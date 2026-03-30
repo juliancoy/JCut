@@ -13,6 +13,7 @@ class QTableWidget;
 class QPushButton;
 class QLineEdit;
 class QIcon;
+class QListWidget;
 
 class InspectorPane final : public QWidget
 {
@@ -112,6 +113,11 @@ public:
     QCheckBox *previewHideOutsideOutputCheckBox() const { return m_previewHideOutsideOutputCheckBox; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
     QPushButton *profileBenchmarkButton() const { return m_profileBenchmarkButton; }
+    QLabel *projectSectionLabel() const { return m_projectSectionLabel; }
+    QListWidget *projectsList() const { return m_projectsList; }
+    QPushButton *newProjectButton() const { return m_newProjectButton; }
+    QPushButton *saveProjectAsButton() const { return m_saveProjectAsButton; }
+    QPushButton *renameProjectButton() const { return m_renameProjectButton; }
 
     QSpinBox *outputWidthSpin() const { return m_outputWidthSpin; }
     QSpinBox *outputHeightSpin() const { return m_outputHeightSpin; }
@@ -144,6 +150,7 @@ private:
     QWidget *buildOutputTab();
     QWidget *buildPreviewTab();
     QWidget *buildProfileTab();
+    QWidget *buildProjectsTab();
     void configureInspectorTabs();
 
 private:
@@ -223,6 +230,11 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
+    QLabel *m_projectSectionLabel = nullptr;
+    QListWidget *m_projectsList = nullptr;
+    QPushButton *m_newProjectButton = nullptr;
+    QPushButton *m_saveProjectAsButton = nullptr;
+    QPushButton *m_renameProjectButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
     QSpinBox *m_transcriptMaxCharsSpin = nullptr;

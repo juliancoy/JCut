@@ -12,6 +12,7 @@
 #include "inspector_pane.h"
 #include "output_tab.h"
 #include "profile_tab.h"
+#include "projects.h"
 #include "transcript_tab.h"
 #include "grading_tab.h"
 #include "titles_tab.h"
@@ -151,10 +152,11 @@ private:
     void togglePlayback();
     bool playbackActive() const;
 
-    QToolButton *m_newProjectButton = nullptr;
-    QToolButton *m_saveProjectAsButton = nullptr;
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
+    QPushButton *m_newProjectButton = nullptr;
+    QPushButton *m_saveProjectAsButton = nullptr;
+    QPushButton *m_renameProjectButton = nullptr;
 
     PreviewWindow *m_preview = nullptr;
     TimelineWidget *m_timeline = nullptr;
@@ -285,6 +287,7 @@ private:
     std::unique_ptr<VideoKeyframeTab> m_videoKeyframeTab;
     std::unique_ptr<OutputTab> m_outputTab;
     std::unique_ptr<ProfileTab> m_profileTab;
+    std::unique_ptr<ProjectsTab> m_projectsTab;
 
     ExplorerPane *m_explorerPane = nullptr;
     InspectorPane *m_inspectorPane = nullptr;
@@ -296,7 +299,6 @@ private:
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;
-    bool m_updatingProjectsList = false;
     bool m_pendingSaveAfterLoad = false;
     bool m_restoringHistory = false;
 

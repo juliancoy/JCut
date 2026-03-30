@@ -171,6 +171,11 @@ EditorWindow::EditorWindow(quint16 controlPort)
     m_renderButton = m_inspectorPane->renderButton();
     m_profileSummaryTable = m_inspectorPane->profileSummaryTable();
     m_profileBenchmarkButton = m_inspectorPane->profileBenchmarkButton();
+    m_projectSectionLabel = m_inspectorPane->projectSectionLabel();
+    m_projectsList = m_inspectorPane->projectsList();
+    m_newProjectButton = m_inspectorPane->newProjectButton();
+    m_saveProjectAsButton = m_inspectorPane->saveProjectAsButton();
+    m_renameProjectButton = m_inspectorPane->renameProjectButton();
     m_transcriptPrependMsSpin = m_inspectorPane->transcriptPrependMsSpin();
     m_transcriptPostpendMsSpin = m_inspectorPane->transcriptPostpendMsSpin();
     m_speechFilterEnabledCheckBox = m_inspectorPane->speechFilterEnabledCheckBox();
@@ -481,6 +486,23 @@ EditorWindow::EditorWindow(quint16 controlPort)
             [this]() { m_inspectorPane->refresh(); }});
     m_profileTab->wire();
 
+    m_projectsTab = std::make_unique<ProjectsTab>(
+        ProjectsTab::Widgets{
+            m_projectSectionLabel,
+            m_projectsList,
+            m_newProjectButton,
+            m_saveProjectAsButton,
+            m_renameProjectButton},
+        ProjectsTab::Dependencies{
+            [this]() { return availableProjectIds(); },
+            [this]() { return currentProjectName(); },
+            [this](const QString& projectId) { return projectPath(projectId); },
+            [this](const QString& projectId) { switchToProject(projectId); },
+            [this]() { createProject(); },
+            [this]() { saveProjectAs(); },
+            [this](const QString& projectId) { renameProject(projectId); }});
+    m_projectsTab->wire();
+
     m_transcriptTab = std::make_unique<TranscriptTab>(
         TranscriptTab::Widgets{
             m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
@@ -614,6 +636,7 @@ EditorWindow::EditorWindow(quint16 controlPort)
         m_videoKeyframeTab->refresh();
         m_outputTab->refresh();
         m_profileTab->refresh();
+        m_projectsTab->refresh();
     });
 
     QTimer::singleShot(0, this, [this]() {
@@ -1460,6 +1483,10 @@ QJsonObject EditorWindow::profilingSnapshot() const
         snapshot[QStringLiteral("preview")] = m_preview->profilingSnapshot();
     }
 
+    if (m_audioEngine) {
+        snapshot[QStringLiteral("audio")] = m_audioEngine->profilingSnapshot();
+    }
+
     snapshot[QStringLiteral("export")] = QJsonObject{
         {QStringLiteral("active"), m_renderInProgress},
         {QStringLiteral("live"), m_liveRenderProfile},
@@ -1783,7 +1810,7 @@ void EditorWindow::advanceFrame()
 {
     if (!m_timeline) return;
 
-    if (m_audioEngine && m_audioEngine->hasPlayableAudio()) {
+    if (m_audioEngine && m_audioEngine->audioClockAvailable() && m_audioEngine->hasPlayableAudio()) {
         int64_t audioSample = qMax<int64_t>(0, m_audioEngine->currentSample());
         const qreal audioFramePosition = samplesToFramePosition(audioSample);
         const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
@@ -2685,7 +2712,7 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(boundedSample);
     m_fastCurrentFrame.store(bounded);
     
-    if (syncAudio && m_audioEngine && m_audioEngine->hasPlayableAudio()) {
+    if (syncAudio && m_audioEngine && m_audioEngine->audioClockAvailable()) {
         m_audioEngine->seek(bounded);
     }
     

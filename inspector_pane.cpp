@@ -9,6 +9,7 @@
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QScrollArea>
 #include <QSplitter>
 #include <QSpinBox>
@@ -58,6 +59,7 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
     m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
     m_inspectorTabs->addTab(buildProfileTab(), QStringLiteral("System"));
+    m_inspectorTabs->addTab(buildProjectsTab(), QStringLiteral("Projects"));
     configureInspectorTabs();
 
     layout->addWidget(m_inspectorTabs);
@@ -94,6 +96,7 @@ void InspectorPane::configureInspectorTabs()
         {6, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
         {7, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
         {8, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {9, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -694,6 +697,34 @@ QWidget *InspectorPane::buildProfileTab()
 
     layout->addWidget(m_profileSummaryTable, 1);
     layout->addWidget(m_profileBenchmarkButton);
+    return page;
+}
+
+QWidget *InspectorPane::buildProjectsTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Projects"), page));
+
+    m_projectSectionLabel = new QLabel(QStringLiteral("PROJECTS"), page);
+    m_projectSectionLabel->setWordWrap(true);
+    m_projectSectionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    layout->addWidget(m_projectSectionLabel);
+
+    auto *buttonRow = new QHBoxLayout;
+    m_newProjectButton = new QPushButton(QStringLiteral("New"), page);
+    m_saveProjectAsButton = new QPushButton(QStringLiteral("Save As"), page);
+    m_renameProjectButton = new QPushButton(QStringLiteral("Rename"), page);
+    buttonRow->addWidget(m_newProjectButton);
+    buttonRow->addWidget(m_saveProjectAsButton);
+    buttonRow->addWidget(m_renameProjectButton);
+    layout->addLayout(buttonRow);
+
+    m_projectsList = new QListWidget(page);
+    m_projectsList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_projectsList->setAlternatingRowColors(true);
+    layout->addWidget(m_projectsList, 1);
+
     return page;
 }
 

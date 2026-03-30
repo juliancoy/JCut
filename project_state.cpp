@@ -225,33 +225,11 @@ QString EditorWindow::currentProjectName() const
 
 void EditorWindow::refreshProjectsList()
 {
-    if (!m_projectsList)
-    {
+    if (!m_projectsTab) {
         return;
     }
-
     loadProjectsFromFolders();
-    m_updatingProjectsList = true;
-    m_projectsList->clear();
-
-    const QStringList projectIds = availableProjectIds();
-    for (const QString &projectId : projectIds)
-    {
-        auto *item = new QListWidgetItem(projectId, m_projectsList);
-        item->setData(Qt::UserRole, projectId);
-        item->setToolTip(QDir::toNativeSeparators(projectPath(projectId)));
-        if (projectId == currentProjectIdOrDefault())
-        {
-            item->setSelected(true);
-        }
-    }
-
-    if (m_projectSectionLabel)
-    {
-        m_projectSectionLabel->setText(QStringLiteral("PROJECTS  %1").arg(currentProjectName()));
-    }
-
-    m_updatingProjectsList = false;
+    m_projectsTab->refresh();
 }
 
 void EditorWindow::switchToProject(const QString &projectId)

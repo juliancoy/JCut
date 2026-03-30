@@ -11,6 +11,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -255,6 +256,58 @@ public:
         return false;
     }
 
+    bool audioClockAvailable() const {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        return m_initialized && m_rtaudio && m_rtaudio->isStreamOpen();
+    }
+
+    QJsonObject profilingSnapshot() const {
+        QJsonObject snapshot;
+        snapshot[QStringLiteral("initialized")] = m_initialized;
+        snapshot[QStringLiteral("running")] = m_running.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("playing")] = m_playing.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("has_playable_audio")] = hasPlayableAudio();
+        snapshot[QStringLiteral("audio_clock_available")] = audioClockAvailable();
+        snapshot[QStringLiteral("current_sample")] = static_cast<qint64>(currentSample());
+        snapshot[QStringLiteral("current_frame")] = static_cast<qint64>(currentFrame());
+        snapshot[QStringLiteral("ring_buffer_samples_available")] = static_cast<qint64>(m_ringBuffer.available());
+        snapshot[QStringLiteral("ring_buffer_end_sample")] = static_cast<qint64>(m_ringBufferEndSample.load(std::memory_order_acquire));
+        snapshot[QStringLiteral("audio_clock_sample")] = static_cast<qint64>(m_audioClockSample.load(std::memory_order_acquire));
+        snapshot[QStringLiteral("timeline_sample_cursor")] = static_cast<qint64>(m_timelineSampleCursor);
+        snapshot[QStringLiteral("underrun_count")] = m_underrunCount.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("sample_rate")] = m_sampleRate;
+        snapshot[QStringLiteral("channel_count")] = m_channelCount;
+        snapshot[QStringLiteral("period_frames")] = m_periodFrames;
+
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        if (!m_rtaudio) {
+            snapshot[QStringLiteral("api")] = QStringLiteral("none");
+            snapshot[QStringLiteral("device_count")] = 0;
+            snapshot[QStringLiteral("stream_open")] = false;
+            snapshot[QStringLiteral("stream_running")] = false;
+            return snapshot;
+        }
+
+        snapshot[QStringLiteral("api")] =
+            QString::fromStdString(rt::audio::RtAudio::getApiName(m_rtaudio->getCurrentApi()));
+        snapshot[QStringLiteral("device_count")] = static_cast<qint64>(m_rtaudio->getDeviceCount());
+        snapshot[QStringLiteral("stream_open")] = m_rtaudio->isStreamOpen();
+        snapshot[QStringLiteral("stream_running")] = m_rtaudio->isStreamRunning();
+        snapshot[QStringLiteral("stream_latency_frames")] = static_cast<qint64>(m_rtaudio->getStreamLatency());
+
+        try {
+            const unsigned int defaultOutputId = m_rtaudio->getDefaultOutputDevice();
+            snapshot[QStringLiteral("default_output_device_id")] = static_cast<qint64>(defaultOutputId);
+            const auto info = m_rtaudio->getDeviceInfo(defaultOutputId);
+            snapshot[QStringLiteral("default_output_device_name")] = QString::fromStdString(info.name);
+            snapshot[QStringLiteral("default_output_channels")] = static_cast<qint64>(info.outputChannels);
+        } catch (const std::exception& e) {
+            snapshot[QStringLiteral("device_info_error")] = QString::fromUtf8(e.what());
+        }
+
+        return snapshot;
+    }
+
     int64_t currentSample() const {
         const int64_t submitted = m_audioClockSample.load(std::memory_order_acquire);
         long latencyFrames = 0;
@@ -304,11 +357,6 @@ private:
             std::memset(out + read, 0, (samplesNeeded - read) * sizeof(int16_t));
             engine->m_underrunCount.fetch_add(1, std::memory_order_relaxed);
         }
-        // Signal mix thread that buffer was consumed. Use an atomic flag
-        // instead of condition_variable::notify_one() because this runs on
-        // the OS realtime audio thread — notify_one can acquire an internal
-        // mutex on some implementations, causing priority inversion.
-        engine->m_bufferConsumed.store(true, std::memory_order_release);
         return 0;
     }
 
@@ -666,7 +714,7 @@ private:
             // Wait until ring buffer needs more data
             {
                 std::unique_lock<std::mutex> lock(m_mixMutex);
-                m_mixCondition.wait(lock, [this]() {
+                m_mixCondition.wait_for(lock, std::chrono::milliseconds(5), [this]() {
                     return !m_running || !m_playing ||
                            m_ringBuffer.available() < static_cast<size_t>(m_mixLowWaterSamples);
                 });
@@ -674,6 +722,9 @@ private:
                     break;
                 }
                 if (!m_playing) {
+                    continue;
+                }
+                if (m_ringBuffer.available() >= static_cast<size_t>(m_mixLowWaterSamples)) {
                     continue;
                 }
             }

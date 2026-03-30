@@ -1,4 +1,5 @@
 #include "control_server.h"
+#include "build_info.h"
 #include "debug_controls.h"
 
 #include <QAbstractButton>
@@ -132,6 +133,42 @@ QJsonObject widgetSnapshot(QWidget* widget) {
     }
     object[QStringLiteral("children")] = children;
     return object;
+}
+
+QJsonObject topLevelWindowSnapshot(QWidget* widget) {
+    if (!widget) {
+        return {};
+    }
+
+    const QRect geometry = widget->geometry();
+    const QRect frameGeometry = widget->frameGeometry();
+    return QJsonObject{
+        {QStringLiteral("class"), QString::fromLatin1(widget->metaObject()->className())},
+        {QStringLiteral("id"), widget->objectName()},
+        {QStringLiteral("title"), widget->windowTitle()},
+        {QStringLiteral("visible"), widget->isVisible()},
+        {QStringLiteral("active"), widget->isActiveWindow()},
+        {QStringLiteral("x"), geometry.x()},
+        {QStringLiteral("y"), geometry.y()},
+        {QStringLiteral("width"), geometry.width()},
+        {QStringLiteral("height"), geometry.height()},
+        {QStringLiteral("frame_x"), frameGeometry.x()},
+        {QStringLiteral("frame_y"), frameGeometry.y()},
+        {QStringLiteral("frame_width"), frameGeometry.width()},
+        {QStringLiteral("frame_height"), frameGeometry.height()}
+    };
+}
+
+QJsonArray topLevelWindowsSnapshot() {
+    QJsonArray windows;
+    const auto widgets = QApplication::topLevelWidgets();
+    for (QWidget* widget : widgets) {
+        if (!widget) {
+            continue;
+        }
+        windows.append(topLevelWindowSnapshot(widget));
+    }
+    return windows;
 }
 
 QWidget* findWidgetByObjectName(QWidget* root, const QString& objectName) {
@@ -380,7 +417,7 @@ private:
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("build_time"), QStringLiteral(EDITOR_BUILD_TIME)},
                 {QStringLiteral("commit"), QStringLiteral(EDITOR_GIT_COMMIT)},
-                {QStringLiteral("dirty"), EDITOR_GIT_DIRTY},
+                {QStringLiteral("dirty"), QJsonValue(static_cast<bool>(EDITOR_GIT_DIRTY))},
                 {QStringLiteral("current_time"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
                 {QStringLiteral("uptime_seconds"), uptimeMs / 1000},
                 {QStringLiteral("pid"), static_cast<qint64>(QCoreApplication::applicationPid())}
@@ -483,6 +520,22 @@ private:
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("ui"), tree},
                 {QStringLiteral("window"), tree}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/windows")) {
+            QJsonArray windows;
+            if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &windows, []() {
+                    return topLevelWindowsSnapshot();
+                })) {
+                writeError(socket, 503, QStringLiteral("timed out waiting for window sizes"));
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("count"), windows.size()},
+                {QStringLiteral("windows"), windows}
             });
             return;
         }
