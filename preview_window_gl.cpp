@@ -42,7 +42,26 @@ void PreviewWindow::initializeGL() {
         uniform float u_contrast;
         uniform float u_saturation;
         uniform float u_opacity;
+        uniform float u_feather_radius;
+        uniform float u_feather_gamma;
+        uniform vec2 u_texel_size;
+        // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+        uniform vec3 u_shadows;      // Lift - affects dark areas
+        uniform vec3 u_midtones;     // Gamma - affects mid-range
+        uniform vec3 u_highlights;   // Gain - affects bright areas
         varying vec2 v_texCoord;
+        
+        // Smooth curve for tone range blending
+        float smoothShadows(float luma) {
+            return pow(1.0 - luma, 2.0);
+        }
+        float smoothMidtones(float luma) {
+            return 1.0 - abs(luma - 0.5) * 2.0;
+        }
+        float smoothHighlights(float luma) {
+            return pow(luma, 2.0);
+        }
+        
         void main() {
             vec4 color;
             float sourceAlpha;
@@ -62,8 +81,47 @@ void PreviewWindow::initializeGL() {
                 if (sourceAlpha > 0.0001) rgb /= sourceAlpha;
                 else rgb = vec3(0.0);
             }
-            rgb = ((rgb - 0.5) * u_contrast) + 0.5 + vec3(u_brightness);
+            
+            // Apply mask feather (box blur on alpha)
+            if (u_feather_radius > 0.0 && sourceAlpha > 0.0) {
+                float alphaSum = 0.0;
+                int sampleCount = 0;
+                int radius = int(ceil(u_feather_radius));
+                for (int dy = -radius; dy <= radius; dy++) {
+                    for (int dx = -radius; dx <= radius; dx++) {
+                        vec2 offset = vec2(float(dx), float(dy)) * u_texel_size;
+                        vec2 sampleCoord = clamp(v_texCoord + offset, 0.0, 1.0);
+                        if (u_texture_mode > 0.5) {
+                            alphaSum += 1.0;
+                        } else {
+                            alphaSum += texture2D(u_texture, sampleCoord).a;
+                        }
+                        sampleCount++;
+                    }
+                }
+                float blurredAlpha = alphaSum / float(sampleCount);
+                // Apply gamma curve to feather (1.0 = linear, <1.0 = sharper edges, >1.0 = softer edges)
+                sourceAlpha = pow(blurredAlpha, 1.0 / max(0.01, u_feather_gamma));
+            }
+            
+            // Calculate luminance for tone-based grading
             float luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+            
+            // Apply Shadows/Lift (multiply, affects dark areas)
+            float shadowWeight = smoothShadows(luminance);
+            rgb *= (1.0 + u_shadows * shadowWeight);
+            
+            // Apply Midtones/Gamma (power curve, affects mid-range)
+            float midtoneWeight = smoothMidtones(luminance);
+            vec3 midtoneAdjust = u_midtones * midtoneWeight;
+            rgb = pow(rgb, vec3(1.0) / (vec3(1.0) + midtoneAdjust));
+            
+            // Apply Highlights/Gain (addition, affects bright areas)
+            float highlightWeight = smoothHighlights(luminance);
+            rgb += u_highlights * highlightWeight;
+            
+            // Basic grading
+            rgb = ((rgb - 0.5) * u_contrast) + 0.5 + vec3(u_brightness);
             rgb = mix(vec3(luminance), rgb, u_saturation);
             rgb = clamp(rgb, 0.0, 1.0);
             color.a = clamp(sourceAlpha * u_opacity, 0.0, 1.0);
@@ -218,6 +276,25 @@ QRectF PreviewWindow::renderFrameLayerGL(const QRect& targetRect, const Timeline
     m_shaderProgram->setUniformValue("u_contrast", GLfloat(contrast));
     m_shaderProgram->setUniformValue("u_saturation", GLfloat(saturation));
     m_shaderProgram->setUniformValue("u_opacity", GLfloat(opacity));
+    
+    // Shadows/Midtones/Highlights uniforms
+    m_shaderProgram->setUniformValue("u_shadows", 
+        QVector3D(grade.shadowsR, grade.shadowsG, grade.shadowsB));
+    m_shaderProgram->setUniformValue("u_midtones", 
+        QVector3D(grade.midtonesR, grade.midtonesG, grade.midtonesB));
+    m_shaderProgram->setUniformValue("u_highlights", 
+        QVector3D(grade.highlightsR, grade.highlightsG, grade.highlightsB));
+    
+    // Mask feather uniforms
+    const qreal featherRadius = clip.maskFeather;
+    const qreal featherGamma = clip.maskFeatherGamma;
+    const QSize frameSize = frame.size();
+    const GLfloat texelSizeX = frameSize.width() > 0 ? 1.0f / frameSize.width() : 0.0f;
+    const GLfloat texelSizeY = frameSize.height() > 0 ? 1.0f / frameSize.height() : 0.0f;
+    m_shaderProgram->setUniformValue("u_feather_radius", GLfloat(featherRadius));
+    m_shaderProgram->setUniformValue("u_feather_gamma", GLfloat(featherGamma));
+    m_shaderProgram->setUniformValue("u_texel_size", QVector2D(texelSizeX, texelSizeY));
+    
     m_shaderProgram->setUniformValue("u_texture", 0);
     m_shaderProgram->setUniformValue("u_texture_uv", 1);
     m_shaderProgram->setUniformValue("u_texture_mode", entry.usesYuvTextures ? 1.0f : 0.0f);

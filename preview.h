@@ -44,6 +44,9 @@ public:
     void setHideOutsideOutputWindow(bool hide);
     void setBypassGrading(bool bypass);
     void setBackgroundColor(const QColor& color);
+    void setPreviewZoom(qreal zoom);
+    qreal previewZoom() const { return m_previewZoom; }
+    void resetPreviewPan() { m_previewPanOffset = QPointF(); }
     QSize outputSize() const { return m_outputSize; }
     bool bypassGrading() const;
     bool audioMuted() const;

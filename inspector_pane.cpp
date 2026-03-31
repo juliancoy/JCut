@@ -6,6 +6,7 @@
 #include <QFontComboBox>
 #include <QFormLayout>
 #include <QFrame>
+#include <QGroupBox>
 #include <QHeaderView>
 #include <QLabel>
 #include <QLineEdit>
@@ -161,6 +162,61 @@ QWidget *InspectorPane::buildGradingTab()
     form->addRow(QStringLiteral("Saturation"), m_saturationSpin);
     form->addRow(QStringLiteral("Opacity"), m_opacitySpin);
 
+    // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+    auto *shadowsGroup = new QGroupBox(QStringLiteral("Shadows (Lift)"), page);
+    auto *shadowsLayout = new QHBoxLayout(shadowsGroup);
+    m_shadowsRSpin = new QDoubleSpinBox(page);
+    m_shadowsGSpin = new QDoubleSpinBox(page);
+    m_shadowsBSpin = new QDoubleSpinBox(page);
+    for (QDoubleSpinBox *spin : {m_shadowsRSpin, m_shadowsGSpin, m_shadowsBSpin}) {
+        spin->setRange(-2.0, 2.0);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.05);
+        spin->setValue(0.0);
+    }
+    m_shadowsRSpin->setPrefix(QStringLiteral("R: "));
+    m_shadowsGSpin->setPrefix(QStringLiteral("G: "));
+    m_shadowsBSpin->setPrefix(QStringLiteral("B: "));
+    shadowsLayout->addWidget(m_shadowsRSpin);
+    shadowsLayout->addWidget(m_shadowsGSpin);
+    shadowsLayout->addWidget(m_shadowsBSpin);
+
+    auto *midtonesGroup = new QGroupBox(QStringLiteral("Midtones (Gamma)"), page);
+    auto *midtonesLayout = new QHBoxLayout(midtonesGroup);
+    m_midtonesRSpin = new QDoubleSpinBox(page);
+    m_midtonesGSpin = new QDoubleSpinBox(page);
+    m_midtonesBSpin = new QDoubleSpinBox(page);
+    for (QDoubleSpinBox *spin : {m_midtonesRSpin, m_midtonesGSpin, m_midtonesBSpin}) {
+        spin->setRange(-2.0, 2.0);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.05);
+        spin->setValue(0.0);
+    }
+    m_midtonesRSpin->setPrefix(QStringLiteral("R: "));
+    m_midtonesGSpin->setPrefix(QStringLiteral("G: "));
+    m_midtonesBSpin->setPrefix(QStringLiteral("B: "));
+    midtonesLayout->addWidget(m_midtonesRSpin);
+    midtonesLayout->addWidget(m_midtonesGSpin);
+    midtonesLayout->addWidget(m_midtonesBSpin);
+
+    auto *highlightsGroup = new QGroupBox(QStringLiteral("Highlights (Gain)"), page);
+    auto *highlightsLayout = new QHBoxLayout(highlightsGroup);
+    m_highlightsRSpin = new QDoubleSpinBox(page);
+    m_highlightsGSpin = new QDoubleSpinBox(page);
+    m_highlightsBSpin = new QDoubleSpinBox(page);
+    for (QDoubleSpinBox *spin : {m_highlightsRSpin, m_highlightsGSpin, m_highlightsBSpin}) {
+        spin->setRange(-2.0, 2.0);
+        spin->setDecimals(3);
+        spin->setSingleStep(0.05);
+        spin->setValue(0.0);
+    }
+    m_highlightsRSpin->setPrefix(QStringLiteral("R: "));
+    m_highlightsGSpin->setPrefix(QStringLiteral("G: "));
+    m_highlightsBSpin->setPrefix(QStringLiteral("B: "));
+    highlightsLayout->addWidget(m_highlightsRSpin);
+    highlightsLayout->addWidget(m_highlightsGSpin);
+    highlightsLayout->addWidget(m_highlightsBSpin);
+
     m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
     m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
     m_gradingAutoScrollCheckBox->setChecked(true);
@@ -194,6 +250,9 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingKeyframeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
 
     layout->addLayout(form);
+    layout->addWidget(shadowsGroup);
+    layout->addWidget(midtonesGroup);
+    layout->addWidget(highlightsGroup);
     layout->addWidget(m_gradingAutoScrollCheckBox);
     layout->addWidget(m_gradingFollowCurrentCheckBox);
     layout->addWidget(m_gradingKeyAtPlayheadButton);
@@ -229,7 +288,7 @@ QWidget *InspectorPane::buildEffectsTab()
     featherGroup->addWidget(m_maskFeatherEnabledCheck);
     
     auto *featherRow = new QHBoxLayout;
-    featherRow->addWidget(new QLabel(QStringLiteral("Feather Radius:"), page));
+    featherRow->addWidget(new QLabel(QStringLiteral("Radius:"), page));
     m_maskFeatherSpin = new QDoubleSpinBox(page);
     m_maskFeatherSpin->setRange(0.0, 100.0);
     m_maskFeatherSpin->setDecimals(1);
@@ -241,11 +300,24 @@ QWidget *InspectorPane::buildEffectsTab()
     featherRow->addStretch();
     featherGroup->addLayout(featherRow);
     
+    auto *gammaRow = new QHBoxLayout;
+    gammaRow->addWidget(new QLabel(QStringLiteral("Curve Gamma:"), page));
+    m_maskFeatherGammaSpin = new QDoubleSpinBox(page);
+    m_maskFeatherGammaSpin->setRange(0.1, 5.0);
+    m_maskFeatherGammaSpin->setDecimals(2);
+    m_maskFeatherGammaSpin->setSingleStep(0.1);
+    m_maskFeatherGammaSpin->setValue(2.0);
+    m_maskFeatherGammaSpin->setToolTip(QStringLiteral("Feather curve gamma: 1.0=linear (soft), 2.0=default (smooth), 3.0+=sharper edges"));
+    gammaRow->addWidget(m_maskFeatherGammaSpin);
+    gammaRow->addStretch();
+    featherGroup->addLayout(gammaRow);
+    
     layout->addLayout(featherGroup);
     
     // Info label
     auto *infoLabel = new QLabel(QStringLiteral(
         "Mask feathering smooths the edges of transparent areas. "
+        "Use Gamma to control edge sharpness: 1.0=soft, 2.0=default, 3.0+=sharp. "
         "Only applies to clips with alpha channels (PNG, ProRes, etc.)."), page);
     infoLabel->setWordWrap(true);
     infoLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
@@ -656,8 +728,37 @@ QWidget *InspectorPane::buildPreviewTab()
     m_previewHideOutsideOutputCheckBox->setToolTip(
         QStringLiteral("Clip the preview to the current output frame so off-frame content is hidden."));
 
+    // Zoom control section
+    auto *zoomSectionLabel = new QLabel(QStringLiteral("Zoom"), page);
+    zoomSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
+    
+    auto *zoomLayout = new QHBoxLayout();
+    m_previewZoomSpin = new QDoubleSpinBox(page);
+    m_previewZoomSpin->setDecimals(2);
+    m_previewZoomSpin->setRange(0.1, 5.0);
+    m_previewZoomSpin->setSingleStep(0.1);
+    m_previewZoomSpin->setValue(1.0);
+    m_previewZoomSpin->setSuffix(QStringLiteral("x"));
+    m_previewZoomSpin->setToolTip(
+        QStringLiteral("Preview zoom level (0.1x to 5.0x). Use mouse wheel over preview for smooth zoom."));
+    
+    m_previewZoomResetButton = new QPushButton(QStringLiteral("Reset"), page);
+    m_previewZoomResetButton->setToolTip(QStringLiteral("Reset zoom to 1.0x and center the view"));
+    
+    zoomLayout->addWidget(m_previewZoomSpin);
+    zoomLayout->addWidget(m_previewZoomResetButton);
+    
+    auto *zoomHelpLabel = new QLabel(
+        QStringLiteral("Mouse wheel: zoom at cursor position. Drag to pan when zoomed."), page);
+    zoomHelpLabel->setWordWrap(true);
+    zoomHelpLabel->setStyleSheet(QStringLiteral("color: #6b7a8f; font-size: 11px;"));
+
     layout->addWidget(summary);
     layout->addWidget(m_previewHideOutsideOutputCheckBox);
+    layout->addSpacing(12);
+    layout->addWidget(zoomSectionLabel);
+    layout->addLayout(zoomLayout);
+    layout->addWidget(zoomHelpLabel);
     layout->addStretch(1);
     return page;
 }

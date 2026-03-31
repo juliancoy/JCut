@@ -361,7 +361,7 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
         
         // Apply mask feathering if clip has alpha and feather is enabled
         if (clip.maskFeather > 0.0) {
-            img = applyMaskFeather(img, clip.maskFeather);
+            img = applyMaskFeather(img, clip.maskFeather, clip.maskFeatherGamma);
         }
         
         const QRect fitted = fitRect(img.size(), targetRect);

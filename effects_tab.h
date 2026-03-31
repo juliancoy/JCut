@@ -18,6 +18,7 @@ public:
     {
         QLabel* effectsPathLabel = nullptr;
         QDoubleSpinBox* maskFeatherSpin = nullptr;
+        QDoubleSpinBox* maskFeatherGammaSpin = nullptr;
         QCheckBox* maskFeatherEnabledCheck = nullptr;
         QPushButton* applyButton = nullptr;
     };
@@ -47,6 +48,7 @@ signals:
 
 private slots:
     void onMaskFeatherChanged(double value);
+    void onMaskFeatherGammaChanged(double value);
     void onMaskFeatherEnabledChanged(bool enabled);
     void onApplyClicked();
     void onEditingFinished();

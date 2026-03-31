@@ -18,6 +18,12 @@ void EffectsTab::wire()
         connect(m_widgets.maskFeatherSpin, &QDoubleSpinBox::editingFinished,
                 this, &EffectsTab::onEditingFinished);
     }
+    if (m_widgets.maskFeatherGammaSpin) {
+        connect(m_widgets.maskFeatherGammaSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, &EffectsTab::onMaskFeatherGammaChanged);
+        connect(m_widgets.maskFeatherGammaSpin, &QDoubleSpinBox::editingFinished,
+                this, &EffectsTab::onEditingFinished);
+    }
     if (m_widgets.maskFeatherEnabledCheck) {
         connect(m_widgets.maskFeatherEnabledCheck, &QCheckBox::toggled,
                 this, &EffectsTab::onMaskFeatherEnabledChanged);
@@ -61,6 +67,9 @@ void EffectsTab::refresh()
     m_widgets.effectsPathLabel->setToolTip(nativePath);
 
     m_widgets.maskFeatherSpin->setValue(clip->maskFeather);
+    if (m_widgets.maskFeatherGammaSpin) {
+        m_widgets.maskFeatherGammaSpin->setValue(clip->maskFeatherGamma);
+    }
     if (m_widgets.maskFeatherEnabledCheck) {
         m_widgets.maskFeatherEnabledCheck->setChecked(clip->maskFeather > 0.0);
     }
@@ -68,8 +77,37 @@ void EffectsTab::refresh()
     // Disable mask feather controls if clip doesn't have alpha
     if (m_widgets.maskFeatherEnabledCheck) {
         m_widgets.maskFeatherEnabledCheck->setEnabled(hasAlpha);
+        if (!hasAlpha) {
+            m_widgets.maskFeatherEnabledCheck->setToolTip(
+                QStringLiteral("Mask feathering requires an alpha channel.\n\n"
+                               "To use this feature:\n"
+                               "• Use PNG, TGA, TIFF, or EXR formats\n"
+                               "• Ensure your source images have transparency\n"
+                               "• For video, use ProRes 4444 or similar alpha-capable codecs\n\n"
+                               "Current clip format does not support alpha."));
+        } else {
+            m_widgets.maskFeatherEnabledCheck->setToolTip(
+                QStringLiteral("Enable mask feathering for this alpha-capable clip."));
+        }
     }
     m_widgets.maskFeatherSpin->setEnabled(hasAlpha && (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
+    if (m_widgets.maskFeatherSpin && !hasAlpha) {
+        m_widgets.maskFeatherSpin->setToolTip(
+            QStringLiteral("Disabled: Selected clip does not have an alpha channel."));
+    } else if (m_widgets.maskFeatherSpin) {
+        m_widgets.maskFeatherSpin->setToolTip(
+            QStringLiteral("Feather radius in pixels for the mask edge."));
+    }
+    if (m_widgets.maskFeatherGammaSpin) {
+        m_widgets.maskFeatherGammaSpin->setEnabled(hasAlpha && (!m_widgets.maskFeatherEnabledCheck || m_widgets.maskFeatherEnabledCheck->isChecked()));
+        if (!hasAlpha) {
+            m_widgets.maskFeatherGammaSpin->setToolTip(
+                QStringLiteral("Disabled: Selected clip does not have an alpha channel."));
+        } else {
+            m_widgets.maskFeatherGammaSpin->setToolTip(
+                QStringLiteral("Feather curve gamma. 1.0=linear (soft), 2.0=default (smooth), higher=sharper edges."));
+        }
+    }
 
     m_updating = false;
 }
@@ -84,9 +122,11 @@ void EffectsTab::applyMaskFeather(bool pushHistory)
     const double featherValue = m_widgets.maskFeatherEnabledCheck && m_widgets.maskFeatherEnabledCheck->isChecked()
                                     ? m_widgets.maskFeatherSpin->value()
                                     : 0.0;
+    const double featherGamma = m_widgets.maskFeatherGammaSpin ? m_widgets.maskFeatherGammaSpin->value() : 2.0;
 
-    const bool updated = m_deps.updateClipById(selectedClip->id, [featherValue](TimelineClip& clip) {
+    const bool updated = m_deps.updateClipById(selectedClip->id, [featherValue, featherGamma](TimelineClip& clip) {
         clip.maskFeather = featherValue;
+        clip.maskFeatherGamma = featherGamma;
     });
 
     if (!updated) return;
@@ -107,12 +147,30 @@ void EffectsTab::onMaskFeatherChanged(double value)
     applyMaskFeather(false);
 }
 
+void EffectsTab::onMaskFeatherGammaChanged(double value)
+{
+    Q_UNUSED(value);
+    if (m_updating) return;
+    applyMaskFeather(false);
+}
+
 void EffectsTab::onMaskFeatherEnabledChanged(bool enabled)
 {
     if (m_updating) return;
     
     if (m_widgets.maskFeatherSpin) {
         m_widgets.maskFeatherSpin->setEnabled(enabled);
+        // Set default value if enabling and current value is 0
+        if (enabled && qFuzzyIsNull(m_widgets.maskFeatherSpin->value())) {
+            m_widgets.maskFeatherSpin->setValue(5.0);  // Default 5px feather
+        }
+    }
+    if (m_widgets.maskFeatherGammaSpin) {
+        m_widgets.maskFeatherGammaSpin->setEnabled(enabled);
+        // Set default gamma if enabling and current value is at minimum
+        if (enabled && qFuzzyCompare(m_widgets.maskFeatherGammaSpin->value(), m_widgets.maskFeatherGammaSpin->minimum())) {
+            m_widgets.maskFeatherGammaSpin->setValue(2.0);  // Default gamma 2.0
+        }
     }
     
     applyMaskFeather(true);

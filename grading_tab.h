@@ -24,6 +24,16 @@ public:
         QDoubleSpinBox* contrastSpin = nullptr;
         QDoubleSpinBox* saturationSpin = nullptr;
         QDoubleSpinBox* opacitySpin = nullptr;
+        // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+        QDoubleSpinBox* shadowsRSpin = nullptr;
+        QDoubleSpinBox* shadowsGSpin = nullptr;
+        QDoubleSpinBox* shadowsBSpin = nullptr;
+        QDoubleSpinBox* midtonesRSpin = nullptr;
+        QDoubleSpinBox* midtonesGSpin = nullptr;
+        QDoubleSpinBox* midtonesBSpin = nullptr;
+        QDoubleSpinBox* highlightsRSpin = nullptr;
+        QDoubleSpinBox* highlightsGSpin = nullptr;
+        QDoubleSpinBox* highlightsBSpin = nullptr;
         QTableWidget* gradingKeyframeTable = nullptr;
         QCheckBox* gradingAutoScrollCheckBox = nullptr;
         QCheckBox* gradingFollowCurrentCheckBox = nullptr;
@@ -63,6 +73,16 @@ private slots:
     void onContrastEditingFinished();
     void onSaturationEditingFinished();
     void onOpacityEditingFinished();
+    // Shadows/Midtones/Highlights slots
+    void onShadowsRChanged(double value);
+    void onShadowsGChanged(double value);
+    void onShadowsBChanged(double value);
+    void onMidtonesRChanged(double value);
+    void onMidtonesGChanged(double value);
+    void onMidtonesBChanged(double value);
+    void onHighlightsRChanged(double value);
+    void onHighlightsGChanged(double value);
+    void onHighlightsBChanged(double value);
     void onAutoScrollToggled(bool checked);
     void onFollowCurrentToggled(bool checked);
     void onKeyAtPlayheadClicked();
@@ -82,6 +102,10 @@ private:
         double contrast = 1.0;
         double saturation = 1.0;
         double opacity = 1.0;
+        // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+        double shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
+        double midtonesR = 0.0, midtonesG = 0.0, midtonesB = 0.0;
+        double highlightsR = 0.0, highlightsG = 0.0, highlightsB = 0.0;
         bool linearInterpolation = true;
     };
 

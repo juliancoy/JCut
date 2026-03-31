@@ -28,6 +28,17 @@ public:
     QDoubleSpinBox *contrastSpin() const { return m_contrastSpin; }
     QDoubleSpinBox *saturationSpin() const { return m_saturationSpin; }
     QDoubleSpinBox *opacitySpin() const { return m_opacitySpin; }
+    
+    // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+    QDoubleSpinBox *shadowsRSpin() const { return m_shadowsRSpin; }
+    QDoubleSpinBox *shadowsGSpin() const { return m_shadowsGSpin; }
+    QDoubleSpinBox *shadowsBSpin() const { return m_shadowsBSpin; }
+    QDoubleSpinBox *midtonesRSpin() const { return m_midtonesRSpin; }
+    QDoubleSpinBox *midtonesGSpin() const { return m_midtonesGSpin; }
+    QDoubleSpinBox *midtonesBSpin() const { return m_midtonesBSpin; }
+    QDoubleSpinBox *highlightsRSpin() const { return m_highlightsRSpin; }
+    QDoubleSpinBox *highlightsGSpin() const { return m_highlightsGSpin; }
+    QDoubleSpinBox *highlightsBSpin() const { return m_highlightsBSpin; }
 
     QDoubleSpinBox *videoTranslationXSpin() const { return m_videoTranslationXSpin; }
     QDoubleSpinBox *videoTranslationYSpin() const { return m_videoTranslationYSpin; }
@@ -65,6 +76,7 @@ public:
     
     QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
     QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
+    QDoubleSpinBox *maskFeatherGammaSpin() const { return m_maskFeatherGammaSpin; }
     QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
     
     QLabel *syncInspectorClipLabel() const { return m_syncInspectorClipLabel; }
@@ -117,6 +129,8 @@ public:
     QDoubleSpinBox *trackCrossfadeSecondsSpin() const { return m_trackCrossfadeSecondsSpin; }
     QPushButton *trackCrossfadeButton() const { return m_trackCrossfadeButton; }
     QCheckBox *previewHideOutsideOutputCheckBox() const { return m_previewHideOutsideOutputCheckBox; }
+    QDoubleSpinBox *previewZoomSpin() const { return m_previewZoomSpin; }
+    QPushButton *previewZoomResetButton() const { return m_previewZoomResetButton; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
     QPushButton *profileBenchmarkButton() const { return m_profileBenchmarkButton; }
     QLabel *projectSectionLabel() const { return m_projectSectionLabel; }
@@ -168,6 +182,16 @@ private:
     QDoubleSpinBox *m_contrastSpin = nullptr;
     QDoubleSpinBox *m_saturationSpin = nullptr;
     QDoubleSpinBox *m_opacitySpin = nullptr;
+    // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+    QDoubleSpinBox *m_shadowsRSpin = nullptr;
+    QDoubleSpinBox *m_shadowsGSpin = nullptr;
+    QDoubleSpinBox *m_shadowsBSpin = nullptr;
+    QDoubleSpinBox *m_midtonesRSpin = nullptr;
+    QDoubleSpinBox *m_midtonesGSpin = nullptr;
+    QDoubleSpinBox *m_midtonesBSpin = nullptr;
+    QDoubleSpinBox *m_highlightsRSpin = nullptr;
+    QDoubleSpinBox *m_highlightsGSpin = nullptr;
+    QDoubleSpinBox *m_highlightsBSpin = nullptr;
     QTableWidget *m_gradingKeyframeTable = nullptr;
     QCheckBox *m_gradingAutoScrollCheckBox = nullptr;
     QCheckBox *m_gradingFollowCurrentCheckBox = nullptr;
@@ -178,6 +202,7 @@ private:
 
     QLabel *m_effectsPathLabel = nullptr;
     QDoubleSpinBox *m_maskFeatherSpin = nullptr;
+    QDoubleSpinBox *m_maskFeatherGammaSpin = nullptr;
     QCheckBox *m_maskFeatherEnabledCheck = nullptr;
 
     QLabel *m_syncInspectorClipLabel = nullptr;
@@ -240,6 +265,8 @@ private:
     QDoubleSpinBox *m_trackCrossfadeSecondsSpin = nullptr;
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
+    QDoubleSpinBox *m_previewZoomSpin = nullptr;
+    QPushButton *m_previewZoomResetButton = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
     QLabel *m_projectSectionLabel = nullptr;

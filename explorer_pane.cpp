@@ -782,9 +782,49 @@ QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
 
     if (isSequence)
     {
-        const QPixmap pixmap = sequenceFolderIcon(QSize(280, 180)).pixmap(QSize(280, 180));
-        if (!pixmap.isNull())
-        {
+        // Load the first frame of the sequence for preview
+        const QStringList frames = imageSequenceFramePaths(filePath);
+        QPixmap pixmap;
+        bool isWebPSequence = false;
+        if (!frames.isEmpty()) {
+            const QString firstFrame = frames.constFirst();
+            const QString suffix = QFileInfo(firstFrame).suffix().toLower();
+            // Skip WebP to avoid thread-safety issues with Qt's WebP plugin
+            if (suffix == QStringLiteral("webp")) {
+                isWebPSequence = true;
+            } else {
+                QImage image(firstFrame);
+                if (!image.isNull()) {
+                    pixmap = QPixmap::fromImage(image);
+                }
+            }
+        }
+        if (pixmap.isNull()) {
+            // Fallback to folder icon if we can't load a frame (or it's WebP)
+            pixmap = sequenceFolderIcon(QSize(280, 180)).pixmap(QSize(280, 180));
+        }
+        // Add WebP indicator if applicable
+        if (isWebPSequence && !pixmap.isNull()) {
+            QPainter painter(&pixmap);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            const QString badgeText = QStringLiteral("WEBP SEQ");
+            QFont font = painter.font();
+            font.setBold(true);
+            font.setPointSize(10);
+            painter.setFont(font);
+            const QFontMetrics fm(font);
+            const int textWidth = fm.horizontalAdvance(badgeText);
+            const int padding = 8;
+            const QRect badgeRect(pixmap.width() / 2 - (textWidth + padding * 2) / 2, 
+                                  pixmap.height() / 2 - (fm.height() + padding) / 2,
+                                  textWidth + padding * 2, fm.height() + padding);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(75, 111, 153, 230));
+            painter.drawRoundedRect(badgeRect, 10, 10);
+            painter.setPen(QColor(QStringLiteral("#edf2f7")));
+            painter.drawText(badgeRect, Qt::AlignCenter, badgeText);
+        }
+        if (!pixmap.isNull()) {
             m_previewPixmapCache.insert(cacheKey, pixmap);
         }
         return pixmap;
@@ -1027,7 +1067,44 @@ void ExplorerPane::showExplorerHoverPreview(const QString &filePath)
         }
     }
 
-    const QPixmap scaled = source.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    QPixmap scaled = source.scaled(targetSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    
+    // Add sequence info badge for image sequences
+    if (isImageSequencePath(filePath)) {
+        const QStringList frames = imageSequenceFramePaths(filePath);
+        if (!frames.isEmpty()) {
+            // Check if it's a WebP sequence
+            const bool isWebP = !frames.isEmpty() && 
+                QFileInfo(frames.constFirst()).suffix().toLower() == QStringLiteral("webp");
+            
+            QPainter painter(&scaled);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            
+            // Draw badge background
+            const QString badgeText = isWebP 
+                ? QStringLiteral("WEBP SEQ: %1 frames").arg(frames.size())
+                : QStringLiteral("SEQ: %1 frames").arg(frames.size());
+            QFont font = painter.font();
+            font.setBold(true);
+            font.setPointSize(9);
+            painter.setFont(font);
+            
+            const QFontMetrics fm(font);
+            const int textWidth = fm.horizontalAdvance(badgeText);
+            const int padding = 8;
+            const QRect badgeRect(scaled.width() - textWidth - padding * 2 - 4, 4, 
+                                  textWidth + padding * 2, fm.height() + padding);
+            
+            painter.setPen(Qt::NoPen);
+            // Different color for WebP sequences
+            painter.setBrush(isWebP ? QColor(120, 80, 160, 200) : QColor(9, 12, 18, 200));
+            painter.drawRoundedRect(badgeRect, 8, 8);
+            
+            painter.setPen(QColor(QStringLiteral("#edf2f7")));
+            painter.drawText(badgeRect, Qt::AlignCenter, badgeText);
+        }
+    }
+    
     m_explorerHoverPreview->setPixmap(scaled);
     m_explorerHoverPreview->resize(scaled.size() + QSize(16, 16));
 

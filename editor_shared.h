@@ -40,10 +40,15 @@ struct TimelineClip {
 
     struct GradingKeyframe {
         int64_t frame = 0;
+        // Basic grading
         qreal brightness = 0.0;
         qreal contrast = 1.0;
         qreal saturation = 1.0;
         qreal opacity = 1.0;
+        // Shadows/Midtones/Highlights (Lift/Gamma/Gain style)
+        qreal shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
+        qreal midtonesR = 0.0, midtonesG = 0.0, midtonesB = 0.0;
+        qreal highlightsR = 0.0, highlightsG = 0.0, highlightsB = 0.0;
         bool linearInterpolation = true;
     };
 
@@ -119,6 +124,7 @@ struct TimelineClip {
     int fadeSamples = 250;  // Crossfade with previous audio clip (0 = no fade)
     bool locked = false;    // When true, prevents temporal adjustments
     qreal maskFeather = 0.0; // Mask feathering radius in pixels (0 = disabled, only applies to clips with alpha)
+    qreal maskFeatherGamma = 1.0; // Feather curve power (1.0 = linear, <1.0 = sharper edges, >1.0 = softer edges)
 };
 
 struct TimelineTrack {
@@ -236,7 +242,7 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
 MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames = 120);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
-QImage applyMaskFeather(const QImage& source, qreal featherRadius);
+QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma = 1.0);
 QString playbackProxyPathForClip(const TimelineClip& clip);
 QString playbackMediaPathForClip(const TimelineClip& clip);
 QString interactivePreviewMediaPathForClip(const TimelineClip& clip);

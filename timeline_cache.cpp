@@ -48,17 +48,26 @@ void cacheTrace(const QString& stage, const QString& detail = QString()) {
     static QHash<QString, qint64> lastLogByStage;
 
     const qint64 now = cacheTraceMs();
-    if (!debugCacheVerboseEnabled() &&
-        (stage.startsWith(QStringLiteral("TimelineCache::onPrefetchTimer")) ||
-         stage.startsWith(QStringLiteral("TimelineCache::prefetch.skip")) ||
-         stage.startsWith(QStringLiteral("TimelineCache::requestFrame.miss")) ||
-         stage.startsWith(QStringLiteral("TimelineCache::requestFrame.dispatch")))) {
-        std::lock_guard<std::mutex> lock(logMutex);
-        const qint64 last = lastLogByStage.value(stage, std::numeric_limits<qint64>::min());
-        if (now - last < 250) {
-            return;
+    if (!debugCacheVerboseEnabled()) {
+        // Rate-limit high-frequency cache operations
+        const bool isHighFreqStage = 
+            stage.startsWith(QStringLiteral("TimelineCache::onPrefetchTimer")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::prefetch.skip")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::prefetch.dispatch")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::prefetch.complete")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::lead-prefetch.dispatch")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::lead-prefetch.complete")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::requestFrame.miss")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::requestFrame.dispatch")) ||
+            stage.startsWith(QStringLiteral("TimelineCache::requestFrame.complete"));
+        if (isHighFreqStage) {
+            std::lock_guard<std::mutex> lock(logMutex);
+            const qint64 last = lastLogByStage.value(stage, std::numeric_limits<qint64>::min());
+            if (now - last < 500) {  // Increased to 500ms for less spam
+                return;
+            }
+            lastLogByStage.insert(stage, now);
         }
-        lastLogByStage.insert(stage, now);
     }
 
     qDebug().noquote() << QStringLiteral("[CACHE %1 ms] %2%3")

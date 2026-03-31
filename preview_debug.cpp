@@ -10,6 +10,9 @@
 #include <QHash>
 #include <QDebug>
 
+#include <mutex>
+#include <limits>
+
 namespace {
 struct PlaybackStaleRunState {
     bool active = false;
@@ -43,7 +46,27 @@ void playbackTrace(const QString& event, const QString& detail)
     if (editor::debugPlaybackLevel() < editor::DebugLogLevel::Info) {
         return;
     }
-    qDebug() << "[PLAYBACK]" << playbackTraceMs() << event << "-" << detail;
+    
+    // Rate-limit high-frequency playback events
+    static std::mutex logMutex;
+    static QHash<QString, qint64> lastLogByEvent;
+    
+    const qint64 now = playbackTraceMs();
+    const bool isHighFreqEvent = 
+        event.startsWith(QStringLiteral("EditorWindow::setCurrentFrame")) ||
+        event.startsWith(QStringLiteral("PreviewWindow::setCurrentPlaybackSample")) ||
+        event.startsWith(QStringLiteral("EditorWindow::advanceFrame"));
+    
+    if (isHighFreqEvent && editor::debugPlaybackLevel() < editor::DebugLogLevel::Verbose) {
+        std::lock_guard<std::mutex> lock(logMutex);
+        const qint64 last = lastLogByEvent.value(event, std::numeric_limits<qint64>::min());
+        if (now - last < 500) {
+            return;
+        }
+        lastLogByEvent.insert(event, now);
+    }
+    
+    qDebug() << "[PLAYBACK]" << now << event << "-" << detail;
 }
 
 void playbackWarnTrace(const QString& event, const QString& detail)

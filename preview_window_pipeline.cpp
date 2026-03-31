@@ -3,6 +3,7 @@
 
 #include "async_decoder.h"
 #include "frame_handle.h"
+#include "media_pipeline_shared.h"
 #include "memory_budget.h"
 #include "playback_frame_pipeline.h"
 #include "timeline_cache.h"
@@ -56,7 +57,7 @@ void PreviewWindow::ensurePipeline() {
     m_decoder = std::make_unique<AsyncDecoder>(this);
     m_decoder->initialize();
     if (MemoryBudget* budget = m_decoder->memoryBudget()) {
-        budget->setMaxCpuMemory(768 * 1024 * 1024);
+        budget->setMaxCpuMemory(1536 * 1024 * 1024); // 1.5GB
     }
 
     m_cache = std::make_unique<TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(), this);
@@ -98,8 +99,49 @@ int64_t PreviewWindow::sourceFrameForSample(const TimelineClip& clip, int64_t sa
 }
 
 void PreviewWindow::requestFramesForCurrentPosition() {
-    // Best-effort split point. The uploaded source truncates this method before completion,
-    // so this file intentionally preserves the method boundary and leaves the body for the user
-    // to paste from the original full source.
-    // TODO: paste full body of PreviewWindow::requestFramesForCurrentPosition from the original file.
+    static constexpr int kMaxVisibleBacklog = 4;
+    QVector<const TimelineClip*> activeClips;
+    activeClips.reserve(m_clips.size());
+    for (const TimelineClip& clip : m_clips) {
+        if (!clipVisualPlaybackEnabled(clip)) {
+            continue;
+        }
+        if (isSampleWithinClip(clip, m_currentSample)) {
+            if (!editor::clipIsActiveAtTimelineFrame(clip, m_currentFramePosition, m_bypassGrading)) {
+                continue;
+            }
+            activeClips.push_back(&clip);
+        }
+    }
+
+    if (activeClips.isEmpty()) {
+        return;
+    }
+
+    ensurePipeline();
+    if (!m_cache) {
+        return;
+    }
+
+    if (!m_playing && m_cache->pendingVisibleRequestCount() >= kMaxVisibleBacklog) {
+        return;
+    }
+
+    for (const TimelineClip* clip : activeClips) {
+        if (clip->mediaType == ClipMediaType::Title) {
+            continue;
+        }
+        const int64_t localFrame = sourceFrameForSample(*clip, m_currentSample);
+        const bool cached = m_cache->isFrameCached(clip->id, localFrame);
+        if (!cached && !m_cache->isVisibleRequestPending(clip->id, localFrame)) {
+            m_lastFrameRequestMs = nowMs();
+            m_cache->requestFrame(clip->id, localFrame,
+                [this](FrameHandle frame) {
+                    Q_UNUSED(frame)
+                    QMetaObject::invokeMethod(this, [this]() {
+                        scheduleRepaint();
+                    }, Qt::QueuedConnection);
+                });
+        }
+    }
 }

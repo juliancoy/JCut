@@ -57,18 +57,26 @@ void decodeTrace(const QString& stage, const QString& detail) {
     static QHash<QString, qint64> lastLogByStage;
 
     const qint64 now = decodeTraceMs();
-    if (!debugDecodeVerboseEnabled() &&
-        (stage.startsWith(QStringLiteral("AsyncDecoder::requestFrame")) ||
-         stage.startsWith(QStringLiteral("DecoderWorker::processRequest.begin")) ||
-         stage.startsWith(QStringLiteral("DecoderContext::decodeFrame.begin")) ||
-         stage.startsWith(QStringLiteral("DecoderContext::decodeFrame.seek")) ||
-         stage.startsWith(QStringLiteral("DecoderContext::decodeFrame.end")))) {
-        std::lock_guard<std::mutex> lock(logMutex);
-        const qint64 last = lastLogByStage.value(stage, std::numeric_limits<qint64>::min());
-        if (now - last < 250) {
-            return;
+    if (!debugDecodeVerboseEnabled()) {
+        // Rate-limit high-frequency decode operations
+        const bool isHighFreqStage =
+            stage.startsWith(QStringLiteral("AsyncDecoder::requestFrame")) ||
+            stage.startsWith(QStringLiteral("AsyncDecoder::runLane.begin")) ||
+            stage.startsWith(QStringLiteral("AsyncDecoder::runLane.end")) ||
+            stage.startsWith(QStringLiteral("DecoderWorker::processRequest.begin")) ||
+            stage.startsWith(QStringLiteral("DecoderContext::decodeFrame.begin")) ||
+            stage.startsWith(QStringLiteral("DecoderContext::decodeFrame.seek")) ||
+            stage.startsWith(QStringLiteral("DecoderContext::decodeFrame.end")) ||
+            stage.startsWith(QStringLiteral("DecoderContext::seekAndDecode.begin")) ||
+            stage.startsWith(QStringLiteral("DecoderContext::seekAndDecode.end"));
+        if (isHighFreqStage) {
+            std::lock_guard<std::mutex> lock(logMutex);
+            const qint64 last = lastLogByStage.value(stage, std::numeric_limits<qint64>::min());
+            if (now - last < 500) {  // Increased to 500ms for less spam
+                return;
+            }
+            lastLogByStage.insert(stage, now);
         }
-        lastLogByStage.insert(stage, now);
     }
 
     qDebug().noquote() << QStringLiteral("[DECODE %1 ms] %2%3")

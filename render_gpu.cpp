@@ -648,7 +648,7 @@ QImage renderTimelineFrame(const RenderRequest& request,
         
         // Apply mask feathering if clip has alpha and feather is enabled
         if (clip.maskFeather > 0.0) {
-            graded = applyMaskFeather(graded, clip.maskFeather);
+            graded = applyMaskFeather(graded, clip.maskFeather, clip.maskFeatherGamma);
         }
         
         const QRect fitted = fitRect(graded.size(), request.outputSize);

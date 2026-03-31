@@ -31,6 +31,8 @@ void EditorWindow::bindInspectorWidgets()
     m_trackCrossfadeSecondsSpin = m_inspectorPane->trackCrossfadeSecondsSpin();
     m_trackCrossfadeButton = m_inspectorPane->trackCrossfadeButton();
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
+    m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
+    m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_transcriptOverlayEnabledCheckBox = m_inspectorPane->transcriptOverlayEnabledCheckBox();
     m_transcriptMaxLinesSpin = m_inspectorPane->transcriptMaxLinesSpin();
     m_transcriptMaxCharsSpin = m_inspectorPane->transcriptMaxCharsSpin();
@@ -65,6 +67,16 @@ void EditorWindow::bindInspectorWidgets()
     m_contrastSpin = m_inspectorPane->contrastSpin();
     m_saturationSpin = m_inspectorPane->saturationSpin();
     m_opacitySpin = m_inspectorPane->opacitySpin();
+    // Shadows/Midtones/Highlights
+    m_shadowsRSpin = m_inspectorPane->shadowsRSpin();
+    m_shadowsGSpin = m_inspectorPane->shadowsGSpin();
+    m_shadowsBSpin = m_inspectorPane->shadowsBSpin();
+    m_midtonesRSpin = m_inspectorPane->midtonesRSpin();
+    m_midtonesGSpin = m_inspectorPane->midtonesGSpin();
+    m_midtonesBSpin = m_inspectorPane->midtonesBSpin();
+    m_highlightsRSpin = m_inspectorPane->highlightsRSpin();
+    m_highlightsGSpin = m_inspectorPane->highlightsGSpin();
+    m_highlightsBSpin = m_inspectorPane->highlightsBSpin();
     m_gradingKeyframeTable = m_inspectorPane->gradingKeyframeTable();
     m_gradingAutoScrollCheckBox = m_inspectorPane->gradingAutoScrollCheckBox();
     m_gradingFollowCurrentCheckBox = m_inspectorPane->gradingFollowCurrentCheckBox();
@@ -262,6 +274,29 @@ void EditorWindow::setupPreviewControls()
         scheduleSaveState();
         pushHistorySnapshot();
     });
+
+    // Preview zoom controls
+    if (m_previewZoomSpin) {
+        connect(m_previewZoomSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
+            if (m_preview) {
+                m_preview->setPreviewZoom(value);
+            }
+        });
+    }
+    
+    if (m_previewZoomResetButton) {
+        connect(m_previewZoomResetButton, &QPushButton::clicked, this, [this]() {
+            if (m_preview) {
+                m_preview->setPreviewZoom(1.0);
+                m_preview->resetPreviewPan();
+                if (m_previewZoomSpin) {
+                    QSignalBlocker block(m_previewZoomSpin);
+                    m_previewZoomSpin->setValue(1.0);
+                }
+            }
+            scheduleSaveState();
+        });
+    }
 
     connect(m_inspectorPane->backgroundColorButton(), &QPushButton::clicked, this, [this]() {
         const QColor chosen = QColorDialog::getColor(m_backgroundColor, this, QStringLiteral("Background Color"));

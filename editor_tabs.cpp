@@ -111,7 +111,12 @@ void EditorWindow::createGradingTab()
     m_gradingTab = std::make_unique<GradingTab>(
         GradingTab::Widgets{
             m_gradingPathLabel, m_brightnessSpin, m_contrastSpin,
-            m_saturationSpin, m_opacitySpin, m_gradingKeyframeTable,
+            m_saturationSpin, m_opacitySpin,
+            // Shadows/Midtones/Highlights
+            m_shadowsRSpin, m_shadowsGSpin, m_shadowsBSpin,
+            m_midtonesRSpin, m_midtonesGSpin, m_midtonesBSpin,
+            m_highlightsRSpin, m_highlightsGSpin, m_highlightsBSpin,
+            m_gradingKeyframeTable,
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
             m_gradingKeyAtPlayheadButton, m_gradingFadeInButton, m_gradingFadeOutButton,
             m_gradingFadeDurationSpin},
@@ -142,6 +147,7 @@ void EditorWindow::createEffectsTab()
         EffectsTab::Widgets{
             m_inspectorPane->effectsPathLabel(),
             m_inspectorPane->maskFeatherSpin(),
+            m_inspectorPane->maskFeatherGammaSpin(),
             m_inspectorPane->maskFeatherEnabledCheck(),
             nullptr},
         EffectsTab::Dependencies{

@@ -212,6 +212,12 @@ void PreviewWindow::setBackgroundColor(const QColor& color) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setPreviewZoom(qreal zoom) {
+    // Clamp to valid range: 0.1x to 5.0x
+    m_previewZoom = qBound<qreal>(0.1, zoom, 5.0);
+    scheduleRepaint();
+}
+
 void PreviewWindow::setBypassGrading(bool bypass) {
     if (m_bypassGrading == bypass) return;
     m_bypassGrading = bypass;

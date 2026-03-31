@@ -28,6 +28,12 @@ bool isImageSuffix(const QString& suffix) {
         QStringLiteral("jpg"),
         QStringLiteral("jpeg"),
         QStringLiteral("webp"),
+        QStringLiteral("tga"),
+        QStringLiteral("tif"),
+        QStringLiteral("tiff"),
+        QStringLiteral("exr"),
+        QStringLiteral("bmp"),
+        QStringLiteral("gif"),
     };
     return kImageSuffixes.contains(suffix);
 }
@@ -225,12 +231,33 @@ bool clipHasAlpha(const TimelineClip& clip) {
     // Check if the media file has alpha channel
     // For now, check common alpha-capable formats and file extensions
     if (!clipHasVisuals(clip)) {
+        qDebug() << "[clipHasAlpha] No visuals for clip:" << clip.label;
         return false;
     }
     
     // Title clips always support alpha
     if (clip.mediaType == ClipMediaType::Title) {
         return true;
+    }
+    
+    // For image sequences, check the first frame's extension
+    if (clip.sourceKind == MediaSourceKind::ImageSequence) {
+        const QStringList frames = imageSequenceFramePaths(clip.filePath);
+        if (!frames.isEmpty()) {
+            const QString frameSuffix = QFileInfo(frames.constFirst()).suffix().toLower();
+            const QStringList alphaImageFormats = {
+                QStringLiteral("png"), QStringLiteral("tga"), QStringLiteral("tiff"),
+                QStringLiteral("tif"), QStringLiteral("exr"), QStringLiteral("webp")
+            };
+            qDebug() << "[clipHasAlpha] Image sequence:" << clip.filePath 
+                     << "first frame:" << frames.constFirst()
+                     << "suffix:" << frameSuffix
+                     << "in alpha list:" << alphaImageFormats.contains(frameSuffix);
+            if (alphaImageFormats.contains(frameSuffix)) {
+                return true;
+            }
+        }
+        // Fall through to probe
     }
     
     const QString suffix = QFileInfo(clip.filePath).suffix().toLower();
@@ -251,6 +278,7 @@ bool clipHasAlpha(const TimelineClip& clip) {
     
     // Check if we probed and found alpha
     const MediaProbeResult probe = probeMediaFile(clip.filePath);
+    qDebug() << "[clipHasAlpha] Probed:" << clip.filePath << "hasAlpha:" << probe.hasAlpha;
     return probe.hasAlpha;
 }
 
@@ -543,6 +571,16 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& cli
             state.contrast = previous.contrast + ((current.contrast - previous.contrast) * t);
             state.saturation = previous.saturation + ((current.saturation - previous.saturation) * t);
             state.opacity = previous.opacity + ((current.opacity - previous.opacity) * t);
+            // Shadows/Midtones/Highlights interpolation
+            state.shadowsR = previous.shadowsR + ((current.shadowsR - previous.shadowsR) * t);
+            state.shadowsG = previous.shadowsG + ((current.shadowsG - previous.shadowsG) * t);
+            state.shadowsB = previous.shadowsB + ((current.shadowsB - previous.shadowsB) * t);
+            state.midtonesR = previous.midtonesR + ((current.midtonesR - previous.midtonesR) * t);
+            state.midtonesG = previous.midtonesG + ((current.midtonesG - previous.midtonesG) * t);
+            state.midtonesB = previous.midtonesB + ((current.midtonesB - previous.midtonesB) * t);
+            state.highlightsR = previous.highlightsR + ((current.highlightsR - previous.highlightsR) * t);
+            state.highlightsG = previous.highlightsG + ((current.highlightsG - previous.highlightsG) * t);
+            state.highlightsB = previous.highlightsB + ((current.highlightsB - previous.highlightsB) * t);
             state.linearInterpolation = current.linearInterpolation;
             return state;
         }
@@ -585,6 +623,16 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& 
             state.contrast = previous.contrast + ((current.contrast - previous.contrast) * t);
             state.saturation = previous.saturation + ((current.saturation - previous.saturation) * t);
             state.opacity = previous.opacity + ((current.opacity - previous.opacity) * t);
+            // Shadows/Midtones/Highlights interpolation
+            state.shadowsR = previous.shadowsR + ((current.shadowsR - previous.shadowsR) * t);
+            state.shadowsG = previous.shadowsG + ((current.shadowsG - previous.shadowsG) * t);
+            state.shadowsB = previous.shadowsB + ((current.shadowsB - previous.shadowsB) * t);
+            state.midtonesR = previous.midtonesR + ((current.midtonesR - previous.midtonesR) * t);
+            state.midtonesG = previous.midtonesG + ((current.midtonesG - previous.midtonesG) * t);
+            state.midtonesB = previous.midtonesB + ((current.midtonesB - previous.midtonesB) * t);
+            state.highlightsR = previous.highlightsR + ((current.highlightsR - previous.highlightsR) * t);
+            state.highlightsG = previous.highlightsG + ((current.highlightsG - previous.highlightsG) * t);
+            state.highlightsB = previous.highlightsB + ((current.highlightsB - previous.highlightsB) * t);
             state.linearInterpolation = current.linearInterpolation;
             return state;
         }
@@ -759,29 +807,67 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
 }
 
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade) {
-    const bool needsGrade =
+    const bool needsBasicGrade =
         !qFuzzyIsNull(grade.brightness) ||
         !qFuzzyCompare(grade.contrast, 1.0) ||
         !qFuzzyCompare(grade.saturation, 1.0) ||
         !qFuzzyCompare(grade.opacity, 1.0);
-    if (source.isNull() || !needsGrade) {
+    const bool needsToneGrade =
+        !qFuzzyIsNull(grade.shadowsR) || !qFuzzyIsNull(grade.shadowsG) || !qFuzzyIsNull(grade.shadowsB) ||
+        !qFuzzyIsNull(grade.midtonesR) || !qFuzzyIsNull(grade.midtonesG) || !qFuzzyIsNull(grade.midtonesB) ||
+        !qFuzzyIsNull(grade.highlightsR) || !qFuzzyIsNull(grade.highlightsG) || !qFuzzyIsNull(grade.highlightsB);
+    
+    if (source.isNull() || (!needsBasicGrade && !needsToneGrade)) {
         return source;
     }
+
+    auto smoothShadows = [](float luma) { return std::pow(1.0f - luma, 2.0f); };
+    auto smoothMidtones = [](float luma) { return 1.0f - std::abs(luma - 0.5f) * 2.0f; };
+    auto smoothHighlights = [](float luma) { return std::pow(luma, 2.0f); };
 
     QImage graded = source.convertToFormat(QImage::Format_ARGB32);
     for (int y = 0; y < graded.height(); ++y) {
         QRgb* row = reinterpret_cast<QRgb*>(graded.scanLine(y));
         for (int x = 0; x < graded.width(); ++x) {
             QColor color = QColor::fromRgba(row[x]);
-            float h = 0.0f;
-            float s = 0.0f;
-            float l = 0.0f;
-            float a = 0.0f;
+            float h = 0.0f, s = 0.0f, l = 0.0f, a = 0.0f;
             color.getHslF(&h, &s, &l, &a);
-
-            int r = clampChannel(qRound(((color.red() - 127.5) * grade.contrast) + 127.5 + grade.brightness * 255.0));
-            int g = clampChannel(qRound(((color.green() - 127.5) * grade.contrast) + 127.5 + grade.brightness * 255.0));
-            int b = clampChannel(qRound(((color.blue() - 127.5) * grade.contrast) + 127.5 + grade.brightness * 255.0));
+            
+            float rf = color.redF();
+            float gf = color.greenF();
+            float bf = color.blueF();
+            
+            // Calculate luminance for tone-based grading
+            float luminance = rf * 0.2126f + gf * 0.7152f + bf * 0.0722f;
+            
+            // Apply Shadows (Lift)
+            if (needsToneGrade) {
+                float shadowWeight = smoothShadows(luminance);
+                rf *= (1.0f + grade.shadowsR * shadowWeight);
+                gf *= (1.0f + grade.shadowsG * shadowWeight);
+                bf *= (1.0f + grade.shadowsB * shadowWeight);
+                
+                // Apply Midtones (Gamma)
+                float midtoneWeight = smoothMidtones(luminance);
+                rf = std::pow(rf, 1.0f / (1.0f + grade.midtonesR * midtoneWeight));
+                gf = std::pow(gf, 1.0f / (1.0f + grade.midtonesG * midtoneWeight));
+                bf = std::pow(bf, 1.0f / (1.0f + grade.midtonesB * midtoneWeight));
+                
+                // Apply Highlights (Gain)
+                float highlightWeight = smoothHighlights(luminance);
+                rf += grade.highlightsR * highlightWeight;
+                gf += grade.highlightsG * highlightWeight;
+                bf += grade.highlightsB * highlightWeight;
+            }
+            
+            // Basic grading
+            rf = qBound(0.0f, rf, 1.0f);
+            gf = qBound(0.0f, gf, 1.0f);
+            bf = qBound(0.0f, bf, 1.0f);
+            
+            int r = clampChannel(qRound(((rf * 255.0 - 127.5) * grade.contrast) + 127.5 + grade.brightness * 255.0));
+            int g = clampChannel(qRound(((gf * 255.0 - 127.5) * grade.contrast) + 127.5 + grade.brightness * 255.0));
+            int b = clampChannel(qRound(((bf * 255.0 - 127.5) * grade.contrast) + 127.5 + grade.brightness * 255.0));
 
             QColor adjusted(r, g, b, color.alpha());
             adjusted.getHslF(&h, &s, &l, &a);
@@ -798,7 +884,7 @@ QImage applyClipGrade(const QImage& source, const TimelineClip& clip) {
     return applyClipGrade(source, evaluateClipGradingAtFrame(clip, clip.startFrame));
 }
 
-QImage applyMaskFeather(const QImage& source, qreal featherRadius) {
+QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma) {
     if (source.isNull() || featherRadius <= 0.0) {
         return source;
     }
@@ -814,8 +900,8 @@ QImage applyMaskFeather(const QImage& source, qreal featherRadius) {
     const int width = feathered.width();
     const int height = feathered.height();
 
-    // Box blur on the alpha channel
-    // Using a simple box blur for performance
+    // Box blur on the alpha channel with gamma curve
+    const qreal gamma = qMax(0.01, featherGamma);
     for (int y = 0; y < height; ++y) {
         QRgb* destRow = reinterpret_cast<QRgb*>(feathered.scanLine(y));
         for (int x = 0; x < width; ++x) {
@@ -833,7 +919,11 @@ QImage applyMaskFeather(const QImage& source, qreal featherRadius) {
                 }
             }
 
-            const int newAlpha = alphaSum / pixelCount;
+            // Box blur average
+            const qreal blurredAlpha = static_cast<qreal>(alphaSum) / pixelCount / 255.0;
+            // Apply gamma curve (1.0 = linear, <1.0 = sharper, >1.0 = softer)
+            const qreal curvedAlpha = std::pow(blurredAlpha, 1.0 / gamma);
+            const int newAlpha = qBound(0, qRound(curvedAlpha * 255.0), 255);
             const QRgb original = destRow[x];
             destRow[x] = qRgba(qRed(original), qGreen(original), qBlue(original), newAlpha);
         }

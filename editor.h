@@ -250,6 +250,8 @@ private:
     QDoubleSpinBox *m_trackCrossfadeSecondsSpin = nullptr;
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
+    QDoubleSpinBox *m_previewZoomSpin = nullptr;
+    QPushButton *m_previewZoomResetButton = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
 
@@ -260,6 +262,16 @@ private:
     QDoubleSpinBox *m_contrastSpin = nullptr;
     QDoubleSpinBox *m_saturationSpin = nullptr;
     QDoubleSpinBox *m_opacitySpin = nullptr;
+    // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
+    QDoubleSpinBox *m_shadowsRSpin = nullptr;
+    QDoubleSpinBox *m_shadowsGSpin = nullptr;
+    QDoubleSpinBox *m_shadowsBSpin = nullptr;
+    QDoubleSpinBox *m_midtonesRSpin = nullptr;
+    QDoubleSpinBox *m_midtonesGSpin = nullptr;
+    QDoubleSpinBox *m_midtonesBSpin = nullptr;
+    QDoubleSpinBox *m_highlightsRSpin = nullptr;
+    QDoubleSpinBox *m_highlightsGSpin = nullptr;
+    QDoubleSpinBox *m_highlightsBSpin = nullptr;
     QCheckBox *m_bypassGradingCheckBox = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
