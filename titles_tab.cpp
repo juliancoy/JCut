@@ -389,6 +389,12 @@ void TitlesTab::syncTableToPlayhead()
     if (!table || m_updating) return;
     if (m_widgets.titleAutoScrollCheck && !m_widgets.titleAutoScrollCheck->isChecked()) return;
 
+    // Skip sync if table has focus (user is manually selecting a row)
+    QWidget* focus = QApplication::focusWidget();
+    if (focus && table->isAncestorOf(focus)) {
+        return;
+    }
+
     const TimelineClip *clip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
     if (!clip || clip->titleKeyframes.isEmpty()) return;
 

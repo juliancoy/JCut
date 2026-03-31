@@ -200,6 +200,12 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t 
         !m_widgets.transcriptFollowCurrentWordCheckBox->isChecked()) {
         return;
     }
+    
+    // Skip sync if table has focus (user is manually selecting a row)
+    QWidget* focus = QApplication::focusWidget();
+    if (focus && m_widgets.transcriptTable->isAncestorOf(focus)) {
+        return;
+    }
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || clip->mediaType != ClipMediaType::Audio || m_loadedTranscriptPath.isEmpty()) {

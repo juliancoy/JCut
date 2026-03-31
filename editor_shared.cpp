@@ -98,6 +98,15 @@ QStringList collectSequenceFrames(const QString& path) {
         return collator.compare(a.fileName(), b.fileName()) < 0;
     });
 
+    // Safety limit: don't treat directories with too many files as image sequences
+    // This prevents memory exhaustion and potential heap corruption with large directories
+    constexpr int kMaxSequenceFrames = 500000;
+    if (bestGroup.size() > kMaxSequenceFrames) {
+        qWarning() << "Directory has too many image files to be a sequence:" 
+                   << bestGroup.size() << "(max:" << kMaxSequenceFrames << ")";
+        return {};
+    }
+    
     QStringList frames;
     frames.reserve(bestGroup.size());
     for (const QFileInfo& entry : bestGroup) {

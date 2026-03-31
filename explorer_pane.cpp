@@ -791,10 +791,12 @@ QPixmap ExplorerPane::previewPixmapForFile(const QString &filePath) const
     }
 
     const QString suffix = info.suffix().toLower();
+    // Note: WebP files are excluded from direct loading to avoid thread-safety issues
+    // with Qt's WebP plugin when multiple threads are loading WebP files simultaneously.
+    // WebP thumbnails are generated asynchronously via the thumbnail worker instead.
     if (suffix == QStringLiteral("png") ||
         suffix == QStringLiteral("jpg") ||
-        suffix == QStringLiteral("jpeg") ||
-        suffix == QStringLiteral("webp"))
+        suffix == QStringLiteral("jpeg"))
     {
         QImage image(filePath);
         const QPixmap pixmap = image.isNull() ? QPixmap() : QPixmap::fromImage(image);

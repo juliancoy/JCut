@@ -895,12 +895,9 @@ void VideoKeyframeTab::syncTableToPlayhead()
     }
 
     QWidget* focus = QApplication::focusWidget();
-    const bool editingKeyframes = m_widgets.videoKeyframeTable &&
-                                  focus &&
-                                  m_widgets.videoKeyframeTable->isAncestorOf(focus) &&
-                                  (qobject_cast<QLineEdit*>(focus) ||
-                                   qobject_cast<QAbstractSpinBox*>(focus));
-    if (editingKeyframes) {
+    
+    // Skip sync if table has focus (user is manually selecting a row)
+    if (focus && m_widgets.videoKeyframeTable->isAncestorOf(focus)) {
         return;
     }
 

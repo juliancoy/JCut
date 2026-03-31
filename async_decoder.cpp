@@ -17,6 +17,7 @@
 #include <QThreadStorage>
 
 #include <limits>
+#include <mutex>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -31,6 +32,8 @@ extern "C" {
 namespace editor {
 
 namespace {
+// Mutex to serialize FFmpeg initialization calls that may not be thread-safe
+static std::mutex g_ffmpegInitMutex;
 constexpr int64_t kMaxSequentialDecodeGap = 90;
 constexpr int64_t kPlaybackBatchFrameSlack = 2;
 constexpr size_t kMaxSequenceFrameCacheBytes = 192 * 1024 * 1024;
@@ -105,19 +108,109 @@ QImage loadSingleImageFile(const QString& framePath) {
         return QImage();
     }
 
-    QImageReader reader(framePath);
-    reader.setAutoTransform(true);
-    QImage image = reader.read();
-    if (!image.isNull()) {
-        if (image.format() != QImage::Format_ARGB32_Premultiplied) {
-            image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const QString suffix = QFileInfo(framePath).suffix().toLower();
+    
+    // Skip Qt's image reader for WebP files - use FFmpeg instead to avoid heap corruption
+    // Qt's WebP plugin has known issues with certain WebP files, especially those with alpha
+    const bool useQtReader = (suffix != QStringLiteral("webp"));
+    
+    // Debug: qDebug() << "loadSingleImageFile:" << framePath << "suffix:" << suffix << "useQtReader:" << useQtReader;
+    
+    // Try Qt's image reader first (for common formats like PNG, JPEG, etc.)
+    if (useQtReader) {
+        QImageReader reader(framePath);
+        // Note: setAutoTransform is intentionally disabled to avoid heap corruption
+        // with certain image formats or corrupted metadata. Apply transforms manually
+        // after successful read if needed.
+        
+        // Validate dimensions BEFORE reading to prevent allocation issues
+        QSize imageSize = reader.size();
+        if (imageSize.isValid()) {
+            if (imageSize.width() <= 0 || imageSize.height() <= 0 ||
+                imageSize.width() > 16384 || imageSize.height() > 16384) {
+                qWarning() << "Invalid image dimensions:" << imageSize << "for file:" << framePath;
+                return QImage();
+            }
+            const qint64 maxBytes = 1024LL * 1024LL * 1024LL; // 1GB limit
+            if (static_cast<qint64>(imageSize.width()) * imageSize.height() * 4 > maxBytes) {
+                qWarning() << "Image too large:" << imageSize << "for file:" << framePath;
+                return QImage();
+            }
         }
-        return image;
+        
+        QImage image = reader.read();
+        if (!image.isNull()) {
+            // Validate the loaded image has proper internal state
+            if (image.width() <= 0 || image.height() <= 0 ||
+                image.width() > 16384 || image.height() > 16384) {
+                qWarning() << "Invalid image dimensions after load:" << image.size() << "for file:" << framePath;
+                return QImage();
+            }
+            // Check that the image data is valid
+            if (!image.bits()) {
+                qWarning() << "Image has no pixel data:" << framePath;
+                return QImage();
+            }
+            // Additional validation before format conversion
+            // Some image formats may report valid dimensions but have corrupted internal data
+            if (image.bytesPerLine() <= 0 || image.bytesPerLine() > image.width() * 8) {
+                qWarning() << "Invalid bytesPerLine:" << image.bytesPerLine() << "for image:" << framePath;
+                return QImage();
+            }
+            
+            // For RGBA images, verify the format is one we can handle
+            if (image.format() == QImage::Format_Invalid) {
+                qWarning() << "Invalid image format for file:" << framePath;
+                return QImage();
+            }
+            
+            if (image.format() != QImage::Format_ARGB32_Premultiplied) {
+                // For WebP and other formats that may have alpha, be extra careful
+                // Use RGBA8888 as an intermediate format to avoid issues with alpha handling
+                QImage safeImage = image;
+                if (image.hasAlphaChannel() && 
+                    image.format() != QImage::Format_RGBA8888 &&
+                    image.format() != QImage::Format_ARGB32) {
+                    // Convert to RGBA8888 first as a safer intermediate step
+                    safeImage = image.convertToFormat(QImage::Format_RGBA8888);
+                    if (safeImage.isNull()) {
+                        qWarning() << "Failed to convert to intermediate RGBA format for file:" << framePath;
+                        return QImage();
+                    }
+                }
+                
+                // Create a new image for conversion to avoid modifying potentially corrupted source
+                QImage converted = safeImage.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                if (converted.isNull()) {
+                    qWarning() << "Failed to convert image format for file:" << framePath;
+                    return QImage();
+                }
+                image = converted;
+            }
+            return image;
+        }
+        qDebug() << "Qt reader failed for:" << framePath << "falling through to FFmpeg";
+        // If Qt reader fails, fall through to FFmpeg below
     }
 
+    // Debug: qDebug() << "Using FFmpeg for:" << framePath;
+    
+    // Lock to prevent concurrent FFmpeg initialization issues
+    std::lock_guard<std::mutex> ffmpegLock(g_ffmpegInitMutex);
+    
+    // Additional safety: validate file exists and has content
+    QFileInfo fileInfo(framePath);
+    if (!fileInfo.exists() || fileInfo.size() == 0) {
+        qWarning() << "File does not exist or is empty:" << framePath;
+        return QImage();
+    }
+    if (fileInfo.size() > 100 * 1024 * 1024) { // 100MB limit for single images
+        qWarning() << "File too large:" << fileInfo.size() << "bytes:" << framePath;
+        return QImage();
+    }
+    
     AVFormatContext* formatCtx = nullptr;
     const QByteArray pathBytes = QFile::encodeName(framePath);
-    const QString suffix = QFileInfo(framePath).suffix().toLower();
     const AVInputFormat* inputFormat = nullptr;
     if (suffix == QStringLiteral("webp")) {
         inputFormat = av_find_input_format("webp_pipe");
@@ -168,45 +261,66 @@ QImage loadSingleImageFile(const QString& framePath) {
 
     AVPacket* packet = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
-    SwsContext* swsCtx = nullptr;
     QImage decodedImage;
 
     while (packet && frame && av_read_frame(formatCtx, packet) >= 0 && decodedImage.isNull()) {
         if (packet->stream_index == videoStreamIndex && avcodec_send_packet(codecCtx, packet) >= 0) {
             while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-                swsCtx = sws_getCachedContext(swsCtx,
-                                              frame->width,
-                                              frame->height,
-                                              static_cast<AVPixelFormat>(frame->format),
-                                              frame->width,
-                                              frame->height,
-                                              AV_PIX_FMT_RGBA,
-                                              SWS_BILINEAR,
-                                              nullptr,
-                                              nullptr,
-                                              nullptr);
-                if (!swsCtx) {
+                // Validate frame dimensions
+                if (frame->width <= 0 || frame->height <= 0 ||
+                    frame->width > 16384 || frame->height > 16384) {
+                    qWarning() << "Invalid frame dimensions from FFmpeg:" << frame->width << "x" << frame->height;
                     av_frame_unref(frame);
                     break;
                 }
-
-                QImage rgba(frame->width, frame->height, QImage::Format_RGBA8888);
-                if (rgba.isNull()) {
-                    av_frame_unref(frame);
-                    break;
+                
+                // Debug: qDebug() << "Frame format:" << frame->format << "width:" << frame->width << "height:" << frame->height
+                //          << "linesize:" << frame->linesize[0];
+                
+                // For WebP and similar, the decoder often outputs RGBA directly
+                // In that case, we can use the frame data directly without sws_scale
+                if (frame->format == AV_PIX_FMT_RGBA) {
+                    // Direct copy from frame data to QImage
+                    decodedImage = QImage(frame->width, frame->height, QImage::Format_RGBA8888);
+                    if (!decodedImage.isNull() && decodedImage.bits()) {
+                        for (int y = 0; y < frame->height; ++y) {
+                            memcpy(decodedImage.scanLine(y), 
+                                   frame->data[0] + y * frame->linesize[0], 
+                                   frame->width * 4);
+                        }
+                    }
+                } else {
+                    // Fallback: use sws_scale for format conversion
+                    int destW = frame->width;
+                    int destH = frame->height;
+                    
+                    int destLinesize[4] = { 0 };
+                    uint8_t* destData[4] = { nullptr };
+                    int bufferSize = av_image_alloc(destData, destLinesize, destW, destH, AV_PIX_FMT_RGBA, 32);
+                    
+                    if (bufferSize > 0 && destData[0]) {
+                        SwsContext* swsCtx = sws_getContext(
+                            frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                            destW, destH, AV_PIX_FMT_RGBA,
+                            SWS_BILINEAR, nullptr, nullptr, nullptr);
+                        
+                        if (swsCtx) {
+                            int swsResult = sws_scale(swsCtx, frame->data, frame->linesize, 0, frame->height, destData, destLinesize);
+                            sws_freeContext(swsCtx);
+                            
+                            if (swsResult > 0) {
+                                decodedImage = QImage(destW, destH, QImage::Format_RGBA8888);
+                                if (!decodedImage.isNull() && decodedImage.bits()) {
+                                    for (int y = 0; y < destH; ++y) {
+                                        memcpy(decodedImage.scanLine(y), destData[0] + y * destLinesize[0], destW * 4);
+                                    }
+                                }
+                            }
+                        }
+                        av_freep(&destData[0]);
+                    }
                 }
-
-                uint8_t* destData[4] = { rgba.bits(), nullptr, nullptr, nullptr };
-                int destLinesize[4] = { static_cast<int>(rgba.bytesPerLine()), 0, 0, 0 };
-                if (sws_scale(swsCtx,
-                              frame->data,
-                              frame->linesize,
-                              0,
-                              frame->height,
-                              destData,
-                              destLinesize) > 0) {
-                    decodedImage = rgba;
-                }
+                
                 av_frame_unref(frame);
                 if (!decodedImage.isNull()) {
                     break;
@@ -214,10 +328,6 @@ QImage loadSingleImageFile(const QString& framePath) {
             }
         }
         av_packet_unref(packet);
-    }
-
-    if (swsCtx) {
-        sws_freeContext(swsCtx);
     }
     if (frame) {
         av_frame_free(&frame);
@@ -227,8 +337,28 @@ QImage loadSingleImageFile(const QString& framePath) {
     }
     avcodec_free_context(&codecCtx);
     avformat_close_input(&formatCtx);
-    if (!decodedImage.isNull() && decodedImage.format() != QImage::Format_ARGB32_Premultiplied) {
-        decodedImage = decodedImage.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (!decodedImage.isNull()) {
+        // Validate decoded image dimensions
+        if (decodedImage.width() <= 0 || decodedImage.height() <= 0 ||
+            decodedImage.width() > 16384 || decodedImage.height() > 16384) {
+            qWarning() << "Invalid decoded image dimensions:" << decodedImage.size() << "for file:" << framePath;
+            return QImage();
+        }
+        // Check if the image size would exceed reasonable memory limits
+        const qint64 maxBytes = 1024LL * 1024LL * 1024LL; // 1GB limit
+        if (static_cast<qint64>(decodedImage.width()) * decodedImage.height() * 4 > maxBytes) {
+            qWarning() << "Decoded image too large:" << decodedImage.size() << "for file:" << framePath;
+            return QImage();
+        }
+        // Verify the image is valid before conversion
+        if (!decodedImage.bits() || decodedImage.bytesPerLine() <= 0) {
+            qWarning() << "Invalid image data before conversion for file:" << framePath;
+            return QImage();
+        }
+        
+        // Skip conversion to ARGB32_Premultiplied to avoid heap corruption
+        // The RGBA8888 format from FFmpeg is sufficient for most uses
+        // If conversion is needed, it will happen in the render path
     }
     return decodedImage;
 }
@@ -479,8 +609,9 @@ bool DecoderContext::loadImageSequence() {
     m_isImageSequence = true;
     m_sequenceFramePaths = framePaths;
     m_sequenceUsesWebp = QFileInfo(framePaths.constFirst()).suffix().compare(QStringLiteral("webp"), Qt::CaseInsensitive) == 0;
-    m_stillImage = image;
-    cacheSequenceFrameImage(0, image);
+    m_stillImage = image.copy();
+    // Caching disabled to avoid memory issues with large sequences
+    // cacheSequenceFrameImage(0, image);
     m_info.path = m_path;
     m_info.durationFrames = framePaths.size();
     m_info.fps = 30.0;

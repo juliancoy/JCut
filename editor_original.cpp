@@ -192,7 +192,7 @@ private:
         }
 
         QImageReader reader(path);
-        reader.setAutoTransform(true);
+        // setAutoTransform disabled to avoid heap corruption with certain images
         const QImage image = reader.read();
         if (!image.isNull()) {
             std::lock_guard<std::mutex> lock(m_state->mutex);
@@ -302,7 +302,7 @@ private:
         }
 
         QImageReader reader(cachePath);
-        reader.setAutoTransform(true);
+        // setAutoTransform disabled to avoid heap corruption with certain images
         const QImage image = reader.read();
         if (image.isNull()) {
             qWarning() << "Failed to read cached frame from" << cachePath;

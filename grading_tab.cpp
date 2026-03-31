@@ -240,12 +240,9 @@ void GradingTab::syncTableToPlayhead()
     }
 
     QWidget* focus = QApplication::focusWidget();
-    const bool editingGrading = m_widgets.gradingKeyframeTable &&
-                                focus &&
-                                m_widgets.gradingKeyframeTable->isAncestorOf(focus) &&
-                                (qobject_cast<QLineEdit*>(focus) ||
-                                 qobject_cast<QAbstractSpinBox*>(focus));
-    if (editingGrading) {
+    
+    // Skip sync if table has focus (user is manually selecting a row)
+    if (focus && m_widgets.gradingKeyframeTable->isAncestorOf(focus)) {
         return;
     }
 
