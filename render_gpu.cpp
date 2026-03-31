@@ -644,7 +644,13 @@ QImage renderTimelineFrame(const RenderRequest& request,
             continue;
         }
 
-        const QImage graded = applyClipGrade(frame.cpuImage(), grade);
+        QImage graded = applyClipGrade(frame.cpuImage(), grade);
+        
+        // Apply mask feathering if clip has alpha and feather is enabled
+        if (clip.maskFeather > 0.0) {
+            graded = applyMaskFeather(graded, clip.maskFeather);
+        }
+        
         const QRect fitted = fitRect(graded.size(), request.outputSize);
         const TimelineClip::TransformKeyframe transform =
             evaluateClipTransformAtPosition(clip, static_cast<qreal>(timelineFrame));

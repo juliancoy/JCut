@@ -1,0 +1,847 @@
+#include "timeline_widget.h"
+#include "titles.h"
+
+#include <QApplication>
+#include <QClipboard>
+#include <QHash>
+
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
+namespace {
+
+void upsertGradingKeyframe(QVector<TimelineClip::GradingKeyframe>& keyframes,
+                           const TimelineClip::GradingKeyframe& keyframe) {
+    for (TimelineClip::GradingKeyframe& existing : keyframes) {
+        if (existing.frame == keyframe.frame) {
+            existing = keyframe;
+            return;
+        }
+    }
+    keyframes.push_back(keyframe);
+}
+
+void applyVisualCrossfade(TimelineClip& clip, bool fadeIn, int64_t fadeFrames) {
+    if (!clipHasVisuals(clip) || clip.durationFrames <= 1 || fadeFrames <= 0) {
+        return;
+    }
+
+    const int64_t localStartFrame = fadeIn ? 0 : qMax<int64_t>(0, clip.durationFrames - fadeFrames);
+    const int64_t localEndFrame = fadeIn ? qMin<int64_t>(clip.durationFrames - 1, fadeFrames) : clip.durationFrames - 1;
+    if (localStartFrame >= localEndFrame) {
+        return;
+    }
+
+    const TimelineClip::GradingKeyframe startState =
+        evaluateClipGradingAtPosition(clip, static_cast<qreal>(clip.startFrame + localStartFrame));
+    const TimelineClip::GradingKeyframe endState =
+        evaluateClipGradingAtPosition(clip, static_cast<qreal>(clip.startFrame + localEndFrame));
+
+    TimelineClip::GradingKeyframe startKeyframe = startState;
+    startKeyframe.frame = localStartFrame;
+    startKeyframe.opacity = fadeIn ? 0.0 : qBound(0.0, startState.opacity, 1.0);
+    startKeyframe.linearInterpolation = true;
+
+    TimelineClip::GradingKeyframe endKeyframe = endState;
+    endKeyframe.frame = localEndFrame;
+    endKeyframe.opacity = fadeIn ? qBound(0.0, endState.opacity, 1.0) : 0.0;
+    endKeyframe.linearInterpolation = true;
+
+    upsertGradingKeyframe(clip.gradingKeyframes, startKeyframe);
+    upsertGradingKeyframe(clip.gradingKeyframes, endKeyframe);
+    normalizeClipGradingKeyframes(clip);
+}
+
+void drawEyeIcon(QPainter& painter, const QRect& rect, bool enabled, bool interactive) {
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QColor stroke = interactive
+                              ? (enabled ? QColor(QStringLiteral("#eef4fa"))
+                                         : QColor(QStringLiteral("#7f8a99")))
+                              : QColor(QStringLiteral("#556170"));
+    painter.setPen(QPen(stroke, 1.7));
+    painter.setBrush(Qt::NoBrush);
+
+    QPainterPath path;
+    path.moveTo(rect.left() + rect.width() * 0.10, rect.center().y());
+    path.quadTo(rect.center().x(), rect.top() + rect.height() * 0.08,
+                rect.right() - rect.width() * 0.10, rect.center().y());
+    path.quadTo(rect.center().x(), rect.bottom() - rect.height() * 0.08,
+                rect.left() + rect.width() * 0.10, rect.center().y());
+    painter.drawPath(path);
+    painter.setBrush(stroke);
+    painter.drawEllipse(QRectF(rect.center().x() - rect.width() * 0.10,
+                               rect.center().y() - rect.height() * 0.10,
+                               rect.width() * 0.20,
+                               rect.height() * 0.20));
+    if (!enabled) {
+        painter.setPen(QPen(QColor(QStringLiteral("#ff8c82")), 2.0));
+        painter.drawLine(rect.left() + 2, rect.bottom() - 2, rect.right() - 2, rect.top() + 2);
+    }
+    painter.restore();
+}
+
+void drawSpeakerIcon(QPainter& painter, const QRect& rect, bool enabled, bool interactive) {
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    const QColor stroke = interactive
+                              ? (enabled ? QColor(QStringLiteral("#eef4fa"))
+                                         : QColor(QStringLiteral("#7f8a99")))
+                              : QColor(QStringLiteral("#556170"));
+    painter.setPen(QPen(stroke, 1.7));
+    painter.setBrush(Qt::NoBrush);
+
+    QPainterPath speaker;
+    speaker.moveTo(rect.left() + rect.width() * 0.18, rect.center().y() - rect.height() * 0.18);
+    speaker.lineTo(rect.left() + rect.width() * 0.36, rect.center().y() - rect.height() * 0.18);
+    speaker.lineTo(rect.left() + rect.width() * 0.55, rect.top() + rect.height() * 0.18);
+    speaker.lineTo(rect.left() + rect.width() * 0.55, rect.bottom() - rect.height() * 0.18);
+    speaker.lineTo(rect.left() + rect.width() * 0.36, rect.center().y() + rect.height() * 0.18);
+    speaker.lineTo(rect.left() + rect.width() * 0.18, rect.center().y() + rect.height() * 0.18);
+    speaker.closeSubpath();
+    painter.drawPath(speaker);
+    if (enabled) {
+        painter.drawArc(QRect(rect.left() + rect.width() * 0.45,
+                              rect.top() + rect.height() * 0.18,
+                              rect.width() * 0.28,
+                              rect.height() * 0.64),
+                        -40 * 16,
+                        80 * 16);
+        painter.drawArc(QRect(rect.left() + rect.width() * 0.52,
+                              rect.top() + rect.height() * 0.06,
+                              rect.width() * 0.34,
+                              rect.height() * 0.88),
+                        -40 * 16,
+                        80 * 16);
+    } else {
+        painter.setPen(QPen(QColor(QStringLiteral("#ff8c82")), 2.0));
+        painter.drawLine(rect.left() + rect.width() * 0.62,
+                         rect.top() + rect.height() * 0.24,
+                         rect.right() - 2,
+                         rect.bottom() - rect.height() * 0.22);
+        painter.drawLine(rect.right() - 2,
+                         rect.top() + rect.height() * 0.24,
+                         rect.left() + rect.width() * 0.62,
+                         rect.bottom() - rect.height() * 0.22);
+    }
+    painter.restore();
+}
+
+}
+
+TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent) {
+    setAcceptDrops(true);
+    setMinimumHeight(150);
+    setMouseTracking(true);
+    setAutoFillBackground(true);
+
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, QColor(QStringLiteral("#0f1216")));
+    setPalette(pal);
+    ensureTrackCount(1);
+    updateMinimumTimelineHeight();
+}
+
+void TimelineWidget::setCurrentFrame(int64_t frame) {
+    m_currentFrame = qMax<int64_t>(0, frame);
+    normalizeExportRange();
+    update();
+}
+
+int64_t TimelineWidget::totalFrames() const {
+    int64_t lastFrame = 300;
+    for (const TimelineClip& clip : m_clips) {
+        lastFrame = qMax(lastFrame, clip.startFrame + clip.durationFrames + 30);
+    }
+    return lastFrame;
+}
+
+void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
+    m_clips = clips;
+    for (TimelineClip& clip : m_clips) {
+        normalizeClipTiming(clip);
+    }
+    normalizeTrackIndices();
+    sortClips();
+    ensureTrackCount(trackCount());
+    if (!selectedClip()) {
+        m_selectedClipId.clear();
+    }
+    if (m_selectedTrackIndex >= trackCount()) {
+        m_selectedTrackIndex = -1;
+    }
+    bool hoveredClipStillExists = m_hoveredClipId.isEmpty();
+    if (!hoveredClipStillExists) {
+        for (const TimelineClip& clip : m_clips) {
+            if (clip.id == m_hoveredClipId) {
+                hoveredClipStillExists = true;
+                break;
+            }
+        }
+    }
+    if (!hoveredClipStillExists) {
+        m_hoveredClipId.clear();
+    }
+    normalizeExportRange();
+    updateMinimumTimelineHeight();
+    update();
+}
+
+void TimelineWidget::setTracks(const QVector<TimelineTrack>& tracks) {
+    m_tracks = tracks;
+    ensureTrackCount(trackCount());
+    normalizeExportRange();
+    updateMinimumTimelineHeight();
+    update();
+}
+
+const TimelineClip* TimelineWidget::selectedClip() const {
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.id == m_selectedClipId) {
+            return &clip;
+        }
+    }
+    return nullptr;
+}
+
+const TimelineTrack* TimelineWidget::selectedTrack() const {
+    if (m_selectedTrackIndex < 0 || m_selectedTrackIndex >= m_tracks.size()) {
+        return nullptr;
+    }
+    return &m_tracks[m_selectedTrackIndex];
+}
+
+void TimelineWidget::setSelectedClipId(const QString& clipId) {
+    if (m_selectedClipId == clipId) {
+        return;
+    }
+    m_selectedClipId = clipId;
+    if (!clipId.isEmpty()) {
+        for (const TimelineClip& clip : m_clips) {
+            if (clip.id == clipId) {
+                m_selectedTrackIndex = clip.trackIndex;
+                break;
+            }
+        }
+    }
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    update();
+}
+
+void TimelineWidget::setSelectedTrackIndex(int trackIndex) {
+    const int normalizedTrackIndex = (trackIndex >= 0 && trackIndex < trackCount()) ? trackIndex : -1;
+    if (m_selectedTrackIndex == normalizedTrackIndex && m_selectedClipId.isEmpty()) {
+        return;
+    }
+    m_selectedTrackIndex = normalizedTrackIndex;
+    m_selectedClipId.clear();
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    update();
+}
+
+bool TimelineWidget::updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater) {
+    for (TimelineClip& clip : m_clips) {
+        if (clip.id == clipId) {
+            updater(clip);
+            normalizeClipTiming(clip);
+            update();
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TimelineWidget::updateTrackByIndex(int trackIndex, const std::function<void(TimelineTrack&)>& updater) {
+    if (trackIndex < 0) {
+        return false;
+    }
+    ensureTrackCount(trackIndex + 1);
+    updater(m_tracks[trackIndex]);
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    updateMinimumTimelineHeight();
+    update();
+    return true;
+}
+
+bool TimelineWidget::updateTrackVisualEnabled(int trackIndex, bool enabled) {
+    return setTrackVisualEnabled(trackIndex, enabled);
+}
+
+bool TimelineWidget::updateTrackAudioEnabled(int trackIndex, bool enabled) {
+    return setTrackAudioEnabled(trackIndex, enabled);
+}
+
+bool TimelineWidget::crossfadeTrack(int trackIndex, double seconds) {
+    return applyCrossfadeToTrack(trackIndex, seconds);
+}
+
+bool TimelineWidget::deleteSelectedClip() {
+    if (m_selectedClipId.isEmpty()) {
+        return false;
+    }
+
+    for (int i = 0; i < m_clips.size(); ++i) {
+        if (m_clips[i].id != m_selectedClipId) {
+            continue;
+        }
+
+        if (m_clips[i].locked) {
+            return false;
+        }
+
+        m_clips.removeAt(i);
+        m_selectedClipId.clear();
+        normalizeTrackIndices();
+        sortClips();
+        if (selectionChanged) {
+            selectionChanged();
+        }
+        if (clipsChanged) {
+            clipsChanged();
+        }
+        update();
+        return true;
+    }
+
+    m_selectedClipId.clear();
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    update();
+    return false;
+}
+
+bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
+    if (m_selectedClipId.isEmpty()) {
+        return false;
+    }
+
+    for (int i = 0; i < m_clips.size(); ++i) {
+        TimelineClip& clip = m_clips[i];
+        if (clip.id != m_selectedClipId) {
+            continue;
+        }
+        if (clip.locked) {
+            return false;
+        }
+        if (frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
+            return false;
+        }
+
+        const int64_t leftDuration = frame - clip.startFrame;
+        const int64_t rightDuration = clip.durationFrames - leftDuration;
+        if (leftDuration <= 0 || rightDuration <= 0) {
+            return false;
+        }
+        const qreal playbackRate = qBound<qreal>(0.001, clip.playbackRate, 4.0);
+        const int64_t consumedSourceFrames =
+            static_cast<int64_t>(std::floor(static_cast<qreal>(leftDuration) * playbackRate));
+
+        const bool isImage = clip.mediaType == ClipMediaType::Image;
+        TimelineClip rightClip = clip;
+        rightClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        rightClip.startFrame = frame;
+        rightClip.sourceInFrame = isImage ? 0 : (clip.sourceInFrame + consumedSourceFrames);
+        rightClip.startSubframeSamples = 0;
+        rightClip.sourceInSubframeSamples = 0;
+        rightClip.durationFrames = rightDuration;
+        if (isImage) {
+            rightClip.sourceDurationFrames = rightDuration;
+        }
+        rightClip.transformKeyframes.clear();
+        for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
+            if (keyframe.frame >= leftDuration) {
+                TimelineClip::TransformKeyframe shifted = keyframe;
+                shifted.frame -= leftDuration;
+                rightClip.transformKeyframes.push_back(shifted);
+            }
+        }
+
+        QVector<TimelineClip::TransformKeyframe> leftKeyframes;
+        for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
+            if (keyframe.frame < leftDuration) {
+                leftKeyframes.push_back(keyframe);
+            }
+        }
+        clip.transformKeyframes = leftKeyframes;
+
+        rightClip.gradingKeyframes.clear();
+        for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
+            if (keyframe.frame >= leftDuration) {
+                TimelineClip::GradingKeyframe shifted = keyframe;
+                shifted.frame -= leftDuration;
+                rightClip.gradingKeyframes.push_back(shifted);
+            }
+        }
+        QVector<TimelineClip::GradingKeyframe> leftGradingKeyframes;
+        for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
+            if (keyframe.frame < leftDuration) {
+                leftGradingKeyframes.push_back(keyframe);
+            }
+        }
+        clip.gradingKeyframes = leftGradingKeyframes;
+
+        clip.durationFrames = leftDuration;
+        if (isImage) {
+            clip.sourceInFrame = 0;
+            clip.sourceDurationFrames = leftDuration;
+        }
+        clip.startSubframeSamples = 0;
+        clip.sourceInSubframeSamples = 0;
+        normalizeClipTransformKeyframes(clip);
+        normalizeClipTransformKeyframes(rightClip);
+        normalizeClipGradingKeyframes(clip);
+        normalizeClipGradingKeyframes(rightClip);
+        normalizeClipTiming(clip);
+        normalizeClipTiming(rightClip);
+        m_clips.insert(i + 1, rightClip);
+        m_selectedClipId = rightClip.id;
+        sortClips();
+        if (selectionChanged) {
+            selectionChanged();
+        }
+        if (clipsChanged) {
+            clipsChanged();
+        }
+        update();
+        return true;
+    }
+
+    return false;
+}
+
+bool TimelineWidget::splitClipAtFrame(const QString& clipId, int64_t frame) {
+    const QString previousSelection = m_selectedClipId;
+    m_selectedClipId = clipId;
+    const bool result = splitSelectedClipAtFrame(frame);
+    if (!result) {
+        m_selectedClipId = previousSelection;
+    }
+    return result;
+}
+
+void TimelineWidget::setToolMode(ToolMode mode) {
+    if (m_toolMode == mode) return;
+    m_toolMode = mode;
+    m_razorHoverFrame = -1;
+    setCursor(mode == ToolMode::Razor ? Qt::CrossCursor : Qt::ArrowCursor);
+    if (toolModeChanged) toolModeChanged();
+    update();
+}
+
+void TimelineWidget::sortClips() {
+    std::sort(m_clips.begin(), m_clips.end(), [](const TimelineClip& a, const TimelineClip& b) {
+        if (a.trackIndex == b.trackIndex) {
+            const int64_t aStartSamples = clipTimelineStartSamples(a);
+            const int64_t bStartSamples = clipTimelineStartSamples(b);
+            if (aStartSamples == bStartSamples) {
+                return a.label < b.label;
+            }
+            return aStartSamples < bStartSamples;
+        }
+        return a.trackIndex < b.trackIndex;
+    });
+}
+
+void TimelineWidget::sortRenderSyncMarkers() {
+    std::sort(m_renderSyncMarkers.begin(), m_renderSyncMarkers.end(),
+              [](const RenderSyncMarker& a, const RenderSyncMarker& b) {
+                  if (a.clipId != b.clipId) {
+                      return a.clipId < b.clipId;
+                  }
+                  if (a.frame == b.frame) {
+                      return static_cast<int>(a.action) < static_cast<int>(b.action);
+                  }
+                  return a.frame < b.frame;
+              });
+}
+
+void TimelineWidget::setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) {
+    m_renderSyncMarkers = markers;
+    sortRenderSyncMarkers();
+    update();
+}
+
+const RenderSyncMarker* TimelineWidget::renderSyncMarkerAtFrame(const QString& clipId, int64_t frame) const {
+    for (const RenderSyncMarker& marker : m_renderSyncMarkers) {
+        if (marker.clipId == clipId && marker.frame == frame) {
+            return &marker;
+        }
+    }
+    return nullptr;
+}
+
+bool TimelineWidget::setRenderSyncMarkerAtCurrentFrame(const QString& clipId, RenderSyncAction action, int count) {
+    if (clipId.isEmpty()) {
+        return false;
+    }
+    count = qMax(1, count);
+    for (RenderSyncMarker& marker : m_renderSyncMarkers) {
+        if (marker.clipId == clipId && marker.frame == m_currentFrame) {
+            if (marker.action == action && marker.count == count) {
+                return false;
+            }
+            marker.action = action;
+            marker.count = count;
+            sortRenderSyncMarkers();
+            if (renderSyncMarkersChanged) {
+                renderSyncMarkersChanged();
+            }
+            update();
+            return true;
+        }
+    }
+
+    RenderSyncMarker marker;
+    marker.clipId = clipId;
+    marker.frame = m_currentFrame;
+    marker.action = action;
+    marker.count = count;
+    m_renderSyncMarkers.push_back(marker);
+    sortRenderSyncMarkers();
+    if (renderSyncMarkersChanged) {
+        renderSyncMarkersChanged();
+    }
+    update();
+    return true;
+}
+
+bool TimelineWidget::clearRenderSyncMarkerAtCurrentFrame(const QString& clipId) {
+    if (clipId.isEmpty()) {
+        return false;
+    }
+    for (int i = 0; i < m_renderSyncMarkers.size(); ++i) {
+        if (m_renderSyncMarkers[i].clipId == clipId && m_renderSyncMarkers[i].frame == m_currentFrame) {
+            m_renderSyncMarkers.removeAt(i);
+            if (renderSyncMarkersChanged) {
+                renderSyncMarkersChanged();
+            }
+            update();
+            return true;
+        }
+    }
+    return false;
+}
+
+void TimelineWidget::normalizeExportRange() {
+    normalizeExportRanges();
+}
+
+void TimelineWidget::normalizeExportRanges() {
+    const int64_t total = totalFrames();
+    if (m_exportRanges.isEmpty()) {
+        m_exportRanges = {ExportRangeSegment{0, total}};
+    }
+    for (ExportRangeSegment& segment : m_exportRanges) {
+        segment.startFrame = qBound<int64_t>(0, segment.startFrame, total);
+        segment.endFrame = qBound<int64_t>(0, segment.endFrame, total);
+        if (segment.endFrame < segment.startFrame) {
+            std::swap(segment.startFrame, segment.endFrame);
+        }
+    }
+    std::sort(m_exportRanges.begin(), m_exportRanges.end(), [](const ExportRangeSegment& a, const ExportRangeSegment& b) {
+        if (a.startFrame == b.startFrame) {
+            return a.endFrame < b.endFrame;
+        }
+        return a.startFrame < b.startFrame;
+    });
+    QVector<ExportRangeSegment> normalized;
+    normalized.reserve(m_exportRanges.size());
+    for (const ExportRangeSegment& segment : std::as_const(m_exportRanges)) {
+        if (!normalized.isEmpty() &&
+            normalized.constLast().startFrame == segment.startFrame &&
+            normalized.constLast().endFrame == segment.endFrame) {
+            continue;
+        }
+        normalized.push_back(segment);
+    }
+    m_exportRanges = normalized;
+}
+
+int TimelineWidget::exportSegmentIndexAtFrame(int64_t frame) const {
+    for (int i = 0; i < m_exportRanges.size(); ++i) {
+        if (frame >= m_exportRanges[i].startFrame && frame <= m_exportRanges[i].endFrame) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int TimelineWidget::exportHandleAtPos(const QPoint& pos, bool* startHandleOut) const {
+    for (int i = 0; i < m_exportRanges.size(); ++i) {
+        if (exportHandleRect(i, true).contains(pos)) {
+            if (startHandleOut) {
+                *startHandleOut = true;
+            }
+            return i;
+        }
+        if (exportHandleRect(i, false).contains(pos)) {
+            if (startHandleOut) {
+                *startHandleOut = false;
+            }
+            return i;
+        }
+    }
+    return -1;
+}
+
+int64_t TimelineWidget::snapThresholdFrames() const {
+    static constexpr qreal kSnapThresholdPixels = 10.0;
+    return qMax<int64_t>(1, qRound64(kSnapThresholdPixels / qMax<qreal>(0.25, m_pixelsPerFrame)));
+}
+
+int64_t TimelineWidget::nearestClipBoundaryFrame(const QString& excludedClipId, int64_t frame, bool* snapped) const {
+    const int64_t threshold = snapThresholdFrames();
+    int64_t bestFrame = frame;
+    int64_t bestDistance = threshold + 1;
+
+    auto consider = [&](int64_t candidate) {
+        const int64_t distance = qAbs(candidate - frame);
+        if (distance <= threshold && distance < bestDistance) {
+            bestDistance = distance;
+            bestFrame = candidate;
+        }
+    };
+
+    consider(0);
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.id == excludedClipId) {
+            continue;
+        }
+        consider(clip.startFrame);
+        consider(clip.startFrame + clip.durationFrames);
+    }
+
+    if (snapped) {
+        *snapped = bestDistance <= threshold;
+    }
+    return bestFrame;
+}
+
+int64_t TimelineWidget::snapMoveStartFrame(const TimelineClip& clip,
+                                           int64_t proposedStartFrame,
+                                           bool* snapped,
+                                           int64_t* snappedBoundaryFrame) const {
+    const int64_t proposedEndFrame = proposedStartFrame + clip.durationFrames;
+    const int64_t threshold = snapThresholdFrames();
+    int64_t bestStartFrame = proposedStartFrame;
+    int64_t bestBoundary = -1;
+    int64_t bestDistance = threshold + 1;
+
+    auto consider = [&](int64_t boundaryFrame) {
+        const int64_t startDistance = qAbs(boundaryFrame - proposedStartFrame);
+        if (startDistance <= threshold && startDistance < bestDistance) {
+            bestDistance = startDistance;
+            bestStartFrame = boundaryFrame;
+            bestBoundary = boundaryFrame;
+        }
+
+        const int64_t endDistance = qAbs(boundaryFrame - proposedEndFrame);
+        if (endDistance <= threshold && endDistance < bestDistance) {
+            bestDistance = endDistance;
+            bestStartFrame = qMax<int64_t>(0, boundaryFrame - clip.durationFrames);
+            bestBoundary = boundaryFrame;
+        }
+    };
+
+    consider(0);
+    for (const TimelineClip& other : m_clips) {
+        if (other.id == clip.id) {
+            continue;
+        }
+        consider(other.startFrame);
+        consider(other.startFrame + other.durationFrames);
+    }
+
+    if (snapped) {
+        *snapped = bestDistance <= threshold;
+    }
+    if (snappedBoundaryFrame) {
+        *snappedBoundaryFrame = bestBoundary;
+    }
+    return bestStartFrame;
+}
+
+int64_t TimelineWidget::snapTrimLeftFrame(const TimelineClip& clip,
+                                          int64_t proposedStartFrame,
+                                          bool* snapped,
+                                          int64_t* snappedBoundaryFrame) const {
+    Q_UNUSED(clip)
+    const int64_t snappedFrame = nearestClipBoundaryFrame(clip.id, proposedStartFrame, snapped);
+    if (snappedBoundaryFrame) {
+        *snappedBoundaryFrame = (snapped && *snapped) ? snappedFrame : -1;
+    }
+    return snappedFrame;
+}
+
+int64_t TimelineWidget::snapTrimRightFrame(const TimelineClip& clip,
+                                           int64_t proposedEndFrame,
+                                           bool* snapped,
+                                           int64_t* snappedBoundaryFrame) const {
+    Q_UNUSED(clip)
+    const int64_t snappedFrame = nearestClipBoundaryFrame(clip.id, proposedEndFrame, snapped);
+    if (snappedBoundaryFrame) {
+        *snappedBoundaryFrame = (snapped && *snapped) ? snappedFrame : -1;
+    }
+    return snappedFrame;
+}
+
+bool TimelineWidget::nudgeSelectedClip(int direction) {
+    if (direction == 0 || m_selectedClipId.isEmpty()) {
+        return false;
+    }
+
+    for (TimelineClip& clip : m_clips) {
+        if (clip.id != m_selectedClipId) {
+            continue;
+        }
+
+        if (clip.locked) {
+            return false;
+        }
+
+        if (clipIsAudioOnly(clip)) {
+            const int64_t nextStartSamples =
+                qMax<int64_t>(0, clipTimelineStartSamples(clip) + (direction * kAudioNudgeSamples));
+            clip.startFrame = nextStartSamples / kSamplesPerFrame;
+            clip.startSubframeSamples = nextStartSamples % kSamplesPerFrame;
+        } else {
+            clip.startFrame = qMax<int64_t>(0, clip.startFrame + direction);
+        }
+
+        normalizeClipTiming(clip);
+        m_currentFrame = clip.startFrame;
+        sortClips();
+        if (clipsChanged) {
+            clipsChanged();
+        }
+        update();
+        return true;
+    }
+
+    return false;
+}
+
+bool TimelineWidget::renameTrack(int trackIndex) {
+    if (trackIndex < 0) {
+        return false;
+    }
+
+    const QString currentName =
+        (trackIndex >= 0 && trackIndex < m_tracks.size()) ? m_tracks[trackIndex].name : defaultTrackName(trackIndex);
+    bool accepted = false;
+    const QString nextName = QInputDialog::getText(this,
+                                                   QStringLiteral("Rename Track"),
+                                                   QStringLiteral("Track name"),
+                                                   QLineEdit::Normal,
+                                                   currentName,
+                                                   &accepted);
+    if (!accepted) {
+        return false;
+    }
+
+    ensureTrackCount(trackIndex + 1);
+    m_tracks[trackIndex].name = nextName.trimmed().isEmpty() ? defaultTrackName(trackIndex) : nextName.trimmed();
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    update();
+    return true;
+}
+
+bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds) {
+    if (trackIndex < 0 || seconds <= 0.0) {
+        return false;
+    }
+
+    QVector<int> clipIndices;
+    for (int i = 0; i < m_clips.size(); ++i) {
+        if (m_clips[i].trackIndex == trackIndex) {
+            clipIndices.push_back(i);
+        }
+    }
+
+    if (clipIndices.size() < 2) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Crossfade Consecutive Clips"),
+                                 QStringLiteral("This track needs at least two clips to apply a crossfade."));
+        return false;
+    }
+
+    for (const int clipIndex : clipIndices) {
+        if (m_clips[clipIndex].locked) {
+            QMessageBox::warning(this,
+                                 QStringLiteral("Crossfade Consecutive Clips"),
+                                 QStringLiteral("Unlock all clips on this track before applying a crossfade."));
+            return false;
+        }
+    }
+
+    std::sort(clipIndices.begin(), clipIndices.end(), [&](int a, int b) {
+        const int64_t startSamplesA = clipTimelineStartSamples(m_clips[a]);
+        const int64_t startSamplesB = clipTimelineStartSamples(m_clips[b]);
+        if (startSamplesA == startSamplesB) {
+            return m_clips[a].label < m_clips[b].label;
+        }
+        return startSamplesA < startSamplesB;
+    });
+
+    const int fadeSamples = qMax(1, qRound(seconds * static_cast<double>(kAudioSampleRate)));
+    const int64_t fadeFrames = qMax<int64_t>(1, qRound64(seconds * static_cast<double>(kTimelineFps)));
+    bool changed = false;
+
+    for (int i = 0; i + 1 < clipIndices.size(); ++i) {
+        TimelineClip& leftClip = m_clips[clipIndices[i]];
+        TimelineClip& rightClip = m_clips[clipIndices[i + 1]];
+
+        const int64_t leftStartSamples = clipTimelineStartSamples(leftClip);
+        const int64_t leftEndSamples = leftStartSamples + (leftClip.durationFrames * kSamplesPerFrame);
+        const int64_t targetRightStartSamples = qMax<int64_t>(0, leftEndSamples - fadeSamples);
+        if (clipTimelineStartSamples(rightClip) != targetRightStartSamples) {
+            rightClip.startFrame = targetRightStartSamples / kSamplesPerFrame;
+            rightClip.startSubframeSamples = targetRightStartSamples % kSamplesPerFrame;
+            normalizeClipTiming(rightClip);
+            changed = true;
+        }
+
+        if (leftClip.hasAudio || leftClip.mediaType == ClipMediaType::Audio) {
+            if (leftClip.fadeSamples != fadeSamples) {
+                leftClip.fadeSamples = fadeSamples;
+                changed = true;
+            }
+        }
+        if (rightClip.hasAudio || rightClip.mediaType == ClipMediaType::Audio) {
+            if (rightClip.fadeSamples != fadeSamples) {
+                rightClip.fadeSamples = fadeSamples;
+                changed = true;
+            }
+        }
+
+        const bool leftHasVisuals = clipHasVisuals(leftClip);
+        const bool rightHasVisuals = clipHasVisuals(rightClip);
+        applyVisualCrossfade(leftClip, false, fadeFrames);
+        applyVisualCrossfade(rightClip, true, fadeFrames);
+        if (leftHasVisuals || rightHasVisuals) {
+            changed = true;
+        }
+    }
+
+    if (!changed) {
+        return false;
+    }
+
+    sortClips();
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    update();
+    return true;
+}
+

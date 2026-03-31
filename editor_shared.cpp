@@ -221,6 +221,39 @@ bool clipHasVisuals(const TimelineClip& clip) {
            clip.sourceKind == MediaSourceKind::ImageSequence;
 }
 
+bool clipHasAlpha(const TimelineClip& clip) {
+    // Check if the media file has alpha channel
+    // For now, check common alpha-capable formats and file extensions
+    if (!clipHasVisuals(clip)) {
+        return false;
+    }
+    
+    // Title clips always support alpha
+    if (clip.mediaType == ClipMediaType::Title) {
+        return true;
+    }
+    
+    const QString suffix = QFileInfo(clip.filePath).suffix().toLower();
+    const QStringList alphaFormats = {
+        QStringLiteral("png"),
+        QStringLiteral("tga"),
+        QStringLiteral("tiff"),
+        QStringLiteral("tif"),
+        QStringLiteral("exr"),
+        QStringLiteral("webp"),
+        QStringLiteral("mov"),  // QuickTime can have alpha
+        QStringLiteral("prores"),
+    };
+    
+    if (alphaFormats.contains(suffix)) {
+        return true;
+    }
+    
+    // Check if we probed and found alpha
+    const MediaProbeResult probe = probeMediaFile(clip.filePath);
+    return probe.hasAlpha;
+}
+
 bool clipIsAudioOnly(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio;
 }
@@ -763,6 +796,50 @@ QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe&
 
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip) {
     return applyClipGrade(source, evaluateClipGradingAtFrame(clip, clip.startFrame));
+}
+
+QImage applyMaskFeather(const QImage& source, qreal featherRadius) {
+    if (source.isNull() || featherRadius <= 0.0) {
+        return source;
+    }
+
+    QImage feathered = source.convertToFormat(QImage::Format_ARGB32);
+    const int radius = qRound(featherRadius);
+    if (radius <= 0) {
+        return source;
+    }
+
+    // Create a copy for reading
+    const QImage sourceCopy = feathered.copy();
+    const int width = feathered.width();
+    const int height = feathered.height();
+
+    // Box blur on the alpha channel
+    // Using a simple box blur for performance
+    for (int y = 0; y < height; ++y) {
+        QRgb* destRow = reinterpret_cast<QRgb*>(feathered.scanLine(y));
+        for (int x = 0; x < width; ++x) {
+            int alphaSum = 0;
+            int pixelCount = 0;
+
+            // Sample the box
+            for (int dy = -radius; dy <= radius; ++dy) {
+                const int sampleY = qBound(0, y + dy, height - 1);
+                const QRgb* srcRow = reinterpret_cast<const QRgb*>(sourceCopy.scanLine(sampleY));
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    const int sampleX = qBound(0, x + dx, width - 1);
+                    alphaSum += qAlpha(srcRow[sampleX]);
+                    pixelCount++;
+                }
+            }
+
+            const int newAlpha = alphaSum / pixelCount;
+            const QRgb original = destRow[x];
+            destRow[x] = qRgba(qRed(original), qGreen(original), qBlue(original), newAlpha);
+        }
+    }
+
+    return feathered.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
 QString playbackProxyPathForClip(const TimelineClip& clip) {

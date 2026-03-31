@@ -62,6 +62,11 @@ public:
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
     QDoubleSpinBox *gradingFadeDurationSpin() const { return m_gradingFadeDurationSpin; }
+    
+    QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
+    QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
+    QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
+    
     QLabel *syncInspectorClipLabel() const { return m_syncInspectorClipLabel; }
     QLabel *syncInspectorDetailsLabel() const { return m_syncInspectorDetailsLabel; }
     QTableWidget *syncTable() const { return m_syncTable; }
@@ -143,6 +148,7 @@ signals:
 private:
     QWidget *buildPane();
     QWidget *buildGradingTab();
+    QWidget *buildEffectsTab();
     QWidget *buildTitlesTab();
     QWidget *buildSyncTab();
     QWidget *buildKeyframesTab();
@@ -169,6 +175,10 @@ private:
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
     QDoubleSpinBox *m_gradingFadeDurationSpin = nullptr;
+
+    QLabel *m_effectsPathLabel = nullptr;
+    QDoubleSpinBox *m_maskFeatherSpin = nullptr;
+    QCheckBox *m_maskFeatherEnabledCheck = nullptr;
 
     QLabel *m_syncInspectorClipLabel = nullptr;
     QLabel *m_syncInspectorDetailsLabel = nullptr;

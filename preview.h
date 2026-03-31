@@ -3,6 +3,7 @@
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
 #include <QOpenGLBuffer>
+#include <QOpenGLShaderProgram>
 #include <QTimer>
 #include <QHash>
 #include <QJsonObject>
@@ -17,10 +18,6 @@
 #include "async_decoder.h"
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
-
-QT_BEGIN_NAMESPACE
-class QOpenGLShaderProgram;
-QT_END_NAMESPACE
 
 using namespace editor;
 

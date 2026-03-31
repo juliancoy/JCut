@@ -51,6 +51,7 @@ QWidget *InspectorPane::buildPane()
 
     m_inspectorTabs = new QTabWidget(pane);
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
+    m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
     m_inspectorTabs->addTab(buildTitlesTab(), QStringLiteral("Titles"));
     m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
     m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
@@ -88,15 +89,16 @@ void InspectorPane::configureInspectorTabs()
 
     const TabSpec specs[] = {
         {0, QStyle::SP_DriveDVDIcon, "Grade: clip color, opacity, and grading keyframes"},
-        {1, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
-        {2, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
-        {3, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
-        {4, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
-        {5, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {6, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {7, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {8, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {9, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {1, QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
+        {2, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
+        {3, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
+        {4, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
+        {5, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
+        {6, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
+        {7, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
+        {8, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {9, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {10, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -205,6 +207,51 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addLayout(fadeDurationLayout);
     
     layout->addWidget(m_gradingKeyframeTable, 1);
+    return page;
+}
+
+QWidget *InspectorPane::buildEffectsTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+    layout->addWidget(createTabHeading(QStringLiteral("Effects"), page));
+
+    m_effectsPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
+    m_effectsPathLabel->setWordWrap(true);
+    layout->addWidget(m_effectsPathLabel);
+
+    // Mask feathering section
+    auto *featherGroup = new QVBoxLayout;
+    
+    m_maskFeatherEnabledCheck = new QCheckBox(QStringLiteral("Enable Mask Feathering"), page);
+    featherGroup->addWidget(m_maskFeatherEnabledCheck);
+    
+    auto *featherRow = new QHBoxLayout;
+    featherRow->addWidget(new QLabel(QStringLiteral("Feather Radius:"), page));
+    m_maskFeatherSpin = new QDoubleSpinBox(page);
+    m_maskFeatherSpin->setRange(0.0, 100.0);
+    m_maskFeatherSpin->setDecimals(1);
+    m_maskFeatherSpin->setSingleStep(0.5);
+    m_maskFeatherSpin->setValue(0.0);
+    m_maskFeatherSpin->setSuffix(QStringLiteral(" px"));
+    m_maskFeatherSpin->setToolTip(QStringLiteral("Amount of feathering to apply to the alpha channel"));
+    featherRow->addWidget(m_maskFeatherSpin);
+    featherRow->addStretch();
+    featherGroup->addLayout(featherRow);
+    
+    layout->addLayout(featherGroup);
+    
+    // Info label
+    auto *infoLabel = new QLabel(QStringLiteral(
+        "Mask feathering smooths the edges of transparent areas. "
+        "Only applies to clips with alpha channels (PNG, ProRes, etc.)."), page);
+    infoLabel->setWordWrap(true);
+    infoLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
+    layout->addWidget(infoLabel);
+
+    layout->addStretch(1);
     return page;
 }
 

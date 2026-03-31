@@ -118,6 +118,7 @@ struct TimelineClip {
     TranscriptOverlaySettings transcriptOverlay;
     int fadeSamples = 250;  // Crossfade with previous audio clip (0 = no fade)
     bool locked = false;    // When true, prevents temporal adjustments
+    qreal maskFeather = 0.0; // Mask feathering radius in pixels (0 = disabled, only applies to clips with alpha)
 };
 
 struct TimelineTrack {
@@ -203,6 +204,7 @@ bool clipHasVisuals(const TimelineClip& clip);
 bool clipIsAudioOnly(const TimelineClip& clip);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip);
 bool clipAudioPlaybackEnabled(const TimelineClip& clip);
+bool clipHasAlpha(const TimelineClip& clip);
 
 int64_t frameToSamples(int64_t frame);
 qreal samplesToFramePosition(int64_t samples);
@@ -234,6 +236,7 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
 MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames = 120);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
+QImage applyMaskFeather(const QImage& source, qreal featherRadius);
 QString playbackProxyPathForClip(const TimelineClip& clip);
 QString playbackMediaPathForClip(const TimelineClip& clip);
 QString interactivePreviewMediaPathForClip(const TimelineClip& clip);

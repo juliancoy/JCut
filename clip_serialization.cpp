@@ -100,6 +100,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("transcriptOverlay")] = transcriptOverlayObj;
         obj[QStringLiteral("fadeSamples")] = clip.fadeSamples;
         obj[QStringLiteral("locked")] = clip.locked;
+        obj[QStringLiteral("maskFeather")] = clip.maskFeather;
         return obj;
     }
 

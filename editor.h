@@ -15,6 +15,7 @@
 #include "projects.h"
 #include "transcript_tab.h"
 #include "grading_tab.h"
+#include "effects_tab.h"
 #include "titles_tab.h"
 #include "video_keyframe_tab.h"
 
@@ -284,6 +285,7 @@ private:
     std::unique_ptr<AudioEngine> m_audioEngine;
     std::unique_ptr<TranscriptTab> m_transcriptTab;
     std::unique_ptr<GradingTab> m_gradingTab;
+    std::unique_ptr<EffectsTab> m_effectsTab;
     std::unique_ptr<TitlesTab> m_titlesTab;
     std::unique_ptr<VideoKeyframeTab> m_videoKeyframeTab;
     std::unique_ptr<OutputTab> m_outputTab;
