@@ -47,6 +47,7 @@ int debugPrefetchSkipVisiblePendingThreshold();
 int debugVisibleQueueReserve();
 int debugPlaybackWindowAhead();
 DecodePreference debugDecodePreference();
+bool debugPlayheadNoRepaint();
 
 void setDebugPlaybackEnabled(bool enabled);
 void setDebugCacheEnabled(bool enabled);
@@ -63,6 +64,7 @@ void setDebugPrefetchSkipVisiblePendingThreshold(int threshold);
 void setDebugVisibleQueueReserve(int reserve);
 void setDebugPlaybackWindowAhead(int ahead);
 void setDebugDecodePreference(DecodePreference preference);
+void setDebugPlayheadNoRepaint(bool enabled);
 
 QJsonObject debugControlsSnapshot();
 bool setDebugControl(const QString& name, bool enabled);

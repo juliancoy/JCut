@@ -2,6 +2,7 @@
 
 #include "preview.h"
 #include "timeline_widget.h"
+#include "timeline_container.h"
 
 #include <QFrame>
 #include <QHBoxLayout>
@@ -10,6 +11,7 @@
 #include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QLabel>
 
 EditorPane::EditorPane(QWidget *parent)
     : QWidget(parent)
@@ -87,17 +89,40 @@ EditorPane::EditorPane(QWidget *parent)
 
     verticalSplitter->addWidget(previewFrame);
 
-    auto *timelinePane = new QWidget;
-    timelinePane->setMinimumHeight(220);
+    // TimelineContainer with 2x2 grid layout
+    m_timelineContainer = new TimelineContainer;
+    m_timelineContainer->setMinimumHeight(220);
+    
+    // Create transport controls and add to TimelineContainer's transport area
+    setupTransportControls();
+    
+    verticalSplitter->addWidget(m_timelineContainer);
+    verticalSplitter->setStretchFactor(0, 3);
+    verticalSplitter->setStretchFactor(1, 2);
+    verticalSplitter->setSizes({540, 320});
+}
 
-    auto *timelineLayout = new QVBoxLayout(timelinePane);
-    timelineLayout->setContentsMargins(0, 14, 0, 0);
-    timelineLayout->setSpacing(14);
-
-    auto *transport = new QWidget;
-    auto *transportLayout = new QHBoxLayout(transport);
-    transportLayout->setContentsMargins(0, 0, 0, 0);
-    transportLayout->setSpacing(10);
+void EditorPane::setupTransportControls()
+{
+    // Find the transport widget in the timeline container
+    QWidget *transportWidget = m_timelineContainer->findChild<QWidget*>(QStringLiteral("timeline.transport"));
+    if (!transportWidget) {
+        qWarning() << "Transport widget not found in TimelineContainer";
+        return;
+    }
+    
+    // Get the transport widget's layout
+    QHBoxLayout *transportLayout = qobject_cast<QHBoxLayout*>(transportWidget->layout());
+    if (!transportLayout) {
+        qWarning() << "Transport layout not found";
+        return;
+    }
+    
+    // Clear the placeholder stretch
+    QLayoutItem *item;
+    while ((item = transportLayout->takeAt(0)) != nullptr) {
+        delete item;
+    }
 
     m_playButton = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), QStringLiteral("Play"));
     m_playButton->setObjectName(QStringLiteral("transport.play"));
@@ -108,6 +133,14 @@ EditorPane::EditorPane(QWidget *parent)
     m_endButton->setObjectName(QStringLiteral("transport.end"));
     m_startButton->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
     m_endButton->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
+
+    m_razorButton = new QToolButton;
+    m_razorButton->setObjectName(QStringLiteral("transport.razor"));
+    m_razorButton->setText(QStringLiteral("Razor"));
+    m_razorButton->setCheckable(true);
+    m_razorButton->setToolTip(QStringLiteral("Razor tool (B) \u2014 click to split clips"));
+    m_razorButton->setStyleSheet(QStringLiteral(
+        "QToolButton:checked { background: #3a4d63; border-color: #a0e0ff; color: #a0e0ff; }"));
 
     m_seekSlider = new QSlider(Qt::Horizontal);
     m_seekSlider->setObjectName(QStringLiteral("transport.seek"));
@@ -131,14 +164,6 @@ EditorPane::EditorPane(QWidget *parent)
     m_audioNowPlayingLabel->setObjectName(QStringLiteral("transport.audio_status"));
     m_audioNowPlayingLabel->setMinimumWidth(80);
 
-    m_razorButton = new QToolButton(transport);
-    m_razorButton->setObjectName(QStringLiteral("transport.razor"));
-    m_razorButton->setText(QStringLiteral("Razor"));
-    m_razorButton->setCheckable(true);
-    m_razorButton->setToolTip(QStringLiteral("Razor tool (B) \u2014 click to split clips"));
-    m_razorButton->setStyleSheet(QStringLiteral(
-        "QToolButton:checked { background: #3a4d63; border-color: #a0e0ff; color: #a0e0ff; }"));
-
     transportLayout->addWidget(m_startButton);
     transportLayout->addWidget(m_playButton);
     transportLayout->addWidget(m_endButton);
@@ -149,21 +174,18 @@ EditorPane::EditorPane(QWidget *parent)
     transportLayout->addWidget(m_audioMuteButton);
     transportLayout->addWidget(m_audioVolumeSlider);
     transportLayout->addWidget(m_audioNowPlayingLabel);
-    timelineLayout->addWidget(transport, 0);
 
-    m_timeline = new TimelineWidget;
-    m_timeline->setObjectName(QStringLiteral("timeline.widget"));
-    timelineLayout->addWidget(m_timeline, 1);
-
-    verticalSplitter->addWidget(timelinePane);
-    verticalSplitter->setStretchFactor(0, 3);
-    verticalSplitter->setStretchFactor(1, 2);
-    verticalSplitter->setSizes({540, 320});
-
+    // Connect signals
     connect(m_playButton, &QPushButton::clicked, this, &EditorPane::playClicked);
     connect(m_startButton, &QToolButton::clicked, this, &EditorPane::startClicked);
     connect(m_endButton, &QToolButton::clicked, this, &EditorPane::endClicked);
     connect(m_seekSlider, &QSlider::valueChanged, this, &EditorPane::seekValueChanged);
     connect(m_audioMuteButton, &QToolButton::clicked, this, &EditorPane::audioMuteClicked);
     connect(m_audioVolumeSlider, &QSlider::valueChanged, this, &EditorPane::audioVolumeChanged);
+}
+
+// Accessor to get the TimelineWidget from the container
+TimelineWidget *EditorPane::timelineWidget() const
+{
+    return m_timelineContainer ? m_timelineContainer->timeline() : nullptr;
 }

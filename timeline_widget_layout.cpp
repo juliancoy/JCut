@@ -44,16 +44,13 @@ QRect TimelineWidget::trackRect() const {
 }
 
 QRect TimelineWidget::trackSidebarRect() const {
-    const QRect tracks = trackRect();
-    return QRect(tracks.left(), tracks.top(), kTimelineLabelWidth, tracks.height());
+    // Track sidebar is now a separate widget, not part of TimelineWidget
+    return QRect();
 }
 
 QRect TimelineWidget::timelineContentRect() const {
-    const QRect tracks = trackRect();
-    return QRect(tracks.left() + kTimelineLabelWidth + kTimelineLabelGap,
-                 tracks.top(),
-                 qMax(0, tracks.width() - kTimelineLabelWidth - kTimelineLabelGap),
-                 tracks.height());
+    // Full width - track sidebar is now a separate widget
+    return trackRect();
 }
 
 QRect TimelineWidget::exportRangeRect() const {
@@ -176,35 +173,50 @@ bool TimelineWidget::trackHasAudioClips(int trackIndex) const {
 }
 
 bool TimelineWidget::trackVisualEnabled(int trackIndex) const {
-    bool sawVisual = false;
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+    // First check track-level setting
+    if (!m_tracks[trackIndex].visualEnabled) {
+        return false;
+    }
+    // Then check if any clip has visual disabled
     for (const TimelineClip& clip : m_clips) {
-        if (clip.trackIndex != trackIndex || !clipHasVisuals(clip)) {
-            continue;
-        }
-        sawVisual = true;
-        if (!clip.videoEnabled) {
+        if (clip.trackIndex == trackIndex && clipHasVisuals(clip) && !clip.videoEnabled) {
             return false;
         }
     }
-    return sawVisual;
+    return true;
 }
 
 bool TimelineWidget::trackAudioEnabled(int trackIndex) const {
-    bool sawAudio = false;
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+    // First check track-level setting
+    if (!m_tracks[trackIndex].audioEnabled) {
+        return false;
+    }
+    // Then check if any clip has audio disabled
     for (const TimelineClip& clip : m_clips) {
-        if (clip.trackIndex != trackIndex || !clip.hasAudio) {
-            continue;
-        }
-        sawAudio = true;
-        if (!clip.audioEnabled) {
+        if (clip.trackIndex == trackIndex && clip.hasAudio && !clip.audioEnabled) {
             return false;
         }
     }
-    return sawAudio;
+    return true;
 }
 
 bool TimelineWidget::setTrackVisualEnabled(int trackIndex, bool enabled) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
     bool changed = false;
+    // Update track-level setting
+    if (m_tracks[trackIndex].visualEnabled != enabled) {
+        m_tracks[trackIndex].visualEnabled = enabled;
+        changed = true;
+    }
+    // Update all clips on this track
     for (TimelineClip& clip : m_clips) {
         if (clip.trackIndex == trackIndex && clipHasVisuals(clip) && clip.videoEnabled != enabled) {
             clip.videoEnabled = enabled;
@@ -221,7 +233,16 @@ bool TimelineWidget::setTrackVisualEnabled(int trackIndex, bool enabled) {
 }
 
 bool TimelineWidget::setTrackAudioEnabled(int trackIndex, bool enabled) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
     bool changed = false;
+    // Update track-level setting
+    if (m_tracks[trackIndex].audioEnabled != enabled) {
+        m_tracks[trackIndex].audioEnabled = enabled;
+        changed = true;
+    }
+    // Update all clips on this track
     for (TimelineClip& clip : m_clips) {
         if (clip.trackIndex == trackIndex && clip.hasAudio && clip.audioEnabled != enabled) {
             clip.audioEnabled = enabled;

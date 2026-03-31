@@ -48,6 +48,7 @@ std::atomic<int> g_debugPrefetchSkipVisiblePendingThreshold{kDefaultPrefetchSkip
 std::atomic<int> g_debugVisibleQueueReserve{kDefaultVisibleQueueReserve};
 std::atomic<int> g_debugPlaybackWindowAhead{kDefaultPlaybackWindowAhead};
 std::atomic<int> g_decodePreference{static_cast<int>(kDefaultDecodePreference)};
+std::atomic<bool> g_debugPlayheadNoRepaint{false};
 
 }
 
@@ -233,6 +234,10 @@ DecodePreference debugDecodePreference() {
     return static_cast<DecodePreference>(g_decodePreference.load());
 }
 
+bool debugPlayheadNoRepaint() {
+    return g_debugPlayheadNoRepaint.load();
+}
+
 void setDebugPlaybackEnabled(bool enabled) {
     g_debugPlayback.store(static_cast<int>(enabled ? DebugLogLevel::Debug : DebugLogLevel::Off));
 }
@@ -293,6 +298,10 @@ void setDebugDecodePreference(DecodePreference preference) {
     g_decodePreference.store(static_cast<int>(preference));
 }
 
+void setDebugPlayheadNoRepaint(bool enabled) {
+    g_debugPlayheadNoRepaint.store(enabled);
+}
+
 QJsonObject debugControlsSnapshot() {
     return QJsonObject{
         {QStringLiteral("playback"), debugPlaybackEnabled()},
@@ -309,7 +318,8 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("prefetch_skip_visible_pending_threshold"), debugPrefetchSkipVisiblePendingThreshold()},
         {QStringLiteral("visible_queue_reserve"), debugVisibleQueueReserve()},
         {QStringLiteral("playback_window_ahead"), debugPlaybackWindowAhead()},
-        {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())}
+        {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())},
+        {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()}
     };
 }
 
@@ -396,6 +406,10 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
             return false;
         }
         setDebugDecodePreference(preference);
+        return true;
+    }
+    if (name == QStringLiteral("playhead_no_repaint") && value.isBool()) {
+        setDebugPlayheadNoRepaint(value.toBool());
         return true;
     }
     return false;

@@ -88,18 +88,8 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     const QRect topBar = topBarRect();
     const QRect ruler = rulerRect();
     const QRect tracks = trackRect();
-    const QRect sidebar = trackSidebarRect();
     const QRect content = timelineContentRect();
     const QRect exportBar = exportRangeRect();
-
-    // Draw track title column background
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(QColor(QStringLiteral("#14181e")));
-    painter.drawRect(sidebar);
-    
-    // Draw vertical separator between track titles and timeline
-    painter.setPen(QPen(QColor(QStringLiteral("#0f1216")), 2));
-    painter.drawLine(sidebar.right(), tracks.top(), sidebar.right(), tracks.bottom());
 
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(QStringLiteral("#171c22")));
@@ -143,20 +133,6 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(QStringLiteral("#171c22")));
     painter.drawRoundedRect(tracks, 10, 10);
-    painter.setBrush(QColor(QStringLiteral("#151b22")));
-    painter.drawRoundedRect(sidebar, 10, 10);
-    painter.setBrush(QColor(QStringLiteral("#202a34")));
-    painter.drawRoundedRect(QRect(sidebar.left(),
-                                  sidebar.top(),
-                                  sidebar.width(),
-                                  qMin(26, sidebar.height())),
-                            10,
-                            10);
-    painter.setPen(QPen(QColor(QStringLiteral("#2b3744")), 1));
-    painter.drawLine(sidebar.right() + (kTimelineLabelGap / 2),
-                     tracks.top() + 8,
-                     sidebar.right() + (kTimelineLabelGap / 2),
-                     tracks.bottom() - 8);
 
     painter.setPen(QColor(QStringLiteral("#6d7887")));
     for (int64_t frame = 0; frame <= totalFrames(); frame += 30) {
@@ -173,63 +149,15 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     }
 
     painter.setPen(QColor(QStringLiteral("#24303c")));
+    // Draw track dividers first (behind everything)
     for (int track = 0; track < trackCount(); ++track) {
-        const QRect labelRect = trackLabelRect(track);
-        const QRect nameRect = trackNameRect(track);
-        const bool dragged = track == m_draggedTrackIndex;
-        const bool target = track == m_trackDropIndex && m_draggedTrackIndex >= 0 && !m_trackDropInGap;
-        const bool selected = track == m_selectedTrackIndex && m_selectedClipId.isEmpty();
-        
-        // Track title background - distinct from timeline content
-        const QColor headerFill =
-            dragged ? QColor(QStringLiteral("#ff6f61"))
-                    : (target ? QColor(QStringLiteral("#32465f"))
-                              : (selected ? QColor(QStringLiteral("#24384d"))
-                                          : QColor(QStringLiteral("#1e252d"))));
-        painter.setBrush(headerFill);
-        painter.drawRoundedRect(labelRect, 8, 8);
-        
-        // Subtle border for track title
-        painter.setPen(QPen(QColor(QStringLiteral("#2a3542")), 1));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRoundedRect(labelRect.adjusted(0, 0, -1, -1), 8, 8);
-        painter.setPen(Qt::NoPen);
-        if (selected) {
-            painter.setPen(QPen(QColor(QStringLiteral("#7fc4ff")), 1.4));
-            painter.setBrush(Qt::NoBrush);
-            painter.drawRoundedRect(labelRect.adjusted(0, 0, -1, -1), 8, 8);
-        }
-        painter.setPen(QColor(QStringLiteral("#eef4fa")));
-        QFont nameFont = painter.font();
-        nameFont.setBold(true);
-        painter.setFont(nameFont);
-        const QString trackLabel = QStringLiteral("%1. %2")
-                                       .arg(track + 1)
-                                       .arg(m_tracks.value(track).name);
-        painter.drawText(nameRect,
-                         Qt::AlignLeft | Qt::AlignVCenter,
-                         painter.fontMetrics().elidedText(trackLabel, Qt::ElideRight, nameRect.width()));
-        painter.setFont(QFont());
-
-        const QRect visualRect = trackVisualToggleRect(track);
-        const QRect audioRect = trackAudioToggleRect(track);
-        const bool hasVisual = trackHasVisualClips(track);
-        const bool hasAudio = trackHasAudioClips(track);
-        const bool visualEnabled = trackVisualEnabled(track);
-        const bool audioEnabled = trackAudioEnabled(track);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(QStringLiteral("#141a21")));
-        painter.drawRoundedRect(visualRect.adjusted(-4, -2, 4, 2), 7, 7);
-        painter.drawRoundedRect(audioRect.adjusted(-4, -2, 4, 2), 7, 7);
-        drawEyeIcon(painter, visualRect, visualEnabled, hasVisual);
-        drawSpeakerIcon(painter, audioRect, audioEnabled, hasAudio);
-
-        painter.setPen(QColor(QStringLiteral("#24303c")));
         const int dividerY = trackTop(track) + trackHeight(track);
-        painter.drawLine(sidebar.left() + 6, dividerY, sidebar.right() - 6, dividerY);
         painter.drawLine(content.left() - 8, dividerY, tracks.right() - 10, dividerY);
     }
 
+    // Draw clips clipped to content area only (not sidebar)
+    painter.save();
+    painter.setClipRect(content);
     for (const TimelineClip& clip : m_clips) {
         const QRect clipRect = clipRectFor(clip);
         const bool audioOnly = clipIsAudioOnly(clip);
@@ -406,6 +334,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         }
 
     }
+    painter.restore(); // End clip clipping
 
     if (m_dropFrame >= 0) {
         const int x = xFromFrame(m_dropFrame);
@@ -474,6 +403,7 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
             painter.drawRoundedRect(markerRect, 4, 4);
         }
     }
+
 }
 
 void TimelineWidget::setExportRange(int64_t startFrame, int64_t endFrame) {

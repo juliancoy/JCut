@@ -68,6 +68,14 @@ public:
     bool updateTrackAudioEnabled(int trackIndex, bool enabled);
     bool crossfadeTrack(int trackIndex, double seconds);
 
+    // Track state queries (for TrackSidebar)
+    bool trackHasVisualClips(int trackIndex) const;
+    bool trackHasAudioClips(int trackIndex) const;
+    bool trackVisualEnabled(int trackIndex) const;
+    bool trackAudioEnabled(int trackIndex) const;
+    bool setTrackVisualEnabled(int trackIndex, bool enabled);
+    bool setTrackAudioEnabled(int trackIndex, bool enabled);
+
     QVector<RenderSyncMarker> renderSyncMarkers() const { return m_renderSyncMarkers; }
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
     const RenderSyncMarker* renderSyncMarkerAtFrame(const QString& clipId, int64_t frame) const;
@@ -199,12 +207,6 @@ private:
     QRect clipRectFor(const TimelineClip& clip) const;
     QRect renderSyncMarkerRect(const TimelineClip& clip, const RenderSyncMarker& marker) const;
 
-    bool trackHasVisualClips(int trackIndex) const;
-    bool trackHasAudioClips(int trackIndex) const;
-    bool trackVisualEnabled(int trackIndex) const;
-    bool trackAudioEnabled(int trackIndex) const;
-    bool setTrackVisualEnabled(int trackIndex, bool enabled);
-    bool setTrackAudioEnabled(int trackIndex, bool enabled);
     bool renameTrack(int trackIndex);
     bool applyCrossfadeToTrack(int trackIndex, double seconds);
 

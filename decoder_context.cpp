@@ -19,9 +19,9 @@ namespace editor {
 namespace {
 
 constexpr int64_t kMaxSequentialDecodeGap = 90;
-constexpr size_t kMaxSequenceFrameCacheBytes = 192 * 1024 * 1024;
-constexpr int kMaxSequenceFrameCacheEntries = 24;
-constexpr int kWebpSequenceBatchAhead = 6;
+constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 4K WebP
+constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at 30fps
+constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
 
 #if defined(__SANITIZE_ADDRESS__)
 constexpr bool kAsanBuild = true;

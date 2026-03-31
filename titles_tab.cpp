@@ -68,8 +68,14 @@ void TitlesTab::wire()
 
 void TitlesTab::refresh()
 {
-    m_updating = true;
     auto *table = m_widgets.titleKeyframeTable;
+    
+    // Skip repaint when keyframes are selected (to avoid disrupting multi-selection)
+    if (table && table->selectedItems().count() > 0) {
+        return;
+    }
+    
+    m_updating = true;
 
     const TimelineClip *clip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
 

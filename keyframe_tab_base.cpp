@@ -1,6 +1,7 @@
 #include "keyframe_tab_base.h"
 
 #include "keyframe_table_shared.h"
+#include "debug_controls.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -202,4 +203,10 @@ bool KeyframeTabBase::eventFilter(QObject* watched, QEvent* event)
         }
     }
     return QObject::eventFilter(watched, event);
+}
+
+bool KeyframeTabBase::shouldSkipKeyframeRepaint() const
+{
+    // Check the global debug flag that prevents UI repainting during playhead movement
+    return editor::debugPlayheadNoRepaint();
 }

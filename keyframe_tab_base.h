@@ -61,6 +61,10 @@ public:
     // It's called by the base class event filter when Delete/Backspace is pressed.
     virtual void removeSelectedKeyframesFromCurrentTable() = 0;
     
+    // Check if we should skip repainting the UI during playhead movement
+    // (to avoid disrupting multi-selection and reduce flicker)
+    bool shouldSkipKeyframeRepaint() const;
+    
     // Context menu with standard actions
     struct ContextMenuActions {
         QAction* addAbove = nullptr;

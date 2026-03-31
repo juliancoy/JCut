@@ -17,6 +17,14 @@ GradingTab::GradingTab(const Widgets& widgets, const Dependencies& deps, QObject
     : KeyframeTabBase(deps, parent)
     , m_widgets(widgets)
 {
+    m_deferredSeekTimer.setSingleShot(true);
+    connect(&m_deferredSeekTimer, &QTimer::timeout, this, [this]() {
+        if (m_pendingSeekTimelineFrame < 0 || !m_deps.seekToTimelineFrame) {
+            return;
+        }
+        m_deps.seekToTimelineFrame(m_pendingSeekTimelineFrame);
+        m_pendingSeekTimelineFrame = -1;
+    });
 }
 
 void GradingTab::wire()
@@ -102,6 +110,11 @@ void GradingTab::refresh()
 {
     if (!m_widgets.gradingPathLabel || !m_widgets.brightnessSpin || !m_widgets.contrastSpin ||
         !m_widgets.saturationSpin || !m_widgets.opacitySpin || !m_widgets.gradingKeyframeTable) {
+        return;
+    }
+    
+    // Skip repaint when keyframes are selected (to avoid disrupting multi-selection)
+    if (m_widgets.gradingKeyframeTable->selectedItems().count() > 0) {
         return;
     }
 
@@ -397,6 +410,11 @@ void GradingTab::onFadeOutClicked()
 void GradingTab::onTableSelectionChanged()
 {
     if (m_updating || m_syncingTableSelection) return;
+
+    // Use base class method for deferred seek to timeline frame
+    onTableSelectionChangedBase(m_widgets.gradingKeyframeTable, &m_deferredSeekTimer, &m_pendingSeekTimelineFrame);
+    // Note: Don't call refresh() here - it disrupts multi-selection. 
+    // The UI update happens through other refresh mechanisms.
 
     const QSet<int64_t> selectedFrames =
         editor::collectSelectedFrameRoles(m_widgets.gradingKeyframeTable);
@@ -851,7 +869,9 @@ void GradingTab::applyOpacityFadeFromPlayhead(bool fadeIn)
 
     const GradingKeyframeDisplay startDisplay = evaluateDisplayedGrading(*clip, clip->startFrame + localStartFrame);
     const GradingKeyframeDisplay endDisplay = evaluateDisplayedGrading(*clip, clip->startFrame + localEndFrame);
-    const double targetVisibleOpacity = qBound(0.0, qMax(startDisplay.opacity, endDisplay.opacity), 1.0);
+    // For fade in, always end at opacity=1.0 (full visibility)
+    // For fade out, end at opacity=0.0
+    const double targetVisibleOpacity = 1.0;
 
     const bool updated = m_deps.updateClipById(clip->id, [&](TimelineClip& updatedClip) {
         auto upsertFrame = [](QVector<TimelineClip::GradingKeyframe>& keyframes,

@@ -427,6 +427,11 @@ void VideoKeyframeTab::refresh()
         !m_widgets.keyframesInspectorDetailsLabel) {
         return;
     }
+    
+    // Skip repaint when keyframes are selected (to avoid disrupting multi-selection)
+    if (m_widgets.videoKeyframeTable->selectedItems().count() > 0) {
+        return;
+    }
 
     const TimelineClip* clip = m_deps.getSelectedClip();
     m_updating = true;
@@ -1100,7 +1105,8 @@ void VideoKeyframeTab::onRemoveKeyframeClicked()
 void VideoKeyframeTab::onTableSelectionChanged()
 {
     onTableSelectionChangedBase(m_widgets.videoKeyframeTable, &m_deferredSeekTimer, &m_pendingSeekTimelineFrame);
-    refresh();
+    // Don't refresh immediately - let the selection stabilize for multi-select
+    // The UI will update on the next periodic refresh or when the user finishes selecting
 }
 
 void VideoKeyframeTab::onTableItemChanged(QTableWidgetItem* changedItem)

@@ -9,6 +9,7 @@
 
 class PreviewWindow;
 class TimelineWidget;
+class TimelineContainer;
 
 class EditorPane final : public QWidget
 {
@@ -18,7 +19,8 @@ public:
     explicit EditorPane(QWidget *parent = nullptr);
 
     PreviewWindow *previewWindow() const { return m_preview; }
-    TimelineWidget *timelineWidget() const { return m_timeline; }
+    TimelineWidget *timelineWidget() const;
+    TimelineContainer *timelineContainer() const { return m_timelineContainer; }
 
     QPushButton *playButton() const { return m_playButton; }
     QToolButton *audioMuteButton() const { return m_audioMuteButton; }
@@ -39,8 +41,9 @@ signals:
     void audioVolumeChanged(int value);
 
 private:
+    void setupTransportControls();
     PreviewWindow *m_preview = nullptr;
-    TimelineWidget *m_timeline = nullptr;
+    TimelineContainer *m_timelineContainer = nullptr;
 
     QPushButton *m_playButton = nullptr;
     QToolButton *m_startButton = nullptr;

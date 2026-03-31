@@ -8,6 +8,7 @@
 #include <QDoubleSpinBox>
 #include <QCheckBox>
 #include <QPushButton>
+#include <QTimer>
 #include <functional>
 
 #include "editor_shared.h"
@@ -122,4 +123,6 @@ private:
     void applyOpacityFadeFromPlayhead(bool fadeIn);
 
     Widgets m_widgets;
+    QTimer m_deferredSeekTimer;
+    int64_t m_pendingSeekTimelineFrame = -1;
 };

@@ -130,6 +130,8 @@ struct TimelineClip {
 struct TimelineTrack {
     QString name;
     int height = 44;
+    bool visualEnabled = true;
+    bool audioEnabled = true;
 };
 
 struct ExportRangeSegment {

@@ -117,6 +117,12 @@ void TranscriptTab::wire()
 
 void TranscriptTab::refresh()
 {
+    // Skip refresh when table items are selected (to avoid disrupting multi-selection
+    // and prevent unintended playhead movement)
+    if (m_widgets.transcriptTable && m_widgets.transcriptTable->selectedItems().count() > 0) {
+        return;
+    }
+
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     m_updating = true;
 
