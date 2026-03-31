@@ -38,7 +38,7 @@ public:
     ~KeyframeTabBase() override = default;
 
     // Common utility methods
-    bool shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* followCheckBox) const;
+    bool shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* followCheckBox);
     int64_t calculateLocalFrame(const TimelineClip* clip) const;
     
     // Keyframe selection helpers (work with any keyframe type via frame role)
@@ -48,6 +48,18 @@ public:
     // Common slot implementations
     void onTableSelectionChangedBase(QTableWidget* table, QTimer* deferredSeekTimer = nullptr, 
                                      int64_t* pendingSeekFrame = nullptr);
+    
+    // Install common event filter and context menu on a table widget.
+    // Call this from derived class wire() for each keyframe table.
+    void installTableHandlers(QTableWidget* table);
+    
+    // Derived classes must call this to handle Delete/Backspace keys.
+    // Returns true if the event was handled.
+    bool handleTableKeyPress(QKeyEvent* event);
+    
+    // Derived classes must implement this to handle Delete key.
+    // It's called by the base class event filter when Delete/Backspace is pressed.
+    virtual void removeSelectedKeyframesFromCurrentTable() = 0;
     
     // Context menu with standard actions
     struct ContextMenuActions {
@@ -73,9 +85,15 @@ signals:
     void keyframeSelectionChanged();
 
 protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
     Dependencies m_deps;
     bool m_updating = false;
     bool m_syncingTableSelection = false;
     int64_t m_selectedKeyframeFrame = -1;
     QSet<int64_t> m_selectedKeyframeFrames;
+    
+    // Tracks the timeline frame that was last manually selected by the user.
+    // Used to prevent the table from auto-syncing (jumping) immediately after
+    // the user clicks a row, which would fight their manual selection.
+    int64_t m_suppressSyncForTimelineFrame = -1;
 };

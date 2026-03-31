@@ -11,6 +11,8 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QKeyEvent>
+#include <QMenu>
 #include <QSignalBlocker>
 #include <cmath>
 
@@ -38,6 +40,10 @@ void TranscriptTab::wire()
                 this, &TranscriptTab::onTranscriptItemDoubleClicked);
         connect(m_widgets.transcriptTable, &QTableWidget::itemChanged,
                 this, &TranscriptTab::applyTableEdit);
+        m_widgets.transcriptTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.transcriptTable, &QWidget::customContextMenuRequested,
+                this, &TranscriptTab::onTranscriptCustomContextMenu);
+        m_widgets.transcriptTable->installEventFilter(this);
     }
     if (m_widgets.transcriptFollowCurrentWordCheckBox) {
         connect(m_widgets.transcriptFollowCurrentWordCheckBox, &QCheckBox::toggled,
@@ -624,4 +630,161 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         m_widgets.transcriptTable->setItem(row, 1, endItem);
         m_widgets.transcriptTable->setItem(row, 2, textItem);
     }
+}
+
+
+void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
+{
+    if (!m_widgets.transcriptTable || m_loadedTranscriptPath.isEmpty() ||
+        !m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+
+    QTableWidgetItem* item = m_widgets.transcriptTable->itemAt(pos);
+    if (!item) return;
+
+    const int row = item->row();
+    const bool isGap = m_widgets.transcriptTable->item(row, 0)->data(Qt::UserRole + 4).toBool();
+    if (isGap) return;
+
+    QMenu menu;
+    QAction* addAbove = menu.addAction(QStringLiteral("Add Word Above"));
+    QAction* addBelow = menu.addAction(QStringLiteral("Add Word Below"));
+    menu.addSeparator();
+    QAction* deleteAction = menu.addAction(QStringLiteral("Delete Word"));
+
+    QAction* chosen = menu.exec(m_widgets.transcriptTable->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+
+    if (chosen == addAbove) {
+        insertWordAtRow(row, true);
+    } else if (chosen == addBelow) {
+        insertWordAtRow(row, false);
+    } else if (chosen == deleteAction) {
+        deleteSelectedRows();
+    }
+}
+
+void TranscriptTab::insertWordAtRow(int row, bool above)
+{
+    if (!m_widgets.transcriptTable || m_loadedTranscriptPath.isEmpty() ||
+        !m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+
+    // Get the times of the word we're inserting relative to
+    QTableWidgetItem* currentItem = m_widgets.transcriptTable->item(row, 0);
+    if (!currentItem) return;
+
+    const double currentStart = currentItem->data(Qt::UserRole).toDouble();
+    const double currentEnd = currentItem->data(Qt::UserRole + 1).toDouble();
+    const int currentSegmentIndex = currentItem->data(Qt::UserRole + 5).toInt();
+    const int currentWordIndex = currentItem->data(Qt::UserRole + 6).toInt();
+
+    double newWordStart, newWordEnd;
+    int targetSegmentIndex, targetWordIndex;
+
+    if (above) {
+        // Get previous row's end time
+        double prevEnd = 0.0;
+        if (row > 0) {
+            QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(row - 1, 0);
+            if (prevItem && !prevItem->data(Qt::UserRole + 4).toBool()) {
+                prevEnd = prevItem->data(Qt::UserRole + 1).toDouble();
+            } else if (prevItem) {
+                // Previous is a gap, check the one before
+                if (row > 1) {
+                    QTableWidgetItem* prevPrevItem = m_widgets.transcriptTable->item(row - 2, 0);
+                    if (prevPrevItem) {
+                        prevEnd = prevPrevItem->data(Qt::UserRole + 1).toDouble();
+                    }
+                }
+            }
+        }
+        
+        // Place new word between prevEnd and currentStart
+        newWordStart = (prevEnd + currentStart) / 2.0;
+        newWordEnd = qMin(newWordStart + 0.1, currentStart - 0.01);
+        if (newWordEnd <= newWordStart) {
+            newWordStart = currentStart - 0.2;
+            newWordEnd = currentStart - 0.05;
+        }
+        targetSegmentIndex = currentSegmentIndex;
+        targetWordIndex = currentWordIndex;
+    } else {
+        // Get next row's start time
+        double nextStart = currentEnd + 1.0;
+        if (row < m_widgets.transcriptTable->rowCount() - 1) {
+            QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(row + 1, 0);
+            if (nextItem && !nextItem->data(Qt::UserRole + 4).toBool()) {
+                nextStart = nextItem->data(Qt::UserRole).toDouble();
+            } else if (nextItem) {
+                // Next is a gap, check the one after
+                if (row < m_widgets.transcriptTable->rowCount() - 2) {
+                    QTableWidgetItem* nextNextItem = m_widgets.transcriptTable->item(row + 2, 0);
+                    if (nextNextItem) {
+                        nextStart = nextNextItem->data(Qt::UserRole).toDouble();
+                    }
+                }
+            }
+        }
+        
+        // Place new word between currentEnd and nextStart
+        newWordStart = (currentEnd + nextStart) / 2.0;
+        newWordEnd = qMin(newWordStart + 0.1, nextStart - 0.01);
+        if (newWordEnd <= newWordStart || newWordStart < currentEnd) {
+            newWordStart = currentEnd + 0.05;
+            newWordEnd = currentEnd + 0.2;
+        }
+        targetSegmentIndex = currentSegmentIndex;
+        targetWordIndex = currentWordIndex + 1;
+    }
+
+    // Ensure valid timing
+    newWordStart = qMax(0.0, newWordStart);
+    newWordEnd = qMax(newWordStart + 0.01, newWordEnd);
+
+    // Create the new word object
+    QJsonObject newWordObj;
+    newWordObj[QStringLiteral("word")] = QStringLiteral("[new]");
+    newWordObj[QStringLiteral("start")] = newWordStart;
+    newWordObj[QStringLiteral("end")] = newWordEnd;
+
+    // Update the JSON document
+    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+
+    if (targetSegmentIndex >= 0 && targetSegmentIndex < segments.size()) {
+        QJsonObject segmentObj = segments.at(targetSegmentIndex).toObject();
+        QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+
+        // Insert at appropriate position
+        int insertIndex = qBound(0, targetWordIndex, words.size());
+        words.insert(insertIndex, newWordObj);
+
+        segmentObj[QStringLiteral("words")] = words;
+        segments.replace(targetSegmentIndex, segmentObj);
+        root[QStringLiteral("segments")] = segments;
+        m_loadedTranscriptDoc.setObject(root);
+
+        if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+            refresh();
+            return;
+        }
+
+        refresh();
+        if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    }
+}
+
+bool TranscriptTab::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == m_widgets.transcriptTable && event->type() == QEvent::KeyPress) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Delete || keyEvent->key() == Qt::Key_Backspace) {
+            deleteSelectedRows();
+            return true;
+        }
+    }
+    return QObject::eventFilter(watched, event);
 }

@@ -30,6 +30,7 @@ public:
         QPushButton* gradingKeyAtPlayheadButton = nullptr;
         QPushButton* gradingFadeInButton = nullptr;
         QPushButton* gradingFadeOutButton = nullptr;
+        QDoubleSpinBox* gradingFadeDurationSpin = nullptr;
     };
 
     struct Dependencies : public KeyframeTabBase::Dependencies
@@ -71,6 +72,7 @@ private slots:
     void onTableItemChanged(QTableWidgetItem* item);
     void onTableItemClicked(QTableWidgetItem* item);
     void onTableCustomContextMenu(const QPoint& pos);
+    void removeSelectedKeyframesFromCurrentTable() override { removeSelectedKeyframes(); }
 
 private:
     struct GradingKeyframeDisplay

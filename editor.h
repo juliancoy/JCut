@@ -182,6 +182,7 @@ private:
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
+    QDoubleSpinBox *m_gradingFadeDurationSpin = nullptr;
 
     QLabel *m_videoInspectorClipLabel = nullptr;
     QLabel *m_videoInspectorDetailsLabel = nullptr;

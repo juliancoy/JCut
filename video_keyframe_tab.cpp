@@ -101,6 +101,7 @@ void VideoKeyframeTab::wire()
         m_widgets.videoKeyframeTable->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(m_widgets.videoKeyframeTable, &QWidget::customContextMenuRequested,
                 this, &VideoKeyframeTab::onTableCustomContextMenu);
+        installTableHandlers(m_widgets.videoKeyframeTable);
     }
 }
 

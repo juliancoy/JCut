@@ -142,6 +142,7 @@ EditorWindow::EditorWindow(quint16 controlPort)
     m_gradingKeyAtPlayheadButton = m_inspectorPane->gradingKeyAtPlayheadButton();
     m_gradingFadeInButton = m_inspectorPane->gradingFadeInButton();
     m_gradingFadeOutButton = m_inspectorPane->gradingFadeOutButton();
+    m_gradingFadeDurationSpin = m_inspectorPane->gradingFadeDurationSpin();
     m_keyframesInspectorClipLabel = m_inspectorPane->keyframesInspectorClipLabel();
     m_keyframesInspectorDetailsLabel = m_inspectorPane->keyframesInspectorDetailsLabel();
     m_keyframesAutoScrollCheckBox = m_inspectorPane->keyframesAutoScrollCheckBox();
@@ -538,7 +539,8 @@ EditorWindow::EditorWindow(quint16 controlPort)
             m_gradingPathLabel, m_brightnessSpin, m_contrastSpin,
             m_saturationSpin, m_opacitySpin, m_gradingKeyframeTable,
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
-            m_gradingKeyAtPlayheadButton, m_gradingFadeInButton, m_gradingFadeOutButton},
+            m_gradingKeyAtPlayheadButton, m_gradingFadeInButton, m_gradingFadeOutButton,
+            m_gradingFadeDurationSpin},
         GradingTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },

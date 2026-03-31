@@ -75,6 +75,7 @@ signals:
 private slots:
     void onTranscriptItemClicked(QTableWidgetItem* item);
     void onTranscriptItemDoubleClicked(QTableWidgetItem* item);
+    void onTranscriptCustomContextMenu(const QPoint& pos);
     void onFollowCurrentWordToggled(bool checked);
     void onOverlaySettingChanged();
     void onPrependMsChanged(int value);
@@ -98,6 +99,8 @@ private:
     QVector<TranscriptRow> parseTranscriptRows(const QJsonArray& segments, int prependMs, int postpendMs);
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
+    void insertWordAtRow(int row, bool above);
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
     Widgets m_widgets;
     Dependencies m_deps;

@@ -20,6 +20,8 @@ void TitlesTab::wire()
         connect(table, &QTableWidget::itemChanged, this, &TitlesTab::onTableItemChanged);
         connect(table, &QTableWidget::itemSelectionChanged, this, &TitlesTab::onTableSelectionChanged);
         connect(table, &QTableWidget::itemClicked, this, &TitlesTab::onTableItemClicked);
+        connect(table, &QWidget::customContextMenuRequested, this, &TitlesTab::onTableCustomContextMenu);
+        installTableHandlers(table);
     }
 
     auto connectSpin = [this](QDoubleSpinBox *spin) {
@@ -488,6 +490,13 @@ void TitlesTab::onTableSelectionChanged()
 
     m_selectedKeyframeFrames = editor::collectSelectedFrameRoles(table);
     m_selectedKeyframeFrame = editor::primarySelectedFrameRole(table);
+    
+    // Suppress auto-sync for this timeline frame to prevent the table from
+    // jumping immediately after user clicks a row (which seeks to that frame).
+    const TimelineClip *selectedClip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
+    if (selectedClip) {
+        m_suppressSyncForTimelineFrame = selectedClip->startFrame + m_selectedKeyframeFrame;
+    }
 
     const TimelineClip *clip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
     if (clip && m_selectedKeyframeFrame >= 0) {
@@ -539,3 +548,85 @@ void TitlesTab::onTableItemClicked(QTableWidgetItem *item)
         if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
     }
 }
+
+void TitlesTab::onTableCustomContextMenu(const QPoint &pos)
+{
+    auto *table = m_widgets.titleKeyframeTable;
+    if (!table) return;
+
+    int row = -1;
+    QTableWidgetItem *item = editor::ensureContextRowSelected(table, pos, &row);
+    if (!item) return;
+
+    const int64_t anchorFrame = item->data(Qt::UserRole).toLongLong();
+    const int64_t previousFrame = editor::rowFrameRole(table, row - 1);
+    const int64_t nextFrame = editor::rowFrameRole(table, row + 1);
+
+    QMenu menu;
+    auto *addAbove = menu.addAction(QStringLiteral("Add Keyframe Above"));
+    addAbove->setEnabled(previousFrame >= 0);
+    auto *addBelow = menu.addAction(QStringLiteral("Add Keyframe Below"));
+    addBelow->setEnabled(nextFrame >= 0);
+    menu.addSeparator();
+    
+    const int deletableRowCount = editor::countSelectedFrameRoles(table, [](int64_t) { return true; });
+    auto *deleteAction = menu.addAction(deletableRowCount == 1
+                                            ? QStringLiteral("Delete Row")
+                                            : QStringLiteral("Delete Rows"));
+    deleteAction->setEnabled(deletableRowCount > 0);
+
+    QAction *chosen = menu.exec(table->viewport()->mapToGlobal(pos));
+    if (!chosen) return;
+
+    const QString clipId = m_deps.getSelectedClipId ? m_deps.getSelectedClipId() : QString();
+    if (clipId.isEmpty()) return;
+
+    const TimelineClip *selectedClip = m_deps.getSelectedClipConst ? m_deps.getSelectedClipConst() : nullptr;
+    if (!selectedClip) return;
+
+    if (chosen == deleteAction && deleteAction->isEnabled()) {
+        removeSelectedKeyframes();
+    } else if ((chosen == addAbove && addAbove->isEnabled()) ||
+               (chosen == addBelow && addBelow->isEnabled())) {
+        const int64_t frameA = (chosen == addAbove) ? previousFrame : anchorFrame;
+        const int64_t frameB = (chosen == addAbove) ? anchorFrame : nextFrame;
+        const int64_t midpointFrame = frameA + ((frameB - frameA) / 2);
+        
+        if (midpointFrame > frameA && midpointFrame < frameB) {
+            // Find the two surrounding keyframes and interpolate
+            const TimelineClip::TitleKeyframe *kfA = nullptr;
+            const TimelineClip::TitleKeyframe *kfB = nullptr;
+            for (const auto &kf : selectedClip->titleKeyframes) {
+                if (kf.frame == frameA) kfA = &kf;
+                if (kf.frame == frameB) kfB = &kf;
+            }
+            
+            if (kfA && kfB && m_deps.updateClipById) {
+                const double t = static_cast<double>(midpointFrame - frameA) / static_cast<double>(frameB - frameA);
+                TimelineClip::TitleKeyframe midpoint;
+                midpoint.frame = midpointFrame;
+                midpoint.text = kfA->text;
+                midpoint.translationX = kfA->translationX + (kfB->translationX - kfA->translationX) * t;
+                midpoint.translationY = kfA->translationY + (kfB->translationY - kfA->translationY) * t;
+                midpoint.fontSize = kfA->fontSize + (kfB->fontSize - kfA->fontSize) * t;
+                midpoint.opacity = kfA->opacity + (kfB->opacity - kfA->opacity) * t;
+                midpoint.fontFamily = kfA->fontFamily;
+                midpoint.bold = kfA->bold;
+                midpoint.italic = kfA->italic;
+                midpoint.linearInterpolation = kfB->linearInterpolation;
+                
+                m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
+                    clip.titleKeyframes.push_back(midpoint);
+                    normalizeClipTitleKeyframes(clip);
+                });
+                m_selectedKeyframeFrame = midpointFrame;
+                m_selectedKeyframeFrames = {midpointFrame};
+                if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
+                refresh();
+                if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+                if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+            }
+        }
+    }
+}
+

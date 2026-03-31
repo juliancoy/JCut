@@ -2,3 +2,7 @@ build
 build-asan
 *.o
 perf.*
+CMakeFiles
+editor_autogen
+generated
+tests

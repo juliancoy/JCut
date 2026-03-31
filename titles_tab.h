@@ -79,6 +79,8 @@ private:
     void onTableItemChanged(QTableWidgetItem *item);
     void onTableSelectionChanged();
     void onTableItemClicked(QTableWidgetItem *item);
+    void onTableCustomContextMenu(const QPoint &pos);
+    void removeSelectedKeyframesFromCurrentTable() override { removeSelectedKeyframes(); }
 
     Widgets m_widgets;
 };

@@ -77,6 +77,7 @@ void GradingTab::wire()
         m_widgets.gradingKeyframeTable->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(m_widgets.gradingKeyframeTable, &QWidget::customContextMenuRequested,
                 this, &GradingTab::onTableCustomContextMenu);
+        installTableHandlers(m_widgets.gradingKeyframeTable);
     }
 }
 
@@ -340,6 +341,13 @@ void GradingTab::onTableSelectionChanged()
 
     m_selectedKeyframeFrame = primaryFrame;
     m_selectedKeyframeFrames = selectedFrames;
+    
+    // Suppress auto-sync for this timeline frame to prevent the table from
+    // jumping immediately after user clicks a row (which seeks to that frame).
+    const TimelineClip* selectedClip = m_deps.getSelectedClip();
+    if (selectedClip) {
+        m_suppressSyncForTimelineFrame = selectedClip->startFrame + primaryFrame;
+    }
 
     const TimelineClip* clip = m_deps.getSelectedClip();
     if (clip && m_deps.clipHasVisuals(*clip)) {
@@ -703,7 +711,19 @@ void GradingTab::applyOpacityFadeFromPlayhead(bool fadeIn)
     const int64_t localStartFrame = qBound<int64_t>(0,
                                                     m_deps.getCurrentTimelineFrame() - clip->startFrame,
                                                     qMax<int64_t>(0, clip->durationFrames - 1));
-    const int64_t localEndFrame = qMax<int64_t>(0, clip->durationFrames - 1);
+    
+    // Get fade duration in seconds and convert to frames
+    double fadeDurationSeconds = 1.0;
+    if (m_widgets.gradingFadeDurationSpin) {
+        fadeDurationSeconds = m_widgets.gradingFadeDurationSpin->value();
+    }
+    const double fps = 30.0; // Assume 30fps, could be made configurable
+    const int64_t fadeDurationFrames = static_cast<int64_t>(fadeDurationSeconds * fps);
+    
+    const int64_t localEndFrame = qMin<int64_t>(
+        qMax<int64_t>(0, clip->durationFrames - 1),
+        localStartFrame + fadeDurationFrames);
+    
     if (localStartFrame >= localEndFrame) {
         QMessageBox::information(nullptr,
                                  QStringLiteral("Opacity Fade"),

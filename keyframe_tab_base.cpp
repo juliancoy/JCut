@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QKeyEvent>
 #include <QTimer>
 
 KeyframeTabBase::KeyframeTabBase(const Dependencies& deps, QObject* parent)
@@ -12,7 +13,7 @@ KeyframeTabBase::KeyframeTabBase(const Dependencies& deps, QObject* parent)
 {
 }
 
-bool KeyframeTabBase::shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* followCheckBox) const
+bool KeyframeTabBase::shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* followCheckBox)
 {
     if (!table || m_updating) {
         return true;
@@ -27,6 +28,18 @@ bool KeyframeTabBase::shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* f
     QWidget* focus = QApplication::focusWidget();
     if (focus && table->isAncestorOf(focus)) {
         return true;
+    }
+    
+    // Skip if the current timeline frame matches the one we just manually selected.
+    // This prevents the table from jumping to follow the playhead immediately after
+    // the user clicks a row (which seeks to that frame).
+    if (m_suppressSyncForTimelineFrame >= 0) {
+        const int64_t currentTimelineFrame = m_deps.getCurrentTimelineFrame();
+        if (currentTimelineFrame == m_suppressSyncForTimelineFrame) {
+            return true;
+        }
+        // Clear suppression once playhead moves to a different frame
+        m_suppressSyncForTimelineFrame = -1;
     }
     
     return false;
@@ -97,9 +110,15 @@ void KeyframeTabBase::onTableSelectionChangedBase(QTableWidget* table, QTimer* d
     m_selectedKeyframeFrame = primaryFrame;
     m_selectedKeyframeFrames = selectedFrames;
     
+    // Suppress auto-sync for this timeline frame to prevent the table from
+    // jumping immediately after user clicks a row (which seeks to that frame).
+    const TimelineClip* selectedClip = m_deps.getSelectedClip();
+    if (selectedClip) {
+        m_suppressSyncForTimelineFrame = selectedClip->startFrame + primaryFrame;
+    }
+    
     // Optional: deferred seek to timeline frame
     if (deferredSeekTimer && pendingSeekFrame) {
-        const TimelineClip* selectedClip = m_deps.getSelectedClip();
         if (selectedClip && m_deps.seekToTimelineFrame) {
             *pendingSeekFrame = selectedClip->startFrame + primaryFrame;
             deferredSeekTimer->start(QApplication::doubleClickInterval());
@@ -111,6 +130,21 @@ void KeyframeTabBase::onTableSelectionChangedBase(QTableWidget* table, QTimer* d
     }
     
     emit keyframeSelectionChanged();
+}
+
+void KeyframeTabBase::installTableHandlers(QTableWidget* table)
+{
+    if (!table) return;
+    table->installEventFilter(this);
+}
+
+bool KeyframeTabBase::handleTableKeyPress(QKeyEvent* event)
+{
+    if (event->key() == Qt::Key_Delete || event->key() == Qt::Key_Backspace) {
+        removeSelectedKeyframesFromCurrentTable();
+        return true;
+    }
+    return false;
 }
 
 KeyframeTabBase::ContextMenuActions KeyframeTabBase::buildStandardContextMenu(
@@ -157,4 +191,15 @@ KeyframeTabBase::ContextMenuActions KeyframeTabBase::buildStandardContextMenu(
     actions.deleteRows->setEnabled(deletableRowCount > 0);
     
     return actions;
+}
+
+bool KeyframeTabBase::eventFilter(QObject* watched, QEvent* event)
+{
+    if (event->type() == QEvent::KeyPress) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (handleTableKeyPress(keyEvent)) {
+            return true;
+        }
+    }
+    return QObject::eventFilter(watched, event);
 }

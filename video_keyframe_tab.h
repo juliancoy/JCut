@@ -89,6 +89,7 @@ private slots:
     void onTableItemDoubleClicked(QTableWidgetItem* item);
     void onTableHeaderClicked(int section);
     void onTableCustomContextMenu(const QPoint& pos);
+    void removeSelectedKeyframesFromCurrentTable() override { removeSelectedKeyframes(); }
 
 private:
     struct TransformKeyframeDisplay

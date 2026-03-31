@@ -166,6 +166,14 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), page);
     m_gradingFadeInButton = new QPushButton(QStringLiteral("Fade In From Playhead"), page);
     m_gradingFadeOutButton = new QPushButton(QStringLiteral("Fade Out From Playhead"), page);
+    
+    m_gradingFadeDurationSpin = new QDoubleSpinBox(page);
+    m_gradingFadeDurationSpin->setRange(0.1, 60.0);
+    m_gradingFadeDurationSpin->setValue(1.0);
+    m_gradingFadeDurationSpin->setSuffix(QStringLiteral(" s"));
+    m_gradingFadeDurationSpin->setDecimals(1);
+    m_gradingFadeDurationSpin->setSingleStep(0.5);
+    m_gradingFadeDurationSpin->setToolTip(QStringLiteral("Fade duration in seconds"));
 
     m_gradingKeyframeTable = new QTableWidget(page);
     m_gradingKeyframeTable->setColumnCount(6);
@@ -189,6 +197,13 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addWidget(m_gradingKeyAtPlayheadButton);
     layout->addWidget(m_gradingFadeInButton);
     layout->addWidget(m_gradingFadeOutButton);
+    
+    auto *fadeDurationLayout = new QHBoxLayout();
+    fadeDurationLayout->addWidget(new QLabel(QStringLiteral("Fade Duration:"), page));
+    fadeDurationLayout->addWidget(m_gradingFadeDurationSpin);
+    fadeDurationLayout->addStretch();
+    layout->addLayout(fadeDurationLayout);
+    
     layout->addWidget(m_gradingKeyframeTable, 1);
     return page;
 }

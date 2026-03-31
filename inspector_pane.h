@@ -61,6 +61,7 @@ public:
     QPushButton *gradingKeyAtPlayheadButton() const { return m_gradingKeyAtPlayheadButton; }
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
+    QDoubleSpinBox *gradingFadeDurationSpin() const { return m_gradingFadeDurationSpin; }
     QLabel *syncInspectorClipLabel() const { return m_syncInspectorClipLabel; }
     QLabel *syncInspectorDetailsLabel() const { return m_syncInspectorDetailsLabel; }
     QTableWidget *syncTable() const { return m_syncTable; }
@@ -167,6 +168,7 @@ private:
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
+    QDoubleSpinBox *m_gradingFadeDurationSpin = nullptr;
 
     QLabel *m_syncInspectorClipLabel = nullptr;
     QLabel *m_syncInspectorDetailsLabel = nullptr;
