@@ -1,5 +1,6 @@
 #include "profile_tab.h"
 #include "async_decoder.h"
+#include "decoder_context.h"
 #include "frame_handle.h"
 #include "editor_shared.h"
 

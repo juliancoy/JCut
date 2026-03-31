@@ -1,4 +1,6 @@
 #include "editor.h"
+#include "preview_debug.h"
+#include "debug_controls.h"
 
 using namespace editor;
 

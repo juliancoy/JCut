@@ -42,6 +42,9 @@ enum class DecodeRequestKind : int {
     Preload = 2,
 };
 
+// Forward declaration - full definition in decoder_context.h
+class DecoderContext;
+
 // ============================================================================
 // DecodeRequest - Single frame decode request
 // ============================================================================
@@ -79,88 +82,8 @@ struct VideoStreamInfo {
     bool isValid = false;
 };
 
-// ============================================================================
-// DecoderContext - Per-file decoder state (lives on decoder thread)
-// ============================================================================
-class DecoderContext {
-public:
-    explicit DecoderContext(const QString& path);
-    ~DecoderContext();
-    
-    // Initialize the decoder (open file, find streams, init codec)
-    bool initialize();
-    
-    // Get stream info
-    VideoStreamInfo info() const { return m_info; }
-    
-    // Decode specific frame (blocking)
-    FrameHandle decodeFrame(int64_t frameNumber);
-    QVector<FrameHandle> decodeThroughFrame(int64_t targetFrame);
-    bool supportsSequenceBatchDecode() const { return m_isImageSequence && m_sequenceUsesWebp; }
-    
-    // Precise seek then decode
-    FrameHandle seekAndDecode(int64_t frameNumber);
-    
-    // Check if hardware accelerated
-    bool isHardwareAccelerated() const { return m_hwDeviceCtx != nullptr; }
-    
-    // Close and cleanup
-    void shutdown();
-    
-    // Last access time for LRU eviction
-    qint64 lastAccessTime() const { return m_lastAccessTime; }
-    void updateAccessTime();
-    
-private:
-    bool openInput();
-    bool initCodec();
-    bool initHardwareAccel(const AVCodec* decoder);
-    bool seekToKeyframe(int64_t targetFrame);
-    bool loadStillImage();
-    bool loadImageSequence();
-    QImage loadCachedSequenceFrameImage(int64_t frameNumber);
-    void cacheSequenceFrameImage(int64_t frameNumber, const QImage& image);
-    void trimSequenceFrameCache();
-    QVector<FrameHandle> decodeForwardUntil(int64_t targetFrame, bool forceSeek);
-    FrameHandle convertToFrame(AVFrame* avFrame, int64_t frameNumber);
-    QImage convertAVFrameToImage(AVFrame* frame);
-    
-    QString m_path;
-    VideoStreamInfo m_info;
-    qint64 m_lastAccessTime = 0;
-    
-    // FFmpeg contexts
-    AVFormatContext* m_formatCtx = nullptr;
-    AVCodecContext* m_codecCtx = nullptr;
-    int m_videoStreamIndex = -1;
-    
-    // Hardware acceleration
-    AVBufferRef* m_hwDeviceCtx = nullptr;
-    int m_hwPixFmt = -1;  // AV_PIX_FMT_NONE stored as int
-    int m_swPixFmt = -1;  // AV_PIX_FMT_NONE stored as int
-    bool m_streamHasAlphaTag = false;
-    bool m_loggedSourceFormat = false;
-    bool m_loggedAlphaProbe = false;
-    bool m_reportedAlphaMismatch = false;
-    bool m_isStillImage = false;
-    bool m_isImageSequence = false;
-    bool m_sequenceUsesWebp = false;
-    QImage m_stillImage;
-    QStringList m_sequenceFramePaths;
-    QHash<int64_t, QImage> m_sequenceFrameCache;
-    QHash<int64_t, quint64> m_sequenceFrameCacheUseOrder;
-    size_t m_sequenceFrameCacheBytes = 0;
-    quint64 m_sequenceFrameUseCounter = 0;
-    SwsContext* m_swsCtx = nullptr;
-    AVFrame* m_convertFrame = nullptr;
-    int m_swsSourceFormat = -1;
-    QSize m_swsSourceSize;
-    QSize m_convertFrameSize;
-    
-    // Seek state
-    int64_t m_lastDecodedFrame = -1;
-    bool m_eof = false;
-};
+// Forward declaration - full definition in decoder_context.h
+class DecoderContext;
 
 // ============================================================================
 // AsyncDecoder - Main API for async frame decoding

@@ -3,11 +3,16 @@
 
 #include "frame_handle.h"
 #include "gl_frame_texture_shared.h"
+#include "timeline_cache.h"
+#include "playback_frame_pipeline.h"
+#include "editor_shared.h"
 
 #include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
 #include <QPainter>
+#include <QJsonArray>
+#include <QJsonObject>
 
 using namespace editor;
 
@@ -173,21 +178,261 @@ void PreviewWindow::paintGL() {
 }
 
 QRectF PreviewWindow::renderFrameLayerGL(const QRect& targetRect, const TimelineClip& clip, const FrameHandle& frame) {
-    // Full body preserved from the original split plan would go here.
-    // TODO: paste exact original body if you need byte-for-byte fidelity.
-    Q_UNUSED(targetRect)
-    Q_UNUSED(clip)
-    Q_UNUSED(frame)
-    return QRectF();
+    if (!m_shaderProgram) {
+        return QRectF();
+    }
+
+    const QString cacheKey = editor::textureCacheKey(frame);
+    const GLuint textureId = textureForFrame(frame);
+    if (textureId == 0) {
+        return QRectF();
+    }
+    const editor::GlTextureCacheEntry entry = m_textureCache.value(cacheKey);
+
+    const QRect fitted = fitRect(frame.size(), targetRect);
+    const TimelineClip::TransformKeyframe transform = evaluateClipTransformAtPosition(clip, m_currentFramePosition);
+    const QPointF previewScale = previewCanvasScale(targetRect);
+    const QPointF center(fitted.center().x() + (transform.translationX * previewScale.x()),
+                         fitted.center().y() + (transform.translationY * previewScale.y()));
+
+    QMatrix4x4 projection;
+    projection.ortho(0.0f, static_cast<float>(width()),
+                     static_cast<float>(height()), 0.0f,
+                     -1.0f, 1.0f);
+
+    QMatrix4x4 model;
+    model.translate(center.x(), center.y());
+    model.rotate(transform.rotation, 0.0f, 0.0f, 1.0f);
+    model.scale(fitted.width() * transform.scaleX, fitted.height() * transform.scaleY, 1.0f);
+
+    const TimelineClip::GradingKeyframe grade =
+        m_bypassGrading ? TimelineClip::GradingKeyframe{} : evaluateClipGradingAtPosition(clip, m_currentFramePosition);
+    const qreal brightness = grade.brightness;
+    const qreal contrast = grade.contrast;
+    const qreal saturation = grade.saturation;
+    const qreal opacity = grade.opacity;
+
+    m_shaderProgram->bind();
+    m_shaderProgram->setUniformValue("u_mvp", projection * model);
+    m_shaderProgram->setUniformValue("u_brightness", GLfloat(brightness));
+    m_shaderProgram->setUniformValue("u_contrast", GLfloat(contrast));
+    m_shaderProgram->setUniformValue("u_saturation", GLfloat(saturation));
+    m_shaderProgram->setUniformValue("u_opacity", GLfloat(opacity));
+    m_shaderProgram->setUniformValue("u_texture", 0);
+    m_shaderProgram->setUniformValue("u_texture_uv", 1);
+    m_shaderProgram->setUniformValue("u_texture_mode", entry.usesYuvTextures ? 1.0f : 0.0f);
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, entry.usesYuvTextures ? entry.auxTextureId : 0);
+    m_quadBuffer.bind();
+    const int positionLoc = m_shaderProgram->attributeLocation("a_position");
+    const int texCoordLoc = m_shaderProgram->attributeLocation("a_texCoord");
+    m_shaderProgram->enableAttributeArray(positionLoc);
+    m_shaderProgram->enableAttributeArray(texCoordLoc);
+    m_shaderProgram->setAttributeBuffer(positionLoc, GL_FLOAT, 0, 2, 4 * sizeof(GLfloat));
+    m_shaderProgram->setAttributeBuffer(texCoordLoc, GL_FLOAT, 2 * sizeof(GLfloat), 2, 4 * sizeof(GLfloat));
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    m_shaderProgram->disableAttributeArray(positionLoc);
+    m_shaderProgram->disableAttributeArray(texCoordLoc);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    m_quadBuffer.release();
+    m_shaderProgram->release();
+
+    QTransform overlayTransform;
+    overlayTransform.translate(center.x(), center.y());
+    overlayTransform.rotate(transform.rotation);
+    overlayTransform.scale(transform.scaleX, transform.scaleY);
+    return overlayTransform.mapRect(QRectF(-fitted.width() / 2.0,
+                                           -fitted.height() / 2.0,
+                                           fitted.width(),
+                                           fitted.height()));
 }
 
 void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                               const QList<TimelineClip>& activeClips,
                                               bool& drewAnyFrame,
                                               bool& waitingForFrame) {
-    // TODO: paste exact original body if you need byte-for-byte fidelity.
-    Q_UNUSED(compositeRect)
-    Q_UNUSED(activeClips)
-    drewAnyFrame = false;
-    waitingForFrame = false;
+    m_overlayInfo.clear();
+    m_paintOrder.clear();
+    int usedPlaybackPipelineCount = 0;
+    int presentationCount = 0;
+    int exactCount = 0;
+    int bestCount = 0;
+    int heldCount = 0;
+    int nullCount = 0;
+    int skippedZeroOpacityCount = 0;
+    QJsonArray clipSelections;
+    GLboolean previousScissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+    GLint previousScissorBox[4] = {0, 0, 0, 0};
+    if (m_hideOutsideOutputWindow) {
+        glGetIntegerv(GL_SCISSOR_BOX, previousScissorBox);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(compositeRect.left(),
+                  height() - compositeRect.bottom() - 1,
+                  compositeRect.width(),
+                  compositeRect.height());
+    }
+    for (const TimelineClip& clip : activeClips) {
+        if (!clipVisualPlaybackEnabled(clip)) {
+            continue;
+        }
+        if (clip.mediaType == ClipMediaType::Title) {
+            continue; // Title clips are drawn as text overlays, not decoded frames
+        }
+        if (!m_bypassGrading) {
+            const TimelineClip::GradingKeyframe grade =
+                evaluateClipGradingAtPosition(clip, m_currentFramePosition);
+            if (grade.opacity <= 0.0001) {
+                ++skippedZeroOpacityCount;
+                clipSelections.append(QJsonObject{
+                    {QStringLiteral("id"), clip.id},
+                    {QStringLiteral("label"), clip.label},
+                    {QStringLiteral("media_type"), clipMediaTypeLabel(clip.mediaType)},
+                    {QStringLiteral("source_kind"), mediaSourceKindLabel(clip.sourceKind)},
+                    {QStringLiteral("playback_pipeline"), false},
+                    {QStringLiteral("local_frame"), static_cast<qint64>(sourceFrameForSample(clip, m_currentSample))},
+                    {QStringLiteral("selection"), QStringLiteral("skipped_zero_opacity")},
+                    {QStringLiteral("frame_storage"), QStringLiteral("none")}
+                });
+                continue;
+            }
+        }
+        const int64_t localFrame = sourceFrameForSample(clip, m_currentSample);
+        const bool usePlaybackPipeline = false;
+        QString selection = QStringLiteral("none");
+        const FrameHandle exactFrame = usePlaybackPipeline
+                                           ? m_playbackPipeline->getFrame(clip.id, localFrame)
+                                           : (m_cache ? m_cache->getCachedFrame(clip.id, localFrame) : FrameHandle());
+        FrameHandle frame;
+        if (usePlaybackPipeline) {
+            ++usedPlaybackPipelineCount;
+            frame = m_playbackPipeline->getPresentationFrame(clip.id, localFrame);
+            if (!frame.isNull()) {
+                ++presentationCount;
+                selection = QStringLiteral("presentation");
+            }
+        } else {
+            frame = exactFrame.isNull() && m_cache
+                        ? (m_playing
+                               ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                               : m_cache->getBestCachedFrame(clip.id, localFrame))
+                        : exactFrame;
+            if (!frame.isNull()) {
+                if (!exactFrame.isNull() && frame == exactFrame) {
+                    ++exactCount;
+                    selection = QStringLiteral("exact");
+                } else {
+                    ++bestCount;
+                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
+                }
+            }
+        }
+        if (usePlaybackPipeline && frame.isNull()) {
+            frame = !exactFrame.isNull() ? exactFrame
+                                         : m_playbackPipeline->getBestFrame(clip.id, localFrame);
+            if (!frame.isNull()) {
+                if (!exactFrame.isNull() && frame == exactFrame) {
+                    ++exactCount;
+                    selection = QStringLiteral("exact");
+                } else {
+                    ++bestCount;
+                    selection = QStringLiteral("best");
+                }
+            }
+        }
+        if (usePlaybackPipeline) {
+            if (!frame.isNull()) {
+                m_lastPresentedFrames.insert(clip.id, frame);
+            } else {
+                frame = m_lastPresentedFrames.value(clip.id);
+                if (!frame.isNull()) {
+                    ++heldCount;
+                    selection = QStringLiteral("held");
+                }
+            }
+        }
+        playbackFrameSelectionTrace(QStringLiteral("PreviewWindow::renderCompositedPreviewGL.select"),
+                                    clip,
+                                    localFrame,
+                                    exactFrame,
+                                    frame,
+                                    m_currentFramePosition);
+        if (frame.isNull()) {
+            ++nullCount;
+            selection = QStringLiteral("null");
+            waitingForFrame = true;
+            clipSelections.append(QJsonObject{
+                {QStringLiteral("id"), clip.id},
+                {QStringLiteral("label"), clip.label},
+                {QStringLiteral("media_type"), clipMediaTypeLabel(clip.mediaType)},
+                {QStringLiteral("source_kind"), mediaSourceKindLabel(clip.sourceKind)},
+                {QStringLiteral("playback_pipeline"), usePlaybackPipeline},
+                {QStringLiteral("local_frame"), static_cast<qint64>(localFrame)},
+                {QStringLiteral("selection"), selection},
+                {QStringLiteral("frame_storage"), QStringLiteral("none")}
+            });
+            continue;
+        }
+        clipSelections.append(QJsonObject{
+            {QStringLiteral("id"), clip.id},
+            {QStringLiteral("label"), clip.label},
+            {QStringLiteral("media_type"), clipMediaTypeLabel(clip.mediaType)},
+            {QStringLiteral("source_kind"), mediaSourceKindLabel(clip.sourceKind)},
+            {QStringLiteral("playback_pipeline"), usePlaybackPipeline},
+            {QStringLiteral("local_frame"), static_cast<qint64>(localFrame)},
+            {QStringLiteral("frame_number"), static_cast<qint64>(frame.frameNumber())},
+            {QStringLiteral("selection"), selection},
+            {QStringLiteral("frame_storage"),
+             frame.hasHardwareFrame() ? QStringLiteral("hardware")
+                                      : (frame.hasCpuImage() ? QStringLiteral("cpu")
+                                                             : QStringLiteral("unknown"))}
+        });
+
+        const QRectF bounds = renderFrameLayerGL(compositeRect, clip, frame);
+        if (!bounds.isEmpty()) {
+            PreviewOverlayInfo info;
+            info.kind = PreviewOverlayKind::VisualClip;
+            info.bounds = bounds;
+            constexpr qreal kHandleSize = 12.0;
+            info.rightHandle = QRectF(bounds.right() - kHandleSize,
+                                      bounds.center().y() - kHandleSize,
+                                      kHandleSize,
+                                      kHandleSize * 2.0);
+            info.bottomHandle = QRectF(bounds.center().x() - kHandleSize,
+                                       bounds.bottom() - kHandleSize,
+                                       kHandleSize * 2.0,
+                                       kHandleSize);
+            info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5,
+                                       bounds.bottom() - kHandleSize * 1.5,
+                                       kHandleSize * 1.5,
+                                       kHandleSize * 1.5);
+            m_overlayInfo.insert(clip.id, info);
+            m_paintOrder.push_back(clip.id);
+        }
+        drewAnyFrame = true;
+    }
+    if (m_hideOutsideOutputWindow) {
+        glScissor(previousScissorBox[0], previousScissorBox[1],
+                  previousScissorBox[2], previousScissorBox[3]);
+        if (!previousScissorEnabled) {
+            glDisable(GL_SCISSOR_TEST);
+        }
+    }
+    m_lastFrameSelectionStats = QJsonObject{
+        {QStringLiteral("path"), QStringLiteral("gl")},
+        {QStringLiteral("active_visual_clips"), activeClips.size()},
+        {QStringLiteral("use_playback_pipeline_clips"), usedPlaybackPipelineCount},
+        {QStringLiteral("presentation"), presentationCount},
+        {QStringLiteral("exact"), exactCount},
+        {QStringLiteral("best"), bestCount},
+        {QStringLiteral("held"), heldCount},
+        {QStringLiteral("null"), nullCount},
+        {QStringLiteral("skipped_zero_opacity"), skippedZeroOpacityCount},
+        {QStringLiteral("clips"), clipSelections}
+    };
 }

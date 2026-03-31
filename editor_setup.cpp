@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "preview_debug.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>
@@ -171,7 +172,7 @@ void EditorWindow::setupDeferredSeekTimers()
     initializeDeferredTimelineSeek(&m_syncClickSeekTimer, &m_pendingSyncClickTimelineFrame);
 }
 
-void EditorWindow::setupControlServer(quint16 controlPort, const QElapsedTimer &ctorTimer)
+void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTimer)
 {
     m_controlServer = std::make_unique<ControlServer>(
         this,

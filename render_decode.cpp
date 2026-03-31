@@ -1,4 +1,5 @@
 #include "render_internal.h"
+#include "decoder_context.h"
 
 namespace render_detail {
 

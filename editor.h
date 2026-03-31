@@ -153,6 +153,41 @@ private:
     void togglePlayback();
     bool playbackActive() const;
 
+    // Setup methods (defined in split files)
+    void setupWindowChrome();
+    void setupMainLayout(QElapsedTimer& ctorTimer);
+    void bindInspectorWidgets();
+    void setupPlaybackTimers();
+    void setupShortcuts();
+    void setupHeartbeat();
+    void setupStateSaveTimer();
+    void setupDeferredSeekTimers();
+    void setupControlServer(quint16 controlPort, QElapsedTimer& ctorTimer);
+    void setupAudioEngine();
+    void setupSpeechFilterControls();
+    void setupTrackInspectorControls();
+    void setupPreviewControls();
+    void setupTabs();
+    void setupInspectorRefreshRouting();
+    void setupStartupLoad();
+    void bindEditorPaneWidgets(EditorPane* pane);
+    void connectTransportControls(EditorPane* pane);
+    void connectTimelineSignals();
+    void connectPreviewSignals();
+    bool handleTranscriptTableDelete(QObject* watched, QEvent* event);
+    bool handleVideoKeyframeTableDelete(QObject* watched, QEvent* event);
+    bool handleGradingKeyframeTableDelete(QObject* watched, QEvent* event);
+
+    // Tab creation methods (editor_tabs.cpp)
+    void createOutputTab();
+    void createProfileTab();
+    void createProjectsTab();
+    void createTranscriptTab();
+    void createGradingTab();
+    void createEffectsTab();
+    void createTitlesTab();
+    void createVideoKeyframeTab();
+
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
     QPushButton *m_newProjectButton = nullptr;
