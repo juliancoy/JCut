@@ -14,9 +14,8 @@
 #include <cmath>
 
 GradingTab::GradingTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
-    : QObject(parent)
+    : KeyframeTabBase(deps, parent)
     , m_widgets(widgets)
-    , m_deps(deps)
 {
 }
 
@@ -227,9 +226,7 @@ void GradingTab::fadeOutFromPlayhead()
 
 void GradingTab::syncTableToPlayhead()
 {
-    if (!m_widgets.gradingKeyframeTable || m_updating) return;
-
-    if (!m_widgets.gradingFollowCurrentCheckBox || !m_widgets.gradingFollowCurrentCheckBox->isChecked()) {
+    if (shouldSkipSyncToPlayhead(m_widgets.gradingKeyframeTable, m_widgets.gradingFollowCurrentCheckBox)) {
         return;
     }
 
@@ -239,16 +236,7 @@ void GradingTab::syncTableToPlayhead()
         return;
     }
 
-    QWidget* focus = QApplication::focusWidget();
-    
-    // Skip sync if table has focus (user is manually selecting a row)
-    if (focus && m_widgets.gradingKeyframeTable->isAncestorOf(focus)) {
-        return;
-    }
-
-    const int64_t localFrame = qBound<int64_t>(0,
-                                               m_deps.getCurrentTimelineFrame() - clip->startFrame,
-                                               qMax<int64_t>(0, clip->durationFrames - 1));
+    const int64_t localFrame = calculateLocalFrame(clip);
 
     int matchingRow = -1;
     int64_t matchingFrame = -1;
@@ -277,12 +265,6 @@ void GradingTab::syncTableToPlayhead()
             m_widgets.gradingKeyframeTable->scrollToItem(item, QAbstractItemView::PositionAtCenter);
         }
     }
-}
-
-void GradingTab::setSelectedKeyframeFrame(int64_t frame)
-{
-    m_selectedKeyframeFrame = frame;
-    m_selectedKeyframeFrames = {frame};
 }
 
 void GradingTab::onBrightnessChanged(double value)
@@ -788,7 +770,7 @@ void GradingTab::removeSelectedKeyframes()
     const TimelineClip* selectedClip = m_deps.getSelectedClip();
     if (!selectedClip) return;
 
-    QList<int64_t> selectedFrames = selectedKeyframeFramesForClip(*selectedClip);
+    QList<int64_t> selectedFrames = selectedKeyframeFramesFromTable(m_widgets.gradingKeyframeTable);
     selectedFrames.erase(std::remove_if(selectedFrames.begin(),
                                         selectedFrames.end(),
                                         [](int64_t frame) { return frame <= 0; }),
@@ -857,22 +839,13 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
     const int64_t anchorFrame = item->data(Qt::UserRole).toLongLong();
     const int64_t previousFrame = editor::rowFrameRole(m_widgets.gradingKeyframeTable, row - 1);
     const int64_t nextFrame = editor::rowFrameRole(m_widgets.gradingKeyframeTable, row + 1);
-    const int deletableRowCount =
-        editor::countSelectedFrameRoles(m_widgets.gradingKeyframeTable, [](int64_t frame) { return frame > 0; });
-
+    
     QMenu menu;
-    QAction* addAboveAction = menu.addAction(QStringLiteral("Add Keyframe Above"));
-    addAboveAction->setEnabled(previousFrame >= 0);
-    QAction* addBelowAction = menu.addAction(QStringLiteral("Add Keyframe Below"));
-    addBelowAction->setEnabled(nextFrame >= 0);
-    menu.addSeparator();
-    QAction* deleteAction = menu.addAction(deletableRowCount == 1
-                                               ? QStringLiteral("Delete Row")
-                                               : QStringLiteral("Delete Rows"));
-    deleteAction->setEnabled(deletableRowCount > 0);
+    ContextMenuActions actions = buildStandardContextMenu(menu, m_widgets.gradingKeyframeTable, row, m_deps.getSelectedClip());
+    // Grading tab doesn't use copy actions, so we ignore those
 
     QAction* chosen = menu.exec(m_widgets.gradingKeyframeTable->viewport()->mapToGlobal(pos));
-    if (chosen == addAboveAction && addAboveAction->isEnabled()) {
+    if (chosen == actions.addAbove && actions.addAbove->isEnabled()) {
         const int64_t midpointFrame = previousFrame + ((anchorFrame - previousFrame) / 2);
         if (midpointFrame > previousFrame && midpointFrame < anchorFrame) {
             const auto findKeyframeAt = [](const TimelineClip& clip, int64_t frame) -> const TimelineClip::GradingKeyframe* {
@@ -917,7 +890,7 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
                 }
             }
         }
-    } else if (chosen == addBelowAction && addBelowAction->isEnabled()) {
+    } else if (chosen == actions.addBelow && actions.addBelow->isEnabled()) {
         const int64_t midpointFrame = anchorFrame + ((nextFrame - anchorFrame) / 2);
         if (midpointFrame > anchorFrame && midpointFrame < nextFrame) {
             const auto findKeyframeAt = [](const TimelineClip& clip, int64_t frame) -> const TimelineClip::GradingKeyframe* {
@@ -962,7 +935,7 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
                 }
             }
         }
-    } else if (chosen == deleteAction && deleteAction->isEnabled()) {
+    } else if (chosen == actions.deleteRows && actions.deleteRows->isEnabled()) {
         removeSelectedKeyframes();
     }
 }

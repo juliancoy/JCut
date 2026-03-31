@@ -1,14 +1,14 @@
 #include "titles_tab.h"
 #include "keyframe_table_shared.h"
 
+#include <QApplication>
 #include <QHeaderView>
 #include <QMenu>
 #include <QSignalBlocker>
 
 TitlesTab::TitlesTab(const Widgets &widgets, const Dependencies &deps, QObject *parent)
-    : QObject(parent)
+    : KeyframeTabBase(deps, parent)
     , m_widgets(widgets)
-    , m_deps(deps)
 {
 }
 
@@ -386,12 +386,7 @@ void TitlesTab::centerVertical()
 void TitlesTab::syncTableToPlayhead()
 {
     auto *table = m_widgets.titleKeyframeTable;
-    if (!table || m_updating) return;
-    if (m_widgets.titleAutoScrollCheck && !m_widgets.titleAutoScrollCheck->isChecked()) return;
-
-    // Skip sync if table has focus (user is manually selecting a row)
-    QWidget* focus = QApplication::focusWidget();
-    if (focus && table->isAncestorOf(focus)) {
+    if (shouldSkipSyncToPlayhead(table, m_widgets.titleAutoScrollCheck)) {
         return;
     }
 

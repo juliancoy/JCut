@@ -1,5 +1,7 @@
 #pragma once
 
+#include "keyframe_tab_base.h"
+
 #include <QObject>
 #include <QTableWidget>
 #include <QLabel>
@@ -12,7 +14,7 @@
 
 #include "editor_shared.h"
 
-class VideoKeyframeTab : public QObject
+class VideoKeyframeTab : public KeyframeTabBase
 {
     Q_OBJECT
 
@@ -38,23 +40,8 @@ public:
         QPushButton* removeVideoKeyframeButton = nullptr;
     };
 
-    struct Dependencies
+    struct Dependencies : public KeyframeTabBase::Dependencies
     {
-        std::function<const TimelineClip*()> getSelectedClip;
-        std::function<const TimelineClip*()> getSelectedClipConst;
-        std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
-        std::function<QString(const TimelineClip&)> getClipFilePath;
-        std::function<bool(const TimelineClip&)> clipHasVisuals;
-        std::function<void()> scheduleSaveState;
-        std::function<void()> pushHistorySnapshot;
-        std::function<void()> refreshInspector;
-        std::function<void()> setPreviewTimelineClips;
-        std::function<int64_t()> getCurrentTimelineFrame;
-        std::function<int64_t()> getSelectedClipStartFrame;
-        std::function<QString()> getSelectedClipId;
-        std::function<void(int64_t)> seekToTimelineFrame;
-        std::function<void(QTableWidgetItem*)> onKeyframeItemChanged;
-        std::function<void()> onKeyframeSelectionChanged;
     };
 
     explicit VideoKeyframeTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -69,9 +56,6 @@ public:
     void duplicateSelectedKeyframesToFrame(int64_t targetFrame);
     bool insertInterpolatedKeyframeBetween(int64_t earlierFrame, int64_t laterFrame);
     void syncTableToPlayhead();
-    void setSelectedKeyframeFrame(int64_t frame);
-    int64_t selectedKeyframeFrame() const { return m_selectedKeyframeFrame; }
-    const QSet<int64_t>& selectedKeyframeFrames() const { return m_selectedKeyframeFrames; }
     void promptMultiplySelectedKeyframeScale(bool scaleX);
 
 signals:
@@ -138,12 +122,7 @@ private:
     void populateTable(const TimelineClip& clip);
 
     Widgets m_widgets;
-    Dependencies m_deps;
-    bool m_updating = false;
-    bool m_syncingTableSelection = false;
     bool m_syncingScaleControls = false;
-    int64_t m_selectedKeyframeFrame = -1;
-    QSet<int64_t> m_selectedKeyframeFrames;
     QTimer m_deferredSeekTimer;
     int64_t m_pendingSeekTimelineFrame = -1;
 };

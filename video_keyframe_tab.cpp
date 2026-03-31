@@ -14,9 +14,8 @@
 #include <cmath>
 
 VideoKeyframeTab::VideoKeyframeTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
-    : QObject(parent)
+    : KeyframeTabBase(deps, parent)
     , m_widgets(widgets)
-    , m_deps(deps)
 {
     m_deferredSeekTimer.setSingleShot(true);
     connect(&m_deferredSeekTimer, &QTimer::timeout, this, [this]() {
@@ -633,7 +632,7 @@ void VideoKeyframeTab::removeSelectedKeyframes()
         return;
     }
 
-    QList<int64_t> selectedFrames = selectedKeyframeFramesForClip(*selectedClip);
+    QList<int64_t> selectedFrames = selectedKeyframeFramesFromTable(m_widgets.videoKeyframeTable);
     selectedFrames.erase(std::remove_if(selectedFrames.begin(),
                                         selectedFrames.end(),
                                         [](int64_t frame) { return frame <= 0; }),
@@ -679,25 +678,20 @@ void VideoKeyframeTab::duplicateSelectedKeyframes(int frameDelta)
         return;
     }
 
-    const QList<int64_t> selectedFrames = selectedKeyframeFramesForClip(*selectedClip);
+    const QList<int64_t> selectedFrames = selectedKeyframeFramesFromTable(m_widgets.videoKeyframeTable);
     if (selectedFrames.isEmpty()) {
         return;
-    }
-
-    QSet<int64_t> sourceFrames;
-    for (int64_t frame : selectedFrames) {
-        sourceFrames.insert(frame);
     }
 
     const int64_t maxFrame = qMax<int64_t>(0, selectedClip->durationFrames - 1);
     QSet<int64_t> newFrames;
 
-    const bool updated = m_deps.updateClipById(selectedClip->id, [frameDelta, maxFrame, sourceFrames, &newFrames](TimelineClip& clip) {
+    const bool updated = m_deps.updateClipById(selectedClip->id, [frameDelta, maxFrame, selectedFrames, &newFrames](TimelineClip& clip) {
         bool changed = false;
         const QVector<TimelineClip::TransformKeyframe> originalKeyframes = clip.transformKeyframes;
         
         for (const TimelineClip::TransformKeyframe& keyframe : originalKeyframes) {
-            if (!sourceFrames.contains(keyframe.frame)) {
+            if (!selectedFrames.contains(keyframe.frame)) {
                 continue;
             }
             
@@ -750,25 +744,21 @@ void VideoKeyframeTab::duplicateSelectedKeyframesToFrame(int64_t targetFrame)
         return;
     }
 
-    const QList<int64_t> selectedFrames = selectedKeyframeFramesForClip(*selectedClip);
+    const QList<int64_t> selectedFrames = selectedKeyframeFramesFromTable(m_widgets.videoKeyframeTable);
     if (selectedFrames.isEmpty()) {
         return;
     }
 
     const int64_t maxFrame = qMax<int64_t>(0, selectedClip->durationFrames - 1);
     const int64_t boundedTarget = qBound<int64_t>(0, targetFrame, maxFrame);
-    QSet<int64_t> sourceFrames;
-    for (int64_t frame : selectedFrames) {
-        sourceFrames.insert(frame);
-    }
 
     const bool updated = m_deps.updateClipById(selectedClip->id,
-                                               [boundedTarget, sourceFrames](TimelineClip& clip) {
+                                               [boundedTarget, selectedFrames](TimelineClip& clip) {
         bool changed = false;
         const QVector<TimelineClip::TransformKeyframe> originalKeyframes = clip.transformKeyframes;
 
         for (const TimelineClip::TransformKeyframe& keyframe : originalKeyframes) {
-            if (!sourceFrames.contains(keyframe.frame)) {
+            if (!selectedFrames.contains(keyframe.frame)) {
                 continue;
             }
 
@@ -880,11 +870,7 @@ bool VideoKeyframeTab::insertInterpolatedKeyframeBetween(int64_t earlierFrame, i
 
 void VideoKeyframeTab::syncTableToPlayhead()
 {
-    if (!m_widgets.videoKeyframeTable || m_updating) {
-        return;
-    }
-
-    if (!m_widgets.keyframesFollowCurrentCheckBox || !m_widgets.keyframesFollowCurrentCheckBox->isChecked()) {
+    if (shouldSkipSyncToPlayhead(m_widgets.videoKeyframeTable, m_widgets.keyframesFollowCurrentCheckBox)) {
         return;
     }
 
@@ -894,16 +880,7 @@ void VideoKeyframeTab::syncTableToPlayhead()
         return;
     }
 
-    QWidget* focus = QApplication::focusWidget();
-    
-    // Skip sync if table has focus (user is manually selecting a row)
-    if (focus && m_widgets.videoKeyframeTable->isAncestorOf(focus)) {
-        return;
-    }
-
-    const int64_t localFrame = qBound<int64_t>(0,
-                                               m_deps.getCurrentTimelineFrame() - clip->startFrame,
-                                               qMax<int64_t>(0, clip->durationFrames - 1));
+    const int64_t localFrame = calculateLocalFrame(clip);
 
     int matchingRow = -1;
     int64_t matchingFrame = -1;
@@ -933,12 +910,6 @@ void VideoKeyframeTab::syncTableToPlayhead()
             m_widgets.videoKeyframeTable->scrollToItem(item, QAbstractItemView::PositionAtCenter);
         }
     }
-}
-
-void VideoKeyframeTab::setSelectedKeyframeFrame(int64_t frame)
-{
-    m_selectedKeyframeFrame = frame;
-    m_selectedKeyframeFrames = {frame};
 }
 
 void VideoKeyframeTab::promptMultiplySelectedKeyframeScale(bool scaleX)
@@ -1127,28 +1098,8 @@ void VideoKeyframeTab::onRemoveKeyframeClicked()
 
 void VideoKeyframeTab::onTableSelectionChanged()
 {
-    if (m_updating || m_syncingTableSelection) return;
-
-    const QSet<int64_t> selectedFrames =
-        editor::collectSelectedFrameRoles(m_widgets.videoKeyframeTable);
-    const int64_t primaryFrame =
-        editor::primarySelectedFrameRole(m_widgets.videoKeyframeTable);
-
-    if (primaryFrame < 0) return;
-
-    m_selectedKeyframeFrame = primaryFrame;
-    m_selectedKeyframeFrames = selectedFrames;
+    onTableSelectionChangedBase(m_widgets.videoKeyframeTable, &m_deferredSeekTimer, &m_pendingSeekTimelineFrame);
     refresh();
-
-    const TimelineClip* selectedClip = m_deps.getSelectedClip();
-    if (selectedClip && m_deps.seekToTimelineFrame) {
-        m_pendingSeekTimelineFrame = selectedClip->startFrame + primaryFrame;
-        m_deferredSeekTimer.start(QApplication::doubleClickInterval());
-    }
-
-    if (m_deps.onKeyframeSelectionChanged) {
-        m_deps.onKeyframeSelectionChanged();
-    }
 }
 
 void VideoKeyframeTab::onTableItemChanged(QTableWidgetItem* changedItem)
@@ -1262,51 +1213,25 @@ void VideoKeyframeTab::onTableCustomContextMenu(const QPoint& pos)
     const int64_t anchorFrame = item->data(Qt::UserRole).toLongLong();
     const int64_t previousFrame = editor::rowFrameRole(m_widgets.videoKeyframeTable, row - 1);
     const int64_t nextFrame = editor::rowFrameRole(m_widgets.videoKeyframeTable, row + 1);
-    const int deletableRowCount =
-        editor::countSelectedFrameRoles(m_widgets.videoKeyframeTable, [](int64_t frame) { return frame > 0; });
+    const int64_t localFrame = calculateLocalFrame(m_deps.getSelectedClip());
+    
     QMenu menu;
-    QAction* addAboveAction = menu.addAction(QStringLiteral("Add Keyframe Above"));
-    addAboveAction->setEnabled(previousFrame >= 0);
-    QAction* addBelowAction = menu.addAction(QStringLiteral("Add Keyframe Below"));
-    addBelowAction->setEnabled(nextFrame >= 0);
-    QAction* copyToNextFrameAction = menu.addAction(QStringLiteral("Copy to Next Frame"));
-    QAction* copyToCurrentPlayheadAction = menu.addAction(QStringLiteral("Copy to Current Playhead"));
-    const TimelineClip* selectedClip = m_deps.getSelectedClip();
-    const int64_t currentPlayheadFrame =
-        selectedClip
-            ? qBound<int64_t>(0,
-                              m_deps.getCurrentTimelineFrame() - selectedClip->startFrame,
-                              qMax<int64_t>(0, selectedClip->durationFrames - 1))
-            : -1;
-    const bool canCopyToNextFrame = selectedClip &&
-                                    m_deps.clipHasVisuals(*selectedClip) &&
-                                    anchorFrame >= 0 &&
-                                    anchorFrame < qMax<int64_t>(0, selectedClip->durationFrames - 1);
-    copyToNextFrameAction->setEnabled(canCopyToNextFrame);
-    copyToCurrentPlayheadAction->setEnabled(selectedClip &&
-                                            m_deps.clipHasVisuals(*selectedClip) &&
-                                            currentPlayheadFrame >= 0 &&
-                                            currentPlayheadFrame != anchorFrame);
-    menu.addSeparator();
-    QAction* deleteAction = menu.addAction(deletableRowCount == 1
-                                               ? QStringLiteral("Delete Row")
-                                               : QStringLiteral("Delete Rows"));
-    deleteAction->setEnabled(deletableRowCount > 0);
-
+    ContextMenuActions actions = buildStandardContextMenu(menu, m_widgets.videoKeyframeTable, row, m_deps.getSelectedClip());
+    
     QAction* chosen = menu.exec(m_widgets.videoKeyframeTable->viewport()->mapToGlobal(pos));
-    if (chosen == addAboveAction && addAboveAction->isEnabled()) {
+    if (chosen == actions.addAbove && actions.addAbove->isEnabled()) {
         insertInterpolatedKeyframeBetween(previousFrame, anchorFrame);
-    } else if (chosen == addBelowAction && addBelowAction->isEnabled()) {
+    } else if (chosen == actions.addBelow && actions.addBelow->isEnabled()) {
         insertInterpolatedKeyframeBetween(anchorFrame, nextFrame);
-    } else if (chosen == copyToNextFrameAction && copyToNextFrameAction->isEnabled()) {
+    } else if (chosen == actions.copyToNext && actions.copyToNext->isEnabled()) {
         m_selectedKeyframeFrame = anchorFrame;
         m_selectedKeyframeFrames = {anchorFrame};
         duplicateSelectedKeyframes(1);
-    } else if (chosen == copyToCurrentPlayheadAction && copyToCurrentPlayheadAction->isEnabled()) {
+    } else if (chosen == actions.copyToPlayhead && actions.copyToPlayhead->isEnabled()) {
         m_selectedKeyframeFrame = anchorFrame;
         m_selectedKeyframeFrames = {anchorFrame};
-        duplicateSelectedKeyframesToFrame(currentPlayheadFrame);
-    } else if (chosen == deleteAction && deleteAction->isEnabled()) {
+        duplicateSelectedKeyframesToFrame(localFrame);
+    } else if (chosen == actions.deleteRows && actions.deleteRows->isEnabled()) {
         removeSelectedKeyframes();
     }
 }
