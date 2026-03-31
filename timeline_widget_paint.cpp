@@ -92,6 +92,15 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
     const QRect content = timelineContentRect();
     const QRect exportBar = exportRangeRect();
 
+    // Draw track title column background
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(QStringLiteral("#14181e")));
+    painter.drawRect(sidebar);
+    
+    // Draw vertical separator between track titles and timeline
+    painter.setPen(QPen(QColor(QStringLiteral("#0f1216")), 2));
+    painter.drawLine(sidebar.right(), tracks.top(), sidebar.right(), tracks.bottom());
+
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(QStringLiteral("#171c22")));
     painter.drawRoundedRect(topBar, 10, 10);
@@ -170,13 +179,21 @@ void TimelineWidget::paintEvent(QPaintEvent*) {
         const bool dragged = track == m_draggedTrackIndex;
         const bool target = track == m_trackDropIndex && m_draggedTrackIndex >= 0 && !m_trackDropInGap;
         const bool selected = track == m_selectedTrackIndex && m_selectedClipId.isEmpty();
+        
+        // Track title background - distinct from timeline content
         const QColor headerFill =
             dragged ? QColor(QStringLiteral("#ff6f61"))
                     : (target ? QColor(QStringLiteral("#32465f"))
                               : (selected ? QColor(QStringLiteral("#24384d"))
-                                          : QColor(QStringLiteral("#192028"))));
+                                          : QColor(QStringLiteral("#1e252d"))));
         painter.setBrush(headerFill);
         painter.drawRoundedRect(labelRect, 8, 8);
+        
+        // Subtle border for track title
+        painter.setPen(QPen(QColor(QStringLiteral("#2a3542")), 1));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRoundedRect(labelRect.adjusted(0, 0, -1, -1), 8, 8);
+        painter.setPen(Qt::NoPen);
         if (selected) {
             painter.setPen(QPen(QColor(QStringLiteral("#7fc4ff")), 1.4));
             painter.setBrush(Qt::NoBrush);
