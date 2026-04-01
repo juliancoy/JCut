@@ -106,7 +106,11 @@ void KeyframeTabBase::onTableSelectionChangedBase(QTableWidget* table, QTimer* d
     const QSet<int64_t> selectedFrames = editor::collectSelectedFrameRoles(table);
     const int64_t primaryFrame = editor::primarySelectedFrameRole(table);
     
-    if (primaryFrame < 0) return;
+    if (primaryFrame < 0) {
+        m_selectedKeyframeFrame = -1;
+        m_selectedKeyframeFrames.clear();
+        return;
+    }
     
     m_selectedKeyframeFrame = primaryFrame;
     m_selectedKeyframeFrames = selectedFrames;

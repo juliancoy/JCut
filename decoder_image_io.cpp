@@ -43,9 +43,10 @@ QImage loadSingleImageFile(const QString& framePath) {
     }
 
     const QString suffix = QFileInfo(framePath).suffix().toLower();
-    const bool useQtReader = (suffix != QStringLiteral("webp"));
 
-    if (useQtReader) {
+    // Always try the Qt reader first (which might have a fast WebP plugin).
+    // If it fails, we fall through to the FFmpeg path.
+    if (true) {
         QImageReader reader(framePath);
 
         const QSize imageSize = reader.size();
@@ -104,7 +105,7 @@ QImage loadSingleImageFile(const QString& framePath) {
             return image;
         }
 
-        qDebug() << "Qt reader failed for:" << framePath << "falling through to FFmpeg";
+        // If Qt fails, we try the fast path below before falling back to the full FFmpeg pipe.
     }
 
     const QFileInfo fileInfo(framePath);
@@ -117,80 +118,11 @@ QImage loadSingleImageFile(const QString& framePath) {
         return QImage();
     }
 
-    AVFormatContext* formatCtx = nullptr;
-    const QByteArray pathBytes = QFile::encodeName(framePath);
-
-    const AVInputFormat* inputFormat = nullptr;
-    if (suffix == QStringLiteral("webp")) {
-        inputFormat = av_find_input_format("webp_pipe");
-    } else {
-        inputFormat = av_find_input_format("image2");
-    }
-
-    if (avformat_open_input(&formatCtx, pathBytes.constData(), inputFormat, nullptr) < 0) {
-        return QImage();
-    }
-
-    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
-        avformat_close_input(&formatCtx);
-        return QImage();
-    }
-
-    int videoStreamIndex = -1;
-    for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
-        if (formatCtx->streams[i] &&
-            formatCtx->streams[i]->codecpar &&
-            formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            videoStreamIndex = static_cast<int>(i);
-            break;
-        }
-    }
-    if (videoStreamIndex < 0) {
-        avformat_close_input(&formatCtx);
-        return QImage();
-    }
-
-    AVStream* stream = formatCtx->streams[videoStreamIndex];
-    const AVCodec* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (!decoder) {
-        avformat_close_input(&formatCtx);
-        return QImage();
-    }
-
-    AVCodecContext* codecCtx = avcodec_alloc_context3(decoder);
-    if (!codecCtx) {
-        avformat_close_input(&formatCtx);
-        return QImage();
-    }
-
-    if (avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
-        avcodec_open2(codecCtx, decoder, nullptr) < 0) {
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return QImage();
-    }
-
-    AVPacket* packet = av_packet_alloc();
-    AVFrame* frame = av_frame_alloc();
-    if (!packet || !frame) {
-        if (packet) {
-            av_packet_free(&packet);
-        }
-        if (frame) {
-            av_frame_free(&frame);
-        }
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return QImage();
-    }
-
     QImage decodedImage;
 
     auto tryConvertFrame = [&](AVFrame* decodedFrame) -> bool {
-        if (decodedFrame->width <= 0 || decodedFrame->height <= 0 ||
+        if (!decodedFrame || decodedFrame->width <= 0 || decodedFrame->height <= 0 ||
             decodedFrame->width > 16384 || decodedFrame->height > 16384) {
-            qWarning() << "Invalid frame dimensions from FFmpeg:"
-                       << decodedFrame->width << "x" << decodedFrame->height;
             return false;
         }
 
@@ -254,14 +186,130 @@ QImage loadSingleImageFile(const QString& framePath) {
         return success;
     };
 
+    static thread_local AVCodecContext* tl_webpCtx = nullptr;
+    static thread_local const AVCodec* tl_webpDecoder = nullptr;
+
+    // Fast path for WebP: decode directly from file bytes using avcodec, bypassing avformat probing
+    if (suffix == QStringLiteral("webp")) {
+        QFile file(framePath);
+        if (file.open(QIODevice::ReadOnly)) {
+            const QByteArray fileData = file.readAll();
+            if (!fileData.isEmpty()) {
+                if (!tl_webpDecoder) {
+                    tl_webpDecoder = avcodec_find_decoder(AV_CODEC_ID_WEBP);
+                }
+                if (tl_webpDecoder) {
+                    if (!tl_webpCtx) {
+                        tl_webpCtx = avcodec_alloc_context3(tl_webpDecoder);
+                        if (tl_webpCtx) {
+                            avcodec_open2(tl_webpCtx, tl_webpDecoder, nullptr);
+                        }
+                    }
+
+                    if (tl_webpCtx) {
+                        AVPacket* wPacket = av_packet_alloc();
+                        AVFrame* wFrame = av_frame_alloc();
+                        wPacket->data = (uint8_t*)fileData.constData();
+                        wPacket->size = fileData.size();
+
+                        if (avcodec_send_packet(tl_webpCtx, wPacket) == 0 &&
+                            avcodec_receive_frame(tl_webpCtx, wFrame) == 0) {
+                            if (tryConvertFrame(wFrame)) {
+                                av_frame_free(&wFrame);
+                                av_packet_free(&wPacket);
+                                return decodedImage;
+                            }
+                        }
+                        av_frame_free(&wFrame);
+                        av_packet_free(&wPacket);
+                        // If decode fails, flush to reset state for next attempt
+                        avcodec_flush_buffers(tl_webpCtx);
+                    }
+                }
+            }
+        }
+    }
+
+    // Only log if we fall through all optimized paths for a WebP file
+    if (suffix == QStringLiteral("webp")) {
+        qDebug().noquote() << "[DECODE][WARN] WebP fast path failed for:" << framePath << "falling through to slow avformat path";
+    }
+
+    AVFormatContext* formatCtx = nullptr;
+    const QByteArray pathBytes = QFile::encodeName(framePath);
+
+    const AVInputFormat* inputFormat = nullptr;
+    if (suffix == QStringLiteral("webp")) {
+        inputFormat = av_find_input_format("webp_pipe");
+    } else {
+        inputFormat = av_find_input_format("image2");
+    }
+
+    if (avformat_open_input(&formatCtx, pathBytes.constData(), inputFormat, nullptr) < 0) {
+        return QImage();
+    }
+
+    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
+        avformat_close_input(&formatCtx);
+        return QImage();
+    }
+
+    int videoStreamIndex = -1;
+    for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
+        if (formatCtx->streams[i] &&
+            formatCtx->streams[i]->codecpar &&
+            formatCtx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            videoStreamIndex = static_cast<int>(i);
+            break;
+        }
+    }
+    if (videoStreamIndex < 0) {
+        avformat_close_input(&formatCtx);
+        return QImage();
+    }
+
+    AVStream* stream = formatCtx->streams[videoStreamIndex];
+    const AVCodec* decoder = avcodec_find_decoder(stream->codecpar->codec_id);
+    if (!decoder) {
+        avformat_close_input(&formatCtx);
+        return QImage();
+    }
+
+    AVCodecContext* codecCtx = avcodec_alloc_context3(decoder);
+    if (!codecCtx) {
+        avformat_close_input(&formatCtx);
+        return QImage();
+    }
+
+    if (avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
+        avcodec_open2(codecCtx, decoder, nullptr) < 0) {
+        avcodec_free_context(&codecCtx);
+        avformat_close_input(&formatCtx);
+        return QImage();
+    }
+
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* vFrame = av_frame_alloc();
+    if (!packet || !vFrame) {
+        if (packet) {
+            av_packet_free(&packet);
+        }
+        if (vFrame) {
+            av_frame_free(&vFrame);
+        }
+        avcodec_free_context(&codecCtx);
+        avformat_close_input(&formatCtx);
+        return QImage();
+    }
+
     while (av_read_frame(formatCtx, packet) >= 0 && decodedImage.isNull()) {
         if (packet->stream_index == videoStreamIndex && avcodec_send_packet(codecCtx, packet) >= 0) {
-            while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-                if (tryConvertFrame(frame)) {
-                    av_frame_unref(frame);
+            while (avcodec_receive_frame(codecCtx, vFrame) >= 0) {
+                if (tryConvertFrame(vFrame)) {
+                    av_frame_unref(vFrame);
                     break;
                 }
-                av_frame_unref(frame);
+                av_frame_unref(vFrame);
             }
         }
         av_packet_unref(packet);
@@ -269,16 +317,16 @@ QImage loadSingleImageFile(const QString& framePath) {
 
     if (decodedImage.isNull()) {
         avcodec_send_packet(codecCtx, nullptr);
-        while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-            if (tryConvertFrame(frame)) {
-                av_frame_unref(frame);
+        while (avcodec_receive_frame(codecCtx, vFrame) >= 0) {
+            if (tryConvertFrame(vFrame)) {
+                av_frame_unref(vFrame);
                 break;
             }
-            av_frame_unref(frame);
+            av_frame_unref(vFrame);
         }
     }
 
-    av_frame_free(&frame);
+    av_frame_free(&vFrame);
     av_packet_free(&packet);
     avcodec_free_context(&codecCtx);
     avformat_close_input(&formatCtx);

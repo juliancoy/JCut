@@ -50,6 +50,9 @@ void restoreSelectionByFrameRole(QTableWidget* table, const QSet<int64_t>& frame
         }
         if (frames.contains(frameData.toLongLong())) {
             table->selectRow(row);
+            if (!table->currentItem()) {
+                table->setCurrentItem(item, QItemSelectionModel::Select);
+            }
         }
     }
 }

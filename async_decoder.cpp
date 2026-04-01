@@ -8,9 +8,14 @@
 #include <QDateTime>
 #include <QDeadlineTimer>
 #include <QDebug>
+#include <QFile>
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QThread>
+
+extern "C" {
+#include <libavutil/hwcontext.h>
+}
 
 #include <atomic>
 #include <condition_variable>
@@ -70,6 +75,10 @@ bool AsyncDecoder::initialize() {
     m_lanes.reserve(m_workerCount);
     m_shuttingDown = false;
 
+    // Create one shared hw device context per supported type.
+    // Worker threads borrow a ref instead of creating their own.
+    initSharedHwDevices();
+
     for (int i = 0; i < m_workerCount; ++i) {
         auto lane = std::make_unique<LaneState>(i);
         startLane(lane.get());
@@ -87,6 +96,7 @@ void AsyncDecoder::shutdown() {
         stopLane(lane.get());
     }
     m_lanes.clear();
+    releaseSharedHwDevices();
     m_initialized = false;
     m_workerCount = 0;
 }
@@ -520,7 +530,14 @@ void AsyncDecoder::runLane(LaneState* lane) {
 
         if (!request.isExpired() && !cancelled) {
             if (!state->context) {
-                state->context = std::make_unique<DecoderContext>(request.filePath);
+                // Pass the shared device map so the context borrows a ref
+                // rather than calling av_hwdevice_ctx_create().
+                QMutexLocker hwLock(&m_sharedHwMutex);
+                const QHash<int, AVBufferRef*>* sharedDevices =
+                    m_sharedHwDevices.isEmpty() ? nullptr : &m_sharedHwDevices;
+                hwLock.unlock();
+
+                state->context = std::make_unique<DecoderContext>(request.filePath, sharedDevices);
                 if (!state->context->initialize()) {
                     errorMessage = QStringLiteral("Failed to create decoder context");
                     state->context.reset();
@@ -661,6 +678,80 @@ void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         }
         queue.erase(queue.begin() + i);
     }
+}
+
+void AsyncDecoder::initSharedHwDevices() {
+    // Attempt to create one device context per supported hardware type.
+    // On success, all DecoderContexts borrow a ref via acquireSharedHwDevice()
+    // instead of calling av_hwdevice_ctx_create() themselves.
+    // This reduces CUDA context count from O(workers × files) → O(1).
+
+    static const AVHWDeviceType kTypes[] = {
+#ifdef __APPLE__
+        AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+#elif defined(_WIN32)
+        AV_HWDEVICE_TYPE_D3D11VA,
+        AV_HWDEVICE_TYPE_DXVA2,
+#endif
+        AV_HWDEVICE_TYPE_CUDA,
+        AV_HWDEVICE_TYPE_VAAPI,
+    };
+
+    QMutexLocker lock(&m_sharedHwMutex);
+
+    for (AVHWDeviceType type : kTypes) {
+        const char* deviceName = nullptr;
+
+#if defined(Q_OS_LINUX)
+        QByteArray devicePath;
+        if (type == AV_HWDEVICE_TYPE_VAAPI) {
+            static const char* kRenderNodes[] = {
+                "/dev/dri/renderD128",
+                "/dev/dri/renderD129",
+                "/dev/dri/renderD130",
+            };
+            for (const char* candidate : kRenderNodes) {
+                if (QFile::exists(QString::fromLatin1(candidate))) {
+                    devicePath = QByteArray(candidate);
+                    deviceName = devicePath.constData();
+                    break;
+                }
+            }
+            if (!deviceName) {
+                continue;
+            }
+        }
+#endif
+
+        AVBufferRef* hwCtx = nullptr;
+        const int ret = av_hwdevice_ctx_create(&hwCtx, type, deviceName, nullptr, 0);
+        if (ret >= 0 && hwCtx) {
+            m_sharedHwDevices.insert(static_cast<int>(type), hwCtx);
+            qDebug() << "AsyncDecoder: shared hw device created for type" << type;
+        } else {
+            qDebug() << "AsyncDecoder: shared hw device unavailable for type" << type
+                     << "— worker threads will use software decode";
+        }
+    }
+}
+
+void AsyncDecoder::releaseSharedHwDevices() {
+    QMutexLocker lock(&m_sharedHwMutex);
+    for (auto it = m_sharedHwDevices.begin(); it != m_sharedHwDevices.end(); ++it) {
+        if (it.value()) {
+            av_buffer_unref(&it.value());
+        }
+    }
+    m_sharedHwDevices.clear();
+}
+
+AVBufferRef* AsyncDecoder::acquireSharedHwDevice(AVHWDeviceType type) const {
+    QMutexLocker lock(&m_sharedHwMutex);
+    auto it = m_sharedHwDevices.find(static_cast<int>(type));
+    if (it == m_sharedHwDevices.end() || !it.value()) {
+        return nullptr;
+    }
+    return av_buffer_ref(it.value());
 }
 
 } // namespace editor

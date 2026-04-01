@@ -31,8 +31,10 @@ constexpr bool kAsanBuild = false;
 
 } // namespace
 
-DecoderContext::DecoderContext(const QString& path)
-    : m_path(path) {}
+DecoderContext::DecoderContext(const QString& path,
+                               const QHash<int, AVBufferRef*>* sharedHwDevices)
+    : m_path(path)
+    , m_sharedHwDevices(sharedHwDevices) {}
 
 DecoderContext::~DecoderContext() {
     shutdown();
@@ -46,7 +48,13 @@ void DecoderContext::shutdown() {
         avformat_close_input(&m_formatCtx);
     }
     if (m_hwDeviceCtx) {
-        av_buffer_unref(&m_hwDeviceCtx);
+        // Only release the ref if we created it ourselves.
+        // Borrowed refs from the shared pool are managed by AsyncDecoder.
+        if (m_ownsHwDeviceCtx) {
+            av_buffer_unref(&m_hwDeviceCtx);
+        } else {
+            m_hwDeviceCtx = nullptr;
+        }
     }
     if (m_swsCtx) {
         sws_freeContext(m_swsCtx);
@@ -324,15 +332,14 @@ bool DecoderContext::initCodec() {
         !headlessOffscreen &&
         !m_streamHasAlphaTag;
     const bool hardwareEnabled = allowHardware && initHardwareAccel(decoder);
-    const bool softwareProResAsanWorkaround =
-        kAsanBuild &&
+    const bool softwareProResWorkaround =
         !hardwareEnabled &&
         stream->codecpar->codec_id == AV_CODEC_ID_PRORES;
 
     if (hardwareEnabled) {
         m_codecCtx->thread_count = 0;
         m_codecCtx->thread_type = FF_THREAD_FRAME;
-    } else if (softwareProResAsanWorkaround) {
+    } else if (softwareProResWorkaround) {
         m_codecCtx->thread_count = 1;
         m_codecCtx->thread_type = 0;
     } else {
@@ -416,11 +423,37 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
         }
 #endif
 
+        // --- Shared device path ---
+        // If AsyncDecoder pre-created a device context for this type, borrow a ref
+        // instead of allocating a brand-new CUDA/VAAPI context. This is the fix
+        // for CUDA_ERROR_OUT_OF_MEMORY caused by N decoder threads each creating
+        // their own cuCtxCreate().
+        if (m_sharedHwDevices) {
+            auto it = m_sharedHwDevices->find(static_cast<int>(type));
+            if (it != m_sharedHwDevices->end() && it.value()) {
+                AVBufferRef* borrowed = av_buffer_ref(it.value());
+                if (borrowed) {
+                    m_codecCtx->hw_device_ctx = av_buffer_ref(borrowed);
+                    m_hwDeviceCtx = borrowed;
+                    m_ownsHwDeviceCtx = false;
+                    m_hwPixFmt = selectedConfig->pix_fmt;
+                    m_codecCtx->get_format = get_hw_format;
+                    m_codecCtx->opaque = reinterpret_cast<void*>(static_cast<intptr_t>(m_hwPixFmt));
+                    qDebug() << "Using shared hardware acceleration:" << type << "for" << m_path;
+                    return true;
+                }
+            }
+        }
+
+        // --- Fallback: create a new device context ---
+        // This happens during getVideoInfo() probing (no shared pool available)
+        // or when the shared pool doesn't have this device type.
         AVBufferRef* hwCtx = nullptr;
         const int ret = av_hwdevice_ctx_create(&hwCtx, type, deviceName, nullptr, 0);
         if (ret >= 0) {
             m_codecCtx->hw_device_ctx = av_buffer_ref(hwCtx);
             m_hwDeviceCtx = hwCtx;
+            m_ownsHwDeviceCtx = true;
             m_hwPixFmt = selectedConfig->pix_fmt;
             m_codecCtx->get_format = get_hw_format;
             m_codecCtx->opaque = reinterpret_cast<void*>(static_cast<intptr_t>(m_hwPixFmt));

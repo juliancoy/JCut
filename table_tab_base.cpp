@@ -18,9 +18,8 @@ TableTabBase::TableTabBase(const Dependencies& deps, QObject* parent)
 
 bool TableTabBase::shouldSkipRefresh(QTableWidget* table) const
 {
-    // Skip refresh when table items are selected (to avoid disrupting multi-selection
-    // and prevent unintended playhead movement)
-    return table && table->selectedItems().count() > 0;
+    // (Removed early return to ensure the UI updates to reflect truth when a row is modified)
+    return false;
 }
 
 bool TableTabBase::shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* followCheckBox) const

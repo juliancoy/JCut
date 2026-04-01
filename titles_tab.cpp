@@ -70,10 +70,8 @@ void TitlesTab::refresh()
 {
     auto *table = m_widgets.titleKeyframeTable;
     
-    // Skip repaint when keyframes are selected (to avoid disrupting multi-selection)
-    if (table && table->selectedItems().count() > 0) {
-        return;
-    }
+    // (Removed early return to ensure the UI updates to reflect truth when a row is modified)
+
     
     m_updating = true;
 
@@ -496,6 +494,11 @@ void TitlesTab::onTableSelectionChanged()
 
     m_selectedKeyframeFrames = editor::collectSelectedFrameRoles(table);
     m_selectedKeyframeFrame = editor::primarySelectedFrameRole(table);
+    
+    if (m_selectedKeyframeFrame < 0) {
+        m_selectedKeyframeFrames.clear();
+        return;
+    }
     
     // Suppress auto-sync for this timeline frame to prevent the table from
     // jumping immediately after user clicks a row (which seeks to that frame).

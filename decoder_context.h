@@ -26,7 +26,11 @@ namespace editor {
 
 class DecoderContext {
 public:
-    explicit DecoderContext(const QString& path);
+    // sharedHwDevices: optional map from AVHWDeviceType (as int) to a
+    // process-wide AVBufferRef*. When provided, initHardwareAccel() borrows a
+    // reference instead of calling av_hwdevice_ctx_create().
+    explicit DecoderContext(const QString& path,
+                            const QHash<int, AVBufferRef*>* sharedHwDevices = nullptr);
     ~DecoderContext();
 
     bool initialize();
@@ -69,6 +73,7 @@ private:
     AVFormatContext* m_formatCtx = nullptr;
     AVCodecContext* m_codecCtx = nullptr;
     AVBufferRef* m_hwDeviceCtx = nullptr;
+    bool m_ownsHwDeviceCtx = true; // false when borrowed from AsyncDecoder's shared pool
     AVPixelFormat m_hwPixFmt = AV_PIX_FMT_NONE;
     SwsContext* m_swsCtx = nullptr;
     AVFrame* m_convertFrame = nullptr;
@@ -92,6 +97,9 @@ private:
     bool m_loggedSourceFormat = false;
     bool m_reportedAlphaMismatch = false;
     bool m_loggedAlphaProbe = false;
+
+    // Optional pointer into AsyncDecoder's shared device map (not owned).
+    const QHash<int, AVBufferRef*>* m_sharedHwDevices = nullptr;
 
     AVPixelFormat m_swsSourceFormat = AV_PIX_FMT_NONE;
     QSize m_swsSourceSize;

@@ -163,6 +163,9 @@ void PreviewWindow::resizeGL(int w, int h) { Q_UNUSED(w) Q_UNUSED(h) }
 bool PreviewWindow::usingCpuFallback() const { return !context() || !isValid() || !m_shaderProgram; }
 
 void PreviewWindow::releaseGlResources() {
+    if (m_glResourcesReleased) return;
+    m_glResourcesReleased = true;
+
     if (!m_glInitialized || !context() || !context()->isValid()) {
         m_textureCache.clear();
         m_shaderProgram.reset();

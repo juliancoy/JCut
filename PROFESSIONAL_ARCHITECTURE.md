@@ -1,427 +1,364 @@
-# Professional Video Frame Pipeline Architecture
+# PanelVid2TikTok — Editor Architecture
+
+> **Status**: Living document reflecting the actual implementation as of 2026-04.
+> Future improvement notes are marked with `🔮`.
+
+---
 
 ## Overview
 
-A production-grade video editor frame pipeline separates decoding, format conversion, and rendering into independent asynchronous stages with backpressure management.
+A Qt6-based non-linear video editor optimised for vertical-format (TikTok/Shorts/Reels) content creation from longer "panel" source videos.
+The editor is a single-binary C++ application built with CMake/Ninja.
+Fixed output resolution is **1080×1920 @ 30 fps**.
 
-## Architecture Diagram
+---
+
+## System Layers
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           UI Thread (Main)                                 │
-│  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────────────┐   │
-│  │ Timeline     │───→│ FrameRequest │───→│ PreviewWidget                │   │
-│  │ Controller   │    │ Queue        │    │ (displays ready frames)      │   │
-│  └──────────────┘    └──────────────┘    └──────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                       ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        Decoder Thread Pool                                  │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │ DecodeQueue (thread-safe priority queue)                            │   │
-│  │   - Max 128 requests, drops low priority under pressure             │   │
-│  │   - Priority: 100=critical, 50=normal, 20=prefetch                  │   │
-│  │   - Deadline-based request expiration                               │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│         ↓                          ↓                          ↓             │
-│  ┌──────────────┐          ┌──────────────┐          ┌──────────────┐      │
-│  │ DecoderCtx 1 │          │ DecoderCtx 2 │          │ DecoderCtx N │      │
-│  │ (Video A)    │          │ (Video B)    │          │ (Images)     │      │
-│  │              │          │              │          │              │      │
-│  │ ┌──────────┐ │          │ ┌──────────┐ │          │ ┌──────────┐ │      │
-│  │ │ libavcodec│ │          │ │ libavcodec│ │          │ │ QImage   │ │      │
-│  │ │ + hwaccel │ │          │ │ + hwaccel │ │          │ │ Cache    │ │      │
-│  │ │ (VAAPI/   │ │          │ │ (CUDA/    │ │          │ │          │ │      │
-│  │ │  VDPAU)   │ │          │ │  NVDec)   │ │          │ │          │ │      │
-│  │ └──────────┘ │          │ └──────────┘ │          │ └──────────┘ │      │
-│  └──────┬───────┘          └──────┬───────┘          └──────┬───────┘      │
-│         ↓                          ↓                          ↓             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │           Frame Cache (per decoder)                                  │   │
-│  │   - LRU eviction with memory budget                                  │   │
-│  │   - QImage for CPU frames                                            │   │
-│  │   - QRhiTexture for GPU frames                                       │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                       ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    Timeline Cache (Predictive Loading)                     │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │ Per-Clip Frame Cache with LRU eviction                              │   │
-│  │   - Registers clips by ID, path, start frame, duration              │   │
-│  │   - Lookahead: 30 frames default                                    │   │
-│  │   - Prefetches based on playback direction                          │   │
-│  │   - Memory budget triggers trim when >80%                           │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-│                                       ↓                                     │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │ Memory Budget Manager                                               │   │
-│  │   - CPU budget: 256MB default                                       │   │
-│  │   - GPU budget: 512MB default                                       │   │
-│  │   - Atomic allocation tracking                                      │   │
-│  │   - Pressure callbacks for eviction                                 │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                       ↓
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Compositor (GPU)                                   │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐   │
-│  │ QRhi Render Pass (OpenGL/Vulkan/Metal)                              │   │
-│  │                                                                      │   │
-│  │   - Vertex buffer: fullscreen quad                                  │   │
-│  │   - Uniform buffer: transform, opacity, blend mode                  │   │
-│  │   - Sampler: linear filtering, clamp to edge                        │   │
-│  │   - Pipeline: configurable blend modes                              │   │
-│  │                                                                      │   │
-│  │ Output: Swapchain image (display)                                   │   │
-│  └──────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────── UI Layer ─────────────────────────────────────────┐
+│   ExplorerPane          TimelineWidget        PreviewWindow      InspectorPane         │
+│   (file browser,        (multi-track          (OpenGL playback   (Inspector tabs per   │
+│    proxy tools)          QWidget-based)        + compositing)     clip type)           │
+└──────────────────────────────────────────────────────────────────────────────────────-┘
+                │                  │                  │                │
+                └──────────────────┴──────────────────┴────────────────┘
+                                          │
+┌──────────────────────────────── Application Layer ────────────────────────────────────┐
+│   EditorWindow (editor.h / editor_*.cpp)                                              │
+│   ├─ ProjectManager / ProjectState   (project CRUD, multi-project switching)          │
+│   ├─ History (undo-redo via JSON snapshots, editor_history.json)                      │
+│   ├─ ControlServer  (local HTTP/REST API on 127.0.0.1:<port>)                         │
+│   └─ PlaybackController  (frame clock, sample-accurate A/V sync)                     │
+└───────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+┌──────────────────────────────── Pipeline Layer ───────────────────────────────────────┐
+│   AsyncDecoder          TimelineCache            MemoryBudget                         │
+│   (thread-pool          (predictive per-clip      (CPU/GPU budget                     │
+│    FFmpeg decode)        LRU cache)                tracking & eviction)               │
+│                                                                                       │
+│   PlaybackFramePipeline (sample-accurate playback pipeline, ties decoder↔audio)      │
+└───────────────────────────────────────────────────────────────────────────────────────┘
+                                          │
+┌──────────────────────────────── Engine Layer ─────────────────────────────────────────┐
+│   DecoderContext / FFmpeg   GlFrameTextureShared   AudioEngine (RtAudio)              │
+│   (libavcodec, libavformat  (OpenGL texture        (multi-track mix, speech-          │
+│    libswscale, CUDA/VAAPI)   upload/eviction)       filter, transcript overlay)       │
+│                                                                                       │
+│   Render Pipeline (render_*.cpp)                                                      │
+│   (GPU-composited or CPU-fallback offline export)                                     │
+└───────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Project Files
-
-| File | Purpose | Status |
-|------|---------|--------|
-| `qt_compat.h` | Qt 6.4/GCC 13 compatibility macros | ✅ Implemented |
-| `frame_handle.h/cpp` | RAII frame wrapper with GPU texture management | ✅ Implemented |
-| `async_decoder.h/cpp` | Thread-pool decoder with libavcodec | ✅ Implemented |
-| `gpu_compositor.h/cpp` | QRhi-based GPU compositing | ✅ Framework implemented |
-| `memory_budget.h/cpp` | CPU/GPU memory budget tracking | ✅ Implemented |
-| `timeline_cache.h/cpp` | Predictive frame caching | ✅ Implemented |
-| `editor.cpp` | Main application with new pipeline | ✅ Refactored |
-| `CMakeLists.txt` | Build configuration with FFmpeg | ✅ Updated |
+---
 
 ## Key Components
 
-### 1. Async Frame Request System
+### 1. Data Model (`editor_shared.h`)
+
+The central data structure is `TimelineClip`, owned by the `EditorWindow` and serialised as JSON.
 
 ```cpp
-// async_decoder.h
-struct DecodeRequest {
-    uint64_t sequenceId;
-    QString filePath;
-    int64_t frameNumber;
-    int priority;  // Higher = more urgent (0-255)
-    QDeadlineTimer deadline;
-    std::function<void(FrameHandle)> callback;
-    qint64 submittedAt;
+struct TimelineClip {
+    // Identity & placement
+    QString id, filePath, proxyPath, label;
+    ClipMediaType mediaType;        // Video | Audio | Image | Title
+    MediaSourceKind sourceKind;     // File | ImageSequence
+    int64_t startFrame, durationFrames, sourceInFrame;
+    int trackIndex;
 
-    bool isExpired() const { return deadline.hasExpired(); }
-    int64_t ageMs() const;
-};
+    // Per-clip grading (flat + keyframes)
+    qreal brightness, contrast, saturation, opacity;
+    QVector<GradingKeyframe> gradingKeyframes;   // step/linear interp
 
-class AsyncDecoder : public QObject {
-    Q_OBJECT
-public:
-    explicit AsyncDecoder(QObject* parent = nullptr);
+    // Per-clip transform (flat + keyframes)
+    qreal baseTranslationX/Y, baseRotation, baseScaleX/Y;
+    QVector<TransformKeyframe> transformKeyframes;
 
-    uint64_t requestFrame(const QString& path,
-                          int64_t frameNumber,
-                          int priority,
-                          int timeoutMs,
-                          std::function<void(FrameHandle)> callback);
+    // Title overlay
+    QVector<TitleKeyframe> titleKeyframes;
 
-    void cancelForFile(const QString& path);
-    void cancelAll();
-    VideoStreamInfo getVideoInfo(const QString& path);
+    // Transcript overlay
+    TranscriptOverlaySettings transcriptOverlay;
 
-signals:
-    void frameReady(FrameHandle frame);
-    void error(QString path, QString message);
+    // Audio
+    int fadeSamples;     // crossfade with previous clip
+    qreal playbackRate;
+    bool videoEnabled, audioEnabled, locked;
+
+    // Alpha mask feathering
+    qreal maskFeather, maskFeatherGamma;
 };
 ```
 
-**Features:**
-- Priority queue with deadline-based expiration
-- Automatic dropping of low-priority requests when queue is full (128 max)
-- Thread pool with workers = max(2, idealThreadCount/2)
-- Hardware acceleration detection (CUDA, VAAPI, VDPAU)
+**Tracks** (`TimelineTrack`) carry name, height, and enable/disable flags.
+The entire project state is serialised to `editor_state.json` and history snapshots to `editor_history.json` for undo-redo.
 
-### 2. Hardware Decoder Context
+---
 
-```cpp
-// async_decoder.h
-class DecoderContext {
-public:
-    explicit DecoderContext(const QString& path);
-    ~DecoderContext();
+### 2. Async Decoder (`async_decoder.h/cpp`, `decoder_context.h/cpp`)
 
-    bool initialize();
-    FrameHandle decodeFrame(int64_t frameNumber);
-    FrameHandle seekAndDecode(int64_t frameNumber);
-    bool isHardwareAccelerated() const;
+**✅ Fully implemented.**
 
-private:
-    bool openInput();
-    bool initCodec();
-    bool initHardwareAccel();
-    bool seekToKeyframe(int64_t targetFrame);
-    FrameHandle convertToFrame(AVFrame* avFrame, int64_t frameNumber);
-    QImage convertAVFrameToImage(AVFrame* frame);
+| Feature | Status |
+|---------|--------|
+| Per-file lane sharding (hash- & shard-based) | ✅ |
+| Priority queue (128-request cap, deadline expiry) | ✅ |
+| Hardware acceleration: CUDA → VAAPI → software | ✅ |
+| Software ProRes single-threaded workaround (crash fix) | ✅ |
+| Image sequence batching + WebP LRU frame cache (384 MB) | ✅ |
+| VP9 alpha path via libvpx-vp9 | ✅ |
+| `DecodeRequest` generation/cancel-before-frame | ✅ |
 
-    AVFormatContext* m_formatCtx = nullptr;
-    AVCodecContext* m_codecCtx = nullptr;
-    AVBufferRef* m_hwDeviceCtx = nullptr;
-    int m_hwPixFmt = -1;
-    int m_videoStreamIndex = -1;
-};
-```
+**Threading model:**
+- 2–6 worker threads (capped at `idealThreadCount`).
+- Each `LaneState` holds up to 4 `DecoderContext` objects; LRU eviction when exceeded.
+- Callbacks are always `QueuedConnection`-invoked back to the main thread.
 
-**Features:**
-- Hardware acceleration with automatic fallback
-- Precise seeking (GOP-aware, decodes from keyframe)
-- Frame conversion via swscale
+🔮 **Future**: GPU zero-copy path (CUDA NV12 → GL texture via `FrameHandle::createHardwareFrame`) is scaffolded but gated behind `EDITOR_HAS_CUDA`. Completing the interop would eliminate the GPU→CPU memcpy during preview.
 
-### 3. Frame Handle (RAII)
+---
 
-```cpp
-// frame_handle.h
-class FrameHandle {
-public:
-    FrameHandle();
+### 3. Frame Handle (`frame_handle.h/cpp`)
 
-    static FrameHandle createCpuFrame(const QImage& image, int64_t frameNum,
-                                      const QString& path);
-    static FrameHandle createGpuFrame(QRhiTexture* texture, int64_t frameNum,
-                                      const QString& path);
+**✅ Implemented.**
 
-    bool isNull() const;
-    int64_t frameNumber() const;
-    QString sourcePath() const;
-    QSize size() const;
+RAII wrapper with `QExplicitlySharedDataPointer` for thread-safe reference counting.
+Supports CPU frames (`QImage`) and GPU frames (CUDA hardware surface).  
+`memoryUsage()` is used by `MemoryBudget` for pressure tracking.
 
-    bool hasCpuImage() const;
-    bool hasGpuTexture() const;
+---
 
-    QImage cpuImage() const;
-    QRhiTexture* gpuTexture() const;
+### 4. Timeline Cache (`timeline_cache.h/cpp`)
 
-    size_t memoryUsage() const;
-    void uploadToGpu(QRhi* rhi);
+**✅ Fully implemented.**
 
-    bool operator==(const FrameHandle& other) const;
+- Per-clip LRU with configurable memory budget.
+- Predictive prefetch based on playback direction and speed.
+- Lookahead window: 30 frames default.
+- Eviction pressure callbacks feed `MemoryBudget`.
+- Cache-hit statistics exposed as `cacheHitRate()`.
 
-private:
-    QExplicitlySharedDataPointer<FrameData> d;
-};
-```
+---
 
-**Features:**
-- Thread-safe reference counting via QExplicitlySharedDataPointer
-- Automatic GPU texture cleanup
-- Memory usage tracking
+### 5. Memory Budget (`memory_budget.h/cpp`)
 
-### 4. Memory Budget Manager
+**✅ Implemented.**
 
-```cpp
-// memory_budget.h
-class MemoryBudget : public QObject {
-    Q_OBJECT
-public:
-    enum class Priority : int {
-        Low = 0,
-        Normal = 50,
-        High = 100,
-        Critical = 200
-    };
+- Separate CPU and GPU budget tracking via `std::atomic`.
+- Priority-aware allocation (`Low` / `Normal` / `High` / `Critical`).
+- `trimRequested` signal drives cache eviction callbacks.
 
-    void setMaxCpuMemory(size_t bytes);
-    void setMaxGpuMemory(size_t bytes);
+🔮 **Future**: GPU budget is tracked conceptually but actual VRAM consumption tracking relies on estimated frame sizes, not direct driver queries. Hooking into `GL_NVX_gpu_memory_info` or similar would improve accuracy.
 
-    bool allocateCpu(size_t bytes, Priority priority);
-    bool allocateGpu(size_t bytes, Priority priority);
-    void deallocateCpu(size_t bytes);
-    void deallocateGpu(size_t bytes);
+---
 
-    double cpuPressure() const;
-    double gpuPressure() const;
+### 6. Preview Window (`preview.h`, `preview_window_*.cpp`)
 
-signals:
-    void trimRequested();
-};
-```
+**✅ Fully implemented.**
 
-**Features:**
-- Separate CPU and GPU budgets
-- Atomic allocation tracking
-- Pressure callbacks for cache eviction
+`PreviewWindow` is a `QOpenGLWidget`. The rendering stack:
+1. `getActiveClips()` filters the clip list to the current timeline frame.
+2. Per-clip frames are fetched from `TimelineCache` (or requested via `AsyncDecoder`).
+3. `renderFrameLayerGL()` uploads each `FrameHandle` → `GLuint` texture (via `GlFrameTextureShared`).
+4. An OpenGL shader composites layers with per-clip transform matrices, grading, opacity, and blend mode.
+5. `PlaybackFramePipeline` drives sample-accurate advancement during live playback.
+6. Transcript overlay is rendered via `QPainter` on top of the GL output.
 
-### 5. Timeline Cache with Predictive Loading
+Features: zoom/pan, interactive clip move/resize handles, audio badge, empty-state placeholder.
 
-```cpp
-// timeline_cache.h
-class TimelineCache : public QObject {
-    Q_OBJECT
-public:
-    enum class PlaybackState { Stopped, Playing, Scrubbing, Exporting };
-    enum class Direction { Forward, Backward };
+**GPU path:** OpenGL with `QOpenGLShaderProgram` (GLSL). Not using Qt RHI (QRhi) despite what the old doc said — actual implementation uses raw OpenGL.
 
-    void setMaxMemory(size_t bytes);
-    void setLookaheadFrames(int frames);
-    void setPlaybackState(PlaybackState state);
-    void setDirection(Direction dir);
-    void setPlaybackSpeed(double speed);
+🔮 **Future**: Migrate to Qt RHI for Vulkan/Metal portability. The `GPUCompositor` class (`gpu_compositor.h`) exists as a QRhi-based skeleton but is not wired into `PreviewWindow`.
 
-    void setPlayheadFrame(int64_t frame);
+---
 
-    void registerClip(const QString& id, const QString& path,
-                      int64_t startFrame, int64_t duration);
-    void unregisterClip(const QString& id);
+### 7. Playback Frame Pipeline (`playback_frame_pipeline.h/cpp`)
 
-    void requestFrame(const QString& clipId, int64_t frameNumber,
-                      std::function<void(FrameHandle)> callback);
+**✅ Implemented.**
 
-    FrameHandle getCachedFrame(const QString& clipId, int64_t frameNumber);
-    bool isFrameCached(const QString& clipId, int64_t frameNumber) const;
+Bridges `AsyncDecoder` and `AudioEngine` for A/V synchronised playback.
+Handles sub-frame sample offset timing and `playbackRate` scaling.
 
-    void startPrefetching();
-    void stopPrefetching();
+---
 
-    double cacheHitRate() const;
-};
-```
+### 8. Audio Engine (`audio_engine.h`)
 
-**Features:**
-- Per-clip LRU cache
-- Predictive loading based on playhead direction
-- Configurable lookahead window
-- Cache hit/miss statistics
+**✅ Implemented** (header is comprehensive, implementation is `audio_engine.h` inline / separate TU).
 
-### 6. GPU Compositor
+- Built on **RtAudio** (bundled in `rtaudio/`).
+- Multi-track mixing with per-clip fade-in/fade-out (`fadeSamples`).
+- Speech-filter pass (silence non-speech segments using transcript data).
+- Transcript-driven overlay timing.
+- Mute/volume control.
 
-```cpp
-// gpu_compositor.h
-struct CompositorLayer {
-    QRhiTexture* texture = nullptr;
-    QMatrix4x4 transform;
-    float opacity = 1.0f;
+---
 
-    enum class BlendMode { Normal, Add, Multiply, Screen, Overlay };
-    BlendMode blendMode = BlendMode::Normal;
-};
+### 9. Offline Render Pipeline (`render.h`, `render_*.cpp`)
 
-class GPUCompositor : public QObject {
-    Q_OBJECT
-public:
-    explicit GPUCompositor(QRhi* rhi, QObject* parent = nullptr);
+**✅ Fully implemented.**
 
-    bool initialize();
+| Stage | File | Notes |
+|-------|------|-------|
+| Decode | `render_decode.cpp` | Parallel decode per clip |
+| GPU composite | `render_gpu.cpp` | OpenGL offscreen FBO |
+| CPU fallback | `render_cpu_fallback.cpp` | `QPainter`-based |
+| Audio mix | `render_audio.cpp` | FFmpeg AAC/Opus output |
+| Codec selection | `render_codecs.cpp` | H.264/HEVC/ProRes/etc. |
+| Export | `render_export.cpp` | Muxing, progress callback |
+| Stats | `render_stats.cpp` | Per-stage timing table |
 
-    void clearLayers();
-    void setLayer(int index, QRhiTexture* texture,
-                  const QMatrix4x4& transform = QMatrix4x4(),
-                  float opacity = 1.0f,
-                  CompositorLayer::BlendMode blend = CompositorLayer::BlendMode::Normal);
+`RenderProgress` provides granular per-stage timing (`renderDecodeStageMs`, `renderCompositeStageMs`, etc.) for profiling.
 
-    void renderToSwapChain(QRhiSwapChain* swapChain,
-                           const QColor& clearColor = QColor(20, 24, 28));
+🔮 **Future**: Hardware encoder support (NVENC/VAAPI encode) — scaffolded with `usingHardwareEncode` flag in `RenderResult`, not yet wired.
 
-    double averageRenderTimeMs() const;
-};
-```
+---
 
-**Note:** The GPU compositor framework is in place. To complete it, you need:
-1. Pre-compiled shaders (use `qsb` tool)
-2. Shader resource binding setup
-3. Per-layer uniform updates
+### 10. Inspector Tabs (Multi-tab Keyframe Editor)
+
+**✅ Implemented.**
+
+| Tab | File | Keyframe Types |
+|-----|------|---------------|
+| Video Transform | `video_keyframe_tab.cpp` | `TransformKeyframe` |
+| Grading | `grading_tab.cpp` | `GradingKeyframe` (brightness, contrast, sat, opacity, shadows/midtones/highlights) |
+| Titles | `titles_tab.cpp` | `TitleKeyframe` (text, position, font, opacity) |
+| Transcript | `transcript_tab.cpp` | WhisperX JSON word-level editing |
+| Effects | `effects_tab.cpp` | Mask feather |
+| Output | `output_tab.cpp` | Export settings |
+| Profile | `profile_tab.cpp` | Render stats display |
+
+All keyframe tabs share `KeyframeTabBase` (deferred seek, sync-to-playhead, selection suppression) and `TableTabBase` (selection/skip-refresh helpers).
+`keyframe_table_shared.h/cpp` provides `restoreSelectionByFrameRole` and `collectSelectedFrameRoles` used by all tabs.
+
+---
+
+### 11. Timeline Widget (`timeline_widget.h`, `timeline_widget_*.cpp`)
+
+**✅ Implemented** (split across core/input/layout/model/paint).
+
+- Multi-track custom `QWidget`.
+- Drag-to-move, trim handles, track sidebar.
+- Render sync markers.
+- Export range segments.
+
+---
+
+### 12. Explorer Pane (`explorer_pane.h/cpp`)
+
+**✅ Implemented.**
+
+File browser with proxy generation tools (image-sequence proxies, MJPEG/H.264 proxies via FFmpeg subprocess), drag-to-timeline, `ai_rest_snapshot.py` integration hook.
+
+---
+
+### 13. Control Server (`control_server.h/cpp`)
+
+**✅ Implemented.**
+
+Local HTTP server on `127.0.0.1:<random port>` for external tool integration (AI scripts, `editor_harness.py`).
+Exposes: fast state snapshot, profiling snapshot, window screenshot.
+
+---
 
 ## Threading Model
 
 ```
-Main Thread (UI):
-  - Qt event loop
-  - Timeline interactions
-  - Preview widget paint (displays cached frames)
-  - User input handling
+Main Thread (Qt event loop)
+├─ UI: Timeline, Inspector, Explorer
+├─ PreviewWindow paint (OpenGL)
+└─ ControlServer dispatch (QueuedConnection from worker thread)
 
-Decoder Thread Pool (N workers):
-  - Frame request processing
-  - libavcodec decode
-  - Hardware frame retrieval
-  - CPU image generation
+Decoder Thread Pool  [2–6 workers]
+└─ Per-lane: DecoderContext (FFmpeg), frame conversion, cache insert
 
-Timeline Cache:
-  - Predictive load scheduling
-  - LRU eviction on memory pressure
+Audio Thread (RtAudio callback)
+└─ Real-time multi-track mix, splice A/V sync
 
-GPU Rendering:
-  - QRhi command buffer recording
-  - Swapchain presentation
+Render Thread (offline export only)
+└─ Sequential frame decode → composite → encode
 ```
 
-## Performance Characteristics
+---
 
-| Metric | Amateur (ffmpeg process) | Professional (This) |
-|--------|-------------------------|---------------------|
-| Decode latency | 50-200ms | 5-15ms (hw) |
-| Frame upload | CPU memcpy | Direct GPU upload |
-| Scrubbing | Stuttery | Smooth 60fps |
-| Memory | Unbounded | Budget-managed |
-| 4K playback | Impossible | 60fps+ |
-| Threading | Single thread | Thread pool |
-| Cache | None | LRU with prefetch |
+## Data Flow: Frame Request Lifecycle
 
-## Build Instructions
+```
+TimelineWidget seeks to frame N
+        │
+        ▼
+PreviewWindow::requestFramesForCurrentPosition()
+        │
+        ▼
+TimelineCache::requestFrame(clipId, localFrame)
+  ├─ Cache HIT  → FrameHandle returned synchronously
+  └─ Cache MISS → AsyncDecoder::requestFrame(path, sourceFrame, priority, timeoutMs, cb)
+                          │
+                          ▼ [worker thread]
+                  DecoderContext::decodeFrame(frameNumber)
+                    ├─ ImageSequence: loadCachedSequenceFrameImage()
+                    └─ Video: seekAndDecode() → avcodec_send_packet → avcodec_receive_frame
+                                                  → convertToFrame() → QImage (CPU)
+                          │
+                          ▼ [QueuedConnection back to main thread]
+                  TimelineCache stores FrameHandle
+                          │
+                          ▼
+                  PreviewWindow::scheduleRepaint()
+                          │
+                          ▼
+                  paintGL(): textureForFrame() → glTexImage2D → GLSL composite
+```
+
+---
+
+## Technology Stack
+
+| Layer | Libraries / Technology |
+|-------|------------------------|
+| UI | Qt 6, QOpenGLWidget, QWidget |
+| Decode | libavcodec, libavformat, libswscale (FFmpeg) |
+| HW Accel | CUDA (NVDec), VAAPI (Linux) |
+| Audio | RtAudio (bundled), libavcodec (AAC/Opus encode) |
+| Compositing | OpenGL 3.3 + GLSL (preview); OpenGL offscreen FBO (render) |
+| Serialisation | QJsonDocument (state + history) |
+| Build | CMake 3.x, Ninja, Qt 6 MOC |
+| Tests | Qt Test framework (`tests/`) |
+| Integration | Python (`ai_rest_snapshot.py`, `editor_harness.py`) |
+
+---
+
+## Known Issues & Future Improvements
+
+| Area | Issue / Improvement | Priority |
+|------|---------------------|----------|
+| 🔮 GPU Interop | CUDA→GL zero-copy path scaffolded but disabled; full path would remove GPU→CPU memcpy | High |
+| 🔮 HW Encode | `RenderResult::usedHardwareEncode` flag exists; NVENC/VAAPI encode not wired | Medium |
+| 🔮 Qt RHI | `GPUCompositor` (QRhi-based) skeleton exists but PreviewWindow still uses raw OpenGL | Low |
+| 🔮 VRAM tracking | GPU memory budget uses size estimates, not driver queries | Low |
+| ⚠️ ProRes threading | ProRes software decoder crashes with multi-threading; fixed with `thread_count=1` | Fixed |
+| 🔮 OCIO/LUTs | No OCIO integration; grading is custom CPU path | Future |
+| 🔮 Audio scrubbing | No pitch-corrected scrub audio | Future |
+| 🔮 Effects plugin API | No plugin system; effects are hardcoded (feather mask only) | Future |
+
+---
+
+## Build
 
 ```bash
-# Install dependencies (Ubuntu/Debian)
+# Install FFmpeg dev libs (Ubuntu/Debian)
 sudo apt install libavcodec-dev libavformat-dev libavutil-dev libswscale-dev
 
-# Build
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)
+# Build (Release)
+./build.sh
 
 # Run
-./editor
+./build/editor
+
+# Tests
+./build/test_async_decoder
+./build/test_timeline_cache
+./build/test_integration
+./build/test_memory_budget
+./build/test_frame_handle
 ```
-
-## Remaining Work for Full Production
-
-### Phase 1: GPU Compositing (Required for smooth playback)
-- [ ] Compile shaders with `qsb` tool
-- [ ] Implement shader resource bindings
-- [ ] Add per-layer uniform updates
-- [ ] Complete renderToSwapChain implementation
-
-### Phase 2: Audio (Required for video editor)
-- [ ] Audio decoder (libavcodec)
-- [ ] Audio resampling (libswresample)
-- [ ] Multi-track mixing
-- [ ] A/V sync with clock
-
-### Phase 3: Export (Required for deliverables)
-- [ ] Hardware encoder support (VAAPI/NVENC)
-- [ ] Encode pipeline separate from preview
-- [ ] Progress callbacks
-- [ ] Multi-format output (H.264, HEVC, ProRes)
-
-### Phase 4: Color (Required for professional work)
-- [ ] OCIO integration
-- [ ] LUT support
-- [ ] Color space conversion (libplacebo)
-- [ ] HDR metadata handling
-
-### Phase 5: Effects (Advanced)
-- [ ] Plugin architecture
-- [ ] GPU effect chain
-- [ ] Transform/keyframe system
-- [ ] Masking and compositing modes
-
-## Error Handling
-
-The implementation handles:
-- ✅ Decoder corruption → fallback to software
-- ✅ GPU memory full → cache eviction triggered
-- ✅ Dropped frames → deadline-based expiration
-- ✅ Seek inaccuracy → GOP-aware precise seeking
-- ⬜ Audio drift → resampling and sync correction (Phase 2)
-
-## Key Libraries
-
-- **libavcodec/libavformat/libswscale**: FFmpeg decoding
-- **Qt6 QRhi**: GPU abstraction (Vulkan/Metal/OpenGL)
-- **Qt6 Concurrent**: Thread pool and synchronization
-- **std::atomic**: Lock-free counters and flags

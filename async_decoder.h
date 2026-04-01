@@ -21,6 +21,12 @@
 #include <thread>
 #include <vector>
 
+// AVHWDeviceType is an enum, available via hwcontext.h.
+// We include it here so the shared-device map type is visible in the header.
+extern "C" {
+#include <libavutil/hwcontext.h>
+}
+
 // FFmpeg forward declarations (actual includes in .cpp)
 extern "C" {
 struct AVCodecContext;
@@ -129,17 +135,25 @@ public:
     
     // Memory budget access
     MemoryBudget* memoryBudget() const { return m_budget; }
-    
+
+    // Returns a shared (ref-bumped) AVBufferRef* for the given hw device type,
+    // or nullptr if the device isn't available. The caller is responsible for
+    // av_buffer_unref()-ing their reference when done.
+    AVBufferRef* acquireSharedHwDevice(AVHWDeviceType type) const;
+
 signals:
     void frameReady(FrameHandle frame);
     void error(QString path, QString message);
     void queuePressureChanged(int pendingCount);
     
+
 private:
     struct LaneState;
 
     void setupTrimCallback();
     void trimCaches();
+    void initSharedHwDevices();
+    void releaseSharedHwDevices();
     int totalPendingRequests() const;
     int laneIndexForRequest(const QString& path, int64_t frameNumber) const;
     LaneState* laneForRequest(const QString& path, int64_t frameNumber) const;
@@ -158,7 +172,12 @@ private:
     bool m_initialized = false;
     bool m_shuttingDown = false;
     std::atomic<uint64_t> m_nextSequenceId{1};
-    
+
+    // One shared hw device context per device type, ref-counted by FFmpeg.
+    // All DecoderContexts borrow a reference rather than creating their own.
+    mutable QMutex m_sharedHwMutex;
+    QHash<int, AVBufferRef*> m_sharedHwDevices; // key = AVHWDeviceType cast to int
+
     QMutex m_infoCacheMutex;
     QHash<QString, VideoStreamInfo> m_infoCache;
 };

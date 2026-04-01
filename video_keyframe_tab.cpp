@@ -428,10 +428,7 @@ void VideoKeyframeTab::refresh()
         return;
     }
     
-    // Skip repaint when keyframes are selected (to avoid disrupting multi-selection)
-    if (m_widgets.videoKeyframeTable->selectedItems().count() > 0) {
-        return;
-    }
+    // (Removed early return to ensure the UI updates to reflect truth when a row is modified)
 
     const TimelineClip* clip = m_deps.getSelectedClip();
     m_updating = true;
@@ -1105,8 +1102,22 @@ void VideoKeyframeTab::onRemoveKeyframeClicked()
 void VideoKeyframeTab::onTableSelectionChanged()
 {
     onTableSelectionChangedBase(m_widgets.videoKeyframeTable, &m_deferredSeekTimer, &m_pendingSeekTimelineFrame);
-    // Don't refresh immediately - let the selection stabilize for multi-select
-    // The UI will update on the next periodic refresh or when the user finishes selecting
+    if (m_updating || m_syncingTableSelection) return;
+
+    const TimelineClip* clip = m_deps.getSelectedClip();
+    if (clip && m_selectedKeyframeFrame >= 0) {
+        int selectedIndex = selectedKeyframeIndex(*clip);
+        if (selectedIndex >= 0) {
+            TransformKeyframeDisplay displayed = keyframeForInspectorDisplay(*clip, clip->transformKeyframes[selectedIndex]);
+            m_updating = true;
+            updateSpinBoxesFromKeyframe(displayed);
+            updateMirrorCheckboxesFromScale(displayed.scaleX, displayed.scaleY);
+            if (m_widgets.videoInterpolationCombo) {
+                m_widgets.videoInterpolationCombo->setCurrentIndex(displayed.linearInterpolation ? 1 : 0);
+            }
+            m_updating = false;
+        }
+    }
 }
 
 void VideoKeyframeTab::onTableItemChanged(QTableWidgetItem* changedItem)

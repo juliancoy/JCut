@@ -113,10 +113,8 @@ void GradingTab::refresh()
         return;
     }
     
-    // Skip repaint when keyframes are selected (to avoid disrupting multi-selection)
-    if (m_widgets.gradingKeyframeTable->selectedItems().count() > 0) {
-        return;
-    }
+    // (Removed early return to ensure the UI updates to reflect truth when a row is modified)
+
 
     const TimelineClip* clip = m_deps.getSelectedClip();
     m_updating = true;
@@ -421,7 +419,11 @@ void GradingTab::onTableSelectionChanged()
     const int64_t primaryFrame =
         editor::primarySelectedFrameRole(m_widgets.gradingKeyframeTable);
 
-    if (primaryFrame < 0) return;
+    if (primaryFrame < 0) {
+        m_selectedKeyframeFrame = -1;
+        m_selectedKeyframeFrames.clear();
+        return;
+    }
 
     m_selectedKeyframeFrame = primaryFrame;
     m_selectedKeyframeFrames = selectedFrames;

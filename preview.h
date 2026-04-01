@@ -150,6 +150,7 @@ private:
     QOpenGLBuffer m_quadBuffer;
 
     bool m_glInitialized = false;
+    bool m_glResourcesReleased = false;
     QColor m_backgroundColor = QColor(Qt::black);
     bool m_playing = false;
     bool m_audioMuted = false;
