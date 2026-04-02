@@ -8,6 +8,7 @@
 #include <QDoubleSpinBox>
 #include <QFontComboBox>
 #include <QJsonDocument>
+#include <QElapsedTimer>
 #include <QTimer>
 #include <functional>
 
@@ -76,6 +77,7 @@ private slots:
     void onTranscriptItemClicked(QTableWidgetItem* item);
     void onTranscriptItemDoubleClicked(QTableWidgetItem* item);
     void onTranscriptCustomContextMenu(const QPoint& pos);
+    void onTranscriptSelectionChanged();
     void onFollowCurrentWordToggled(bool checked);
     void onOverlaySettingChanged();
     void onPrependMsChanged(int value);
@@ -100,6 +102,8 @@ private:
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
     void insertWordAtRow(int row, bool above);
+    void scheduleSeekToTranscriptRow(int row);
+    bool hasActiveManualSelection() const;
     bool eventFilter(QObject* watched, QEvent* event) override;
 
     Widgets m_widgets;
@@ -114,4 +118,9 @@ private:
     bool m_speechFilterEnabled = false;
     QTimer m_deferredSeekTimer;
     int64_t m_pendingSeekTimelineFrame = -1;
+    QElapsedTimer m_manualSelectionTimer;
+    bool m_suppressSelectionSideEffects = false;
+    QString m_persistedSelectedClipId;
+    int m_persistedSelectedSegmentIndex = -1;
+    int m_persistedSelectedWordIndex = -1;
 };

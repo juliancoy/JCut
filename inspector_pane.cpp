@@ -35,6 +35,19 @@ QLabel *createTabHeading(const QString &text, QWidget *parent = nullptr) {
 InspectorPane::InspectorPane(QWidget *parent)
     : QWidget(parent)
 {
+    setStyleSheet(
+        QStringLiteral(
+            "QWidget { background: #0c1015; color: #edf2f7; }"
+            "QPushButton, QToolButton { background: #1b2430; border: 1px solid #2e3b4a; border-radius: 7px; padding: 6px 12px; }"
+            "QPushButton:hover, QToolButton:hover { background: #233142; }"
+            "QDoubleSpinBox, QSpinBox, QLineEdit, QComboBox { background: #151b22; border: 1px solid #30363d; color: #c9d1d9; border-radius: 6px; padding: 4px; }"
+            "QCheckBox { color: #edf2f7; }"
+            "QLabel { color: #8fa0b5; }"
+            "QGroupBox { border: 1px solid #30363d; border-radius: 6px; margin-top: 2ex; font-weight: bold; color: #8fa0b5; padding-top: 10px; }"
+            "QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left; padding: 0 3px; }"
+            "QTableWidget { background: #0c1015; alternate-background-color: #161b22; gridline-color: #30363d; border: 1px solid #30363d; border-radius: 6px; color: #c9d1d9; }"
+            "QHeaderView::section { background-color: #161b22; color: #8fa0b5; border: 1px solid #30363d; padding: 4px; }"));
+
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(buildPane());

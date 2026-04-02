@@ -235,7 +235,10 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
             continue; // Title clips are drawn as text overlays below
         }
         const int64_t localFrame = sourceFrameForSample(clip, m_currentSample);
-        const bool usePlaybackPipeline = false;
+        const bool usePlaybackPipeline =
+            m_playing &&
+            clip.sourceKind == MediaSourceKind::ImageSequence &&
+            clip.mediaType != ClipMediaType::Image;
         const bool usePlaybackBuffer =
             m_playing &&
             !usePlaybackPipeline &&
@@ -282,6 +285,23 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                 } else {
                     ++bestCount;
                     selection = QStringLiteral("best");
+                }
+            }
+        }
+        if (usePlaybackPipeline && frame.isNull() && m_cache) {
+            const FrameHandle cacheExact = m_cache->getCachedFrame(clip.id, localFrame);
+            frame = !cacheExact.isNull()
+                        ? cacheExact
+                        : (m_playing
+                               ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                               : m_cache->getBestCachedFrame(clip.id, localFrame));
+            if (!frame.isNull()) {
+                if (!cacheExact.isNull() && frame == cacheExact) {
+                    ++exactCount;
+                    selection = QStringLiteral("exact");
+                } else {
+                    ++bestCount;
+                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
                 }
             }
         }

@@ -13,6 +13,9 @@ namespace editor {
 namespace {
 constexpr int64_t kVisibleDecodeKeepWindow = 8;
 constexpr int64_t kObsoleteVisibleFrameSlack = 2;
+constexpr int64_t kSequenceVisibleDecodeKeepWindow = 24;
+constexpr int64_t kSequenceObsoleteVisibleFrameSlack = 8;
+constexpr int64_t kSequenceLateBufferSeedSlack = 16;
 constexpr int64_t kMaxPresentationPastFrameDelta = 6;
 constexpr int64_t kMaxPresentationFutureFrameDelta = 1;
 
@@ -38,6 +41,10 @@ void playbackPipelineTrace(const QString& stage, const QString& detail = QString
 
 bool isSingleFrameClip(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Image;
+}
+
+bool isImageSequencePlaybackClip(const TimelineClip& clip) {
+    return clip.sourceKind == MediaSourceKind::ImageSequence;
 }
 }
 
@@ -353,8 +360,19 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
         return;
     }
 
+    const bool isSequenceClip = isImageSequencePlaybackClip(info.clip);
+    const int64_t keepWindow = isSequenceClip
+                                   ? kSequenceVisibleDecodeKeepWindow
+                                   : kVisibleDecodeKeepWindow;
+    const int64_t obsoleteVisibleFrameSlack = isSequenceClip
+                                                  ? kSequenceObsoleteVisibleFrameSlack
+                                                  : kObsoleteVisibleFrameSlack;
+    const int64_t lateBufferSeedSlack = isSequenceClip
+                                            ? kSequenceLateBufferSeedSlack
+                                            : obsoleteVisibleFrameSlack;
+
     m_decoder->cancelForFileBefore(info.playbackPath,
-                                   qMax<int64_t>(0, canonicalFrame - kVisibleDecodeKeepWindow));
+                                   qMax<int64_t>(0, canonicalFrame - keepWindow));
 
     for (int offset = 0; offset <= playbackWindowAhead; ++offset) {
         const int64_t targetFrame = normalizeFrameNumber(info, canonicalFrame + offset);
@@ -393,11 +411,30 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                                 priority,
                                 5000,
                                 kind,
-                                [self, clipId = info.clip.id, targetFrame, key, kind, requestedAt, onFrameReady](FrameHandle frame) {
+                                [self,
+                                 clipId = info.clip.id,
+                                 targetFrame,
+                                 key,
+                                 kind,
+                                 requestedAt,
+                                 onFrameReady,
+                                 obsoleteVisibleFrameSlack,
+                                 lateBufferSeedSlack](FrameHandle frame) {
                                     if (!self) {
                                         return;
                                     }
-                                    QMetaObject::invokeMethod(self, [self, clipId, targetFrame, key, kind, requestedAt, onFrameReady, frame]() {
+                                    QMetaObject::invokeMethod(
+                                        self,
+                                        [self,
+                                         clipId,
+                                         targetFrame,
+                                         key,
+                                         kind,
+                                         requestedAt,
+                                         onFrameReady,
+                                         frame,
+                                         obsoleteVisibleFrameSlack,
+                                         lateBufferSeedSlack]() {
                                         if (!self) {
                                             return;
                                         }
@@ -416,9 +453,13 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                                         const int64_t playheadFrame = self->m_playheadFrame.load();
                                         const bool obsoleteForPresentation =
                                             !frame.isNull() &&
-                                            targetFrame < qMax<int64_t>(0, playheadFrame - kObsoleteVisibleFrameSlack);
+                                            targetFrame < qMax<int64_t>(0, playheadFrame - obsoleteVisibleFrameSlack);
+                                        const bool bufferableLateCompletion =
+                                            !frame.isNull() &&
+                                            targetFrame >= qMax<int64_t>(0, playheadFrame - lateBufferSeedSlack);
 
-                                        if (!frame.isNull() && !obsoleteForPresentation) {
+                                        if (!frame.isNull() &&
+                                            (!obsoleteForPresentation || bufferableLateCompletion)) {
                                             QMutexLocker lock(&self->m_clipsMutex);
                                             auto it = self->m_buffers.find(clipId);
                                             if (it != self->m_buffers.end() && it.value()) {
@@ -440,11 +481,13 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                                         }
 
                                         if (onFrameReady &&
-                                            ((!frame.isNull() && !obsoleteForPresentation) ||
+                                            ((!frame.isNull() &&
+                                              (!obsoleteForPresentation || bufferableLateCompletion)) ||
                                              kind == DecodeRequestKind::Visible)) {
                                             onFrameReady();
                                         }
-                                    }, Qt::QueuedConnection);
+                                    },
+                                        Qt::QueuedConnection);
                                 });
     }
 }

@@ -172,7 +172,11 @@ bool DecoderContext::loadStillImage() {
     m_info.fps = 30.0;
     m_info.frameSize = m_stillImage.size();
     m_info.codecName = QStringLiteral("still-image");
+    m_info.decodePath = QStringLiteral("software");
+    m_info.interopPath = QStringLiteral("software");
+    m_info.requestedDecodeMode = decodePreferenceToString(debugDecodePreference());
     m_info.hasAlpha = m_stillImage.hasAlphaChannel();
+    m_info.hardwareAccelerated = false;
     m_info.isValid = true;
     m_lastDecodedFrame = 0;
     m_eof = false;
@@ -202,7 +206,11 @@ bool DecoderContext::loadImageSequence() {
     m_info.fps = 30.0;
     m_info.frameSize = image.size();
     m_info.codecName = QStringLiteral("image_sequence");
+    m_info.decodePath = QStringLiteral("software");
+    m_info.interopPath = QStringLiteral("software");
+    m_info.requestedDecodeMode = decodePreferenceToString(debugDecodePreference());
     m_info.hasAlpha = image.hasAlphaChannel();
+    m_info.hardwareAccelerated = false;
     m_info.isValid = true;
     m_lastDecodedFrame = 0;
     m_eof = false;

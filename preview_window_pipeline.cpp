@@ -26,7 +26,10 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, targetSample);
-        const bool usePlaybackPipeline = false;
+        const bool usePlaybackPipeline =
+            m_playing &&
+            clip.sourceKind == MediaSourceKind::ImageSequence &&
+            clip.mediaType != ClipMediaType::Image;
         const bool ready = usePlaybackPipeline ? m_playbackPipeline->isFrameBuffered(clip.id, localFrame)
                                                : m_cache->isFrameCached(clip.id, localFrame);
         if (ready) continue;
@@ -132,16 +135,35 @@ void PreviewWindow::requestFramesForCurrentPosition() {
             continue;
         }
         const int64_t localFrame = sourceFrameForSample(*clip, m_currentSample);
-        const bool cached = m_cache->isFrameCached(clip->id, localFrame);
-        if (!cached && !m_cache->isVisibleRequestPending(clip->id, localFrame)) {
+        const bool usePlaybackPipeline =
+            m_playing &&
+            clip->sourceKind == MediaSourceKind::ImageSequence &&
+            clip->mediaType != ClipMediaType::Image;
+        const bool cached = usePlaybackPipeline
+                                ? m_playbackPipeline->isFrameBuffered(clip->id, localFrame)
+                                : m_cache->isFrameCached(clip->id, localFrame);
+        const bool pending = usePlaybackPipeline
+                                 ? m_playbackPipeline->pendingVisibleRequestCount() >= kMaxVisibleBacklog
+                                 : m_cache->isVisibleRequestPending(clip->id, localFrame);
+        if (!cached && !pending) {
             m_lastFrameRequestMs = nowMs();
-            m_cache->requestFrame(clip->id, localFrame,
-                [this](FrameHandle frame) {
-                    Q_UNUSED(frame)
-                    QMetaObject::invokeMethod(this, [this]() {
-                        scheduleRepaint();
-                    }, Qt::QueuedConnection);
-                });
+            if (usePlaybackPipeline) {
+                m_playbackPipeline->requestFramesForSample(
+                    m_currentSample,
+                    [this]() {
+                        QMetaObject::invokeMethod(this, [this]() {
+                            scheduleRepaint();
+                        }, Qt::QueuedConnection);
+                    });
+            } else {
+                m_cache->requestFrame(clip->id, localFrame,
+                    [this](FrameHandle frame) {
+                        Q_UNUSED(frame)
+                        QMetaObject::invokeMethod(this, [this]() {
+                            scheduleRepaint();
+                        }, Qt::QueuedConnection);
+                    });
+            }
         }
     }
 }

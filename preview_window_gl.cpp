@@ -383,7 +383,10 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             }
         }
         const int64_t localFrame = sourceFrameForSample(clip, m_currentSample);
-        const bool usePlaybackPipeline = false;
+        const bool usePlaybackPipeline =
+            m_playing &&
+            clip.sourceKind == MediaSourceKind::ImageSequence &&
+            clip.mediaType != ClipMediaType::Image;
         QString selection = QStringLiteral("none");
         const FrameHandle exactFrame = usePlaybackPipeline
                                            ? m_playbackPipeline->getFrame(clip.id, localFrame)
@@ -422,6 +425,23 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                 } else {
                     ++bestCount;
                     selection = QStringLiteral("best");
+                }
+            }
+        }
+        if (usePlaybackPipeline && frame.isNull() && m_cache) {
+            const FrameHandle cacheExact = m_cache->getCachedFrame(clip.id, localFrame);
+            frame = !cacheExact.isNull()
+                        ? cacheExact
+                        : (m_playing
+                               ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                               : m_cache->getBestCachedFrame(clip.id, localFrame));
+            if (!frame.isNull()) {
+                if (!cacheExact.isNull() && frame == cacheExact) {
+                    ++exactCount;
+                    selection = QStringLiteral("exact");
+                } else {
+                    ++bestCount;
+                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
                 }
             }
         }

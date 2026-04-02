@@ -286,7 +286,6 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
                 m_dragOriginalTransformKeyframes = m_clips[hitIndex].transformKeyframes;
                 m_dragOffsetFrames = frameFromX(event->position().x()) - m_clips[hitIndex].startFrame;
             }
-            m_currentFrame = m_clips[hitIndex].startFrame;
             update();
             return;
         }
@@ -1005,4 +1004,3 @@ void TimelineWidget::wheelEvent(QWheelEvent* event) {
     setVerticalScrollOffset(m_verticalScrollOffset - (steps * 36));
     event->accept();
 }
-
