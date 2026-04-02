@@ -121,6 +121,8 @@ void TitlesTab::refresh()
         editor::restoreSelectionByFrameRole(table, m_selectedKeyframeFrames);
     }
 
+    m_suppressSyncForTimelineFrame = -1;
+
     if (m_widgets.titlesInspectorDetailsLabel) {
         m_widgets.titlesInspectorDetailsLabel->setText(
             QStringLiteral("%1 title keyframes").arg(clip->titleKeyframes.size()));
@@ -409,7 +411,10 @@ void TitlesTab::syncTableToPlayhead()
             bestRow = row;
         }
     }
-    table->scrollToItem(table->item(bestRow, 0), QAbstractItemView::PositionAtCenter);
+    applySyncedRowSelection(table,
+                            bestRow,
+                            m_widgets.titleAutoScrollCheck &&
+                                m_widgets.titleAutoScrollCheck->isChecked());
 }
 
 int TitlesTab::selectedKeyframeIndex(const TimelineClip &clip) const
@@ -638,4 +643,3 @@ void TitlesTab::onTableCustomContextMenu(const QPoint &pos)
         }
     }
 }
-

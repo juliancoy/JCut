@@ -316,9 +316,69 @@ void PlaybackFramePipeline::onFrameReady(FrameHandle frame) {
         return;
     }
 
-    // Request-specific callbacks own insertion into playback buffers.
-    // Avoid globally inserting every decoded frame for a matching file path,
-    // which pollutes the presentation buffer with obsolete completions.
+    QVector<RenderSyncMarker> markers;
+    {
+        QMutexLocker lock(&m_markersMutex);
+        markers = m_renderSyncMarkers;
+    }
+
+    struct SeedTarget {
+        QString clipId;
+        int64_t frameNumber = 0;
+    };
+
+    QVector<SeedTarget> seedTargets;
+    const int64_t playheadFrame = m_playheadFrame.load();
+    const int64_t maxAheadFrame =
+        qMax<int64_t>(debugPlaybackWindowAhead(), kMaxPresentationFutureFrameDelta);
+    {
+        QMutexLocker lock(&m_clipsMutex);
+        for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+            const ClipInfo& info = it.value();
+            if (info.isSingleFrame ||
+                !isImageSequencePlaybackClip(info.clip) ||
+                info.playbackPath != sourcePath) {
+                continue;
+            }
+
+            if (playheadFrame < info.clip.startFrame ||
+                playheadFrame >= info.clip.startFrame + info.clip.durationFrames) {
+                continue;
+            }
+
+            const int64_t activeSourceFrame = normalizeFrameNumber(
+                info,
+                sourceFrameForClipAtTimelinePosition(info.clip,
+                                                     static_cast<qreal>(playheadFrame),
+                                                     markers));
+            const int64_t decodedFrameNumber = normalizeFrameNumber(info, frame.frameNumber());
+            const int64_t minSeedFrame =
+                qMax<int64_t>(0, activeSourceFrame - kSequenceLateBufferSeedSlack);
+            const int64_t maxSeedFrame = activeSourceFrame + maxAheadFrame;
+            if (decodedFrameNumber < minSeedFrame || decodedFrameNumber > maxSeedFrame) {
+                continue;
+            }
+
+            seedTargets.push_back({it.key(), decodedFrameNumber});
+        }
+    }
+
+    if (seedTargets.isEmpty()) {
+        emit frameAvailable();
+        return;
+    }
+
+    {
+        QMutexLocker lock(&m_clipsMutex);
+        for (const SeedTarget& target : seedTargets) {
+            auto it = m_buffers.find(target.clipId);
+            if (it == m_buffers.end() || !it.value()) {
+                continue;
+            }
+            it.value()->insert(target.frameNumber, frame);
+        }
+    }
+
     emit frameAvailable();
 }
 

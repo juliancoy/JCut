@@ -35,6 +35,7 @@ public:
     void setTimelineClips(const QVector<TimelineClip>& clips);
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
     void setExportRanges(const QVector<ExportRangeSegment>& ranges);
+    void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString());
     void beginBulkUpdate();
     void endBulkUpdate();
     QString backendName() const;

@@ -717,7 +717,6 @@ bool TimelineWidget::nudgeSelectedClip(int direction) {
         }
 
         normalizeClipTiming(clip);
-        m_currentFrame = clip.startFrame;
         sortClips();
         if (clipsChanged) {
             clipsChanged();
@@ -844,4 +843,3 @@ bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds) {
     update();
     return true;
 }
-

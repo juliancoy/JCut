@@ -98,6 +98,26 @@ int KeyframeTabBase::nearestKeyframeIndexFromTable(QTableWidget* table, int64_t 
     return bestIndex;
 }
 
+void KeyframeTabBase::applySyncedRowSelection(QTableWidget* table, int row, bool autoScroll)
+{
+    if (!table || row < 0 || row >= table->rowCount() || !table->selectionModel()) {
+        return;
+    }
+
+    if (!table->selectionModel()->isRowSelected(row, QModelIndex())) {
+        m_syncingTableSelection = true;
+        table->setCurrentCell(row, 0);
+        table->selectRow(row);
+        m_syncingTableSelection = false;
+    }
+
+    if (autoScroll) {
+        if (QTableWidgetItem* item = table->item(row, 0)) {
+            table->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+        }
+    }
+}
+
 void KeyframeTabBase::onTableSelectionChangedBase(QTableWidget* table, QTimer* deferredSeekTimer,
                                                   int64_t* pendingSeekFrame)
 {

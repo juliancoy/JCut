@@ -481,6 +481,8 @@ void VideoKeyframeTab::refresh()
         m_selectedKeyframeFrames = {m_selectedKeyframeFrame};
     }
 
+    m_suppressSyncForTimelineFrame = -1;
+
     TransformKeyframeDisplay displayed;
     if (clip->transformKeyframes.isEmpty()) {
         displayed = evaluateDisplayedTransform(*clip, clip->startFrame);
@@ -901,18 +903,10 @@ void VideoKeyframeTab::syncTableToPlayhead()
         matchingRow = 0;
     }
 
-    if (!m_widgets.videoKeyframeTable->selectionModel()->isRowSelected(matchingRow, QModelIndex())) {
-        m_syncingTableSelection = true;
-        m_widgets.videoKeyframeTable->setCurrentCell(matchingRow, 0);
-        m_widgets.videoKeyframeTable->selectRow(matchingRow);
-        m_syncingTableSelection = false;
-    }
-
-    if (m_widgets.keyframesAutoScrollCheckBox && m_widgets.keyframesAutoScrollCheckBox->isChecked()) {
-        if (QTableWidgetItem* item = m_widgets.videoKeyframeTable->item(matchingRow, 0)) {
-            m_widgets.videoKeyframeTable->scrollToItem(item, QAbstractItemView::PositionAtCenter);
-        }
-    }
+    applySyncedRowSelection(m_widgets.videoKeyframeTable,
+                            matchingRow,
+                            m_widgets.keyframesAutoScrollCheckBox &&
+                                m_widgets.keyframesAutoScrollCheckBox->isChecked());
 }
 
 void VideoKeyframeTab::promptMultiplySelectedKeyframeScale(bool scaleX)

@@ -65,13 +65,15 @@ public:
     void syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t sourceFrame);
     void applyTableEdit(QTableWidgetItem* item);
     void deleteSelectedRows();
+    void setSelectedRowsSkipped(bool skipped);
     int transcriptPrependMs() const { return m_transcriptPrependMs; }
     int transcriptPostpendMs() const { return m_transcriptPostpendMs; }
     int speechFilterFadeSamples() const { return m_speechFilterFadeSamples; }
     bool speechFilterEnabled() const { return m_speechFilterEnabled; }
 
 signals:
-    void speechFilterSettingsChanged();
+    void transcriptDocumentChanged();
+    void speechFilterParametersChanged();
 
 private slots:
     void onTranscriptItemClicked(QTableWidgetItem* item);
@@ -92,6 +94,7 @@ private:
         int64_t endFrame = 0;
         QString text;
         bool isGap = false;
+        bool isSkipped = false;
         int segmentIndex = -1;
         int wordIndex = -1;
     };
@@ -102,6 +105,10 @@ private:
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
     void insertWordAtRow(int row, bool above);
+    void applyTranscriptRowState(QTableWidgetItem* startItem,
+                                 QTableWidgetItem* endItem,
+                                 QTableWidgetItem* textItem,
+                                 const TranscriptRow& entry) const;
     void scheduleSeekToTranscriptRow(int row);
     bool hasActiveManualSelection() const;
     bool eventFilter(QObject* watched, QEvent* event) override;

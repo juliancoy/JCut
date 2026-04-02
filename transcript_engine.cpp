@@ -229,6 +229,10 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
                 for (const QJsonValue &wordValue : words)
                 {
                     const QJsonObject wordObj = wordValue.toObject();
+                    if (wordObj.value(QStringLiteral("skipped")).toBool(false))
+                    {
+                        continue;
+                    }
                     if (wordObj.value(QStringLiteral("word")).toString().trimmed().isEmpty())
                     {
                         continue;

@@ -44,6 +44,7 @@ public:
     // Keyframe selection helpers (work with any keyframe type via frame role)
     QList<int64_t> selectedKeyframeFramesFromTable(QTableWidget* table) const;
     int nearestKeyframeIndexFromTable(QTableWidget* table, int64_t targetFrame) const;
+    void applySyncedRowSelection(QTableWidget* table, int row, bool autoScroll);
     
     // Common slot implementations
     void onTableSelectionChangedBase(QTableWidget* table, QTimer* deferredSeekTimer = nullptr, 

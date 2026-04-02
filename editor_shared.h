@@ -166,6 +166,7 @@ struct TranscriptWord {
     int64_t startFrame = 0;
     int64_t endFrame = 0;
     QString text;
+    bool skipped = false;
 };
 
 struct TranscriptSection {

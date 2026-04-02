@@ -179,6 +179,8 @@ void GradingTab::refresh()
         m_selectedKeyframeFrames = {m_selectedKeyframeFrame};
     }
 
+    m_suppressSyncForTimelineFrame = -1;
+
     GradingKeyframeDisplay displayed = evaluateDisplayedGrading(*clip, clip->startFrame);
     const int selectedIndex = selectedKeyframeIndex(*clip);
     if (selectedIndex >= 0) {
@@ -320,18 +322,10 @@ void GradingTab::syncTableToPlayhead()
         matchingRow = 0;
     }
 
-    if (!m_widgets.gradingKeyframeTable->selectionModel()->isRowSelected(matchingRow, QModelIndex())) {
-        m_syncingTableSelection = true;
-        m_widgets.gradingKeyframeTable->setCurrentCell(matchingRow, 0);
-        m_widgets.gradingKeyframeTable->selectRow(matchingRow);
-        m_syncingTableSelection = false;
-    }
-
-    if (m_widgets.gradingAutoScrollCheckBox && m_widgets.gradingAutoScrollCheckBox->isChecked()) {
-        if (QTableWidgetItem* item = m_widgets.gradingKeyframeTable->item(matchingRow, 0)) {
-            m_widgets.gradingKeyframeTable->scrollToItem(item, QAbstractItemView::PositionAtCenter);
-        }
-    }
+    applySyncedRowSelection(m_widgets.gradingKeyframeTable,
+                            matchingRow,
+                            m_widgets.gradingAutoScrollCheckBox &&
+                                m_widgets.gradingAutoScrollCheckBox->isChecked());
 }
 
 void GradingTab::onBrightnessChanged(double value)

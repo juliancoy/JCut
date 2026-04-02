@@ -7,6 +7,15 @@ bool PreviewWindow::clipShowsTranscriptOverlay(const TimelineClip& clip) const {
     return clip.mediaType == ClipMediaType::Audio && clip.transcriptOverlay.enabled;
 }
 
+void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath) {
+    if (clipFilePath.isEmpty()) {
+        m_transcriptSectionsCache.clear();
+    } else {
+        m_transcriptSectionsCache.remove(clipFilePath);
+    }
+    scheduleRepaint();
+}
+
 const QVector<TranscriptSection>& PreviewWindow::transcriptSectionsForClip(const TimelineClip& clip) const {
     const QString key = clip.filePath;
     auto it = m_transcriptSectionsCache.find(key);

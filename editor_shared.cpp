@@ -1097,6 +1097,10 @@ QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath)
             if (text.isEmpty()) {
                 continue;
             }
+            const bool skipped = wordObj.value(QStringLiteral("skipped")).toBool(false);
+            if (skipped) {
+                continue;
+            }
             const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
             const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
             if (startSeconds < 0.0 || endSeconds < startSeconds) {
@@ -1106,7 +1110,7 @@ QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath)
                 qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
             const int64_t endFrame =
                 qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)) - 1);
-            words.push_back({startFrame, endFrame, text});
+            words.push_back({startFrame, endFrame, text, false});
         }
     }
 

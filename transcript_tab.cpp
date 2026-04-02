@@ -18,6 +18,7 @@
 
 namespace {
 constexpr qint64 kManualTranscriptSelectionHoldMs = 1200;
+constexpr QLatin1StringView kTranscriptWordSkippedKey("skipped");
 }
 
 TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
@@ -318,6 +319,7 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
     }
 
     refresh();
+    emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
 }
 
@@ -372,7 +374,86 @@ void TranscriptTab::deleteSelectedRows()
     }
 
     refresh();
+    emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void TranscriptTab::setSelectedRowsSkipped(bool skipped)
+{
+    if (m_updating || !m_widgets.transcriptTable || m_loadedTranscriptPath.isEmpty() ||
+        !m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+
+    QItemSelectionModel* selectionModel = m_widgets.transcriptTable->selectionModel();
+    if (!selectionModel) {
+        return;
+    }
+
+    const QModelIndexList selectedRows = selectionModel->selectedRows();
+    if (selectedRows.isEmpty()) {
+        return;
+    }
+
+    QSet<quint64> targetKeys;
+    for (const QModelIndex& index : selectedRows) {
+        QTableWidgetItem* item = m_widgets.transcriptTable->item(index.row(), 0);
+        if (!item || item->data(Qt::UserRole + 4).toBool()) {
+            continue;
+        }
+        const int segmentIndex = item->data(Qt::UserRole + 5).toInt();
+        const int wordIndex = item->data(Qt::UserRole + 6).toInt();
+        if (segmentIndex < 0 || wordIndex < 0) {
+            continue;
+        }
+        targetKeys.insert((static_cast<quint64>(segmentIndex) << 32) |
+                          static_cast<quint32>(wordIndex));
+    }
+    if (targetKeys.isEmpty()) {
+        return;
+    }
+
+    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+    bool changed = false;
+    for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
+        QJsonObject segmentObj = segments.at(segmentIndex).toObject();
+        QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+        for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
+            const quint64 key = (static_cast<quint64>(segmentIndex) << 32) |
+                                static_cast<quint32>(wordIndex);
+            if (!targetKeys.contains(key)) {
+                continue;
+            }
+            QJsonObject wordObj = words.at(wordIndex).toObject();
+            const bool currentSkipped = wordObj.value(kTranscriptWordSkippedKey).toBool(false);
+            if (currentSkipped == skipped) {
+                continue;
+            }
+            wordObj[QString(kTranscriptWordSkippedKey)] = skipped;
+            words.replace(wordIndex, wordObj);
+            changed = true;
+        }
+        segmentObj[QStringLiteral("words")] = words;
+        segments.replace(segmentIndex, segmentObj);
+    }
+
+    if (!changed) {
+        return;
+    }
+
+    root[QStringLiteral("segments")] = segments;
+    m_loadedTranscriptDoc.setObject(root);
+    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+        refresh();
+        return;
+    }
+
+    refresh();
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
 
 void TranscriptTab::scheduleSeekToTranscriptRow(int row)
@@ -504,7 +585,7 @@ void TranscriptTab::onPrependMsChanged(int value)
 {
     m_transcriptPrependMs = qMax(0, value);
     refresh();
-    emit speechFilterSettingsChanged();
+    emit speechFilterParametersChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
@@ -513,7 +594,7 @@ void TranscriptTab::onPostpendMsChanged(int value)
 {
     m_transcriptPostpendMs = qMax(0, value);
     refresh();
-    emit speechFilterSettingsChanged();
+    emit speechFilterParametersChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
@@ -521,7 +602,7 @@ void TranscriptTab::onPostpendMsChanged(int value)
 void TranscriptTab::onSpeechFilterEnabledToggled(bool enabled)
 {
     m_speechFilterEnabled = enabled;
-    emit speechFilterSettingsChanged();
+    emit speechFilterParametersChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
@@ -529,7 +610,7 @@ void TranscriptTab::onSpeechFilterEnabledToggled(bool enabled)
 void TranscriptTab::onSpeechFilterFadeSamplesChanged(int value)
 {
     m_speechFilterFadeSamples = qMax(0, value);
-    emit speechFilterSettingsChanged();
+    emit speechFilterParametersChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
@@ -657,6 +738,7 @@ QVector<TranscriptTab::TranscriptRow> TranscriptTab::parseTranscriptRows(const Q
             row.endFrame = qMax<int64_t>(row.startFrame,
                                          static_cast<int64_t>(std::ceil(adjustedEndTime * kTimelineFps)) - 1);
             row.text = text;
+            row.isSkipped = word.value(kTranscriptWordSkippedKey).toBool(false);
             row.segmentIndex = segmentIndex;
             row.wordIndex = wordIndex;
             rows.push_back(row);
@@ -709,7 +791,6 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
     }
 
     m_widgets.transcriptTable->setRowCount(displayRows.size());
-    const QColor gapColor(255, 248, 196);
     int restoreRow = -1;
     for (int row = 0; row < displayRows.size(); ++row) {
         const TranscriptRow& entry = displayRows.at(row);
@@ -729,14 +810,13 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
             tableItem->setData(Qt::UserRole + 4, entry.isGap);
             tableItem->setData(Qt::UserRole + 5, entry.segmentIndex);
             tableItem->setData(Qt::UserRole + 6, entry.wordIndex);
+            tableItem->setData(Qt::UserRole + 7, entry.isSkipped);
         }
 
-        if (entry.isGap) {
-            for (QTableWidgetItem* tableItem : rowItems) {
-                tableItem->setBackground(gapColor);
-                tableItem->setFlags(tableItem->flags() & ~Qt::ItemIsEditable);
-            }
-        } else if (selectedClipId == m_persistedSelectedClipId &&
+        applyTranscriptRowState(startItem, endItem, textItem, entry);
+
+        if (!entry.isGap &&
+            selectedClipId == m_persistedSelectedClipId &&
                    entry.segmentIndex == m_persistedSelectedSegmentIndex &&
                    entry.wordIndex == m_persistedSelectedWordIndex) {
             restoreRow = row;
@@ -754,6 +834,38 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         m_widgets.transcriptTable->setCurrentCell(restoreRow, 0);
         m_widgets.transcriptTable->selectRow(restoreRow);
         m_suppressSelectionSideEffects = false;
+    }
+}
+
+void TranscriptTab::applyTranscriptRowState(QTableWidgetItem* startItem,
+                                            QTableWidgetItem* endItem,
+                                            QTableWidgetItem* textItem,
+                                            const TranscriptRow& entry) const
+{
+    const QColor gapColor(255, 248, 196);
+    const QColor skippedColor(214, 255, 214);
+    const QColor skippedTextColor(22, 96, 37);
+    QTableWidgetItem* rowItems[] = {startItem, endItem, textItem};
+
+    if (entry.isGap) {
+        for (QTableWidgetItem* tableItem : rowItems) {
+            tableItem->setBackground(gapColor);
+            tableItem->setFlags(tableItem->flags() & ~Qt::ItemIsEditable);
+        }
+        return;
+    }
+
+    if (!entry.isSkipped) {
+        return;
+    }
+
+    QFont skippedFont = textItem->font();
+    skippedFont.setItalic(true);
+    textItem->setFont(skippedFont);
+    textItem->setText(QStringLiteral("Skip: %1").arg(entry.text));
+    for (QTableWidgetItem* tableItem : rowItems) {
+        tableItem->setBackground(skippedColor);
+        tableItem->setForeground(skippedTextColor);
     }
 }
 
@@ -776,6 +888,9 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     QAction* addAbove = menu.addAction(QStringLiteral("Add Word Above"));
     QAction* addBelow = menu.addAction(QStringLiteral("Add Word Below"));
     menu.addSeparator();
+    const bool rowSkipped = item->data(Qt::UserRole + 7).toBool();
+    QAction* skipAction = menu.addAction(rowSkipped ? QStringLiteral("Unskip Word")
+                                                    : QStringLiteral("Skip Word"));
     QAction* deleteAction = menu.addAction(QStringLiteral("Delete Word"));
 
     QAction* chosen = menu.exec(m_widgets.transcriptTable->viewport()->mapToGlobal(pos));
@@ -785,6 +900,8 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
         insertWordAtRow(row, true);
     } else if (chosen == addBelow) {
         insertWordAtRow(row, false);
+    } else if (chosen == skipAction) {
+        setSelectedRowsSkipped(!rowSkipped);
     } else if (chosen == deleteAction) {
         deleteSelectedRows();
     }
@@ -898,6 +1015,7 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         }
 
         refresh();
+        emit transcriptDocumentChanged();
         if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     }
 }

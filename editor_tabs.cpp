@@ -93,7 +93,15 @@ void EditorWindow::createTranscriptTab()
             [this](int64_t frame) { setCurrentFrame(frame); }});
     m_transcriptTab->wire();
 
-    connect(m_transcriptTab.get(), &TranscriptTab::speechFilterSettingsChanged, this, [this]() {
+    connect(m_transcriptTab.get(), &TranscriptTab::transcriptDocumentChanged, this, [this]() {
+        m_transcriptEngine.invalidateCache();
+        if (m_preview) {
+            if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
+                m_preview->invalidateTranscriptOverlayCache(clip->filePath);
+            } else {
+                m_preview->invalidateTranscriptOverlayCache();
+            }
+        }
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
@@ -101,8 +109,17 @@ void EditorWindow::createTranscriptTab()
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
         }
         m_inspectorPane->refresh();
-        scheduleSaveState();
-        pushHistorySnapshot();
+    });
+
+    connect(m_transcriptTab.get(), &TranscriptTab::speechFilterParametersChanged, this, [this]() {
+        m_transcriptEngine.invalidateCache();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        if (m_preview) m_preview->setExportRanges(ranges);
+        if (m_audioEngine) {
+            m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+        }
+        m_inspectorPane->refresh();
     });
 }
 
