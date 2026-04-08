@@ -14,6 +14,11 @@ public:
     explicit ProjectManager(QObject *parent = nullptr);
     ~ProjectManager() override = default;
 
+    // Root directory configuration (stored near executable)
+    QString configFilePath() const;
+    QString rootDirPath() const;
+    void setRootDirPath(const QString& path);
+    
     // Project path helpers
     QString projectsDirPath() const;
     QString currentProjectMarkerPath() const;

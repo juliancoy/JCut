@@ -39,6 +39,13 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     connect(m_explorerPane, &ExplorerPane::fileActivated, this, &EditorWindow::addFileToTimeline);
     connect(m_explorerPane, &ExplorerPane::transcriptionRequested, this, &EditorWindow::openTranscriptionWindow);
+    connect(m_explorerPane, &ExplorerPane::folderRootChanged, this, [this](const QString& path) {
+        // Update the projects root directory when explorer root changes
+        setRootDirPath(path);
+        // Reload projects from the new root
+        loadProjectsFromFolders();
+        refreshProjectsList();
+    });
     connect(m_explorerPane, &ExplorerPane::stateChanged, this, [this]() {
         scheduleSaveState();
         pushHistorySnapshot();
@@ -191,6 +198,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
                 {QStringLiteral("last_playhead_advance_age_ms"), playheadMs > 0 ? now - playheadMs : -1}};
         },
         [this]() { return profilingSnapshot(); },
+        [this]() { if (m_preview) m_preview->resetProfilingStats(); },
         this);
     m_controlServer->start(controlPort);
     qDebug() << "[STARTUP] ControlServer started in" << ctorTimer.elapsed() << "ms";

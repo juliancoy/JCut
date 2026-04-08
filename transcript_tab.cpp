@@ -888,6 +888,8 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     QAction* addAbove = menu.addAction(QStringLiteral("Add Word Above"));
     QAction* addBelow = menu.addAction(QStringLiteral("Add Word Below"));
     menu.addSeparator();
+    QAction* expandAction = menu.addAction(QStringLiteral("Expand"));
+    menu.addSeparator();
     const bool rowSkipped = item->data(Qt::UserRole + 7).toBool();
     QAction* skipAction = menu.addAction(rowSkipped ? QStringLiteral("Unskip Word")
                                                     : QStringLiteral("Skip Word"));
@@ -900,6 +902,8 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
         insertWordAtRow(row, true);
     } else if (chosen == addBelow) {
         insertWordAtRow(row, false);
+    } else if (chosen == expandAction) {
+        expandSelectedRow(row);
     } else if (chosen == skipAction) {
         setSelectedRowsSkipped(!rowSkipped);
     } else if (chosen == deleteAction) {
@@ -1018,6 +1022,82 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         emit transcriptDocumentChanged();
         if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     }
+}
+
+void TranscriptTab::expandSelectedRow(int row)
+{
+    if (!m_widgets.transcriptTable || m_loadedTranscriptPath.isEmpty() ||
+        !m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+
+    QTableWidgetItem* currentItem = m_widgets.transcriptTable->item(row, 0);
+    if (!currentItem) return;
+
+    const bool isGap = currentItem->data(Qt::UserRole + 4).toBool();
+    if (isGap) return;
+
+    const int segmentIndex = currentItem->data(Qt::UserRole + 5).toInt();
+    const int wordIndex = currentItem->data(Qt::UserRole + 6).toInt();
+    if (segmentIndex < 0 || wordIndex < 0) return;
+
+    // Find the previous word's end time
+    double newStartTime = 0.0;
+    bool hasPreviousWord = false;
+    for (int r = row - 1; r >= 0; --r) {
+        QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(r, 0);
+        if (!prevItem) continue;
+        if (prevItem->data(Qt::UserRole + 4).toBool()) continue; // Skip gaps
+        newStartTime = prevItem->data(Qt::UserRole + 1).toDouble(); // Previous word's end time
+        hasPreviousWord = true;
+        break;
+    }
+
+    // Find the next word's start time
+    double newEndTime = 0.0;
+    bool hasNextWord = false;
+    for (int r = row + 1; r < m_widgets.transcriptTable->rowCount(); ++r) {
+        QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(r, 0);
+        if (!nextItem) continue;
+        if (nextItem->data(Qt::UserRole + 4).toBool()) continue; // Skip gaps
+        newEndTime = nextItem->data(Qt::UserRole).toDouble(); // Next word's start time
+        hasNextWord = true;
+        break;
+    }
+
+    // Update the JSON document
+    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+    if (segmentIndex >= segments.size()) return;
+
+    QJsonObject segmentObj = segments.at(segmentIndex).toObject();
+    QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+    if (wordIndex >= words.size()) return;
+
+    QJsonObject wordObj = words.at(wordIndex).toObject();
+
+    if (hasPreviousWord) {
+        wordObj[QStringLiteral("start")] = newStartTime;
+    }
+    if (hasNextWord) {
+        wordObj[QStringLiteral("end")] = newEndTime;
+    }
+
+    words.replace(wordIndex, wordObj);
+    segmentObj[QStringLiteral("words")] = words;
+    segments.replace(segmentIndex, segmentObj);
+    root[QStringLiteral("segments")] = segments;
+    m_loadedTranscriptDoc.setObject(root);
+
+    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+        refresh();
+        return;
+    }
+
+    refresh();
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
 
 bool TranscriptTab::eventFilter(QObject* watched, QEvent* event)

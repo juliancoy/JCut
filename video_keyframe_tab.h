@@ -38,6 +38,7 @@ public:
         QCheckBox* keyframesFollowCurrentCheckBox = nullptr;
         QPushButton* addVideoKeyframeButton = nullptr;
         QPushButton* removeVideoKeyframeButton = nullptr;
+        QPushButton* flipHorizontalButton = nullptr;
     };
 
     struct Dependencies : public KeyframeTabBase::Dependencies
@@ -83,6 +84,7 @@ private slots:
     void onFollowCurrentToggled(bool checked);
     void onAddKeyframeClicked();
     void onRemoveKeyframeClicked();
+    void onFlipHorizontalClicked();
     void onTableSelectionChanged();
     void onTableItemChanged(QTableWidgetItem* item);
     void onTableItemClicked(QTableWidgetItem* item);

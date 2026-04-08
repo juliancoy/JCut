@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 using namespace editor;
 
@@ -266,6 +267,33 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("repaint_timer_active"), m_repaintTimer.isActive()},
                          {QStringLiteral("bypass_grading"), m_bypassGrading}};
 
+    // Render timing statistics
+    QJsonObject renderTiming;
+    renderTiming[QStringLiteral("last_ms")] = static_cast<qint64>(m_lastRenderDurationMs);
+    renderTiming[QStringLiteral("max_ms")] = static_cast<qint64>(m_maxRenderDurationMs);
+    renderTiming[QStringLiteral("count")] = static_cast<qint64>(m_renderCount);
+    renderTiming[QStringLiteral("avg_ms")] = m_renderCount > 0 
+        ? static_cast<double>(m_totalRenderDurationMs) / static_cast<double>(m_renderCount) 
+        : 0.0;
+    renderTiming[QStringLiteral("target_ms")] = m_playing ? 33.33 : 16.67; // 30fps vs 60fps target
+    renderTiming[QStringLiteral("slow_frame")] = m_lastRenderDurationMs > (m_playing ? 33 : 16);
+    
+    // Calculate 95th percentile
+    if (!m_renderTimeHistory.empty()) {
+        std::vector<qint64> sorted(m_renderTimeHistory.begin(), m_renderTimeHistory.end());
+        std::sort(sorted.begin(), sorted.end());
+        const size_t p95Index = static_cast<size_t>(sorted.size() * 0.95);
+        renderTiming[QStringLiteral("p95_ms")] = static_cast<qint64>(sorted[p95Index]);
+    }
+    
+    QJsonArray history;
+    for (qint64 t : m_renderTimeHistory) {
+        history.append(static_cast<qint64>(t));
+    }
+    renderTiming[QStringLiteral("history_ms")] = history;
+    
+    snapshot[QStringLiteral("render_timing")] = renderTiming;
+
     if (m_decoder) {
         snapshot[QStringLiteral("decoder")] = QJsonObject{{QStringLiteral("worker_count"), m_decoder->workerCount()},
                                                            {QStringLiteral("pending_requests"), m_decoder->pendingRequestCount()}};
@@ -328,6 +356,14 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
 
     return snapshot;
 }
+
+void PreviewWindow::resetProfilingStats() {
+    m_maxRenderDurationMs = 0;
+    m_renderCount = 0;
+    m_totalRenderDurationMs = 0;
+    m_renderTimeHistory.clear();
+}
+
 void PreviewWindow::scheduleRepaint() {
     m_lastRepaintScheduleMs = nowMs();
     if (!m_repaintTimer.isActive()) {

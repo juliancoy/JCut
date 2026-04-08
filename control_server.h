@@ -18,6 +18,7 @@ public:
         QWidget* window,
         std::function<QJsonObject()> fastSnapshotCallback = {},
         std::function<QJsonObject()> profilingCallback = {},
+        std::function<void()> resetProfilingCallback = {},
         QObject* parent = nullptr);
     ~ControlServer() override;
 
@@ -32,6 +33,7 @@ private:
     QWidget* m_window = nullptr;
     std::function<QJsonObject()> m_fastSnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
+    std::function<void()> m_resetProfilingCallback;
     std::unique_ptr<QThread> m_thread;
     QObject* m_worker = nullptr;
 };

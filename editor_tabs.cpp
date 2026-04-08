@@ -233,7 +233,8 @@ void EditorWindow::createVideoKeyframeTab()
             m_videoInterpolationCombo, m_mirrorHorizontalCheckBox,
             m_mirrorVerticalCheckBox, m_lockVideoScaleCheckBox,
             m_keyframeSpaceCheckBox, m_keyframesAutoScrollCheckBox,
-            m_keyframesFollowCurrentCheckBox, m_addVideoKeyframeButton, m_removeVideoKeyframeButton},
+            m_keyframesFollowCurrentCheckBox, m_addVideoKeyframeButton, m_removeVideoKeyframeButton,
+            m_flipHorizontalButton},
         VideoKeyframeTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
@@ -255,6 +256,26 @@ void EditorWindow::createVideoKeyframeTab()
     m_videoKeyframeTab->wire();
 }
 
+void EditorWindow::createClipsTab()
+{
+    m_clipsTab = std::make_unique<ClipsTab>(
+        ClipsTab::Widgets{m_inspectorPane->clipsTable()},
+        ClipsTab::Dependencies{
+            [this]() { return m_timeline ? m_timeline->clips() : QVector<TimelineClip>{}; },
+            [this]() { return m_timeline ? m_timeline->tracks() : QVector<TimelineTrack>{}; },
+            [this](const QString& clipId) { return m_timeline ? m_timeline->deleteClipById(clipId) : false; },
+            [this](const QString& clipId) { if (m_timeline) m_timeline->setSelectedClipId(clipId); },
+            [this](const QString& clipId, const std::function<void(TimelineClip&)>& updater) {
+                return m_timeline ? m_timeline->updateClipById(clipId, updater) : false;
+            },
+            [this](int trackIndex, const std::function<void(TimelineTrack&)>& updater) {
+                return m_timeline ? m_timeline->updateTrackByIndex(trackIndex, updater) : false;
+            },
+            [this]() { pushHistorySnapshot(); },
+            [this]() { scheduleSaveState(); }});
+    m_clipsTab->wire();
+}
+
 void EditorWindow::setupTabs()
 {
     createOutputTab();
@@ -265,6 +286,7 @@ void EditorWindow::setupTabs()
     createEffectsTab();
     createTitlesTab();
     createVideoKeyframeTab();
+    createClipsTab();
 }
 
 void EditorWindow::setupInspectorRefreshRouting()
@@ -280,5 +302,9 @@ void EditorWindow::setupInspectorRefreshRouting()
         m_outputTab->refresh();
         m_profileTab->refresh();
         m_projectsTab->refresh();
+        if (m_clipsTab) m_clipsTab->refresh();
+        if (m_inspectorPane && m_inspectorPane->tracksTable()) {
+            refreshTracksTab();
+        }
     });
 }

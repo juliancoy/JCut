@@ -9,6 +9,7 @@ class QLabel;
 class QPushButton;
 class QToolButton;
 class QSlider;
+class QSplitter;
 
 // Container that holds TrackSidebar and TimelineWidget in a 2x2 grid:
 // +------------------+------------------+
@@ -38,6 +39,8 @@ private slots:
     void onTrackVisualToggled(int trackIndex, bool enabled);
     void onTrackAudioToggled(int trackIndex, bool enabled);
     void onTrackSelected(int trackIndex);
+    void onTrackMoveUp(int trackIndex);
+    void onTrackMoveDown(int trackIndex);
 
 private:
     void setupLayout();
@@ -51,6 +54,7 @@ private:
     QWidget *m_transportWidget = nullptr;
     
     // Bottom row widgets  
+    QSplitter *m_bottomSplitter = nullptr;
     TrackSidebar *m_trackSidebar = nullptr;
     TimelineWidget *m_timeline = nullptr;
 };

@@ -203,7 +203,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
 {
     m_loadingState = true;
 
-    QString rootPath = root.value(QStringLiteral("explorerRoot")).toString(QDir::currentPath());
+    // Default to the projects root from editor.config, then fall back to saved state, then current dir
+    QString rootPath = root.value(QStringLiteral("explorerRoot")).toString(rootDirPath());
+    if (rootPath.isEmpty() || !QDir(rootPath).exists()) {
+        rootPath = QDir::currentPath();
+    }
     QString galleryFolderPath = root.value(QStringLiteral("explorerGalleryPath")).toString();
     const int outputWidth = qMax(16, root.value(QStringLiteral("outputWidth")).toInt(1080));
     const int outputHeight = qMax(16, root.value(QStringLiteral("outputHeight")).toInt(1920));
@@ -377,10 +381,20 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     updateTransportLabels();
 
     m_loadingState = false;
-    QTimer::singleShot(0, this, [this, resolvedRootPath]() {
+    
+    // Use the projects root from editor.config if available, otherwise use the saved explorer root
+    const QString projectsRoot = rootDirPath();
+    const QString explorerRoot = (!projectsRoot.isEmpty() && QDir(projectsRoot).exists()) 
+        ? projectsRoot 
+        : resolvedRootPath;
+    
+    QTimer::singleShot(0, this, [this, explorerRoot]() {
         if (m_explorerPane) {
-            m_explorerPane->setInitialRootPath(resolvedRootPath);
+            m_explorerPane->setInitialRootPath(explorerRoot);
         }
+        // Ensure projects root is set to match explorer root
+        setRootDirPath(explorerRoot);
+        loadProjectsFromFolders();
         refreshProjectsList();
         m_inspectorPane->refresh();
     });
@@ -891,6 +905,90 @@ void EditorWindow::refreshClipInspector()
     }
     if (m_trackCrossfadeButton) {
         m_trackCrossfadeButton->setEnabled(clipCount > 1);
+    }
+}
+
+void EditorWindow::refreshTracksTab()
+{
+    QTableWidget *tracksTable = m_inspectorPane ? m_inspectorPane->tracksTable() : nullptr;
+    if (!tracksTable) {
+        return;
+    }
+
+    m_updatingTracksTab = true;
+    const QVector<TimelineTrack> tracks = m_timeline ? m_timeline->tracks() : QVector<TimelineTrack>{};
+    tracksTable->setRowCount(tracks.size());
+
+    for (int row = 0; row < tracks.size(); ++row) {
+        const TimelineTrack &track = tracks[row];
+        const QString trackName = track.name.trimmed().isEmpty()
+            ? QStringLiteral("Track %1").arg(row + 1)
+            : track.name;
+
+        auto *nameItem = new QTableWidgetItem(trackName);
+        nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
+
+        auto *visualItem = new QTableWidgetItem;
+        const bool hasVisual = m_timeline ? m_timeline->trackHasVisualClips(row) : false;
+        const bool visualEnabled = m_timeline ? m_timeline->trackVisualEnabled(row) : false;
+        Qt::ItemFlags visualFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
+        if (hasVisual) {
+            visualFlags |= Qt::ItemIsEnabled;
+        }
+        visualItem->setFlags(visualFlags);
+        visualItem->setCheckState(visualEnabled ? Qt::Checked : Qt::Unchecked);
+        if (!hasVisual) {
+            visualItem->setToolTip(QStringLiteral("No visual clips on this track"));
+        }
+
+        auto *audioItem = new QTableWidgetItem;
+        const bool hasAudio = m_timeline ? m_timeline->trackHasAudioClips(row) : false;
+        const bool audioEnabled = m_timeline ? m_timeline->trackAudioEnabled(row) : false;
+        Qt::ItemFlags audioFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
+        if (hasAudio) {
+            audioFlags |= Qt::ItemIsEnabled;
+        }
+        audioItem->setFlags(audioFlags);
+        audioItem->setCheckState(audioEnabled ? Qt::Checked : Qt::Unchecked);
+        if (!hasAudio) {
+            audioItem->setToolTip(QStringLiteral("No audio clips on this track"));
+        }
+
+        tracksTable->setItem(row, 0, nameItem);
+        tracksTable->setItem(row, 1, visualItem);
+        tracksTable->setItem(row, 2, audioItem);
+    }
+
+    tracksTable->resizeColumnsToContents();
+    m_updatingTracksTab = false;
+}
+
+void EditorWindow::onTrackTableItemChanged(QTableWidgetItem* item)
+{
+    if (m_updatingTracksTab || !item || !m_timeline || !m_inspectorPane) {
+        return;
+    }
+
+    const int row = item->row();
+    if (row < 0 || !m_inspectorPane->tracksTable() || row >= m_inspectorPane->tracksTable()->rowCount()) {
+        return;
+    }
+
+    const bool checked = item->checkState() == Qt::Checked;
+    bool changed = false;
+
+    if (item->column() == 1) {
+        changed = m_timeline->updateTrackVisualEnabled(row, checked);
+    } else if (item->column() == 2) {
+        changed = m_timeline->updateTrackAudioEnabled(row, checked);
+    }
+
+    if (changed) {
+        m_inspectorPane->refresh();
+        scheduleSaveState();
+        pushHistorySnapshot();
+    } else {
+        refreshTracksTab();
     }
 }
 

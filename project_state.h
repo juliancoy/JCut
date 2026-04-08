@@ -10,6 +10,11 @@
 
 void loadState();
 
+// Root directory configuration (stored near executable in editor.config)
+QString configFilePath() const;
+QString rootDirPath() const;
+void setRootDirPath(const QString& path);
+
 QString projectsDirPath() const;
 QString currentProjectMarkerPath() const;
 QString currentProjectIdOrDefault() const;

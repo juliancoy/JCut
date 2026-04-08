@@ -90,6 +90,7 @@ public:
     QCheckBox *keyframesFollowCurrentCheckBox() const { return m_keyframesFollowCurrentCheckBox; }
     QPushButton *addVideoKeyframeButton() const { return m_addVideoKeyframeButton; }
     QPushButton *removeVideoKeyframeButton() const { return m_removeVideoKeyframeButton; }
+    QPushButton *flipHorizontalButton() const { return m_flipHorizontalButton; }
 
     QLabel *titlesInspectorClipLabel() const { return m_titlesInspectorClipLabel; }
     QLabel *titlesInspectorDetailsLabel() const { return m_titlesInspectorDetailsLabel; }
@@ -132,6 +133,8 @@ public:
     QDoubleSpinBox *previewZoomSpin() const { return m_previewZoomSpin; }
     QPushButton *previewZoomResetButton() const { return m_previewZoomResetButton; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
+    QTableWidget *clipsTable() const { return m_clipsTable; }
+    QTableWidget *tracksTable() const { return m_tracksTable; }
     QPushButton *profileBenchmarkButton() const { return m_profileBenchmarkButton; }
     QLabel *projectSectionLabel() const { return m_projectSectionLabel; }
     QListWidget *projectsList() const { return m_projectsList; }
@@ -168,6 +171,8 @@ private:
     QWidget *buildKeyframesTab();
     QWidget *buildTranscriptTab();
     QWidget *buildClipTab();
+    QWidget *buildClipsTab();
+    QWidget *buildTracksTab();
     QWidget *buildOutputTab();
     QWidget *buildPreviewTab();
     QWidget *buildProfileTab();
@@ -226,6 +231,7 @@ private:
     QCheckBox *m_keyframeSpaceCheckBox = nullptr;
     QPushButton *m_addVideoKeyframeButton = nullptr;
     QPushButton *m_removeVideoKeyframeButton = nullptr;
+    QPushButton *m_flipHorizontalButton = nullptr;
 
     QLabel *m_titlesInspectorClipLabel = nullptr;
     QLabel *m_titlesInspectorDetailsLabel = nullptr;
@@ -268,6 +274,8 @@ private:
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
+    QTableWidget *m_clipsTable = nullptr;
+    QTableWidget *m_tracksTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;

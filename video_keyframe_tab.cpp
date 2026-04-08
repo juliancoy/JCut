@@ -87,6 +87,10 @@ void VideoKeyframeTab::wire()
         connect(m_widgets.removeVideoKeyframeButton, &QPushButton::clicked,
                 this, &VideoKeyframeTab::onRemoveKeyframeClicked);
     }
+    if (m_widgets.flipHorizontalButton) {
+        connect(m_widgets.flipHorizontalButton, &QPushButton::clicked,
+                this, &VideoKeyframeTab::onFlipHorizontalClicked);
+    }
     if (m_widgets.videoKeyframeTable) {
         connect(m_widgets.videoKeyframeTable, &QTableWidget::itemSelectionChanged,
                 this, &VideoKeyframeTab::onTableSelectionChanged);
@@ -1246,4 +1250,74 @@ void VideoKeyframeTab::onTableCustomContextMenu(const QPoint& pos)
     } else if (chosen == actions.deleteRows && actions.deleteRows->isEnabled()) {
         removeSelectedKeyframes();
     }
+}
+
+void VideoKeyframeTab::onFlipHorizontalClicked()
+{
+    const TimelineClip* clip = m_deps.getSelectedClip();
+    if (!clip || !m_deps.clipHasVisuals(*clip)) {
+        return;
+    }
+
+    // Get current position within the clip
+    const int64_t currentLocalFrame = qBound<int64_t>(0,
+                                                      m_deps.getCurrentTimelineFrame() - clip->startFrame,
+                                                      qMax<int64_t>(0, clip->durationFrames - 1));
+    
+    // Calculate the end frame (1 second later = 30 frames at 30fps)
+    static constexpr int64_t kOneSecondFrames = 30;
+    const int64_t endLocalFrame = qMin<int64_t>(currentLocalFrame + kOneSecondFrames, 
+                                                qMax<int64_t>(0, clip->durationFrames - 1));
+
+    // Get current transform values at current position
+    const TransformKeyframeDisplay currentTransform = evaluateDisplayedTransform(*clip, currentLocalFrame);
+
+    // Calculate flipped X values (flip across center line means negate translation X and scale X)
+    TransformKeyframeDisplay flippedTransform = currentTransform;
+    flippedTransform.translationX = -currentTransform.translationX;
+    flippedTransform.scaleX = -currentTransform.scaleX;
+
+    const bool updated = m_deps.updateClipById(clip->id, [this, currentLocalFrame, endLocalFrame, 
+                                                          &currentTransform, &flippedTransform](TimelineClip& editableClip) {
+        // Helper to add or update keyframe
+        auto upsertKeyframe = [this, &editableClip](int64_t frame, const TransformKeyframeDisplay& transform) {
+            TimelineClip::TransformKeyframe keyframe = keyframeFromInspectorDisplay(editableClip, transform);
+            keyframe.frame = frame;
+            keyframe.linearInterpolation = true; // Use linear interpolation for smooth flip
+
+            bool replaced = false;
+            for (TimelineClip::TransformKeyframe& existing : editableClip.transformKeyframes) {
+                if (existing.frame == frame) {
+                    existing = keyframe;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                editableClip.transformKeyframes.push_back(keyframe);
+            }
+        };
+
+        // Add keyframe at current position with current values
+        upsertKeyframe(currentLocalFrame, currentTransform);
+
+        // Add keyframe 1 second later with flipped X values
+        upsertKeyframe(endLocalFrame, flippedTransform);
+
+        normalizeClipTransformKeyframes(editableClip);
+    });
+
+    if (!updated) {
+        return;
+    }
+
+    // Select the end keyframe
+    m_selectedKeyframeFrame = endLocalFrame;
+    m_selectedKeyframeFrames = {endLocalFrame};
+
+    m_deps.setPreviewTimelineClips();
+    m_deps.refreshInspector();
+    m_deps.scheduleSaveState();
+    m_deps.pushHistorySnapshot();
+    emit keyframeAdded();
 }

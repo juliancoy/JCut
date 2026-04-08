@@ -105,6 +105,7 @@ private:
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
     void insertWordAtRow(int row, bool above);
+    void expandSelectedRow(int row);
     void applyTranscriptRowState(QTableWidgetItem* startItem,
                                  QTableWidgetItem* endItem,
                                  QTableWidgetItem* textItem,

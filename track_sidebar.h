@@ -9,6 +9,8 @@ struct TrackInfo {
     bool audioEnabled = true;
     bool hasVisual = false;
     bool hasAudio = false;
+    int top = 0; // Track top position relative to the timeline track area
+    int height = 44;  // Default track height, should match TimelineWidget::kDefaultTrackHeight
 };
 
 class TrackSidebar final : public QWidget {
@@ -26,6 +28,9 @@ public:
     QRect trackRect(int index) const;
 
     static constexpr int kTrackColumnWidth = 110;
+    static constexpr int kDefaultTrackHeight = 44;
+    static constexpr int kMinTrackHeight = 28;
+    static constexpr int kTrackSpacing = 10;  // Match TimelineWidget::kTimelineTrackSpacing
 
 signals:
     void trackVisualToggled(int trackIndex, bool enabled);
@@ -33,12 +38,15 @@ signals:
     void trackSelected(int trackIndex);
     void trackDragStarted(int trackIndex);
     void trackDropped(int fromIndex, int toIndex);
+    void trackMoveUpRequested(int trackIndex);
+    void trackMoveDownRequested(int trackIndex);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override;
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
 
@@ -46,7 +54,7 @@ private:
     QRect trackLabelRect(int index) const;
     QRect trackVisualToggleRect(int index) const;
     QRect trackAudioToggleRect(int index) const;
-    int trackHeight() const;
+    int trackHeight(int index) const;
     int trackTop(int index) const;
 
     QVector<TrackInfo> m_tracks;

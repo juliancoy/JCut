@@ -1,4 +1,6 @@
 #include "timeline_widget.h"
+#include "timeline_layout.h"
+#include "timeline_renderer.h"
 #include "titles.h"
 
 #include <QApplication>
@@ -135,6 +137,9 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent) {
     setMinimumHeight(150);
     setMouseTracking(true);
     setAutoFillBackground(true);
+
+    m_layout = std::make_unique<TimelineLayout>(this);
+    m_renderer = std::make_unique<TimelineRenderer>(this);
 
     QPalette pal = palette();
     pal.setColor(QPalette::Window, QColor(QStringLiteral("#0f1216")));
@@ -280,6 +285,109 @@ bool TimelineWidget::updateTrackAudioEnabled(int trackIndex, bool enabled) {
 
 bool TimelineWidget::crossfadeTrack(int trackIndex, double seconds) {
     return applyCrossfadeToTrack(trackIndex, seconds);
+}
+
+bool TimelineWidget::moveTrackUp(int trackIndex) {
+    if (trackIndex <= 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+    
+    ensureTrackCount(trackCount());
+    
+    // Swap track indices
+    std::swap(m_tracks[trackIndex], m_tracks[trackIndex - 1]);
+    
+    // Update clip track indices
+    for (TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex) {
+            clip.trackIndex = trackIndex - 1;
+        } else if (clip.trackIndex == trackIndex - 1) {
+            clip.trackIndex = trackIndex;
+        }
+    }
+    
+    normalizeTrackIndices();
+    sortClips();
+    
+    // Update selected track
+    if (m_selectedTrackIndex == trackIndex) {
+        m_selectedTrackIndex = trackIndex - 1;
+    } else if (m_selectedTrackIndex == trackIndex - 1) {
+        m_selectedTrackIndex = trackIndex;
+    }
+    
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    update();
+    return true;
+}
+
+bool TimelineWidget::moveTrackDown(int trackIndex) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size() - 1) {
+        return false;
+    }
+    
+    ensureTrackCount(trackCount());
+    
+    // Swap track indices
+    std::swap(m_tracks[trackIndex], m_tracks[trackIndex + 1]);
+    
+    // Update clip track indices
+    for (TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex) {
+            clip.trackIndex = trackIndex + 1;
+        } else if (clip.trackIndex == trackIndex + 1) {
+            clip.trackIndex = trackIndex;
+        }
+    }
+    
+    normalizeTrackIndices();
+    sortClips();
+    
+    // Update selected track
+    if (m_selectedTrackIndex == trackIndex) {
+        m_selectedTrackIndex = trackIndex + 1;
+    } else if (m_selectedTrackIndex == trackIndex + 1) {
+        m_selectedTrackIndex = trackIndex;
+    }
+    
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    update();
+    return true;
+}
+
+bool TimelineWidget::deleteClipById(const QString& clipId) {
+    if (clipId.isEmpty()) {
+        return false;
+    }
+    for (int i = 0; i < m_clips.size(); ++i) {
+        if (m_clips[i].id != clipId) {
+            continue;
+        }
+        if (m_clips[i].locked) {
+            return false;
+        }
+        m_clips.removeAt(i);
+        if (m_selectedClipId == clipId) {
+            m_selectedClipId.clear();
+        }
+        sortClips();
+        if (clipsChanged) {
+            clipsChanged();
+        }
+        update();
+        return true;
+    }
+    return false;
 }
 
 bool TimelineWidget::deleteSelectedClip() {
@@ -842,4 +950,41 @@ bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds) {
     }
     update();
     return true;
+}
+
+void TimelineWidget::setExportRange(int64_t startFrame, int64_t endFrame) {
+    setExportRanges({ExportRangeSegment{startFrame, endFrame}});
+}
+
+void TimelineWidget::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
+    m_exportRanges = ranges;
+    normalizeExportRanges();
+    update();
+}
+
+bool TimelineWidget::isVisualMediaType(ClipMediaType type) const {
+    return type == ClipMediaType::Image || type == ClipMediaType::Video || type == ClipMediaType::Title;
+}
+
+bool TimelineWidget::isAudioMediaType(ClipMediaType type) const {
+    return type == ClipMediaType::Audio;
+}
+
+bool TimelineWidget::wouldClipConflictWithTrack(const TimelineClip& clip, int trackIndex, const QString& excludeClipId) const {
+    const bool clipIsVisual = isVisualMediaType(clip.mediaType);
+    const bool clipIsAudio = isAudioMediaType(clip.mediaType);
+    for (const TimelineClip& other : m_clips) {
+        if (other.id == excludeClipId || other.id == clip.id) {
+            continue;
+        }
+        if (other.trackIndex != trackIndex) {
+            continue;
+        }
+        const bool otherIsVisual = isVisualMediaType(other.mediaType);
+        const bool otherIsAudio = isAudioMediaType(other.mediaType);
+        if ((clipIsVisual && otherIsVisual) || (clipIsAudio && otherIsAudio)) {
+            return true;
+        }
+    }
+    return false;
 }

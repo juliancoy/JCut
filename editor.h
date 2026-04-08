@@ -18,6 +18,7 @@
 #include "effects_tab.h"
 #include "titles_tab.h"
 #include "video_keyframe_tab.h"
+#include "clips_tab.h"
 
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -94,6 +95,11 @@ private:
     void scheduleDeferredTimelineSeek(QTimer *timer, int64_t *pendingFrame, int64_t timelineFrame);
     void cancelDeferredTimelineSeek(QTimer *timer, int64_t *pendingFrame);
 
+    // Root directory configuration (stored near executable in editor.config)
+    QString configFilePath() const;
+    QString rootDirPath() const;
+    void setRootDirPath(const QString& path);
+
     QString projectsDirPath() const;
     QString currentProjectMarkerPath() const;
     QString currentProjectIdOrDefault() const;
@@ -139,6 +145,8 @@ private:
     void onSyncTableItemDoubleClicked(QTableWidgetItem* item);
     void onSyncTableCustomContextMenu(const QPoint& pos);
     void refreshClipInspector();
+    void refreshTracksTab();
+    void onTrackTableItemChanged(QTableWidgetItem* item);
     void refreshOutputInspector();
     void applyOutputRangeFromInspector();
     void renderFromOutputInspector();
@@ -187,6 +195,7 @@ private:
     void createEffectsTab();
     void createTitlesTab();
     void createVideoKeyframeTab();
+    void createClipsTab();
 
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
@@ -325,6 +334,7 @@ private:
 
     QPushButton *m_addVideoKeyframeButton = nullptr;
     QPushButton *m_removeVideoKeyframeButton = nullptr;
+    QPushButton *m_flipHorizontalButton = nullptr;
     QPushButton *m_renderButton = nullptr;
     QString m_lastRenderOutputPath;
 
@@ -338,6 +348,7 @@ private:
     std::unique_ptr<OutputTab> m_outputTab;
     std::unique_ptr<ProfileTab> m_profileTab;
     std::unique_ptr<ProjectsTab> m_projectsTab;
+    std::unique_ptr<ClipsTab> m_clipsTab;
 
     ExplorerPane *m_explorerPane = nullptr;
     InspectorPane *m_inspectorPane = nullptr;
@@ -351,6 +362,7 @@ private:
     bool m_loadingState = false;
     bool m_pendingSaveAfterLoad = false;
     bool m_restoringHistory = false;
+    bool m_updatingTracksTab = false;
 
     QColor m_backgroundColor = QColor(Qt::black);
     int64_t m_absolutePlaybackSample = 0;

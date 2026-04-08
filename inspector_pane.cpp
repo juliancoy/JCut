@@ -71,6 +71,8 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
     m_inspectorTabs->addTab(buildTranscriptTab(), QStringLiteral("Transcript"));
     m_inspectorTabs->addTab(buildClipTab(), QStringLiteral("Properties"));
+    m_inspectorTabs->addTab(buildClipsTab(), QStringLiteral("Clips"));
+    m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
     m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
     m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
     m_inspectorTabs->addTab(buildProfileTab(), QStringLiteral("System"));
@@ -109,10 +111,11 @@ void InspectorPane::configureInspectorTabs()
         {4, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
         {5, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
         {6, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {7, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {8, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {9, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {10, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {7, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
+        {8, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
+        {9, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {10, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {11, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -492,6 +495,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_keyframeSpaceCheckBox = new QCheckBox(QStringLiteral("Clip-Relative Frames"), page);
     m_addVideoKeyframeButton = new QPushButton(QStringLiteral("Add Keyframe"), page);
     m_removeVideoKeyframeButton = new QPushButton(QStringLiteral("Remove Keyframe"), page);
+    m_flipHorizontalButton = new QPushButton(QStringLiteral("Flip Horizontal"), page);
 
     m_videoInterpolationCombo->addItem(QStringLiteral("Step"));
     m_videoInterpolationCombo->addItem(QStringLiteral("Linear"));
@@ -518,6 +522,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     auto *buttonRow = new QHBoxLayout;
     buttonRow->addWidget(m_addVideoKeyframeButton);
     buttonRow->addWidget(m_removeVideoKeyframeButton);
+    buttonRow->addWidget(m_flipHorizontalButton);
 
     m_keyframesAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
     m_keyframesFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
@@ -669,6 +674,70 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     layout->addWidget(splitter);
 
+    return page;
+}
+
+QWidget *InspectorPane::buildClipsTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    m_clipsTable = new QTableWidget(page);
+    m_clipsTable->setColumnCount(6);
+    m_clipsTable->setHorizontalHeaderLabels({
+        QStringLiteral("Name"),
+        QStringLiteral("Track"),
+        QStringLiteral("Type"),
+        QStringLiteral("Start"),
+        QStringLiteral("Duration"),
+        QStringLiteral("File"),
+    });
+    m_clipsTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    m_clipsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_clipsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_clipsTable->setFocusPolicy(Qt::ClickFocus);
+    m_clipsTable->setAlternatingRowColors(true);
+    m_clipsTable->verticalHeader()->setVisible(false);
+    m_clipsTable->horizontalHeader()->setStretchLastSection(true);
+    m_clipsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_clipsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_clipsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_clipsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_clipsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_clipsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+
+    layout->addWidget(m_clipsTable, 1);
+    return page;
+}
+
+QWidget *InspectorPane::buildTracksTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    m_tracksTable = new QTableWidget(page);
+    m_tracksTable->setColumnCount(3);
+    m_tracksTable->setHorizontalHeaderLabels({
+        QStringLiteral("Track"),
+        QStringLiteral("Visual"),
+        QStringLiteral("Audio"),
+    });
+    m_tracksTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_tracksTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_tracksTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_tracksTable->setFocusPolicy(Qt::ClickFocus);
+    m_tracksTable->setAlternatingRowColors(true);
+    m_tracksTable->verticalHeader()->setVisible(false);
+    m_tracksTable->horizontalHeader()->setStretchLastSection(true);
+    m_tracksTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_tracksTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_tracksTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+
+    layout->addWidget(m_tracksTable, 1);
     return page;
 }
 

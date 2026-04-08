@@ -8,6 +8,7 @@
 #include <QCoreApplication>
 #include <QContextMenuEvent>
 #include <QDateTime>
+#include <QDebug>
 #include <QEvent>
 #include <QHash>
 #include <QJsonArray>
@@ -272,10 +273,12 @@ class ControlServerWorker final : public QObject {
 public:
     ControlServerWorker(QWidget* window,
                         std::function<QJsonObject()> fastSnapshotCallback,
-                        std::function<QJsonObject()> profilingCallback)
+                        std::function<QJsonObject()> profilingCallback,
+                        std::function<void()> resetProfilingCallback)
         : m_window(window)
         , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
-        , m_profilingCallback(std::move(profilingCallback)) {}
+        , m_profilingCallback(std::move(profilingCallback))
+        , m_resetProfilingCallback(std::move(resetProfilingCallback)) {}
 
     ~ControlServerWorker() override = default;
 
@@ -453,6 +456,25 @@ private:
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("profile"), profile}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/profile/reset")) {
+            bool reset = false;
+            if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &reset, [this]() {
+                    if (m_resetProfilingCallback) {
+                        m_resetProfilingCallback();
+                        return true;
+                    }
+                    return false;
+                })) {
+                writeError(socket, 503, QStringLiteral("timed out waiting for ui-thread profile reset"));
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), reset},
+                {QStringLiteral("message"), reset ? QStringLiteral("profiling stats reset") : QStringLiteral("no reset callback configured")}
             });
             return;
         }
@@ -730,6 +752,7 @@ private:
     QPointer<QWidget> m_window;
     std::function<QJsonObject()> m_fastSnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
+    std::function<void()> m_resetProfilingCallback;
     std::unique_ptr<QTcpServer> m_server;
     QHash<QTcpSocket*, QByteArray> m_buffers;
     quint16 m_listenPort = 0;
@@ -741,11 +764,13 @@ private:
 ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> fastSnapshotCallback,
                              std::function<QJsonObject()> profilingCallback,
+                             std::function<void()> resetProfilingCallback,
                              QObject* parent)
     : QObject(parent)
     , m_window(window)
     , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
-    , m_profilingCallback(std::move(profilingCallback)) {}
+    , m_profilingCallback(std::move(profilingCallback))
+    , m_resetProfilingCallback(std::move(resetProfilingCallback)) {}
 
 ControlServer::~ControlServer() {
     if (m_worker) {
@@ -763,11 +788,12 @@ ControlServer::~ControlServer() {
 
 bool ControlServer::start(quint16 port) {
     if (m_thread) {
+        qDebug() << "[ControlServer] start() ignored because the server thread already exists";
         return false;
     }
 
     m_thread = std::make_unique<QThread>();
-    auto* worker = new ControlServerWorker(m_window, m_fastSnapshotCallback, m_profilingCallback);
+    auto* worker = new ControlServerWorker(m_window, m_fastSnapshotCallback, m_profilingCallback, m_resetProfilingCallback);
     m_worker = worker;
     worker->moveToThread(m_thread.get());
     connect(m_thread.get(), &QThread::finished, worker, &QObject::deleteLater);
@@ -780,10 +806,12 @@ bool ControlServer::start(quint16 port) {
                 started = worker->startListening(port);
             },
             Qt::BlockingQueuedConnection)) {
+        qDebug() << "[ControlServer] Failed to invoke worker startup on port" << port;
         return false;
     }
 
     if (!started) {
+        qDebug() << "[ControlServer] Failed to initialize on port" << port;
         worker->deleteLater();
         m_worker = nullptr;
         m_thread->quit();
@@ -792,6 +820,7 @@ bool ControlServer::start(quint16 port) {
         return false;
     }
 
+    qDebug() << "[ControlServer] Initialized on port" << port;
     return true;
 }
 

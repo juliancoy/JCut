@@ -206,7 +206,8 @@ void PreviewWindow::trimTextureCache() {
 }
 
 void PreviewWindow::paintGL() {
-    m_lastPaintMs = nowMs();
+    const qint64 renderStartMs = nowMs();
+    m_lastPaintMs = renderStartMs;
     glDisable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -231,6 +232,17 @@ void PreviewWindow::paintGL() {
     renderCompositedPreviewGL(compositeRect, activeClips, drewAnyFrame, waitingForFrame);
     drawCompositedPreviewOverlay(&painter, safeRect, compositeRect, activeClips, drewAnyFrame, waitingForFrame);
     drawPreviewChrome(&painter, safeRect, activeClips.size());
+
+    // Track render timing
+    const qint64 renderEndMs = nowMs();
+    m_lastRenderDurationMs = renderEndMs - renderStartMs;
+    m_maxRenderDurationMs = qMax(m_maxRenderDurationMs, m_lastRenderDurationMs);
+    m_totalRenderDurationMs += m_lastRenderDurationMs;
+    ++m_renderCount;
+    m_renderTimeHistory.push_back(m_lastRenderDurationMs);
+    if (m_renderTimeHistory.size() > kRenderTimeHistorySize) {
+        m_renderTimeHistory.pop_front();
+    }
 
     if (m_playing || (m_cache && m_cache->pendingVisibleRequestCount() > 0) ||
         (m_decoder && m_decoder->pendingRequestCount() > 0)) {

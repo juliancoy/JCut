@@ -47,32 +47,23 @@ QString TimelineWidget::defaultTrackName(int trackIndex) const {
 }
 
 int TimelineWidget::trackTop(int trackIndex) const {
-    const QRect tracks = trackRect();
-    int y = tracks.top() + kTimelineTrackInnerPadding - m_verticalScrollOffset;
-    for (int i = 0; i < trackIndex && i < m_tracks.size(); ++i) {
-        y += trackHeight(i) + kTimelineTrackSpacing;
-    }
-    return y;
+    return m_layout->trackTop(trackIndex);
+}
+
+int TimelineWidget::trackTopInTrackArea(int trackIndex) const {
+    return m_layout->trackTop(trackIndex) - trackRect().top();
 }
 
 int TimelineWidget::trackHeight(int trackIndex) const {
-    if (trackIndex >= 0 && trackIndex < m_tracks.size()) {
-        return qMax(kMinTrackHeight, m_tracks[trackIndex].height);
-    }
-    return kDefaultTrackHeight;
+    return m_layout->trackHeight(trackIndex);
 }
 
 int TimelineWidget::totalTrackAreaHeight() const {
-    int trackAreaHeight = kTimelineTrackInnerPadding * 2;
-    for (int i = 0; i < trackCount(); ++i) {
-        trackAreaHeight += trackHeight(i);
-    }
-    trackAreaHeight += qMax(0, trackCount() - 1) * kTimelineTrackSpacing;
-    return trackAreaHeight;
+    return m_layout->totalTrackAreaHeight();
 }
 
 int TimelineWidget::maxVerticalScrollOffset() const {
-    return qMax(0, totalTrackAreaHeight() - trackRect().height());
+    return m_layout->maxVerticalScrollOffset();
 }
 
 void TimelineWidget::setVerticalScrollOffset(int offset) {
@@ -107,81 +98,15 @@ void TimelineWidget::setTimelineZoom(qreal pixelsPerFrame) {
 }
 
 int TimelineWidget::trackIndexAtY(int y, bool allowAppendTrack) const {
-    if (m_tracks.isEmpty()) {
-        return 0;
-    }
-
-    for (int i = 0; i < trackCount(); ++i) {
-        const int top = trackTop(i);
-        const int bottom = top + trackHeight(i);
-        if (y >= top && y < bottom) {
-            return i;
-        }
-    }
-
-    const int lastTrackBottom = trackTop(trackCount() - 1) + trackHeight(trackCount() - 1);
-    if (allowAppendTrack && y >= lastTrackBottom) {
-        return trackCount();
-    }
-    if (y < trackTop(0)) {
-        return 0;
-    }
-    return trackCount() - 1;
+    return m_layout->trackIndexAtY(y, allowAppendTrack);
 }
 
 int TimelineWidget::trackDropTargetAtY(int y, bool* insertsTrack) const {
-    if (insertsTrack) {
-        *insertsTrack = false;
-    }
-    if (m_tracks.isEmpty()) {
-        if (insertsTrack) {
-            *insertsTrack = true;
-        }
-        return 0;
-    }
-
-    const int firstTop = trackTop(0);
-    if (y < firstTop) {
-        if (insertsTrack) {
-            *insertsTrack = true;
-        }
-        return 0;
-    }
-
-    for (int i = 0; i < trackCount(); ++i) {
-        const int top = trackTop(i);
-        const int bottom = top + trackHeight(i);
-        if (y >= top && y < bottom) {
-            return i;
-        }
-        const int nextTop = (i + 1 < trackCount()) ? trackTop(i + 1) : bottom + kTimelineTrackSpacing;
-        if (y >= bottom && y < nextTop) {
-            if (insertsTrack) {
-                *insertsTrack = true;
-            }
-            return i + 1;
-        }
-    }
-
-    if (insertsTrack) {
-        *insertsTrack = true;
-    }
-    return trackCount();
+    return m_layout->trackDropTargetAtY(y, insertsTrack);
 }
 
 int TimelineWidget::trackDividerAt(const QPoint& pos) const {
-    const QRect tracks = trackRect();
-    if (!tracks.contains(pos)) {
-        return -1;
-    }
-
-    for (int i = 0; i < trackCount(); ++i) {
-        const int dividerY = trackTop(i) + trackHeight(i);
-        if (std::abs(pos.y() - dividerY) <= kTrackResizeHandleHalfHeight) {
-            return i;
-        }
-    }
-    return -1;
+    return m_layout->trackDividerAt(pos);
 }
 
 void TimelineWidget::updateMinimumTimelineHeight() {
@@ -189,3 +114,103 @@ void TimelineWidget::updateMinimumTimelineHeight() {
     m_verticalScrollOffset = qBound(0, m_verticalScrollOffset, maxVerticalScrollOffset());
 }
 
+
+bool TimelineWidget::trackHasVisualClips(int trackIndex) const {
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex && clipHasVisuals(clip)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TimelineWidget::trackHasAudioClips(int trackIndex) const {
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex && clip.hasAudio) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TimelineWidget::trackVisualEnabled(int trackIndex) const {
+    bool sawVisual = false;
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.trackIndex != trackIndex || !clipHasVisuals(clip)) {
+            continue;
+        }
+        sawVisual = true;
+        if (!clip.videoEnabled) {
+            return false;
+        }
+    }
+    return sawVisual;
+}
+
+bool TimelineWidget::trackAudioEnabled(int trackIndex) const {
+    bool sawAudio = false;
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.trackIndex != trackIndex || !clip.hasAudio) {
+            continue;
+        }
+        sawAudio = true;
+        if (!clip.audioEnabled) {
+            return false;
+        }
+    }
+    return sawAudio;
+}
+
+bool TimelineWidget::setTrackVisualEnabled(int trackIndex, bool enabled) {
+    bool changed = false;
+    for (TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex && clipHasVisuals(clip) && clip.videoEnabled != enabled) {
+            clip.videoEnabled = enabled;
+            changed = true;
+        }
+    }
+    if (changed && clipsChanged) {
+        clipsChanged();
+    }
+    if (changed) {
+        update();
+    }
+    return changed;
+}
+
+bool TimelineWidget::setTrackAudioEnabled(int trackIndex, bool enabled) {
+    bool changed = false;
+    for (TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex && clip.hasAudio && clip.audioEnabled != enabled) {
+            clip.audioEnabled = enabled;
+            changed = true;
+        }
+    }
+    if (changed && clipsChanged) {
+        clipsChanged();
+    }
+    if (changed) {
+        update();
+    }
+    return changed;
+}
+
+void TimelineWidget::insertTrackAt(int trackIndex) {
+    const int insertAt = qBound(0, trackIndex, trackCount());
+    ensureTrackCount(trackCount());
+    for (TimelineClip& clip : m_clips) {
+        if (clip.trackIndex >= insertAt) {
+            clip.trackIndex += 1;
+        }
+    }
+    TimelineTrack track;
+    track.name = defaultTrackName(insertAt);
+    track.height = kDefaultTrackHeight;
+    m_tracks.insert(insertAt, track);
+    for (int i = insertAt + 1; i < m_tracks.size(); ++i) {
+        if (m_tracks[i].name.startsWith(QStringLiteral("Track "))) {
+            m_tracks[i].name = defaultTrackName(i);
+        }
+    }
+    updateMinimumTimelineHeight();
+}

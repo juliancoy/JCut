@@ -4,10 +4,12 @@
 #include <QPainterPath>
 #include <QMouseEvent>
 #include <QStyleOption>
+#include <QMenu>
+#include <QContextMenuEvent>
 
 namespace {
-    constexpr int kTrackHeight = 52;
-    constexpr int kTrackSpacing = 4;
+    constexpr int kDefaultTrackHeight = 44;
+    constexpr int kTrackSpacing = 10;
 
     void drawEyeIcon(QPainter& painter, const QRect& rect, bool enabled, bool interactive) {
         painter.save();
@@ -88,12 +90,12 @@ namespace {
 TrackSidebar::TrackSidebar(QWidget *parent)
     : QWidget(parent)
 {
-    setFixedWidth(kTrackColumnWidth);
     setObjectName(QStringLiteral("timeline.track_sidebar"));
 }
 
 void TrackSidebar::setTracks(const QVector<TrackInfo> &tracks) {
     m_tracks = tracks;
+    updateGeometry();
     update();
 }
 
@@ -127,43 +129,51 @@ QRect TrackSidebar::trackRect(int index) const {
 }
 
 QRect TrackSidebar::trackLabelRect(int index) const {
-    return QRect(4, trackTop(index) + 2, kTrackColumnWidth - 8, trackHeight() - 4);
+    const int sidebarWidth = width() > 0 ? width() : kTrackColumnWidth;
+    return QRect(4, trackTop(index) + 2, qMax(0, sidebarWidth - 8), qMax(0, trackHeight(index) - 4));
 }
 
 QRect TrackSidebar::trackVisualToggleRect(int index) const {
-    QRect header = trackLabelRect(index);
+    const QRect header = trackLabelRect(index);
     return QRect(header.right() - 56, header.center().y() - 11, 20, 22);
 }
 
 QRect TrackSidebar::trackAudioToggleRect(int index) const {
-    QRect header = trackLabelRect(index);
+    const QRect header = trackLabelRect(index);
     return QRect(header.right() - 28, header.center().y() - 11, 20, 22);
 }
 
-int TrackSidebar::trackHeight() const {
-    return kTrackHeight;
+int TrackSidebar::trackHeight(int index) const {
+    if (index >= 0 && index < m_tracks.size()) {
+        return qMax(kMinTrackHeight, m_tracks[index].height);
+    }
+    return kDefaultTrackHeight;
 }
 
 int TrackSidebar::trackTop(int index) const {
-    return index * (kTrackHeight + kTrackSpacing);
+    if (index >= 0 && index < m_tracks.size()) {
+        return m_tracks[index].top;
+    }
+
+    int y = 0;
+    for (int i = 0; i < index && i < m_tracks.size(); ++i) {
+        y += trackHeight(i) + kTrackSpacing;
+    }
+    return y;
 }
 
 void TrackSidebar::paintEvent(QPaintEvent *) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    // Background
     painter.fillRect(rect(), QColor(QStringLiteral("#14181e")));
 
-    // Draw tracks
-    painter.setPen(QColor(QStringLiteral("#24303c")));
     for (int track = 0; track < m_tracks.size(); ++track) {
         const QRect labelRect = trackLabelRect(track);
         const bool dragged = track == m_draggedTrack;
         const bool target = track == m_dropTarget && !m_dropInGap;
         const bool selected = track == m_selectedTrack;
 
-        // Track title background
         const QColor headerFill =
             dragged ? QColor(QStringLiteral("#ff6f61"))
                     : (target ? QColor(QStringLiteral("#32465f"))
@@ -173,7 +183,6 @@ void TrackSidebar::paintEvent(QPaintEvent *) {
         painter.setPen(Qt::NoPen);
         painter.drawRoundedRect(labelRect, 8, 8);
 
-        // Border
         painter.setPen(QPen(QColor(QStringLiteral("#2a3542")), 1));
         painter.setBrush(Qt::NoBrush);
         painter.drawRoundedRect(labelRect.adjusted(0, 0, -1, -1), 8, 8);
@@ -184,24 +193,25 @@ void TrackSidebar::paintEvent(QPaintEvent *) {
             painter.drawRoundedRect(labelRect.adjusted(0, 0, -1, -1), 8, 8);
         }
 
-        // Track name
         painter.setPen(QColor(QStringLiteral("#eef4fa")));
         QFont nameFont = painter.font();
         nameFont.setBold(true);
         painter.setFont(nameFont);
 
         const QRect audioRect = trackAudioToggleRect(track);
-        QRect nameRect(labelRect.left() + 10, labelRect.top(),
-                      qMax(24, audioRect.left() - labelRect.left() - 18), labelRect.height());
+        QRect nameRect(labelRect.left() + 10,
+                       labelRect.top(),
+                       qMax(24, audioRect.left() - labelRect.left() - 18),
+                       labelRect.height());
 
         const QString trackLabel = QStringLiteral("%1. %2")
                                        .arg(track + 1)
                                        .arg(m_tracks[track].name);
-        painter.drawText(nameRect, Qt::AlignLeft | Qt::AlignVCenter,
-                        painter.fontMetrics().elidedText(trackLabel, Qt::ElideRight, nameRect.width()));
+        painter.drawText(nameRect,
+                         Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(trackLabel, Qt::ElideRight, nameRect.width()));
         painter.setFont(QFont());
 
-        // Visual/Audio toggles
         const QRect visualRect = trackVisualToggleRect(track);
         const bool hasVisual = m_tracks[track].hasVisual;
         const bool hasAudio = m_tracks[track].hasAudio;
@@ -215,19 +225,20 @@ void TrackSidebar::paintEvent(QPaintEvent *) {
         drawEyeIcon(painter, visualRect, visualEnabled, hasVisual);
         drawSpeakerIcon(painter, audioRect, audioEnabled, hasAudio);
 
-        // Divider
         painter.setPen(QColor(QStringLiteral("#24303c")));
-        int dividerY = trackTop(track) + trackHeight();
+        const int dividerY = trackTop(track) + trackHeight(track);
         painter.drawLine(labelRect.left() + 6, dividerY, labelRect.right() - 6, dividerY);
     }
 
-    // Drop indicator line
     if (m_dropTarget >= 0 && m_dropInGap) {
-        int insertionY = trackTop(0) - (kTrackSpacing / 2);
-        if (m_dropTarget >= m_tracks.size()) {
-            insertionY = trackTop(m_tracks.size() - 1) + trackHeight() + (kTrackSpacing / 2);
-        } else if (m_dropTarget > 0) {
-            insertionY = trackTop(m_dropTarget) - (kTrackSpacing / 2);
+        int insertionY = -(kTrackSpacing / 2);
+        if (!m_tracks.isEmpty()) {
+            insertionY = trackTop(0) - (kTrackSpacing / 2);
+            if (m_dropTarget >= m_tracks.size()) {
+                insertionY = trackTop(m_tracks.size() - 1) + trackHeight(m_tracks.size() - 1) + (kTrackSpacing / 2);
+            } else if (m_dropTarget > 0) {
+                insertionY = trackTop(m_dropTarget) - (kTrackSpacing / 2);
+            }
         }
         painter.setPen(QPen(QColor(QStringLiteral("#f7b955")), 2, Qt::DashLine));
         painter.drawLine(4, insertionY, width() - 4, insertionY);
@@ -239,9 +250,8 @@ void TrackSidebar::mousePressEvent(QMouseEvent *event) {
         m_dragStartPos = event->pos();
         m_dragging = false;
 
-        int track = trackAt(event->pos());
+        const int track = trackAt(event->pos());
         if (track >= 0) {
-            // Check if clicking visual/audio toggle
             if (trackVisualToggleRect(track).contains(event->pos())) {
                 emit trackVisualToggled(track, !m_tracks[track].visualEnabled);
                 return;
@@ -259,7 +269,7 @@ void TrackSidebar::mouseMoveEvent(QMouseEvent *event) {
     if (event->buttons() & Qt::LeftButton) {
         if (!m_dragging && (event->pos() - m_dragStartPos).manhattanLength() > 10) {
             m_dragging = true;
-            int track = trackAt(m_dragStartPos);
+            const int track = trackAt(m_dragStartPos);
             if (track >= 0) {
                 emit trackDragStarted(track);
             }
@@ -273,15 +283,55 @@ void TrackSidebar::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 QSize TrackSidebar::sizeHint() const {
-    int height = 0;
+    int totalHeight = 0;
     if (m_tracks.isEmpty()) {
-        height = kTrackHeight + kTrackSpacing;  // At least one track height
+        totalHeight = kDefaultTrackHeight + kTrackSpacing;
     } else {
-        height = m_tracks.size() * (kTrackHeight + kTrackSpacing);
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            totalHeight += trackHeight(i) + kTrackSpacing;
+        }
     }
-    return QSize(kTrackColumnWidth, height);
+    return QSize(kTrackColumnWidth, totalHeight);
 }
 
 QSize TrackSidebar::minimumSizeHint() const {
-    return QSize(kTrackColumnWidth, kTrackHeight + kTrackSpacing);
+    return QSize(kTrackColumnWidth, kDefaultTrackHeight + kTrackSpacing);
+}
+
+void TrackSidebar::contextMenuEvent(QContextMenuEvent *event) {
+    const int track = trackAt(event->pos());
+    if (track < 0) {
+        return;
+    }
+
+    setSelectedTrack(track);
+    emit trackSelected(track);
+
+    QMenu menu(this);
+
+    QAction *moveUpAction = menu.addAction(QStringLiteral("Move Track Up"));
+    QAction *moveDownAction = menu.addAction(QStringLiteral("Move Track Down"));
+
+    moveUpAction->setEnabled(track > 0);
+    moveDownAction->setEnabled(track < m_tracks.size() - 1);
+
+    menu.addSeparator();
+
+    QAction *renameAction = menu.addAction(QStringLiteral("Rename Track..."));
+    QAction *crossfadeAction = menu.addAction(QStringLiteral("Crossfade Consecutive Clips..."));
+
+    QAction *chosen = menu.exec(event->globalPos());
+    if (!chosen) {
+        return;
+    }
+
+    if (chosen == moveUpAction) {
+        emit trackMoveUpRequested(track);
+    } else if (chosen == moveDownAction) {
+        emit trackMoveDownRequested(track);
+    } else if (chosen == renameAction) {
+        // TODO: Implement rename
+    } else if (chosen == crossfadeAction) {
+        // TODO: Implement crossfade
+    }
 }

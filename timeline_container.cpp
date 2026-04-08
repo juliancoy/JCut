@@ -23,30 +23,41 @@ TimelineContainer::TimelineContainer(QWidget *parent)
 
 void TimelineContainer::setupLayout()
 {
+    m_bottomSplitter = nullptr; // no splitter; use a real 2x2 grid
+
     m_gridLayout = new QGridLayout(this);
     m_gridLayout->setContentsMargins(0, 0, 0, 0);
-    m_gridLayout->setSpacing(0);
-    m_gridLayout->setColumnStretch(0, 0);  // Sidebar column: fixed width
-    m_gridLayout->setColumnStretch(1, 1);  // Timeline column: stretch
-    m_gridLayout->setRowStretch(0, 0);     // Transport row: fixed height
-    m_gridLayout->setRowStretch(1, 1);     // Content row: stretch
+    m_gridLayout->setHorizontalSpacing(0);
+    m_gridLayout->setVerticalSpacing(0);
 
-    // === TOP LEFT: Placeholder (track column header area) ===
+    // A true grid:
+    // row 0 col 0 = track header
+    // row 0 col 1 = transport
+    // row 1 col 0 = track sidebar
+    // row 1 col 1 = timeline
+    m_gridLayout->setColumnMinimumWidth(0, TrackSidebar::kTrackColumnWidth);
+    m_gridLayout->setColumnStretch(0, 0);
+    m_gridLayout->setColumnStretch(1, 1);
+    m_gridLayout->setRowStretch(0, 0);
+    m_gridLayout->setRowStretch(1, 1);
+
+    // === TOP LEFT: Track column header ===
     m_topLeftPlaceholder = new QWidget(this);
     m_topLeftPlaceholder->setObjectName(QStringLiteral("timeline.placeholder"));
     m_topLeftPlaceholder->setFixedWidth(TrackSidebar::kTrackColumnWidth);
     m_topLeftPlaceholder->setFixedHeight(44);
     m_topLeftPlaceholder->setStyleSheet(QStringLiteral(
-        "QWidget { background: #14181e; border-bottom: 1px solid #2a3542; }"));
-    
-    // Add a label to the placeholder
+        "QWidget { background: #14181e; border-bottom: 1px solid #2a3542; border-right: 1px solid #2a3542; }"));
+
     auto *placeholderLayout = new QHBoxLayout(m_topLeftPlaceholder);
     placeholderLayout->setContentsMargins(8, 4, 8, 4);
-    auto *placeholderLabel = new QLabel(QStringLiteral("Tracks"));
-    placeholderLabel->setStyleSheet(QStringLiteral("color: #7f8a99; font-weight: bold; font-size: 11px;"));
+
+    auto *placeholderLabel = new QLabel(QStringLiteral("Tracks"), m_topLeftPlaceholder);
+    placeholderLabel->setStyleSheet(QStringLiteral(
+        "color: #7f8a99; font-weight: bold; font-size: 11px;"));
     placeholderLayout->addWidget(placeholderLabel);
     placeholderLayout->addStretch();
-    
+
     m_gridLayout->addWidget(m_topLeftPlaceholder, 0, 0);
 
     // === TOP RIGHT: Transport controls ===
@@ -55,60 +66,65 @@ void TimelineContainer::setupLayout()
     m_transportWidget->setFixedHeight(44);
     m_transportWidget->setStyleSheet(QStringLiteral(
         "QWidget { background: #14181e; border-bottom: 1px solid #2a3542; }"));
-    
-    // Create layout for transport - EditorPane will add buttons to this
+
     auto *transportLayout = new QHBoxLayout(m_transportWidget);
     transportLayout->setContentsMargins(8, 4, 8, 4);
     transportLayout->setSpacing(6);
-    transportLayout->addStretch();  // Placeholder stretch
-    
+    transportLayout->addStretch();
+
     m_gridLayout->addWidget(m_transportWidget, 0, 1);
 
     // === BOTTOM LEFT: Track Sidebar ===
     m_trackSidebar = new TrackSidebar(this);
     m_trackSidebar->setObjectName(QStringLiteral("timeline.track_sidebar"));
-    // Align top so it doesn't stretch vertically
-    m_gridLayout->addWidget(m_trackSidebar, 1, 0, Qt::AlignTop);
+    m_trackSidebar->setFixedWidth(TrackSidebar::kTrackColumnWidth);
+    m_trackSidebar->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    m_gridLayout->addWidget(m_trackSidebar, 1, 0);
 
     // === BOTTOM RIGHT: Timeline Widget ===
     m_timeline = new TimelineWidget(this);
     m_timeline->setObjectName(QStringLiteral("timeline.widget"));
+    m_timeline->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_gridLayout->addWidget(m_timeline, 1, 1);
 
-    // Initial sync
     QTimer::singleShot(0, this, &TimelineContainer::syncTracksFromTimeline);
 }
 
 void TimelineContainer::connectSignals()
 {
-    // Connect sidebar signals to timeline slots
     connect(m_trackSidebar, &TrackSidebar::trackVisualToggled,
             this, &TimelineContainer::onTrackVisualToggled);
     connect(m_trackSidebar, &TrackSidebar::trackAudioToggled,
             this, &TimelineContainer::onTrackAudioToggled);
     connect(m_trackSidebar, &TrackSidebar::trackSelected,
             this, &TimelineContainer::onTrackSelected);
-    
-    // Use std::function callbacks from timeline since it doesn't use Qt signals
+    connect(m_trackSidebar, &TrackSidebar::trackMoveUpRequested,
+            this, &TimelineContainer::onTrackMoveUp);
+    connect(m_trackSidebar, &TrackSidebar::trackMoveDownRequested,
+            this, &TimelineContainer::onTrackMoveDown);
+
     if (m_timeline) {
         m_timeline->clipsChanged = [this]() {
             syncTracksFromTimeline();
         };
         m_timeline->selectionChanged = [this]() {
-            m_trackSidebar->setSelectedTrack(m_timeline->selectedTrackIndex());
+            if (m_trackSidebar) {
+                m_trackSidebar->setSelectedTrack(m_timeline->selectedTrackIndex());
+            }
         };
     }
 }
 
 void TimelineContainer::syncTracksFromTimeline()
 {
-    if (!m_timeline || !m_trackSidebar)
+    if (!m_timeline || !m_trackSidebar) {
         return;
+    }
 
-    // Get track info from timeline and sync to sidebar
     QVector<TrackInfo> tracks;
-    int trackCount = m_timeline->tracks().size();
-    
+    const int trackCount = m_timeline->tracks().size();
+    tracks.reserve(trackCount);
+
     for (int i = 0; i < trackCount; ++i) {
         const auto &timelineTrack = m_timeline->tracks()[i];
         TrackInfo info;
@@ -117,9 +133,11 @@ void TimelineContainer::syncTracksFromTimeline()
         info.audioEnabled = timelineTrack.audioEnabled;
         info.hasVisual = m_timeline->trackHasVisualClips(i);
         info.hasAudio = m_timeline->trackHasAudioClips(i);
+        info.top = m_timeline->trackTopInTrackArea(i);
+        info.height = m_timeline->trackHeight(i);
         tracks.append(info);
     }
-    
+
     m_trackSidebar->setTracks(tracks);
     m_trackSidebar->setSelectedTrack(m_timeline->selectedTrackIndex());
     m_trackSidebar->updateGeometry();
@@ -150,40 +168,56 @@ void TimelineContainer::onTrackSelected(int trackIndex)
     }
 }
 
-// Accessors for transport controls (these will return nullptr for now, 
-// EditorPane will create the actual transport controls and add them to m_transportWidget)
+void TimelineContainer::onTrackMoveUp(int trackIndex)
+{
+    if (m_timeline) {
+        m_timeline->moveTrackUp(trackIndex);
+    }
+}
+
+void TimelineContainer::onTrackMoveDown(int trackIndex)
+{
+    if (m_timeline) {
+        m_timeline->moveTrackDown(trackIndex);
+    }
+}
+
 QPushButton *TimelineContainer::playButton() const
 {
-    // Find the play button in the transport widget
-    if (!m_transportWidget)
+    if (!m_transportWidget) {
         return nullptr;
+    }
     return m_transportWidget->findChild<QPushButton*>(QStringLiteral("transport.play"));
 }
 
 QToolButton *TimelineContainer::startButton() const
 {
-    if (!m_transportWidget)
+    if (!m_transportWidget) {
         return nullptr;
+    }
     return m_transportWidget->findChild<QToolButton*>(QStringLiteral("transport.start"));
 }
 
 QToolButton *TimelineContainer::endButton() const
 {
-    if (!m_transportWidget)
+    if (!m_transportWidget) {
         return nullptr;
+    }
     return m_transportWidget->findChild<QToolButton*>(QStringLiteral("transport.end"));
 }
 
 QSlider *TimelineContainer::seekSlider() const
 {
-    if (!m_transportWidget)
+    if (!m_transportWidget) {
         return nullptr;
+    }
     return m_transportWidget->findChild<QSlider*>(QStringLiteral("transport.seek"));
 }
 
 QLabel *TimelineContainer::timecodeLabel() const
 {
-    if (!m_transportWidget)
+    if (!m_transportWidget) {
         return nullptr;
+    }
     return m_transportWidget->findChild<QLabel*>(QStringLiteral("transport.timecode"));
 }

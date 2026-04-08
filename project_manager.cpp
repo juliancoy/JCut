@@ -8,15 +8,56 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QRegularExpression>
+#include <QStandardPaths>
+#include <QCoreApplication>
 
 ProjectManager::ProjectManager(QObject *parent)
     : QObject(parent)
 {
 }
 
+QString ProjectManager::applicationDirPath() const
+{
+    // Get the directory where the executable is located
+    return QCoreApplication::applicationDirPath();
+}
+
+QString ProjectManager::configFilePath() const
+{
+    // Config file stored near the executable
+    return QDir(applicationDirPath()).filePath(QStringLiteral("editor.config"));
+}
+
+QString ProjectManager::rootDirPath() const
+{
+    // Read root directory from config file, or default to executable directory
+    QFile configFile(configFilePath());
+    if (configFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QString path = QString::fromUtf8(configFile.readAll()).trimmed();
+        if (!path.isEmpty() && QDir(path).exists()) {
+            return path;
+        }
+    }
+    // Default to executable directory if no valid config
+    return applicationDirPath();
+}
+
+void ProjectManager::setRootDirPath(const QString& path)
+{
+    if (path.isEmpty()) {
+        return;
+    }
+    QSaveFile config(configFilePath());
+    if (config.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        config.write(path.toUtf8());
+        config.commit();
+    }
+}
+
 QString ProjectManager::projectsDirPath() const
 {
-    return QDir(QDir::currentPath()).filePath(QStringLiteral("projects"));
+    // Projects are stored in a "projects" subfolder of the Root directory
+    return QDir(rootDirPath()).filePath(QStringLiteral("projects"));
 }
 
 QString ProjectManager::currentProjectMarkerPath() const

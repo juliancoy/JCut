@@ -10,13 +10,19 @@
 #include <QMessageBox>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QDebug>
 #include <QSignalBlocker>
+#include <QStandardPaths>
+#include <QCoreApplication>
 
 using namespace editor;
 
 void EditorWindow::loadState()
 {
     loadProjectsFromFolders();
+    qDebug() << "[PROJECT] Loading project:" << currentProjectIdOrDefault();
+    qDebug() << "[PROJECT] State file:" << stateFilePath();
+    qDebug() << "[PROJECT] History file:" << historyFilePath();
     m_historyEntries = QJsonArray();
     m_historyIndex = -1;
     m_lastSavedState.clear();
@@ -61,9 +67,42 @@ void EditorWindow::loadState()
     }
 }
 
+QString EditorWindow::configFilePath() const
+{
+    // Config file stored near the executable
+    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("editor.config"));
+}
+
+QString EditorWindow::rootDirPath() const
+{
+    // Read root directory from config file, or default to executable directory
+    QFile configFile(configFilePath());
+    if (configFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        const QString path = QString::fromUtf8(configFile.readAll()).trimmed();
+        if (!path.isEmpty() && QDir(path).exists()) {
+            return path;
+        }
+    }
+    // Default to executable directory if no valid config
+    return QCoreApplication::applicationDirPath();
+}
+
+void EditorWindow::setRootDirPath(const QString& path)
+{
+    if (path.isEmpty()) {
+        return;
+    }
+    QSaveFile config(configFilePath());
+    if (config.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        config.write(path.toUtf8());
+        config.commit();
+    }
+}
+
 QString EditorWindow::projectsDirPath() const
 {
-    return QDir(QDir::currentPath()).filePath(QStringLiteral("projects"));
+    // Projects are stored in a "projects" subfolder of the Root directory
+    return QDir(rootDirPath()).filePath(QStringLiteral("projects"));
 }
 
 QString EditorWindow::currentProjectMarkerPath() const

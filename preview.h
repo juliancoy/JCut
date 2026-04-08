@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QHash>
 #include <QJsonObject>
+#include <deque>
 #include <memory>
 #include <functional>
 
@@ -56,6 +57,7 @@ public:
     bool preparePlaybackAdvance(int64_t targetFrame);
     bool preparePlaybackAdvanceSample(int64_t targetSample);
     QJsonObject profilingSnapshot() const;
+    void resetProfilingStats();
 
     std::function<void(const QString&)> selectionRequested;
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
@@ -170,6 +172,10 @@ private:
     qint64 m_lastFrameReadyMs = 0;
     qint64 m_lastPaintMs = 0;
     qint64 m_lastRepaintScheduleMs = 0;
+    qint64 m_lastRenderDurationMs = 0;
+    qint64 m_maxRenderDurationMs = 0;
+    qint64 m_renderCount = 0;
+    qint64 m_totalRenderDurationMs = 0;
     QString m_selectedClipId;
     QSize m_outputSize = QSize(1080, 1920);
     bool m_hideOutsideOutputWindow = false;
@@ -180,6 +186,8 @@ private:
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
     QHash<QString, FrameHandle> m_lastPresentedFrames;
     mutable QJsonObject m_lastFrameSelectionStats;
+    static constexpr int kRenderTimeHistorySize = 60;
+    std::deque<qint64> m_renderTimeHistory;
     QVector<QString> m_paintOrder;
     int m_bulkUpdateDepth = 0;
     bool m_pendingFrameRequest = false;

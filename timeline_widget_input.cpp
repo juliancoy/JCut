@@ -4,6 +4,138 @@
 #include <QApplication>
 #include <QClipboard>
 
+int TimelineWidget::trackIndexAt(const QPoint& pos) const {
+    for (int i = 0; i < trackCount(); ++i) {
+        if (trackLabelRect(i).contains(pos)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int TimelineWidget::clipIndexAt(const QPoint& pos) const {
+    for (int i = 0; i < m_clips.size(); ++i) {
+        if (clipRectFor(m_clips[i]).contains(pos)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+TimelineWidget::ClipDragMode TimelineWidget::clipDragModeAt(const TimelineClip& clip, const QPoint& pos) const {
+    const QRect rect = clipRectFor(clip);
+    if (!rect.contains(pos)) {
+        return ClipDragMode::None;
+    }
+    const int edgeThreshold = qMin(10, qMax(4, rect.width() / 5));
+    if (pos.x() <= rect.left() + edgeThreshold) {
+        return ClipDragMode::TrimLeft;
+    }
+    if (pos.x() >= rect.right() - edgeThreshold) {
+        return ClipDragMode::TrimRight;
+    }
+    return ClipDragMode::Move;
+}
+
+void TimelineWidget::updateHoverCursor(const QPoint& pos) {
+    if (m_toolMode == ToolMode::Razor) {
+        setCursor(clipIndexAt(pos) >= 0 ? Qt::CrossCursor : Qt::ArrowCursor);
+        return;
+    }
+    if (trackDividerAt(pos) >= 0) {
+        setCursor(Qt::SizeVerCursor);
+        return;
+    }
+    const int clipIndex = clipIndexAt(pos);
+    if (clipIndex < 0) {
+        unsetCursor();
+        return;
+    }
+    const ClipDragMode mode = clipDragModeAt(m_clips[clipIndex], pos);
+    if (mode == ClipDragMode::TrimLeft || mode == ClipDragMode::TrimRight) {
+        setCursor(Qt::SizeHorCursor);
+        return;
+    }
+    setCursor(Qt::ArrowCursor);
+}
+
+const RenderSyncMarker* TimelineWidget::renderSyncMarkerAtPos(const QPoint& pos, int* clipIndexOut) const {
+    for (int i = m_clips.size() - 1; i >= 0; --i) {
+        const TimelineClip& clip = m_clips[i];
+        for (const RenderSyncMarker& marker : m_renderSyncMarkers) {
+            if (marker.clipId != clip.id) {
+                continue;
+            }
+            if (renderSyncMarkerRect(clip, marker).contains(pos)) {
+                if (clipIndexOut) {
+                    *clipIndexOut = i;
+                }
+                return &marker;
+            }
+        }
+    }
+    if (clipIndexOut) {
+        *clipIndexOut = -1;
+    }
+    return nullptr;
+}
+
+void TimelineWidget::openRenderSyncMarkerMenu(const QPoint& globalPos, const QString& clipId) {
+    const RenderSyncMarker* currentSyncMarker = renderSyncMarkerAtFrame(clipId, m_currentFrame);
+    QMenu menu(this);
+    QAction* duplicateRenderFrameAction =
+        menu.addAction(QStringLiteral("Render Sync: Duplicate Frames For Clip..."));
+    QAction* skipRenderFrameAction =
+        menu.addAction(QStringLiteral("Render Sync: Skip Frames For Clip..."));
+    QAction* clearRenderSyncAction = menu.addAction(QStringLiteral("Clear Clip Render Sync At Playhead"));
+    clearRenderSyncAction->setEnabled(currentSyncMarker != nullptr);
+
+    QAction* selected = menu.exec(globalPos);
+    if (!selected) {
+        return;
+    }
+
+    if (selected == duplicateRenderFrameAction) {
+        const int defaultCount =
+            currentSyncMarker && currentSyncMarker->action == RenderSyncAction::DuplicateFrame ? currentSyncMarker->count : 1;
+        bool ok = false;
+        const int count = QInputDialog::getInt(this,
+                                               QStringLiteral("Duplicate Frames"),
+                                               QStringLiteral("How many extra frames should be duplicated for this clip?"),
+                                               defaultCount,
+                                               1,
+                                               120,
+                                               1,
+                                               &ok);
+        if (ok) {
+            setRenderSyncMarkerAtCurrentFrame(clipId, RenderSyncAction::DuplicateFrame, count);
+        }
+        return;
+    }
+
+    if (selected == skipRenderFrameAction) {
+        const int defaultCount =
+            currentSyncMarker && currentSyncMarker->action == RenderSyncAction::SkipFrame ? currentSyncMarker->count : 1;
+        bool ok = false;
+        const int count = QInputDialog::getInt(this,
+                                               QStringLiteral("Skip Frames"),
+                                               QStringLiteral("How many frames should be skipped for this clip?"),
+                                               defaultCount,
+                                               1,
+                                               120,
+                                               1,
+                                               &ok);
+        if (ok) {
+            setRenderSyncMarkerAtCurrentFrame(clipId, RenderSyncAction::SkipFrame, count);
+        }
+        return;
+    }
+
+    if (selected == clearRenderSyncAction) {
+        clearRenderSyncMarkerAtCurrentFrame(clipId);
+    }
+}
+
 bool TimelineWidget::clipHasProxyAvailable(const TimelineClip& clip) const {
     if (clip.mediaType != ClipMediaType::Video) {
         return false;
@@ -161,6 +293,27 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
 
         ensureTrackCount(targetTrack + 1);
         TimelineClip clip = buildClipFromFile(filePath, insertFrame, targetTrack);
+        
+        // Check for conflict with existing clips on this track
+        if (wouldClipConflictWithTrack(clip, targetTrack)) {
+            // Find the next available track that doesn't have a conflict
+            int newTrack = targetTrack;
+            bool foundNonConflictingTrack = false;
+            for (int t = 0; t <= trackCount(); ++t) {
+                if (!wouldClipConflictWithTrack(clip, t)) {
+                    newTrack = t;
+                    foundNonConflictingTrack = true;
+                    break;
+                }
+            }
+            if (!foundNonConflictingTrack) {
+                newTrack = trackCount();
+                insertTrackAt(newTrack);
+            }
+            clip.trackIndex = newTrack;
+            targetTrack = newTrack;
+        }
+        
         m_clips.push_back(clip);
         insertFrame += clip.durationFrames + 6;
     }
@@ -384,16 +537,25 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             const int64_t unsnappedStartFrame = qMax<int64_t>(0, pointerFrame - m_dragOffsetFrames);
             const int64_t newStartFrame =
                 snapMoveStartFrame(clip, unsnappedStartFrame, &snapped, &snappedBoundaryFrame);
-            clip.startFrame = newStartFrame;
-            m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
             bool insertsTrack = false;
             const int proposedTrack = trackDropTargetAtY(event->position().toPoint().y(), &insertsTrack);
-            if (proposedTrack >= 0) {
-                clip.trackIndex = proposedTrack;
-                m_trackDropIndex = proposedTrack;
-                m_trackDropInGap = insertsTrack;
-            }
+            
+            // Always update frame position
+            clip.startFrame = newStartFrame;
+            m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
             m_currentFrame = newStartFrame;
+            
+            // Check for conflict when moving to a different track
+            if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                TimelineClip tempClip = clip;
+                tempClip.trackIndex = proposedTrack;
+                if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
+                    // No conflict - allow the track change
+                    clip.trackIndex = proposedTrack;
+                }
+            }
+            m_trackDropIndex = proposedTrack;
+            m_trackDropInGap = insertsTrack;
         } else if (m_dragMode == ClipDragMode::TrimLeft) {
             const int64_t maxStartFrame = m_dragOriginalStartFrame + m_dragOriginalDurationFrames - kMinClipFrames;
             bool snapped = false;
@@ -687,8 +849,27 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == addTitleClipAction) {
         const int64_t insertFrame = frameFromX(event->pos().x());
         const int track = trackIndexAt(event->pos());
-        const int targetTrack = track >= 0 ? track : (m_tracks.isEmpty() ? 0 : m_tracks.size());
+        int targetTrack = track >= 0 ? track : (m_tracks.isEmpty() ? 0 : m_tracks.size());
         TimelineClip titleClip = createDefaultTitleClip(insertFrame, targetTrack);
+        
+        // Check for conflict with audio clips on this track
+        if (wouldClipConflictWithTrack(titleClip, targetTrack)) {
+            // Find the next available track that doesn't have a conflict
+            bool foundNonConflictingTrack = false;
+            for (int t = 0; t <= trackCount(); ++t) {
+                if (!wouldClipConflictWithTrack(titleClip, t)) {
+                    targetTrack = t;
+                    foundNonConflictingTrack = true;
+                    break;
+                }
+            }
+            if (!foundNonConflictingTrack) {
+                targetTrack = trackCount();
+                insertTrackAt(targetTrack);
+            }
+            titleClip.trackIndex = targetTrack;
+        }
+        
         m_clips.push_back(titleClip);
         normalizeClipTiming(m_clips.last());
         normalizeTrackIndices();

@@ -28,6 +28,9 @@
 #include <QVector>
 
 #include <functional>
+#include <memory>
+#include "timeline_layout.h"
+#include "timeline_renderer.h"
 
 class TimelineWidget final : public QWidget {
     Q_OBJECT
@@ -57,6 +60,7 @@ public:
 
     bool updateClipById(const QString& clipId, const std::function<void(TimelineClip&)>& updater);
     bool deleteSelectedClip();
+    bool deleteClipById(const QString& clipId);
     bool splitSelectedClipAtFrame(int64_t frame);
     bool splitClipAtFrame(const QString& clipId, int64_t frame);
     bool nudgeSelectedClip(int direction);
@@ -67,6 +71,8 @@ public:
     bool updateTrackVisualEnabled(int trackIndex, bool enabled);
     bool updateTrackAudioEnabled(int trackIndex, bool enabled);
     bool crossfadeTrack(int trackIndex, double seconds);
+    bool moveTrackUp(int trackIndex);
+    bool moveTrackDown(int trackIndex);
 
     // Track state queries (for TrackSidebar)
     bool trackHasVisualClips(int trackIndex) const;
@@ -75,6 +81,10 @@ public:
     bool trackAudioEnabled(int trackIndex) const;
     bool setTrackVisualEnabled(int trackIndex, bool enabled);
     bool setTrackAudioEnabled(int trackIndex, bool enabled);
+
+    // Track geometry queries (for TrackSidebar)
+    int trackTopInTrackArea(int trackIndex) const;
+    int trackHeight(int trackIndex) const;
 
     QVector<RenderSyncMarker> renderSyncMarkers() const { return m_renderSyncMarkers; }
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
@@ -186,7 +196,6 @@ private:
     void insertTrackAt(int trackIndex);
     QString defaultTrackName(int trackIndex) const;
     int trackTop(int trackIndex) const;
-    int trackHeight(int trackIndex) const;
     int totalTrackAreaHeight() const;
     int maxVerticalScrollOffset() const;
     void updateMinimumTimelineHeight();
@@ -210,6 +219,11 @@ private:
     bool renameTrack(int trackIndex);
     bool applyCrossfadeToTrack(int trackIndex, double seconds);
 
+    // Prevent images and audio from overlapping on the same track
+    bool wouldClipConflictWithTrack(const TimelineClip& clip, int trackIndex, const QString& excludeClipId = QString()) const;
+    bool isVisualMediaType(ClipMediaType type) const;
+    bool isAudioMediaType(ClipMediaType type) const;
+
     void normalizeExportRange();
     void normalizeExportRanges();
     int exportSegmentIndexAtFrame(int64_t frame) const;
@@ -217,6 +231,12 @@ private:
     const RenderSyncMarker* renderSyncMarkerAtPos(const QPoint& pos, int* clipIndexOut = nullptr) const;
     void openRenderSyncMarkerMenu(const QPoint& globalPos, const QString& clipId);
     bool clipHasProxyAvailable(const TimelineClip& clip) const;
+
+    std::unique_ptr<TimelineLayout> m_layout;
+    std::unique_ptr<TimelineRenderer> m_renderer;
+
+    friend class TimelineLayout;
+    friend class TimelineRenderer;
 
     QVector<TimelineClip> m_clips;
     QVector<TimelineTrack> m_tracks;

@@ -22,6 +22,13 @@ void EditorWindow::bindInspectorWidgets()
     m_clipOriginalInfoLabel = m_inspectorPane->clipOriginalInfoLabel();
     m_clipProxyInfoLabel = m_inspectorPane->clipProxyInfoLabel();
     m_clipPlaybackRateSpin = m_inspectorPane->clipPlaybackRateSpin();
+    {
+        QTableWidget *tracksTable = m_inspectorPane->tracksTable();
+        if (tracksTable) {
+            connect(tracksTable, &QTableWidget::itemChanged,
+                    this, &EditorWindow::onTrackTableItemChanged);
+        }
+    }
     m_trackInspectorLabel = m_inspectorPane->trackInspectorLabel();
     m_trackInspectorDetailsLabel = m_inspectorPane->trackInspectorDetailsLabel();
     m_trackNameEdit = m_inspectorPane->trackNameEdit();
@@ -103,6 +110,7 @@ void EditorWindow::bindInspectorWidgets()
     m_keyframeSpaceCheckBox = m_inspectorPane->keyframeSpaceCheckBox();
     m_addVideoKeyframeButton = m_inspectorPane->addVideoKeyframeButton();
     m_removeVideoKeyframeButton = m_inspectorPane->removeVideoKeyframeButton();
+    m_flipHorizontalButton = m_inspectorPane->flipHorizontalButton();
     m_outputWidthSpin = m_inspectorPane->outputWidthSpin();
     m_outputHeightSpin = m_inspectorPane->outputHeightSpin();
     m_exportStartSpin = m_inspectorPane->exportStartSpin();
