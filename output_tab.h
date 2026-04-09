@@ -44,6 +44,7 @@ public:
         std::function<void(const QSize&)> setOutputSize;
         std::function<void()> stopPlayback;
         std::function<QVector<TimelineClip>()> getTimelineClips;
+        std::function<QVector<TimelineTrack>()> getTimelineTracks;
         std::function<QVector<RenderSyncMarker>()> getRenderSyncMarkers;
         std::function<void(const RenderRequest&)> renderTimeline;
         std::function<QString()> lastRenderOutputPath;

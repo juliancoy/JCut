@@ -92,8 +92,8 @@ void TimelineContainer::setupLayout()
 
 void TimelineContainer::connectSignals()
 {
-    connect(m_trackSidebar, &TrackSidebar::trackVisualToggled,
-            this, &TimelineContainer::onTrackVisualToggled);
+    connect(m_trackSidebar, &TrackSidebar::trackVisualModeChanged,
+            this, &TimelineContainer::onTrackVisualModeChanged);
     connect(m_trackSidebar, &TrackSidebar::trackAudioToggled,
             this, &TimelineContainer::onTrackAudioToggled);
     connect(m_trackSidebar, &TrackSidebar::trackSelected,
@@ -102,9 +102,22 @@ void TimelineContainer::connectSignals()
             this, &TimelineContainer::onTrackMoveUp);
     connect(m_trackSidebar, &TrackSidebar::trackMoveDownRequested,
             this, &TimelineContainer::onTrackMoveDown);
+    connect(m_trackSidebar, &TrackSidebar::trackDropped,
+            this, &TimelineContainer::onTrackDropped);
+    connect(m_trackSidebar, &TrackSidebar::trackRenameRequested,
+            this, &TimelineContainer::onTrackRenameRequested);
+    connect(m_trackSidebar, &TrackSidebar::trackDeleteRequested,
+            this, &TimelineContainer::onTrackDeleteRequested);
+    connect(m_trackSidebar, &TrackSidebar::wheelAdjusted,
+            this, &TimelineContainer::onTrackSidebarWheelAdjusted);
+    connect(m_trackSidebar, &TrackSidebar::widthResizeRequested,
+            this, &TimelineContainer::onTrackSidebarWidthResizeRequested);
 
     if (m_timeline) {
         m_timeline->clipsChanged = [this]() {
+            syncTracksFromTimeline();
+        };
+        m_timeline->trackLayoutChanged = [this]() {
             syncTracksFromTimeline();
         };
         m_timeline->selectionChanged = [this]() {
@@ -129,11 +142,11 @@ void TimelineContainer::syncTracksFromTimeline()
         const auto &timelineTrack = m_timeline->tracks()[i];
         TrackInfo info;
         info.name = timelineTrack.name;
-        info.visualEnabled = timelineTrack.visualEnabled;
+        info.visualMode = timelineTrack.visualMode;
         info.audioEnabled = timelineTrack.audioEnabled;
         info.hasVisual = m_timeline->trackHasVisualClips(i);
         info.hasAudio = m_timeline->trackHasAudioClips(i);
-        info.top = m_timeline->trackTopInTrackArea(i);
+        info.top = m_timeline->trackTop(i);
         info.height = m_timeline->trackHeight(i);
         tracks.append(info);
     }
@@ -144,10 +157,10 @@ void TimelineContainer::syncTracksFromTimeline()
     m_trackSidebar->update();
 }
 
-void TimelineContainer::onTrackVisualToggled(int trackIndex, bool enabled)
+void TimelineContainer::onTrackVisualModeChanged(int trackIndex, int mode)
 {
     if (m_timeline) {
-        m_timeline->setTrackVisualEnabled(trackIndex, enabled);
+        m_timeline->setTrackVisualMode(trackIndex, static_cast<TrackVisualMode>(mode));
         m_timeline->update();
     }
 }
@@ -180,6 +193,49 @@ void TimelineContainer::onTrackMoveDown(int trackIndex)
     if (m_timeline) {
         m_timeline->moveTrackDown(trackIndex);
     }
+}
+
+void TimelineContainer::onTrackDropped(int fromIndex, int toIndex)
+{
+    if (m_timeline) {
+        m_timeline->moveTrack(fromIndex, toIndex);
+    }
+}
+
+void TimelineContainer::onTrackRenameRequested(int trackIndex)
+{
+    if (m_timeline) {
+        m_timeline->renameTrack(trackIndex);
+    }
+}
+
+void TimelineContainer::onTrackDeleteRequested(int trackIndex)
+{
+    if (m_timeline) {
+        m_timeline->deleteTrack(trackIndex);
+    }
+}
+
+void TimelineContainer::onTrackSidebarWheelAdjusted(int steps, Qt::KeyboardModifiers modifiers)
+{
+    if (m_timeline) {
+        m_timeline->handleSidebarWheelSteps(steps, modifiers);
+    }
+}
+
+void TimelineContainer::onTrackSidebarWidthResizeRequested(int width)
+{
+    const int boundedWidth = qMax(TrackSidebar::kTrackColumnWidth, width);
+    if (m_topLeftPlaceholder) {
+        m_topLeftPlaceholder->setFixedWidth(boundedWidth);
+    }
+    if (m_trackSidebar) {
+        m_trackSidebar->setFixedWidth(boundedWidth);
+    }
+    if (m_gridLayout) {
+        m_gridLayout->setColumnMinimumWidth(0, boundedWidth);
+    }
+    updateGeometry();
 }
 
 QPushButton *TimelineContainer::playButton() const

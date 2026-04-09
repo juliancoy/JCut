@@ -33,7 +33,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
         totalFramesToRender += (exportEnd - exportStart + 1);
     }
-    const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips);
+    const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips, request.tracks);
     QString gpuInitializationError;
     OffscreenGpuRenderer gpuRenderer;
     const bool useGpuRenderer = gpuRenderer.initialize(request.outputSize, &gpuInitializationError);

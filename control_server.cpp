@@ -320,6 +320,35 @@ private slots:
     }
 
 private:
+    bool refreshProfileCacheFromUi(int timeoutMs, QString* errorOut) {
+        QJsonObject profile;
+        if (!invokeOnUiThread(m_window, timeoutMs, &profile, [this]() {
+                return m_profilingCallback ? m_profilingCallback() : QJsonObject{};
+            })) {
+            ++m_profileTimeoutCount;
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for ui-thread profile");
+            }
+            return false;
+        }
+
+        m_lastProfileSnapshot = profile;
+        m_lastProfileSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_profileSuccessCount;
+        return true;
+    }
+
+    QJsonObject profileCacheMeta() const {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        return QJsonObject{
+            {QStringLiteral("has_snapshot"), !m_lastProfileSnapshot.isEmpty()},
+            {QStringLiteral("last_snapshot_ms"), m_lastProfileSnapshotMs},
+            {QStringLiteral("last_snapshot_age_ms"),
+             m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1},
+            {QStringLiteral("success_count"), m_profileSuccessCount},
+            {QStringLiteral("timeout_count"), m_profileTimeoutCount}};
+    }
+
     void onReadyRead(QTcpSocket* socket) {
         m_buffers[socket].append(socket->readAll());
         std::optional<Request> request = tryParseRequest(m_buffers[socket]);
@@ -446,16 +475,52 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/profile")) {
-            QJsonObject profile;
-            if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &profile, [this]() {
-                    return m_profilingCallback ? m_profilingCallback() : QJsonObject{};
-                })) {
-                writeError(socket, 503, QStringLiteral("timed out waiting for ui-thread profile"));
+            QString uiError;
+            const bool live = refreshProfileCacheFromUi(kUiInvokeTimeoutMs, &uiError);
+            if (!live && m_lastProfileSnapshot.isEmpty()) {
+                writeError(socket, 503, uiError);
+                return;
+            }
+
+            const QJsonObject snapshot = fastSnapshot();
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("live"), live},
+                {QStringLiteral("ui_thread_responsive"),
+                 snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
+                     kUiHeartbeatStaleMs},
+                {QStringLiteral("ui_error"), live ? QString() : uiError},
+                {QStringLiteral("profile"), m_lastProfileSnapshot},
+                {QStringLiteral("cache"), profileCacheMeta()}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") &&
+            request.url.path() == QStringLiteral("/profile/cached")) {
+            if (m_lastProfileSnapshot.isEmpty()) {
+                writeError(socket, 404, QStringLiteral("no cached profile snapshot"));
                 return;
             }
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
-                {QStringLiteral("profile"), profile}
+                {QStringLiteral("profile"), m_lastProfileSnapshot},
+                {QStringLiteral("cache"), profileCacheMeta()}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") &&
+            request.url.path() == QStringLiteral("/diag/perf")) {
+            const QJsonObject snapshot = fastSnapshot();
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("ui_thread_responsive"),
+                 snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
+                     kUiHeartbeatStaleMs},
+                {QStringLiteral("fast_snapshot"), snapshot},
+                {QStringLiteral("profile_cache"), profileCacheMeta()},
+                {QStringLiteral("debug"), editor::debugControlsSnapshot()}
             });
             return;
         }
@@ -471,6 +536,10 @@ private:
                 })) {
                 writeError(socket, 503, QStringLiteral("timed out waiting for ui-thread profile reset"));
                 return;
+            }
+            if (reset) {
+                m_lastProfileSnapshot = QJsonObject{};
+                m_lastProfileSnapshotMs = 0;
             }
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), reset},
@@ -757,6 +826,10 @@ private:
     QHash<QTcpSocket*, QByteArray> m_buffers;
     quint16 m_listenPort = 0;
     qint64 m_startTimeMs = QDateTime::currentMSecsSinceEpoch();
+    QJsonObject m_lastProfileSnapshot;
+    qint64 m_lastProfileSnapshotMs = 0;
+    qint64 m_profileSuccessCount = 0;
+    qint64 m_profileTimeoutCount = 0;
 };
 
 } // namespace

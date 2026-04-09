@@ -104,6 +104,16 @@ void EditorWindow::syncGradingTableToPlayhead()
     if (m_gradingTab) {
         m_gradingTab->syncTableToPlayhead();
     }
+    if (m_opacityTab) {
+        m_opacityTab->syncTableToPlayhead();
+    }
+}
+
+void EditorWindow::syncOpacityTableToPlayhead()
+{
+    if (m_opacityTab) {
+        m_opacityTab->syncTableToPlayhead();
+    }
 }
 
 bool EditorWindow::focusInTranscriptTable() const
@@ -122,6 +132,12 @@ bool EditorWindow::focusInGradingTable() const
 {
     QWidget *focus = QApplication::focusWidget();
     return m_gradingKeyframeTable && focus && (focus == m_gradingKeyframeTable || m_gradingKeyframeTable->isAncestorOf(focus));
+}
+
+bool EditorWindow::focusInOpacityTable() const
+{
+    QWidget *focus = QApplication::focusWidget();
+    return m_opacityKeyframeTable && focus && (focus == m_opacityKeyframeTable || m_opacityKeyframeTable->isAncestorOf(focus));
 }
 
 bool EditorWindow::focusInEditableInput() const
@@ -275,6 +291,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         TimelineTrack track;
         track.name = obj.value(QStringLiteral("name")).toString(QStringLiteral("Track %1").arg(i + 1));
         track.height = qMax(28, obj.value(QStringLiteral("height")).toInt(44));
+        if (obj.contains(QStringLiteral("visualMode"))) {
+            track.visualMode = trackVisualModeFromString(obj.value(QStringLiteral("visualMode")).toString());
+        } else if (obj.contains(QStringLiteral("visualEnabled")) &&
+                   !obj.value(QStringLiteral("visualEnabled")).toBool(true)) {
+            track.visualMode = TrackVisualMode::Hidden;
+        }
+        track.audioEnabled = obj.value(QStringLiteral("audioEnabled")).toBool(true);
         loadedTracks.push_back(track);
     }
        const QJsonArray renderSyncMarkers = root.value(QStringLiteral("renderSyncMarkers")).toArray();
@@ -356,6 +379,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     
     m_preview->beginBulkUpdate();
     m_preview->setClipCount(m_timeline->clips().size());
+    m_preview->setTimelineTracks(m_timeline->tracks());
     m_preview->setTimelineClips(m_timeline->clips());
     m_preview->setExportRanges(effectivePlaybackRanges());
     m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
@@ -765,10 +789,10 @@ void EditorWindow::refreshClipInspector()
             m_trackHeightSpin->setValue(44);
             m_trackHeightSpin->setEnabled(false);
         }
-        if (m_trackVideoEnabledCheckBox) {
-            QSignalBlocker blocker(m_trackVideoEnabledCheckBox);
-            m_trackVideoEnabledCheckBox->setChecked(false);
-            m_trackVideoEnabledCheckBox->setEnabled(false);
+        if (m_trackVisualModeCombo) {
+            QSignalBlocker blocker(m_trackVisualModeCombo);
+            m_trackVisualModeCombo->setCurrentIndex(0);
+            m_trackVisualModeCombo->setEnabled(false);
         }
         if (m_trackAudioEnabledCheckBox) {
             QSignalBlocker blocker(m_trackAudioEnabledCheckBox);
@@ -852,7 +876,6 @@ void EditorWindow::refreshClipInspector()
     int clipCount = 0;
     int visualCount = 0;
     int audioCount = 0;
-    bool allVisualEnabled = true;
     bool allAudioEnabled = true;
     for (const TimelineClip& timelineClip : m_timeline->clips()) {
         if (timelineClip.trackIndex != selectedTrackIndex) {
@@ -861,7 +884,6 @@ void EditorWindow::refreshClipInspector()
         ++clipCount;
         if (clipHasVisuals(timelineClip)) {
             ++visualCount;
-            allVisualEnabled = allVisualEnabled && timelineClip.videoEnabled;
         }
         if (timelineClip.hasAudio) {
             ++audioCount;
@@ -890,10 +912,11 @@ void EditorWindow::refreshClipInspector()
         m_trackHeightSpin->setValue(track->height);
         m_trackHeightSpin->setEnabled(true);
     }
-    if (m_trackVideoEnabledCheckBox) {
-        QSignalBlocker blocker(m_trackVideoEnabledCheckBox);
-        m_trackVideoEnabledCheckBox->setChecked(visualCount > 0 ? allVisualEnabled : false);
-        m_trackVideoEnabledCheckBox->setEnabled(visualCount > 0);
+    if (m_trackVisualModeCombo) {
+        QSignalBlocker blocker(m_trackVisualModeCombo);
+        const int modeIndex = m_trackVisualModeCombo->findData(static_cast<int>(track->visualMode));
+        m_trackVisualModeCombo->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
+        m_trackVisualModeCombo->setEnabled(visualCount > 0);
     }
     if (m_trackAudioEnabledCheckBox) {
         QSignalBlocker blocker(m_trackAudioEnabledCheckBox);
@@ -930,15 +953,20 @@ void EditorWindow::refreshTracksTab()
 
         auto *visualItem = new QTableWidgetItem;
         const bool hasVisual = m_timeline ? m_timeline->trackHasVisualClips(row) : false;
-        const bool visualEnabled = m_timeline ? m_timeline->trackVisualEnabled(row) : false;
+        const TrackVisualMode visualMode =
+            m_timeline ? m_timeline->trackVisualMode(row) : TrackVisualMode::Enabled;
         Qt::ItemFlags visualFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
         if (hasVisual) {
             visualFlags |= Qt::ItemIsEnabled;
         }
         visualItem->setFlags(visualFlags);
-        visualItem->setCheckState(visualEnabled ? Qt::Checked : Qt::Unchecked);
+        visualItem->setCheckState(
+            visualMode == TrackVisualMode::Hidden ? Qt::Unchecked
+            : (visualMode == TrackVisualMode::ForceOpaque ? Qt::PartiallyChecked : Qt::Checked));
         if (!hasVisual) {
             visualItem->setToolTip(QStringLiteral("No visual clips on this track"));
+        } else if (visualMode == TrackVisualMode::ForceOpaque) {
+            visualItem->setToolTip(QStringLiteral("Force Opaque"));
         }
 
         auto *audioItem = new QTableWidgetItem;
@@ -978,7 +1006,11 @@ void EditorWindow::onTrackTableItemChanged(QTableWidgetItem* item)
     bool changed = false;
 
     if (item->column() == 1) {
-        changed = m_timeline->updateTrackVisualEnabled(row, checked);
+        const TrackVisualMode mode =
+            item->checkState() == Qt::Unchecked ? TrackVisualMode::Hidden
+            : (item->checkState() == Qt::PartiallyChecked ? TrackVisualMode::ForceOpaque
+                                                          : TrackVisualMode::Enabled);
+        changed = m_timeline->updateTrackVisualMode(row, mode);
     } else if (item->column() == 2) {
         changed = m_timeline->updateTrackAudioEnabled(row, checked);
     }

@@ -22,6 +22,7 @@ void EditorWindow::createOutputTab()
             [this](const QSize& size) { if (m_preview) m_preview->setOutputSize(size); },
             [this]() { setPlaybackActive(false); },
             [this]() { return m_timeline ? m_timeline->clips() : QVector<TimelineClip>{}; },
+            [this]() { return m_timeline ? m_timeline->tracks() : QVector<TimelineTrack>{}; },
             [this]() { return m_timeline ? m_timeline->renderSyncMarkers() : QVector<RenderSyncMarker>{}; },
             [this](const RenderRequest& request) { renderTimelineFromOutputRequest(request); },
             [this]() { return m_lastRenderOutputPath; },
@@ -88,7 +89,7 @@ void EditorWindow::createTranscriptTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this]() { m_inspectorPane->refresh(); },
-            [this]() { m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { return effectivePlaybackRanges(); },
             [this](int64_t frame) { setCurrentFrame(frame); }});
     m_transcriptTab->wire();
@@ -128,15 +129,14 @@ void EditorWindow::createGradingTab()
     m_gradingTab = std::make_unique<GradingTab>(
         GradingTab::Widgets{
             m_gradingPathLabel, m_brightnessSpin, m_contrastSpin,
-            m_saturationSpin, m_opacitySpin,
+            m_saturationSpin,
             // Shadows/Midtones/Highlights
             m_shadowsRSpin, m_shadowsGSpin, m_shadowsBSpin,
             m_midtonesRSpin, m_midtonesGSpin, m_midtonesBSpin,
             m_highlightsRSpin, m_highlightsGSpin, m_highlightsBSpin,
             m_gradingKeyframeTable,
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
-            m_gradingKeyAtPlayheadButton, m_gradingFadeInButton, m_gradingFadeOutButton,
-            m_gradingFadeDurationSpin},
+            m_gradingKeyAtPlayheadButton},
         GradingTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
@@ -148,7 +148,7 @@ void EditorWindow::createGradingTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this]() { m_inspectorPane->refresh(); },
-            [this]() { m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
             [this]() -> QString { return m_timeline ? m_timeline->selectedClipId() : QString(); },
@@ -156,6 +156,40 @@ void EditorWindow::createGradingTab()
             {},
             {}});
     m_gradingTab->wire();
+}
+
+void EditorWindow::createOpacityTab()
+{
+    m_opacityTab = std::make_unique<OpacityTab>(
+        OpacityTab::Widgets{
+            m_inspectorPane->opacityPathLabel(),
+            m_opacitySpin,
+            m_inspectorPane->opacityKeyframeTable(),
+            m_inspectorPane->opacityAutoScrollCheckBox(),
+            m_inspectorPane->opacityFollowCurrentCheckBox(),
+            m_inspectorPane->opacityKeyAtPlayheadButton(),
+            m_inspectorPane->opacityFadeInButton(),
+            m_inspectorPane->opacityFadeOutButton(),
+            m_inspectorPane->opacityFadeDurationSpin()},
+        OpacityTab::Dependencies{
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
+                return m_timeline->updateClipById(id, updater);
+            },
+            [this](const TimelineClip& clip) { return clip.filePath; },
+            [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); },
+            [this]() { m_inspectorPane->refresh(); },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
+            [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
+            [this]() -> QString { return m_timeline ? m_timeline->selectedClipId() : QString(); },
+            [this](int64_t frame) { setCurrentFrame(frame); },
+            {},
+            {}});
+    m_opacityTab->wire();
 }
 
 void EditorWindow::createEffectsTab()
@@ -173,7 +207,7 @@ void EditorWindow::createEffectsTab()
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
                 return m_timeline->updateClipById(id, updater);
             },
-            [this]() { m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { m_inspectorPane->refresh(); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
@@ -213,7 +247,7 @@ void EditorWindow::createTitlesTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this]() { m_inspectorPane->refresh(); },
-            [this]() { m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
             [this]() -> QString { return m_timeline ? m_timeline->selectedClipId() : QString(); },
@@ -232,7 +266,7 @@ void EditorWindow::createVideoKeyframeTab()
             m_videoRotationSpin, m_videoScaleXSpin, m_videoScaleYSpin,
             m_videoInterpolationCombo, m_mirrorHorizontalCheckBox,
             m_mirrorVerticalCheckBox, m_lockVideoScaleCheckBox,
-            m_keyframeSpaceCheckBox, m_keyframesAutoScrollCheckBox,
+            m_keyframeSpaceCheckBox, m_keyframeSkipAwareTimingCheckBox, m_keyframesAutoScrollCheckBox,
             m_keyframesFollowCurrentCheckBox, m_addVideoKeyframeButton, m_removeVideoKeyframeButton,
             m_flipHorizontalButton},
         VideoKeyframeTab::Dependencies{
@@ -246,7 +280,7 @@ void EditorWindow::createVideoKeyframeTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this]() { m_inspectorPane->refresh(); },
-            [this]() { m_preview->setTimelineClips(m_timeline->clips()); },
+            [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
             [this]() -> QString { return m_timeline ? m_timeline->selectedClipId() : QString(); },
@@ -283,6 +317,7 @@ void EditorWindow::setupTabs()
     createProjectsTab();
     createTranscriptTab();
     createGradingTab();
+    createOpacityTab();
     createEffectsTab();
     createTitlesTab();
     createVideoKeyframeTab();
@@ -293,6 +328,7 @@ void EditorWindow::setupInspectorRefreshRouting()
 {
     connect(m_inspectorPane, &InspectorPane::refreshRequested, this, [this]() {
         m_gradingTab->refresh();
+        if (m_opacityTab) m_opacityTab->refresh();
         m_effectsTab->refresh();
         m_titlesTab->refresh();
         refreshSyncInspector();

@@ -47,12 +47,6 @@ void GradingTab::wire()
         connect(m_widgets.saturationSpin, &QDoubleSpinBox::editingFinished,
                 this, &GradingTab::onSaturationEditingFinished);
     }
-    if (m_widgets.opacitySpin) {
-        connect(m_widgets.opacitySpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
-                this, &GradingTab::onOpacityChanged);
-        connect(m_widgets.opacitySpin, &QDoubleSpinBox::editingFinished,
-                this, &GradingTab::onOpacityEditingFinished);
-    }
     // Shadows/Midtones/Highlights connections
     auto connectToneSpin = [this](QDoubleSpinBox* spin, void (GradingTab::*changedSlot)(double)) {
         if (spin) {
@@ -82,14 +76,6 @@ void GradingTab::wire()
         connect(m_widgets.gradingKeyAtPlayheadButton, &QPushButton::clicked,
                 this, &GradingTab::onKeyAtPlayheadClicked);
     }
-    if (m_widgets.gradingFadeInButton) {
-        connect(m_widgets.gradingFadeInButton, &QPushButton::clicked,
-                this, &GradingTab::onFadeInClicked);
-    }
-    if (m_widgets.gradingFadeOutButton) {
-        connect(m_widgets.gradingFadeOutButton, &QPushButton::clicked,
-                this, &GradingTab::onFadeOutClicked);
-    }
     if (m_widgets.gradingKeyframeTable) {
         connect(m_widgets.gradingKeyframeTable, &QTableWidget::itemSelectionChanged,
                 this, &GradingTab::onTableSelectionChanged);
@@ -109,7 +95,7 @@ void GradingTab::wire()
 void GradingTab::refresh()
 {
     if (!m_widgets.gradingPathLabel || !m_widgets.brightnessSpin || !m_widgets.contrastSpin ||
-        !m_widgets.saturationSpin || !m_widgets.opacitySpin || !m_widgets.gradingKeyframeTable) {
+        !m_widgets.saturationSpin || !m_widgets.gradingKeyframeTable) {
         return;
     }
     
@@ -122,7 +108,6 @@ void GradingTab::refresh()
     QSignalBlocker brightnessBlock(m_widgets.brightnessSpin);
     QSignalBlocker contrastBlock(m_widgets.contrastSpin);
     QSignalBlocker saturationBlock(m_widgets.saturationSpin);
-    QSignalBlocker opacityBlock(m_widgets.opacitySpin);
     QSignalBlocker shadowsRBlock(m_widgets.shadowsRSpin);
     QSignalBlocker shadowsGBlock(m_widgets.shadowsGSpin);
     QSignalBlocker shadowsBBlock(m_widgets.shadowsBSpin);
@@ -143,7 +128,6 @@ void GradingTab::refresh()
         m_widgets.brightnessSpin->setValue(0.0);
         m_widgets.contrastSpin->setValue(1.0);
         m_widgets.saturationSpin->setValue(1.0);
-        m_widgets.opacitySpin->setValue(1.0);
         // Reset shadows/midtones/highlights
         if (m_widgets.shadowsRSpin) m_widgets.shadowsRSpin->setValue(0.0);
         if (m_widgets.shadowsGSpin) m_widgets.shadowsGSpin->setValue(0.0);
@@ -189,7 +173,6 @@ void GradingTab::refresh()
         displayed.brightness = keyframe.brightness;
         displayed.contrast = keyframe.contrast;
         displayed.saturation = keyframe.saturation;
-        displayed.opacity = keyframe.opacity;
         displayed.shadowsR = keyframe.shadowsR;
         displayed.shadowsG = keyframe.shadowsG;
         displayed.shadowsB = keyframe.shadowsB;
@@ -229,7 +212,6 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
         keyframe.brightness = m_widgets.brightnessSpin->value();
         keyframe.contrast = m_widgets.contrastSpin->value();
         keyframe.saturation = m_widgets.saturationSpin->value();
-        keyframe.opacity = m_widgets.opacitySpin->value();
         // Shadows/Midtones/Highlights
         keyframe.shadowsR = m_widgets.shadowsRSpin ? m_widgets.shadowsRSpin->value() : 0.0;
         keyframe.shadowsG = m_widgets.shadowsGSpin ? m_widgets.shadowsGSpin->value() : 0.0;
@@ -281,16 +263,6 @@ void GradingTab::upsertKeyframeAtPlayhead()
     m_selectedKeyframeFrames = {m_selectedKeyframeFrame};
     applyGradeFromInspector(true);
     emit keyframeAdded();
-}
-
-void GradingTab::fadeInFromPlayhead()
-{
-    applyOpacityFadeFromPlayhead(true);
-}
-
-void GradingTab::fadeOutFromPlayhead()
-{
-    applyOpacityFadeFromPlayhead(false);
 }
 
 void GradingTab::syncTableToPlayhead()
@@ -349,13 +321,6 @@ void GradingTab::onSaturationChanged(double value)
     applyGradeFromInspector(false);
 }
 
-void GradingTab::onOpacityChanged(double value)
-{
-    Q_UNUSED(value);
-    if (m_updating) return;
-    applyGradeFromInspector(false);
-}
-
 // Shadows/Midtones/Highlights slots
 void GradingTab::onShadowsRChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
 void GradingTab::onShadowsGChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
@@ -387,16 +352,6 @@ void GradingTab::onFollowCurrentToggled(bool checked)
 void GradingTab::onKeyAtPlayheadClicked()
 {
     upsertKeyframeAtPlayhead();
-}
-
-void GradingTab::onFadeInClicked()
-{
-    fadeInFromPlayhead();
-}
-
-void GradingTab::onFadeOutClicked()
-{
-    fadeOutFromPlayhead();
 }
 
 void GradingTab::onTableSelectionChanged()
@@ -438,7 +393,6 @@ void GradingTab::onTableSelectionChanged()
                 displayed.brightness = keyframe.brightness;
                 displayed.contrast = keyframe.contrast;
                 displayed.saturation = keyframe.saturation;
-                displayed.opacity = keyframe.opacity;
                 displayed.shadowsR = keyframe.shadowsR;
                 displayed.shadowsG = keyframe.shadowsG;
                 displayed.shadowsB = keyframe.shadowsB;
@@ -490,9 +444,7 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
     if (!ok) { refresh(); return; }
     edited.saturation = tableText(3).toDouble(&ok);
     if (!ok) { refresh(); return; }
-    edited.opacity = tableText(4).toDouble(&ok);
-    if (!ok) { refresh(); return; }
-    if (!parseVideoInterpolationText(tableText(5), &edited.linearInterpolation)) {
+    if (!parseVideoInterpolationText(tableText(4), &edited.linearInterpolation)) {
         refresh();
         return;
     }
@@ -533,7 +485,6 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
                                              existing.brightness == edited.brightness &&
                                              existing.contrast == edited.contrast &&
                                              existing.saturation == edited.saturation &&
-                                             existing.opacity == edited.opacity &&
                                              existing.linearInterpolation == edited.linearInterpolation)) {
                     hasBaseAtZero = true;
                     break;
@@ -567,7 +518,7 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
 void GradingTab::onTableItemClicked(QTableWidgetItem* item)
 {
     if (m_updating || !item) return;
-    if (item->column() != 5) return;
+    if (item->column() != 4) return;
     item->setText(nextVideoInterpolationLabel(item->text()));
 }
 
@@ -656,7 +607,6 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
     result.brightness = 0.0;
     result.contrast = 1.0;
     result.saturation = 1.0;
-    result.opacity = 1.0;
     result.shadowsR = 0.0; result.shadowsG = 0.0; result.shadowsB = 0.0;
     result.midtonesR = 0.0; result.midtonesG = 0.0; result.midtonesB = 0.0;
     result.highlightsR = 0.0; result.highlightsG = 0.0; result.highlightsB = 0.0;
@@ -681,7 +631,6 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.brightness = kf.brightness;
         result.contrast = kf.contrast;
         result.saturation = kf.saturation;
-        result.opacity = kf.opacity;
         result.shadowsR = kf.shadowsR; result.shadowsG = kf.shadowsG; result.shadowsB = kf.shadowsB;
         result.midtonesR = kf.midtonesR; result.midtonesG = kf.midtonesG; result.midtonesB = kf.midtonesB;
         result.highlightsR = kf.highlightsR; result.highlightsG = kf.highlightsG; result.highlightsB = kf.highlightsB;
@@ -696,7 +645,6 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.brightness = before.brightness;
         result.contrast = before.contrast;
         result.saturation = before.saturation;
-        result.opacity = before.opacity;
         result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
         result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
         result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
@@ -713,7 +661,6 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.brightness = before.brightness;
         result.contrast = before.contrast;
         result.saturation = before.saturation;
-        result.opacity = before.opacity;
         result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
         result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
         result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
@@ -727,7 +674,6 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.brightness = before.brightness;
         result.contrast = before.contrast;
         result.saturation = before.saturation;
-        result.opacity = before.opacity;
         result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
         result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
         result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
@@ -738,7 +684,6 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
     result.brightness = before.brightness + (after.brightness - before.brightness) * t;
     result.contrast = before.contrast + (after.contrast - before.contrast) * t;
     result.saturation = before.saturation + (after.saturation - before.saturation) * t;
-    result.opacity = before.opacity + (after.opacity - before.opacity) * t;
     result.shadowsR = before.shadowsR + (after.shadowsR - before.shadowsR) * t;
     result.shadowsG = before.shadowsG + (after.shadowsG - before.shadowsG) * t;
     result.shadowsB = before.shadowsB + (after.shadowsB - before.shadowsB) * t;
@@ -758,7 +703,6 @@ void GradingTab::updateSpinBoxesFromKeyframe(const GradingKeyframeDisplay& keyfr
     QSignalBlocker brightnessBlock(m_widgets.brightnessSpin);
     QSignalBlocker contrastBlock(m_widgets.contrastSpin);
     QSignalBlocker saturationBlock(m_widgets.saturationSpin);
-    QSignalBlocker opacityBlock(m_widgets.opacitySpin);
     QSignalBlocker shadowsRBlock(m_widgets.shadowsRSpin);
     QSignalBlocker shadowsGBlock(m_widgets.shadowsGSpin);
     QSignalBlocker shadowsBBlock(m_widgets.shadowsBSpin);
@@ -772,7 +716,6 @@ void GradingTab::updateSpinBoxesFromKeyframe(const GradingKeyframeDisplay& keyfr
     m_widgets.brightnessSpin->setValue(keyframe.brightness);
     m_widgets.contrastSpin->setValue(keyframe.contrast);
     m_widgets.saturationSpin->setValue(keyframe.saturation);
-    m_widgets.opacitySpin->setValue(keyframe.opacity);
     
     if (m_widgets.shadowsRSpin) m_widgets.shadowsRSpin->setValue(keyframe.shadowsR);
     if (m_widgets.shadowsGSpin) m_widgets.shadowsGSpin->setValue(keyframe.shadowsG);
@@ -821,7 +764,6 @@ void GradingTab::populateTable(const TimelineClip& clip)
             QString::number(displayedFrame.brightness, 'f', 3),
             QString::number(displayedFrame.contrast, 'f', 3),
             QString::number(displayedFrame.saturation, 'f', 3),
-            QString::number(displayedFrame.opacity, 'f', 3),
             videoInterpolationLabel(displayedFrame.linearInterpolation)
         };
 
@@ -831,93 +773,6 @@ void GradingTab::populateTable(const TimelineClip& clip)
             m_widgets.gradingKeyframeTable->setItem(row, column, item);
         }
     }
-}
-
-void GradingTab::applyOpacityFadeFromPlayhead(bool fadeIn)
-{
-    const TimelineClip* clip = m_deps.getSelectedClip();
-    if (!clip || !m_deps.clipHasVisuals(*clip)) {
-        return;
-    }
-
-    const int64_t localStartFrame = qBound<int64_t>(0,
-                                                    m_deps.getCurrentTimelineFrame() - clip->startFrame,
-                                                    qMax<int64_t>(0, clip->durationFrames - 1));
-    
-    // Get fade duration in seconds and convert to frames
-    double fadeDurationSeconds = 1.0;
-    if (m_widgets.gradingFadeDurationSpin) {
-        fadeDurationSeconds = m_widgets.gradingFadeDurationSpin->value();
-    }
-    const double fps = 30.0; // Assume 30fps, could be made configurable
-    const int64_t fadeDurationFrames = static_cast<int64_t>(fadeDurationSeconds * fps);
-    
-    const int64_t localEndFrame = qMin<int64_t>(
-        qMax<int64_t>(0, clip->durationFrames - 1),
-        localStartFrame + fadeDurationFrames);
-    
-    if (localStartFrame >= localEndFrame) {
-        QMessageBox::information(nullptr,
-                                 QStringLiteral("Opacity Fade"),
-                                 QStringLiteral("Move the playhead before the end of the clip to create a fade."));
-        return;
-    }
-
-    const GradingKeyframeDisplay startDisplay = evaluateDisplayedGrading(*clip, clip->startFrame + localStartFrame);
-    const GradingKeyframeDisplay endDisplay = evaluateDisplayedGrading(*clip, clip->startFrame + localEndFrame);
-    // For fade in, always end at opacity=1.0 (full visibility)
-    // For fade out, end at opacity=0.0
-    const double targetVisibleOpacity = 1.0;
-
-    const bool updated = m_deps.updateClipById(clip->id, [&](TimelineClip& updatedClip) {
-        auto upsertFrame = [](QVector<TimelineClip::GradingKeyframe>& keyframes,
-                              const TimelineClip::GradingKeyframe& keyframe) {
-            for (TimelineClip::GradingKeyframe& existing : keyframes) {
-                if (existing.frame == keyframe.frame) {
-                    existing = keyframe;
-                    return;
-                }
-            }
-            keyframes.push_back(keyframe);
-        };
-
-        TimelineClip::GradingKeyframe startKeyframe;
-        startKeyframe.frame = localStartFrame;
-        startKeyframe.brightness = startDisplay.brightness;
-        startKeyframe.contrast = startDisplay.contrast;
-        startKeyframe.saturation = startDisplay.saturation;
-        startKeyframe.opacity = fadeIn ? 0.0 : qBound(0.0, startDisplay.opacity, 1.0);
-        startKeyframe.shadowsR = startDisplay.shadowsR; startKeyframe.shadowsG = startDisplay.shadowsG; startKeyframe.shadowsB = startDisplay.shadowsB;
-        startKeyframe.midtonesR = startDisplay.midtonesR; startKeyframe.midtonesG = startDisplay.midtonesG; startKeyframe.midtonesB = startDisplay.midtonesB;
-        startKeyframe.highlightsR = startDisplay.highlightsR; startKeyframe.highlightsG = startDisplay.highlightsG; startKeyframe.highlightsB = startDisplay.highlightsB;
-        startKeyframe.linearInterpolation = true;
-
-        TimelineClip::GradingKeyframe endKeyframe;
-        endKeyframe.frame = localEndFrame;
-        endKeyframe.brightness = endDisplay.brightness;
-        endKeyframe.contrast = endDisplay.contrast;
-        endKeyframe.saturation = endDisplay.saturation;
-        endKeyframe.opacity = fadeIn ? targetVisibleOpacity : 0.0;
-        endKeyframe.shadowsR = endDisplay.shadowsR; endKeyframe.shadowsG = endDisplay.shadowsG; endKeyframe.shadowsB = endDisplay.shadowsB;
-        endKeyframe.midtonesR = endDisplay.midtonesR; endKeyframe.midtonesG = endDisplay.midtonesG; endKeyframe.midtonesB = endDisplay.midtonesB;
-        endKeyframe.highlightsR = endDisplay.highlightsR; endKeyframe.highlightsG = endDisplay.highlightsG; endKeyframe.highlightsB = endDisplay.highlightsB;
-        endKeyframe.linearInterpolation = true;
-
-        upsertFrame(updatedClip.gradingKeyframes, startKeyframe);
-        upsertFrame(updatedClip.gradingKeyframes, endKeyframe);
-        normalizeClipGradingKeyframes(updatedClip);
-    });
-
-    if (!updated) {
-        return;
-    }
-
-    m_selectedKeyframeFrame = localStartFrame;
-    m_selectedKeyframeFrames = {localStartFrame, localEndFrame};
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
 }
 
 void GradingTab::removeSelectedKeyframes()
@@ -981,12 +836,6 @@ void GradingTab::onSaturationEditingFinished()
     applyGradeFromInspector(true);
 }
 
-void GradingTab::onOpacityEditingFinished()
-{
-    if (m_updating) return;
-    applyGradeFromInspector(true);
-}
-
 void GradingTab::onTableCustomContextMenu(const QPoint& pos)
 {
     if (!m_widgets.gradingKeyframeTable) return;
@@ -1025,7 +874,6 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
                     midpoint.brightness = earlier->brightness + ((later->brightness - earlier->brightness) * t);
                     midpoint.contrast = earlier->contrast + ((later->contrast - earlier->contrast) * t);
                     midpoint.saturation = earlier->saturation + ((later->saturation - earlier->saturation) * t);
-                    midpoint.opacity = earlier->opacity + ((later->opacity - earlier->opacity) * t);
                     midpoint.shadowsR = earlier->shadowsR + ((later->shadowsR - earlier->shadowsR) * t);
                     midpoint.shadowsG = earlier->shadowsG + ((later->shadowsG - earlier->shadowsG) * t);
                     midpoint.shadowsB = earlier->shadowsB + ((later->shadowsB - earlier->shadowsB) * t);
@@ -1079,7 +927,6 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
                     midpoint.brightness = earlier->brightness + ((later->brightness - earlier->brightness) * t);
                     midpoint.contrast = earlier->contrast + ((later->contrast - earlier->contrast) * t);
                     midpoint.saturation = earlier->saturation + ((later->saturation - earlier->saturation) * t);
-                    midpoint.opacity = earlier->opacity + ((later->opacity - earlier->opacity) * t);
                     midpoint.shadowsR = earlier->shadowsR + ((later->shadowsR - earlier->shadowsR) * t);
                     midpoint.shadowsG = earlier->shadowsG + ((later->shadowsG - earlier->shadowsG) * t);
                     midpoint.shadowsB = earlier->shadowsB + ((later->shadowsB - earlier->shadowsB) * t);

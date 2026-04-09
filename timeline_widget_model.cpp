@@ -50,10 +50,6 @@ int TimelineWidget::trackTop(int trackIndex) const {
     return m_layout->trackTop(trackIndex);
 }
 
-int TimelineWidget::trackTopInTrackArea(int trackIndex) const {
-    return m_layout->trackTop(trackIndex) - trackRect().top();
-}
-
 int TimelineWidget::trackHeight(int trackIndex) const {
     return m_layout->trackHeight(trackIndex);
 }
@@ -72,6 +68,9 @@ void TimelineWidget::setVerticalScrollOffset(int offset) {
         return;
     }
     m_verticalScrollOffset = bounded;
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
     update();
 }
 
@@ -95,6 +94,10 @@ void TimelineWidget::setTimelineZoom(qreal pixelsPerFrame) {
         m_frameOffset = 0;
     }
     update();
+}
+
+void TimelineWidget::handleSidebarWheelSteps(int steps, Qt::KeyboardModifiers modifiers) {
+    handleWheelSteps(steps, modifiers, timelineContentRect().left(), true);
 }
 
 int TimelineWidget::trackIndexAtY(int y, bool allowAppendTrack) const {
@@ -133,21 +136,18 @@ bool TimelineWidget::trackHasAudioClips(int trackIndex) const {
     return false;
 }
 
-bool TimelineWidget::trackVisualEnabled(int trackIndex) const {
-    bool sawVisual = false;
-    for (const TimelineClip& clip : m_clips) {
-        if (clip.trackIndex != trackIndex || !clipHasVisuals(clip)) {
-            continue;
-        }
-        sawVisual = true;
-        if (!clip.videoEnabled) {
-            return false;
-        }
+TrackVisualMode TimelineWidget::trackVisualMode(int trackIndex) const {
+    if (trackIndex >= 0 && trackIndex < m_tracks.size()) {
+        return m_tracks[trackIndex].visualMode;
     }
-    return sawVisual;
+    return TrackVisualMode::Enabled;
 }
 
 bool TimelineWidget::trackAudioEnabled(int trackIndex) const {
+    if (trackIndex >= 0 && trackIndex < m_tracks.size()) {
+        return m_tracks[trackIndex].audioEnabled;
+    }
+
     bool sawAudio = false;
     for (const TimelineClip& clip : m_clips) {
         if (clip.trackIndex != trackIndex || !clip.hasAudio) {
@@ -161,13 +161,15 @@ bool TimelineWidget::trackAudioEnabled(int trackIndex) const {
     return sawAudio;
 }
 
-bool TimelineWidget::setTrackVisualEnabled(int trackIndex, bool enabled) {
+bool TimelineWidget::setTrackVisualMode(int trackIndex, TrackVisualMode mode) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+
     bool changed = false;
-    for (TimelineClip& clip : m_clips) {
-        if (clip.trackIndex == trackIndex && clipHasVisuals(clip) && clip.videoEnabled != enabled) {
-            clip.videoEnabled = enabled;
-            changed = true;
-        }
+    if (m_tracks[trackIndex].visualMode != mode) {
+        m_tracks[trackIndex].visualMode = mode;
+        changed = true;
     }
     if (changed && clipsChanged) {
         clipsChanged();
@@ -179,7 +181,15 @@ bool TimelineWidget::setTrackVisualEnabled(int trackIndex, bool enabled) {
 }
 
 bool TimelineWidget::setTrackAudioEnabled(int trackIndex, bool enabled) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+
     bool changed = false;
+    if (m_tracks[trackIndex].audioEnabled != enabled) {
+        m_tracks[trackIndex].audioEnabled = enabled;
+        changed = true;
+    }
     for (TimelineClip& clip : m_clips) {
         if (clip.trackIndex == trackIndex && clip.hasAudio && clip.audioEnabled != enabled) {
             clip.audioEnabled = enabled;

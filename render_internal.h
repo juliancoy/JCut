@@ -185,7 +185,8 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                        AVFormatContext* formatCtx,
                        QString* errorMessage);
 
-QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips);
+QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
+                                        const QVector<TimelineTrack>& tracks);
 
 class OffscreenGpuRendererPrivate;
 

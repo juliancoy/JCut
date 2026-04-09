@@ -34,6 +34,7 @@ public:
         QCheckBox* mirrorVerticalCheckBox = nullptr;
         QCheckBox* lockVideoScaleCheckBox = nullptr;
         QCheckBox* keyframeSpaceCheckBox = nullptr;
+        QCheckBox* keyframeSkipAwareTimingCheckBox = nullptr;
         QCheckBox* keyframesAutoScrollCheckBox = nullptr;
         QCheckBox* keyframesFollowCurrentCheckBox = nullptr;
         QPushButton* addVideoKeyframeButton = nullptr;
@@ -80,6 +81,7 @@ private slots:
     void onMirrorVerticalToggled(bool checked);
     void onLockScaleToggled(bool checked);
     void onKeyframeSpaceToggled(bool checked);
+    void onSkipAwareTimingToggled(bool checked);
     void onAutoScrollToggled(bool checked);
     void onFollowCurrentToggled(bool checked);
     void onAddKeyframeClicked();

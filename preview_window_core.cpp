@@ -128,7 +128,7 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
     m_transcriptSectionsCache.clear();
     QSet<QString> visualClipIds;
     for (const auto& clip : clips) {
-        if (clipVisualPlaybackEnabled(clip)) visualClipIds.insert(clip.id);
+        if (clipVisualPlaybackEnabled(clip, m_tracks)) visualClipIds.insert(clip.id);
     }
     for (auto it = m_lastPresentedFrames.begin(); it != m_lastPresentedFrames.end();) {
         if (!visualClipIds.contains(it.key())) it = m_lastPresentedFrames.erase(it);
@@ -143,7 +143,7 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
 
     QSet<QString> registeredIds;
     for (const auto& clip : clips) {
-        if (!clipVisualPlaybackEnabled(clip)) continue;
+        if (!clipVisualPlaybackEnabled(clip, m_tracks)) continue;
         registeredIds.insert(clip.id);
         if (!m_registeredClips.contains(clip.id)) {
             m_cache->registerClip(clip);
@@ -159,6 +159,11 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
     else if (m_frameRequestsArmed) { m_pendingFrameRequest = true; scheduleFrameRequest(); }
     else m_pendingFrameRequest = true;
     scheduleRepaint();
+}
+
+void PreviewWindow::setTimelineTracks(const QVector<TimelineTrack>& tracks) {
+    m_tracks = tracks;
+    setTimelineClips(m_clips);
 }
 
 void PreviewWindow::setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) {
@@ -245,7 +250,7 @@ QList<TimelineClip> PreviewWindow::getActiveClips() const {
     }
     std::sort(active.begin(), active.end(), [](const TimelineClip& a, const TimelineClip& b) {
         if (a.trackIndex == b.trackIndex) return a.startFrame < b.startFrame;
-        return a.trackIndex < b.trackIndex;
+        return a.trackIndex > b.trackIndex;
     });
     return active;
 }

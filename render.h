@@ -52,6 +52,7 @@ struct RenderRequest {
     QSize outputSize;
     bool useProxyMedia = false;
     QVector<TimelineClip> clips;
+    QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;
     int64_t exportStartFrame = 0;

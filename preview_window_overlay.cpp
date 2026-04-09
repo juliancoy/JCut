@@ -475,14 +475,11 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
     painter->setClipRect(targetRect);
 
     if (!frame.isNull() && frame.hasCpuImage()) {
-        QImage img =
-            m_bypassGrading
-                ? frame.cpuImage()
-                : applyClipGrade(frame.cpuImage(), evaluateClipGradingAtPosition(clip, m_currentFramePosition));
-        
-        // Apply mask feathering if clip has alpha and feather is enabled
-        if (clip.maskFeather > 0.0) {
-            img = applyMaskFeather(img, clip.maskFeather, clip.maskFeatherGamma);
+        QImage img = frame.cpuImage();
+        if (!m_bypassGrading) {
+            const EffectiveVisualEffects effects =
+                evaluateEffectiveVisualEffectsAtPosition(clip, m_tracks, m_currentFramePosition);
+            img = applyEffectiveClipVisualEffectsToImage(img, effects);
         }
         
         const QRect fitted = fitRect(img.size(), targetRect);

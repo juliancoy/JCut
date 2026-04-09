@@ -79,6 +79,10 @@ void VideoKeyframeTab::wire()
         connect(m_widgets.keyframeSpaceCheckBox, &QCheckBox::toggled,
                 this, &VideoKeyframeTab::onKeyframeSpaceToggled);
     }
+    if (m_widgets.keyframeSkipAwareTimingCheckBox) {
+        connect(m_widgets.keyframeSkipAwareTimingCheckBox, &QCheckBox::toggled,
+                this, &VideoKeyframeTab::onSkipAwareTimingToggled);
+    }
     if (m_widgets.addVideoKeyframeButton) {
         connect(m_widgets.addVideoKeyframeButton, &QPushButton::clicked,
                 this, &VideoKeyframeTab::onAddKeyframeClicked);
@@ -275,78 +279,14 @@ bool VideoKeyframeTab::hasRemovableKeyframeSelection(const TimelineClip& clip) c
 VideoKeyframeTab::TransformKeyframeDisplay VideoKeyframeTab::evaluateDisplayedTransform(const TimelineClip& clip, int64_t localFrame) const
 {
     TransformKeyframeDisplay result;
-    result.translationX = clip.baseTranslationX;
-    result.translationY = clip.baseTranslationY;
-    result.rotation = clip.baseRotation;
-    result.scaleX = clip.baseScaleX;
-    result.scaleY = clip.baseScaleY;
-    result.linearInterpolation = true;
-
-    if (clip.transformKeyframes.isEmpty()) {
-        return result;
-    }
-
-    int beforeIndex = -1;
-    for (int i = clip.transformKeyframes.size() - 1; i >= 0; --i) {
-        if (clip.transformKeyframes[i].frame <= localFrame) {
-            beforeIndex = i;
-            break;
-        }
-    }
-
-    if (beforeIndex < 0) {
-        const auto& kf = clip.transformKeyframes[0];
-        result.translationX = clip.baseTranslationX + kf.translationX;
-        result.translationY = clip.baseTranslationY + kf.translationY;
-        result.rotation = clip.baseRotation + kf.rotation;
-        result.scaleX = clip.baseScaleX * kf.scaleX;
-        result.scaleY = clip.baseScaleY * kf.scaleY;
-        result.linearInterpolation = kf.linearInterpolation;
-        return result;
-    }
-
-    const auto& before = clip.transformKeyframes[beforeIndex];
-    
-    if (beforeIndex == clip.transformKeyframes.size() - 1 || before.frame == localFrame) {
-        result.translationX = clip.baseTranslationX + before.translationX;
-        result.translationY = clip.baseTranslationY + before.translationY;
-        result.rotation = clip.baseRotation + before.rotation;
-        result.scaleX = clip.baseScaleX * before.scaleX;
-        result.scaleY = clip.baseScaleY * before.scaleY;
-        result.linearInterpolation = before.linearInterpolation;
-        return result;
-    }
-
-    int afterIndex = beforeIndex + 1;
-    const auto& after = clip.transformKeyframes[afterIndex];
-
-    if (!before.linearInterpolation) {
-        result.translationX = clip.baseTranslationX + before.translationX;
-        result.translationY = clip.baseTranslationY + before.translationY;
-        result.rotation = clip.baseRotation + before.rotation;
-        result.scaleX = clip.baseScaleX * before.scaleX;
-        result.scaleY = clip.baseScaleY * before.scaleY;
-        return result;
-    }
-
-    const int64_t range = after.frame - before.frame;
-    if (range <= 0) {
-        result.translationX = clip.baseTranslationX + before.translationX;
-        result.translationY = clip.baseTranslationY + before.translationY;
-        result.rotation = clip.baseRotation + before.rotation;
-        result.scaleX = clip.baseScaleX * before.scaleX;
-        result.scaleY = clip.baseScaleY * before.scaleY;
-        return result;
-    }
-
-    const double t = static_cast<double>(localFrame - before.frame) / static_cast<double>(range);
-    result.translationX = clip.baseTranslationX + before.translationX + (after.translationX - before.translationX) * t;
-    result.translationY = clip.baseTranslationY + before.translationY + (after.translationY - before.translationY) * t;
-    result.rotation = clip.baseRotation + before.rotation + (after.rotation - before.rotation) * t;
-    result.scaleX = clip.baseScaleX * (before.scaleX + (after.scaleX - before.scaleX) * t);
-    result.scaleY = clip.baseScaleY * (before.scaleY + (after.scaleY - before.scaleY) * t);
-    result.linearInterpolation = after.linearInterpolation;
-
+    const TimelineClip::TransformKeyframe evaluated =
+        evaluateClipTransformAtFrame(clip, clip.startFrame + qBound<int64_t>(0, localFrame, qMax<int64_t>(0, clip.durationFrames - 1)));
+    result.translationX = evaluated.translationX;
+    result.translationY = evaluated.translationY;
+    result.rotation = evaluated.rotation;
+    result.scaleX = evaluated.scaleX;
+    result.scaleY = evaluated.scaleY;
+    result.linearInterpolation = evaluated.linearInterpolation;
     return result;
 }
 
@@ -446,6 +386,7 @@ void VideoKeyframeTab::refresh()
     QSignalBlocker interpBlocker(m_widgets.videoInterpolationCombo);
     QSignalBlocker mirrorHBlocker(m_widgets.mirrorHorizontalCheckBox);
     QSignalBlocker mirrorVBlocker(m_widgets.mirrorVerticalCheckBox);
+    QSignalBlocker skipAwareBlocker(m_widgets.keyframeSkipAwareTimingCheckBox);
 
     m_widgets.videoKeyframeTable->clearContents();
     m_widgets.videoKeyframeTable->setRowCount(0);
@@ -462,6 +403,9 @@ void VideoKeyframeTab::refresh()
         m_widgets.videoInterpolationCombo->setCurrentIndex(1);
         m_widgets.mirrorHorizontalCheckBox->setChecked(false);
         m_widgets.mirrorVerticalCheckBox->setChecked(false);
+        if (m_widgets.keyframeSkipAwareTimingCheckBox) {
+            m_widgets.keyframeSkipAwareTimingCheckBox->setChecked(false);
+        }
         m_selectedKeyframeFrame = -1;
         m_selectedKeyframeFrames.clear();
         m_updating = false;
@@ -489,7 +433,7 @@ void VideoKeyframeTab::refresh()
 
     TransformKeyframeDisplay displayed;
     if (clip->transformKeyframes.isEmpty()) {
-        displayed = evaluateDisplayedTransform(*clip, clip->startFrame);
+        displayed = evaluateDisplayedTransform(*clip, calculateLocalFrame(clip));
         displayed.frame = 0;
     } else {
         int selectedIndex = selectedKeyframeIndex(*clip);
@@ -505,6 +449,9 @@ void VideoKeyframeTab::refresh()
     updateSpinBoxesFromKeyframe(displayed);
     updateMirrorCheckboxesFromScale(displayed.scaleX, displayed.scaleY);
     m_widgets.videoInterpolationCombo->setCurrentIndex(displayed.linearInterpolation ? 1 : 0);
+    if (m_widgets.keyframeSkipAwareTimingCheckBox) {
+        m_widgets.keyframeSkipAwareTimingCheckBox->setChecked(clip->transformSkipAwareTiming);
+    }
 
     editor::restoreSelectionByFrameRole(m_widgets.videoKeyframeTable, m_selectedKeyframeFrames);
 
@@ -1068,6 +1015,26 @@ void VideoKeyframeTab::onKeyframeSpaceToggled(bool checked)
     if (m_updating) return;
     refresh();
     m_deps.scheduleSaveState();
+}
+
+void VideoKeyframeTab::onSkipAwareTimingToggled(bool checked)
+{
+    if (m_updating) return;
+    const QString clipId = m_deps.getSelectedClipId();
+    if (clipId.isEmpty()) {
+        return;
+    }
+    const bool updated = m_deps.updateClipById(clipId, [checked](TimelineClip& clip) {
+        clip.transformSkipAwareTiming = checked;
+    });
+    if (!updated) {
+        return;
+    }
+    m_deps.setPreviewTimelineClips();
+    refresh();
+    m_deps.refreshInspector();
+    m_deps.scheduleSaveState();
+    m_deps.pushHistorySnapshot();
 }
 
 void VideoKeyframeTab::onAutoScrollToggled(bool checked)

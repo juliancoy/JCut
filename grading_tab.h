@@ -24,7 +24,6 @@ public:
         QDoubleSpinBox* brightnessSpin = nullptr;
         QDoubleSpinBox* contrastSpin = nullptr;
         QDoubleSpinBox* saturationSpin = nullptr;
-        QDoubleSpinBox* opacitySpin = nullptr;
         // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
         QDoubleSpinBox* shadowsRSpin = nullptr;
         QDoubleSpinBox* shadowsGSpin = nullptr;
@@ -39,9 +38,6 @@ public:
         QCheckBox* gradingAutoScrollCheckBox = nullptr;
         QCheckBox* gradingFollowCurrentCheckBox = nullptr;
         QPushButton* gradingKeyAtPlayheadButton = nullptr;
-        QPushButton* gradingFadeInButton = nullptr;
-        QPushButton* gradingFadeOutButton = nullptr;
-        QDoubleSpinBox* gradingFadeDurationSpin = nullptr;
     };
 
     struct Dependencies : public KeyframeTabBase::Dependencies
@@ -55,8 +51,6 @@ public:
     void refresh();
     void applyGradeFromInspector(bool pushHistory = false);
     void upsertKeyframeAtPlayhead();
-    void fadeInFromPlayhead();
-    void fadeOutFromPlayhead();
     void removeSelectedKeyframes();
     void syncTableToPlayhead();
 
@@ -69,11 +63,9 @@ private slots:
     void onBrightnessChanged(double value);
     void onContrastChanged(double value);
     void onSaturationChanged(double value);
-    void onOpacityChanged(double value);
     void onBrightnessEditingFinished();
     void onContrastEditingFinished();
     void onSaturationEditingFinished();
-    void onOpacityEditingFinished();
     // Shadows/Midtones/Highlights slots
     void onShadowsRChanged(double value);
     void onShadowsGChanged(double value);
@@ -87,8 +79,6 @@ private slots:
     void onAutoScrollToggled(bool checked);
     void onFollowCurrentToggled(bool checked);
     void onKeyAtPlayheadClicked();
-    void onFadeInClicked();
-    void onFadeOutClicked();
     void onTableSelectionChanged();
     void onTableItemChanged(QTableWidgetItem* item);
     void onTableItemClicked(QTableWidgetItem* item);
@@ -102,7 +92,6 @@ private:
         double brightness = 0.0;
         double contrast = 1.0;
         double saturation = 1.0;
-        double opacity = 1.0;
         // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
         double shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
         double midtonesR = 0.0, midtonesG = 0.0, midtonesB = 0.0;
@@ -120,7 +109,6 @@ private:
     GradingKeyframeDisplay evaluateDisplayedGrading(const TimelineClip& clip, int64_t localFrame) const;
     void updateSpinBoxesFromKeyframe(const GradingKeyframeDisplay& keyframe);
     void populateTable(const TimelineClip& clip);
-    void applyOpacityFadeFromPlayhead(bool fadeIn);
 
     Widgets m_widgets;
     QTimer m_deferredSeekTimer;

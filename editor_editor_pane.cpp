@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "titles.h"
 
 #include <QStyle>
 #include <QToolButton>
@@ -57,6 +58,7 @@ void EditorWindow::connectTimelineSignals()
         syncSliderRange();
         m_preview->beginBulkUpdate();
         m_preview->setClipCount(m_timeline->clips().size());
+        m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_preview->setExportRanges(effectivePlaybackRanges());
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
@@ -137,6 +139,7 @@ void EditorWindow::connectTimelineSignals()
             c.baseTranslationY = 0.0;
             normalizeClipTransformKeyframes(c);
         });
+        m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_inspectorPane->refresh();
         scheduleSaveState();
@@ -154,6 +157,100 @@ void EditorWindow::connectPreviewSignals()
 {
     m_preview->selectionRequested = [this](const QString &clipId) {
         if (m_timeline) m_timeline->setSelectedClipId(clipId);
+    };
+    m_preview->createKeyframeRequested = [this](const QString &clipId) {
+        if (!m_timeline) return;
+
+        const int64_t currentFrame = m_timeline->currentFrame();
+        const bool updated = m_timeline->updateClipById(clipId, [currentFrame](TimelineClip &clip) {
+            const int64_t localFrame = qBound<int64_t>(
+                0,
+                currentFrame - clip.startFrame,
+                qMax<int64_t>(0, clip.durationFrames - 1));
+
+            if (clip.mediaType == ClipMediaType::Title) {
+                if (clip.titleKeyframes.isEmpty()) {
+                    return;
+                }
+
+                const EvaluatedTitle evaluated = evaluateTitleAtLocalFrame(clip, localFrame);
+                if (!evaluated.valid) {
+                    return;
+                }
+
+                TimelineClip::TitleKeyframe keyframe = clip.titleKeyframes.constFirst();
+                keyframe.frame = localFrame;
+                keyframe.text = evaluated.text;
+                keyframe.translationX = evaluated.x;
+                keyframe.translationY = evaluated.y;
+                keyframe.fontSize = evaluated.fontSize;
+                keyframe.opacity = evaluated.opacity;
+                keyframe.fontFamily = evaluated.fontFamily;
+                keyframe.bold = evaluated.bold;
+                keyframe.italic = evaluated.italic;
+                keyframe.color = evaluated.color;
+                for (const TimelineClip::TitleKeyframe &existing : clip.titleKeyframes) {
+                    if (existing.frame > localFrame) {
+                        keyframe.linearInterpolation = existing.linearInterpolation;
+                        break;
+                    }
+                }
+
+                bool replaced = false;
+                for (TimelineClip::TitleKeyframe &existing : clip.titleKeyframes) {
+                    if (existing.frame == localFrame) {
+                        existing = keyframe;
+                        replaced = true;
+                        break;
+                    }
+                }
+                if (!replaced) {
+                    clip.titleKeyframes.push_back(keyframe);
+                }
+                normalizeClipTitleKeyframes(clip);
+                return;
+            }
+
+            if (!clipHasVisuals(clip)) return;
+
+            const TimelineClip::TransformKeyframe evaluated =
+                evaluateClipTransformAtFrame(clip, currentFrame);
+            TimelineClip::TransformKeyframe keyframe;
+            keyframe.frame = localFrame;
+            keyframe.translationX = evaluated.translationX - clip.baseTranslationX;
+            keyframe.translationY = evaluated.translationY - clip.baseTranslationY;
+            keyframe.rotation = evaluated.rotation - clip.baseRotation;
+            keyframe.scaleX =
+                sanitizeScaleValue(evaluated.scaleX / sanitizeScaleValue(clip.baseScaleX));
+            keyframe.scaleY =
+                sanitizeScaleValue(evaluated.scaleY / sanitizeScaleValue(clip.baseScaleY));
+            for (const TimelineClip::TransformKeyframe &existing : clip.transformKeyframes) {
+                if (existing.frame > localFrame) {
+                    keyframe.linearInterpolation = existing.linearInterpolation;
+                    break;
+                }
+            }
+
+            bool replaced = false;
+            for (TimelineClip::TransformKeyframe &existing : clip.transformKeyframes) {
+                if (existing.frame == localFrame) {
+                    existing = keyframe;
+                    replaced = true;
+                    break;
+                }
+            }
+            if (!replaced) {
+                clip.transformKeyframes.push_back(keyframe);
+            }
+            normalizeClipTransformKeyframes(clip);
+        });
+        if (!updated) return;
+        m_preview->setTimelineTracks(m_timeline->tracks());
+        m_preview->setTimelineClips(m_timeline->clips());
+        m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+        m_inspectorPane->refresh();
+        scheduleSaveState();
+        pushHistorySnapshot();
     };
     m_preview->resizeRequested = [this](const QString &clipId, qreal scaleX, qreal scaleY, bool finalize) {
         if (!m_timeline) return;
@@ -185,6 +282,7 @@ void EditorWindow::connectPreviewSignals()
             normalizeClipTransformKeyframes(clip);
         });
         if (!updated) return;
+        m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_inspectorPane->refresh();
@@ -244,6 +342,7 @@ void EditorWindow::connectPreviewSignals()
             normalizeClipTransformKeyframes(clip);
         });
         if (!updated) return;
+        m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_inspectorPane->refresh();
@@ -266,6 +365,7 @@ void EditorWindow::addFileToTimeline(const QString &filePath)
 {
     if (m_timeline) {
         m_timeline->addClipFromFile(filePath);
+        m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
     }
 }

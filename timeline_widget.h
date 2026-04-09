@@ -68,22 +68,25 @@ public:
     void setToolMode(ToolMode mode);
     ToolMode toolMode() const { return m_toolMode; }
     bool updateTrackByIndex(int trackIndex, const std::function<void(TimelineTrack&)>& updater);
-    bool updateTrackVisualEnabled(int trackIndex, bool enabled);
+    bool updateTrackVisualMode(int trackIndex, TrackVisualMode mode);
     bool updateTrackAudioEnabled(int trackIndex, bool enabled);
     bool crossfadeTrack(int trackIndex, double seconds);
     bool moveTrackUp(int trackIndex);
     bool moveTrackDown(int trackIndex);
+    bool moveTrack(int fromTrack, int toTrack);
+    bool renameTrack(int trackIndex);
+    bool deleteTrack(int trackIndex);
 
     // Track state queries (for TrackSidebar)
     bool trackHasVisualClips(int trackIndex) const;
     bool trackHasAudioClips(int trackIndex) const;
-    bool trackVisualEnabled(int trackIndex) const;
+    TrackVisualMode trackVisualMode(int trackIndex) const;
     bool trackAudioEnabled(int trackIndex) const;
-    bool setTrackVisualEnabled(int trackIndex, bool enabled);
+    bool setTrackVisualMode(int trackIndex, TrackVisualMode mode);
     bool setTrackAudioEnabled(int trackIndex, bool enabled);
 
     // Track geometry queries (for TrackSidebar)
-    int trackTopInTrackArea(int trackIndex) const;
+    int trackTop(int trackIndex) const;
     int trackHeight(int trackIndex) const;
 
     QVector<RenderSyncMarker> renderSyncMarkers() const { return m_renderSyncMarkers; }
@@ -94,6 +97,7 @@ public:
 
     qreal timelineZoom() const { return m_pixelsPerFrame; }
     void setTimelineZoom(qreal pixelsPerFrame);
+    void handleSidebarWheelSteps(int steps, Qt::KeyboardModifiers modifiers);
 
     int verticalScrollOffset() const { return m_verticalScrollOffset; }
     void setVerticalScrollOffset(int offset);
@@ -107,6 +111,7 @@ public:
     std::function<void(int64_t)> seekRequested;
     std::function<void()> clipsChanged;
     std::function<void()> selectionChanged;
+    std::function<void()> trackLayoutChanged;
     std::function<void()> gradingRequested;
     std::function<void()> renderSyncMarkersChanged;
     std::function<void(const QString&, const QString&)> transcribeRequested;
@@ -195,7 +200,6 @@ private:
     void ensureTrackCount(int count);
     void insertTrackAt(int trackIndex);
     QString defaultTrackName(int trackIndex) const;
-    int trackTop(int trackIndex) const;
     int totalTrackAreaHeight() const;
     int maxVerticalScrollOffset() const;
     void updateMinimumTimelineHeight();
@@ -216,7 +220,6 @@ private:
     QRect clipRectFor(const TimelineClip& clip) const;
     QRect renderSyncMarkerRect(const TimelineClip& clip, const RenderSyncMarker& marker) const;
 
-    bool renameTrack(int trackIndex);
     bool applyCrossfadeToTrack(int trackIndex, double seconds);
 
     // Prevent images and audio from overlapping on the same track
@@ -231,6 +234,10 @@ private:
     const RenderSyncMarker* renderSyncMarkerAtPos(const QPoint& pos, int* clipIndexOut = nullptr) const;
     void openRenderSyncMarkerMenu(const QPoint& globalPos, const QString& clipId);
     bool clipHasProxyAvailable(const TimelineClip& clip) const;
+    bool handleWheelSteps(int steps,
+                          Qt::KeyboardModifiers modifiers,
+                          qreal cursorX,
+                          bool overTrackLabels);
 
     std::unique_ptr<TimelineLayout> m_layout;
     std::unique_ptr<TimelineRenderer> m_renderer;

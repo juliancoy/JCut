@@ -1,11 +1,13 @@
 #include "render_internal.h"
+#include "visual_effects_shader.h"
 
 namespace render_detail {
 
-QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips) {
+QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
+                                        const QVector<TimelineTrack>& tracks) {
     QVector<TimelineClip> visual;
     for (const TimelineClip& clip : clips) {
-        if (clipVisualPlaybackEnabled(clip)) {
+        if (clipVisualPlaybackEnabled(clip, tracks)) {
             visual.push_back(clip);
         }
     }
@@ -13,7 +15,7 @@ QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips) {
         if (a.trackIndex == b.trackIndex) {
             return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
         }
-        return a.trackIndex < b.trackIndex;
+        return a.trackIndex > b.trackIndex;
     });
     return visual;
 }
@@ -65,59 +67,9 @@ public:
         glEnable(GL_BLEND);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
-        static const char* kVertexShader = R"(
-            attribute vec2 a_position;
-            attribute vec2 a_texCoord;
-            uniform mat4 u_mvp;
-            varying vec2 v_texCoord;
-            void main() {
-                v_texCoord = a_texCoord;
-                gl_Position = u_mvp * vec4(a_position, 0.0, 1.0);
-            }
-        )";
-
-        static const char* kFragmentShader = R"(
-            uniform sampler2D u_texture;
-            uniform sampler2D u_texture_uv;
-            uniform float u_texture_mode;
-            uniform float u_brightness;
-            uniform float u_contrast;
-            uniform float u_saturation;
-            uniform float u_opacity;
-            varying vec2 v_texCoord;
-
-            void main() {
-                vec4 color;
-                if (u_texture_mode > 0.5) {
-                    float y = texture2D(u_texture, v_texCoord).r;
-                    vec2 uv = texture2D(u_texture_uv, v_texCoord).rg - vec2(0.5, 0.5);
-                    float r = y + (1.402 * uv.y);
-                    float g = y - (0.344136 * uv.x) - (0.714136 * uv.y);
-                    float b = y + (1.772 * uv.x);
-                    color = vec4(clamp(vec3(r, g, b), 0.0, 1.0), 1.0);
-                } else {
-                    color = texture2D(u_texture, v_texCoord);
-                }
-                float sourceAlpha = color.a;
-                vec3 rgb = color.rgb;
-                if (sourceAlpha > 0.0001) {
-                    rgb /= sourceAlpha;
-                } else {
-                    rgb = vec3(0.0);
-                }
-                rgb = ((rgb - 0.5) * u_contrast) + 0.5 + vec3(u_brightness);
-                float luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
-                rgb = mix(vec3(luminance), rgb, u_saturation);
-                rgb = clamp(rgb, 0.0, 1.0);
-                color.a = clamp(sourceAlpha * u_opacity, 0.0, 1.0);
-                color.rgb = rgb * color.a;
-                gl_FragColor = color;
-            }
-        )";
-
         m_shaderProgram = std::make_unique<QOpenGLShaderProgram>();
-        if (!m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, kVertexShader) ||
-            !m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, kFragmentShader) ||
+        if (!m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, editor::visualEffectsVertexShaderSource()) ||
+            !m_shaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, editor::visualEffectsFragmentShaderSource()) ||
             !m_shaderProgram->link()) {
             if (errorMessage) {
                 *errorMessage = QStringLiteral("Failed to build offscreen render shader pipeline.");
@@ -270,8 +222,9 @@ public:
                 continue;
             }
 
-            const TimelineClip::GradingKeyframe grade =
-                evaluateClipGradingAtPosition(clip, static_cast<qreal>(timelineFrame));
+            const EffectiveVisualEffects effects =
+                evaluateEffectiveVisualEffectsAtPosition(clip, request.tracks, static_cast<qreal>(timelineFrame));
+            const TimelineClip::GradingKeyframe& grade = effects.grading;
             if (grade.opacity <= 0.0001) {
                 recordRenderSkip(skippedClips, skippedReasonCounts, clip, QStringLiteral("zero_opacity"), timelineFrame);
                 continue;
@@ -335,6 +288,20 @@ public:
             m_shaderProgram->setUniformValue("u_contrast", GLfloat(grade.contrast));
             m_shaderProgram->setUniformValue("u_saturation", GLfloat(grade.saturation));
             m_shaderProgram->setUniformValue("u_opacity", GLfloat(grade.opacity));
+            m_shaderProgram->setUniformValue("u_shadows",
+                                             QVector3D(grade.shadowsR, grade.shadowsG, grade.shadowsB));
+            m_shaderProgram->setUniformValue("u_midtones",
+                                             QVector3D(grade.midtonesR, grade.midtonesG, grade.midtonesB));
+            m_shaderProgram->setUniformValue("u_highlights",
+                                             QVector3D(grade.highlightsR, grade.highlightsG, grade.highlightsB));
+            const qreal featherRadius = effects.maskFeather;
+            const qreal featherGamma = effects.maskFeatherGamma;
+            const QSize frameSize = frame.size();
+            const GLfloat texelSizeX = frameSize.width() > 0 ? 1.0f / frameSize.width() : 0.0f;
+            const GLfloat texelSizeY = frameSize.height() > 0 ? 1.0f / frameSize.height() : 0.0f;
+            m_shaderProgram->setUniformValue("u_feather_radius", GLfloat(featherRadius));
+            m_shaderProgram->setUniformValue("u_feather_gamma", GLfloat(featherGamma));
+            m_shaderProgram->setUniformValue("u_texel_size", QVector2D(texelSizeX, texelSizeY));
             m_shaderProgram->setUniformValue("u_texture", 0);
             m_shaderProgram->setUniformValue("u_texture_uv", 1);
             m_shaderProgram->setUniformValue("u_texture_mode", textureEntry->usesYuvTextures ? 1.0f : 0.0f);
@@ -616,8 +583,9 @@ QImage renderTimelineFrame(const RenderRequest& request,
             continue;
         }
 
-        const TimelineClip::GradingKeyframe grade = evaluateClipGradingAtFrame(clip, timelineFrame);
-        if (grade.opacity <= 0.0001) {
+        const EffectiveVisualEffects effects =
+            evaluateEffectiveVisualEffectsAtFrame(clip, request.tracks, timelineFrame);
+        if (effects.grading.opacity <= 0.0001) {
             recordRenderSkip(skippedClips, skippedReasonCounts, clip, QStringLiteral("zero_opacity"), timelineFrame);
             continue;
         }
@@ -644,12 +612,7 @@ QImage renderTimelineFrame(const RenderRequest& request,
             continue;
         }
 
-        QImage graded = applyClipGrade(frame.cpuImage(), grade);
-        
-        // Apply mask feathering if clip has alpha and feather is enabled
-        if (clip.maskFeather > 0.0) {
-            graded = applyMaskFeather(graded, clip.maskFeather, clip.maskFeatherGamma);
-        }
+        QImage graded = applyEffectiveClipVisualEffectsToImage(frame.cpuImage(), effects);
         
         const QRect fitted = fitRect(graded.size(), request.outputSize);
         const TimelineClip::TransformKeyframe transform =

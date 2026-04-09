@@ -37,6 +37,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("baseRotation")] = clip.baseRotation;
         obj[QStringLiteral("baseScaleX")] = clip.baseScaleX;
         obj[QStringLiteral("baseScaleY")] = clip.baseScaleY;
+        obj[QStringLiteral("transformSkipAwareTiming")] = clip.transformSkipAwareTiming;
         QJsonArray keyframes;
         for (const TimelineClip::TransformKeyframe &keyframe : clip.transformKeyframes)
         {
@@ -59,11 +60,20 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("brightness")] = keyframe.brightness;
             keyframeObj[QStringLiteral("contrast")] = keyframe.contrast;
             keyframeObj[QStringLiteral("saturation")] = keyframe.saturation;
-            keyframeObj[QStringLiteral("opacity")] = keyframe.opacity;
             keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
             gradingKeyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("gradingKeyframes")] = gradingKeyframes;
+        QJsonArray opacityKeyframes;
+        for (const TimelineClip::OpacityKeyframe &keyframe : clip.opacityKeyframes)
+        {
+            QJsonObject keyframeObj;
+            keyframeObj[QStringLiteral("frame")] = static_cast<qint64>(keyframe.frame);
+            keyframeObj[QStringLiteral("opacity")] = keyframe.opacity;
+            keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
+            opacityKeyframes.push_back(keyframeObj);
+        }
+        obj[QStringLiteral("opacityKeyframes")] = opacityKeyframes;
         QJsonArray titleKeyframes;
         for (const TimelineClip::TitleKeyframe &keyframe : clip.titleKeyframes)
         {
@@ -101,6 +111,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("fadeSamples")] = clip.fadeSamples;
         obj[QStringLiteral("locked")] = clip.locked;
         obj[QStringLiteral("maskFeather")] = clip.maskFeather;
+        obj[QStringLiteral("maskFeatherGamma")] = clip.maskFeatherGamma;
         return obj;
     }
 
@@ -158,6 +169,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.baseRotation = obj.value(QStringLiteral("baseRotation")).toDouble(0.0);
         clip.baseScaleX = obj.value(QStringLiteral("baseScaleX")).toDouble(1.0);
         clip.baseScaleY = obj.value(QStringLiteral("baseScaleY")).toDouble(1.0);
+        clip.transformSkipAwareTiming = obj.value(QStringLiteral("transformSkipAwareTiming")).toBool(false);
         const QJsonArray keyframes = obj.value(QStringLiteral("transformKeyframes")).toArray();
         for (const QJsonValue &value : keyframes)
         {
@@ -184,6 +196,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.transformKeyframes.push_back(keyframe);
         }
         const QJsonArray gradingKeyframes = obj.value(QStringLiteral("gradingKeyframes")).toArray();
+        QVector<TimelineClip::OpacityKeyframe> migratedOpacityKeyframes;
         for (const QJsonValue &value : gradingKeyframes)
         {
             if (!value.isObject())
@@ -196,7 +209,6 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.brightness = keyframeObj.value(QStringLiteral("brightness")).toDouble(0.0);
             keyframe.contrast = keyframeObj.value(QStringLiteral("contrast")).toDouble(1.0);
             keyframe.saturation = keyframeObj.value(QStringLiteral("saturation")).toDouble(1.0);
-            keyframe.opacity = keyframeObj.value(QStringLiteral("opacity")).toDouble(1.0);
             if (keyframeObj.contains(QStringLiteral("linearInterpolation"))) {
                 keyframe.linearInterpolation =
                     keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
@@ -204,6 +216,30 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                 keyframe.linearInterpolation = true;
             }
             clip.gradingKeyframes.push_back(keyframe);
+            if (keyframeObj.contains(QStringLiteral("opacity"))) {
+                TimelineClip::OpacityKeyframe opacityKeyframe;
+                opacityKeyframe.frame = keyframe.frame;
+                opacityKeyframe.opacity = keyframeObj.value(QStringLiteral("opacity")).toDouble(clip.opacity);
+                opacityKeyframe.linearInterpolation = keyframe.linearInterpolation;
+                migratedOpacityKeyframes.push_back(opacityKeyframe);
+            }
+        }
+        const QJsonArray opacityKeyframes = obj.value(QStringLiteral("opacityKeyframes")).toArray();
+        for (const QJsonValue &value : opacityKeyframes)
+        {
+            if (!value.isObject())
+            {
+                continue;
+            }
+            const QJsonObject keyframeObj = value.toObject();
+            TimelineClip::OpacityKeyframe keyframe;
+            keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            keyframe.opacity = keyframeObj.value(QStringLiteral("opacity")).toDouble(clip.opacity);
+            keyframe.linearInterpolation = keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
+            clip.opacityKeyframes.push_back(keyframe);
+        }
+        if (clip.opacityKeyframes.isEmpty() && !migratedOpacityKeyframes.isEmpty()) {
+            clip.opacityKeyframes = migratedOpacityKeyframes;
         }
         const QJsonObject transcriptOverlayObj = obj.value(QStringLiteral("transcriptOverlay")).toObject();
         clip.transcriptOverlay.enabled = transcriptOverlayObj.value(QStringLiteral("enabled")).toBool(false);
@@ -225,6 +261,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             QColor(transcriptOverlayObj.value(QStringLiteral("textColor")).toString(QStringLiteral("#ffffffff")));
         clip.fadeSamples = qMax(0, obj.value(QStringLiteral("fadeSamples")).toInt(250));
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
+        clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));
+        clip.maskFeatherGamma = qBound(0.1, obj.value(QStringLiteral("maskFeatherGamma")).toDouble(2.0), 5.0);
         const QJsonArray titleKeyframesArr = obj.value(QStringLiteral("titleKeyframes")).toArray();
         for (const QJsonValue &value : titleKeyframesArr)
         {
@@ -246,6 +284,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         }
         normalizeClipTransformKeyframes(clip);
         normalizeClipGradingKeyframes(clip);
+        normalizeClipOpacityKeyframes(clip);
         normalizeClipTitleKeyframes(clip);
         return clip;
     }

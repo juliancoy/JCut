@@ -15,6 +15,7 @@
 #include "projects.h"
 #include "transcript_tab.h"
 #include "grading_tab.h"
+#include "opacity_tab.h"
 #include "effects_tab.h"
 #include "titles_tab.h"
 #include "video_keyframe_tab.h"
@@ -84,10 +85,12 @@ private:
     void syncTranscriptTableToPlayhead();
     void syncKeyframeTableToPlayhead();
     void syncGradingTableToPlayhead();
+    void syncOpacityTableToPlayhead();
 
     bool focusInTranscriptTable() const;
     bool focusInKeyframeTable() const;
     bool focusInGradingTable() const;
+    bool focusInOpacityTable() const;
     bool focusInEditableInput() const;
     bool shouldBlockGlobalEditorShortcuts() const;
 
@@ -185,6 +188,7 @@ private:
     bool handleTranscriptTableDelete(QObject* watched, QEvent* event);
     bool handleVideoKeyframeTableDelete(QObject* watched, QEvent* event);
     bool handleGradingKeyframeTableDelete(QObject* watched, QEvent* event);
+    bool handleOpacityKeyframeTableDelete(QObject* watched, QEvent* event);
 
     // Tab creation methods (editor_tabs.cpp)
     void createOutputTab();
@@ -192,6 +196,7 @@ private:
     void createProjectsTab();
     void createTranscriptTab();
     void createGradingTab();
+    void createOpacityTab();
     void createEffectsTab();
     void createTitlesTab();
     void createVideoKeyframeTab();
@@ -254,7 +259,7 @@ private:
     QLabel *m_trackInspectorDetailsLabel = nullptr;
     QLineEdit *m_trackNameEdit = nullptr;
     QSpinBox *m_trackHeightSpin = nullptr;
-    QCheckBox *m_trackVideoEnabledCheckBox = nullptr;
+    QComboBox *m_trackVisualModeCombo = nullptr;
     QCheckBox *m_trackAudioEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_trackCrossfadeSecondsSpin = nullptr;
     QPushButton *m_trackCrossfadeButton = nullptr;
@@ -302,6 +307,7 @@ private:
     QCheckBox *m_mirrorVerticalCheckBox = nullptr;
     QCheckBox *m_lockVideoScaleCheckBox = nullptr;
     QCheckBox *m_keyframeSpaceCheckBox = nullptr;
+    QCheckBox *m_keyframeSkipAwareTimingCheckBox = nullptr;
 
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
@@ -331,6 +337,7 @@ private:
     QTableWidget *m_videoKeyframeTable = nullptr;
     QTableWidget *m_transcriptTable = nullptr;
     QTableWidget *m_syncTable = nullptr;
+    QTableWidget *m_opacityKeyframeTable = nullptr;
 
     QPushButton *m_addVideoKeyframeButton = nullptr;
     QPushButton *m_removeVideoKeyframeButton = nullptr;
@@ -342,6 +349,7 @@ private:
     std::unique_ptr<AudioEngine> m_audioEngine;
     std::unique_ptr<TranscriptTab> m_transcriptTab;
     std::unique_ptr<GradingTab> m_gradingTab;
+    std::unique_ptr<OpacityTab> m_opacityTab;
     std::unique_ptr<EffectsTab> m_effectsTab;
     std::unique_ptr<TitlesTab> m_titlesTab;
     std::unique_ptr<VideoKeyframeTab> m_videoKeyframeTab;

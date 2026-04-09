@@ -54,10 +54,27 @@ bool EditorWindow::handleGradingKeyframeTableDelete(QObject *watched, QEvent *ev
     return false;
 }
 
+bool EditorWindow::handleOpacityKeyframeTableDelete(QObject *watched, QEvent *event)
+{
+    if (!m_opacityKeyframeTable ||
+        (watched != m_opacityKeyframeTable && watched != m_opacityKeyframeTable->viewport()) ||
+        event->type() != QEvent::KeyPress) {
+        return false;
+    }
+
+    auto *keyEvent = static_cast<QKeyEvent *>(event);
+    if (keyEvent->key() == Qt::Key_Delete && !(keyEvent->modifiers() & Qt::KeyboardModifierMask)) {
+        m_opacityTab->removeSelectedKeyframes();
+        return true;
+    }
+    return false;
+}
+
 bool EditorWindow::eventFilter(QObject *watched, QEvent *event)
 {
     if (handleTranscriptTableDelete(watched, event)) return true;
     if (handleVideoKeyframeTableDelete(watched, event)) return true;
     if (handleGradingKeyframeTableDelete(watched, event)) return true;
+    if (handleOpacityKeyframeTableDelete(watched, event)) return true;
     return QMainWindow::eventFilter(watched, event);
 }

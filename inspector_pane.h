@@ -28,6 +28,14 @@ public:
     QDoubleSpinBox *contrastSpin() const { return m_contrastSpin; }
     QDoubleSpinBox *saturationSpin() const { return m_saturationSpin; }
     QDoubleSpinBox *opacitySpin() const { return m_opacitySpin; }
+    QLabel *opacityPathLabel() const { return m_opacityPathLabel; }
+    QTableWidget *opacityKeyframeTable() const { return m_opacityKeyframeTable; }
+    QCheckBox *opacityAutoScrollCheckBox() const { return m_opacityAutoScrollCheckBox; }
+    QCheckBox *opacityFollowCurrentCheckBox() const { return m_opacityFollowCurrentCheckBox; }
+    QPushButton *opacityKeyAtPlayheadButton() const { return m_opacityKeyAtPlayheadButton; }
+    QPushButton *opacityFadeInButton() const { return m_opacityFadeInButton; }
+    QPushButton *opacityFadeOutButton() const { return m_opacityFadeOutButton; }
+    QDoubleSpinBox *opacityFadeDurationSpin() const { return m_opacityFadeDurationSpin; }
     
     // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
     QDoubleSpinBox *shadowsRSpin() const { return m_shadowsRSpin; }
@@ -50,6 +58,7 @@ public:
     QCheckBox *mirrorVerticalCheckBox() const { return m_mirrorVerticalCheckBox; }
     QCheckBox *lockVideoScaleCheckBox() const { return m_lockVideoScaleCheckBox; }
     QCheckBox *keyframeSpaceCheckBox() const { return m_keyframeSpaceCheckBox; }
+    QCheckBox *keyframeSkipAwareTimingCheckBox() const { return m_keyframeSkipAwareTimingCheckBox; }
 
     QCheckBox *transcriptOverlayEnabledCheckBox() const { return m_transcriptOverlayEnabledCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
@@ -125,7 +134,7 @@ public:
     QLabel *trackInspectorDetailsLabel() const { return m_trackInspectorDetailsLabel; }
     QLineEdit *trackNameEdit() const { return m_trackNameEdit; }
     QSpinBox *trackHeightSpin() const { return m_trackHeightSpin; }
-    QCheckBox *trackVideoEnabledCheckBox() const { return m_trackVideoEnabledCheckBox; }
+    QComboBox *trackVisualModeCombo() const { return m_trackVisualModeCombo; }
     QCheckBox *trackAudioEnabledCheckBox() const { return m_trackAudioEnabledCheckBox; }
     QDoubleSpinBox *trackCrossfadeSecondsSpin() const { return m_trackCrossfadeSecondsSpin; }
     QPushButton *trackCrossfadeButton() const { return m_trackCrossfadeButton; }
@@ -165,6 +174,7 @@ signals:
 private:
     QWidget *buildPane();
     QWidget *buildGradingTab();
+    QWidget *buildOpacityTab();
     QWidget *buildEffectsTab();
     QWidget *buildTitlesTab();
     QWidget *buildSyncTab();
@@ -183,6 +193,7 @@ private:
     QTabWidget *m_inspectorTabs = nullptr;
 
     QLabel *m_gradingPathLabel = nullptr;
+    QLabel *m_opacityPathLabel = nullptr;
     QDoubleSpinBox *m_brightnessSpin = nullptr;
     QDoubleSpinBox *m_contrastSpin = nullptr;
     QDoubleSpinBox *m_saturationSpin = nullptr;
@@ -198,12 +209,19 @@ private:
     QDoubleSpinBox *m_highlightsGSpin = nullptr;
     QDoubleSpinBox *m_highlightsBSpin = nullptr;
     QTableWidget *m_gradingKeyframeTable = nullptr;
+    QTableWidget *m_opacityKeyframeTable = nullptr;
     QCheckBox *m_gradingAutoScrollCheckBox = nullptr;
     QCheckBox *m_gradingFollowCurrentCheckBox = nullptr;
+    QCheckBox *m_opacityAutoScrollCheckBox = nullptr;
+    QCheckBox *m_opacityFollowCurrentCheckBox = nullptr;
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
+    QPushButton *m_opacityKeyAtPlayheadButton = nullptr;
+    QPushButton *m_opacityFadeInButton = nullptr;
+    QPushButton *m_opacityFadeOutButton = nullptr;
     QDoubleSpinBox *m_gradingFadeDurationSpin = nullptr;
+    QDoubleSpinBox *m_opacityFadeDurationSpin = nullptr;
 
     QLabel *m_effectsPathLabel = nullptr;
     QDoubleSpinBox *m_maskFeatherSpin = nullptr;
@@ -229,6 +247,7 @@ private:
     QCheckBox *m_mirrorVerticalCheckBox = nullptr;
     QCheckBox *m_lockVideoScaleCheckBox = nullptr;
     QCheckBox *m_keyframeSpaceCheckBox = nullptr;
+    QCheckBox *m_keyframeSkipAwareTimingCheckBox = nullptr;
     QPushButton *m_addVideoKeyframeButton = nullptr;
     QPushButton *m_removeVideoKeyframeButton = nullptr;
     QPushButton *m_flipHorizontalButton = nullptr;
@@ -266,7 +285,7 @@ private:
     QLabel *m_trackInspectorDetailsLabel = nullptr;
     QLineEdit *m_trackNameEdit = nullptr;
     QSpinBox *m_trackHeightSpin = nullptr;
-    QCheckBox *m_trackVideoEnabledCheckBox = nullptr;
+    QComboBox *m_trackVisualModeCombo = nullptr;
     QCheckBox *m_trackAudioEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_trackCrossfadeSecondsSpin = nullptr;
     QPushButton *m_trackCrossfadeButton = nullptr;

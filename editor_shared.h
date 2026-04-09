@@ -27,6 +27,12 @@ enum class MediaSourceKind {
     ImageSequence,
 };
 
+enum class TrackVisualMode {
+    Enabled,
+    ForceOpaque,
+    Hidden,
+};
+
 struct TimelineClip {
     struct TransformKeyframe {
         int64_t frame = 0;
@@ -44,6 +50,7 @@ struct TimelineClip {
         qreal brightness = 0.0;
         qreal contrast = 1.0;
         qreal saturation = 1.0;
+        // Derived during evaluation; serialized opacity lives in opacityKeyframes.
         qreal opacity = 1.0;
         // Shadows/Midtones/Highlights (Lift/Gamma/Gain style)
         qreal shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
@@ -90,6 +97,12 @@ struct TimelineClip {
         QColor textColor = QColor(QStringLiteral("#ffffff"));
     };
 
+    struct OpacityKeyframe {
+        int64_t frame = 0;
+        qreal opacity = 1.0;
+        bool linearInterpolation = true;
+    };
+
     QString id;
     QString filePath;
     QString proxyPath;
@@ -117,8 +130,10 @@ struct TimelineClip {
     qreal baseRotation = 0.0;
     qreal baseScaleX = 1.0;
     qreal baseScaleY = 1.0;
+    bool transformSkipAwareTiming = false;
     QVector<TransformKeyframe> transformKeyframes;
     QVector<GradingKeyframe> gradingKeyframes;
+    QVector<OpacityKeyframe> opacityKeyframes;
     QVector<TitleKeyframe> titleKeyframes;
     TranscriptOverlaySettings transcriptOverlay;
     int fadeSamples = 250;  // Crossfade with previous audio clip (0 = no fade)
@@ -130,7 +145,7 @@ struct TimelineClip {
 struct TimelineTrack {
     QString name;
     int height = 44;
-    bool visualEnabled = true;
+    TrackVisualMode visualMode = TrackVisualMode::Enabled;
     bool audioEnabled = true;
 };
 
@@ -187,6 +202,12 @@ struct TranscriptOverlayLayout {
     bool truncatedBottom = false;
 };
 
+struct EffectiveVisualEffects {
+    TimelineClip::GradingKeyframe grading;
+    qreal maskFeather = 0.0;
+    qreal maskFeatherGamma = 1.0;
+};
+
 #ifdef __APPLE__
 inline const QString kDefaultFontFamily = QStringLiteral("Helvetica Neue");
 #else
@@ -204,6 +225,9 @@ QString clipMediaTypeLabel(ClipMediaType type);
 QString mediaSourceKindToString(MediaSourceKind kind);
 MediaSourceKind mediaSourceKindFromString(const QString& value);
 QString mediaSourceKindLabel(MediaSourceKind kind);
+QString trackVisualModeToString(TrackVisualMode mode);
+TrackVisualMode trackVisualModeFromString(const QString& value);
+QString trackVisualModeLabel(TrackVisualMode mode);
 
 QString renderSyncActionToString(RenderSyncAction action);
 RenderSyncAction renderSyncActionFromString(const QString& value);
@@ -212,6 +236,8 @@ QString renderSyncActionLabel(RenderSyncAction action);
 bool clipHasVisuals(const TimelineClip& clip);
 bool clipIsAudioOnly(const TimelineClip& clip);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip);
+TrackVisualMode trackVisualModeForClip(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
+bool clipVisualPlaybackEnabled(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
 bool clipAudioPlaybackEnabled(const TimelineClip& clip);
 bool clipHasAlpha(const TimelineClip& clip);
 
@@ -226,12 +252,35 @@ QString transformInterpolationLabel(bool linearInterpolation);
 qreal sanitizeScaleValue(qreal value);
 void normalizeClipTransformKeyframes(TimelineClip& clip);
 void normalizeClipGradingKeyframes(TimelineClip& clip);
+void normalizeClipOpacityKeyframes(TimelineClip& clip);
 void normalizeClipTitleKeyframes(TimelineClip& clip);
 TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+qreal evaluateClipOpacityAtFrame(const TimelineClip& clip, int64_t timelineFrame);
+qreal evaluateClipOpacityAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+qreal evaluateEffectiveClipOpacityAtFrame(const TimelineClip& clip,
+                                          const QVector<TimelineTrack>& tracks,
+                                          int64_t timelineFrame);
+qreal evaluateEffectiveClipOpacityAtPosition(const TimelineClip& clip,
+                                             const QVector<TimelineTrack>& tracks,
+                                             qreal timelineFramePosition);
+TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtFrame(const TimelineClip& clip,
+                                                                  const QVector<TimelineTrack>& tracks,
+                                                                  int64_t timelineFrame);
+TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtPosition(const TimelineClip& clip,
+                                                                     const QVector<TimelineTrack>& tracks,
+                                                                     qreal timelineFramePosition);
+TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
+TimelineClip::GradingKeyframe evaluateEffectiveClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip& clip,
+                                                             const QVector<TimelineTrack>& tracks,
+                                                             int64_t timelineFrame);
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
+                                                                const QVector<TimelineTrack>& tracks,
+                                                                qreal timelineFramePosition);
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
                                               const QVector<RenderSyncMarker>& markers);
@@ -245,6 +294,7 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
 MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames = 120);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
+QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects);
 QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma = 1.0);
 QString playbackProxyPathForClip(const TimelineClip& clip);
 QString playbackMediaPathForClip(const TimelineClip& clip);

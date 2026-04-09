@@ -595,6 +595,19 @@ test_integration/fast:
 .PHONY : test_integration/fast
 
 #=============================================================================
+# Target rules for targets named test_visual_effects_parity
+
+# Build rule for target.
+test_visual_effects_parity: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_visual_effects_parity
+.PHONY : test_visual_effects_parity
+
+# fast build rule for target.
+test_visual_effects_parity/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_visual_effects_parity.dir/build.make tests/CMakeFiles/test_visual_effects_parity.dir/build
+.PHONY : test_visual_effects_parity/fast
+
+#=============================================================================
 # Target rules for targets named test_frame_handle_autogen_timestamp_deps
 
 # Build rule for target.
@@ -724,6 +737,32 @@ test_integration_autogen/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_integration_autogen.dir/build.make tests/CMakeFiles/test_integration_autogen.dir/build
 .PHONY : test_integration_autogen/fast
 
+#=============================================================================
+# Target rules for targets named test_visual_effects_parity_autogen_timestamp_deps
+
+# Build rule for target.
+test_visual_effects_parity_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_visual_effects_parity_autogen_timestamp_deps
+.PHONY : test_visual_effects_parity_autogen_timestamp_deps
+
+# fast build rule for target.
+test_visual_effects_parity_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_visual_effects_parity_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_visual_effects_parity_autogen_timestamp_deps.dir/build
+.PHONY : test_visual_effects_parity_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_visual_effects_parity_autogen
+
+# Build rule for target.
+test_visual_effects_parity_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_visual_effects_parity_autogen
+.PHONY : test_visual_effects_parity_autogen
+
+# fast build rule for target.
+test_visual_effects_parity_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_visual_effects_parity_autogen.dir/build.make tests/CMakeFiles/test_visual_effects_parity_autogen.dir/build
+.PHONY : test_visual_effects_parity_autogen/fast
+
 async_decoder.o: async_decoder.cpp.o
 .PHONY : async_decoder.o
 
@@ -771,6 +810,30 @@ clip_serialization.s: clip_serialization.cpp.s
 clip_serialization.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/clip_serialization.cpp.s
 .PHONY : clip_serialization.cpp.s
+
+clips_tab.o: clips_tab.cpp.o
+.PHONY : clips_tab.o
+
+# target to build an object file
+clips_tab.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/clips_tab.cpp.o
+.PHONY : clips_tab.cpp.o
+
+clips_tab.i: clips_tab.cpp.i
+.PHONY : clips_tab.i
+
+# target to preprocess a source file
+clips_tab.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/clips_tab.cpp.i
+.PHONY : clips_tab.cpp.i
+
+clips_tab.s: clips_tab.cpp.s
+.PHONY : clips_tab.s
+
+# target to generate assembly for a file
+clips_tab.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/clips_tab.cpp.s
+.PHONY : clips_tab.cpp.s
 
 control_server.o: control_server.cpp.o
 .PHONY : control_server.o
@@ -1443,6 +1506,30 @@ memory_budget.s: memory_budget.cpp.s
 memory_budget.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/memory_budget.cpp.s
 .PHONY : memory_budget.cpp.s
+
+opacity_tab.o: opacity_tab.cpp.o
+.PHONY : opacity_tab.o
+
+# target to build an object file
+opacity_tab.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/opacity_tab.cpp.o
+.PHONY : opacity_tab.cpp.o
+
+opacity_tab.i: opacity_tab.cpp.i
+.PHONY : opacity_tab.i
+
+# target to preprocess a source file
+opacity_tab.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/opacity_tab.cpp.i
+.PHONY : opacity_tab.cpp.i
+
+opacity_tab.s: opacity_tab.cpp.s
+.PHONY : opacity_tab.s
+
+# target to generate assembly for a file
+opacity_tab.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/opacity_tab.cpp.s
+.PHONY : opacity_tab.cpp.s
 
 output_tab.o: output_tab.cpp.o
 .PHONY : output_tab.o
@@ -2357,18 +2444,24 @@ help:
 	@echo "... test_memory_budget_autogen_timestamp_deps"
 	@echo "... test_timeline_cache_autogen"
 	@echo "... test_timeline_cache_autogen_timestamp_deps"
+	@echo "... test_visual_effects_parity_autogen"
+	@echo "... test_visual_effects_parity_autogen_timestamp_deps"
 	@echo "... editor"
 	@echo "... test_async_decoder"
 	@echo "... test_frame_handle"
 	@echo "... test_integration"
 	@echo "... test_memory_budget"
 	@echo "... test_timeline_cache"
+	@echo "... test_visual_effects_parity"
 	@echo "... async_decoder.o"
 	@echo "... async_decoder.i"
 	@echo "... async_decoder.s"
 	@echo "... clip_serialization.o"
 	@echo "... clip_serialization.i"
 	@echo "... clip_serialization.s"
+	@echo "... clips_tab.o"
+	@echo "... clips_tab.i"
+	@echo "... clips_tab.s"
 	@echo "... control_server.o"
 	@echo "... control_server.i"
 	@echo "... control_server.s"
@@ -2453,6 +2546,9 @@ help:
 	@echo "... memory_budget.o"
 	@echo "... memory_budget.i"
 	@echo "... memory_budget.s"
+	@echo "... opacity_tab.o"
+	@echo "... opacity_tab.i"
+	@echo "... opacity_tab.s"
 	@echo "... output_tab.o"
 	@echo "... output_tab.i"
 	@echo "... output_tab.s"

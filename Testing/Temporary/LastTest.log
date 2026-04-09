@@ -1,0 +1,26 @@
+Start testing: Apr 09 01:37 EDT
+----------------------------------------------------------
+6/6 Testing: test_visual_effects_parity
+6/6 Test: test_visual_effects_parity
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_visual_effects_parity"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_visual_effects_parity" start time: Apr 09 01:37 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestVisualEffectsParity *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestVisualEffectsParity::initTestCase()
+PASS   : TestVisualEffectsParity::testHelperMatchesManualCpuComposition()
+PASS   : TestVisualEffectsParity::testForceOpaqueTrackOverridesOpacity()
+PASS   : TestVisualEffectsParity::cleanupTestCase()
+Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 2ms
+********* Finished testing of TestVisualEffectsParity *********
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"test_visual_effects_parity" end time: Apr 09 01:37 EDT
+"test_visual_effects_parity" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Apr 09 01:37 EDT

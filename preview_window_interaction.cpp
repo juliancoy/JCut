@@ -1,7 +1,9 @@
 #include "preview.h"
 #include "titles.h"
 
+#include <QContextMenuEvent>
 #include <QMouseEvent>
+#include <QMenu>
 #include <QOpenGLWidget>
 #include <QTimer>
 #include <QWheelEvent>
@@ -191,6 +193,38 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
     scheduleRepaint();
     event->accept();
 }
+
+void PreviewWindow::contextMenuEvent(QContextMenuEvent* event) {
+    const QString hitClipId = clipIdAtPosition(event->pos());
+    if (hitClipId.isEmpty()) {
+        QWidget::contextMenuEvent(event);
+        return;
+    }
+
+    const PreviewOverlayInfo info = m_overlayInfo.value(hitClipId);
+    if (info.kind == PreviewOverlayKind::TranscriptOverlay) {
+        QWidget::contextMenuEvent(event);
+        return;
+    }
+
+    if (m_selectedClipId != hitClipId) {
+        m_selectedClipId = hitClipId;
+        if (selectionRequested) selectionRequested(hitClipId);
+        update();
+    }
+
+    QMenu menu(this);
+    QAction* createKeyframeAction = menu.addAction(QStringLiteral("Create Keyframe Here"));
+    QAction* chosen = menu.exec(event->globalPos());
+    if (chosen == createKeyframeAction && createKeyframeRequested) {
+        createKeyframeRequested(hitClipId);
+        event->accept();
+        return;
+    }
+
+    QWidget::contextMenuEvent(event);
+}
+
 QString PreviewWindow::clipIdAtPosition(const QPointF& position) const {
     for (int i = m_paintOrder.size() - 1; i >= 0; --i) {
         const QString& clipId = m_paintOrder[i];

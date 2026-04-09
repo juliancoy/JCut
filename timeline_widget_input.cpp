@@ -14,7 +14,7 @@ int TimelineWidget::trackIndexAt(const QPoint& pos) const {
 }
 
 int TimelineWidget::clipIndexAt(const QPoint& pos) const {
-    for (int i = 0; i < m_clips.size(); ++i) {
+    for (int i = m_clips.size() - 1; i >= 0; --i) {
         if (clipRectFor(m_clips[i]).contains(pos)) {
             return i;
         }
@@ -221,6 +221,7 @@ TimelineClip TimelineWidget::buildClipFromFile(const QString& filePath,
     }
     normalizeClipTransformKeyframes(clip);
     normalizeClipGradingKeyframes(clip);
+    normalizeClipOpacityKeyframes(clip);
     return clip;
 }
 
@@ -405,7 +406,20 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         if (trackHit >= 0) {
             if (trackVisualToggleRect(trackHit).contains(event->position().toPoint()) &&
                 trackHasVisualClips(trackHit)) {
-                setTrackVisualEnabled(trackHit, !trackVisualEnabled(trackHit));
+                TrackVisualMode nextMode = TrackVisualMode::Enabled;
+                switch (trackVisualMode(trackHit)) {
+                case TrackVisualMode::Enabled:
+                    nextMode = TrackVisualMode::ForceOpaque;
+                    break;
+                case TrackVisualMode::ForceOpaque:
+                    nextMode = TrackVisualMode::Hidden;
+                    break;
+                case TrackVisualMode::Hidden:
+                default:
+                    nextMode = TrackVisualMode::Enabled;
+                    break;
+                }
+                setTrackVisualMode(trackHit, nextMode);
                 event->accept();
                 return;
             }
@@ -522,6 +536,9 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
         const int delta = event->position().toPoint().y() - m_resizeOriginY;
         m_tracks[m_resizingTrackIndex].height = qMax(kMinTrackHeight, m_resizeOriginHeight + delta);
         updateMinimumTimelineHeight();
+        if (trackLayoutChanged) {
+            trackLayoutChanged();
+        }
         update();
         return;
     }
@@ -998,6 +1015,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         clip.opacity = 1.0;
         clip.gradingKeyframes.clear();
         normalizeClipGradingKeyframes(clip);
+        clip.opacityKeyframes.clear();
+        normalizeClipOpacityKeyframes(clip);
         if (clipsChanged) clipsChanged();
         update();
         return;
@@ -1104,20 +1123,15 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 }
 
-void TimelineWidget::wheelEvent(QWheelEvent* event) {
-    const QPoint numDegrees = event->angleDelta() / 8;
-    if (numDegrees.isNull()) {
-        QWidget::wheelEvent(event);
-        return;
-    }
-
-    const int steps = numDegrees.y() / 15;
+bool TimelineWidget::handleWheelSteps(int steps,
+                                      Qt::KeyboardModifiers modifiers,
+                                      qreal cursorX,
+                                      bool overTrackLabels) {
     if (steps == 0) {
-        QWidget::wheelEvent(event);
-        return;
+        return false;
     }
 
-    if (event->modifiers() & Qt::AltModifier) {
+    if (modifiers & Qt::AltModifier) {
         const qreal zoomFactor = steps > 0 ? 1.12 : (1.0 / 1.12);
         bool changed = false;
         for (TimelineTrack& track : m_tracks) {
@@ -1132,27 +1146,25 @@ void TimelineWidget::wheelEvent(QWheelEvent* event) {
             if (clipsChanged) {
                 clipsChanged();
             }
+            if (trackLayoutChanged) {
+                trackLayoutChanged();
+            }
             update();
         }
-        event->accept();
-        return;
+        return true;
     }
 
-    if (event->modifiers() & Qt::ShiftModifier) {
+    if (modifiers & Qt::ShiftModifier) {
         const int visibleFrames = qMax(1, static_cast<int>(width() / m_pixelsPerFrame));
         const int panFrames = qMax(1, visibleFrames / 12);
         m_frameOffset = qMax<int64_t>(0, m_frameOffset - steps * panFrames);
         update();
-        event->accept();
-        return;
+        return true;
     }
 
-    const bool overTrackLabels = trackRect().contains(event->position().toPoint()) &&
-                                 !timelineContentRect().contains(event->position().toPoint());
-
-    if ((event->modifiers() & Qt::ControlModifier) || !overTrackLabels) {
+    if ((modifiers & Qt::ControlModifier) || !overTrackLabels) {
         const qreal oldPixelsPerFrame = m_pixelsPerFrame;
-        const qreal cursorFrame = frameFromX(event->position().x());
+        const qreal cursorFrame = frameFromX(cursorX);
         const qreal zoomFactor = steps > 0 ? 1.15 : (1.0 / 1.15);
         const QRect contentRect = timelineContentRect();
         const int64_t fullTimelineFrames = qMax<int64_t>(1, totalFrames());
@@ -1163,7 +1175,7 @@ void TimelineWidget::wheelEvent(QWheelEvent* event) {
         const qreal minPixelsPerFrame = qMin<qreal>(0.25, fitAllPixelsPerFrame);
         m_pixelsPerFrame = qBound(minPixelsPerFrame, m_pixelsPerFrame * std::pow(zoomFactor, std::abs(steps)), 24.0);
 
-        const qreal localX = event->position().x() - static_cast<qreal>(contentRect.left());
+        const qreal localX = cursorX - static_cast<qreal>(contentRect.left());
         if (m_pixelsPerFrame > 0.0) {
             const qreal newOffset = cursorFrame - qMax<qreal>(0.0, localX) / m_pixelsPerFrame;
             const int64_t visibleFrames = qMax<int64_t>(1, qRound(static_cast<qreal>(contentRect.width()) / m_pixelsPerFrame));
@@ -1178,10 +1190,32 @@ void TimelineWidget::wheelEvent(QWheelEvent* event) {
         if (!qFuzzyCompare(oldPixelsPerFrame, m_pixelsPerFrame)) {
             update();
         }
+        return true;
+    }
+
+    setVerticalScrollOffset(m_verticalScrollOffset - (steps * 36));
+    return true;
+}
+
+void TimelineWidget::wheelEvent(QWheelEvent* event) {
+    const QPoint numDegrees = event->angleDelta() / 8;
+    if (numDegrees.isNull()) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    const int steps = numDegrees.y() / 15;
+    if (steps == 0) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+
+    const bool overTrackLabels = trackRect().contains(event->position().toPoint()) &&
+                                 !timelineContentRect().contains(event->position().toPoint());
+    if (handleWheelSteps(steps, event->modifiers(), event->position().x(), overTrackLabels)) {
         event->accept();
         return;
     }
 
-    setVerticalScrollOffset(m_verticalScrollOffset - (steps * 36));
-    event->accept();
+    QWidget::wheelEvent(event);
 }

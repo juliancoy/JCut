@@ -24,6 +24,17 @@ void upsertGradingKeyframe(QVector<TimelineClip::GradingKeyframe>& keyframes,
     keyframes.push_back(keyframe);
 }
 
+void upsertOpacityKeyframe(QVector<TimelineClip::OpacityKeyframe>& keyframes,
+                           const TimelineClip::OpacityKeyframe& keyframe) {
+    for (TimelineClip::OpacityKeyframe& existing : keyframes) {
+        if (existing.frame == keyframe.frame) {
+            existing = keyframe;
+            return;
+        }
+    }
+    keyframes.push_back(keyframe);
+}
+
 void applyVisualCrossfade(TimelineClip& clip, bool fadeIn, int64_t fadeFrames) {
     if (!clipHasVisuals(clip) || clip.durationFrames <= 1 || fadeFrames <= 0) {
         return;
@@ -35,24 +46,22 @@ void applyVisualCrossfade(TimelineClip& clip, bool fadeIn, int64_t fadeFrames) {
         return;
     }
 
-    const TimelineClip::GradingKeyframe startState =
-        evaluateClipGradingAtPosition(clip, static_cast<qreal>(clip.startFrame + localStartFrame));
-    const TimelineClip::GradingKeyframe endState =
-        evaluateClipGradingAtPosition(clip, static_cast<qreal>(clip.startFrame + localEndFrame));
+    const qreal startState = evaluateClipOpacityAtPosition(clip, static_cast<qreal>(clip.startFrame + localStartFrame));
+    const qreal endState = evaluateClipOpacityAtPosition(clip, static_cast<qreal>(clip.startFrame + localEndFrame));
 
-    TimelineClip::GradingKeyframe startKeyframe = startState;
+    TimelineClip::OpacityKeyframe startKeyframe;
     startKeyframe.frame = localStartFrame;
-    startKeyframe.opacity = fadeIn ? 0.0 : qBound(0.0, startState.opacity, 1.0);
+    startKeyframe.opacity = fadeIn ? 0.0 : qBound(0.0, startState, 1.0);
     startKeyframe.linearInterpolation = true;
 
-    TimelineClip::GradingKeyframe endKeyframe = endState;
+    TimelineClip::OpacityKeyframe endKeyframe;
     endKeyframe.frame = localEndFrame;
-    endKeyframe.opacity = fadeIn ? qBound(0.0, endState.opacity, 1.0) : 0.0;
+    endKeyframe.opacity = fadeIn ? qBound(0.0, endState, 1.0) : 0.0;
     endKeyframe.linearInterpolation = true;
 
-    upsertGradingKeyframe(clip.gradingKeyframes, startKeyframe);
-    upsertGradingKeyframe(clip.gradingKeyframes, endKeyframe);
-    normalizeClipGradingKeyframes(clip);
+    upsertOpacityKeyframe(clip.opacityKeyframes, startKeyframe);
+    upsertOpacityKeyframe(clip.opacityKeyframes, endKeyframe);
+    normalizeClipOpacityKeyframes(clip);
 }
 
 void drawEyeIcon(QPainter& painter, const QRect& rect, bool enabled, bool interactive) {
@@ -190,6 +199,9 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     }
     normalizeExportRange();
     updateMinimumTimelineHeight();
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
     update();
 }
 
@@ -198,6 +210,9 @@ void TimelineWidget::setTracks(const QVector<TimelineTrack>& tracks) {
     ensureTrackCount(trackCount());
     normalizeExportRange();
     updateMinimumTimelineHeight();
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
     update();
 }
 
@@ -271,12 +286,15 @@ bool TimelineWidget::updateTrackByIndex(int trackIndex, const std::function<void
         clipsChanged();
     }
     updateMinimumTimelineHeight();
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
     update();
     return true;
 }
 
-bool TimelineWidget::updateTrackVisualEnabled(int trackIndex, bool enabled) {
-    return setTrackVisualEnabled(trackIndex, enabled);
+bool TimelineWidget::updateTrackVisualMode(int trackIndex, TrackVisualMode mode) {
+    return setTrackVisualMode(trackIndex, mode);
 }
 
 bool TimelineWidget::updateTrackAudioEnabled(int trackIndex, bool enabled) {
@@ -322,6 +340,9 @@ bool TimelineWidget::moveTrackUp(int trackIndex) {
     if (clipsChanged) {
         clipsChanged();
     }
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
     update();
     return true;
 }
@@ -360,6 +381,56 @@ bool TimelineWidget::moveTrackDown(int trackIndex) {
     }
     if (clipsChanged) {
         clipsChanged();
+    }
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
+    update();
+    return true;
+}
+
+bool TimelineWidget::moveTrack(int fromTrack, int toTrack) {
+    if (fromTrack < 0 || toTrack < 0 || fromTrack >= m_tracks.size() || toTrack >= m_tracks.size()) {
+        return false;
+    }
+    if (fromTrack == toTrack) {
+        return false;
+    }
+
+    ensureTrackCount(trackCount());
+
+    for (TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == fromTrack) {
+            clip.trackIndex = toTrack;
+        } else if (fromTrack < toTrack && clip.trackIndex > fromTrack && clip.trackIndex <= toTrack) {
+            clip.trackIndex -= 1;
+        } else if (fromTrack > toTrack && clip.trackIndex >= toTrack && clip.trackIndex < fromTrack) {
+            clip.trackIndex += 1;
+        }
+    }
+
+    TimelineTrack movedTrack = m_tracks.takeAt(fromTrack);
+    m_tracks.insert(toTrack, movedTrack);
+
+    normalizeTrackIndices();
+    sortClips();
+
+    if (m_selectedTrackIndex == fromTrack) {
+        m_selectedTrackIndex = toTrack;
+    } else if (fromTrack < toTrack && m_selectedTrackIndex > fromTrack && m_selectedTrackIndex <= toTrack) {
+        m_selectedTrackIndex -= 1;
+    } else if (fromTrack > toTrack && m_selectedTrackIndex >= toTrack && m_selectedTrackIndex < fromTrack) {
+        m_selectedTrackIndex += 1;
+    }
+
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
     }
     update();
     return true;
@@ -496,6 +567,22 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
         }
         clip.gradingKeyframes = leftGradingKeyframes;
 
+        rightClip.opacityKeyframes.clear();
+        for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
+            if (keyframe.frame >= leftDuration) {
+                TimelineClip::OpacityKeyframe shifted = keyframe;
+                shifted.frame -= leftDuration;
+                rightClip.opacityKeyframes.push_back(shifted);
+            }
+        }
+        QVector<TimelineClip::OpacityKeyframe> leftOpacityKeyframes;
+        for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
+            if (keyframe.frame < leftDuration) {
+                leftOpacityKeyframes.push_back(keyframe);
+            }
+        }
+        clip.opacityKeyframes = leftOpacityKeyframes;
+
         clip.durationFrames = leftDuration;
         if (isImage) {
             clip.sourceInFrame = 0;
@@ -507,6 +594,8 @@ bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
         normalizeClipTransformKeyframes(rightClip);
         normalizeClipGradingKeyframes(clip);
         normalizeClipGradingKeyframes(rightClip);
+        normalizeClipOpacityKeyframes(clip);
+        normalizeClipOpacityKeyframes(rightClip);
         normalizeClipTiming(clip);
         normalizeClipTiming(rightClip);
         m_clips.insert(i + 1, rightClip);
@@ -554,7 +643,7 @@ void TimelineWidget::sortClips() {
             }
             return aStartSamples < bStartSamples;
         }
-        return a.trackIndex < b.trackIndex;
+        return a.trackIndex > b.trackIndex;
     });
 }
 
@@ -858,6 +947,78 @@ bool TimelineWidget::renameTrack(int trackIndex) {
     m_tracks[trackIndex].name = nextName.trimmed().isEmpty() ? defaultTrackName(trackIndex) : nextName.trimmed();
     if (clipsChanged) {
         clipsChanged();
+    }
+    update();
+    return true;
+}
+
+bool TimelineWidget::deleteTrack(int trackIndex) {
+    if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+        return false;
+    }
+
+    int clipCountOnTrack = 0;
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.trackIndex == trackIndex) {
+            ++clipCountOnTrack;
+        }
+    }
+
+    if (clipCountOnTrack > 0) {
+        const QMessageBox::StandardButton choice = QMessageBox::warning(
+            this,
+            QStringLiteral("Delete Track"),
+            QStringLiteral("Track \"%1\" contains %2 clip%3.\n\nDelete the track and all clips on it?")
+                .arg(m_tracks[trackIndex].name.trimmed().isEmpty() ? defaultTrackName(trackIndex) : m_tracks[trackIndex].name)
+                .arg(clipCountOnTrack)
+                .arg(clipCountOnTrack == 1 ? QString() : QStringLiteral("s")),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel);
+        if (choice != QMessageBox::Yes) {
+            return false;
+        }
+    }
+
+    for (int i = m_clips.size() - 1; i >= 0; --i) {
+        if (m_clips[i].trackIndex == trackIndex) {
+            if (m_selectedClipId == m_clips[i].id) {
+                m_selectedClipId.clear();
+            }
+            m_clips.removeAt(i);
+        }
+    }
+
+    if (m_tracks.size() > 1) {
+        m_tracks.removeAt(trackIndex);
+        for (TimelineClip& clip : m_clips) {
+            if (clip.trackIndex > trackIndex) {
+                clip.trackIndex -= 1;
+            }
+        }
+    } else {
+        TimelineTrack resetTrack;
+        resetTrack.name = defaultTrackName(0);
+        resetTrack.height = m_tracks[0].height;
+        m_tracks[0] = resetTrack;
+    }
+
+    if (m_selectedTrackIndex == trackIndex) {
+        m_selectedTrackIndex = -1;
+    } else if (m_selectedTrackIndex > trackIndex) {
+        m_selectedTrackIndex -= 1;
+    }
+
+    normalizeTrackIndices();
+    sortClips();
+
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
     }
     update();
     return true;

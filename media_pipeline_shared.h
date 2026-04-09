@@ -20,6 +20,7 @@ struct SequencePrefetchRequest {
 };
 
 bool clipIsActiveAtTimelineFrame(const TimelineClip& clip,
+                                 const QVector<TimelineTrack>& tracks,
                                  qreal timelineFrame,
                                  bool bypassGrading);
 

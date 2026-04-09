@@ -34,6 +34,7 @@ public:
     void setClipCount(int count);
     void setSelectedClipId(const QString& clipId);
     void setTimelineClips(const QVector<TimelineClip>& clips);
+    void setTimelineTracks(const QVector<TimelineTrack>& tracks);
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
     void setExportRanges(const QVector<ExportRangeSegment>& ranges);
     void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString());
@@ -62,6 +63,7 @@ public:
     std::function<void(const QString&)> selectionRequested;
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested;
+    std::function<void(const QString&)> createKeyframeRequested;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -73,6 +75,7 @@ protected:
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
     enum class PreviewOverlayKind {
@@ -164,6 +167,7 @@ private:
     qreal m_currentFramePosition = 0.0;
     int m_clipCount = 0;
     QVector<TimelineClip> m_clips;
+    QVector<TimelineTrack> m_tracks;
     QVector<RenderSyncMarker> m_renderSyncMarkers;
     QSet<QString> m_registeredClips;
     QTimer m_repaintTimer;

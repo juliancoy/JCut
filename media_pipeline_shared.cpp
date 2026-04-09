@@ -42,16 +42,20 @@ int64_t nextValidFrameShared(int64_t currentFrame,
 namespace editor {
 
 bool clipIsActiveAtTimelineFrame(const TimelineClip& clip,
+                                 const QVector<TimelineTrack>& tracks,
                                  qreal timelineFrame,
                                  bool bypassGrading) {
     if (timelineFrame < static_cast<qreal>(clip.startFrame) ||
         timelineFrame >= static_cast<qreal>(clip.startFrame + clip.durationFrames)) {
         return false;
     }
+    if (!clipVisualPlaybackEnabled(clip, tracks)) {
+        return false;
+    }
     if (bypassGrading) {
         return true;
     }
-    return evaluateClipGradingAtPosition(clip, timelineFrame).opacity > 0.0001;
+    return evaluateEffectiveClipGradingAtPosition(clip, tracks, timelineFrame).opacity > 0.0001;
 }
 
 QVector<int64_t> collectLookaheadTimelineFrames(int64_t startTimelineFrame,
@@ -89,7 +93,7 @@ QVector<int64_t> collectSequenceLookaheadSourceFrames(const TimelineClip& clip,
     int64_t lastFrame = std::numeric_limits<int64_t>::min();
     for (int offset = 0; offset < lookaheadFrames; ++offset) {
         const qreal futureTimelineFrame = startTimelineFrame + static_cast<qreal>(offset);
-        if (!clipIsActiveAtTimelineFrame(clip, futureTimelineFrame, bypassGrading)) {
+        if (!clipIsActiveAtTimelineFrame(clip, {}, futureTimelineFrame, bypassGrading)) {
             continue;
         }
         const int64_t sourceFrame =
@@ -115,7 +119,7 @@ QVector<SequencePrefetchRequest> collectSequencePrefetchRequestsAtTimelineFrame(
         if (candidate.decodePath.isEmpty() || !isImageSequencePath(candidate.decodePath)) {
             continue;
         }
-        if (!clipIsActiveAtTimelineFrame(candidate.clip, timelineFrame, bypassGrading)) {
+        if (!clipIsActiveAtTimelineFrame(candidate.clip, {}, timelineFrame, bypassGrading)) {
             continue;
         }
         activeClips.push_back(candidate);

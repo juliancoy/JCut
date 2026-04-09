@@ -33,7 +33,7 @@ void EditorWindow::bindInspectorWidgets()
     m_trackInspectorDetailsLabel = m_inspectorPane->trackInspectorDetailsLabel();
     m_trackNameEdit = m_inspectorPane->trackNameEdit();
     m_trackHeightSpin = m_inspectorPane->trackHeightSpin();
-    m_trackVideoEnabledCheckBox = m_inspectorPane->trackVideoEnabledCheckBox();
+    m_trackVisualModeCombo = m_inspectorPane->trackVisualModeCombo();
     m_trackAudioEnabledCheckBox = m_inspectorPane->trackAudioEnabledCheckBox();
     m_trackCrossfadeSecondsSpin = m_inspectorPane->trackCrossfadeSecondsSpin();
     m_trackCrossfadeButton = m_inspectorPane->trackCrossfadeButton();
@@ -74,6 +74,7 @@ void EditorWindow::bindInspectorWidgets()
     m_contrastSpin = m_inspectorPane->contrastSpin();
     m_saturationSpin = m_inspectorPane->saturationSpin();
     m_opacitySpin = m_inspectorPane->opacitySpin();
+    m_opacityKeyframeTable = m_inspectorPane->opacityKeyframeTable();
     // Shadows/Midtones/Highlights
     m_shadowsRSpin = m_inspectorPane->shadowsRSpin();
     m_shadowsGSpin = m_inspectorPane->shadowsGSpin();
@@ -108,6 +109,7 @@ void EditorWindow::bindInspectorWidgets()
     m_mirrorVerticalCheckBox = m_inspectorPane->mirrorVerticalCheckBox();
     m_lockVideoScaleCheckBox = m_inspectorPane->lockVideoScaleCheckBox();
     m_keyframeSpaceCheckBox = m_inspectorPane->keyframeSpaceCheckBox();
+    m_keyframeSkipAwareTimingCheckBox = m_inspectorPane->keyframeSkipAwareTimingCheckBox();
     m_addVideoKeyframeButton = m_inspectorPane->addVideoKeyframeButton();
     m_removeVideoKeyframeButton = m_inspectorPane->removeVideoKeyframeButton();
     m_flipHorizontalButton = m_inspectorPane->flipHorizontalButton();
@@ -233,15 +235,17 @@ void EditorWindow::setupTrackInspectorControls()
         refreshClipInspector();
     });
 
-    connect(m_trackVideoEnabledCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
-        if (!m_timeline || !m_trackVideoEnabledCheckBox) {
+    connect(m_trackVisualModeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        if (!m_timeline || !m_trackVisualModeCombo) {
             return;
         }
         const int trackIndex = m_timeline->selectedTrackIndex();
         if (trackIndex < 0) {
             return;
         }
-        if (m_timeline->updateTrackVisualEnabled(trackIndex, checked)) {
+        const TrackVisualMode mode = static_cast<TrackVisualMode>(
+            m_trackVisualModeCombo->currentData().toInt());
+        if (m_timeline->updateTrackVisualMode(trackIndex, mode)) {
             refreshClipInspector();
         }
     });

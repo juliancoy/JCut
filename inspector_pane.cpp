@@ -1,4 +1,5 @@
 #include "inspector_pane.h"
+#include "editor_shared.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -65,6 +66,7 @@ QWidget *InspectorPane::buildPane()
 
     m_inspectorTabs = new QTabWidget(pane);
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
+    m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
     m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
     m_inspectorTabs->addTab(buildTitlesTab(), QStringLiteral("Titles"));
     m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
@@ -104,18 +106,19 @@ void InspectorPane::configureInspectorTabs()
     };
 
     const TabSpec specs[] = {
-        {0, QStyle::SP_DriveDVDIcon, "Grade: clip color, opacity, and grading keyframes"},
-        {1, QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
-        {2, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
-        {3, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
-        {4, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
-        {5, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
-        {6, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {7, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
-        {8, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {9, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {10, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {11, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {0, QStyle::SP_DriveDVDIcon, "Grade: clip color and grading keyframes"},
+        {1, QStyle::SP_BrowserStop, "Opacity: clip opacity keyframes and fades"},
+        {2, QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
+        {3, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
+        {4, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
+        {5, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
+        {6, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
+        {7, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
+        {8, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
+        {9, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
+        {10, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {11, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {12, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -164,19 +167,15 @@ QWidget *InspectorPane::buildGradingTab()
     m_saturationSpin = new QDoubleSpinBox(page);
     m_opacitySpin = new QDoubleSpinBox(page);
 
-    for (QDoubleSpinBox *spin : {m_brightnessSpin, m_contrastSpin, m_saturationSpin, m_opacitySpin})
+    for (QDoubleSpinBox *spin : {m_brightnessSpin, m_contrastSpin, m_saturationSpin})
     {
         spin->setRange(-10.0, 10.0);
         spin->setDecimals(3);
         spin->setSingleStep(0.05);
     }
-    m_opacitySpin->setRange(0.0, 1.0);
-    m_opacitySpin->setValue(1.0);
-
     form->addRow(QStringLiteral("Brightness"), m_brightnessSpin);
     form->addRow(QStringLiteral("Contrast"), m_contrastSpin);
     form->addRow(QStringLiteral("Saturation"), m_saturationSpin);
-    form->addRow(QStringLiteral("Opacity"), m_opacitySpin);
 
     // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
     auto *shadowsGroup = new QGroupBox(QStringLiteral("Shadows (Lift)"), page);
@@ -250,12 +249,11 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingFadeDurationSpin->setToolTip(QStringLiteral("Fade duration in seconds"));
 
     m_gradingKeyframeTable = new QTableWidget(page);
-    m_gradingKeyframeTable->setColumnCount(6);
+    m_gradingKeyframeTable->setColumnCount(5);
     m_gradingKeyframeTable->setHorizontalHeaderLabels({QStringLiteral("Frame"),
                                                        QStringLiteral("Bright"),
                                                        QStringLiteral("Contrast"),
                                                        QStringLiteral("Sat"),
-                                                       QStringLiteral("Opacity"),
                                                        QStringLiteral("Interp")});
     m_gradingKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_gradingKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -272,16 +270,69 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addWidget(m_gradingAutoScrollCheckBox);
     layout->addWidget(m_gradingFollowCurrentCheckBox);
     layout->addWidget(m_gradingKeyAtPlayheadButton);
-    layout->addWidget(m_gradingFadeInButton);
-    layout->addWidget(m_gradingFadeOutButton);
-    
+    layout->addWidget(m_gradingKeyframeTable, 1);
+    return page;
+}
+
+QWidget *InspectorPane::buildOpacityTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Opacity"), page));
+
+    m_opacityPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
+    m_opacityPathLabel->setWordWrap(true);
+    layout->addWidget(m_opacityPathLabel);
+
+    auto *form = new QFormLayout;
+    m_opacitySpin->setRange(0.0, 1.0);
+    m_opacitySpin->setDecimals(3);
+    m_opacitySpin->setSingleStep(0.05);
+    m_opacitySpin->setValue(1.0);
+    form->addRow(QStringLiteral("Opacity"), m_opacitySpin);
+    layout->addLayout(form);
+
+    m_opacityAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
+    m_opacityFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
+    m_opacityAutoScrollCheckBox->setChecked(true);
+    m_opacityFollowCurrentCheckBox->setChecked(true);
+    m_opacityKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), page);
+    m_opacityFadeInButton = new QPushButton(QStringLiteral("Fade In From Playhead"), page);
+    m_opacityFadeOutButton = new QPushButton(QStringLiteral("Fade Out From Playhead"), page);
+
+    m_opacityFadeDurationSpin = new QDoubleSpinBox(page);
+    m_opacityFadeDurationSpin->setRange(0.1, 60.0);
+    m_opacityFadeDurationSpin->setValue(1.0);
+    m_opacityFadeDurationSpin->setSuffix(QStringLiteral(" s"));
+    m_opacityFadeDurationSpin->setDecimals(1);
+    m_opacityFadeDurationSpin->setSingleStep(0.5);
+
+    m_opacityKeyframeTable = new QTableWidget(page);
+    m_opacityKeyframeTable->setColumnCount(3);
+    m_opacityKeyframeTable->setHorizontalHeaderLabels({QStringLiteral("Frame"),
+                                                       QStringLiteral("Opacity"),
+                                                       QStringLiteral("Interp")});
+    m_opacityKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_opacityKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_opacityKeyframeTable->setEditTriggers(QAbstractItemView::DoubleClicked |
+                                            QAbstractItemView::EditKeyPressed);
+    m_opacityKeyframeTable->verticalHeader()->setVisible(false);
+    m_opacityKeyframeTable->horizontalHeader()->setStretchLastSection(true);
+    m_opacityKeyframeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+
+    layout->addWidget(m_opacityAutoScrollCheckBox);
+    layout->addWidget(m_opacityFollowCurrentCheckBox);
+    layout->addWidget(m_opacityKeyAtPlayheadButton);
+    layout->addWidget(m_opacityFadeInButton);
+    layout->addWidget(m_opacityFadeOutButton);
+
     auto *fadeDurationLayout = new QHBoxLayout();
     fadeDurationLayout->addWidget(new QLabel(QStringLiteral("Fade Duration:"), page));
-    fadeDurationLayout->addWidget(m_gradingFadeDurationSpin);
+    fadeDurationLayout->addWidget(m_opacityFadeDurationSpin);
     fadeDurationLayout->addStretch();
     layout->addLayout(fadeDurationLayout);
-    
-    layout->addWidget(m_gradingKeyframeTable, 1);
+
+    layout->addWidget(m_opacityKeyframeTable, 1);
     return page;
 }
 
@@ -493,6 +544,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_mirrorVerticalCheckBox = new QCheckBox(QStringLiteral("Mirror Vertical"), page);
     m_lockVideoScaleCheckBox = new QCheckBox(QStringLiteral("Lock Scale"), page);
     m_keyframeSpaceCheckBox = new QCheckBox(QStringLiteral("Clip-Relative Frames"), page);
+    m_keyframeSkipAwareTimingCheckBox = new QCheckBox(QStringLiteral("Skip Aware Timing"), page);
     m_addVideoKeyframeButton = new QPushButton(QStringLiteral("Add Keyframe"), page);
     m_removeVideoKeyframeButton = new QPushButton(QStringLiteral("Remove Keyframe"), page);
     m_flipHorizontalButton = new QPushButton(QStringLiteral("Flip Horizontal"), page);
@@ -501,6 +553,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_videoInterpolationCombo->addItem(QStringLiteral("Linear"));
     m_lockVideoScaleCheckBox->setChecked(false);
     m_keyframeSpaceCheckBox->setChecked(true);
+    m_keyframeSkipAwareTimingCheckBox->setChecked(false);
 
     for (QDoubleSpinBox *spin : {
              m_videoTranslationXSpin, m_videoTranslationYSpin, m_videoRotationSpin,
@@ -551,6 +604,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     layout->addLayout(form);
     layout->addWidget(m_lockVideoScaleCheckBox);
     layout->addWidget(m_keyframeSpaceCheckBox);
+    layout->addWidget(m_keyframeSkipAwareTimingCheckBox);
     layout->addWidget(m_keyframesAutoScrollCheckBox);
     layout->addWidget(m_keyframesFollowCurrentCheckBox);
     layout->addWidget(m_mirrorHorizontalCheckBox);
@@ -873,7 +927,13 @@ QWidget *InspectorPane::buildClipTab()
     m_trackNameEdit = new QLineEdit(page);
     m_trackHeightSpin = new QSpinBox(page);
     m_trackHeightSpin->setRange(28, 240);
-    m_trackVideoEnabledCheckBox = new QCheckBox(QStringLiteral("Track Video Enabled"), page);
+    m_trackVisualModeCombo = new QComboBox(page);
+    m_trackVisualModeCombo->addItem(trackVisualModeLabel(TrackVisualMode::Enabled),
+                                    static_cast<int>(TrackVisualMode::Enabled));
+    m_trackVisualModeCombo->addItem(trackVisualModeLabel(TrackVisualMode::ForceOpaque),
+                                    static_cast<int>(TrackVisualMode::ForceOpaque));
+    m_trackVisualModeCombo->addItem(trackVisualModeLabel(TrackVisualMode::Hidden),
+                                    static_cast<int>(TrackVisualMode::Hidden));
     m_trackAudioEnabledCheckBox = new QCheckBox(QStringLiteral("Track Audio Enabled"), page);
     m_trackCrossfadeSecondsSpin = new QDoubleSpinBox(page);
     m_trackCrossfadeSecondsSpin->setDecimals(2);
@@ -905,12 +965,12 @@ QWidget *InspectorPane::buildClipTab()
     auto *trackForm = new QFormLayout;
     trackForm->addRow(QStringLiteral("Track Name"), m_trackNameEdit);
     trackForm->addRow(QStringLiteral("Track Height"), m_trackHeightSpin);
+    trackForm->addRow(QStringLiteral("Track Visuals"), m_trackVisualModeCombo);
     trackForm->addRow(QStringLiteral("Crossfade"), m_trackCrossfadeSecondsSpin);
     layout->addWidget(trackSectionLabel);
     layout->addWidget(m_trackInspectorLabel);
     layout->addWidget(m_trackInspectorDetailsLabel);
     layout->addLayout(trackForm);
-    layout->addWidget(m_trackVideoEnabledCheckBox);
     layout->addWidget(m_trackAudioEnabledCheckBox);
     layout->addWidget(m_trackCrossfadeButton);
     layout->addWidget(audioSectionLabel);

@@ -548,6 +548,8 @@ QJsonObject EditorWindow::buildStateJson() const
             QJsonObject trackObj;
             trackObj[QStringLiteral("name")] = track.name;
             trackObj[QStringLiteral("height")] = track.height;
+            trackObj[QStringLiteral("visualMode")] = trackVisualModeToString(track.visualMode);
+            trackObj[QStringLiteral("audioEnabled")] = track.audioEnabled;
             tracks.push_back(trackObj);
         }
     }

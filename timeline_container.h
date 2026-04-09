@@ -36,11 +36,16 @@ public:
     void syncTracksFromTimeline();
 
 private slots:
-    void onTrackVisualToggled(int trackIndex, bool enabled);
+    void onTrackVisualModeChanged(int trackIndex, int mode);
     void onTrackAudioToggled(int trackIndex, bool enabled);
     void onTrackSelected(int trackIndex);
     void onTrackMoveUp(int trackIndex);
     void onTrackMoveDown(int trackIndex);
+    void onTrackDropped(int fromIndex, int toIndex);
+    void onTrackRenameRequested(int trackIndex);
+    void onTrackDeleteRequested(int trackIndex);
+    void onTrackSidebarWheelAdjusted(int steps, Qt::KeyboardModifiers modifiers);
+    void onTrackSidebarWidthResizeRequested(int width);
 
 private:
     void setupLayout();

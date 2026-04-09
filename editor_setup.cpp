@@ -117,7 +117,7 @@ void EditorWindow::setupShortcuts()
 
     auto *deleteShortcut = new QShortcut(QKeySequence::Delete, this);
     connect(deleteShortcut, &QShortcut::activated, this, [this]() {
-        if (focusInTranscriptTable() || focusInKeyframeTable() || focusInGradingTable() ||
+        if (focusInTranscriptTable() || focusInKeyframeTable() || focusInGradingTable() || focusInOpacityTable() ||
             shouldBlockGlobalEditorShortcuts()) {
             return;
         }

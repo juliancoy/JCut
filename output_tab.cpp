@@ -176,6 +176,7 @@ void OutputTab::renderFromInspector()
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
     request.clips = m_deps.getTimelineClips();
+    request.tracks = m_deps.getTimelineTracks ? m_deps.getTimelineTracks() : QVector<TimelineTrack>{};
     request.renderSyncMarkers = m_deps.getRenderSyncMarkers
         ? m_deps.getRenderSyncMarkers()
         : QVector<RenderSyncMarker>{};

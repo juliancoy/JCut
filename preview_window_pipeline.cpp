@@ -21,7 +21,7 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
     if (!m_cache) return false;
 
     for (const TimelineClip& clip : m_clips) {
-        if (!clipHasVisuals(clip) || !clip.videoEnabled || !isSampleWithinClip(clip, targetSample)) {
+        if (!clipVisualPlaybackEnabled(clip, m_tracks) || !isSampleWithinClip(clip, targetSample)) {
             continue;
         }
 
@@ -77,7 +77,7 @@ void PreviewWindow::ensurePipeline() {
     m_playbackPipeline->setRenderSyncMarkers(m_renderSyncMarkers);
     m_registeredClips.clear();
     for (const TimelineClip& clip : m_clips) {
-        if (!clipHasVisuals(clip) || !clip.videoEnabled) continue;
+        if (!clipVisualPlaybackEnabled(clip, m_tracks)) continue;
         m_cache->registerClip(clip);
         m_registeredClips.insert(clip.id);
     }
@@ -106,11 +106,11 @@ void PreviewWindow::requestFramesForCurrentPosition() {
     QVector<const TimelineClip*> activeClips;
     activeClips.reserve(m_clips.size());
     for (const TimelineClip& clip : m_clips) {
-        if (!clipVisualPlaybackEnabled(clip)) {
+        if (!clipVisualPlaybackEnabled(clip, m_tracks)) {
             continue;
         }
         if (isSampleWithinClip(clip, m_currentSample)) {
-            if (!editor::clipIsActiveAtTimelineFrame(clip, m_currentFramePosition, m_bypassGrading)) {
+            if (!editor::clipIsActiveAtTimelineFrame(clip, m_tracks, m_currentFramePosition, m_bypassGrading)) {
                 continue;
             }
             activeClips.push_back(&clip);
