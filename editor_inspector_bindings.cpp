@@ -9,6 +9,8 @@
 #include <QSpinBox>
 #include <QTableWidget>
 
+#include "transform_skip_aware_timing.h"
+
 using namespace editor;
 
 void EditorWindow::bindInspectorWidgets()
@@ -138,6 +140,8 @@ void EditorWindow::setupSpeechFilterControls()
 {
     const auto refreshSpeechFilterRouting = [this](bool pushHistory = false) {
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        setTransformSkipAwareTimelineRanges(
+            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);

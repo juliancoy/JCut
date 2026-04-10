@@ -493,6 +493,7 @@ QJsonObject EditorWindow::buildStateJson() const
         m_keyframesAutoScrollCheckBox ? m_keyframesAutoScrollCheckBox->isChecked() : true;
     root[QStringLiteral("selectedInspectorTab")] =
         m_inspectorTabs ? m_inspectorTabs->currentIndex() : 0;
+    root[QStringLiteral("playbackSpeed")] = m_playbackSpeed;
     root[QStringLiteral("timelineZoom")] =
         m_timeline ? m_timeline->timelineZoom() : 4.0;
     root[QStringLiteral("timelineVerticalScroll")] =

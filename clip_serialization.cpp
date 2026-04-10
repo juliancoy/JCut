@@ -60,6 +60,15 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("brightness")] = keyframe.brightness;
             keyframeObj[QStringLiteral("contrast")] = keyframe.contrast;
             keyframeObj[QStringLiteral("saturation")] = keyframe.saturation;
+            keyframeObj[QStringLiteral("shadowsR")] = keyframe.shadowsR;
+            keyframeObj[QStringLiteral("shadowsG")] = keyframe.shadowsG;
+            keyframeObj[QStringLiteral("shadowsB")] = keyframe.shadowsB;
+            keyframeObj[QStringLiteral("midtonesR")] = keyframe.midtonesR;
+            keyframeObj[QStringLiteral("midtonesG")] = keyframe.midtonesG;
+            keyframeObj[QStringLiteral("midtonesB")] = keyframe.midtonesB;
+            keyframeObj[QStringLiteral("highlightsR")] = keyframe.highlightsR;
+            keyframeObj[QStringLiteral("highlightsG")] = keyframe.highlightsG;
+            keyframeObj[QStringLiteral("highlightsB")] = keyframe.highlightsB;
             keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
             gradingKeyframes.push_back(keyframeObj);
         }
@@ -209,6 +218,15 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.brightness = keyframeObj.value(QStringLiteral("brightness")).toDouble(0.0);
             keyframe.contrast = keyframeObj.value(QStringLiteral("contrast")).toDouble(1.0);
             keyframe.saturation = keyframeObj.value(QStringLiteral("saturation")).toDouble(1.0);
+            keyframe.shadowsR = keyframeObj.value(QStringLiteral("shadowsR")).toDouble(0.0);
+            keyframe.shadowsG = keyframeObj.value(QStringLiteral("shadowsG")).toDouble(0.0);
+            keyframe.shadowsB = keyframeObj.value(QStringLiteral("shadowsB")).toDouble(0.0);
+            keyframe.midtonesR = keyframeObj.value(QStringLiteral("midtonesR")).toDouble(0.0);
+            keyframe.midtonesG = keyframeObj.value(QStringLiteral("midtonesG")).toDouble(0.0);
+            keyframe.midtonesB = keyframeObj.value(QStringLiteral("midtonesB")).toDouble(0.0);
+            keyframe.highlightsR = keyframeObj.value(QStringLiteral("highlightsR")).toDouble(0.0);
+            keyframe.highlightsG = keyframeObj.value(QStringLiteral("highlightsG")).toDouble(0.0);
+            keyframe.highlightsB = keyframeObj.value(QStringLiteral("highlightsB")).toDouble(0.0);
             if (keyframeObj.contains(QStringLiteral("linearInterpolation"))) {
                 keyframe.linearInterpolation =
                     keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);

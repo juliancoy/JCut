@@ -12,6 +12,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QLabel>
+#include <QComboBox>
 
 EditorPane::EditorPane(QWidget *parent)
     : QWidget(parent)
@@ -129,10 +130,18 @@ void EditorPane::setupTransportControls()
 
     m_startButton = new QToolButton;
     m_endButton = new QToolButton;
+    m_prevFrameButton = new QToolButton;
+    m_nextFrameButton = new QToolButton;
     m_startButton->setObjectName(QStringLiteral("transport.start"));
     m_endButton->setObjectName(QStringLiteral("transport.end"));
+    m_prevFrameButton->setObjectName(QStringLiteral("transport.prev_frame"));
+    m_nextFrameButton->setObjectName(QStringLiteral("transport.next_frame"));
     m_startButton->setIcon(style()->standardIcon(QStyle::SP_MediaSkipBackward));
     m_endButton->setIcon(style()->standardIcon(QStyle::SP_MediaSkipForward));
+    m_prevFrameButton->setText(QStringLiteral("<"));
+    m_nextFrameButton->setText(QStringLiteral(">"));
+    m_prevFrameButton->setToolTip(QStringLiteral("Step back 1 frame"));
+    m_nextFrameButton->setToolTip(QStringLiteral("Step forward 1 frame"));
 
     m_razorButton = new QToolButton;
     m_razorButton->setObjectName(QStringLiteral("transport.razor"));
@@ -150,6 +159,17 @@ void EditorPane::setupTransportControls()
     m_timecodeLabel->setObjectName(QStringLiteral("transport.timecode"));
     m_timecodeLabel->setMinimumWidth(96);
 
+    m_playbackSpeedCombo = new QComboBox;
+    m_playbackSpeedCombo->setObjectName(QStringLiteral("transport.playback_speed"));
+    m_playbackSpeedCombo->addItem(QStringLiteral("10%"), 0.1);
+    m_playbackSpeedCombo->addItem(QStringLiteral("25%"), 0.25);
+    m_playbackSpeedCombo->addItem(QStringLiteral("50%"), 0.5);
+    m_playbackSpeedCombo->addItem(QStringLiteral("75%"), 0.75);
+    m_playbackSpeedCombo->addItem(QStringLiteral("100%"), 1.0);
+    m_playbackSpeedCombo->setCurrentIndex(4);
+    m_playbackSpeedCombo->setToolTip(
+        QStringLiteral("Timeline playback speed. Audio clock remains authoritative when audio is active."));
+
     m_audioMuteButton = new QToolButton;
     m_audioMuteButton->setObjectName(QStringLiteral("transport.audio_mute"));
     m_audioMuteButton->setText(QStringLiteral("Mute"));
@@ -166,11 +186,14 @@ void EditorPane::setupTransportControls()
 
     transportLayout->addWidget(m_startButton);
     transportLayout->addWidget(m_playButton);
+    transportLayout->addWidget(m_prevFrameButton);
+    transportLayout->addWidget(m_nextFrameButton);
     transportLayout->addWidget(m_endButton);
     transportLayout->addSpacing(12);
     transportLayout->addWidget(m_razorButton);
     transportLayout->addWidget(m_seekSlider, 1);
     transportLayout->addWidget(m_timecodeLabel);
+    transportLayout->addWidget(m_playbackSpeedCombo);
     transportLayout->addWidget(m_audioMuteButton);
     transportLayout->addWidget(m_audioVolumeSlider);
     transportLayout->addWidget(m_audioNowPlayingLabel);
@@ -178,8 +201,14 @@ void EditorPane::setupTransportControls()
     // Connect signals
     connect(m_playButton, &QPushButton::clicked, this, &EditorPane::playClicked);
     connect(m_startButton, &QToolButton::clicked, this, &EditorPane::startClicked);
+    connect(m_prevFrameButton, &QToolButton::clicked, this, &EditorPane::prevFrameClicked);
+    connect(m_nextFrameButton, &QToolButton::clicked, this, &EditorPane::nextFrameClicked);
     connect(m_endButton, &QToolButton::clicked, this, &EditorPane::endClicked);
     connect(m_seekSlider, &QSlider::valueChanged, this, &EditorPane::seekValueChanged);
+    connect(m_playbackSpeedCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+        const double speed = m_playbackSpeedCombo->itemData(index).toDouble();
+        emit playbackSpeedChanged(speed);
+    });
     connect(m_audioMuteButton, &QToolButton::clicked, this, &EditorPane::audioMuteClicked);
     connect(m_audioVolumeSlider, &QSlider::valueChanged, this, &EditorPane::audioVolumeChanged);
 }

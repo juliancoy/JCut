@@ -273,10 +273,16 @@ class ControlServerWorker final : public QObject {
 public:
     ControlServerWorker(QWidget* window,
                         std::function<QJsonObject()> fastSnapshotCallback,
+                        std::function<QJsonObject()> stateSnapshotCallback,
+                        std::function<QJsonObject()> projectSnapshotCallback,
+                        std::function<QJsonObject()> historySnapshotCallback,
                         std::function<QJsonObject()> profilingCallback,
                         std::function<void()> resetProfilingCallback)
         : m_window(window)
         , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
+        , m_stateSnapshotCallback(std::move(stateSnapshotCallback))
+        , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
+        , m_historySnapshotCallback(std::move(historySnapshotCallback))
         , m_profilingCallback(std::move(profilingCallback))
         , m_resetProfilingCallback(std::move(resetProfilingCallback)) {}
 
@@ -406,6 +412,63 @@ private:
         return m_fastSnapshotCallback ? m_fastSnapshotCallback() : QJsonObject{};
     }
 
+    bool fetchStateSnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
+        if (!out) {
+            return false;
+        }
+        if (!m_stateSnapshotCallback) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("state snapshot callback unavailable");
+            }
+            return false;
+        }
+        if (!invokeOnUiThread(m_window, timeoutMs, out, [this]() { return m_stateSnapshotCallback(); })) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for state snapshot");
+            }
+            return false;
+        }
+        return true;
+    }
+
+    bool fetchProjectSnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
+        if (!out) {
+            return false;
+        }
+        if (!m_projectSnapshotCallback) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("project snapshot callback unavailable");
+            }
+            return false;
+        }
+        if (!invokeOnUiThread(m_window, timeoutMs, out, [this]() { return m_projectSnapshotCallback(); })) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for project snapshot");
+            }
+            return false;
+        }
+        return true;
+    }
+
+    bool fetchHistorySnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
+        if (!out) {
+            return false;
+        }
+        if (!m_historySnapshotCallback) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("history snapshot callback unavailable");
+            }
+            return false;
+        }
+        if (!invokeOnUiThread(m_window, timeoutMs, out, [this]() { return m_historySnapshotCallback(); })) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for history snapshot");
+            }
+            return false;
+        }
+        return true;
+    }
+
     bool uiThreadResponsive() const {
         const QJsonObject snapshot = fastSnapshot();
         return snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <= kUiHeartbeatStaleMs;
@@ -465,6 +528,227 @@ private:
                 {QStringLiteral("current_frame"), snapshot.value(QStringLiteral("current_frame")).toInteger()},
                 {QStringLiteral("playback_active"), snapshot.value(QStringLiteral("playback_active")).toBool()},
                 {QStringLiteral("main_thread_heartbeat_age_ms"), snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1)}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/state")) {
+            QJsonObject state;
+            QString error;
+            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("state"), state}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/timeline")) {
+            QJsonObject state;
+            QString error;
+            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("currentFrame"), state.value(QStringLiteral("currentFrame")).toInteger()},
+                {QStringLiteral("selectedClipId"), state.value(QStringLiteral("selectedClipId")).toString()},
+                {QStringLiteral("timeline"), state.value(QStringLiteral("timeline")).toArray()},
+                {QStringLiteral("tracks"), state.value(QStringLiteral("tracks")).toArray()},
+                {QStringLiteral("renderSyncMarkers"), state.value(QStringLiteral("renderSyncMarkers")).toArray()},
+                {QStringLiteral("timelineZoom"), state.value(QStringLiteral("timelineZoom")).toDouble(4.0)},
+                {QStringLiteral("timelineVerticalScroll"), state.value(QStringLiteral("timelineVerticalScroll")).toInteger(0)}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/tracks")) {
+            QJsonObject state;
+            QString error;
+            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            const QJsonArray tracks = state.value(QStringLiteral("tracks")).toArray();
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("count"), tracks.size()},
+                {QStringLiteral("tracks"), tracks}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/clips")) {
+            QJsonObject state;
+            QString error;
+            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+
+            const QUrlQuery query(request.url);
+            const QString idFilter = query.queryItemValue(QStringLiteral("id")).trimmed();
+            const QString labelContains =
+                query.queryItemValue(QStringLiteral("label_contains")).trimmed().toLower();
+            const QString fileContains =
+                query.queryItemValue(QStringLiteral("file_contains")).trimmed().toLower();
+            const int trackIndexFilter = query.queryItemValue(QStringLiteral("trackIndex")).toInt();
+            const bool hasTrackFilter = query.hasQueryItem(QStringLiteral("trackIndex"));
+
+            QJsonArray filtered;
+            const QJsonArray timeline = state.value(QStringLiteral("timeline")).toArray();
+            for (const QJsonValue& value : timeline) {
+                if (!value.isObject()) {
+                    continue;
+                }
+                const QJsonObject clip = value.toObject();
+                if (!idFilter.isEmpty() && clip.value(QStringLiteral("id")).toString() != idFilter) {
+                    continue;
+                }
+                if (hasTrackFilter && clip.value(QStringLiteral("trackIndex")).toInt() != trackIndexFilter) {
+                    continue;
+                }
+                if (!labelContains.isEmpty() &&
+                    !clip.value(QStringLiteral("label")).toString().toLower().contains(labelContains)) {
+                    continue;
+                }
+                if (!fileContains.isEmpty() &&
+                    !clip.value(QStringLiteral("filePath")).toString().toLower().contains(fileContains)) {
+                    continue;
+                }
+                filtered.push_back(clip);
+            }
+
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("count"), filtered.size()},
+                {QStringLiteral("clips"), filtered}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/clip")) {
+            QJsonObject state;
+            QString error;
+            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            const QUrlQuery query(request.url);
+            const QString clipId = query.queryItemValue(QStringLiteral("id")).trimmed();
+            if (clipId.isEmpty()) {
+                writeError(socket, 400, QStringLiteral("missing id"));
+                return;
+            }
+
+            const QJsonArray timeline = state.value(QStringLiteral("timeline")).toArray();
+            for (int i = 0; i < timeline.size(); ++i) {
+                const QJsonObject clip = timeline.at(i).toObject();
+                if (clip.value(QStringLiteral("id")).toString() == clipId) {
+                    writeJson(socket, 200, QJsonObject{
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("index"), i},
+                        {QStringLiteral("clip"), clip}
+                    });
+                    return;
+                }
+            }
+            writeError(socket, 404, QStringLiteral("clip not found"));
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/keyframes")) {
+            QJsonObject state;
+            QString error;
+            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            const QUrlQuery query(request.url);
+            const QString clipId = query.queryItemValue(QStringLiteral("id")).trimmed();
+            if (clipId.isEmpty()) {
+                writeError(socket, 400, QStringLiteral("missing id"));
+                return;
+            }
+            const QString type = query.queryItemValue(QStringLiteral("type")).trimmed().toLower();
+            const qint64 minFrame = query.queryItemValue(QStringLiteral("minFrame")).toLongLong();
+            const qint64 maxFrame = query.queryItemValue(QStringLiteral("maxFrame")).toLongLong();
+            const bool hasMin = query.hasQueryItem(QStringLiteral("minFrame"));
+            const bool hasMax = query.hasQueryItem(QStringLiteral("maxFrame"));
+
+            const QJsonArray timeline = state.value(QStringLiteral("timeline")).toArray();
+            for (const QJsonValue& value : timeline) {
+                const QJsonObject clip = value.toObject();
+                if (clip.value(QStringLiteral("id")).toString() != clipId) {
+                    continue;
+                }
+
+                const QString key = type == QStringLiteral("grading")
+                    ? QStringLiteral("gradingKeyframes")
+                    : (type == QStringLiteral("opacity")
+                           ? QStringLiteral("opacityKeyframes")
+                           : (type == QStringLiteral("title")
+                                  ? QStringLiteral("titleKeyframes")
+                                  : QStringLiteral("transformKeyframes")));
+                const QJsonArray keyframes = clip.value(key).toArray();
+                QJsonArray filtered;
+                for (const QJsonValue& keyframeValue : keyframes) {
+                    if (!keyframeValue.isObject()) {
+                        continue;
+                    }
+                    const QJsonObject keyframe = keyframeValue.toObject();
+                    const qint64 frame = keyframe.value(QStringLiteral("frame")).toInteger();
+                    if (hasMin && frame < minFrame) {
+                        continue;
+                    }
+                    if (hasMax && frame > maxFrame) {
+                        continue;
+                    }
+                    filtered.push_back(keyframe);
+                }
+
+                writeJson(socket, 200, QJsonObject{
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("id"), clipId},
+                    {QStringLiteral("type"), key},
+                    {QStringLiteral("count"), filtered.size()},
+                    {QStringLiteral("keyframes"), filtered}
+                });
+                return;
+            }
+
+            writeError(socket, 404, QStringLiteral("clip not found"));
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/project")) {
+            QJsonObject project;
+            QString error;
+            if (!fetchProjectSnapshot(kUiInvokeTimeoutMs, &project, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("project"), project}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/history")) {
+            QJsonObject history;
+            QString error;
+            if (!fetchHistorySnapshot(kUiInvokeTimeoutMs, &history, &error)) {
+                writeError(socket, 503, error);
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("history"), history}
             });
             return;
         }
@@ -820,6 +1104,9 @@ private:
 
     QPointer<QWidget> m_window;
     std::function<QJsonObject()> m_fastSnapshotCallback;
+    std::function<QJsonObject()> m_stateSnapshotCallback;
+    std::function<QJsonObject()> m_projectSnapshotCallback;
+    std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
     std::unique_ptr<QTcpServer> m_server;
@@ -836,12 +1123,18 @@ private:
 
 ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> fastSnapshotCallback,
+                             std::function<QJsonObject()> stateSnapshotCallback,
+                             std::function<QJsonObject()> projectSnapshotCallback,
+                             std::function<QJsonObject()> historySnapshotCallback,
                              std::function<QJsonObject()> profilingCallback,
                              std::function<void()> resetProfilingCallback,
                              QObject* parent)
     : QObject(parent)
     , m_window(window)
     , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
+    , m_stateSnapshotCallback(std::move(stateSnapshotCallback))
+    , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
+    , m_historySnapshotCallback(std::move(historySnapshotCallback))
     , m_profilingCallback(std::move(profilingCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback)) {}
 
@@ -866,7 +1159,13 @@ bool ControlServer::start(quint16 port) {
     }
 
     m_thread = std::make_unique<QThread>();
-    auto* worker = new ControlServerWorker(m_window, m_fastSnapshotCallback, m_profilingCallback, m_resetProfilingCallback);
+    auto* worker = new ControlServerWorker(m_window,
+                                           m_fastSnapshotCallback,
+                                           m_stateSnapshotCallback,
+                                           m_projectSnapshotCallback,
+                                           m_historySnapshotCallback,
+                                           m_profilingCallback,
+                                           m_resetProfilingCallback);
     m_worker = worker;
     worker->moveToThread(m_thread.get());
     connect(m_thread.get(), &QThread::finished, worker, &QObject::deleteLater);

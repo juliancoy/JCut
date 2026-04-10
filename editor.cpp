@@ -1,6 +1,7 @@
 #include "editor.h"
 #include "keyframe_table_shared.h"
 #include "clip_serialization.h"
+#include "transform_skip_aware_timing.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -241,6 +242,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool keyframesFollowCurrent = root.value(QStringLiteral("keyframesFollowCurrent")).toBool(true);
     const bool keyframesAutoScroll = root.value(QStringLiteral("keyframesAutoScroll")).toBool(true);
     const int selectedInspectorTab = root.value(QStringLiteral("selectedInspectorTab")).toInt(0);
+    const qreal playbackSpeed = qBound<qreal>(0.1, root.value(QStringLiteral("playbackSpeed")).toDouble(1.0), 1.0);
     const qreal timelineZoom = root.value(QStringLiteral("timelineZoom")).toDouble(4.0);
     const int timelineVerticalScroll = root.value(QStringLiteral("timelineVerticalScroll")).toInt(0);
     const int64_t exportStartFrame = root.value(QStringLiteral("exportStartFrame")).toVariant().toLongLong();
@@ -356,6 +358,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_inspectorTabs);
         m_inspectorTabs->setCurrentIndex(qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1));
     }
+    if (m_playbackSpeedCombo) {
+        QSignalBlocker block(m_playbackSpeedCombo);
+        const int speedIndex = m_playbackSpeedCombo->findData(playbackSpeed);
+        if (speedIndex >= 0) {
+            m_playbackSpeedCombo->setCurrentIndex(speedIndex);
+        }
+    }
+    setPlaybackSpeed(playbackSpeed);
     
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
@@ -376,19 +386,23 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_timeline->setRenderSyncMarkers(loadedRenderSyncMarkers);
     m_timeline->setSelectedClipId(selectedClipId);
     syncSliderRange();
+
+    const QVector<ExportRangeSegment> playbackRanges = effectivePlaybackRanges();
+    setTransformSkipAwareTimelineRanges(
+        speechFilterPlaybackEnabled() ? playbackRanges : QVector<ExportRangeSegment>{});
     
     m_preview->beginBulkUpdate();
     m_preview->setClipCount(m_timeline->clips().size());
     m_preview->setTimelineTracks(m_timeline->tracks());
     m_preview->setTimelineClips(m_timeline->clips());
-    m_preview->setExportRanges(effectivePlaybackRanges());
+    m_preview->setExportRanges(playbackRanges);
     m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
     m_preview->setSelectedClipId(selectedClipId);
     m_preview->endBulkUpdate();
     
     if (m_audioEngine) {
         m_audioEngine->setTimelineClips(m_timeline->clips());
-        m_audioEngine->setExportRanges(effectivePlaybackRanges());
+        m_audioEngine->setExportRanges(playbackRanges);
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
         m_audioEngine->seek(currentFrame);
@@ -495,6 +509,52 @@ int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
         if (currentFrame >= range.startFrame && currentFrame < range.endFrame) return currentFrame + 1;
     }
     return ranges.constFirst().startFrame;
+}
+
+int64_t EditorWindow::stepForwardFrame(int64_t currentFrame) const
+{
+    if (!m_timeline) return 0;
+    const int64_t totalFrames = m_timeline->totalFrames();
+    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+    if (ranges.isEmpty()) {
+        return qMin<int64_t>(totalFrames, currentFrame + 1);
+    }
+
+    for (const ExportRangeSegment& range : ranges) {
+        if (currentFrame < range.startFrame) {
+            return range.startFrame;
+        }
+        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
+            return currentFrame + 1;
+        }
+    }
+    return totalFrames;
+}
+
+int64_t EditorWindow::stepBackwardFrame(int64_t currentFrame) const
+{
+    if (!m_timeline) return 0;
+    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+    if (ranges.isEmpty()) {
+        return qMax<int64_t>(0, currentFrame - 1);
+    }
+
+    for (int i = ranges.size() - 1; i >= 0; --i) {
+        const ExportRangeSegment& range = ranges.at(i);
+        if (currentFrame > range.endFrame) {
+            return range.endFrame;
+        }
+        if (currentFrame > range.startFrame && currentFrame <= range.endFrame) {
+            return currentFrame - 1;
+        }
+        if (currentFrame == range.startFrame) {
+            if (i > 0) {
+                return ranges.at(i - 1).endFrame;
+            }
+            return 0;
+        }
+    }
+    return 0;
 }
 
 QString EditorWindow::clipLabelForId(const QString &clipId) const
@@ -1453,6 +1513,37 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
 void EditorWindow::setCurrentFrame(int64_t frame, bool syncAudio)
 {
     setCurrentPlaybackSample(frameToSamples(frame), syncAudio);
+}
+
+void EditorWindow::setPlaybackSpeed(qreal speed)
+{
+    const qreal clampedSpeed = qBound<qreal>(0.1, speed, 1.0);
+    if (qAbs(m_playbackSpeed - clampedSpeed) < 0.0001) {
+        return;
+    }
+
+    m_playbackSpeed = clampedSpeed;
+    updatePlaybackTimerInterval();
+
+    if (m_playbackSpeedCombo) {
+        const int speedIndex = m_playbackSpeedCombo->findData(clampedSpeed);
+        if (speedIndex >= 0 && speedIndex != m_playbackSpeedCombo->currentIndex()) {
+            QSignalBlocker blocker(m_playbackSpeedCombo);
+            m_playbackSpeedCombo->setCurrentIndex(speedIndex);
+        }
+    }
+
+    updateTransportLabels();
+    if (!m_loadingState) {
+        scheduleSaveState();
+    }
+}
+
+void EditorWindow::updatePlaybackTimerInterval()
+{
+    const qreal speed = qBound<qreal>(0.1, m_playbackSpeed, 1.0);
+    const int intervalMs = qMax(1, qRound(1000.0 / (static_cast<qreal>(kTimelineFps) * speed)));
+    m_playbackTimer.setInterval(intervalMs);
 }
 
 void EditorWindow::setPlaybackActive(bool playing)

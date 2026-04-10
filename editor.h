@@ -139,6 +139,8 @@ private:
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
+    int64_t stepForwardFrame(int64_t currentFrame) const;
+    int64_t stepBackwardFrame(int64_t currentFrame) const;
     QString clipLabelForId(const QString &clipId) const;
     QColor clipColorForId(const QString &clipId) const;
     bool parseSyncActionText(const QString &text, RenderSyncAction *actionOut) const;
@@ -160,6 +162,8 @@ private:
     QStringList availableHardwareDeviceTypes() const;
     void setCurrentPlaybackSample(int64_t samplePosition, bool syncAudio = true, bool duringPlayback = false);
     void setCurrentFrame(int64_t frame, bool syncAudio = true);
+    void setPlaybackSpeed(qreal speed);
+    void updatePlaybackTimerInterval();
     void setPlaybackActive(bool playing);
     void togglePlayback();
     bool playbackActive() const;
@@ -214,6 +218,7 @@ private:
     QPushButton *m_playButton = nullptr;
     QSlider *m_seekSlider = nullptr;
     QLabel *m_timecodeLabel = nullptr;
+    QComboBox *m_playbackSpeedCombo = nullptr;
 
     QToolButton *m_audioMuteButton = nullptr;
     QSlider *m_audioVolumeSlider = nullptr;
@@ -344,6 +349,7 @@ private:
     QPushButton *m_flipHorizontalButton = nullptr;
     QPushButton *m_renderButton = nullptr;
     QString m_lastRenderOutputPath;
+    QString m_lastAutoTranscriptSwitchClipId;
 
     std::unique_ptr<ControlServer> m_controlServer;
     std::unique_ptr<AudioEngine> m_audioEngine;
@@ -375,6 +381,7 @@ private:
     QColor m_backgroundColor = QColor(Qt::black);
     int64_t m_absolutePlaybackSample = 0;
     int64_t m_filteredPlaybackSample = 0;
+    qreal m_playbackSpeed = 1.0;
     QTimer m_transcriptClickSeekTimer;
     int64_t m_pendingTranscriptClickTimelineFrame = -1;
     QTimer m_keyframeClickSeekTimer;

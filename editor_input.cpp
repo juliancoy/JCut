@@ -1,7 +1,10 @@
 #include "editor.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QEvent>
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QTableWidget>
 
 using namespace editor;
@@ -72,6 +75,14 @@ bool EditorWindow::handleOpacityKeyframeTableDelete(QObject *watched, QEvent *ev
 
 bool EditorWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_timecodeLabel && watched == m_timecodeLabel && event->type() == QEvent::MouseButtonRelease) {
+        auto *mouseEvent = static_cast<QMouseEvent *>(event);
+        if (mouseEvent->button() == Qt::LeftButton) {
+            const int64_t currentFrame = m_timeline ? m_timeline->currentFrame() : 0;
+            QApplication::clipboard()->setText(QString::number(currentFrame));
+            return true;
+        }
+    }
     if (handleTranscriptTableDelete(watched, event)) return true;
     if (handleVideoKeyframeTableDelete(watched, event)) return true;
     if (handleGradingKeyframeTableDelete(watched, event)) return true;

@@ -1,6 +1,7 @@
 #include "editor.h"
 #include "titles.h"
 
+#include <QFileInfo>
 #include <QStyle>
 #include <QToolButton>
 
@@ -14,6 +15,12 @@ void EditorWindow::bindEditorPaneWidgets(EditorPane *pane)
     m_playButton = pane->playButton();
     m_seekSlider = pane->seekSlider();
     m_timecodeLabel = pane->timecodeLabel();
+    if (m_timecodeLabel) {
+        m_timecodeLabel->setCursor(Qt::PointingHandCursor);
+        m_timecodeLabel->setToolTip(QStringLiteral("Click to copy current frame number"));
+        m_timecodeLabel->installEventFilter(this);
+    }
+    m_playbackSpeedCombo = pane->playbackSpeedCombo();
     m_audioMuteButton = pane->audioMuteButton();
     m_audioVolumeSlider = pane->audioVolumeSlider();
     m_audioNowPlayingLabel = pane->audioNowPlayingLabel();
@@ -25,12 +32,23 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
 {
     connect(pane, &EditorPane::playClicked, this, [this]() { togglePlayback(); });
     connect(pane, &EditorPane::startClicked, this, [this]() { setCurrentFrame(0); });
+    connect(pane, &EditorPane::prevFrameClicked, this, [this]() {
+        if (!m_timeline) return;
+        setCurrentFrame(stepBackwardFrame(m_timeline->currentFrame()));
+    });
+    connect(pane, &EditorPane::nextFrameClicked, this, [this]() {
+        if (!m_timeline) return;
+        setCurrentFrame(stepForwardFrame(m_timeline->currentFrame()));
+    });
     connect(pane, &EditorPane::endClicked, this, [this]() {
         setCurrentFrame(m_timeline ? m_timeline->totalFrames() : 0);
     });
     connect(pane, &EditorPane::seekValueChanged, this, [this](int value) {
         if (m_ignoreSeekSignal) return;
         setCurrentFrame(value);
+    });
+    connect(pane, &EditorPane::playbackSpeedChanged, this, [this](double speed) {
+        setPlaybackSpeed(speed);
     });
     connect(pane, &EditorPane::audioMuteClicked, this, [this]() {
         const bool nextMuted = !m_preview->audioMuted();
@@ -76,10 +94,26 @@ void EditorWindow::connectTimelineSignals()
         pushHistorySnapshot();
     };
     m_timeline->selectionChanged = [this]() {
+        const TimelineClip* selectedClip = m_timeline ? m_timeline->selectedClip() : nullptr;
+        const QString selectedClipId = selectedClip ? selectedClip->id : QString();
+        const bool selectionChanged = selectedClipId != m_lastAutoTranscriptSwitchClipId;
+        m_lastAutoTranscriptSwitchClipId = selectedClipId;
+
         m_preview->setSelectedClipId(m_timeline->selectedClipId());
         refreshSyncInspector();
         m_transcriptTab->refresh();
         refreshClipInspector();
+        if (selectionChanged && selectedClip && !selectedClip->filePath.isEmpty()) {
+            const QString transcriptPath = transcriptWorkingPathForClipFile(selectedClip->filePath);
+            if (QFileInfo::exists(transcriptPath) && m_inspectorTabs) {
+                for (int i = 0; i < m_inspectorTabs->count(); ++i) {
+                    if (m_inspectorTabs->tabText(i) == QStringLiteral("Transcript")) {
+                        m_inspectorTabs->setCurrentIndex(i);
+                        break;
+                    }
+                }
+            }
+        }
         m_outputTab->refresh();
         m_profileTab->refresh();
         m_gradingTab->refresh();

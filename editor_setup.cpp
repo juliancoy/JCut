@@ -75,7 +75,7 @@ void EditorWindow::setupPlaybackTimers()
 {
     connect(&m_playbackTimer, &QTimer::timeout, this, &EditorWindow::advanceFrame);
     m_playbackTimer.setTimerType(Qt::PreciseTimer);
-    m_playbackTimer.setInterval(16);
+    updatePlaybackTimerInterval();
 }
 
 void EditorWindow::setupShortcuts()
@@ -196,6 +196,27 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
                 {QStringLiteral("main_thread_heartbeat_age_ms"), heartbeatMs > 0 ? now - heartbeatMs : -1},
                 {QStringLiteral("last_playhead_advance_ms"), playheadMs},
                 {QStringLiteral("last_playhead_advance_age_ms"), playheadMs > 0 ? now - playheadMs : -1}};
+        },
+        [this]() {
+            return buildStateJson();
+        },
+        [this]() {
+            const QString projectId = currentProjectIdOrDefault();
+            return QJsonObject{
+                {QStringLiteral("currentProjectId"), projectId},
+                {QStringLiteral("currentProjectName"), currentProjectName()},
+                {QStringLiteral("projectPath"), projectPath(projectId)},
+                {QStringLiteral("stateFilePath"), stateFilePath()},
+                {QStringLiteral("historyFilePath"), historyFilePath()},
+                {QStringLiteral("projectsDirPath"), projectsDirPath()},
+                {QStringLiteral("rootDirPath"), rootDirPath()}
+            };
+        },
+        [this]() {
+            return QJsonObject{
+                {QStringLiteral("index"), m_historyIndex},
+                {QStringLiteral("entries"), m_historyEntries}
+            };
         },
         [this]() { return profilingSnapshot(); },
         [this]() { if (m_preview) m_preview->resetProfilingStats(); },

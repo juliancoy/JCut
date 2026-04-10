@@ -17,6 +17,9 @@ public:
     explicit ControlServer(
         QWidget* window,
         std::function<QJsonObject()> fastSnapshotCallback = {},
+        std::function<QJsonObject()> stateSnapshotCallback = {},
+        std::function<QJsonObject()> projectSnapshotCallback = {},
+        std::function<QJsonObject()> historySnapshotCallback = {},
         std::function<QJsonObject()> profilingCallback = {},
         std::function<void()> resetProfilingCallback = {},
         QObject* parent = nullptr);
@@ -32,6 +35,9 @@ private:
 
     QWidget* m_window = nullptr;
     std::function<QJsonObject()> m_fastSnapshotCallback;
+    std::function<QJsonObject()> m_stateSnapshotCallback;
+    std::function<QJsonObject()> m_projectSnapshotCallback;
+    std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
     std::unique_ptr<QThread> m_thread;
