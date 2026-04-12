@@ -254,14 +254,49 @@ void TimelineWidget::selectClipWithModifiers(const QString& clipId, Qt::Keyboard
         return;
     }
 
+    const TimelineClip* clickedClip = nullptr;
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.id == clipId) {
+            clickedClip = &clip;
+            break;
+        }
+    }
+    if (!clickedClip) {
+        return;
+    }
+
     QSet<QString> nextSelection = m_clipSelection.ids;
-    if (togglePressed && nextSelection.contains(clipId)) {
+    if (!shiftPressed && togglePressed && nextSelection.contains(clipId)) {
         nextSelection.remove(clipId);
         applyClipSelection(nextSelection, QString());
         return;
     }
 
     nextSelection.insert(clipId);
+
+    if (shiftPressed) {
+        const int targetTrack = clickedClip->trackIndex;
+        const int64_t clickedStartFrame = clickedClip->startFrame;
+        for (const TimelineClip& selectedClip : m_clips) {
+            if (!m_clipSelection.ids.contains(selectedClip.id) || selectedClip.id == clipId) {
+                continue;
+            }
+            if (selectedClip.trackIndex != targetTrack) {
+                continue;
+            }
+            const int64_t rangeStart = qMin(clickedStartFrame, selectedClip.startFrame);
+            const int64_t rangeEnd = qMax(clickedStartFrame, selectedClip.startFrame);
+            for (const TimelineClip& candidate : m_clips) {
+                if (candidate.trackIndex != targetTrack) {
+                    continue;
+                }
+                if (candidate.startFrame >= rangeStart && candidate.startFrame <= rangeEnd) {
+                    nextSelection.insert(candidate.id);
+                }
+            }
+        }
+    }
+
     applyClipSelection(nextSelection, clipId);
 }
 

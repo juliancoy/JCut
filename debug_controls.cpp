@@ -49,6 +49,7 @@ std::atomic<int> g_debugVisibleQueueReserve{kDefaultVisibleQueueReserve};
 std::atomic<int> g_debugPlaybackWindowAhead{kDefaultPlaybackWindowAhead};
 std::atomic<int> g_decodePreference{static_cast<int>(kDefaultDecodePreference)};
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
+std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
 
 }
 
@@ -238,6 +239,10 @@ bool debugPlayheadNoRepaint() {
     return g_debugPlayheadNoRepaint.load();
 }
 
+bool debugPlaybackCacheFallbackEnabled() {
+    return g_debugPlaybackCacheFallbackEnabled.load();
+}
+
 void setDebugPlaybackEnabled(bool enabled) {
     g_debugPlayback.store(static_cast<int>(enabled ? DebugLogLevel::Debug : DebugLogLevel::Off));
 }
@@ -302,6 +307,10 @@ void setDebugPlayheadNoRepaint(bool enabled) {
     g_debugPlayheadNoRepaint.store(enabled);
 }
 
+void setDebugPlaybackCacheFallbackEnabled(bool enabled) {
+    g_debugPlaybackCacheFallbackEnabled.store(enabled);
+}
+
 QJsonObject debugControlsSnapshot() {
     return QJsonObject{
         {QStringLiteral("playback"), debugPlaybackEnabled()},
@@ -319,7 +328,8 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("visible_queue_reserve"), debugVisibleQueueReserve()},
         {QStringLiteral("playback_window_ahead"), debugPlaybackWindowAhead()},
         {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())},
-        {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()}
+        {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()},
+        {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()}
     };
 }
 
@@ -410,6 +420,10 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
     }
     if (name == QStringLiteral("playhead_no_repaint") && value.isBool()) {
         setDebugPlayheadNoRepaint(value.toBool());
+        return true;
+    }
+    if (name == QStringLiteral("playback_cache_fallback") && value.isBool()) {
+        setDebugPlaybackCacheFallbackEnabled(value.toBool());
         return true;
     }
     return false;

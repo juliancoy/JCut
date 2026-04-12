@@ -1,5 +1,6 @@
 #include "preview.h"
 #include "preview_debug.h"
+#include "debug_controls.h"
 #include "titles.h"
 
 #include <QJsonArray>
@@ -258,13 +259,22 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                 selection = QStringLiteral("presentation");
             }
         } else {
-            frame = exactFrame.isNull() && m_cache
-                        ? (usePlaybackBuffer
-                               ? m_cache->getLatestPlaybackFrame(clip.id, localFrame)
-                               : (m_playing
-                                      ? m_cache->getLatestCachedFrame(clip.id, localFrame)
-                                      : m_cache->getBestCachedFrame(clip.id, localFrame)))
-                        : exactFrame;
+            frame = exactFrame;
+            if (frame.isNull() && m_cache) {
+                if (usePlaybackBuffer) {
+                    frame = m_cache->getLatestPlaybackFrame(clip.id, localFrame);
+                    if (frame.isNull() && editor::debugPlaybackCacheFallbackEnabled()) {
+                        const FrameHandle cacheExact = m_cache->getCachedFrame(clip.id, localFrame);
+                        frame = !cacheExact.isNull()
+                                    ? cacheExact
+                                    : m_cache->getLatestCachedFrame(clip.id, localFrame);
+                    }
+                } else {
+                    frame = m_playing
+                                ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                                : m_cache->getBestCachedFrame(clip.id, localFrame);
+                }
+            }
             if (!frame.isNull()) {
                 if (!exactFrame.isNull() && frame == exactFrame) {
                     ++exactCount;

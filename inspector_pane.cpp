@@ -1,5 +1,6 @@
 #include "inspector_pane.h"
 #include "editor_shared.h"
+#include "debug_controls.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -893,12 +894,53 @@ QWidget *InspectorPane::buildPreviewTab()
     zoomHelpLabel->setWordWrap(true);
     zoomHelpLabel->setStyleSheet(QStringLiteral("color: #6b7a8f; font-size: 11px;"));
 
+    auto *bufferingSectionLabel = new QLabel(QStringLiteral("Playback Buffering"), page);
+    bufferingSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
+
+    m_previewPlaybackCacheFallbackCheckBox =
+        new QCheckBox(QStringLiteral("Allow Cached-Frame Fallback During Playback"), page);
+    m_previewPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
+    m_previewPlaybackCacheFallbackCheckBox->setToolTip(
+        QStringLiteral("When playback buffers miss, reuse timeline cache frames so still images remain visible."));
+
+    m_previewLeadPrefetchEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Lead Prefetch"), page);
+    m_previewLeadPrefetchEnabledCheckBox->setChecked(editor::debugLeadPrefetchEnabled());
+    m_previewLeadPrefetchEnabledCheckBox->setToolTip(
+        QStringLiteral("Prefetch frames ahead of playhead to reduce visible misses while playing."));
+
+    auto *bufferingForm = new QFormLayout();
+    m_previewLeadPrefetchCountSpin = new QSpinBox(page);
+    m_previewLeadPrefetchCountSpin->setRange(0, 8);
+    m_previewLeadPrefetchCountSpin->setValue(editor::debugLeadPrefetchCount());
+    m_previewLeadPrefetchCountSpin->setToolTip(
+        QStringLiteral("How many lead-prefetch requests to schedule (0-8)."));
+    bufferingForm->addRow(QStringLiteral("Lead Prefetch Count"), m_previewLeadPrefetchCountSpin);
+
+    m_previewPlaybackWindowAheadSpin = new QSpinBox(page);
+    m_previewPlaybackWindowAheadSpin->setRange(1, 24);
+    m_previewPlaybackWindowAheadSpin->setValue(editor::debugPlaybackWindowAhead());
+    m_previewPlaybackWindowAheadSpin->setToolTip(
+        QStringLiteral("Decode window ahead of playhead for playback pipeline clips (1-24)."));
+    bufferingForm->addRow(QStringLiteral("Playback Window Ahead"), m_previewPlaybackWindowAheadSpin);
+
+    m_previewVisibleQueueReserveSpin = new QSpinBox(page);
+    m_previewVisibleQueueReserveSpin->setRange(0, 64);
+    m_previewVisibleQueueReserveSpin->setValue(editor::debugVisibleQueueReserve());
+    m_previewVisibleQueueReserveSpin->setToolTip(
+        QStringLiteral("Reserved visible-request budget before aggressive prefetch throttling (0-64)."));
+    bufferingForm->addRow(QStringLiteral("Visible Queue Reserve"), m_previewVisibleQueueReserveSpin);
+
     layout->addWidget(summary);
     layout->addWidget(m_previewHideOutsideOutputCheckBox);
     layout->addSpacing(12);
     layout->addWidget(zoomSectionLabel);
     layout->addLayout(zoomLayout);
     layout->addWidget(zoomHelpLabel);
+    layout->addSpacing(12);
+    layout->addWidget(bufferingSectionLabel);
+    layout->addWidget(m_previewPlaybackCacheFallbackCheckBox);
+    layout->addWidget(m_previewLeadPrefetchEnabledCheckBox);
+    layout->addLayout(bufferingForm);
     layout->addStretch(1);
     return page;
 }

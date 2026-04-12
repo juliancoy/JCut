@@ -1,6 +1,7 @@
 // project_state.cpp
 #include "editor.h"
 #include "clip_serialization.h"
+#include "debug_controls.h"
 
 #include <QDir>
 #include <QFile>
@@ -474,6 +475,11 @@ QJsonObject EditorWindow::buildStateJson() const
         m_renderUseProxiesCheckBox ? m_renderUseProxiesCheckBox->isChecked() : false;
     root[QStringLiteral("previewHideOutsideOutput")] =
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
+    root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
+    root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
+    root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();
+    root[QStringLiteral("previewPlaybackWindowAhead")] = editor::debugPlaybackWindowAhead();
+    root[QStringLiteral("previewVisibleQueueReserve")] = editor::debugVisibleQueueReserve();
     root[QStringLiteral("speechFilterEnabled")] =
         m_speechFilterEnabledCheckBox ? m_speechFilterEnabledCheckBox->isChecked() : false;
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;

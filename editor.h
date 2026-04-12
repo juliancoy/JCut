@@ -272,6 +272,11 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
+    QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;
+    QCheckBox *m_previewLeadPrefetchEnabledCheckBox = nullptr;
+    QSpinBox *m_previewLeadPrefetchCountSpin = nullptr;
+    QSpinBox *m_previewPlaybackWindowAheadSpin = nullptr;
+    QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
 

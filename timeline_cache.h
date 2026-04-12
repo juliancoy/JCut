@@ -145,6 +145,10 @@ public:
     FrameHandle getLatestPlaybackFrame(const QString& clipId, int64_t frameNumber);
     bool isFrameCached(const QString& clipId, int64_t frameNumber) const;
     bool isPlaybackFrameBuffered(const QString& clipId, int64_t frameNumber) const;
+    bool hasDisplayableFrameForPreview(const QString& clipId,
+                                       int64_t frameNumber,
+                                       bool preferPlaybackBuffer,
+                                       bool allowCacheFallback);
     
     // Preload control
     void startPrefetching();

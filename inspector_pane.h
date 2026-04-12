@@ -142,6 +142,11 @@ public:
     QCheckBox *previewHideOutsideOutputCheckBox() const { return m_previewHideOutsideOutputCheckBox; }
     QDoubleSpinBox *previewZoomSpin() const { return m_previewZoomSpin; }
     QPushButton *previewZoomResetButton() const { return m_previewZoomResetButton; }
+    QCheckBox *previewPlaybackCacheFallbackCheckBox() const { return m_previewPlaybackCacheFallbackCheckBox; }
+    QCheckBox *previewLeadPrefetchEnabledCheckBox() const { return m_previewLeadPrefetchEnabledCheckBox; }
+    QSpinBox *previewLeadPrefetchCountSpin() const { return m_previewLeadPrefetchCountSpin; }
+    QSpinBox *previewPlaybackWindowAheadSpin() const { return m_previewPlaybackWindowAheadSpin; }
+    QSpinBox *previewVisibleQueueReserveSpin() const { return m_previewVisibleQueueReserveSpin; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
     QTableWidget *clipsTable() const { return m_clipsTable; }
     QTableWidget *tracksTable() const { return m_tracksTable; }
@@ -294,6 +299,11 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
+    QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;
+    QCheckBox *m_previewLeadPrefetchEnabledCheckBox = nullptr;
+    QSpinBox *m_previewLeadPrefetchCountSpin = nullptr;
+    QSpinBox *m_previewPlaybackWindowAheadSpin = nullptr;
+    QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QTableWidget *m_clipsTable = nullptr;
     QTableWidget *m_tracksTable = nullptr;

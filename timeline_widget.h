@@ -272,6 +272,9 @@ private:
     int64_t m_dragOriginalSourceInFrame = 0;
     QVector<TimelineClip::TransformKeyframe> m_dragOriginalTransformKeyframes;
     int64_t m_dragOffsetFrames = 0;
+    QSet<QString> m_dragMoveClipIds;
+    QHash<QString, int64_t> m_dragMoveOriginalStartFrames;
+    bool m_dragLockedTrackOnly = false;
     int m_draggedTrackIndex = -1;
     int m_trackDropIndex = -1;
     bool m_trackDropInGap = false;

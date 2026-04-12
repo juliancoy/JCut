@@ -7,6 +7,7 @@
 #include "memory_budget.h"
 #include "playback_frame_pipeline.h"
 #include "timeline_cache.h"
+#include "debug_controls.h"
 
 using namespace editor;
 
@@ -30,8 +31,13 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
             m_playing &&
             clip.sourceKind == MediaSourceKind::ImageSequence &&
             clip.mediaType != ClipMediaType::Image;
-        const bool ready = usePlaybackPipeline ? m_playbackPipeline->isFrameBuffered(clip.id, localFrame)
-                                               : m_cache->isFrameCached(clip.id, localFrame);
+        const bool ready = usePlaybackPipeline
+                               ? m_playbackPipeline->isFrameBuffered(clip.id, localFrame)
+                               : m_cache->hasDisplayableFrameForPreview(
+                                     clip.id,
+                                     localFrame,
+                                     m_playing,
+                                     editor::debugPlaybackCacheFallbackEnabled());
         if (ready) continue;
         if (!m_playing && m_cache->isVisibleRequestPending(clip.id, localFrame)) continue;
 
@@ -139,9 +145,14 @@ void PreviewWindow::requestFramesForCurrentPosition() {
             m_playing &&
             clip->sourceKind == MediaSourceKind::ImageSequence &&
             clip->mediaType != ClipMediaType::Image;
+        const bool usePlaybackBuffer = m_playing && !usePlaybackPipeline;
         const bool cached = usePlaybackPipeline
                                 ? m_playbackPipeline->isFrameBuffered(clip->id, localFrame)
-                                : m_cache->isFrameCached(clip->id, localFrame);
+                                : m_cache->hasDisplayableFrameForPreview(
+                                      clip->id,
+                                      localFrame,
+                                      usePlaybackBuffer,
+                                      editor::debugPlaybackCacheFallbackEnabled());
         const bool pending = usePlaybackPipeline
                                  ? m_playbackPipeline->pendingVisibleRequestCount() >= kMaxVisibleBacklog
                                  : m_cache->isVisibleRequestPending(clip->id, localFrame);

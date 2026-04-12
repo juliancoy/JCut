@@ -1,10 +1,97 @@
-Start testing: Apr 09 01:37 EDT
+Start testing: Apr 11 21:43 EDT
 ----------------------------------------------------------
-6/6 Testing: test_visual_effects_parity
-6/6 Test: test_visual_effects_parity
+2/7 Testing: test_memory_budget
+2/7 Test: test_memory_budget
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_memory_budget"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_memory_budget" start time: Apr 11 21:43 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestMemoryBudget *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestMemoryBudget::initTestCase()
+PASS   : TestMemoryBudget::testInitialState()
+PASS   : TestMemoryBudget::testAllocation()
+PASS   : TestMemoryBudget::testDeallocation()
+PASS   : TestMemoryBudget::testPressureCalculation()
+PASS   : TestMemoryBudget::testPriorityAllocation()
+PASS   : TestMemoryBudget::testTrimCallback()
+PASS   : TestMemoryBudget::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 2ms
+********* Finished testing of TestMemoryBudget *********
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"test_memory_budget" end time: Apr 11 21:43 EDT
+"test_memory_budget" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/7 Testing: test_timeline_cache
+4/7 Test: test_timeline_cache
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_timeline_cache"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_timeline_cache" start time: Apr 11 21:43 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestTimelineCache *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestTimelineCache::initTestCase()
+PASS   : TestTimelineCache::testInitialization()
+[AVHWDeviceContext @ 0x579a17d957c0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestTimelineCache::testClipRegistration() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestTimelineCache::testClipRegistration() AsyncDecoder initialized with 6 workers
+PASS   : TestTimelineCache::testClipRegistration()
+PASS   : TestTimelineCache::testPlayheadTracking()
+[AVHWDeviceContext @ 0x579a17dc3ac0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestTimelineCache::testCacheHitMiss() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestTimelineCache::testCacheHitMiss() AsyncDecoder initialized with 6 workers
+QWARN  : TestTimelineCache::testCacheHitMiss() Failed to open input: "/tmp/test.mp4" "No such file or directory"
+PASS   : TestTimelineCache::testCacheHitMiss()
+PASS   : TestTimelineCache::testPlaybackState()
+PASS   : TestTimelineCache::cleanupTestCase()
+Totals: 7 passed, 0 failed, 0 skipped, 0 blacklisted, 11ms
+********* Finished testing of TestTimelineCache *********
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"test_timeline_cache" end time: Apr 11 21:43 EDT
+"test_timeline_cache" time elapsed: 00:00:00
+----------------------------------------------------------
+
+1/7 Testing: test_frame_handle
+1/7 Test: test_frame_handle
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_frame_handle"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_frame_handle" start time: Apr 11 21:43 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestFrameHandle *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestFrameHandle::initTestCase()
+PASS   : TestFrameHandle::testDefaultConstruction()
+PASS   : TestFrameHandle::testNullFrame()
+PASS   : TestFrameHandle::testCpuFrameCreation()
+PASS   : TestFrameHandle::testFrameComparison()
+PASS   : TestFrameHandle::testMemoryUsage()
+PASS   : TestFrameHandle::testSharedData()
+PASS   : TestFrameHandle::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 0ms
+********* Finished testing of TestFrameHandle *********
+<end of output>
+Test time =   0.05 sec
+----------------------------------------------------------
+Test Passed.
+"test_frame_handle" end time: Apr 11 21:43 EDT
+"test_frame_handle" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/7 Testing: test_visual_effects_parity
+6/7 Test: test_visual_effects_parity
 Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_visual_effects_parity"
 Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
-"test_visual_effects_parity" start time: Apr 09 01:37 EDT
+"test_visual_effects_parity" start time: Apr 11 21:43 EDT
 Output:
 ----------------------------------------------------------
 ********* Start testing of TestVisualEffectsParity *********
@@ -16,11 +103,130 @@ PASS   : TestVisualEffectsParity::cleanupTestCase()
 Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 2ms
 ********* Finished testing of TestVisualEffectsParity *********
 <end of output>
-Test time =   0.04 sec
+Test time =   0.05 sec
 ----------------------------------------------------------
 Test Passed.
-"test_visual_effects_parity" end time: Apr 09 01:37 EDT
+"test_visual_effects_parity" end time: Apr 11 21:43 EDT
 "test_visual_effects_parity" time elapsed: 00:00:00
 ----------------------------------------------------------
 
-End testing: Apr 09 01:37 EDT
+7/7 Testing: test_transform_skip_aware_timing
+7/7 Test: test_transform_skip_aware_timing
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_transform_skip_aware_timing"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_transform_skip_aware_timing" start time: Apr 11 21:43 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestTransformSkipAwareTiming *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestTransformSkipAwareTiming::initTestCase()
+PASS   : TestTransformSkipAwareTiming::testInterpolationFactorContinuousAcrossSkippedGap()
+PASS   : TestTransformSkipAwareTiming::testInterpolationFactorUsesGlobalSpeechFilterRanges()
+PASS   : TestTransformSkipAwareTiming::cleanupTestCase()
+Totals: 4 passed, 0 failed, 0 skipped, 0 blacklisted, 1ms
+********* Finished testing of TestTransformSkipAwareTiming *********
+<end of output>
+Test time =   0.04 sec
+----------------------------------------------------------
+Test Passed.
+"test_transform_skip_aware_timing" end time: Apr 11 21:43 EDT
+"test_transform_skip_aware_timing" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/7 Testing: test_async_decoder
+3/7 Test: test_async_decoder
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_async_decoder"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_async_decoder" start time: Apr 11 21:43 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestAsyncDecoder *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestAsyncDecoder::initTestCase()
+[AVHWDeviceContext @ 0x59dbe0fb01c0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestAsyncDecoder::testInitialization() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestAsyncDecoder::testInitialization() AsyncDecoder initialized with 6 workers
+PASS   : TestAsyncDecoder::testInitialization()
+[AVHWDeviceContext @ 0x59dbe0fe1080] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestAsyncDecoder::testVideoInfo() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestAsyncDecoder::testVideoInfo() AsyncDecoder initialized with 6 workers
+QWARN  : TestAsyncDecoder::testVideoInfo() Failed to open input: "/nonexistent/file.mp4" "No such file or directory"
+PASS   : TestAsyncDecoder::testVideoInfo()
+[AVHWDeviceContext @ 0x59dbe0fde140] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestAsyncDecoder::testInvalidFile() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestAsyncDecoder::testInvalidFile() AsyncDecoder initialized with 6 workers
+QWARN  : TestAsyncDecoder::testInvalidFile() Failed to open input: "/nonexistent/file.mp4" "No such file or directory"
+PASS   : TestAsyncDecoder::testInvalidFile()
+[AVHWDeviceContext @ 0x59dbe0fb01c0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestAsyncDecoder::testRequestFrame() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestAsyncDecoder::testRequestFrame() AsyncDecoder initialized with 6 workers
+QWARN  : TestAsyncDecoder::testRequestFrame() Failed to open input: "/tmp/test.mp4" "No such file or directory"
+PASS   : TestAsyncDecoder::testRequestFrame()
+[AVHWDeviceContext @ 0x59dbe0fe9ec0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestAsyncDecoder::testCancelRequests() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestAsyncDecoder::testCancelRequests() AsyncDecoder initialized with 6 workers
+QWARN  : TestAsyncDecoder::testCancelRequests() Failed to open input: "/tmp/test.mp4" "No such file or directory"
+PASS   : TestAsyncDecoder::testCancelRequests()
+[AVHWDeviceContext @ 0x59dbe0fe8ec0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestAsyncDecoder::testMultipleRequests() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestAsyncDecoder::testMultipleRequests() AsyncDecoder initialized with 6 workers
+QWARN  : TestAsyncDecoder::testMultipleRequests() Failed to open input: "/tmp/test1.mp4" "No such file or directory"
+QWARN  : TestAsyncDecoder::testMultipleRequests() Failed to open input: "/tmp/test2.mp4" "No such file or directory"
+QWARN  : TestAsyncDecoder::testMultipleRequests() Failed to open input: "/tmp/test3.mp4" "No such file or directory"
+PASS   : TestAsyncDecoder::testMultipleRequests()
+PASS   : TestAsyncDecoder::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 1054ms
+********* Finished testing of TestAsyncDecoder *********
+<end of output>
+Test time =   1.11 sec
+----------------------------------------------------------
+Test Passed.
+"test_async_decoder" end time: Apr 11 21:43 EDT
+"test_async_decoder" time elapsed: 00:00:01
+----------------------------------------------------------
+
+5/7 Testing: test_integration
+5/7 Test: test_integration
+Command: "/mnt/Cancer/PanelVid2TikTok/editor/tests/test_integration"
+Directory: /mnt/Cancer/PanelVid2TikTok/editor/tests
+"test_integration" start time: Apr 11 21:43 EDT
+Output:
+----------------------------------------------------------
+********* Start testing of TestIntegration *********
+Config: Using QtTest library 6.4.2, Qt 6.4.2 (x86_64-little_endian-lp64 shared (dynamic) release build; by GCC 13.2.0), ubuntu 24.04
+PASS   : TestIntegration::initTestCase()
+PASS   : TestIntegration::testVideoGeneration()
+[AVHWDeviceContext @ 0x600555e42f40] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestIntegration::testDecodeRealVideo() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestIntegration::testDecodeRealVideo() AsyncDecoder initialized with 6 workers
+QDEBUG : TestIntegration::testDecodeRealVideo() Decoder path for "/tmp/test_integration-zBgDLF/test_video.mp4" : software
+QDEBUG : TestIntegration::testDecodeRealVideo() Decoder path for "/tmp/test_integration-zBgDLF/test_video.mp4" : software
+PASS   : TestIntegration::testDecodeRealVideo()
+PASS   : TestIntegration::testMemoryBudgetUnderLoad()
+[AVHWDeviceContext @ 0x600555e6e2c0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestIntegration::testConcurrentDecodes() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestIntegration::testConcurrentDecodes() AsyncDecoder initialized with 6 workers
+QDEBUG : TestIntegration::testConcurrentDecodes() Decoder path for "/tmp/test_integration-zBgDLF/test_video.mp4" : software
+PASS   : TestIntegration::testConcurrentDecodes()
+[AVHWDeviceContext @ 0x600555e9a6c0] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestIntegration::testScrubbingPerformance() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestIntegration::testScrubbingPerformance() AsyncDecoder initialized with 6 workers
+QDEBUG : TestIntegration::testScrubbingPerformance() Decoder path for "/tmp/test_integration-zBgDLF/test_video.mp4" : software
+PASS   : TestIntegration::testScrubbingPerformance()
+[AVHWDeviceContext @ 0x600555e5fa80] cu->cuInit(0) failed -> CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected
+QDEBUG : TestIntegration::testLongVideoSeeking() AsyncDecoder: shared hw device unavailable for type 2 — worker threads will use software decode
+QDEBUG : TestIntegration::testLongVideoSeeking() AsyncDecoder initialized with 6 workers
+QDEBUG : TestIntegration::testLongVideoSeeking() Decoder path for "/tmp/test_integration-zBgDLF/long_video.mp4" : software
+PASS   : TestIntegration::testLongVideoSeeking()
+PASS   : TestIntegration::cleanupTestCase()
+Totals: 8 passed, 0 failed, 0 skipped, 0 blacklisted, 2642ms
+********* Finished testing of TestIntegration *********
+<end of output>
+Test time =   2.69 sec
+----------------------------------------------------------
+Test Passed.
+"test_integration" end time: Apr 11 21:43 EDT
+"test_integration" time elapsed: 00:00:02
+----------------------------------------------------------
+
+End testing: Apr 11 21:43 EDT

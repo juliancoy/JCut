@@ -10,6 +10,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 
+#include "debug_controls.h"
 #include "transform_skip_aware_timing.h"
 
 using namespace editor;
@@ -43,6 +44,11 @@ void EditorWindow::bindInspectorWidgets()
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
+    m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
+    m_previewLeadPrefetchEnabledCheckBox = m_inspectorPane->previewLeadPrefetchEnabledCheckBox();
+    m_previewLeadPrefetchCountSpin = m_inspectorPane->previewLeadPrefetchCountSpin();
+    m_previewPlaybackWindowAheadSpin = m_inspectorPane->previewPlaybackWindowAheadSpin();
+    m_previewVisibleQueueReserveSpin = m_inspectorPane->previewVisibleQueueReserveSpin();
     m_transcriptOverlayEnabledCheckBox = m_inspectorPane->transcriptOverlayEnabledCheckBox();
     m_transcriptMaxLinesSpin = m_inspectorPane->transcriptMaxLinesSpin();
     m_transcriptMaxCharsSpin = m_inspectorPane->transcriptMaxCharsSpin();
@@ -313,6 +319,10 @@ void EditorWindow::setupTrackInspectorControls()
 
 void EditorWindow::setupPreviewControls()
 {
+    const auto persistPreviewBufferingSettings = [this]() {
+        scheduleSaveState();
+    };
+
     connect(m_previewHideOutsideOutputCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
         if (m_preview) {
             m_preview->setHideOutsideOutputWindow(checked);
@@ -342,6 +352,48 @@ void EditorWindow::setupPreviewControls()
             }
             scheduleSaveState();
         });
+    }
+
+    if (m_previewPlaybackCacheFallbackCheckBox) {
+        connect(m_previewPlaybackCacheFallbackCheckBox, &QCheckBox::toggled, this, [persistPreviewBufferingSettings](bool checked) {
+            editor::setDebugPlaybackCacheFallbackEnabled(checked);
+            persistPreviewBufferingSettings();
+        });
+    }
+
+    if (m_previewLeadPrefetchEnabledCheckBox) {
+        connect(m_previewLeadPrefetchEnabledCheckBox, &QCheckBox::toggled, this, [this, persistPreviewBufferingSettings](bool checked) {
+            editor::setDebugLeadPrefetchEnabled(checked);
+            if (m_previewLeadPrefetchCountSpin) {
+                m_previewLeadPrefetchCountSpin->setEnabled(checked);
+            }
+            persistPreviewBufferingSettings();
+        });
+    }
+
+    if (m_previewLeadPrefetchCountSpin) {
+        connect(m_previewLeadPrefetchCountSpin, qOverload<int>(&QSpinBox::valueChanged), this, [persistPreviewBufferingSettings](int value) {
+            editor::setDebugLeadPrefetchCount(value);
+            persistPreviewBufferingSettings();
+        });
+    }
+
+    if (m_previewPlaybackWindowAheadSpin) {
+        connect(m_previewPlaybackWindowAheadSpin, qOverload<int>(&QSpinBox::valueChanged), this, [persistPreviewBufferingSettings](int value) {
+            editor::setDebugPlaybackWindowAhead(value);
+            persistPreviewBufferingSettings();
+        });
+    }
+
+    if (m_previewVisibleQueueReserveSpin) {
+        connect(m_previewVisibleQueueReserveSpin, qOverload<int>(&QSpinBox::valueChanged), this, [persistPreviewBufferingSettings](int value) {
+            editor::setDebugVisibleQueueReserve(value);
+            persistPreviewBufferingSettings();
+        });
+    }
+
+    if (m_previewLeadPrefetchCountSpin && m_previewLeadPrefetchEnabledCheckBox) {
+        m_previewLeadPrefetchCountSpin->setEnabled(m_previewLeadPrefetchEnabledCheckBox->isChecked());
     }
 
     connect(m_inspectorPane->backgroundColorButton(), &QPushButton::clicked, this, [this]() {

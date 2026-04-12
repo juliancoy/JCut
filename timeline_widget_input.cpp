@@ -463,15 +463,52 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
                 update();
                 return;
             }
-            setSelectedClipId(clickedClipId);
-            if (!m_clips[hitIndex].locked) {
-                m_dragMode = clipDragModeAt(m_clips[hitIndex], event->position().toPoint());
-                m_draggedClipIndex = hitIndex;
-                m_dragOriginalStartFrame = m_clips[hitIndex].startFrame;
-                m_dragOriginalDurationFrames = m_clips[hitIndex].durationFrames;
-                m_dragOriginalSourceInFrame = m_clips[hitIndex].sourceInFrame;
-                m_dragOriginalTransformKeyframes = m_clips[hitIndex].transformKeyframes;
-                m_dragOffsetFrames = frameFromX(event->position().x()) - m_clips[hitIndex].startFrame;
+            const bool clickedWasSelected = isClipSelected(clickedClipId);
+            if (!clickedWasSelected) {
+                setSelectedClipId(clickedClipId);
+            }
+            m_dragMode = clipDragModeAt(m_clips[hitIndex], event->position().toPoint());
+            m_draggedClipIndex = hitIndex;
+            m_dragOriginalStartFrame = m_clips[hitIndex].startFrame;
+            m_dragOriginalDurationFrames = m_clips[hitIndex].durationFrames;
+            m_dragOriginalSourceInFrame = m_clips[hitIndex].sourceInFrame;
+            m_dragOriginalTransformKeyframes = m_clips[hitIndex].transformKeyframes;
+            m_dragOffsetFrames = frameFromX(event->position().x()) - m_clips[hitIndex].startFrame;
+            m_dragMoveClipIds.clear();
+            m_dragMoveOriginalStartFrames.clear();
+            m_dragLockedTrackOnly = false;
+            if (m_clips[hitIndex].locked) {
+                // Locked clips may move between tracks, but not in time.
+                m_dragMode = ClipDragMode::Move;
+                m_dragLockedTrackOnly = true;
+            }
+            if (m_dragMode == ClipDragMode::Move) {
+                QSet<QString> movingIds = selectedClipIds();
+                if (movingIds.isEmpty()) {
+                    movingIds.insert(clickedClipId);
+                } else if (!movingIds.contains(clickedClipId)) {
+                    movingIds = QSet<QString>{clickedClipId};
+                }
+                QSet<QString> unlockedMovingIds;
+                unlockedMovingIds.reserve(movingIds.size());
+                for (const QString& candidateId : movingIds) {
+                    for (const TimelineClip& candidateClip : m_clips) {
+                        if (candidateClip.id == candidateId && !candidateClip.locked) {
+                            unlockedMovingIds.insert(candidateId);
+                            break;
+                        }
+                    }
+                }
+                movingIds = unlockedMovingIds;
+                if (movingIds.isEmpty() || m_dragLockedTrackOnly) {
+                    movingIds = QSet<QString>{clickedClipId};
+                }
+                m_dragMoveClipIds = movingIds;
+                for (const TimelineClip& clip : m_clips) {
+                    if (m_dragMoveClipIds.contains(clip.id)) {
+                        m_dragMoveOriginalStartFrames.insert(clip.id, clip.startFrame);
+                    }
+                }
             }
             update();
             return;
@@ -569,30 +606,68 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
         const bool isImage = clip.mediaType == ClipMediaType::Image;
         m_snapIndicatorFrame = -1;
         if (m_dragMode == ClipDragMode::Move) {
+            if (m_dragLockedTrackOnly) {
+                bool insertsTrack = false;
+                const int proposedTrack = trackDropTargetAtY(event->position().toPoint().y(), &insertsTrack);
+                if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                    TimelineClip tempClip = clip;
+                    tempClip.trackIndex = proposedTrack;
+                    if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
+                        clip.trackIndex = proposedTrack;
+                    }
+                }
+                m_trackDropIndex = proposedTrack;
+                m_trackDropInGap = insertsTrack;
+                update();
+                return;
+            }
             bool snapped = false;
             int64_t snappedBoundaryFrame = -1;
             const int64_t unsnappedStartFrame = qMax<int64_t>(0, pointerFrame - m_dragOffsetFrames);
             const int64_t newStartFrame =
                 snapMoveStartFrame(clip, unsnappedStartFrame, &snapped, &snappedBoundaryFrame);
+            int64_t moveDelta = newStartFrame - m_dragOriginalStartFrame;
+            int64_t minOriginalStartFrame = std::numeric_limits<int64_t>::max();
+            for (auto it = m_dragMoveOriginalStartFrames.constBegin(); it != m_dragMoveOriginalStartFrames.constEnd(); ++it) {
+                minOriginalStartFrame = qMin(minOriginalStartFrame, it.value());
+            }
+            if (minOriginalStartFrame != std::numeric_limits<int64_t>::max()) {
+                moveDelta = qMax<int64_t>(moveDelta, -minOriginalStartFrame);
+            }
             bool insertsTrack = false;
             const int proposedTrack = trackDropTargetAtY(event->position().toPoint().y(), &insertsTrack);
-            
-            // Always update frame position
-            clip.startFrame = newStartFrame;
-            m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
-            m_currentFrame = newStartFrame;
-            
-            // Check for conflict when moving to a different track
-            if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
-                TimelineClip tempClip = clip;
-                tempClip.trackIndex = proposedTrack;
-                if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
-                    // No conflict - allow the track change
-                    clip.trackIndex = proposedTrack;
+
+            const bool movingMultipleClips = m_dragMoveOriginalStartFrames.size() > 1;
+            if (movingMultipleClips) {
+                for (TimelineClip& movingClip : m_clips) {
+                    const auto it = m_dragMoveOriginalStartFrames.constFind(movingClip.id);
+                    if (it == m_dragMoveOriginalStartFrames.constEnd()) {
+                        continue;
+                    }
+                    movingClip.startFrame = qMax<int64_t>(0, it.value() + moveDelta);
                 }
+            } else {
+                clip.startFrame = qMax<int64_t>(0, m_dragOriginalStartFrame + moveDelta);
             }
-            m_trackDropIndex = proposedTrack;
-            m_trackDropInGap = insertsTrack;
+            m_snapIndicatorFrame = snapped ? snappedBoundaryFrame : -1;
+            m_currentFrame = qMax<int64_t>(0, m_dragOriginalStartFrame + moveDelta);
+
+            if (!movingMultipleClips) {
+                // Check for conflict when moving to a different track
+                if (proposedTrack >= 0 && proposedTrack != clip.trackIndex) {
+                    TimelineClip tempClip = clip;
+                    tempClip.trackIndex = proposedTrack;
+                    if (!wouldClipConflictWithTrack(tempClip, proposedTrack, clip.id)) {
+                        // No conflict - allow the track change
+                        clip.trackIndex = proposedTrack;
+                    }
+                }
+                m_trackDropIndex = proposedTrack;
+                m_trackDropInGap = insertsTrack;
+            } else {
+                m_trackDropIndex = clip.trackIndex;
+                m_trackDropInGap = false;
+            }
         } else if (m_dragMode == ClipDragMode::TrimLeft) {
             const int64_t maxStartFrame = m_dragOriginalStartFrame + m_dragOriginalDurationFrames - kMinClipFrames;
             bool snapped = false;
@@ -754,6 +829,9 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         m_dragOriginalDurationFrames = 0;
         m_dragOriginalSourceInFrame = 0;
         m_dragOriginalTransformKeyframes.clear();
+        m_dragMoveClipIds.clear();
+        m_dragMoveOriginalStartFrames.clear();
+        m_dragLockedTrackOnly = false;
         if (clipsChanged) clipsChanged();
         updateHoverCursor(event->position().toPoint());
         update();

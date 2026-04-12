@@ -48,6 +48,7 @@ int debugVisibleQueueReserve();
 int debugPlaybackWindowAhead();
 DecodePreference debugDecodePreference();
 bool debugPlayheadNoRepaint();
+bool debugPlaybackCacheFallbackEnabled();
 
 void setDebugPlaybackEnabled(bool enabled);
 void setDebugCacheEnabled(bool enabled);
@@ -65,6 +66,7 @@ void setDebugVisibleQueueReserve(int reserve);
 void setDebugPlaybackWindowAhead(int ahead);
 void setDebugDecodePreference(DecodePreference preference);
 void setDebugPlayheadNoRepaint(bool enabled);
+void setDebugPlaybackCacheFallbackEnabled(bool enabled);
 
 QJsonObject debugControlsSnapshot();
 bool setDebugControl(const QString& name, bool enabled);

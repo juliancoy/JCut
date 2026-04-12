@@ -2,6 +2,7 @@
 #include "keyframe_table_shared.h"
 #include "clip_serialization.h"
 #include "transform_skip_aware_timing.h"
+#include "debug_controls.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -232,6 +233,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
+    const bool previewPlaybackCacheFallback =
+        root.value(QStringLiteral("previewPlaybackCacheFallback")).toBool(editor::debugPlaybackCacheFallbackEnabled());
+    const bool previewLeadPrefetchEnabled =
+        root.value(QStringLiteral("previewLeadPrefetchEnabled")).toBool(editor::debugLeadPrefetchEnabled());
+    const int previewLeadPrefetchCount =
+        qBound(0, root.value(QStringLiteral("previewLeadPrefetchCount")).toInt(editor::debugLeadPrefetchCount()), 8);
+    const int previewPlaybackWindowAhead =
+        qBound(1, root.value(QStringLiteral("previewPlaybackWindowAhead")).toInt(editor::debugPlaybackWindowAhead()), 24);
+    const int previewVisibleQueueReserve =
+        qBound(0, root.value(QStringLiteral("previewVisibleQueueReserve")).toInt(editor::debugVisibleQueueReserve()), 64);
     const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(0);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(0);
@@ -338,6 +349,27 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_previewHideOutsideOutputCheckBox);
         m_previewHideOutsideOutputCheckBox->setChecked(previewHideOutsideOutput);
     }
+    if (m_previewPlaybackCacheFallbackCheckBox) {
+        QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
+        m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
+    }
+    if (m_previewLeadPrefetchEnabledCheckBox) {
+        QSignalBlocker block(m_previewLeadPrefetchEnabledCheckBox);
+        m_previewLeadPrefetchEnabledCheckBox->setChecked(previewLeadPrefetchEnabled);
+    }
+    if (m_previewLeadPrefetchCountSpin) {
+        QSignalBlocker block(m_previewLeadPrefetchCountSpin);
+        m_previewLeadPrefetchCountSpin->setValue(previewLeadPrefetchCount);
+        m_previewLeadPrefetchCountSpin->setEnabled(previewLeadPrefetchEnabled);
+    }
+    if (m_previewPlaybackWindowAheadSpin) {
+        QSignalBlocker block(m_previewPlaybackWindowAheadSpin);
+        m_previewPlaybackWindowAheadSpin->setValue(previewPlaybackWindowAhead);
+    }
+    if (m_previewVisibleQueueReserveSpin) {
+        QSignalBlocker block(m_previewVisibleQueueReserveSpin);
+        m_previewVisibleQueueReserveSpin->setValue(previewVisibleQueueReserve);
+    }
     if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(speechFilterEnabled); }
     
     m_transcriptPrependMs = transcriptPrependMs;
@@ -371,6 +403,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
     }
+    editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
+    editor::setDebugLeadPrefetchEnabled(previewLeadPrefetchEnabled);
+    editor::setDebugLeadPrefetchCount(previewLeadPrefetchCount);
+    editor::setDebugPlaybackWindowAhead(previewPlaybackWindowAhead);
+    editor::setDebugVisibleQueueReserve(previewVisibleQueueReserve);
 
     m_timeline->setTracks(loadedTracks);
     m_timeline->setClips(loadedClips);

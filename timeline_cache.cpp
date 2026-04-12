@@ -922,6 +922,46 @@ bool TimelineCache::isPlaybackFrameBuffered(const QString& clipId, int64_t frame
     return it.value()->contains(frameNumber);
 }
 
+bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
+                                                  int64_t frameNumber,
+                                                  bool preferPlaybackBuffer,
+                                                  bool allowCacheFallback) {
+    frameNumber = normalizeFrameNumber(clipId, frameNumber);
+    QMutexLocker lock(&m_clipsMutex);
+
+    PlaybackBuffer* playbackBuffer = nullptr;
+    auto playbackIt = m_playbackBuffers.find(clipId);
+    if (playbackIt != m_playbackBuffers.end()) {
+        playbackBuffer = playbackIt.value();
+    }
+
+    ClipCache* cache = nullptr;
+    auto cacheIt = m_caches.find(clipId);
+    if (cacheIt != m_caches.end()) {
+        cache = cacheIt.value();
+    }
+
+    if (preferPlaybackBuffer && playbackBuffer) {
+        if (playbackBuffer->contains(frameNumber)) {
+            return true;
+        }
+        if (!playbackBuffer->getLatestAtOrBefore(frameNumber).isNull()) {
+            return true;
+        }
+    }
+
+    if (allowCacheFallback && cache) {
+        if (cache->contains(frameNumber)) {
+            return true;
+        }
+        if (!cache->getLatestAtOrBefore(frameNumber).isNull()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void TimelineCache::startPrefetching() {
     m_prefetchTimer.start();
 }
