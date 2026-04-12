@@ -62,10 +62,11 @@ void TimelineWidget::updateHoverCursor(const QPoint& pos) {
 const RenderSyncMarker* TimelineWidget::renderSyncMarkerAtPos(const QPoint& pos, int* clipIndexOut) const {
     for (int i = m_clips.size() - 1; i >= 0; --i) {
         const TimelineClip& clip = m_clips[i];
-        for (const RenderSyncMarker& marker : m_renderSyncMarkers) {
-            if (marker.clipId != clip.id) {
-                continue;
-            }
+        const QVector<RenderSyncMarker>* clipMarkers = renderSyncMarkersForClipId(clip.id);
+        if (!clipMarkers) {
+            continue;
+        }
+        for (const RenderSyncMarker& marker : *clipMarkers) {
             if (renderSyncMarkerRect(clip, marker).contains(pos)) {
                 if (clipIndexOut) {
                     *clipIndexOut = i;
@@ -203,6 +204,11 @@ TimelineClip TimelineWidget::buildClipFromFile(const QString& filePath,
                                                int trackIndex) const {
     const QFileInfo info(filePath);
     const MediaProbeResult probe = probeMediaFile(filePath, guessDurationFrames(info.suffix().toLower()));
+    const qreal sourceFps = probe.fps > 0.001 ? probe.fps : static_cast<qreal>(kTimelineFps);
+    const int64_t timelineDurationFrames = qMax<int64_t>(
+        1,
+        qRound64((static_cast<qreal>(qMax<int64_t>(1, probe.durationFrames)) / sourceFps) *
+                 static_cast<qreal>(kTimelineFps)));
 
     TimelineClip clip;
     clip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -211,9 +217,10 @@ TimelineClip TimelineWidget::buildClipFromFile(const QString& filePath,
     clip.mediaType = probe.mediaType;
     clip.sourceKind = probe.sourceKind;
     clip.hasAudio = probe.hasAudio;
+    clip.sourceFps = sourceFps;
     clip.sourceDurationFrames = probe.durationFrames;
     clip.startFrame = startFrame;
-    clip.durationFrames = probe.durationFrames;
+    clip.durationFrames = timelineDurationFrames;
     clip.trackIndex = trackIndex;
     clip.color = colorForPath(filePath);
     if (clip.mediaType == ClipMediaType::Audio) {
@@ -437,13 +444,26 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
         }
         const int hitIndex = clipIndexAt(event->position().toPoint());
         if (hitIndex >= 0 && m_toolMode == ToolMode::Razor) {
+            const QString clickedClipId = m_clips[hitIndex].id;
+            if (!isClipSelected(clickedClipId)) {
+                setSelectedClipId(clickedClipId);
+            }
             const int64_t clickFrame = frameFromX(event->position().x());
-            splitClipAtFrame(m_clips[hitIndex].id, clickFrame);
+            splitSelectedClipAtFrame(clickFrame);
             update();
             return;
         }
         if (hitIndex >= 0) {
-            setSelectedClipId(m_clips[hitIndex].id);
+            const QString clickedClipId = m_clips[hitIndex].id;
+            const Qt::KeyboardModifiers modifiers = event->modifiers();
+            if (modifiers.testFlag(Qt::ShiftModifier) ||
+                modifiers.testFlag(Qt::ControlModifier) ||
+                modifiers.testFlag(Qt::MetaModifier)) {
+                selectClipWithModifiers(clickedClipId, modifiers);
+                update();
+                return;
+            }
+            setSelectedClipId(clickedClipId);
             if (!m_clips[hitIndex].locked) {
                 m_dragMode = clipDragModeAt(m_clips[hitIndex], event->position().toPoint());
                 m_draggedClipIndex = hitIndex;
@@ -744,6 +764,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
 
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     const int clipIndex = clipIndexAt(event->pos());
+    const QString clickedClipId = clipIndex >= 0 ? m_clips[clipIndex].id : QString();
     int markerClipIndex = -1;
     const RenderSyncMarker* clickedMarker = renderSyncMarkerAtPos(event->pos(), &markerClipIndex);
     if (clickedMarker && markerClipIndex >= 0) {
@@ -756,7 +777,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         return;
     }
     const QString targetClipId =
-        clipIndex >= 0 ? m_clips[clipIndex].id : m_selectedClipId;
+        clipIndex >= 0 ? m_clips[clipIndex].id : selectedClipId();
     QMenu menu(this);
     QAction* setExportStartAction = menu.addAction(QStringLiteral("Set Export Start At Playhead"));
     QAction* setExportEndAction = menu.addAction(QStringLiteral("Set Export End At Playhead"));
@@ -782,6 +803,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     menu.addSeparator();
     QAction* addTitleClipAction = menu.addAction(QStringLiteral("Add Title Clip"));
 
+    QAction* syncAction = nullptr;
     QAction* nudgeLeftAction = nullptr;
     QAction* nudgeRightAction = nullptr;
     QAction* splitClipAction = nullptr;
@@ -791,13 +813,41 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* resetGradingAction = nullptr;
     QAction* scaleToFillAction = nullptr;
     QAction* propertiesAction = nullptr;
+    QAction* refreshMetadataAction = nullptr;
     QAction* transcribeAction = nullptr;
     QAction* createProxyAction = nullptr;
     QAction* deleteProxyAction = nullptr;
 
+    QSet<QString> contextSelection = selectedClipIds();
+    if (clipIndex >= 0 && !clickedClipId.isEmpty() && !contextSelection.contains(clickedClipId)) {
+        contextSelection = QSet<QString>{clickedClipId};
+    }
+    if (contextSelection.isEmpty() && !clickedClipId.isEmpty()) {
+        contextSelection.insert(clickedClipId);
+    }
+    bool selectionHasVisual = false;
+    bool selectionHasAudio = false;
+    bool selectionHasCombined = false;
+    for (const TimelineClip& clip : m_clips) {
+        if (!contextSelection.contains(clip.id)) {
+            continue;
+        }
+        const bool clipHasAudio = clip.hasAudio || clip.mediaType == ClipMediaType::Audio;
+        const bool clipHasVideo = clipHasVisuals(clip);
+        selectionHasVisual = selectionHasVisual || clipHasVideo;
+        selectionHasAudio = selectionHasAudio || clipHasAudio;
+        selectionHasCombined = selectionHasCombined || (clipHasVideo && clipHasAudio);
+    }
+    const bool canAutoSyncSelection = (selectionHasVisual && selectionHasAudio) || selectionHasCombined;
+
     if (clipIndex >= 0) {
         menu.addSeparator();
-        setSelectedClipId(m_clips[clipIndex].id);
+        if (!isClipSelected(clickedClipId)) {
+            setSelectedClipId(clickedClipId);
+        }
+        syncAction = menu.addAction(QStringLiteral("Sync"));
+        syncAction->setEnabled(canAutoSyncSelection);
+        menu.addSeparator();
         const bool audioOnly = clipIsAudioOnly(m_clips[clipIndex]);
         nudgeLeftAction = menu.addAction(
             audioOnly ? QStringLiteral("Nudge -25ms\tAlt+Left") : QStringLiteral("Nudge -1 Frame\tAlt+Left"));
@@ -817,6 +867,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         copyClipNameAction = menu.addAction(QStringLiteral("Copy Clip Name"));
         gradingAction = menu.addAction(QStringLiteral("Grading..."));
         resetGradingAction = menu.addAction(QStringLiteral("Reset Grading"));
+        refreshMetadataAction = menu.addAction(QStringLiteral("Refresh"));
         auto *speedMenu = menu.addMenu(QStringLiteral("Playback Speed"));
         static const qreal kSpeeds[] = { 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0 };
         for (qreal s : kSpeeds) {
@@ -973,6 +1024,17 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         return;
     }
 
+    if (selected == syncAction) {
+        applyClipSelection(contextSelection, clickedClipId, false);
+        if (selectionChanged) {
+            selectionChanged();
+        }
+        if (syncRequested) {
+            syncRequested(selectedClipIds());
+        }
+        return;
+    }
+
     if (selected == nudgeRightAction) {
         nudgeSelectedClip(1);
         return;
@@ -1107,6 +1169,97 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                 .arg(clip.saturation, 0, 'f', 2)
                 .arg(clip.opacity, 0, 'f', 2)
                 .arg(clip.locked ? QStringLiteral("Yes") : QStringLiteral("No")));
+        return;
+    }
+
+    if (selected == refreshMetadataAction) {
+        QSet<QString> refreshIds = contextSelection;
+        if (refreshIds.isEmpty() && clipIndex >= 0) {
+            refreshIds.insert(m_clips[clipIndex].id);
+        }
+        if (refreshIds.isEmpty()) {
+            return;
+        }
+
+        int refreshedCount = 0;
+        int missingCount = 0;
+        bool anyChanged = false;
+        for (TimelineClip& clip : m_clips) {
+            if (!refreshIds.contains(clip.id)) {
+                continue;
+            }
+
+            const QFileInfo sourceInfo(clip.filePath);
+            const bool sourceExists =
+                sourceInfo.exists() &&
+                (sourceInfo.isFile() || (sourceInfo.isDir() && isImageSequencePath(clip.filePath)));
+            if (!sourceExists) {
+                ++missingCount;
+                continue;
+            }
+
+            const TimelineClip before = clip;
+            const MediaProbeResult probe = probeMediaFile(
+                clip.filePath,
+                qMax<int64_t>(1, clip.sourceDurationFrames > 0 ? clip.sourceDurationFrames : clip.durationFrames));
+
+            clip.mediaType = probe.mediaType;
+            clip.sourceKind = probe.sourceKind;
+            clip.hasAudio = probe.hasAudio;
+            if (probe.fps > 0.001) {
+                clip.sourceFps = probe.fps;
+            }
+            if (probe.durationFrames > 0) {
+                clip.sourceDurationFrames = probe.durationFrames;
+            }
+
+            if (clip.sourceDurationFrames > 0) {
+                clip.sourceInFrame = qBound<int64_t>(0, clip.sourceInFrame, clip.sourceDurationFrames - 1);
+                const qreal sourceFps = clip.sourceFps > 0.001 ? clip.sourceFps : static_cast<qreal>(kTimelineFps);
+                const int64_t availableSourceFrames =
+                    qMax<int64_t>(1, clip.sourceDurationFrames - clip.sourceInFrame);
+                const int64_t maxTimelineDuration = qMax<int64_t>(
+                    1,
+                    qRound64((static_cast<qreal>(availableSourceFrames) / sourceFps) *
+                             static_cast<qreal>(kTimelineFps)));
+                clip.durationFrames = qMin<int64_t>(clip.durationFrames, maxTimelineDuration);
+            }
+
+            const QString detectedProxyPath = playbackProxyPathForClip(clip);
+            if (detectedProxyPath.isEmpty()) {
+                clip.proxyPath.clear();
+            } else {
+                clip.proxyPath = detectedProxyPath;
+            }
+
+            normalizeClipTiming(clip);
+            const bool changed =
+                before.mediaType != clip.mediaType ||
+                before.sourceKind != clip.sourceKind ||
+                before.hasAudio != clip.hasAudio ||
+                qAbs(before.sourceFps - clip.sourceFps) > 0.0001 ||
+                before.sourceDurationFrames != clip.sourceDurationFrames ||
+                before.sourceInFrame != clip.sourceInFrame ||
+                before.durationFrames != clip.durationFrames ||
+                before.proxyPath != clip.proxyPath;
+            anyChanged = anyChanged || changed;
+            ++refreshedCount;
+        }
+
+        if (anyChanged) {
+            sortClips();
+            if (clipsChanged) {
+                clipsChanged();
+            }
+            update();
+        }
+
+        QMessageBox::information(
+            this,
+            QStringLiteral("Refresh Metadata"),
+            QStringLiteral("Refreshed %1 clip(s).\nMissing source on disk: %2.")
+                .arg(refreshedCount)
+                .arg(missingCount));
         return;
     }
 

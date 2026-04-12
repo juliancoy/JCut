@@ -4,6 +4,7 @@
 #include <QColorDialog>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSpinBox>
@@ -58,6 +59,7 @@ void EditorWindow::bindInspectorWidgets()
     m_syncTable = m_inspectorPane->syncTable();
     m_syncInspectorClipLabel = m_inspectorPane->syncInspectorClipLabel();
     m_syncInspectorDetailsLabel = m_inspectorPane->syncInspectorDetailsLabel();
+    m_clearAllSyncPointsButton = m_inspectorPane->clearAllSyncPointsButton();
 
     if (m_syncTable) {
         connect(m_syncTable, &QTableWidget::itemSelectionChanged,
@@ -69,6 +71,34 @@ void EditorWindow::bindInspectorWidgets()
         m_syncTable->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(m_syncTable, &QWidget::customContextMenuRequested,
                 this, &EditorWindow::onSyncTableCustomContextMenu);
+    }
+    if (m_clearAllSyncPointsButton) {
+        connect(m_clearAllSyncPointsButton, &QPushButton::clicked, this, [this]() {
+            if (!m_timeline) {
+                return;
+            }
+            const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+            if (markers.isEmpty()) {
+                QMessageBox::information(this,
+                                         QStringLiteral("Clear Sync Points"),
+                                         QStringLiteral("There are no sync points to clear."));
+                return;
+            }
+            const int response = QMessageBox::question(
+                this,
+                QStringLiteral("Clear All Sync Points"),
+                QStringLiteral("Remove all %1 sync points from the timeline?")
+                    .arg(markers.size()),
+                QMessageBox::Yes | QMessageBox::No,
+                QMessageBox::No);
+            if (response != QMessageBox::Yes) {
+                return;
+            }
+            m_timeline->setRenderSyncMarkers({});
+            refreshSyncInspector();
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
     }
 
     m_gradingPathLabel = m_inspectorPane->gradingPathLabel();

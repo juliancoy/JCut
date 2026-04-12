@@ -447,7 +447,9 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
                     m_hwPixFmt = selectedConfig->pix_fmt;
                     m_codecCtx->get_format = get_hw_format;
                     m_codecCtx->opaque = reinterpret_cast<void*>(static_cast<intptr_t>(m_hwPixFmt));
-                    qDebug() << "Using shared hardware acceleration:" << type << "for" << m_path;
+                    if (debugDecodeEnabled()) {
+                        qDebug() << "Using shared hardware acceleration:" << type << "for" << m_path;
+                    }
                     return true;
                 }
             }

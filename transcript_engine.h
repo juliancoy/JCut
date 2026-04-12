@@ -35,6 +35,7 @@ public:
 private:
     mutable QHash<QString, QVector<ExportRangeSegment>> m_transcriptWordRangesCache;
     mutable QString m_transcriptWordRangesCacheSignature;
+    mutable QVector<ExportRangeSegment> m_transcriptWordRangesMergedCache;
 };
 
 } // namespace editor

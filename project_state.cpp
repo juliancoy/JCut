@@ -639,7 +639,7 @@ void EditorWindow::saveHistoryNow()
 
 void EditorWindow::pushHistorySnapshot()
 {
-    if (m_loadingState || m_restoringHistory || !m_timeline)
+    if (m_loadingState || m_restoringHistory || m_suppressHistorySnapshots || !m_timeline)
     {
         return;
     }

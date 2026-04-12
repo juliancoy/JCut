@@ -74,6 +74,7 @@ private:
                                 const MediaProbeResult *knownProbe = nullptr) const;
     void createProxyForClip(const QString &clipId);
     void deleteProxyForClip(const QString &clipId);
+    void requestAutoSyncForSelection(const QSet<QString>& selectedClipIds);
 
     void addFileToTimeline(const QString &filePath);
     void syncSliderRange();
@@ -276,6 +277,7 @@ private:
 
     QLabel *m_syncInspectorClipLabel = nullptr;
     QLabel *m_syncInspectorDetailsLabel = nullptr;
+    QPushButton *m_clearAllSyncPointsButton = nullptr;
 
     QDoubleSpinBox *m_brightnessSpin = nullptr;
     QDoubleSpinBox *m_contrastSpin = nullptr;
@@ -376,6 +378,7 @@ private:
     bool m_loadingState = false;
     bool m_pendingSaveAfterLoad = false;
     bool m_restoringHistory = false;
+    bool m_suppressHistorySnapshots = false;
     bool m_updatingTracksTab = false;
 
     QColor m_backgroundColor = QColor(Qt::black);

@@ -20,7 +20,9 @@
 #include <QPalette>
 #include <QPoint>
 #include <QRect>
+#include <QHash>
 #include <QString>
+#include <QSet>
 #include <QUrl>
 #include <QWidget>
 #include <QWheelEvent>
@@ -51,7 +53,8 @@ public:
     void setClips(const QVector<TimelineClip>& clips);
     void setTracks(const QVector<TimelineTrack>& tracks);
 
-    QString selectedClipId() const { return m_selectedClipId; }
+    QString selectedClipId() const;
+    QSet<QString> selectedClipIds() const;
     const TimelineClip* selectedClip() const;
     void setSelectedClipId(const QString& clipId);
     int selectedTrackIndex() const { return m_selectedTrackIndex; }
@@ -117,6 +120,7 @@ public:
     std::function<void(const QString&, const QString&)> transcribeRequested;
     std::function<void(const QString&)> createProxyRequested;
     std::function<void(const QString&)> deleteProxyRequested;
+    std::function<void(const QSet<QString>&)> syncRequested;
     std::function<void()> exportRangeChanged;
     std::function<void()> toolModeChanged;
     std::function<void(const QString&)> scaleToFillRequested;
@@ -136,6 +140,11 @@ protected:
     void paintEvent(QPaintEvent*) override;
 
 private:
+    struct ClipSelectionState {
+        QSet<QString> ids;
+        QString primaryId;
+    };
+
     enum class ClipDragMode {
         None,
         Move,
@@ -203,6 +212,10 @@ private:
     int totalTrackAreaHeight() const;
     int maxVerticalScrollOffset() const;
     void updateMinimumTimelineHeight();
+    QString resolveSelectionPrimary(const QSet<QString>& selectedIds) const;
+    void applyClipSelection(const QSet<QString>& selectedIds, const QString& primaryIdHint, bool notify = true);
+    bool isClipSelected(const QString& clipId) const;
+    void selectClipWithModifiers(const QString& clipId, Qt::KeyboardModifiers modifiers);
 
     QRect drawRect() const;
     QRect topBarRect() const;
@@ -232,6 +245,8 @@ private:
     int exportSegmentIndexAtFrame(int64_t frame) const;
     int exportHandleAtPos(const QPoint& pos, bool* startHandleOut) const;
     const RenderSyncMarker* renderSyncMarkerAtPos(const QPoint& pos, int* clipIndexOut = nullptr) const;
+    const QVector<RenderSyncMarker>* renderSyncMarkersForClipId(const QString& clipId) const;
+    void rebuildRenderSyncMarkerIndex();
     void openRenderSyncMarkerMenu(const QPoint& globalPos, const QString& clipId);
     bool clipHasProxyAvailable(const TimelineClip& clip) const;
     bool handleWheelSteps(int steps,
@@ -267,10 +282,11 @@ private:
     int64_t m_frameOffset = 0;
     int m_verticalScrollOffset = 0;
     int64_t m_snapIndicatorFrame = -1;
-    QString m_selectedClipId;
+    ClipSelectionState m_clipSelection;
     int m_selectedTrackIndex = -1;
     QString m_hoveredClipId;
     QVector<RenderSyncMarker> m_renderSyncMarkers;
+    QHash<QString, QVector<RenderSyncMarker>> m_renderSyncMarkersByClip;
     ExportRangeDragMode m_exportRangeDragMode = ExportRangeDragMode::None;
     int m_exportRangeDragSegmentIndex = -1;
     ToolMode m_toolMode = ToolMode::Select;

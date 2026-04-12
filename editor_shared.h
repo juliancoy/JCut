@@ -110,6 +110,7 @@ struct TimelineClip {
     ClipMediaType mediaType = ClipMediaType::Unknown;
     MediaSourceKind sourceKind = MediaSourceKind::File;
     bool hasAudio = false;
+    qreal sourceFps = 30.0;
     int64_t sourceDurationFrames = 0;
     int64_t sourceInFrame = 0;
     int64_t sourceInSubframeSamples = 0;
@@ -175,6 +176,7 @@ struct MediaProbeResult {
     int64_t durationFrames = 120;
     QString codecName;
     QSize frameSize;
+    double fps = 30.0;
 };
 
 struct TranscriptWord {
@@ -296,9 +298,12 @@ QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects);
 QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma = 1.0);
+qreal effectiveFpsForClip(const TimelineClip& clip);
 QString playbackProxyPathForClip(const TimelineClip& clip);
 QString playbackMediaPathForClip(const TimelineClip& clip);
 QString interactivePreviewMediaPathForClip(const TimelineClip& clip);
+QString playbackMediaPathForClip(const TimelineClip& clip);
+bool isVariableFrameRate(const QString& path);
 bool isImageSequencePath(const QString& path);
 QStringList imageSequenceFramePaths(const QString& path);
 QString imageSequenceDisplayLabel(const QString& path);

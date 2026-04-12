@@ -145,6 +145,9 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->transcribeRequested = [this](const QString &filePath, const QString &label) {
         openTranscriptionWindow(filePath, label);
     };
+    m_timeline->syncRequested = [this](const QSet<QString>& selectedClipIds) {
+        requestAutoSyncForSelection(selectedClipIds);
+    };
     m_timeline->createProxyRequested = [this](const QString &clipId) { createProxyForClip(clipId); };
     m_timeline->deleteProxyRequested = [this](const QString &clipId) { deleteProxyForClip(clipId); };
     m_timeline->scaleToFillRequested = [this](const QString &clipId) {

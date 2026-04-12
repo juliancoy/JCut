@@ -594,6 +594,10 @@ void EditorWindow::refreshSyncInspector()
 {
     m_syncInspectorClipLabel->setText(QStringLiteral("Sync"));
     m_updatingSyncInspector = true;
+    const int allSyncMarkerCount = m_timeline ? m_timeline->renderSyncMarkers().size() : 0;
+    if (m_clearAllSyncPointsButton) {
+        m_clearAllSyncPointsButton->setEnabled(allSyncMarkerCount > 0);
+    }
     const QSet<int64_t> selectedFrames =
         editor::collectSelectedFrameRoles(m_syncTable);
     m_syncTable->clearContents();
@@ -1542,7 +1546,26 @@ void EditorWindow::setPlaybackSpeed(qreal speed)
 void EditorWindow::updatePlaybackTimerInterval()
 {
     const qreal speed = qBound<qreal>(0.1, m_playbackSpeed, 1.0);
-    const int intervalMs = qMax(1, qRound(1000.0 / (static_cast<qreal>(kTimelineFps) * speed)));
+
+    // Determine effective FPS for playback timer
+    qreal effectiveFps = kTimelineFps;
+
+    // If no audio master, use the video clip's FPS
+    if (!m_audioEngine || !m_audioEngine->hasPlayableAudio()) {
+        for (const TimelineClip& clip : m_timeline->clips()) {
+            const int64_t currentFrame = m_timeline->currentFrame();
+            // Find clip that contains current frame
+            if (currentFrame >= clip.startFrame && currentFrame < clip.startFrame + clip.durationFrames) {
+                const qreal clipFps = effectiveFpsForClip(clip);
+                if (clipFps > 0) {
+                    effectiveFps = clipFps;
+                    break;
+                }
+            }
+        }
+    }
+
+    const int intervalMs = qMax(1, qRound(1000.0 / (effectiveFps * speed)));
     m_playbackTimer.setInterval(intervalMs);
 }
 

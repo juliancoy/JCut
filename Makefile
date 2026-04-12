@@ -608,6 +608,19 @@ test_visual_effects_parity/fast:
 .PHONY : test_visual_effects_parity/fast
 
 #=============================================================================
+# Target rules for targets named test_transform_skip_aware_timing
+
+# Build rule for target.
+test_transform_skip_aware_timing: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_transform_skip_aware_timing
+.PHONY : test_transform_skip_aware_timing
+
+# fast build rule for target.
+test_transform_skip_aware_timing/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_transform_skip_aware_timing.dir/build.make tests/CMakeFiles/test_transform_skip_aware_timing.dir/build
+.PHONY : test_transform_skip_aware_timing/fast
+
+#=============================================================================
 # Target rules for targets named test_frame_handle_autogen_timestamp_deps
 
 # Build rule for target.
@@ -762,6 +775,32 @@ test_visual_effects_parity_autogen: cmake_check_build_system
 test_visual_effects_parity_autogen/fast:
 	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_visual_effects_parity_autogen.dir/build.make tests/CMakeFiles/test_visual_effects_parity_autogen.dir/build
 .PHONY : test_visual_effects_parity_autogen/fast
+
+#=============================================================================
+# Target rules for targets named test_transform_skip_aware_timing_autogen_timestamp_deps
+
+# Build rule for target.
+test_transform_skip_aware_timing_autogen_timestamp_deps: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_transform_skip_aware_timing_autogen_timestamp_deps
+.PHONY : test_transform_skip_aware_timing_autogen_timestamp_deps
+
+# fast build rule for target.
+test_transform_skip_aware_timing_autogen_timestamp_deps/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_transform_skip_aware_timing_autogen_timestamp_deps.dir/build.make tests/CMakeFiles/test_transform_skip_aware_timing_autogen_timestamp_deps.dir/build
+.PHONY : test_transform_skip_aware_timing_autogen_timestamp_deps/fast
+
+#=============================================================================
+# Target rules for targets named test_transform_skip_aware_timing_autogen
+
+# Build rule for target.
+test_transform_skip_aware_timing_autogen: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 test_transform_skip_aware_timing_autogen
+.PHONY : test_transform_skip_aware_timing_autogen
+
+# fast build rule for target.
+test_transform_skip_aware_timing_autogen/fast:
+	$(MAKE) $(MAKESILENT) -f tests/CMakeFiles/test_transform_skip_aware_timing_autogen.dir/build.make tests/CMakeFiles/test_transform_skip_aware_timing_autogen.dir/build
+.PHONY : test_transform_skip_aware_timing_autogen/fast
 
 async_decoder.o: async_decoder.cpp.o
 .PHONY : async_decoder.o
@@ -2371,6 +2410,30 @@ transcript_tab.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/transcript_tab.cpp.s
 .PHONY : transcript_tab.cpp.s
 
+transform_skip_aware_timing.o: transform_skip_aware_timing.cpp.o
+.PHONY : transform_skip_aware_timing.o
+
+# target to build an object file
+transform_skip_aware_timing.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/transform_skip_aware_timing.cpp.o
+.PHONY : transform_skip_aware_timing.cpp.o
+
+transform_skip_aware_timing.i: transform_skip_aware_timing.cpp.i
+.PHONY : transform_skip_aware_timing.i
+
+# target to preprocess a source file
+transform_skip_aware_timing.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/transform_skip_aware_timing.cpp.i
+.PHONY : transform_skip_aware_timing.cpp.i
+
+transform_skip_aware_timing.s: transform_skip_aware_timing.cpp.s
+.PHONY : transform_skip_aware_timing.s
+
+# target to generate assembly for a file
+transform_skip_aware_timing.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/transform_skip_aware_timing.cpp.s
+.PHONY : transform_skip_aware_timing.cpp.s
+
 video_keyframe_tab.o: video_keyframe_tab.cpp.o
 .PHONY : video_keyframe_tab.o
 
@@ -2444,6 +2507,8 @@ help:
 	@echo "... test_memory_budget_autogen_timestamp_deps"
 	@echo "... test_timeline_cache_autogen"
 	@echo "... test_timeline_cache_autogen_timestamp_deps"
+	@echo "... test_transform_skip_aware_timing_autogen"
+	@echo "... test_transform_skip_aware_timing_autogen_timestamp_deps"
 	@echo "... test_visual_effects_parity_autogen"
 	@echo "... test_visual_effects_parity_autogen_timestamp_deps"
 	@echo "... editor"
@@ -2452,6 +2517,7 @@ help:
 	@echo "... test_integration"
 	@echo "... test_memory_budget"
 	@echo "... test_timeline_cache"
+	@echo "... test_transform_skip_aware_timing"
 	@echo "... test_visual_effects_parity"
 	@echo "... async_decoder.o"
 	@echo "... async_decoder.i"
@@ -2654,6 +2720,9 @@ help:
 	@echo "... transcript_tab.o"
 	@echo "... transcript_tab.i"
 	@echo "... transcript_tab.s"
+	@echo "... transform_skip_aware_timing.o"
+	@echo "... transform_skip_aware_timing.i"
+	@echo "... transform_skip_aware_timing.s"
 	@echo "... video_keyframe_tab.o"
 	@echo "... video_keyframe_tab.i"
 	@echo "... video_keyframe_tab.s"

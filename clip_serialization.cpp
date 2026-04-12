@@ -17,6 +17,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("mediaType")] = clipMediaTypeToString(clip.mediaType);
         obj[QStringLiteral("sourceKind")] = mediaSourceKindToString(clip.sourceKind);
         obj[QStringLiteral("hasAudio")] = clip.hasAudio;
+        obj[QStringLiteral("sourceFps")] = clip.sourceFps;
         obj[QStringLiteral("sourceDurationFrames")] = static_cast<qint64>(clip.sourceDurationFrames);
         obj[QStringLiteral("sourceInFrame")] = static_cast<qint64>(clip.sourceInFrame);
         obj[QStringLiteral("sourceInSubframeSamples")] = static_cast<qint64>(clip.sourceInSubframeSamples);
@@ -127,6 +128,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
 TimelineClip clipFromJson(const QJsonObject &obj)
     {
         TimelineClip clip;
+        const bool hasSourceFps = obj.contains(QStringLiteral("sourceFps"));
         clip.id = obj.value(QStringLiteral("id")).toString();
         clip.filePath = obj.value(QStringLiteral("filePath")).toString();
         clip.proxyPath = obj.value(QStringLiteral("proxyPath")).toString();
@@ -134,6 +136,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.mediaType = clipMediaTypeFromString(obj.value(QStringLiteral("mediaType")).toString());
         clip.sourceKind = mediaSourceKindFromString(obj.value(QStringLiteral("sourceKind")).toString());
         clip.hasAudio = obj.value(QStringLiteral("hasAudio")).toBool(false);
+        clip.sourceFps = obj.value(QStringLiteral("sourceFps")).toDouble(30.0);
         clip.sourceDurationFrames = obj.value(QStringLiteral("sourceDurationFrames")).toVariant().toLongLong();
         clip.sourceInFrame = obj.value(QStringLiteral("sourceInFrame")).toVariant().toLongLong();
         clip.sourceInSubframeSamples = obj.value(QStringLiteral("sourceInSubframeSamples")).toVariant().toLongLong();
@@ -152,8 +155,46 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.mediaType = probe.mediaType;
             clip.sourceKind = probe.sourceKind;
             clip.hasAudio = probe.hasAudio;
-            clip.durationFrames = probe.durationFrames;
+            clip.sourceFps = probe.fps;
+            const qreal sourceFps = probe.fps > 0.001 ? probe.fps : static_cast<qreal>(kTimelineFps);
+            clip.durationFrames = qMax<int64_t>(
+                1,
+                qRound64((static_cast<qreal>(qMax<int64_t>(1, probe.durationFrames)) / sourceFps) *
+                         static_cast<qreal>(kTimelineFps)));
             clip.sourceDurationFrames = probe.durationFrames;
+        }
+        if (!hasSourceFps && !clip.filePath.isEmpty()) {
+            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames);
+            if (probe.fps > 0.001) {
+                clip.sourceFps = probe.fps;
+            }
+        }
+        if (!clip.filePath.isEmpty() &&
+            clip.mediaType != ClipMediaType::Image &&
+            clip.mediaType != ClipMediaType::Title) {
+            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames);
+            if (probe.fps > 0.001) {
+                const bool suspiciousLegacySourceFps =
+                    qAbs(clip.sourceFps - static_cast<qreal>(kTimelineFps)) <= 0.001 &&
+                    qAbs(probe.fps - clip.sourceFps) > 0.01;
+                if (suspiciousLegacySourceFps) {
+                    clip.sourceFps = probe.fps;
+                }
+            }
+            if (probe.durationFrames > 0 && clip.sourceDurationFrames <= 0) {
+                clip.sourceDurationFrames = probe.durationFrames;
+            }
+            const bool looksLikeLegacyDuration =
+                clip.sourceDurationFrames > 0 &&
+                qAbs(clip.durationFrames - clip.sourceDurationFrames) <= 1;
+            if (looksLikeLegacyDuration &&
+                clip.sourceFps > 0.001 &&
+                qAbs(clip.sourceFps - static_cast<qreal>(kTimelineFps)) > 0.001) {
+                clip.durationFrames = qMax<int64_t>(
+                    1,
+                    qRound64((static_cast<qreal>(clip.sourceDurationFrames) / clip.sourceFps) *
+                             static_cast<qreal>(kTimelineFps)));
+            }
         }
         if (clip.sourceDurationFrames <= 0)
         {

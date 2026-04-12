@@ -171,6 +171,100 @@ int64_t TimelineWidget::totalFrames() const {
     return lastFrame;
 }
 
+QString TimelineWidget::selectedClipId() const {
+    return m_clipSelection.primaryId;
+}
+
+QSet<QString> TimelineWidget::selectedClipIds() const {
+    return m_clipSelection.ids;
+}
+
+QString TimelineWidget::resolveSelectionPrimary(const QSet<QString>& selectedIds) const {
+    if (selectedIds.isEmpty()) {
+        return QString();
+    }
+    if (!m_clipSelection.primaryId.isEmpty() && selectedIds.contains(m_clipSelection.primaryId)) {
+        return m_clipSelection.primaryId;
+    }
+    for (const TimelineClip& clip : m_clips) {
+        if (selectedIds.contains(clip.id)) {
+            return clip.id;
+        }
+    }
+    return *selectedIds.constBegin();
+}
+
+void TimelineWidget::applyClipSelection(const QSet<QString>& selectedIds,
+                                        const QString& primaryIdHint,
+                                        bool notify) {
+    QSet<QString> existingIds;
+    existingIds.reserve(m_clips.size());
+    for (const TimelineClip& clip : m_clips) {
+        existingIds.insert(clip.id);
+    }
+
+    QSet<QString> filteredSelection;
+    filteredSelection.reserve(selectedIds.size());
+    for (const QString& id : selectedIds) {
+        if (existingIds.contains(id)) {
+            filteredSelection.insert(id);
+        }
+    }
+
+    QString nextPrimary = primaryIdHint;
+    if (!nextPrimary.isEmpty() && !filteredSelection.contains(nextPrimary)) {
+        nextPrimary.clear();
+    }
+    if (nextPrimary.isEmpty()) {
+        nextPrimary = resolveSelectionPrimary(filteredSelection);
+    }
+
+    const bool changed = (m_clipSelection.ids != filteredSelection ||
+                          m_clipSelection.primaryId != nextPrimary);
+    if (!changed) {
+        return;
+    }
+
+    m_clipSelection.ids = filteredSelection;
+    m_clipSelection.primaryId = nextPrimary;
+
+    if (!m_clipSelection.primaryId.isEmpty()) {
+        for (const TimelineClip& clip : m_clips) {
+            if (clip.id == m_clipSelection.primaryId) {
+                m_selectedTrackIndex = clip.trackIndex;
+                break;
+            }
+        }
+    }
+
+    if (notify && selectionChanged) {
+        selectionChanged();
+    }
+}
+
+bool TimelineWidget::isClipSelected(const QString& clipId) const {
+    return m_clipSelection.ids.contains(clipId);
+}
+
+void TimelineWidget::selectClipWithModifiers(const QString& clipId, Qt::KeyboardModifiers modifiers) {
+    const bool shiftPressed = modifiers.testFlag(Qt::ShiftModifier);
+    const bool togglePressed = modifiers.testFlag(Qt::ControlModifier) || modifiers.testFlag(Qt::MetaModifier);
+    if (!shiftPressed && !togglePressed) {
+        applyClipSelection(QSet<QString>{clipId}, clipId);
+        return;
+    }
+
+    QSet<QString> nextSelection = m_clipSelection.ids;
+    if (togglePressed && nextSelection.contains(clipId)) {
+        nextSelection.remove(clipId);
+        applyClipSelection(nextSelection, QString());
+        return;
+    }
+
+    nextSelection.insert(clipId);
+    applyClipSelection(nextSelection, clipId);
+}
+
 void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     m_clips = clips;
     for (TimelineClip& clip : m_clips) {
@@ -179,9 +273,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     normalizeTrackIndices();
     sortClips();
     ensureTrackCount(trackCount());
-    if (!selectedClip()) {
-        m_selectedClipId.clear();
-    }
+    applyClipSelection(m_clipSelection.ids, m_clipSelection.primaryId, false);
     if (m_selectedTrackIndex >= trackCount()) {
         m_selectedTrackIndex = -1;
     }
@@ -218,7 +310,7 @@ void TimelineWidget::setTracks(const QVector<TimelineTrack>& tracks) {
 
 const TimelineClip* TimelineWidget::selectedClip() const {
     for (const TimelineClip& clip : m_clips) {
-        if (clip.id == m_selectedClipId) {
+        if (clip.id == m_clipSelection.primaryId) {
             return &clip;
         }
     }
@@ -233,34 +325,22 @@ const TimelineTrack* TimelineWidget::selectedTrack() const {
 }
 
 void TimelineWidget::setSelectedClipId(const QString& clipId) {
-    if (m_selectedClipId == clipId) {
+    if (clipId.isEmpty()) {
+        applyClipSelection({}, QString());
+        update();
         return;
     }
-    m_selectedClipId = clipId;
-    if (!clipId.isEmpty()) {
-        for (const TimelineClip& clip : m_clips) {
-            if (clip.id == clipId) {
-                m_selectedTrackIndex = clip.trackIndex;
-                break;
-            }
-        }
-    }
-    if (selectionChanged) {
-        selectionChanged();
-    }
+    applyClipSelection(QSet<QString>{clipId}, clipId);
     update();
 }
 
 void TimelineWidget::setSelectedTrackIndex(int trackIndex) {
     const int normalizedTrackIndex = (trackIndex >= 0 && trackIndex < trackCount()) ? trackIndex : -1;
-    if (m_selectedTrackIndex == normalizedTrackIndex && m_selectedClipId.isEmpty()) {
+    if (m_selectedTrackIndex == normalizedTrackIndex && m_clipSelection.ids.isEmpty()) {
         return;
     }
     m_selectedTrackIndex = normalizedTrackIndex;
-    m_selectedClipId.clear();
-    if (selectionChanged) {
-        selectionChanged();
-    }
+    applyClipSelection({}, QString());
     update();
 }
 
@@ -448,9 +528,9 @@ bool TimelineWidget::deleteClipById(const QString& clipId) {
             return false;
         }
         m_clips.removeAt(i);
-        if (m_selectedClipId == clipId) {
-            m_selectedClipId.clear();
-        }
+        QSet<QString> nextSelection = m_clipSelection.ids;
+        nextSelection.remove(clipId);
+        applyClipSelection(nextSelection, m_clipSelection.primaryId, false);
         sortClips();
         if (clipsChanged) {
             clipsChanged();
@@ -462,12 +542,12 @@ bool TimelineWidget::deleteClipById(const QString& clipId) {
 }
 
 bool TimelineWidget::deleteSelectedClip() {
-    if (m_selectedClipId.isEmpty()) {
+    if (m_clipSelection.primaryId.isEmpty()) {
         return false;
     }
 
     for (int i = 0; i < m_clips.size(); ++i) {
-        if (m_clips[i].id != m_selectedClipId) {
+        if (m_clips[i].id != m_clipSelection.primaryId) {
             continue;
         }
 
@@ -476,7 +556,9 @@ bool TimelineWidget::deleteSelectedClip() {
         }
 
         m_clips.removeAt(i);
-        m_selectedClipId.clear();
+        QSet<QString> nextSelection = m_clipSelection.ids;
+        nextSelection.remove(m_clipSelection.primaryId);
+        applyClipSelection(nextSelection, QString(), false);
         normalizeTrackIndices();
         sortClips();
         if (selectionChanged) {
@@ -489,7 +571,7 @@ bool TimelineWidget::deleteSelectedClip() {
         return true;
     }
 
-    m_selectedClipId.clear();
+    applyClipSelection({}, QString(), false);
     if (selectionChanged) {
         selectionChanged();
     }
@@ -498,128 +580,167 @@ bool TimelineWidget::deleteSelectedClip() {
 }
 
 bool TimelineWidget::splitSelectedClipAtFrame(int64_t frame) {
-    if (m_selectedClipId.isEmpty()) {
+    QVector<QString> targetClipIds;
+    targetClipIds.reserve(m_clipSelection.ids.size() + 1);
+    if (!m_clipSelection.ids.isEmpty()) {
+        for (const TimelineClip& clip : m_clips) {
+            if (m_clipSelection.ids.contains(clip.id)) {
+                targetClipIds.push_back(clip.id);
+            }
+        }
+    } else if (!m_clipSelection.primaryId.isEmpty()) {
+        targetClipIds.push_back(m_clipSelection.primaryId);
+    }
+    if (targetClipIds.isEmpty()) {
         return false;
     }
 
-    for (int i = 0; i < m_clips.size(); ++i) {
-        TimelineClip& clip = m_clips[i];
-        if (clip.id != m_selectedClipId) {
-            continue;
-        }
-        if (clip.locked) {
-            return false;
-        }
-        if (frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
-            return false;
-        }
+    QSet<QString> newSelection;
+    newSelection.reserve(targetClipIds.size());
+    bool splitAny = false;
+    const QString previousPrimarySelection = m_clipSelection.primaryId;
+    QString nextPrimarySelection;
 
-        const int64_t leftDuration = frame - clip.startFrame;
-        const int64_t rightDuration = clip.durationFrames - leftDuration;
-        if (leftDuration <= 0 || rightDuration <= 0) {
-            return false;
-        }
-        const qreal playbackRate = qBound<qreal>(0.001, clip.playbackRate, 4.0);
-        const int64_t consumedSourceFrames =
-            static_cast<int64_t>(std::floor(static_cast<qreal>(leftDuration) * playbackRate));
+    for (const QString& targetClipId : std::as_const(targetClipIds)) {
+        for (int i = 0; i < m_clips.size(); ++i) {
+            TimelineClip& clip = m_clips[i];
+            if (clip.id != targetClipId) {
+                continue;
+            }
+            if (clip.locked || frame <= clip.startFrame || frame >= clip.startFrame + clip.durationFrames) {
+                break;
+            }
 
-        const bool isImage = clip.mediaType == ClipMediaType::Image;
-        TimelineClip rightClip = clip;
-        rightClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        rightClip.startFrame = frame;
-        rightClip.sourceInFrame = isImage ? 0 : (clip.sourceInFrame + consumedSourceFrames);
-        rightClip.startSubframeSamples = 0;
-        rightClip.sourceInSubframeSamples = 0;
-        rightClip.durationFrames = rightDuration;
-        if (isImage) {
-            rightClip.sourceDurationFrames = rightDuration;
-        }
-        rightClip.transformKeyframes.clear();
-        for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
-            if (keyframe.frame >= leftDuration) {
-                TimelineClip::TransformKeyframe shifted = keyframe;
-                shifted.frame -= leftDuration;
-                rightClip.transformKeyframes.push_back(shifted);
+            const int64_t leftDuration = frame - clip.startFrame;
+            const int64_t rightDuration = clip.durationFrames - leftDuration;
+            if (leftDuration <= 0 || rightDuration <= 0) {
+                break;
             }
-        }
+            const int64_t splitTimelineSample = frameToSamples(frame) + clip.startSubframeSamples;
+            const int64_t splitSourceSample =
+                sourceSampleForClipAtTimelineSample(clip, splitTimelineSample, m_renderSyncMarkers);
 
-        QVector<TimelineClip::TransformKeyframe> leftKeyframes;
-        for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
-            if (keyframe.frame < leftDuration) {
-                leftKeyframes.push_back(keyframe);
+            const bool isImage = clip.mediaType == ClipMediaType::Image;
+            TimelineClip rightClip = clip;
+            rightClip.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            rightClip.startFrame = frame;
+            rightClip.startSubframeSamples = clip.startSubframeSamples;
+            rightClip.durationFrames = rightDuration;
+            if (isImage) {
+                rightClip.sourceInFrame = 0;
+                rightClip.sourceInSubframeSamples = 0;
+                rightClip.sourceDurationFrames = rightDuration;
+            } else {
+                rightClip.sourceInFrame = splitSourceSample / kSamplesPerFrame;
+                rightClip.sourceInSubframeSamples = splitSourceSample % kSamplesPerFrame;
             }
-        }
-        clip.transformKeyframes = leftKeyframes;
+            rightClip.transformKeyframes.clear();
+            for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
+                if (keyframe.frame >= leftDuration) {
+                    TimelineClip::TransformKeyframe shifted = keyframe;
+                    shifted.frame -= leftDuration;
+                    rightClip.transformKeyframes.push_back(shifted);
+                }
+            }
 
-        rightClip.gradingKeyframes.clear();
-        for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
-            if (keyframe.frame >= leftDuration) {
-                TimelineClip::GradingKeyframe shifted = keyframe;
-                shifted.frame -= leftDuration;
-                rightClip.gradingKeyframes.push_back(shifted);
+            QVector<TimelineClip::TransformKeyframe> leftKeyframes;
+            for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
+                if (keyframe.frame < leftDuration) {
+                    leftKeyframes.push_back(keyframe);
+                }
             }
-        }
-        QVector<TimelineClip::GradingKeyframe> leftGradingKeyframes;
-        for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
-            if (keyframe.frame < leftDuration) {
-                leftGradingKeyframes.push_back(keyframe);
-            }
-        }
-        clip.gradingKeyframes = leftGradingKeyframes;
+            clip.transformKeyframes = leftKeyframes;
 
-        rightClip.opacityKeyframes.clear();
-        for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
-            if (keyframe.frame >= leftDuration) {
-                TimelineClip::OpacityKeyframe shifted = keyframe;
-                shifted.frame -= leftDuration;
-                rightClip.opacityKeyframes.push_back(shifted);
+            rightClip.gradingKeyframes.clear();
+            for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
+                if (keyframe.frame >= leftDuration) {
+                    TimelineClip::GradingKeyframe shifted = keyframe;
+                    shifted.frame -= leftDuration;
+                    rightClip.gradingKeyframes.push_back(shifted);
+                }
             }
-        }
-        QVector<TimelineClip::OpacityKeyframe> leftOpacityKeyframes;
-        for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
-            if (keyframe.frame < leftDuration) {
-                leftOpacityKeyframes.push_back(keyframe);
+            QVector<TimelineClip::GradingKeyframe> leftGradingKeyframes;
+            for (const TimelineClip::GradingKeyframe& keyframe : clip.gradingKeyframes) {
+                if (keyframe.frame < leftDuration) {
+                    leftGradingKeyframes.push_back(keyframe);
+                }
             }
-        }
-        clip.opacityKeyframes = leftOpacityKeyframes;
+            clip.gradingKeyframes = leftGradingKeyframes;
 
-        clip.durationFrames = leftDuration;
-        if (isImage) {
-            clip.sourceInFrame = 0;
-            clip.sourceDurationFrames = leftDuration;
+            rightClip.opacityKeyframes.clear();
+            for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
+                if (keyframe.frame >= leftDuration) {
+                    TimelineClip::OpacityKeyframe shifted = keyframe;
+                    shifted.frame -= leftDuration;
+                    rightClip.opacityKeyframes.push_back(shifted);
+                }
+            }
+            QVector<TimelineClip::OpacityKeyframe> leftOpacityKeyframes;
+            for (const TimelineClip::OpacityKeyframe& keyframe : clip.opacityKeyframes) {
+                if (keyframe.frame < leftDuration) {
+                    leftOpacityKeyframes.push_back(keyframe);
+                }
+            }
+            clip.opacityKeyframes = leftOpacityKeyframes;
+
+            clip.durationFrames = leftDuration;
+            if (isImage) {
+                clip.sourceInFrame = 0;
+                clip.sourceInSubframeSamples = 0;
+                clip.sourceDurationFrames = leftDuration;
+            }
+            normalizeClipTransformKeyframes(clip);
+            normalizeClipTransformKeyframes(rightClip);
+            normalizeClipGradingKeyframes(clip);
+            normalizeClipGradingKeyframes(rightClip);
+            normalizeClipOpacityKeyframes(clip);
+            normalizeClipOpacityKeyframes(rightClip);
+            normalizeClipTiming(clip);
+            normalizeClipTiming(rightClip);
+
+            bool movedMarkers = false;
+            for (RenderSyncMarker& marker : m_renderSyncMarkers) {
+                if (marker.clipId == clip.id && marker.frame >= frame) {
+                    marker.clipId = rightClip.id;
+                    movedMarkers = true;
+                }
+            }
+            m_clips.insert(i + 1, rightClip);
+            newSelection.insert(rightClip.id);
+            if (nextPrimarySelection.isEmpty() || targetClipId == previousPrimarySelection) {
+                nextPrimarySelection = rightClip.id;
+            }
+            splitAny = true;
+            if (movedMarkers) {
+                sortRenderSyncMarkers();
+                rebuildRenderSyncMarkerIndex();
+            }
+            break;
         }
-        clip.startSubframeSamples = 0;
-        clip.sourceInSubframeSamples = 0;
-        normalizeClipTransformKeyframes(clip);
-        normalizeClipTransformKeyframes(rightClip);
-        normalizeClipGradingKeyframes(clip);
-        normalizeClipGradingKeyframes(rightClip);
-        normalizeClipOpacityKeyframes(clip);
-        normalizeClipOpacityKeyframes(rightClip);
-        normalizeClipTiming(clip);
-        normalizeClipTiming(rightClip);
-        m_clips.insert(i + 1, rightClip);
-        m_selectedClipId = rightClip.id;
-        sortClips();
-        if (selectionChanged) {
-            selectionChanged();
-        }
-        if (clipsChanged) {
-            clipsChanged();
-        }
-        update();
-        return true;
     }
 
-    return false;
+    if (!splitAny) {
+        return false;
+    }
+
+    sortClips();
+    applyClipSelection(newSelection, nextPrimarySelection, false);
+    if (selectionChanged) {
+        selectionChanged();
+    }
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    update();
+    return true;
 }
 
 bool TimelineWidget::splitClipAtFrame(const QString& clipId, int64_t frame) {
-    const QString previousSelection = m_selectedClipId;
-    m_selectedClipId = clipId;
+    const ClipSelectionState previousSelection = m_clipSelection;
+    applyClipSelection(QSet<QString>{clipId}, clipId, false);
     const bool result = splitSelectedClipAtFrame(frame);
     if (!result) {
-        m_selectedClipId = previousSelection;
+        m_clipSelection = previousSelection;
     }
     return result;
 }
@@ -660,17 +781,42 @@ void TimelineWidget::sortRenderSyncMarkers() {
               });
 }
 
+void TimelineWidget::rebuildRenderSyncMarkerIndex() {
+    m_renderSyncMarkersByClip.clear();
+    if (m_renderSyncMarkers.isEmpty()) {
+        return;
+    }
+    for (const RenderSyncMarker& marker : m_renderSyncMarkers) {
+        m_renderSyncMarkersByClip[marker.clipId].push_back(marker);
+    }
+}
+
+const QVector<RenderSyncMarker>* TimelineWidget::renderSyncMarkersForClipId(const QString& clipId) const {
+    const auto it = m_renderSyncMarkersByClip.constFind(clipId);
+    if (it == m_renderSyncMarkersByClip.constEnd()) {
+        return nullptr;
+    }
+    return &it.value();
+}
+
 void TimelineWidget::setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) {
     m_renderSyncMarkers = markers;
     sortRenderSyncMarkers();
+    rebuildRenderSyncMarkerIndex();
     update();
 }
 
 const RenderSyncMarker* TimelineWidget::renderSyncMarkerAtFrame(const QString& clipId, int64_t frame) const {
-    for (const RenderSyncMarker& marker : m_renderSyncMarkers) {
-        if (marker.clipId == clipId && marker.frame == frame) {
-            return &marker;
-        }
+    const QVector<RenderSyncMarker>* markers = renderSyncMarkersForClipId(clipId);
+    if (!markers || markers->isEmpty()) {
+        return nullptr;
+    }
+    const auto it = std::lower_bound(markers->begin(), markers->end(), frame,
+                                     [](const RenderSyncMarker& marker, int64_t value) {
+                                         return marker.frame < value;
+                                     });
+    if (it != markers->end() && it->frame == frame) {
+        return &(*it);
     }
     return nullptr;
 }
@@ -688,6 +834,7 @@ bool TimelineWidget::setRenderSyncMarkerAtCurrentFrame(const QString& clipId, Re
             marker.action = action;
             marker.count = count;
             sortRenderSyncMarkers();
+            rebuildRenderSyncMarkerIndex();
             if (renderSyncMarkersChanged) {
                 renderSyncMarkersChanged();
             }
@@ -703,6 +850,7 @@ bool TimelineWidget::setRenderSyncMarkerAtCurrentFrame(const QString& clipId, Re
     marker.count = count;
     m_renderSyncMarkers.push_back(marker);
     sortRenderSyncMarkers();
+    rebuildRenderSyncMarkerIndex();
     if (renderSyncMarkersChanged) {
         renderSyncMarkersChanged();
     }
@@ -717,6 +865,7 @@ bool TimelineWidget::clearRenderSyncMarkerAtCurrentFrame(const QString& clipId) 
     for (int i = 0; i < m_renderSyncMarkers.size(); ++i) {
         if (m_renderSyncMarkers[i].clipId == clipId && m_renderSyncMarkers[i].frame == m_currentFrame) {
             m_renderSyncMarkers.removeAt(i);
+            rebuildRenderSyncMarkerIndex();
             if (renderSyncMarkersChanged) {
                 renderSyncMarkersChanged();
             }
@@ -891,12 +1040,12 @@ int64_t TimelineWidget::snapTrimRightFrame(const TimelineClip& clip,
 }
 
 bool TimelineWidget::nudgeSelectedClip(int direction) {
-    if (direction == 0 || m_selectedClipId.isEmpty()) {
+    if (direction == 0 || m_clipSelection.primaryId.isEmpty()) {
         return false;
     }
 
     for (TimelineClip& clip : m_clips) {
-        if (clip.id != m_selectedClipId) {
+        if (clip.id != m_clipSelection.primaryId) {
             continue;
         }
 
@@ -981,12 +1130,10 @@ bool TimelineWidget::deleteTrack(int trackIndex) {
 
     for (int i = m_clips.size() - 1; i >= 0; --i) {
         if (m_clips[i].trackIndex == trackIndex) {
-            if (m_selectedClipId == m_clips[i].id) {
-                m_selectedClipId.clear();
-            }
             m_clips.removeAt(i);
         }
     }
+    applyClipSelection(m_clipSelection.ids, m_clipSelection.primaryId, false);
 
     if (m_tracks.size() > 1) {
         m_tracks.removeAt(trackIndex);

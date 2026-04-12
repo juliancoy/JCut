@@ -91,6 +91,7 @@ public:
     QLabel *syncInspectorClipLabel() const { return m_syncInspectorClipLabel; }
     QLabel *syncInspectorDetailsLabel() const { return m_syncInspectorDetailsLabel; }
     QTableWidget *syncTable() const { return m_syncTable; }
+    QPushButton *clearAllSyncPointsButton() const { return m_clearAllSyncPointsButton; }
 
     QLabel *keyframesInspectorClipLabel() const { return m_keyframesInspectorClipLabel; }
     QLabel *keyframesInspectorDetailsLabel() const { return m_keyframesInspectorDetailsLabel; }
@@ -231,6 +232,7 @@ private:
     QLabel *m_syncInspectorClipLabel = nullptr;
     QLabel *m_syncInspectorDetailsLabel = nullptr;
     QTableWidget *m_syncTable = nullptr;
+    QPushButton *m_clearAllSyncPointsButton = nullptr;
 
     QLabel *m_keyframesInspectorClipLabel = nullptr;
     QLabel *m_keyframesInspectorDetailsLabel = nullptr;

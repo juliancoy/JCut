@@ -518,6 +518,10 @@ QWidget *InspectorPane::buildSyncTab()
 
     layout->addWidget(m_syncInspectorClipLabel);
     layout->addWidget(m_syncInspectorDetailsLabel);
+    m_clearAllSyncPointsButton = new QPushButton(QStringLiteral("Clear All Sync Points"), page);
+    m_clearAllSyncPointsButton->setToolTip(
+        QStringLiteral("Remove every render sync marker across all clips."));
+    layout->addWidget(m_clearAllSyncPointsButton);
     layout->addWidget(m_syncTable, 1);
 
     return page;

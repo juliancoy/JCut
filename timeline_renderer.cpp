@@ -2,6 +2,9 @@
 #include "timeline_widget.h"
 #include "timeline_layout.h"
 
+#include <QFileInfo>
+#include <algorithm>
+
 TimelineRenderer::TimelineRenderer(TimelineWidget* widget)
     : m_widget(widget) {
 }
@@ -61,8 +64,14 @@ void TimelineRenderer::paint(QPainter* painter) {
     painter->setBrush(QColor(QStringLiteral("#171c22")));
     painter->drawRoundedRect(tracks, 10, 10);
 
+    const int64_t visibleStartFrame = qMax<int64_t>(0, m_widget->frameFromX(content.left()));
+    const int64_t visibleEndFrame =
+        qMax<int64_t>(visibleStartFrame, m_widget->frameFromX(content.right() + 1));
+    const int64_t rulerStartFrame = qMax<int64_t>(0, (visibleStartFrame / 30) * 30);
+    const int64_t rulerEndFrame = qMin<int64_t>(m_widget->totalFrames(), visibleEndFrame + 30);
+
     painter->setPen(QColor(QStringLiteral("#6d7887")));
-    for (int64_t frame = 0; frame <= m_widget->totalFrames(); frame += 30) {
+    for (int64_t frame = rulerStartFrame; frame <= rulerEndFrame; frame += 30) {
         const int x = m_widget->xFromFrame(frame);
         const bool major = (frame % 150) == 0;
         painter->setPen(major ? QColor(QStringLiteral("#8fa0b5")) : QColor(QStringLiteral("#53606e")));
@@ -85,6 +94,13 @@ void TimelineRenderer::paint(QPainter* painter) {
     painter->setClipRect(content);
     for (const TimelineClip& clip : m_widget->m_clips) {
         const QRect clipRect = layout.clipRectFor(clip);
+        if (clipRect.right() < content.left() || clipRect.left() > content.right()) {
+            continue;
+        }
+        const QRect visibleClipRect = clipRect.intersected(content.adjusted(-2, 0, 2, 0));
+        if (visibleClipRect.isEmpty()) {
+            continue;
+        }
         const bool audioOnly = clipIsAudioOnly(clip);
         const bool hovered = clip.id == m_widget->m_hoveredClipId;
         const bool showSourceGhost = clip.mediaType != ClipMediaType::Image;
@@ -98,11 +114,12 @@ void TimelineRenderer::paint(QPainter* painter) {
                                   qMax(40, m_widget->widthForFrames(ghostDurationFrames)),
                                   clipRect.height());
 
-            if (ghostRect != clipRect) {
+            if (ghostRect != clipRect &&
+                !(ghostRect.right() < content.left() || ghostRect.left() > content.right())) {
                 painter->setPen(QColor(255, 255, 255, 20));
                 painter->setBrush(clip.color.lighter(130));
                 painter->setOpacity(0.18);
-                painter->drawRoundedRect(ghostRect, 7, 7);
+                painter->drawRoundedRect(ghostRect.intersected(content.adjusted(-2, 0, 2, 0)), 7, 7);
                 painter->setOpacity(1.0);
             }
         }
@@ -114,12 +131,16 @@ void TimelineRenderer::paint(QPainter* painter) {
         }
         painter->setPen(QColor(255, 255, 255, 32));
         painter->setBrush(clipFill);
-        painter->drawRoundedRect(clipRect, 7, 7);
+        painter->drawRoundedRect(visibleClipRect, 7, 7);
 
         if (audioOnly) {
             painter->save();
-            const int verticalInset = qMax(5, clipRect.height() / 10);
-            const QRect envelopeRect = clipRect.adjusted(8, verticalInset, -8, -verticalInset);
+            const int verticalInset = qMax(5, visibleClipRect.height() / 10);
+            const QRect envelopeRect = visibleClipRect.adjusted(8, verticalInset, -8, -verticalInset);
+            if (envelopeRect.isEmpty()) {
+                painter->restore();
+                continue;
+            }
             painter->setPen(Qt::NoPen);
             painter->setBrush(QColor(QStringLiteral("#163946")));
             painter->drawRoundedRect(envelopeRect, 5, 5);
@@ -141,14 +162,14 @@ void TimelineRenderer::paint(QPainter* painter) {
         }
 
         painter->setPen(QColor(QStringLiteral("#f4f7fb")));
-        if (clip.id == m_widget->m_selectedClipId) {
+        if (m_widget->isClipSelected(clip.id)) {
             painter->setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2));
             if (audioOnly) {
                 painter->setBrush(Qt::NoBrush);
-                painter->drawRoundedRect(clipRect.adjusted(1, 1, -1, -1), 7, 7);
+                painter->drawRoundedRect(visibleClipRect.adjusted(1, 1, -1, -1), 7, 7);
             } else {
                 painter->setBrush(clip.color.lighter(108));
-                painter->drawRoundedRect(clipRect, 7, 7);
+                painter->drawRoundedRect(visibleClipRect, 7, 7);
             }
             painter->setPen(Qt::NoPen);
             painter->setBrush(QColor(QStringLiteral("#fff4c2")));
@@ -159,6 +180,35 @@ void TimelineRenderer::paint(QPainter* painter) {
             painter->drawRoundedRect(rightHandle, 2, 2);
             painter->setPen(QColor(QStringLiteral("#f4f7fb")));
         }
+
+        const int barHeight = qBound(3, visibleClipRect.height() / 10, 6);
+        int barBottom = visibleClipRect.bottom() - 1;
+
+        const QString transcriptPath = transcriptWorkingPathForClipFile(clip.filePath);
+        const bool transcriptExists =
+            !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
+        if (transcriptExists) {
+            const QRect transcriptBarRect(visibleClipRect.left() + 2,
+                                          barBottom - barHeight + 1,
+                                          qMax(1, visibleClipRect.width() - 4),
+                                          barHeight);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(QStringLiteral("#3d8bff")));
+            painter->drawRoundedRect(transcriptBarRect, 2, 2);
+            barBottom -= (barHeight + 1);
+        }
+
+        const bool proxyInUse = !clip.proxyPath.trimmed().isEmpty() && QFileInfo::exists(clip.proxyPath);
+        if (proxyInUse) {
+            const QRect proxyBarRect(visibleClipRect.left() + 2,
+                                     barBottom - barHeight + 1,
+                                     qMax(1, visibleClipRect.width() - 4),
+                                     barHeight);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(QStringLiteral("#ff9e3d")));
+            painter->drawRoundedRect(proxyBarRect, 2, 2);
+        }
+
         QString clipTitle;
         if (clip.mediaType == ClipMediaType::Title) {
             const QString titleText = clip.titleKeyframes.isEmpty()
@@ -181,7 +231,7 @@ void TimelineRenderer::paint(QPainter* painter) {
         if (qAbs(clip.playbackRate - 1.0) > 0.001) {
             clipTitle = QStringLiteral("%1  %2x").arg(clipTitle).arg(clip.playbackRate, 0, 'g', 3);
         }
-        painter->drawText(clipRect.adjusted(10, 0, -10, 0),
+        painter->drawText(visibleClipRect.adjusted(10, 0, -10, 0),
                         Qt::AlignLeft | Qt::AlignVCenter,
                         clipTitle);
     }
@@ -229,7 +279,7 @@ void TimelineRenderer::paint(QPainter* painter) {
     painter->setBrush(QColor(QStringLiteral("#ff6f61")));
     painter->setPen(Qt::NoPen);
     painter->drawRoundedRect(QRect(playheadX - 8, ruler.top(), 16, 12), 4, 4);
-    if (const RenderSyncMarker* marker = m_widget->renderSyncMarkerAtFrame(m_widget->m_selectedClipId, m_widget->m_currentFrame)) {
+    if (const RenderSyncMarker* marker = m_widget->renderSyncMarkerAtFrame(m_widget->selectedClipId(), m_widget->m_currentFrame)) {
         const QString label = marker->action == RenderSyncAction::DuplicateFrame
             ? QStringLiteral("DUP %1").arg(marker->count)
             : QStringLiteral("SKIP %1").arg(marker->count);
@@ -243,11 +293,26 @@ void TimelineRenderer::paint(QPainter* painter) {
     }
 
     for (const TimelineClip& clip : m_widget->m_clips) {
-        for (const RenderSyncMarker& marker : m_widget->m_renderSyncMarkers) {
-            if (marker.clipId != clip.id ||
-                marker.frame < clip.startFrame ||
-                marker.frame >= clip.startFrame + clip.durationFrames) {
-                continue;
+        const QVector<RenderSyncMarker>* clipMarkers = m_widget->renderSyncMarkersForClipId(clip.id);
+        if (!clipMarkers) {
+            continue;
+        }
+        const int64_t clipVisibleStart = qMax<int64_t>(clip.startFrame, visibleStartFrame);
+        const int64_t clipVisibleEnd =
+            qMin<int64_t>(clip.startFrame + clip.durationFrames, visibleEndFrame + 1);
+        if (clipVisibleEnd <= clipVisibleStart) {
+            continue;
+        }
+        auto markerIt = std::lower_bound(clipMarkers->begin(),
+                                         clipMarkers->end(),
+                                         clipVisibleStart,
+                                         [](const RenderSyncMarker& marker, int64_t frame) {
+                                             return marker.frame < frame;
+                                         });
+        for (; markerIt != clipMarkers->end(); ++markerIt) {
+            const RenderSyncMarker& marker = *markerIt;
+            if (marker.frame >= clipVisibleEnd) {
+                break;
             }
             const QRect markerRect = m_widget->renderSyncMarkerRect(clip, marker);
             const QColor markerColor = marker.action == RenderSyncAction::DuplicateFrame

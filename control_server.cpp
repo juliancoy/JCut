@@ -35,7 +35,7 @@
 
 namespace {
 
-constexpr int kUiInvokeTimeoutMs = 250;
+constexpr int kUiInvokeTimeoutMs = 500;
 constexpr qint64 kUiHeartbeatStaleMs = 1000;
 
 QString reasonPhrase(int statusCode) {
@@ -290,6 +290,7 @@ public:
 
     bool startListening(quint16 port) {
         m_server = std::make_unique<QTcpServer>();
+        m_server->setMaxPendingConnections(256);
         connect(m_server.get(), &QTcpServer::newConnection, this, &ControlServerWorker::onNewConnection);
         if (!m_server->listen(QHostAddress::LocalHost, port)) {
             return false;
@@ -353,6 +354,18 @@ private:
              m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1},
             {QStringLiteral("success_count"), m_profileSuccessCount},
             {QStringLiteral("timeout_count"), m_profileTimeoutCount}};
+    }
+
+    QJsonObject stateCacheMeta() const {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        return QJsonObject{
+            {QStringLiteral("has_snapshot"), !m_lastStateSnapshot.isEmpty()},
+            {QStringLiteral("last_snapshot_ms"), m_lastStateSnapshotMs},
+            {QStringLiteral("last_snapshot_age_ms"),
+             m_lastStateSnapshotMs > 0 ? now - m_lastStateSnapshotMs : -1},
+            {QStringLiteral("success_count"), m_stateSnapshotSuccessCount},
+            {QStringLiteral("timeout_count"), m_stateSnapshotTimeoutCount},
+            {QStringLiteral("served_cached_count"), m_stateSnapshotServedCachedCount}};
     }
 
     void onReadyRead(QTcpSocket* socket) {
@@ -422,13 +435,28 @@ private:
             }
             return false;
         }
-        if (!invokeOnUiThread(m_window, timeoutMs, out, [this]() { return m_stateSnapshotCallback(); })) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("timed out waiting for state snapshot");
-            }
-            return false;
+        QJsonObject snapshot;
+        if (invokeOnUiThread(m_window, timeoutMs, &snapshot, [this]() { return m_stateSnapshotCallback(); })) {
+            *out = snapshot;
+            m_lastStateSnapshot = snapshot;
+            m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+            ++m_stateSnapshotSuccessCount;
+            return true;
         }
-        return true;
+
+        ++m_stateSnapshotTimeoutCount;
+        if (!m_lastStateSnapshot.isEmpty()) {
+            *out = m_lastStateSnapshot;
+            ++m_stateSnapshotServedCachedCount;
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for state snapshot; served cached snapshot");
+            }
+            return true;
+        }
+        if (errorOut) {
+            *errorOut = QStringLiteral("timed out waiting for state snapshot");
+        }
+        return false;
     }
 
     bool fetchProjectSnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
@@ -657,7 +685,7 @@ private:
                     return;
                 }
             }
-            writeError(socket, 404, QStringLiteral("clip not found"));
+writeError(socket, 404, QStringLiteral("clip not found"));
             return;
         }
 
@@ -804,6 +832,7 @@ private:
                      kUiHeartbeatStaleMs},
                 {QStringLiteral("fast_snapshot"), snapshot},
                 {QStringLiteral("profile_cache"), profileCacheMeta()},
+                {QStringLiteral("state_cache"), stateCacheMeta()},
                 {QStringLiteral("debug"), editor::debugControlsSnapshot()}
             });
             return;
@@ -1117,6 +1146,11 @@ private:
     qint64 m_lastProfileSnapshotMs = 0;
     qint64 m_profileSuccessCount = 0;
     qint64 m_profileTimeoutCount = 0;
+    QJsonObject m_lastStateSnapshot;
+    qint64 m_lastStateSnapshotMs = 0;
+    qint64 m_stateSnapshotSuccessCount = 0;
+    qint64 m_stateSnapshotTimeoutCount = 0;
+    qint64 m_stateSnapshotServedCachedCount = 0;
 };
 
 } // namespace

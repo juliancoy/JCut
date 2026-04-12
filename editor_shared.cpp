@@ -8,6 +8,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QRegularExpression>
@@ -39,8 +40,65 @@ bool isImageSuffix(const QString& suffix) {
     return kImageSuffixes.contains(suffix);
 }
 
+bool isVideoSuffix(const QString& suffix) {
+    static const QSet<QString> kVideoSuffixes = {
+        QStringLiteral("mp4"),
+        QStringLiteral("mov"),
+        QStringLiteral("mkv"),
+        QStringLiteral("webm"),
+        QStringLiteral("avi"),
+        QStringLiteral("m4v"),
+        QStringLiteral("mpg"),
+        QStringLiteral("mpeg"),
+        QStringLiteral("mxf"),
+    };
+    return kVideoSuffixes.contains(suffix.toLower());
+}
+
+bool isValidMediaFile(const QString& path) {
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        return false;
+    }
+    const QString suffix = info.suffix().toLower();
+    return isImageSuffix(suffix) || isVideoSuffix(suffix);
+}
+
 int clampChannel(int value) {
     return qBound(0, value, 255);
+}
+
+bool detectVariableFrameRate(const QString& path) {
+    AVFormatContext* formatCtx = nullptr;
+    const QByteArray pathBytes = QFile::encodeName(path);
+    if (avformat_open_input(&formatCtx, pathBytes.constData(), nullptr, nullptr) < 0) {
+        return false;
+    }
+
+    bool isVfr = false;
+    if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
+        for (unsigned i = 0; i < formatCtx->nb_streams; ++i) {
+            AVStream* stream = formatCtx->streams[i];
+            if (!stream || !stream->codecpar) continue;
+            if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                const AVRational& avgFrameRate = stream->avg_frame_rate;
+                const AVRational& rFrameRate = stream->r_frame_rate;
+                // VFR if avg and real frame rates differ significantly
+                if (avgFrameRate.num > 0 && avgFrameRate.den > 0 &&
+                    rFrameRate.num > 0 && rFrameRate.den > 0) {
+                    const double avgFps = av_q2d(avgFrameRate);
+                    const double realFps = av_q2d(rFrameRate);
+                    // If they differ by more than 1%, consider it VFR
+                    if (qAbs(avgFps - realFps) > 0.01 * qMax(avgFps, realFps)) {
+                        isVfr = true;
+                    }
+                }
+                break;
+            }
+        }
+    }
+    avformat_close_input(&formatCtx);
+    return isVfr;
 }
 
 QStringList collectSequenceFrames(const QString& path) {
@@ -125,6 +183,98 @@ QStringList collectSequenceFrames(const QString& path) {
     }
     return frames;
 }
+
+struct RenderSyncClipLookup {
+    QVector<int64_t> timelineFrames;
+    QVector<int> cumulativeDelta;
+};
+
+struct RenderSyncLookupCache {
+    const QVector<RenderSyncMarker>* source = nullptr;
+    int size = -1;
+    quint64 signature = 0;
+    QHash<QString, RenderSyncClipLookup> byClip;
+};
+
+quint64 markerQuickSignature(const QVector<RenderSyncMarker>& markers) {
+    quint64 sig = static_cast<quint64>(markers.size()) * 1469598103934665603ULL;
+    if (markers.isEmpty()) {
+        return sig;
+    }
+    auto mixMarker = [&sig](const RenderSyncMarker& marker) {
+        sig ^= static_cast<quint64>(qHash(marker.clipId));
+        sig = (sig * 1099511628211ULL) ^ static_cast<quint64>(marker.frame);
+        sig = (sig * 1099511628211ULL) ^ static_cast<quint64>(marker.count);
+        sig = (sig * 1099511628211ULL) ^ static_cast<quint64>(static_cast<int>(marker.action));
+    };
+    mixMarker(markers.constFirst());
+    if (markers.size() > 1) {
+        mixMarker(markers[markers.size() / 2]);
+        mixMarker(markers.constLast());
+    }
+    return sig;
+}
+
+int markerDelta(const RenderSyncMarker& marker) {
+    const int magnitude = qMax(1, marker.count);
+    return marker.action == RenderSyncAction::DuplicateFrame ? -magnitude : magnitude;
+}
+
+void rebuildRenderSyncLookupCache(RenderSyncLookupCache& cache,
+                                  const QVector<RenderSyncMarker>& markers) {
+    cache.byClip.clear();
+    if (markers.isEmpty()) {
+        return;
+    }
+
+    QHash<QString, QVector<RenderSyncMarker>> grouped;
+    grouped.reserve(markers.size());
+    for (const RenderSyncMarker& marker : markers) {
+        grouped[marker.clipId].push_back(marker);
+    }
+
+    for (auto it = grouped.begin(); it != grouped.end(); ++it) {
+        QVector<RenderSyncMarker>& clipMarkers = it.value();
+        std::sort(clipMarkers.begin(), clipMarkers.end(),
+                  [](const RenderSyncMarker& a, const RenderSyncMarker& b) {
+                      if (a.frame == b.frame) {
+                          return static_cast<int>(a.action) < static_cast<int>(b.action);
+                      }
+                      return a.frame < b.frame;
+                  });
+        RenderSyncClipLookup lookup;
+        lookup.timelineFrames.reserve(clipMarkers.size());
+        lookup.cumulativeDelta.reserve(clipMarkers.size());
+        int runningDelta = 0;
+        for (const RenderSyncMarker& marker : clipMarkers) {
+            runningDelta += markerDelta(marker);
+            lookup.timelineFrames.push_back(marker.frame);
+            lookup.cumulativeDelta.push_back(runningDelta);
+        }
+        cache.byClip.insert(it.key(), std::move(lookup));
+    }
+}
+
+const RenderSyncClipLookup* lookupForClip(const QVector<RenderSyncMarker>& markers,
+                                          const QString& clipId) {
+    thread_local RenderSyncLookupCache cache;
+    const quint64 signature = markerQuickSignature(markers);
+    if (cache.source != &markers || cache.size != markers.size() || cache.signature != signature) {
+        cache.source = &markers;
+        cache.size = markers.size();
+        cache.signature = signature;
+        rebuildRenderSyncLookupCache(cache, markers);
+    }
+    auto it = cache.byClip.constFind(clipId);
+    if (it == cache.byClip.constEnd()) {
+        return nullptr;
+    }
+    return &it.value();
+}
+}
+
+bool isVariableFrameRate(const QString& path) {
+    return detectVariableFrameRate(path);
 }
 
 QString clipMediaTypeToString(ClipMediaType type) {
@@ -354,12 +504,26 @@ qreal samplesToFramePosition(int64_t samples) {
     return static_cast<qreal>(samples) / static_cast<qreal>(kSamplesPerFrame);
 }
 
+qreal resolvedSourceFps(const TimelineClip& clip) {
+    const qreal fps = clip.sourceFps;
+    if (!std::isfinite(fps) || fps <= 0.001) {
+        return static_cast<qreal>(kTimelineFps);
+    }
+    return fps;
+}
+
+int64_t sourceFramesToSamples(const TimelineClip& clip, qreal sourceFrames) {
+    const qreal clampedSourceFrames = qMax<qreal>(0.0, sourceFrames);
+    const qreal durationSeconds = clampedSourceFrames / resolvedSourceFps(clip);
+    return qMax<int64_t>(0, qRound64(durationSeconds * static_cast<qreal>(kAudioSampleRate)));
+}
+
 int64_t clipTimelineStartSamples(const TimelineClip& clip) {
     return frameToSamples(clip.startFrame) + clip.startSubframeSamples;
 }
 
 int64_t clipSourceInSamples(const TimelineClip& clip) {
-    return frameToSamples(clip.sourceInFrame) + clip.sourceInSubframeSamples;
+    return sourceFramesToSamples(clip, static_cast<qreal>(clip.sourceInFrame)) + clip.sourceInSubframeSamples;
 }
 
 void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples) {
@@ -947,29 +1111,20 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
                                               const QVector<RenderSyncMarker>& markers) {
-    int64_t adjustedLocalFrame = qMax<int64_t>(0, localTimelineFrame);
-    int duplicateCarry = 0;
-    for (const RenderSyncMarker& marker : markers) {
-        if (marker.clipId != clip.id) {
-            continue;
-        }
-        const int64_t markerLocalFrame = marker.frame - clip.startFrame;
-        if (markerLocalFrame < 0 || markerLocalFrame >= localTimelineFrame) {
-            continue;
-        }
-        if (duplicateCarry > 0) {
-            adjustedLocalFrame -= 1;
-            duplicateCarry -= 1;
-            continue;
-        }
-        if (marker.action == RenderSyncAction::DuplicateFrame) {
-            adjustedLocalFrame -= 1;
-            duplicateCarry = qMax(0, marker.count - 1);
-        } else if (marker.action == RenderSyncAction::SkipFrame) {
-            adjustedLocalFrame += marker.count;
-        }
+    const int64_t boundedLocalFrame = qMax<int64_t>(0, localTimelineFrame);
+    const RenderSyncClipLookup* lookup = lookupForClip(markers, clip.id);
+    if (!lookup || lookup->timelineFrames.isEmpty()) {
+        return boundedLocalFrame;
     }
-    return adjustedLocalFrame;
+    const int64_t timelineFrame = clip.startFrame + boundedLocalFrame;
+    const auto endIt =
+        std::lower_bound(lookup->timelineFrames.begin(), lookup->timelineFrames.end(), timelineFrame);
+    if (endIt == lookup->timelineFrames.begin()) {
+        return boundedLocalFrame;
+    }
+    const int index = static_cast<int>(std::distance(lookup->timelineFrames.begin(), endIt) - 1);
+    const int delta = lookup->cumulativeDelta[index];
+    return qMax<int64_t>(0, boundedLocalFrame + static_cast<int64_t>(delta));
 }
 
 int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
@@ -982,8 +1137,12 @@ int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
         qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFramePosition)));
     const int64_t adjustedLocalFrame =
         adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
+    const qreal sourceFpsScale =
+        resolvedSourceFps(clip) / static_cast<qreal>(kTimelineFps);
     const qreal sourceFrameOffset =
-        std::floor(static_cast<qreal>(adjustedLocalFrame) * qMax<qreal>(0.001, clip.playbackRate));
+        std::floor(static_cast<qreal>(adjustedLocalFrame) *
+                   qMax<qreal>(0.001, clip.playbackRate) *
+                   sourceFpsScale);
     return qMax<int64_t>(0,
                          qMin<int64_t>(qMax<int64_t>(0, clip.sourceDurationFrames - 1),
                                        clip.sourceInFrame + static_cast<int64_t>(sourceFrameOffset)));
@@ -1011,7 +1170,9 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
     const int64_t sourceSample =
         clipSourceInSamples(clip) + static_cast<int64_t>(sourceSampleOffset);
     const int64_t maxSourceSample =
-        clipSourceInSamples(clip) + qMax<int64_t>(0, frameToSamples(qMax<int64_t>(0, clip.sourceDurationFrames)) - 1);
+        clipSourceInSamples(clip) +
+        qMax<int64_t>(0,
+                      sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames))) - 1);
     return qMax<int64_t>(0, qMin<int64_t>(sourceSample, maxSourceSample));
 }
 
@@ -1057,6 +1218,7 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
 
     if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
         double durationSeconds = 0.0;
+        double sourceFps = 30.0;
         if (formatCtx->duration > 0) {
             durationSeconds = formatCtx->duration / static_cast<double>(AV_TIME_BASE);
         }
@@ -1080,6 +1242,11 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
                 if (descriptor && (descriptor->flags & AV_PIX_FMT_FLAG_ALPHA)) {
                     result.hasAlpha = true;
                 }
+                // Calculate source FPS from the video stream
+                const AVRational framerate = av_guess_frame_rate(formatCtx, const_cast<AVStream*>(stream), nullptr);
+                if (framerate.num > 0 && framerate.den > 0) {
+                    sourceFps = av_q2d(framerate);
+                }
             } else if (stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
                 result.hasAudio = true;
             }
@@ -1092,7 +1259,8 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
         }
 
         if (durationSeconds > 0.0) {
-            result.durationFrames = qMax<int64_t>(1, qRound64(durationSeconds * kTimelineFps));
+            result.durationFrames = qMax<int64_t>(1, qRound64(durationSeconds * sourceFps));
+            result.fps = sourceFps;
         }
     }
 
@@ -1241,8 +1409,23 @@ QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal feather
     return feathered.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 }
 
+qreal effectiveFpsForClip(const TimelineClip& clip) {
+    // If clip has explicit source FPS, use that (considering proxy if available)
+    if (clip.sourceFps > 0) {
+        return clip.sourceFps;
+    }
+    // Otherwise probe the media file
+    const QString mediaPath = playbackMediaPathForClip(clip);
+    if (!mediaPath.isEmpty()) {
+        const MediaProbeResult probe = probeMediaFile(mediaPath, clip.durationFrames);
+        return probe.fps;
+    }
+    return kTimelineFps;
+}
+
 QString playbackProxyPathForClip(const TimelineClip& clip) {
-    if (!clip.proxyPath.isEmpty() && QFileInfo::exists(clip.proxyPath)) {
+    // Validate stored proxy path - must be a valid media file
+    if (!clip.proxyPath.isEmpty() && isValidMediaFile(clip.proxyPath)) {
         return clip.proxyPath;
     }
     if (clip.filePath.isEmpty() || !clipHasVisuals(clip)) {
@@ -1261,6 +1444,7 @@ QString playbackProxyPathForClip(const TimelineClip& clip) {
     const QStringList seqDirCandidates = {
         baseName + QStringLiteral(".proxy"),
         baseName + QStringLiteral("_proxy"),
+        baseName + QStringLiteral("-proxy"),
     };
     for (const QString& dirName : seqDirCandidates) {
         const QString dirPath = sourceDir.filePath(dirName);
@@ -1277,12 +1461,17 @@ QString playbackProxyPathForClip(const TimelineClip& clip) {
         baseName + QStringLiteral("_proxy.mov"),
         baseName + QStringLiteral("_proxy.mp4"),
         baseName + QStringLiteral("_proxy.mkv"),
-        baseName + QStringLiteral("_proxy.webm")
+        baseName + QStringLiteral("_proxy.webm"),
+        baseName + QStringLiteral("-proxy.mov"),
+        baseName + QStringLiteral("-proxy.mp4"),
+        baseName + QStringLiteral("-proxy.mkv"),
+        baseName + QStringLiteral("-proxy.webm"),
     };
 
     for (const QString& candidateName : candidateNames) {
         const QString candidatePath = sourceDir.filePath(candidateName);
-        if (QFileInfo::exists(candidatePath)) {
+        const QFileInfo candidateInfo(candidatePath);
+        if (candidateInfo.exists() && isValidMediaFile(candidatePath)) {
             return candidatePath;
         }
     }
@@ -1297,7 +1486,8 @@ QString playbackProxyPathForClip(const TimelineClip& clip) {
         };
         for (const QString& suffix : proxySuffixes) {
             const QString candidatePath = proxiesDir.filePath(baseName + suffix);
-            if (QFileInfo::exists(candidatePath)) {
+            const QFileInfo candidateInfo(candidatePath);
+            if (candidateInfo.exists() && isValidMediaFile(candidatePath)) {
                 return candidatePath;
             }
         }

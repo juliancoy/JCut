@@ -11,6 +11,81 @@
 
 namespace editor
 {
+namespace {
+
+QVector<ExportRangeSegment> mergeRanges(const QVector<ExportRangeSegment>& ranges)
+{
+    if (ranges.isEmpty()) {
+        return {};
+    }
+
+    QVector<ExportRangeSegment> sorted = ranges;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const ExportRangeSegment& a, const ExportRangeSegment& b) {
+                  if (a.startFrame == b.startFrame) {
+                      return a.endFrame < b.endFrame;
+                  }
+                  return a.startFrame < b.startFrame;
+              });
+
+    QVector<ExportRangeSegment> merged;
+    for (const ExportRangeSegment& range : sorted) {
+        if (merged.isEmpty() || range.startFrame > merged.constLast().endFrame + 1) {
+            merged.push_back(range);
+        } else {
+            merged.last().endFrame = qMax(merged.last().endFrame, range.endFrame);
+        }
+    }
+    return merged;
+}
+
+QVector<ExportRangeSegment> subtractRanges(const QVector<ExportRangeSegment>& baseRanges,
+                                          const QVector<ExportRangeSegment>& removedRanges)
+{
+    if (baseRanges.isEmpty()) {
+        return {};
+    }
+    if (removedRanges.isEmpty()) {
+        return baseRanges;
+    }
+
+    const QVector<ExportRangeSegment> mergedBase = mergeRanges(baseRanges);
+    const QVector<ExportRangeSegment> mergedRemoved = mergeRanges(removedRanges);
+    QVector<ExportRangeSegment> result;
+
+    int removedIndex = 0;
+    for (const ExportRangeSegment& base : mergedBase) {
+        int64_t cursor = base.startFrame;
+        while (removedIndex < mergedRemoved.size() &&
+               mergedRemoved.at(removedIndex).endFrame < base.startFrame) {
+            ++removedIndex;
+        }
+
+        int currentRemoved = removedIndex;
+        while (currentRemoved < mergedRemoved.size()) {
+            const ExportRangeSegment& removed = mergedRemoved.at(currentRemoved);
+            if (removed.startFrame > base.endFrame) {
+                break;
+            }
+            if (removed.startFrame > cursor) {
+                result.push_back(ExportRangeSegment{cursor, removed.startFrame - 1});
+            }
+            cursor = qMax<int64_t>(cursor, removed.endFrame + 1);
+            if (cursor > base.endFrame) {
+                break;
+            }
+            ++currentRemoved;
+        }
+
+        if (cursor <= base.endFrame) {
+            result.push_back(ExportRangeSegment{cursor, base.endFrame});
+        }
+    }
+
+    return result;
+}
+
+}
 
 QString TranscriptEngine::transcriptPathForClip(const TimelineClip &clip) const
     {
@@ -146,45 +221,27 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
         for (const TimelineClip &clip : clips)
         {
             const QFileInfo transcriptInfo(transcriptPathForClip(clip));
-            cacheSignature += QStringLiteral("clip:%1:%2:%3:%4:%5:%6:%7|")
+            cacheSignature += QStringLiteral("clip:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10|")
                                   .arg(clip.id)
                                   .arg(clip.startFrame)
+                                  .arg(clip.startSubframeSamples)
                                   .arg(clip.durationFrames)
                                   .arg(clip.sourceInFrame)
+                                  .arg(clip.sourceInSubframeSamples)
                                   .arg(clip.sourceDurationFrames)
+                                  .arg(clip.playbackRate, 0, 'g', 12)
                                   .arg(clip.filePath)
                                   .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : -1);
         }
 
-        if (m_transcriptWordRangesCacheSignature == cacheSignature && !m_transcriptWordRangesCache.isEmpty())
+        if (m_transcriptWordRangesCacheSignature == cacheSignature)
         {
-            QVector<ExportRangeSegment> result;
-            for (auto it = m_transcriptWordRangesCache.constBegin(); it != m_transcriptWordRangesCache.constEnd(); ++it)
-            {
-                result.append(it.value());
-            }
-            std::sort(result.begin(), result.end(),
-                      [](const ExportRangeSegment &a, const ExportRangeSegment &b)
-                      {
-                          return a.startFrame < b.startFrame;
-                      });
-            QVector<ExportRangeSegment> merged;
-            for (const auto &range : result)
-            {
-                if (merged.isEmpty() || range.startFrame > merged.last().endFrame + 1)
-                {
-                    merged.append(range);
-                }
-                else
-                {
-                    merged.last().endFrame = qMax(merged.last().endFrame, range.endFrame);
-                }
-            }
-            return merged;
+            return m_transcriptWordRangesMergedCache;
         }
 
         m_transcriptWordRangesCache.clear();
         m_transcriptWordRangesCacheSignature = cacheSignature;
+        m_transcriptWordRangesMergedCache.clear();
 
         QVector<ExportRangeSegment> resolvedBaseRanges = baseRanges;
         if (resolvedBaseRanges.isEmpty())
@@ -198,10 +255,11 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
         }
 
         QVector<ExportRangeSegment> allTranscriptRanges;
+        QVector<ExportRangeSegment> filteredClipCoverage;
 
         for (const TimelineClip &clip : clips)
         {
-            if (clip.durationFrames <= 0)
+            if (clip.mediaType != ClipMediaType::Audio || clip.durationFrames <= 0)
             {
                 continue;
             }
@@ -263,30 +321,13 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
                 continue;
             }
 
+            filteredClipCoverage.push_back(ExportRangeSegment{
+                clip.startFrame,
+                clip.startFrame + clip.durationFrames - 1,
+            });
+
             // Sort and merge overlapping word ranges at source level
-            std::sort(sourceWordRanges.begin(), sourceWordRanges.end(),
-                      [](const ExportRangeSegment &a, const ExportRangeSegment &b)
-                      {
-                          if (a.startFrame == b.startFrame)
-                          {
-                              return a.endFrame < b.endFrame;
-                          }
-                          return a.startFrame < b.startFrame;
-                      });
-            QVector<ExportRangeSegment> mergedSourceWordRanges;
-            for (const ExportRangeSegment &wordRange : std::as_const(sourceWordRanges))
-            {
-                if (mergedSourceWordRanges.isEmpty() ||
-                    wordRange.startFrame > mergedSourceWordRanges.constLast().endFrame + 1)
-                {
-                    mergedSourceWordRanges.push_back(wordRange);
-                }
-                else
-                {
-                    mergedSourceWordRanges.last().endFrame =
-                        qMax(mergedSourceWordRanges.last().endFrame, wordRange.endFrame);
-                }
-            }
+            const QVector<ExportRangeSegment> mergedSourceWordRanges = mergeRanges(sourceWordRanges);
 
             QVector<ExportRangeSegment> clipTimelineRanges;
 
@@ -334,30 +375,18 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
         }
 
         // Sort and merge all ranges from all clips
-        std::sort(allTranscriptRanges.begin(), allTranscriptRanges.end(),
-                  [](const ExportRangeSegment &a, const ExportRangeSegment &b)
-                  {
-                      return a.startFrame < b.startFrame;
-                  });
-        QVector<ExportRangeSegment> merged;
-        for (const auto &range : allTranscriptRanges)
-        {
-            if (merged.isEmpty() || range.startFrame > merged.last().endFrame + 1)
-            {
-                merged.append(range);
-            }
-            else
-            {
-                merged.last().endFrame = qMax(merged.last().endFrame, range.endFrame);
-            }
-        }
-        return merged;
+        const QVector<ExportRangeSegment> passthroughRanges =
+            subtractRanges(resolvedBaseRanges, filteredClipCoverage);
+        allTranscriptRanges += passthroughRanges;
+        m_transcriptWordRangesMergedCache = mergeRanges(allTranscriptRanges);
+        return m_transcriptWordRangesMergedCache;
     }
 
 void TranscriptEngine::invalidateCache()
 {
     m_transcriptWordRangesCache.clear();
     m_transcriptWordRangesCacheSignature.clear();
+    m_transcriptWordRangesMergedCache.clear();
 }
 
 } // namespace editor
