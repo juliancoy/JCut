@@ -17,6 +17,7 @@
 #include "grading_tab.h"
 #include "opacity_tab.h"
 #include "effects_tab.h"
+#include "corrections_tab.h"
 #include "titles_tab.h"
 #include "video_keyframe_tab.h"
 #include "clips_tab.h"
@@ -203,6 +204,7 @@ private:
     void createGradingTab();
     void createOpacityTab();
     void createEffectsTab();
+    void createCorrectionsTab();
     void createTitlesTab();
     void createVideoKeyframeTab();
     void createClipsTab();
@@ -364,6 +366,7 @@ private:
     std::unique_ptr<GradingTab> m_gradingTab;
     std::unique_ptr<OpacityTab> m_opacityTab;
     std::unique_ptr<EffectsTab> m_effectsTab;
+    std::unique_ptr<CorrectionsTab> m_correctionsTab;
     std::unique_ptr<TitlesTab> m_titlesTab;
     std::unique_ptr<VideoKeyframeTab> m_videoKeyframeTab;
     std::unique_ptr<OutputTab> m_outputTab;

@@ -69,6 +69,7 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
     m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
     m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
+    m_inspectorTabs->addTab(buildCorrectionsTab(), QStringLiteral("Corrections"));
     m_inspectorTabs->addTab(buildTitlesTab(), QStringLiteral("Titles"));
     m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
     m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
@@ -110,16 +111,17 @@ void InspectorPane::configureInspectorTabs()
         {0, QStyle::SP_DriveDVDIcon, "Grade: clip color and grading keyframes"},
         {1, QStyle::SP_BrowserStop, "Opacity: clip opacity keyframes and fades"},
         {2, QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
-        {3, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
-        {4, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
-        {5, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
-        {6, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
-        {7, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {8, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
-        {9, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {10, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {11, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {12, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {3, QStyle::SP_DriveFDIcon, "Corrections: draw polygon erase masks for visual artifacts"},
+        {4, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
+        {5, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
+        {6, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
+        {7, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
+        {8, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
+        {9, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
+        {10, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
+        {11, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {12, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {13, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -390,6 +392,50 @@ QWidget *InspectorPane::buildEffectsTab()
     infoLabel->setWordWrap(true);
     infoLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
     layout->addWidget(infoLabel);
+
+    layout->addStretch(1);
+    return page;
+}
+
+QWidget *InspectorPane::buildCorrectionsTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+    layout->addWidget(createTabHeading(QStringLiteral("Corrections"), page));
+
+    m_correctionsClipLabel = new QLabel(QStringLiteral("No clip selected"), page);
+    m_correctionsClipLabel->setWordWrap(true);
+    layout->addWidget(m_correctionsClipLabel);
+
+    m_correctionsStatusLabel = new QLabel(QStringLiteral("Select a visual clip to add erase polygons."), page);
+    m_correctionsStatusLabel->setWordWrap(true);
+    layout->addWidget(m_correctionsStatusLabel);
+
+    m_correctionsDrawModeCheck = new QCheckBox(QStringLiteral("Draw Polygons In Preview"), page);
+    m_correctionsDrawModeCheck->setChecked(false);
+    m_correctionsDrawModeCheck->setToolTip(
+        QStringLiteral("Click 3 or more points on the clip in preview, then close polygon."));
+    layout->addWidget(m_correctionsDrawModeCheck);
+
+    m_correctionsClosePolygonButton = new QPushButton(QStringLiteral("Close Polygon"), page);
+    m_correctionsCancelDraftButton = new QPushButton(QStringLiteral("Cancel Draft"), page);
+    m_correctionsDeleteLastButton = new QPushButton(QStringLiteral("Delete Last Polygon"), page);
+    m_correctionsClearAllButton = new QPushButton(QStringLiteral("Clear All Polygons"), page);
+
+    layout->addWidget(m_correctionsClosePolygonButton);
+    layout->addWidget(m_correctionsCancelDraftButton);
+    layout->addSpacing(8);
+    layout->addWidget(m_correctionsDeleteLastButton);
+    layout->addWidget(m_correctionsClearAllButton);
+
+    auto *hintLabel = new QLabel(
+        QStringLiteral("Polygons erase alpha inside their shape. Use for webp sequence cleanup artifacts."),
+        page);
+    hintLabel->setWordWrap(true);
+    hintLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-size: 11px; }"));
+    layout->addWidget(hintLabel);
 
     layout->addStretch(1);
     return page;

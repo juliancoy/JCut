@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QImage>
+#include <QPointF>
 #include <QStringList>
 #include <QString>
 #include <QVector>
@@ -103,6 +104,11 @@ struct TimelineClip {
         bool linearInterpolation = true;
     };
 
+    struct CorrectionPolygon {
+        QVector<QPointF> pointsNormalized;
+        bool enabled = true;
+    };
+
     QString id;
     QString filePath;
     QString proxyPath;
@@ -141,6 +147,7 @@ struct TimelineClip {
     bool locked = false;    // When true, prevents temporal adjustments
     qreal maskFeather = 0.0; // Mask feathering radius in pixels (0 = disabled, only applies to clips with alpha)
     qreal maskFeatherGamma = 1.0; // Feather curve power (1.0 = linear, <1.0 = sharper edges, >1.0 = softer edges)
+    QVector<CorrectionPolygon> correctionPolygons; // Erase polygons in normalized source coordinates.
 };
 
 struct TimelineTrack {
@@ -208,6 +215,7 @@ struct EffectiveVisualEffects {
     TimelineClip::GradingKeyframe grading;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;
+    QVector<TimelineClip::CorrectionPolygon> correctionPolygons;
 };
 
 #ifdef __APPLE__
@@ -237,6 +245,7 @@ QString renderSyncActionLabel(RenderSyncAction action);
 
 bool clipHasVisuals(const TimelineClip& clip);
 bool clipIsAudioOnly(const TimelineClip& clip);
+bool clipHasCorrections(const TimelineClip& clip);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip);
 TrackVisualMode trackVisualModeForClip(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);

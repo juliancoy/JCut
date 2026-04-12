@@ -6,6 +6,7 @@
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
 #include "editor_shared.h"
+#include "debug_controls.h"
 #include "visual_effects_shader.h"
 
 #include <QOpenGLContext>
@@ -54,7 +55,17 @@ void PreviewWindow::initializeGL() {
 
 void PreviewWindow::resizeGL(int w, int h) { Q_UNUSED(w) Q_UNUSED(h) }
 
-bool PreviewWindow::usingCpuFallback() const { return !context() || !isValid() || !m_shaderProgram; }
+bool PreviewWindow::usingCpuFallback() const {
+    if (!context() || !isValid() || !m_shaderProgram) {
+        return true;
+    }
+    for (const TimelineClip& clip : m_clips) {
+        if (clipHasCorrections(clip)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 void PreviewWindow::releaseGlResources() {
     if (m_glResourcesReleased) return;
@@ -309,11 +320,14 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                 selection = QStringLiteral("presentation");
             }
         } else {
-            frame = exactFrame.isNull() && m_cache
-                        ? (m_playing
-                               ? m_cache->getLatestCachedFrame(clip.id, localFrame)
-                               : m_cache->getBestCachedFrame(clip.id, localFrame))
-                        : exactFrame;
+            frame = exactFrame;
+            if (frame.isNull() && m_cache) {
+                frame = m_playing ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                                  : m_cache->getBestCachedFrame(clip.id, localFrame);
+                if (frame.isNull() && editor::debugPlaybackCacheFallbackEnabled()) {
+                    frame = m_cache->getBestCachedFrame(clip.id, localFrame);
+                }
+            }
             if (!frame.isNull()) {
                 if (!exactFrame.isNull() && frame == exactFrame) {
                     ++exactCount;

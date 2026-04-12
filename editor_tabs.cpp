@@ -216,6 +216,41 @@ void EditorWindow::createEffectsTab()
     m_effectsTab->wire();
 }
 
+void EditorWindow::createCorrectionsTab()
+{
+    m_correctionsTab = std::make_unique<CorrectionsTab>(
+        CorrectionsTab::Widgets{
+            m_inspectorPane->correctionsClipLabel(),
+            m_inspectorPane->correctionsStatusLabel(),
+            m_inspectorPane->correctionsDrawModeCheck(),
+            m_inspectorPane->correctionsClosePolygonButton(),
+            m_inspectorPane->correctionsCancelDraftButton(),
+            m_inspectorPane->correctionsDeleteLastButton(),
+            m_inspectorPane->correctionsClearAllButton()},
+        CorrectionsTab::Dependencies{
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
+                return m_timeline ? m_timeline->updateClipById(id, updater) : false;
+            },
+            [this]() {
+                if (m_preview && m_timeline) {
+                    m_preview->setTimelineTracks(m_timeline->tracks());
+                    m_preview->setTimelineClips(m_timeline->clips());
+                }
+            },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refresh(); },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); },
+            [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
+            [this](bool enabled) { if (m_preview) m_preview->setCorrectionDrawMode(enabled); },
+            [this](const QVector<QPointF>& points) {
+                if (m_preview) {
+                    m_preview->setCorrectionDraftPoints(points);
+                }
+            }});
+    m_correctionsTab->wire();
+}
+
 void EditorWindow::createTitlesTab()
 {
     m_titlesTab = std::make_unique<TitlesTab>(
@@ -319,6 +354,7 @@ void EditorWindow::setupTabs()
     createGradingTab();
     createOpacityTab();
     createEffectsTab();
+    createCorrectionsTab();
     createTitlesTab();
     createVideoKeyframeTab();
     createClipsTab();
@@ -330,6 +366,7 @@ void EditorWindow::setupInspectorRefreshRouting()
         m_gradingTab->refresh();
         if (m_opacityTab) m_opacityTab->refresh();
         m_effectsTab->refresh();
+        if (m_correctionsTab) m_correctionsTab->refresh();
         m_titlesTab->refresh();
         refreshSyncInspector();
         m_transcriptTab->refresh();

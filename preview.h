@@ -48,6 +48,9 @@ public:
     void setBypassGrading(bool bypass);
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
+    void setCorrectionDrawMode(bool enabled) { m_correctionDrawMode = enabled; }
+    bool correctionDrawMode() const { return m_correctionDrawMode; }
+    void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_correctionDraftPoints = points; update(); }
     qreal previewZoom() const { return m_previewZoom; }
     void resetPreviewPan() { m_previewPanOffset = QPointF(); }
     QSize outputSize() const { return m_outputSize; }
@@ -64,6 +67,7 @@ public:
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested;
     std::function<void(const QString&)> createKeyframeRequested;
+    std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -200,4 +204,6 @@ private:
     QPointF m_dragOriginPos;
     QRectF m_dragOriginBounds;
     TimelineClip::TransformKeyframe m_dragOriginTransform;
+    bool m_correctionDrawMode = false;
+    QVector<QPointF> m_correctionDraftPoints;
 };

@@ -122,6 +122,24 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("locked")] = clip.locked;
         obj[QStringLiteral("maskFeather")] = clip.maskFeather;
         obj[QStringLiteral("maskFeatherGamma")] = clip.maskFeatherGamma;
+        QJsonArray correctionPolygons;
+        for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+            if (polygon.pointsNormalized.size() < 3) {
+                continue;
+            }
+            QJsonObject polygonObj;
+            polygonObj[QStringLiteral("enabled")] = polygon.enabled;
+            QJsonArray points;
+            for (const QPointF& point : polygon.pointsNormalized) {
+                QJsonObject pointObj;
+                pointObj[QStringLiteral("x")] = point.x();
+                pointObj[QStringLiteral("y")] = point.y();
+                points.push_back(pointObj);
+            }
+            polygonObj[QStringLiteral("points")] = points;
+            correctionPolygons.push_back(polygonObj);
+        }
+        obj[QStringLiteral("correctionPolygons")] = correctionPolygons;
         return obj;
     }
 
@@ -322,6 +340,29 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
         clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));
         clip.maskFeatherGamma = qBound(0.1, obj.value(QStringLiteral("maskFeatherGamma")).toDouble(2.0), 5.0);
+        const QJsonArray correctionPolygons = obj.value(QStringLiteral("correctionPolygons")).toArray();
+        for (const QJsonValue& polygonValue : correctionPolygons) {
+            if (!polygonValue.isObject()) {
+                continue;
+            }
+            const QJsonObject polygonObj = polygonValue.toObject();
+            TimelineClip::CorrectionPolygon polygon;
+            polygon.enabled = polygonObj.value(QStringLiteral("enabled")).toBool(true);
+            const QJsonArray points = polygonObj.value(QStringLiteral("points")).toArray();
+            polygon.pointsNormalized.reserve(points.size());
+            for (const QJsonValue& pointValue : points) {
+                if (!pointValue.isObject()) {
+                    continue;
+                }
+                const QJsonObject pointObj = pointValue.toObject();
+                const qreal x = qBound<qreal>(0.0, pointObj.value(QStringLiteral("x")).toDouble(0.0), 1.0);
+                const qreal y = qBound<qreal>(0.0, pointObj.value(QStringLiteral("y")).toDouble(0.0), 1.0);
+                polygon.pointsNormalized.push_back(QPointF(x, y));
+            }
+            if (polygon.pointsNormalized.size() >= 3) {
+                clip.correctionPolygons.push_back(polygon);
+            }
+        }
         const QJsonArray titleKeyframesArr = obj.value(QStringLiteral("titleKeyframes")).toArray();
         for (const QJsonValue &value : titleKeyframesArr)
         {

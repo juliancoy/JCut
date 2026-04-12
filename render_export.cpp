@@ -34,9 +34,20 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         totalFramesToRender += (exportEnd - exportStart + 1);
     }
     const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips, request.tracks);
+    bool hasCorrectionPolygons = false;
+    for (const TimelineClip& clip : orderedClips) {
+        if (clipHasCorrections(clip)) {
+            hasCorrectionPolygons = true;
+            break;
+        }
+    }
     QString gpuInitializationError;
     OffscreenGpuRenderer gpuRenderer;
-    const bool useGpuRenderer = gpuRenderer.initialize(request.outputSize, &gpuInitializationError);
+    const bool gpuInitialized = gpuRenderer.initialize(request.outputSize, &gpuInitializationError);
+    const bool useGpuRenderer = gpuInitialized && !hasCorrectionPolygons;
+    if (gpuInitialized && hasCorrectionPolygons) {
+        gpuInitializationError = QStringLiteral("disabled: correction polygons require CPU compositing path");
+    }
     result.usedGpu = useGpuRenderer;
 
     AVFormatContext* formatCtx = nullptr;

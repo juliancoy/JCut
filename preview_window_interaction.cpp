@@ -23,6 +23,31 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
+    if (m_correctionDrawMode) {
+        const QString hitClipId = clipIdAtPosition(event->position());
+        if (!hitClipId.isEmpty()) {
+            if (m_selectedClipId != hitClipId) {
+                m_selectedClipId = hitClipId;
+                if (selectionRequested) {
+                    selectionRequested(hitClipId);
+                }
+            }
+            const PreviewOverlayInfo info = m_overlayInfo.value(hitClipId);
+            if (info.bounds.isValid() && info.bounds.width() > 1.0 && info.bounds.height() > 1.0) {
+                const qreal xNorm = qBound<qreal>(0.0,
+                    (event->position().x() - info.bounds.left()) / info.bounds.width(), 1.0);
+                const qreal yNorm = qBound<qreal>(0.0,
+                    (event->position().y() - info.bounds.top()) / info.bounds.height(), 1.0);
+                if (correctionPointRequested) {
+                    correctionPointRequested(hitClipId, xNorm, yNorm);
+                }
+                update();
+                event->accept();
+                return;
+            }
+        }
+    }
+
     const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
     if (!m_selectedClipId.isEmpty()) {
         if (selectedInfo.cornerHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeBoth;

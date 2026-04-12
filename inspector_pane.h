@@ -87,6 +87,13 @@ public:
     QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
     QDoubleSpinBox *maskFeatherGammaSpin() const { return m_maskFeatherGammaSpin; }
     QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
+    QLabel *correctionsClipLabel() const { return m_correctionsClipLabel; }
+    QLabel *correctionsStatusLabel() const { return m_correctionsStatusLabel; }
+    QCheckBox *correctionsDrawModeCheck() const { return m_correctionsDrawModeCheck; }
+    QPushButton *correctionsClosePolygonButton() const { return m_correctionsClosePolygonButton; }
+    QPushButton *correctionsCancelDraftButton() const { return m_correctionsCancelDraftButton; }
+    QPushButton *correctionsDeleteLastButton() const { return m_correctionsDeleteLastButton; }
+    QPushButton *correctionsClearAllButton() const { return m_correctionsClearAllButton; }
     
     QLabel *syncInspectorClipLabel() const { return m_syncInspectorClipLabel; }
     QLabel *syncInspectorDetailsLabel() const { return m_syncInspectorDetailsLabel; }
@@ -182,6 +189,7 @@ private:
     QWidget *buildGradingTab();
     QWidget *buildOpacityTab();
     QWidget *buildEffectsTab();
+    QWidget *buildCorrectionsTab();
     QWidget *buildTitlesTab();
     QWidget *buildSyncTab();
     QWidget *buildKeyframesTab();
@@ -233,6 +241,13 @@ private:
     QDoubleSpinBox *m_maskFeatherSpin = nullptr;
     QDoubleSpinBox *m_maskFeatherGammaSpin = nullptr;
     QCheckBox *m_maskFeatherEnabledCheck = nullptr;
+    QLabel *m_correctionsClipLabel = nullptr;
+    QLabel *m_correctionsStatusLabel = nullptr;
+    QCheckBox *m_correctionsDrawModeCheck = nullptr;
+    QPushButton *m_correctionsClosePolygonButton = nullptr;
+    QPushButton *m_correctionsCancelDraftButton = nullptr;
+    QPushButton *m_correctionsDeleteLastButton = nullptr;
+    QPushButton *m_correctionsClearAllButton = nullptr;
 
     QLabel *m_syncInspectorClipLabel = nullptr;
     QLabel *m_syncInspectorDetailsLabel = nullptr;

@@ -11,6 +11,8 @@
 #include <QHash>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QPainter>
+#include <QPainterPath>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -472,6 +474,15 @@ bool clipHasAlpha(const TimelineClip& clip) {
 
 bool clipIsAudioOnly(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio;
+}
+
+bool clipHasCorrections(const TimelineClip& clip) {
+    for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+        if (polygon.enabled && polygon.pointsNormalized.size() >= 3) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool clipVisualPlaybackEnabled(const TimelineClip& clip) {
@@ -1095,6 +1106,7 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip&
     effects.grading = evaluateEffectiveClipGradingAtFrame(clip, tracks, timelineFrame);
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
+    effects.correctionPolygons = clip.correctionPolygons;
     return effects;
 }
 
@@ -1105,6 +1117,7 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
     effects.grading = evaluateEffectiveClipGradingAtPosition(clip, tracks, timelineFramePosition);
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
+    effects.correctionPolygons = clip.correctionPolygons;
     return effects;
 }
 
@@ -1355,6 +1368,35 @@ QImage applyClipGrade(const QImage& source, const TimelineClip& clip) {
 
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects) {
     QImage output = applyClipGrade(source, effects.grading);
+    if (!effects.correctionPolygons.isEmpty() && !output.isNull()) {
+        output = output.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        QPainter painter(&output);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        painter.setBrush(Qt::black);
+        painter.setPen(Qt::NoPen);
+        const qreal width = qMax<qreal>(1.0, output.width());
+        const qreal height = qMax<qreal>(1.0, output.height());
+        for (const TimelineClip::CorrectionPolygon& polygon : effects.correctionPolygons) {
+            if (!polygon.enabled || polygon.pointsNormalized.size() < 3) {
+                continue;
+            }
+            QPainterPath path;
+            const QPointF first(
+                qBound<qreal>(0.0, polygon.pointsNormalized.constFirst().x(), 1.0) * width,
+                qBound<qreal>(0.0, polygon.pointsNormalized.constFirst().y(), 1.0) * height);
+            path.moveTo(first);
+            for (int i = 1; i < polygon.pointsNormalized.size(); ++i) {
+                const QPointF point(
+                    qBound<qreal>(0.0, polygon.pointsNormalized[i].x(), 1.0) * width,
+                    qBound<qreal>(0.0, polygon.pointsNormalized[i].y(), 1.0) * height);
+                path.lineTo(point);
+            }
+            path.closeSubpath();
+            painter.drawPath(path);
+        }
+        painter.end();
+    }
     if (effects.maskFeather > 0.0) {
         output = applyMaskFeather(output, effects.maskFeather, effects.maskFeatherGamma);
     }

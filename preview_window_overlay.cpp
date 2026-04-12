@@ -177,6 +177,66 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         }
     }
 
+    for (const TimelineClip& clip : activeClips) {
+        const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
+        if (clip.id != m_selectedClipId || !info.bounds.isValid() || clip.correctionPolygons.isEmpty()) {
+            continue;
+        }
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(QColor(255, 92, 92, 220), 2.0));
+        painter->setBrush(QColor(255, 92, 92, 48));
+        for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+            if (!polygon.enabled || polygon.pointsNormalized.size() < 3) {
+                continue;
+            }
+            QPainterPath path;
+            const QPointF first(
+                info.bounds.left() + (polygon.pointsNormalized.constFirst().x() * info.bounds.width()),
+                info.bounds.top() + (polygon.pointsNormalized.constFirst().y() * info.bounds.height()));
+            path.moveTo(first);
+            for (int i = 1; i < polygon.pointsNormalized.size(); ++i) {
+                const QPointF point(
+                    info.bounds.left() + (polygon.pointsNormalized[i].x() * info.bounds.width()),
+                    info.bounds.top() + (polygon.pointsNormalized[i].y() * info.bounds.height()));
+                path.lineTo(point);
+            }
+            path.closeSubpath();
+            painter->drawPath(path);
+        }
+        painter->restore();
+    }
+
+    if (!m_correctionDraftPoints.isEmpty()) {
+        const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
+        if (info.bounds.isValid()) {
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            painter->setPen(QPen(QColor(255, 200, 64, 230), 2.0, Qt::DashLine));
+            painter->setBrush(QColor(255, 200, 64, 64));
+            QPolygonF polygon;
+            polygon.reserve(m_correctionDraftPoints.size());
+            for (const QPointF& pointNorm : m_correctionDraftPoints) {
+                polygon.push_back(QPointF(
+                    info.bounds.left() + (pointNorm.x() * info.bounds.width()),
+                    info.bounds.top() + (pointNorm.y() * info.bounds.height())));
+            }
+            if (!polygon.isEmpty()) {
+                if (polygon.size() >= 3) {
+                    painter->drawPolygon(polygon);
+                } else {
+                    painter->drawPolyline(polygon);
+                }
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor(255, 200, 64, 255));
+                for (const QPointF& p : polygon) {
+                    painter->drawEllipse(p, 3.0, 3.0);
+                }
+            }
+            painter->restore();
+        }
+    }
+
     QList<TimelineClip> activeAudioClips;
     for (const TimelineClip& clip : m_clips) {
         if (clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample)) {
