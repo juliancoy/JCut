@@ -64,6 +64,36 @@ QPointF PreviewWindow::previewCanvasScale(const QRect& targetRect) const {
                    targetRect.height() / qMax<qreal>(1.0, output.height()));
 }
 
+QPointF PreviewWindow::mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info,
+                                                      const QPointF& normalizedPoint) const {
+    const qreal x = qBound<qreal>(0.0, normalizedPoint.x(), 1.0);
+    const qreal y = qBound<qreal>(0.0, normalizedPoint.y(), 1.0);
+    if (info.clipPixelSize.width() > 1.0 && info.clipPixelSize.height() > 1.0) {
+        const QPointF localPoint((x - 0.5) * info.clipPixelSize.width(),
+                                 (y - 0.5) * info.clipPixelSize.height());
+        return info.clipTransform.map(localPoint);
+    }
+    return QPointF(info.bounds.left() + (x * info.bounds.width()),
+                   info.bounds.top() + (y * info.bounds.height()));
+}
+
+QPointF PreviewWindow::mapScreenPointToNormalizedClip(const PreviewOverlayInfo& info,
+                                                      const QPointF& screenPoint) const {
+    if (info.clipPixelSize.width() > 1.0 && info.clipPixelSize.height() > 1.0 && !info.clipTransform.isIdentity()) {
+        bool invertible = false;
+        const QTransform inverse = info.clipTransform.inverted(&invertible);
+        if (invertible) {
+            const QPointF localPoint = inverse.map(screenPoint);
+            return QPointF(
+                qBound<qreal>(0.0, (localPoint.x() / info.clipPixelSize.width()) + 0.5, 1.0),
+                qBound<qreal>(0.0, (localPoint.y() / info.clipPixelSize.height()) + 0.5, 1.0));
+        }
+    }
+    return QPointF(
+        qBound<qreal>(0.0, (screenPoint.x() - info.bounds.left()) / qMax<qreal>(1.0, info.bounds.width()), 1.0),
+        qBound<qreal>(0.0, (screenPoint.y() - info.bounds.top()) / qMax<qreal>(1.0, info.bounds.height()), 1.0));
+}
+
 void PreviewWindow::drawBackground(QPainter* painter) {
     const float phase = std::fmod(static_cast<float>(m_currentFramePosition), 180.0f) / 179.0f;
     const float clipFactor = qBound(0.0f, static_cast<float>(m_clipCount) / 8.0f, 1.0f);
@@ -198,6 +228,13 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                 visiblePolygons.push_back(selected);
             }
             if (visiblePolygons.isEmpty()) {
+                for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+                    if (polygon.pointsNormalized.size() >= 3) {
+                        visiblePolygons.push_back(polygon);
+                    }
+                }
+            }
+            if (visiblePolygons.isEmpty()) {
                 continue;
             }
             painter->save();
@@ -206,14 +243,10 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
             painter->setBrush(QColor(255, 92, 92, 48));
             for (const TimelineClip::CorrectionPolygon& polygon : visiblePolygons) {
                 QPainterPath path;
-                const QPointF first(
-                    info.bounds.left() + (polygon.pointsNormalized.constFirst().x() * info.bounds.width()),
-                    info.bounds.top() + (polygon.pointsNormalized.constFirst().y() * info.bounds.height()));
+                const QPointF first = mapNormalizedClipPointToScreen(info, polygon.pointsNormalized.constFirst());
                 path.moveTo(first);
                 for (int i = 1; i < polygon.pointsNormalized.size(); ++i) {
-                    const QPointF point(
-                        info.bounds.left() + (polygon.pointsNormalized[i].x() * info.bounds.width()),
-                        info.bounds.top() + (polygon.pointsNormalized[i].y() * info.bounds.height()));
+                    const QPointF point = mapNormalizedClipPointToScreen(info, polygon.pointsNormalized[i]);
                     path.lineTo(point);
                 }
                 path.closeSubpath();
@@ -221,35 +254,33 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
             }
             painter->restore();
         }
+    }
 
-        if (!m_correctionDraftPoints.isEmpty()) {
-            const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
-            if (info.bounds.isValid()) {
-                painter->save();
-                painter->setRenderHint(QPainter::Antialiasing, true);
-                painter->setPen(QPen(QColor(255, 200, 64, 230), 2.0, Qt::DashLine));
-                painter->setBrush(QColor(255, 200, 64, 64));
-                QPolygonF polygon;
-                polygon.reserve(m_correctionDraftPoints.size());
-                for (const QPointF& pointNorm : m_correctionDraftPoints) {
-                    polygon.push_back(QPointF(
-                        info.bounds.left() + (pointNorm.x() * info.bounds.width()),
-                        info.bounds.top() + (pointNorm.y() * info.bounds.height())));
-                }
-                if (!polygon.isEmpty()) {
-                    if (polygon.size() >= 3) {
-                        painter->drawPolygon(polygon);
-                    } else {
-                        painter->drawPolyline(polygon);
-                    }
-                    painter->setPen(Qt::NoPen);
-                    painter->setBrush(QColor(255, 200, 64, 255));
-                    for (const QPointF& p : polygon) {
-                        painter->drawEllipse(p, 3.0, 3.0);
-                    }
-                }
-                painter->restore();
+    if (!m_correctionDraftPoints.isEmpty() && (m_showCorrectionOverlays || m_correctionDrawMode)) {
+        const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
+        if (info.bounds.isValid()) {
+            painter->save();
+            painter->setRenderHint(QPainter::Antialiasing, true);
+            painter->setPen(QPen(QColor(255, 200, 64, 230), 2.0, Qt::DashLine));
+            painter->setBrush(QColor(255, 200, 64, 64));
+            QPolygonF polygon;
+            polygon.reserve(m_correctionDraftPoints.size());
+            for (const QPointF& pointNorm : m_correctionDraftPoints) {
+                polygon.push_back(mapNormalizedClipPointToScreen(info, pointNorm));
             }
+            if (!polygon.isEmpty()) {
+                if (polygon.size() >= 3) {
+                    painter->drawPolygon(polygon);
+                } else {
+                    painter->drawPolyline(polygon);
+                }
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor(255, 200, 64, 255));
+                for (const QPointF& p : polygon) {
+                    painter->drawEllipse(p, 3.0, 3.0);
+                }
+            }
+            painter->restore();
         }
     }
 
@@ -590,6 +621,8 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
         PreviewOverlayInfo info;
         info.kind = PreviewOverlayKind::VisualClip;
         info.bounds = bounds;
+        info.clipTransform = overlayTransform;
+        info.clipPixelSize = QSizeF(fitted.width(), fitted.height());
         constexpr qreal kHandleSize = 12.0;
         info.rightHandle = QRectF(bounds.right() - kHandleSize,
                                   bounds.center().y() - kHandleSize,

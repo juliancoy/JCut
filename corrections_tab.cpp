@@ -1,6 +1,7 @@
 #include "corrections_tab.h"
 #include "timeline_widget.h"
 
+#include <QMenu>
 #include <QSignalBlocker>
 
 CorrectionsTab::CorrectionsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
@@ -100,6 +101,11 @@ void CorrectionsTab::wire() {
         });
     }
     if (m_widgets.correctionsPolygonTable) {
+        m_widgets.correctionsPolygonTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.correctionsPolygonTable,
+                &QTableWidget::customContextMenuRequested,
+                this,
+                [this](const QPoint& pos) { showPolygonContextMenu(pos); });
         connect(m_widgets.correctionsPolygonTable, &QTableWidget::itemSelectionChanged, this, [this]() {
             if (m_updating) {
                 return;
@@ -173,6 +179,7 @@ void CorrectionsTab::commitDraftPolygon() {
         return;
     }
 
+    const int newPolygonIndex = clip->correctionPolygons.size();
     const QVector<QPointF> polygonPoints = m_draftPoints;
     if (!m_deps.updateClipById(clip->id, [polygonPoints](TimelineClip& editable) {
             TimelineClip::CorrectionPolygon polygon;
@@ -185,6 +192,7 @@ void CorrectionsTab::commitDraftPolygon() {
         return;
     }
 
+    m_selectedPolygon = newPolygonIndex;
     m_draftPoints.clear();
     clearDraftFromPreview();
     if (m_deps.setPreviewTimelineClips) {
@@ -199,7 +207,9 @@ void CorrectionsTab::commitDraftPolygon() {
     if (m_deps.refreshInspector) {
         m_deps.refreshInspector();
     }
-    m_selectedPolygon = clip->correctionPolygons.size();
+    if (m_deps.setSelectedCorrectionPolygon) {
+        m_deps.setSelectedCorrectionPolygon(m_selectedPolygon);
+    }
 }
 
 void CorrectionsTab::handlePreviewPoint(const QString& clipId, qreal xNorm, qreal yNorm) {
@@ -345,6 +355,75 @@ int CorrectionsTab::selectedPolygonIndex() const {
         return item->data(Qt::UserRole).toInt();
     }
     return row;
+}
+
+void CorrectionsTab::showPolygonContextMenu(const QPoint& pos) {
+    if (!m_widgets.correctionsPolygonTable || !m_deps.getSelectedClip) {
+        return;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip();
+    if (!clip || clip->correctionPolygons.isEmpty()) {
+        return;
+    }
+
+    const QModelIndex modelIndex = m_widgets.correctionsPolygonTable->indexAt(pos);
+    if (!modelIndex.isValid()) {
+        return;
+    }
+    const int row = modelIndex.row();
+    QTableWidgetItem* rowItem = m_widgets.correctionsPolygonTable->item(row, 0);
+    const int polygonIndex = rowItem ? rowItem->data(Qt::UserRole).toInt() : row;
+    if (polygonIndex < 0 || polygonIndex >= clip->correctionPolygons.size()) {
+        return;
+    }
+
+    QMenu menu(m_widgets.correctionsPolygonTable);
+    QAction* deleteAction = menu.addAction(QStringLiteral("Delete Polygon"));
+    QAction* chosen = menu.exec(m_widgets.correctionsPolygonTable->viewport()->mapToGlobal(pos));
+    if (chosen == deleteAction) {
+        deletePolygonAtIndex(polygonIndex);
+    }
+}
+
+void CorrectionsTab::deletePolygonAtIndex(int polygonIndex) {
+    if (!m_deps.getSelectedClip || !m_deps.updateClipById) {
+        return;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip();
+    if (!clip || polygonIndex < 0 || polygonIndex >= clip->correctionPolygons.size()) {
+        return;
+    }
+
+    if (!m_deps.updateClipById(clip->id, [polygonIndex](TimelineClip& editable) {
+            if (polygonIndex < 0 || polygonIndex >= editable.correctionPolygons.size()) {
+                return;
+            }
+            editable.correctionPolygons.removeAt(polygonIndex);
+        })) {
+        return;
+    }
+
+    const int remainingCount = qMax(0, clip->correctionPolygons.size() - 1);
+    if (remainingCount <= 0) {
+        m_selectedPolygon = -1;
+    } else {
+        m_selectedPolygon = qMin(m_selectedPolygon, remainingCount - 1);
+    }
+
+    if (m_deps.setPreviewTimelineClips) {
+        m_deps.setPreviewTimelineClips();
+    }
+    if (m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
+    }
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
+    if (m_deps.refreshInspector) {
+        m_deps.refreshInspector();
+    } else {
+        refresh();
+    }
 }
 
 void CorrectionsTab::refreshPolygonTable(const TimelineClip* clip) {

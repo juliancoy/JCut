@@ -4,6 +4,7 @@
 #include <QCheckBox>
 #include <QLabel>
 #include <QPointF>
+#include <QPoint>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QVector>
@@ -61,6 +62,8 @@ private:
     void clearDraftFromPreview();
     void syncDraftToPreview();
     void setDrawingEnabled(bool enabled);
+    void showPolygonContextMenu(const QPoint& pos);
+    void deletePolygonAtIndex(int polygonIndex);
     void refreshPolygonTable(const TimelineClip* clip);
     void refreshVertexTable(const TimelineClip* clip);
     void applyPolygonCellEdit(QTableWidgetItem* item);

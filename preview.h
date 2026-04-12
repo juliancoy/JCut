@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QHash>
 #include <QJsonObject>
+#include <QTransform>
 #include <deque>
 #include <memory>
 #include <functional>
@@ -51,7 +52,17 @@ public:
     void setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; update(); }
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
-    void setCorrectionDrawMode(bool enabled) { m_correctionDrawMode = enabled; }
+    void setCorrectionDrawMode(bool enabled) {
+        if (m_correctionDrawMode == enabled) {
+            return;
+        }
+        m_correctionDrawMode = enabled;
+        if (m_correctionDrawMode) {
+            m_dragMode = PreviewDragMode::None;
+            m_dragOriginBounds = QRectF();
+        }
+        update();
+    }
     bool correctionDrawMode() const { return m_correctionDrawMode; }
     void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_correctionDraftPoints = points; update(); }
     qreal previewZoom() const { return m_previewZoom; }
@@ -97,6 +108,8 @@ private:
         QRectF rightHandle;
         QRectF bottomHandle;
         QRectF cornerHandle;
+        QTransform clipTransform;
+        QSizeF clipPixelSize;
     };
 
     enum class PreviewDragMode {
@@ -124,7 +137,7 @@ private:
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceSampleForPlaybackSample(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
-    QRectF renderFrameLayerGL(const QRect& targetRect, const TimelineClip& clip, const FrameHandle& frame);
+    PreviewOverlayInfo renderFrameLayerGL(const QRect& targetRect, const TimelineClip& clip, const FrameHandle& frame);
     void renderCompositedPreviewGL(const QRect& compositeRect,
                                    const QList<TimelineClip>& activeClips,
                                    bool& drewAnyFrame,
@@ -152,6 +165,8 @@ private:
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
     QRect fitRect(const QSize& source, const QRect& bounds) const;
+    QPointF mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info, const QPointF& normalizedPoint) const;
+    QPointF mapScreenPointToNormalizedClip(const PreviewOverlayInfo& info, const QPointF& screenPoint) const;
     void drawPreviewChrome(QPainter* painter, const QRect& safeRect, int activeClipCount) const;
     QString clipIdAtPosition(const QPointF& position) const;
     TimelineClip::TransformKeyframe evaluateTransformForSelectedClip() const;

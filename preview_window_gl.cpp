@@ -161,15 +161,19 @@ void PreviewWindow::paintGL() {
     }
 }
 
-QRectF PreviewWindow::renderFrameLayerGL(const QRect& targetRect, const TimelineClip& clip, const FrameHandle& frame) {
+PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect& targetRect,
+                                                                    const TimelineClip& clip,
+                                                                    const FrameHandle& frame) {
+    PreviewOverlayInfo overlayInfo;
+    overlayInfo.kind = PreviewOverlayKind::VisualClip;
     if (!m_shaderProgram) {
-        return QRectF();
+        return overlayInfo;
     }
 
     const QString cacheKey = editor::textureCacheKey(frame);
     const GLuint textureId = textureForFrame(frame);
     if (textureId == 0) {
-        return QRectF();
+        return overlayInfo;
     }
     const editor::GlTextureCacheEntry entry = m_textureCache.value(cacheKey);
 
@@ -319,10 +323,13 @@ QRectF PreviewWindow::renderFrameLayerGL(const QRect& targetRect, const Timeline
     overlayTransform.translate(center.x(), center.y());
     overlayTransform.rotate(transform.rotation);
     overlayTransform.scale(transform.scaleX, transform.scaleY);
-    return overlayTransform.mapRect(QRectF(-fitted.width() / 2.0,
-                                           -fitted.height() / 2.0,
-                                           fitted.width(),
-                                           fitted.height()));
+    overlayInfo.bounds = overlayTransform.mapRect(QRectF(-fitted.width() / 2.0,
+                                                         -fitted.height() / 2.0,
+                                                         fitted.width(),
+                                                         fitted.height()));
+    overlayInfo.clipTransform = overlayTransform;
+    overlayInfo.clipPixelSize = QSizeF(fitted.width(), fitted.height());
+    return overlayInfo;
 }
 
 void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
@@ -488,11 +495,9 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                                              : QStringLiteral("unknown"))}
         });
 
-        const QRectF bounds = renderFrameLayerGL(compositeRect, clip, frame);
-        if (!bounds.isEmpty()) {
-            PreviewOverlayInfo info;
-            info.kind = PreviewOverlayKind::VisualClip;
-            info.bounds = bounds;
+        PreviewOverlayInfo info = renderFrameLayerGL(compositeRect, clip, frame);
+        if (!info.bounds.isEmpty()) {
+            const QRectF bounds = info.bounds;
             constexpr qreal kHandleSize = 12.0;
             info.rightHandle = QRectF(bounds.right() - kHandleSize,
                                       bounds.center().y() - kHandleSize,

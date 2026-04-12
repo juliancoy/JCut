@@ -63,11 +63,12 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorTabs && m_preview) {
+        static constexpr int kCorrectionsTabIndex = 3;
         auto syncCorrectionOverlayVisibility = [this]() {
             bool show = false;
             if (m_inspectorTabs) {
                 const int index = m_inspectorTabs->currentIndex();
-                show = index >= 0 && m_inspectorTabs->tabText(index) == QStringLiteral("Corrections");
+                show = index == kCorrectionsTabIndex;
             }
             if (m_preview) {
                 m_preview->setShowCorrectionOverlays(show);

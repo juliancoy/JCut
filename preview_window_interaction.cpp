@@ -22,7 +22,17 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
     }
 
     if (m_correctionDrawMode) {
-        const QString hitClipId = clipIdAtPosition(event->position());
+        m_dragMode = PreviewDragMode::None;
+        QString hitClipId;
+        if (!m_selectedClipId.isEmpty()) {
+            const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
+            if (selectedInfo.bounds.contains(event->position())) {
+                hitClipId = m_selectedClipId;
+            }
+        }
+        if (hitClipId.isEmpty()) {
+            hitClipId = clipIdAtPosition(event->position());
+        }
         if (!hitClipId.isEmpty()) {
             if (m_selectedClipId != hitClipId) {
                 m_selectedClipId = hitClipId;
@@ -32,18 +42,17 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
             }
             const PreviewOverlayInfo info = m_overlayInfo.value(hitClipId);
             if (info.bounds.isValid() && info.bounds.width() > 1.0 && info.bounds.height() > 1.0) {
-                const qreal xNorm = qBound<qreal>(0.0,
-                    (event->position().x() - info.bounds.left()) / info.bounds.width(), 1.0);
-                const qreal yNorm = qBound<qreal>(0.0,
-                    (event->position().y() - info.bounds.top()) / info.bounds.height(), 1.0);
+                const QPointF normalized = mapScreenPointToNormalizedClip(info, event->position());
                 if (correctionPointRequested) {
-                    correctionPointRequested(hitClipId, xNorm, yNorm);
+                    correctionPointRequested(hitClipId, normalized.x(), normalized.y());
                 }
                 update();
                 event->accept();
                 return;
             }
         }
+        event->accept();
+        return;
     }
 
     const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
@@ -75,6 +84,17 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
 }
 
 void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
+    if (m_correctionDrawMode) {
+        m_dragMode = PreviewDragMode::None;
+        if (event->buttons() & Qt::LeftButton) {
+            event->accept();
+            return;
+        }
+        setCursor(Qt::CrossCursor);
+        QWidget::mouseMoveEvent(event);
+        return;
+    }
+
     if (m_dragMode != PreviewDragMode::None && (event->buttons() & Qt::LeftButton) &&
         !m_selectedClipId.isEmpty() && m_dragOriginBounds.width() > 1.0 && m_dragOriginBounds.height() > 1.0) {
         
@@ -156,6 +176,13 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void PreviewWindow::mouseReleaseEvent(QMouseEvent* event) {
+    if (m_correctionDrawMode && event->button() == Qt::LeftButton) {
+        m_dragMode = PreviewDragMode::None;
+        m_dragOriginBounds = QRectF();
+        event->accept();
+        return;
+    }
+
     if (event->button() == Qt::LeftButton && m_dragMode != PreviewDragMode::None) {
         const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
         const TimelineClip::TransformKeyframe transform = evaluateTransformForSelectedClip();
@@ -278,6 +305,11 @@ TimelineClip::TransformKeyframe PreviewWindow::evaluateTransformForSelectedClip(
 }
 
 void PreviewWindow::updatePreviewCursor(const QPointF& position) {
+    if (m_correctionDrawMode) {
+        setCursor(Qt::CrossCursor);
+        return;
+    }
+
     const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
     if (!m_selectedClipId.isEmpty()) {
         if (info.cornerHandle.contains(position)) {

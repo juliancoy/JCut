@@ -426,12 +426,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     
     if (m_inspectorTabs && m_inspectorTabs->count() > 0) {
+        static constexpr int kCorrectionsTabIndex = 3;
         QSignalBlocker block(m_inspectorTabs);
         m_inspectorTabs->setCurrentIndex(qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1));
         if (m_preview) {
             const int index = m_inspectorTabs->currentIndex();
-            const bool showCorrectionOverlays =
-                index >= 0 && m_inspectorTabs->tabText(index) == QStringLiteral("Corrections");
+            const bool showCorrectionOverlays = index == kCorrectionsTabIndex;
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
