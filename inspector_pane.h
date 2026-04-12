@@ -156,6 +156,7 @@ public:
     QSpinBox *previewVisibleQueueReserveSpin() const { return m_previewVisibleQueueReserveSpin; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
     QTableWidget *clipsTable() const { return m_clipsTable; }
+    QTableWidget *historyTable() const { return m_historyTable; }
     QTableWidget *tracksTable() const { return m_tracksTable; }
     QPushButton *profileBenchmarkButton() const { return m_profileBenchmarkButton; }
     QLabel *projectSectionLabel() const { return m_projectSectionLabel; }
@@ -187,6 +188,7 @@ signals:
 private:
     QWidget *buildPane();
     QWidget *buildGradingTab();
+    QWidget *buildHistoryTab();
     QWidget *buildOpacityTab();
     QWidget *buildEffectsTab();
     QWidget *buildCorrectionsTab();
@@ -321,6 +323,7 @@ private:
     QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QTableWidget *m_clipsTable = nullptr;
+    QTableWidget *m_historyTable = nullptr;
     QTableWidget *m_tracksTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
     QLabel *m_projectSectionLabel = nullptr;

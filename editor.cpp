@@ -217,6 +217,36 @@ void EditorWindow::undoHistory()
     scheduleSaveState();
 }
 
+void EditorWindow::redoHistory()
+{
+    if (m_historyIndex >= m_historyEntries.size() - 1 || m_historyEntries.isEmpty())
+    {
+        return;
+    }
+
+    m_restoringHistory = true;
+    m_historyIndex += 1;
+    applyStateJson(m_historyEntries.at(m_historyIndex).toObject());
+    m_restoringHistory = false;
+    saveHistoryNow();
+    scheduleSaveState();
+}
+
+void EditorWindow::restoreToHistoryIndex(int index)
+{
+    if (index < 0 || index >= m_historyEntries.size())
+    {
+        return;
+    }
+
+    m_restoringHistory = true;
+    m_historyIndex = index;
+    applyStateJson(m_historyEntries.at(m_historyIndex).toObject());
+    m_restoringHistory = false;
+    saveHistoryNow();
+    scheduleSaveState();
+}
+
 void EditorWindow::applyStateJson(const QJsonObject &root)
 {
     m_loadingState = true;

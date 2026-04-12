@@ -1206,7 +1206,7 @@ bool TimelineWidget::deleteTrack(int trackIndex) {
     return true;
 }
 
-bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds) {
+bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds, bool moveClips) {
     if (trackIndex < 0 || seconds <= 0.0) {
         return false;
     }
@@ -1247,19 +1247,26 @@ bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds) {
     const int64_t fadeFrames = qMax<int64_t>(1, qRound64(seconds * static_cast<double>(kTimelineFps)));
     bool changed = false;
 
+    if (moveClips) {
+        for (int i = 0; i + 1 < clipIndices.size(); ++i) {
+            TimelineClip& leftClip = m_clips[clipIndices[i]];
+            TimelineClip& rightClip = m_clips[clipIndices[i + 1]];
+
+            const int64_t leftStartSamples = clipTimelineStartSamples(leftClip);
+            const int64_t leftEndSamples = leftStartSamples + (leftClip.durationFrames * kSamplesPerFrame);
+            const int64_t targetRightStartSamples = qMax<int64_t>(0, leftEndSamples - fadeSamples);
+            if (clipTimelineStartSamples(rightClip) != targetRightStartSamples) {
+                rightClip.startFrame = targetRightStartSamples / kSamplesPerFrame;
+                rightClip.startSubframeSamples = targetRightStartSamples % kSamplesPerFrame;
+                normalizeClipTiming(rightClip);
+                changed = true;
+            }
+        }
+    }
+
     for (int i = 0; i + 1 < clipIndices.size(); ++i) {
         TimelineClip& leftClip = m_clips[clipIndices[i]];
         TimelineClip& rightClip = m_clips[clipIndices[i + 1]];
-
-        const int64_t leftStartSamples = clipTimelineStartSamples(leftClip);
-        const int64_t leftEndSamples = leftStartSamples + (leftClip.durationFrames * kSamplesPerFrame);
-        const int64_t targetRightStartSamples = qMax<int64_t>(0, leftEndSamples - fadeSamples);
-        if (clipTimelineStartSamples(rightClip) != targetRightStartSamples) {
-            rightClip.startFrame = targetRightStartSamples / kSamplesPerFrame;
-            rightClip.startSubframeSamples = targetRightStartSamples % kSamplesPerFrame;
-            normalizeClipTiming(rightClip);
-            changed = true;
-        }
 
         if (leftClip.hasAudio || leftClip.mediaType == ClipMediaType::Audio) {
             if (leftClip.fadeSamples != fadeSamples) {

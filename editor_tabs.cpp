@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "history_tab.h"
 
 #include <QColorDialog>
 
@@ -247,7 +248,9 @@ void EditorWindow::createCorrectionsTab()
                 if (m_preview) {
                     m_preview->setCorrectionDraftPoints(points);
                 }
-            }});
+            },
+            [this](TimelineWidget::ToolMode mode) { if (m_timeline) m_timeline->setToolMode(mode); },
+            [this]() -> TimelineWidget::ToolMode { return m_timeline ? m_timeline->toolMode() : TimelineWidget::ToolMode::Select; }});
     m_correctionsTab->wire();
 }
 
@@ -345,6 +348,18 @@ void EditorWindow::createClipsTab()
     m_clipsTab->wire();
 }
 
+void EditorWindow::createHistoryTab()
+{
+    m_historyTab = std::make_unique<HistoryTab>(
+        HistoryTab::Widgets{m_inspectorPane->historyTable()},
+        HistoryTab::Dependencies{
+            [this]() -> QJsonArray { return m_historyEntries; },
+            [this]() -> int { return m_historyIndex; },
+            [this](int index) { restoreToHistoryIndex(index); },
+            [this]() { pushHistorySnapshot(); }});
+    m_historyTab->wire();
+}
+
 void EditorWindow::setupTabs()
 {
     createOutputTab();
@@ -358,6 +373,7 @@ void EditorWindow::setupTabs()
     createTitlesTab();
     createVideoKeyframeTab();
     createClipsTab();
+    createHistoryTab();
 }
 
 void EditorWindow::setupInspectorRefreshRouting()
@@ -376,6 +392,7 @@ void EditorWindow::setupInspectorRefreshRouting()
         m_profileTab->refresh();
         m_projectsTab->refresh();
         if (m_clipsTab) m_clipsTab->refresh();
+        if (m_historyTab) m_historyTab->refresh();
         if (m_inspectorPane && m_inspectorPane->tracksTable()) {
             refreshTracksTab();
         }

@@ -233,7 +233,7 @@ private:
     QRect clipRectFor(const TimelineClip& clip) const;
     QRect renderSyncMarkerRect(const TimelineClip& clip, const RenderSyncMarker& marker) const;
 
-    bool applyCrossfadeToTrack(int trackIndex, double seconds);
+    bool applyCrossfadeToTrack(int trackIndex, double seconds, bool moveClips = true);
 
     // Prevent images and audio from overlapping on the same track
     bool wouldClipConflictWithTrack(const TimelineClip& clip, int trackIndex, const QString& excludeClipId = QString()) const;

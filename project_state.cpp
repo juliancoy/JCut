@@ -672,3 +672,53 @@ void EditorWindow::pushHistorySnapshot()
     m_historyIndex = m_historyEntries.size() - 1;
     saveHistoryNow();
 }
+
+void EditorWindow::setupAutosaveTimer()
+{
+    m_autosaveTimer.setSingleShot(false);
+    m_autosaveTimer.setInterval(15 * 60 * 1000);
+    connect(&m_autosaveTimer, &QTimer::timeout, this, [this]() { saveAutosaveBackup(); });
+    m_autosaveTimer.start();
+    saveAutosaveBackup();
+}
+
+void EditorWindow::saveAutosaveBackup()
+{
+    if (!m_timeline || m_loadingState)
+    {
+        return;
+    }
+
+    ensureProjectsDirectory();
+    const QString projectDir = projectPath(currentProjectIdOrDefault());
+    QDir().mkpath(projectDir);
+
+    const QDateTime now = QDateTime::currentDateTime();
+    const QString backupFileName = QStringLiteral("state_backup_%1.json").arg(now.toString(QStringLiteral("yyyy-MM-dd_HH-mm-ss")));
+    const QString backupPath = QDir(projectDir).filePath(backupFileName);
+
+    const QByteArray serializedState = QJsonDocument(buildStateJson()).toJson(QJsonDocument::Indented);
+
+    QSaveFile file(backupPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    {
+        return;
+    }
+
+    if (file.write(serializedState) != serializedState.size())
+    {
+        file.cancelWriting();
+        return;
+    }
+
+    file.commit();
+    qDebug() << "[AUTOSAVE] Backup saved:" << backupPath;
+
+    QDir autosaveDir(projectDir);
+    const QStringList backups = autosaveDir.entryList(QStringList(QStringLiteral("state_backup_*.json")), QDir::Files, QDir::Name);
+    if (backups.size() > 10)
+    {
+        const QString oldest = backups.first();
+        QDir(projectDir).remove(oldest);
+    }
+}

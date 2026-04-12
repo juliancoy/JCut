@@ -21,6 +21,7 @@
 #include "titles_tab.h"
 #include "video_keyframe_tab.h"
 #include "clips_tab.h"
+#include "history_tab.h"
 
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -134,6 +135,10 @@ private:
     void saveHistoryNow();
     void pushHistorySnapshot();
     void undoHistory();
+    void redoHistory();
+    void restoreToHistoryIndex(int index);
+    void setupAutosaveTimer();
+    void saveAutosaveBackup();
     void applyStateJson(const QJsonObject &root);
 
     void advanceFrame();
@@ -208,6 +213,7 @@ private:
     void createTitlesTab();
     void createVideoKeyframeTab();
     void createClipsTab();
+    void createHistoryTab();
 
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
@@ -373,6 +379,7 @@ private:
     std::unique_ptr<ProfileTab> m_profileTab;
     std::unique_ptr<ProjectsTab> m_projectsTab;
     std::unique_ptr<ClipsTab> m_clipsTab;
+    std::unique_ptr<HistoryTab> m_historyTab;
 
     ExplorerPane *m_explorerPane = nullptr;
     InspectorPane *m_inspectorPane = nullptr;
@@ -381,6 +388,7 @@ private:
     QTimer m_playbackTimer;
     QTimer m_mainThreadHeartbeatTimer;
     QTimer m_stateSaveTimer;
+    QTimer m_autosaveTimer;
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;

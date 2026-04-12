@@ -898,6 +898,30 @@ control_server.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server.cpp.s
 .PHONY : control_server.cpp.s
 
+corrections_tab.o: corrections_tab.cpp.o
+.PHONY : corrections_tab.o
+
+# target to build an object file
+corrections_tab.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/corrections_tab.cpp.o
+.PHONY : corrections_tab.cpp.o
+
+corrections_tab.i: corrections_tab.cpp.i
+.PHONY : corrections_tab.i
+
+# target to preprocess a source file
+corrections_tab.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/corrections_tab.cpp.i
+.PHONY : corrections_tab.cpp.i
+
+corrections_tab.s: corrections_tab.cpp.s
+.PHONY : corrections_tab.s
+
+# target to generate assembly for a file
+corrections_tab.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/corrections_tab.cpp.s
+.PHONY : corrections_tab.cpp.s
+
 debug_controls.o: debug_controls.cpp.o
 .PHONY : debug_controls.o
 
@@ -1425,6 +1449,30 @@ grading_tab.s: grading_tab.cpp.s
 grading_tab.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/grading_tab.cpp.s
 .PHONY : grading_tab.cpp.s
+
+history_tab.o: history_tab.cpp.o
+.PHONY : history_tab.o
+
+# target to build an object file
+history_tab.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/history_tab.cpp.o
+.PHONY : history_tab.cpp.o
+
+history_tab.i: history_tab.cpp.i
+.PHONY : history_tab.i
+
+# target to preprocess a source file
+history_tab.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/history_tab.cpp.i
+.PHONY : history_tab.cpp.i
+
+history_tab.s: history_tab.cpp.s
+.PHONY : history_tab.s
+
+# target to generate assembly for a file
+history_tab.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/history_tab.cpp.s
+.PHONY : history_tab.cpp.s
 
 inspector_pane.o: inspector_pane.cpp.o
 .PHONY : inspector_pane.o
@@ -2531,6 +2579,9 @@ help:
 	@echo "... control_server.o"
 	@echo "... control_server.i"
 	@echo "... control_server.s"
+	@echo "... corrections_tab.o"
+	@echo "... corrections_tab.i"
+	@echo "... corrections_tab.s"
 	@echo "... debug_controls.o"
 	@echo "... debug_controls.i"
 	@echo "... debug_controls.s"
@@ -2597,6 +2648,9 @@ help:
 	@echo "... grading_tab.o"
 	@echo "... grading_tab.i"
 	@echo "... grading_tab.s"
+	@echo "... history_tab.o"
+	@echo "... history_tab.i"
+	@echo "... history_tab.s"
 	@echo "... inspector_pane.o"
 	@echo "... inspector_pane.i"
 	@echo "... inspector_pane.s"

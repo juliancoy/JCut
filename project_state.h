@@ -45,3 +45,5 @@ void scheduleSaveState();
 void saveStateNow();
 void saveHistoryNow();
 void pushHistorySnapshot();
+void setupAutosaveTimer();
+void saveAutosaveBackup();

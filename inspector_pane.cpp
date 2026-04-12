@@ -76,6 +76,7 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildTranscriptTab(), QStringLiteral("Transcript"));
     m_inspectorTabs->addTab(buildClipTab(), QStringLiteral("Properties"));
     m_inspectorTabs->addTab(buildClipsTab(), QStringLiteral("Clips"));
+    m_inspectorTabs->addTab(buildHistoryTab(), QStringLiteral("History"));
     m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
     m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
     m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
@@ -814,6 +815,31 @@ QWidget *InspectorPane::buildClipsTab()
     m_clipsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
 
     layout->addWidget(m_clipsTable, 1);
+    return page;
+}
+
+QWidget *InspectorPane::buildHistoryTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+
+    m_historyTable = new QTableWidget(page);
+    m_historyTable->setColumnCount(2);
+    m_historyTable->setHorizontalHeaderLabels({
+        QStringLiteral("Index"),
+        QStringLiteral("Summary"),
+    });
+    m_historyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_historyTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_historyTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_historyTable->setFocusPolicy(Qt::ClickFocus);
+    m_historyTable->setAlternatingRowColors(true);
+    m_historyTable->verticalHeader()->setVisible(false);
+    m_historyTable->horizontalHeader()->setStretchLastSection(true);
+
+    layout->addWidget(m_historyTable, 1);
     return page;
 }
 

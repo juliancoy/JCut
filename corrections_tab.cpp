@@ -1,4 +1,5 @@
 #include "corrections_tab.h"
+#include "timeline_widget.h"
 
 #include <QSignalBlocker>
 
@@ -82,6 +83,18 @@ void CorrectionsTab::wire() {
 }
 
 void CorrectionsTab::setDrawingEnabled(bool enabled) {
+    if (enabled) {
+        if (m_deps.getTimelineToolMode && m_deps.setTimelineToolMode) {
+            m_savedToolMode = m_deps.getTimelineToolMode();
+            m_savedToolModeValid = true;
+            m_deps.setTimelineToolMode(TimelineWidget::ToolMode::Select);
+        }
+    } else {
+        if (m_deps.setTimelineToolMode && m_savedToolModeValid) {
+            m_deps.setTimelineToolMode(m_savedToolMode);
+            m_savedToolModeValid = false;
+        }
+    }
     if (m_deps.setCorrectionDrawMode) {
         m_deps.setCorrectionDrawMode(enabled);
     }

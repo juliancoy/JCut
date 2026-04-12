@@ -3,6 +3,12 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDialog>
+#include <QVBoxLayout>
+#include <QLabel>
+#include <QDoubleSpinBox>
+#include <QCheckBox>
+#include <QDialogButtonBox>
 
 int TimelineWidget::trackIndexAt(const QPoint& pos) const {
     for (int i = 0; i < trackCount(); ++i) {
@@ -348,17 +354,26 @@ void TimelineWidget::mouseDoubleClickEvent(QMouseEvent* event) {
             if (chosen == renameAction) {
                 renameTrack(trackHit);
             } else if (chosen == crossfadeAction) {
-                bool accepted = false;
-                const double seconds = QInputDialog::getDouble(this,
-                                                               QStringLiteral("Crossfade Consecutive Clips"),
-                                                               QStringLiteral("Crossfade duration (seconds)"),
-                                                               0.50,
-                                                               0.01,
-                                                               30.00,
-                                                               2,
-                                                               &accepted);
-                if (accepted) {
-                    applyCrossfadeToTrack(trackHit, seconds);
+                auto *dialog = new QDialog(this);
+                dialog->setWindowTitle(QStringLiteral("Crossfade Consecutive Clips"));
+                auto *layout = new QVBoxLayout(dialog);
+                layout->addWidget(new QLabel(QStringLiteral("Crossfade duration (seconds)")));
+                auto *spinBox = new QDoubleSpinBox(dialog);
+                spinBox->setRange(0.01, 30.00);
+                spinBox->setValue(0.50);
+                spinBox->setDecimals(2);
+                layout->addWidget(spinBox);
+                auto *checkBox = new QCheckBox(QStringLiteral("Move clips to overlap (uncheck to keep positions)"), dialog);
+                checkBox->setChecked(false);
+                layout->addWidget(checkBox);
+                auto *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+                layout->addWidget(buttonBox);
+                connect(buttonBox, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
+                connect(buttonBox, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+                if (dialog->exec() == QDialog::Accepted) {
+                    const double seconds = spinBox->value();
+                    const bool moveClips = checkBox->isChecked();
+                    applyCrossfadeToTrack(trackHit, seconds, moveClips);
                 }
             }
             event->accept();

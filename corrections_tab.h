@@ -9,6 +9,7 @@
 #include <functional>
 
 #include "editor_shared.h"
+#include "timeline_widget.h"
 
 class CorrectionsTab : public QObject {
     Q_OBJECT
@@ -34,6 +35,8 @@ public:
         std::function<bool(const TimelineClip&)> clipHasVisuals;
         std::function<void(bool)> setCorrectionDrawMode;
         std::function<void(const QVector<QPointF>&)> setCorrectionDraftPoints;
+        std::function<void(TimelineWidget::ToolMode)> setTimelineToolMode;
+        std::function<TimelineWidget::ToolMode()> getTimelineToolMode;
     };
 
     explicit CorrectionsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -54,4 +57,6 @@ private:
     Dependencies m_deps;
     QVector<QPointF> m_draftPoints;
     bool m_updating = false;
+    bool m_savedToolModeValid = false;
+    TimelineWidget::ToolMode m_savedToolMode;
 };

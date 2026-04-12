@@ -88,6 +88,14 @@ void EditorWindow::setupShortcuts()
         undoHistory();
     });
 
+    auto *redoShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+Z")), this);
+    connect(redoShortcut, &QShortcut::activated, this, [this]() {
+        if (shouldBlockGlobalEditorShortcuts()) {
+            return;
+        }
+        redoHistory();
+    });
+
     auto *splitShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+B")), this);
     connect(splitShortcut, &QShortcut::activated, this, [this]() {
         if (shouldBlockGlobalEditorShortcuts()) {
@@ -237,6 +245,7 @@ void EditorWindow::setupStartupLoad()
         loadProjectsFromFolders();
         refreshProjectsList();
         loadState();
+        setupAutosaveTimer();
         m_inspectorPane->refresh();
     });
 }

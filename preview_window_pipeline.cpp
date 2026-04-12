@@ -132,10 +132,6 @@ void PreviewWindow::requestFramesForCurrentPosition() {
         return;
     }
 
-    if (!m_playing && m_cache->pendingVisibleRequestCount() >= kMaxVisibleBacklog) {
-        return;
-    }
-
     for (const TimelineClip* clip : activeClips) {
         if (clip->mediaType == ClipMediaType::Title) {
             continue;
