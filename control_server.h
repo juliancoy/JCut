@@ -22,6 +22,7 @@ public:
         std::function<QJsonObject()> historySnapshotCallback = {},
         std::function<QJsonObject()> profilingCallback = {},
         std::function<void()> resetProfilingCallback = {},
+        std::function<void(int64_t)> setPlayheadCallback = {},
         QObject* parent = nullptr);
     ~ControlServer() override;
 
@@ -40,6 +41,7 @@ private:
     std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
+    std::function<void(int64_t)> m_setPlayheadCallback;
     std::unique_ptr<QThread> m_thread;
     QObject* m_worker = nullptr;
 };

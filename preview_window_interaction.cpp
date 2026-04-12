@@ -10,11 +10,9 @@
 
 void PreviewWindow::showEvent(QShowEvent* event) {
     QOpenGLWidget::showEvent(event);
-    QTimer::singleShot(0, this, [this]() {
-        m_frameRequestsArmed = true;
-        m_pendingFrameRequest = true;
-        scheduleFrameRequest();
-    });
+    m_frameRequestsArmed = true;
+    m_pendingFrameRequest = true;
+    scheduleFrameRequest();
 }
 
 void PreviewWindow::mousePressEvent(QMouseEvent* event) {

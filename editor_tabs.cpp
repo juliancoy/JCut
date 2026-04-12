@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "history_tab.h"
+#include "playback_debug.h"
 
 #include <QColorDialog>
 
@@ -224,6 +225,7 @@ void EditorWindow::createCorrectionsTab()
             m_inspectorPane->correctionsClipLabel(),
             m_inspectorPane->correctionsStatusLabel(),
             m_inspectorPane->correctionsDrawModeCheck(),
+            m_inspectorPane->correctionsDrawPolygonButton(),
             m_inspectorPane->correctionsClosePolygonButton(),
             m_inspectorPane->correctionsCancelDraftButton(),
             m_inspectorPane->correctionsDeleteLastButton(),
@@ -379,6 +381,8 @@ void EditorWindow::setupTabs()
 void EditorWindow::setupInspectorRefreshRouting()
 {
     connect(m_inspectorPane, &InspectorPane::refreshRequested, this, [this]() {
+        QElapsedTimer refreshTimer;
+        refreshTimer.start();
         m_gradingTab->refresh();
         if (m_opacityTab) m_opacityTab->refresh();
         m_effectsTab->refresh();
@@ -395,6 +399,25 @@ void EditorWindow::setupInspectorRefreshRouting()
         if (m_historyTab) m_historyTab->refresh();
         if (m_inspectorPane && m_inspectorPane->tracksTable()) {
             refreshTracksTab();
+        }
+
+        const qint64 elapsedMs = refreshTimer.elapsed();
+        m_lastInspectorRefreshDurationMs.store(elapsedMs);
+        qint64 maxDuration = m_maxInspectorRefreshDurationMs.load();
+        while (elapsedMs > maxDuration &&
+               !m_maxInspectorRefreshDurationMs.compare_exchange_weak(maxDuration, elapsedMs)) {
+        }
+        constexpr qint64 kSlowInspectorRefreshThresholdMs = 30;
+        if (elapsedMs >= kSlowInspectorRefreshThresholdMs) {
+            m_inspectorRefreshSlowCount.fetch_add(1);
+            if (debugPlaybackWarnEnabled()) {
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] slow inspector refresh: %1 ms")
+                           .arg(elapsedMs);
+            }
+        } else if (debugPlaybackVerboseEnabled()) {
+            playbackTrace(QStringLiteral("EditorWindow::setupInspectorRefreshRouting.refresh"),
+                          QStringLiteral("elapsed_ms=%1").arg(elapsedMs));
         }
     });
 }

@@ -16,12 +16,20 @@ void PreviewWindow::paintEvent(QPaintEvent* event) {
         QOpenGLWidget::paintEvent(event);
         return;
     }
-    if (!QWidget::paintEngine()) return;
 
     Q_UNUSED(event)
     m_lastPaintMs = nowMs();
 
     QPainter painter(this);
+    if (!painter.isActive()) {
+        static qint64 s_lastPaintWarningMs = 0;
+        const qint64 now = nowMs();
+        if (now - s_lastPaintWarningMs >= 2000) {
+            s_lastPaintWarningMs = now;
+            qWarning() << "[PreviewWindow] CPU fallback painter is inactive; skipping paint";
+        }
+        return;
+    }
     painter.setRenderHint(QPainter::Antialiasing, true);
     drawBackground(&painter);
     const QList<TimelineClip> activeClips = getActiveClips();
@@ -296,14 +304,10 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
             continue; // Title clips are drawn as text overlays below
         }
         const int64_t localFrame = sourceFrameForSample(clip, m_currentSample);
-        const bool usePlaybackPipeline =
-            m_playing &&
-            clip.sourceKind == MediaSourceKind::ImageSequence &&
-            clip.mediaType != ClipMediaType::Image;
-        const bool usePlaybackBuffer =
-            m_playing &&
-            !usePlaybackPipeline &&
-            m_cache;
+        const bool isImageSequence = clip.sourceKind == MediaSourceKind::ImageSequence &&
+                                     clip.mediaType != ClipMediaType::Image;
+        const bool usePlaybackPipeline = m_playing && isImageSequence;
+        const bool usePlaybackBuffer = !isImageSequence && m_playing && m_cache;
         QString selection = QStringLiteral("none");
         const FrameHandle exactFrame = usePlaybackPipeline
                                            ? m_playbackPipeline->getFrame(clip.id, localFrame)

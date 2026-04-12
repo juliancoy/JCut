@@ -427,6 +427,13 @@ private:
     std::atomic<bool> m_fastPlaybackActive{false};
     std::atomic<qint64> m_lastMainThreadHeartbeatMs{0};
     std::atomic<qint64> m_lastPlayheadAdvanceMs{0};
+    std::atomic<qint64> m_lastSetCurrentPlaybackSampleDurationMs{0};
+    std::atomic<qint64> m_maxSetCurrentPlaybackSampleDurationMs{0};
+    std::atomic<qint64> m_setCurrentPlaybackSampleSlowCount{0};
+    std::atomic<qint64> m_lastInspectorRefreshDurationMs{0};
+    std::atomic<qint64> m_maxInspectorRefreshDurationMs{0};
+    std::atomic<qint64> m_inspectorRefreshSlowCount{0};
+    int m_audioClockStallTicks = 0;
 };
 
 } // namespace editor

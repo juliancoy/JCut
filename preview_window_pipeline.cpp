@@ -31,27 +31,31 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
             m_playing &&
             clip.sourceKind == MediaSourceKind::ImageSequence &&
             clip.mediaType != ClipMediaType::Image;
+        const bool pausedSequenceNeedsExact =
+            !m_playing &&
+            clip.sourceKind == MediaSourceKind::ImageSequence &&
+            clip.mediaType != ClipMediaType::Image;
         const bool ready = usePlaybackPipeline
-                               ? m_playbackPipeline->isFrameBuffered(clip.id, localFrame)
-                               : m_cache->hasDisplayableFrameForPreview(
-                                     clip.id,
-                                     localFrame,
-                                     m_playing,
-                                     editor::debugPlaybackCacheFallbackEnabled());
+                                ? m_playbackPipeline->isFrameBuffered(clip.id, localFrame)
+                                : (pausedSequenceNeedsExact
+                                      ? m_cache->isFrameCached(clip.id, localFrame)
+                                : m_cache->hasDisplayableFrameForPreview(
+                                      clip.id,
+                                      localFrame,
+                                      m_playing,
+                                      editor::debugPlaybackCacheFallbackEnabled()));
         if (ready) continue;
-        if (!m_playing && m_cache->isVisibleRequestPending(clip.id, localFrame)) continue;
 
         if (usePlaybackPipeline) {
             m_playbackPipeline->requestFramesForSample(targetSample,
                 [this]() { QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection); });
-            break;
+        } else {
+            m_cache->requestFrame(clip.id, localFrame,
+                                  [this](FrameHandle frame) {
+                                      Q_UNUSED(frame)
+                                      QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection);
+                                  });
         }
-
-        m_cache->requestFrame(clip.id, localFrame,
-                              [this](FrameHandle frame) {
-                                  Q_UNUSED(frame)
-                                  QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection);
-                              });
     }
 
     return true;
@@ -109,6 +113,11 @@ int64_t PreviewWindow::sourceFrameForSample(const TimelineClip& clip, int64_t sa
 
 void PreviewWindow::requestFramesForCurrentPosition() {
     static constexpr int kMaxVisibleBacklog = 4;
+    playbackTrace(QStringLiteral("PreviewWindow::requestFramesForCurrentPosition"),
+                  QStringLiteral("frame=%1 playing=%2 activeClips=%3")
+                      .arg(m_currentFramePosition, 0, 'f', 3)
+                      .arg(m_playing)
+                      .arg(m_clips.size()));
     QVector<const TimelineClip*> activeClips;
     activeClips.reserve(m_clips.size());
     for (const TimelineClip& clip : m_clips) {
@@ -137,18 +146,20 @@ void PreviewWindow::requestFramesForCurrentPosition() {
             continue;
         }
         const int64_t localFrame = sourceFrameForSample(*clip, m_currentSample);
-        const bool usePlaybackPipeline =
-            m_playing &&
-            clip->sourceKind == MediaSourceKind::ImageSequence &&
-            clip->mediaType != ClipMediaType::Image;
-        const bool usePlaybackBuffer = m_playing && !usePlaybackPipeline;
+        const bool isImageSequence = clip->sourceKind == MediaSourceKind::ImageSequence &&
+                                     clip->mediaType != ClipMediaType::Image;
+        const bool usePlaybackPipeline = m_playing && isImageSequence;
+
+        const bool pausedSequenceNeedsExact = !m_playing && isImageSequence;
         const bool cached = usePlaybackPipeline
                                 ? m_playbackPipeline->isFrameBuffered(clip->id, localFrame)
+                                : (pausedSequenceNeedsExact
+                                      ? m_cache->isFrameCached(clip->id, localFrame)
                                 : m_cache->hasDisplayableFrameForPreview(
                                       clip->id,
                                       localFrame,
-                                      usePlaybackBuffer,
-                                      editor::debugPlaybackCacheFallbackEnabled());
+                                      false,
+                                      true));
         const bool pending = usePlaybackPipeline
                                  ? m_playbackPipeline->pendingVisibleRequestCount() >= kMaxVisibleBacklog
                                  : m_cache->isVisibleRequestPending(clip->id, localFrame);

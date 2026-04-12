@@ -277,14 +277,16 @@ public:
                         std::function<QJsonObject()> projectSnapshotCallback,
                         std::function<QJsonObject()> historySnapshotCallback,
                         std::function<QJsonObject()> profilingCallback,
-                        std::function<void()> resetProfilingCallback)
+                        std::function<void()> resetProfilingCallback,
+                        std::function<void(int64_t)> setPlayheadCallback)
         : m_window(window)
         , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
         , m_stateSnapshotCallback(std::move(stateSnapshotCallback))
         , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
         , m_historySnapshotCallback(std::move(historySnapshotCallback))
         , m_profilingCallback(std::move(profilingCallback))
-        , m_resetProfilingCallback(std::move(resetProfilingCallback)) {}
+        , m_resetProfilingCallback(std::move(resetProfilingCallback))
+        , m_setPlayheadCallback(std::move(setPlayheadCallback)) {}
 
     ~ControlServerWorker() override = default;
 
@@ -556,6 +558,31 @@ private:
                 {QStringLiteral("current_frame"), snapshot.value(QStringLiteral("current_frame")).toInteger()},
                 {QStringLiteral("playback_active"), snapshot.value(QStringLiteral("playback_active")).toBool()},
                 {QStringLiteral("main_thread_heartbeat_age_ms"), snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1)}
+            });
+            return;
+        }
+
+        if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/playhead")) {
+            const QJsonObject body = QJsonDocument::fromJson(request.body).object();
+            const qint64 frame = body.value(QStringLiteral("frame")).toInteger(-1);
+            if (frame < 0) {
+                writeError(socket, 400, QStringLiteral("invalid frame number"));
+                return;
+            }
+            bool success = false;
+            if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &success, [this, frame]() {
+                    if (m_setPlayheadCallback) {
+                        m_setPlayheadCallback(frame);
+                        return true;
+                    }
+                    return false;
+                })) {
+                writeError(socket, 503, QStringLiteral("timed out waiting for playhead seek"));
+                return;
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), success},
+                {QStringLiteral("frame"), frame}
             });
             return;
         }
@@ -1138,6 +1165,7 @@ writeError(socket, 404, QStringLiteral("clip not found"));
     std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
+    std::function<void(int64_t)> m_setPlayheadCallback;
     std::unique_ptr<QTcpServer> m_server;
     QHash<QTcpSocket*, QByteArray> m_buffers;
     quint16 m_listenPort = 0;
@@ -1162,6 +1190,7 @@ ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> historySnapshotCallback,
                              std::function<QJsonObject()> profilingCallback,
                              std::function<void()> resetProfilingCallback,
+                             std::function<void(int64_t)> setPlayheadCallback,
                              QObject* parent)
     : QObject(parent)
     , m_window(window)
@@ -1170,7 +1199,8 @@ ControlServer::ControlServer(QWidget* window,
     , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
     , m_historySnapshotCallback(std::move(historySnapshotCallback))
     , m_profilingCallback(std::move(profilingCallback))
-    , m_resetProfilingCallback(std::move(resetProfilingCallback)) {}
+    , m_resetProfilingCallback(std::move(resetProfilingCallback))
+    , m_setPlayheadCallback(std::move(setPlayheadCallback)) {}
 
 ControlServer::~ControlServer() {
     if (m_worker) {
@@ -1199,7 +1229,8 @@ bool ControlServer::start(quint16 port) {
                                            m_projectSnapshotCallback,
                                            m_historySnapshotCallback,
                                            m_profilingCallback,
-                                           m_resetProfilingCallback);
+                                           m_resetProfilingCallback,
+                                           m_setPlayheadCallback);
     m_worker = worker;
     worker->moveToThread(m_thread.get());
     connect(m_thread.get(), &QThread::finished, worker, &QObject::deleteLater);

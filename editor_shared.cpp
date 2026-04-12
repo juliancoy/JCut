@@ -1,8 +1,10 @@
 #include "editor_shared.h"
 #include "transform_skip_aware_timing.h"
+#include "debug_controls.h"
 
 #include <QDir>
 #include <QCollator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -418,10 +420,7 @@ bool clipHasVisuals(const TimelineClip& clip) {
 }
 
 bool clipHasAlpha(const TimelineClip& clip) {
-    // Check if the media file has alpha channel
-    // For now, check common alpha-capable formats and file extensions
     if (!clipHasVisuals(clip)) {
-        qDebug() << "[clipHasAlpha] No visuals for clip:" << clip.label;
         return false;
     }
 
@@ -439,10 +438,6 @@ bool clipHasAlpha(const TimelineClip& clip) {
                 QStringLiteral("png"), QStringLiteral("tga"), QStringLiteral("tiff"),
                 QStringLiteral("tif"), QStringLiteral("exr"), QStringLiteral("webp")
             };
-            qDebug() << "[clipHasAlpha] Image sequence:" << clip.filePath
-                     << "first frame:" << frames.constFirst()
-                     << "suffix:" << frameSuffix
-                     << "in alpha list:" << alphaImageFormats.contains(frameSuffix);
             if (alphaImageFormats.contains(frameSuffix)) {
                 return true;
             }
@@ -466,10 +461,53 @@ bool clipHasAlpha(const TimelineClip& clip) {
         return true;
     }
 
-    // Check if we probed and found alpha
+    // Fast-path formats that are effectively non-alpha in this editor context.
+    static const QSet<QString> kNoAlphaProbeFormats = {
+        QStringLiteral("mp4"),
+        QStringLiteral("m4v"),
+        QStringLiteral("avi"),
+        QStringLiteral("mpg"),
+        QStringLiteral("mpeg"),
+        QStringLiteral("mts"),
+        QStringLiteral("m2ts"),
+        QStringLiteral("ts"),
+    };
+    if (kNoAlphaProbeFormats.contains(suffix)) {
+        return false;
+    }
+
+    // Cache probe results to avoid repeated expensive FFmpeg opens on playhead/UI refresh.
+    struct AlphaProbeCacheEntry {
+        qint64 size = -1;
+        qint64 modifiedMs = -1;
+        bool hasAlpha = false;
+    };
+    static QMutex cacheMutex;
+    static QHash<QString, AlphaProbeCacheEntry> cacheByPath;
+
+    const QFileInfo info(clip.filePath);
+    const QString cacheKey = info.absoluteFilePath();
+    const qint64 size = info.size();
+    const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
+
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto it = cacheByPath.constFind(cacheKey);
+        if (it != cacheByPath.cend() &&
+            it->size == size &&
+            it->modifiedMs == modifiedMs) {
+            return it->hasAlpha;
+        }
+    }
+
     const MediaProbeResult probe = probeMediaFile(clip.filePath);
-    qDebug() << "[clipHasAlpha] Probed:" << clip.filePath << "hasAlpha:" << probe.hasAlpha;
-    return probe.hasAlpha;
+    const bool hasAlpha = probe.hasAlpha;
+
+    {
+        QMutexLocker locker(&cacheMutex);
+        cacheByPath.insert(cacheKey, AlphaProbeCacheEntry{size, modifiedMs, hasAlpha});
+    }
+    return hasAlpha;
 }
 
 bool clipIsAudioOnly(const TimelineClip& clip) {
@@ -1190,6 +1228,8 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
 }
 
 MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames) {
+    QElapsedTimer probeTimer;
+    probeTimer.start();
     MediaProbeResult result;
     result.durationFrames = fallbackFrames;
 
@@ -1283,6 +1323,27 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
         result.mediaType = ClipMediaType::Video;
     } else if (result.hasAudio) {
         result.mediaType = ClipMediaType::Audio;
+    }
+
+    const qint64 elapsedMs = probeTimer.elapsed();
+    if (editor::debugDecodeWarnEnabled() && elapsedMs >= 80) {
+        qWarning().noquote()
+            << QStringLiteral("[DECODE WARN] slow probeMediaFile: %1 ms | path=%2 hasVideo=%3 hasAudio=%4 codec=%5")
+                   .arg(elapsedMs)
+                   .arg(filePath)
+                   .arg(result.hasVideo)
+                   .arg(result.hasAudio)
+                   .arg(result.codecName.isEmpty() ? QStringLiteral("unknown") : result.codecName);
+    } else if (editor::debugDecodeLevel() >= editor::DebugLogLevel::Info &&
+               (editor::debugDecodeVerboseEnabled() || elapsedMs >= 20)) {
+        qDebug().noquote()
+            << QStringLiteral("[DECODE] probeMediaFile: %1 ms | path=%2 hasVideo=%3 hasAudio=%4 codec=%5 fps=%6")
+                   .arg(elapsedMs)
+                   .arg(filePath)
+                   .arg(result.hasVideo)
+                   .arg(result.hasAudio)
+                   .arg(result.codecName.isEmpty() ? QStringLiteral("unknown") : result.codecName)
+                   .arg(result.fps, 0, 'f', 3);
     }
 
     return result;

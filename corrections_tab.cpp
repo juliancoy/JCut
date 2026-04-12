@@ -18,6 +18,14 @@ void CorrectionsTab::wire() {
             setDrawingEnabled(enabled);
         });
     }
+    if (m_widgets.correctionsDrawPolygonButton) {
+        connect(m_widgets.correctionsDrawPolygonButton, &QPushButton::toggled, this, [this](bool checked) {
+            if (m_updating) {
+                return;
+            }
+            setDrawingEnabled(checked);
+        });
+    }
     if (m_widgets.correctionsClosePolygonButton) {
         connect(m_widgets.correctionsClosePolygonButton, &QPushButton::clicked, this, [this]() {
             commitDraftPolygon();
@@ -159,7 +167,8 @@ void CorrectionsTab::handlePreviewPoint(const QString& clipId, qreal xNorm, qrea
     if (!clip || clip->id != clipId) {
         return;
     }
-    const bool drawEnabled = m_widgets.correctionsDrawModeCheck && m_widgets.correctionsDrawModeCheck->isChecked();
+    const bool drawEnabled = (m_widgets.correctionsDrawModeCheck && m_widgets.correctionsDrawModeCheck->isChecked())
+        || (m_widgets.correctionsDrawPolygonButton && m_widgets.correctionsDrawPolygonButton->isChecked());
     if (!drawEnabled) {
         return;
     }
@@ -171,7 +180,8 @@ void CorrectionsTab::handlePreviewPoint(const QString& clipId, qreal xNorm, qrea
 
 void CorrectionsTab::refresh() {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    const bool drawEnabled = m_widgets.correctionsDrawModeCheck && m_widgets.correctionsDrawModeCheck->isChecked();
+    const bool drawEnabled = (m_widgets.correctionsDrawModeCheck && m_widgets.correctionsDrawModeCheck->isChecked())
+        || (m_widgets.correctionsDrawPolygonButton && m_widgets.correctionsDrawPolygonButton->isChecked());
 
     m_updating = true;
     if (m_widgets.correctionsClipLabel) {
@@ -199,6 +209,14 @@ void CorrectionsTab::refresh() {
         m_widgets.correctionsDrawModeCheck->setEnabled(clipSupportsCorrections);
         if (!clipSupportsCorrections) {
             m_widgets.correctionsDrawModeCheck->setChecked(false);
+        }
+    }
+
+    if (m_widgets.correctionsDrawPolygonButton) {
+        QSignalBlocker block(m_widgets.correctionsDrawPolygonButton);
+        m_widgets.correctionsDrawPolygonButton->setEnabled(clipSupportsCorrections);
+        if (!clipSupportsCorrections) {
+            m_widgets.correctionsDrawPolygonButton->setChecked(false);
         }
     }
 

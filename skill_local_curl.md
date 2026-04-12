@@ -1,67 +1,90 @@
-# Local Curl Skill (Sandbox-Friendly)
+# Local Curl Skill (Always-Valid Runbook)
 
-This document explains the exact command formatting that worked for querying local control-server endpoints without tripping sandbox/network restrictions.
+This runbook defines the command patterns that are safest and most reliable for local control-server checks.
 
-## Why this matters
+## Goal
 
-In this environment, outbound network access is restricted and command execution is policy-gated.
-For local REST checks, `curl` commands worked reliably when they matched approved/simple patterns.
+Use commands that are deterministic and easy to classify into one of these failure classes:
+- server not listening
+- sandbox/permission/connectivity issue
+- invalid endpoint path
+- app-level timeout/error
 
-## Working command format
+## Always run these in order
 
-Use this exact style:
-
-```bash
-curl --max-time 3 -s http://127.0.0.1:40130/health
-```
-
-Key points:
-- Use `127.0.0.1` (not external hosts).
-- Keep flags minimal: `--max-time` and `-s`.
-- Use direct endpoint URLs.
-- Prefer one endpoint per command for reliability.
-
-## Recommended patterns
-
-Basic endpoint check:
+### 1) Verify the server is listening
 
 ```bash
-curl --max-time 4 -s http://127.0.0.1:40130/state
+ss -tlnp | rg 40130
 ```
 
-Query params:
+Interpretation:
+- no output: server-down / not listening
+- listener present on `127.0.0.1:40130`: transport should be possible
+
+### 2) Verify base endpoint connectivity
 
 ```bash
-curl --max-time 4 -s "http://127.0.0.1:40130/clips?label_contains=Julian%20Floating"
+curl -s --max-time 3 http://127.0.0.1:40130/health
 ```
 
-Trim large JSON for terminal readability:
+Interpretation:
+- JSON response: transport + endpoint OK
+- `curl: (7) Failed to connect...`: connection failure (often permission/sandbox isolation, or dead listener race)
+
+### 3) Verify API-level error behavior
 
 ```bash
-curl --max-time 4 -s http://127.0.0.1:40130/timeline | head -c 1200
+curl -s --max-time 3 http://127.0.0.1:40130/profile/scene
 ```
 
-## What failed more often
+Interpretation:
+- `{"ok":false,"error":"not found"}`: server reachable, path invalid (expected)
 
-These patterns were less reliable under sandbox policy checks:
-- Extra curl flags like `-i`, `-o`, `-w` in ad-hoc combinations.
-- Complex one-liners writing temp files in `/tmp` from non-approved patterns.
-- Large loop wrappers that changed the command shape too much.
+## Known-good command shapes
 
-## Practical rule of thumb
-
-Start with:
+### Basic GET
 
 ```bash
-curl --max-time 4 -s http://127.0.0.1:<port>/<endpoint>
+curl -s --max-time 3 http://127.0.0.1:40130/health
+curl -s --max-time 3 http://127.0.0.1:40130/playhead
+curl -s --max-time 5 http://127.0.0.1:40130/profile
 ```
 
-Then add only what is necessary (for example a quoted URL with query params, or `| head -c N` for output trimming).
+### GET with query params
 
-## Useful local endpoints (current control server)
+```bash
+curl -s --max-time 5 "http://127.0.0.1:40130/clips?label_contains=aiarchitectures"
+curl -s --max-time 5 "http://127.0.0.1:40130/clip?id=<clip-id>"
+```
+
+### POST JSON (playhead seek)
+
+```bash
+curl -s --max-time 5 -X POST http://127.0.0.1:40130/playhead \
+  -H 'Content-Type: application/json' \
+  -d '{"frame":8333}'
+```
+
+## Failure classification matrix
+
+- `ss` no listener + `curl (7)`: server not running
+- `ss` listener present + `curl (7)`: environment/sandbox/permission path issue
+- HTTP `404` or JSON `not found`: invalid endpoint path
+- HTTP `503`: app alive, but UI-thread callback or internal timeout issue
+- HTTP `200` with valid JSON: success
+
+## Minimal reliable defaults
+
+- host: `127.0.0.1`
+- port: `40130`
+- flags: `-s --max-time <seconds>`
+- one endpoint per command when diagnosing
+
+## Useful local endpoints
 
 - `/health`
-- `/ui`
+- `/playhead` (GET/POST)
 - `/state`
 - `/timeline`
 - `/tracks`
@@ -77,4 +100,3 @@ Then add only what is necessary (for example a quoted URL with query params, or 
 - `/screenshot`
 - `/profile`
 - `/diag/perf`
-

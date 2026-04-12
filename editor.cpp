@@ -515,15 +515,28 @@ void EditorWindow::advanceFrame()
         const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
 
         if (audioFrame == m_timeline->currentFrame()) {
+            ++m_audioClockStallTicks;
+            constexpr int kAudioClockStallThresholdTicks = 3;
+            if (m_audioClockStallTicks <= kAudioClockStallThresholdTicks) {
+                if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
+                return;
+            }
+            if (debugPlaybackWarnEnabled()) {
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] audio clock stalled for %1 ticks at frame %2; falling back to timeline timer")
+                           .arg(m_audioClockStallTicks)
+                           .arg(audioFrame);
+            }
+        } else {
+            m_audioClockStallTicks = 0;
             if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
+            if (m_preview) m_preview->preparePlaybackAdvanceSample(audioSample);
+            setCurrentPlaybackSample(audioSample, false, true);
             return;
         }
-
-        if (m_preview) m_preview->preparePlaybackAdvanceSample(audioSample);
-        setCurrentPlaybackSample(audioSample, false, true);
-        return;
     }
 
+    m_audioClockStallTicks = 0;
     const int64_t nextFrame = nextPlaybackFrame(m_timeline->currentFrame());
     if (m_preview) m_preview->preparePlaybackAdvance(nextFrame);
     setCurrentPlaybackSample(frameToSamples(nextFrame), false, true);
@@ -1537,6 +1550,8 @@ QStringList EditorWindow::availableHardwareDeviceTypes() const
 
 void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAudio, bool duringPlayback)
 {
+    QElapsedTimer seekUpdateTimer;
+    seekUpdateTimer.start();
     const int64_t boundedSample = qBound<int64_t>(0, samplePosition, frameToSamples(m_timeline->totalFrames()));
     const qreal framePosition = samplesToFramePosition(boundedSample);
     const int64_t bounded = qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), m_timeline->totalFrames());
@@ -1566,8 +1581,8 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     
     m_timecodeLabel->setText(frameToTimecode(bounded));
     
+    updateTransportLabels();
     if (duringPlayback) {
-        updateTransportLabels();
         syncTranscriptTableToPlayhead();
         syncKeyframeTableToPlayhead();
         syncGradingTableToPlayhead();
@@ -1579,6 +1594,32 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
         m_titlesTab->syncTableToPlayhead();
     }
     scheduleSaveState();
+
+    const qint64 elapsedMs = seekUpdateTimer.elapsed();
+    m_lastSetCurrentPlaybackSampleDurationMs.store(elapsedMs);
+    qint64 maxDuration = m_maxSetCurrentPlaybackSampleDurationMs.load();
+    while (elapsedMs > maxDuration &&
+           !m_maxSetCurrentPlaybackSampleDurationMs.compare_exchange_weak(maxDuration, elapsedMs)) {
+    }
+    constexpr qint64 kSlowSeekUpdateThresholdMs = 20;
+    if (elapsedMs >= kSlowSeekUpdateThresholdMs) {
+        m_setCurrentPlaybackSampleSlowCount.fetch_add(1);
+        if (debugPlaybackWarnEnabled()) {
+            qWarning().noquote()
+                << QStringLiteral("[PLAYBACK WARN] slow setCurrentPlaybackSample: %1 ms | frame=%2 duringPlayback=%3 syncAudio=%4")
+                       .arg(elapsedMs)
+                       .arg(bounded)
+                       .arg(duringPlayback)
+                       .arg(syncAudio);
+        }
+    } else if (debugPlaybackVerboseEnabled()) {
+        playbackTrace(QStringLiteral("EditorWindow::setCurrentPlaybackSample.complete"),
+                      QStringLiteral("elapsed_ms=%1 frame=%2 duringPlayback=%3 syncAudio=%4")
+                          .arg(elapsedMs)
+                          .arg(bounded)
+                          .arg(duringPlayback)
+                          .arg(syncAudio));
+    }
 }
 
 void EditorWindow::setCurrentFrame(int64_t frame, bool syncAudio)

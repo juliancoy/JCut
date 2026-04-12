@@ -420,6 +420,12 @@ QWidget *InspectorPane::buildCorrectionsTab()
         QStringLiteral("Click 3 or more points on the clip in preview, then close polygon."));
     layout->addWidget(m_correctionsDrawModeCheck);
 
+    m_correctionsDrawPolygonButton = new QPushButton(QStringLiteral("Draw Polygon"), page);
+    m_correctionsDrawPolygonButton->setCheckable(true);
+    m_correctionsDrawPolygonButton->setToolTip(
+        QStringLiteral("Enter draw mode to draw polygons on the clip in preview."));
+    layout->addWidget(m_correctionsDrawPolygonButton);
+
     m_correctionsClosePolygonButton = new QPushButton(QStringLiteral("Close Polygon"), page);
     m_correctionsCancelDraftButton = new QPushButton(QStringLiteral("Cancel Draft"), page);
     m_correctionsDeleteLastButton = new QPushButton(QStringLiteral("Delete Last Polygon"), page);

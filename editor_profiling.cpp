@@ -18,7 +18,13 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("main_thread_heartbeat_ms"), m_lastMainThreadHeartbeatMs.load()},
         {QStringLiteral("last_playhead_advance_ms"), m_lastPlayheadAdvanceMs.load()},
         {QStringLiteral("main_thread_heartbeat_age_ms"), m_lastMainThreadHeartbeatMs.load() > 0 ? now - m_lastMainThreadHeartbeatMs.load() : -1},
-        {QStringLiteral("last_playhead_advance_age_ms"), m_lastPlayheadAdvanceMs.load() > 0 ? now - m_lastPlayheadAdvanceMs.load() : -1}};
+        {QStringLiteral("last_playhead_advance_age_ms"), m_lastPlayheadAdvanceMs.load() > 0 ? now - m_lastPlayheadAdvanceMs.load() : -1},
+        {QStringLiteral("last_seek_update_duration_ms"), m_lastSetCurrentPlaybackSampleDurationMs.load()},
+        {QStringLiteral("max_seek_update_duration_ms"), m_maxSetCurrentPlaybackSampleDurationMs.load()},
+        {QStringLiteral("slow_seek_update_count"), m_setCurrentPlaybackSampleSlowCount.load()},
+        {QStringLiteral("last_inspector_refresh_duration_ms"), m_lastInspectorRefreshDurationMs.load()},
+        {QStringLiteral("max_inspector_refresh_duration_ms"), m_maxInspectorRefreshDurationMs.load()},
+        {QStringLiteral("slow_inspector_refresh_count"), m_inspectorRefreshSlowCount.load()}};
 
     if (m_preview) {
         snapshot[QStringLiteral("preview")] = m_preview->profilingSnapshot();
@@ -35,4 +41,3 @@ QJsonObject EditorWindow::profilingSnapshot() const
 
     return snapshot;
 }
-

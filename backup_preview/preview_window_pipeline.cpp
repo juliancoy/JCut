@@ -29,19 +29,17 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
         const bool ready = usePlaybackPipeline ? m_playbackPipeline->isFrameBuffered(clip.id, localFrame)
                                                : m_cache->isFrameCached(clip.id, localFrame);
         if (ready) continue;
-        if (!m_playing && m_cache->isVisibleRequestPending(clip.id, localFrame)) continue;
 
         if (usePlaybackPipeline) {
             m_playbackPipeline->requestFramesForSample(targetSample,
                 [this]() { QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection); });
-            break;
+        } else {
+            m_cache->requestFrame(clip.id, localFrame,
+                                  [this](FrameHandle frame) {
+                                      Q_UNUSED(frame)
+                                      QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection);
+                                  });
         }
-
-        m_cache->requestFrame(clip.id, localFrame,
-                              [this](FrameHandle frame) {
-                                  Q_UNUSED(frame)
-                                  QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection);
-                              });
     }
 
     return true;

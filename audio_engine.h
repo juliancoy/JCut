@@ -258,7 +258,7 @@ public:
 
     bool audioClockAvailable() const {
         std::lock_guard<std::mutex> lock(m_stateMutex);
-        return m_initialized && m_rtaudio && m_rtaudio->isStreamOpen();
+        return m_initialized && m_rtaudio && m_rtaudio->isStreamRunning();
     }
 
     QJsonObject profilingSnapshot() const {

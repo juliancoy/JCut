@@ -901,6 +901,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* nudgeRightAction = nullptr;
     QAction* splitClipAction = nullptr;
     QAction* deleteAction = nullptr;
+    QAction* copyTitleAction = nullptr;
     QAction* copyClipNameAction = nullptr;
     QAction* gradingAction = nullptr;
     QAction* resetGradingAction = nullptr;
@@ -957,6 +958,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         }
         menu.addSeparator();
         deleteAction = menu.addAction(QStringLiteral("Delete"));
+        copyTitleAction = menu.addAction(QStringLiteral("Copy title"));
         copyClipNameAction = menu.addAction(QStringLiteral("Copy Clip Name"));
         gradingAction = menu.addAction(QStringLiteral("Grading..."));
         resetGradingAction = menu.addAction(QStringLiteral("Reset Grading"));
@@ -1142,6 +1144,15 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         if (clipIndex >= 0) {
             setSelectedClipId(m_clips[clipIndex].id);
             deleteSelectedClip();
+        }
+        return;
+    }
+
+    if (selected == copyTitleAction) {
+        if (clipIndex >= 0) {
+            if (QClipboard* clipboard = QApplication::clipboard()) {
+                clipboard->setText(m_clips[clipIndex].label);
+            }
         }
         return;
     }

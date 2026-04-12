@@ -19,6 +19,7 @@ public:
         QLabel* correctionsClipLabel = nullptr;
         QLabel* correctionsStatusLabel = nullptr;
         QCheckBox* correctionsDrawModeCheck = nullptr;
+        QPushButton* correctionsDrawPolygonButton = nullptr;
         QPushButton* correctionsClosePolygonButton = nullptr;
         QPushButton* correctionsCancelDraftButton = nullptr;
         QPushButton* correctionsDeleteLastButton = nullptr;

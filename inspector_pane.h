@@ -90,6 +90,7 @@ public:
     QLabel *correctionsClipLabel() const { return m_correctionsClipLabel; }
     QLabel *correctionsStatusLabel() const { return m_correctionsStatusLabel; }
     QCheckBox *correctionsDrawModeCheck() const { return m_correctionsDrawModeCheck; }
+    QPushButton *correctionsDrawPolygonButton() const { return m_correctionsDrawPolygonButton; }
     QPushButton *correctionsClosePolygonButton() const { return m_correctionsClosePolygonButton; }
     QPushButton *correctionsCancelDraftButton() const { return m_correctionsCancelDraftButton; }
     QPushButton *correctionsDeleteLastButton() const { return m_correctionsDeleteLastButton; }
@@ -246,6 +247,7 @@ private:
     QLabel *m_correctionsClipLabel = nullptr;
     QLabel *m_correctionsStatusLabel = nullptr;
     QCheckBox *m_correctionsDrawModeCheck = nullptr;
+    QPushButton *m_correctionsDrawPolygonButton = nullptr;
     QPushButton *m_correctionsClosePolygonButton = nullptr;
     QPushButton *m_correctionsCancelDraftButton = nullptr;
     QPushButton *m_correctionsDeleteLastButton = nullptr;
