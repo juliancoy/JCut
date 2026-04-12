@@ -107,6 +107,8 @@ struct TimelineClip {
     struct CorrectionPolygon {
         QVector<QPointF> pointsNormalized;
         bool enabled = true;
+        int64_t startFrame = 0; // Clip-local frame (inclusive)
+        int64_t endFrame = -1;  // Clip-local frame (inclusive), -1 means until clip end
     };
 
     QString id;
@@ -246,6 +248,12 @@ QString renderSyncActionLabel(RenderSyncAction action);
 bool clipHasVisuals(const TimelineClip& clip);
 bool clipIsAudioOnly(const TimelineClip& clip);
 bool clipHasCorrections(const TimelineClip& clip);
+bool correctionPolygonActiveAtTimelineFrame(const TimelineClip& clip,
+                                            const TimelineClip::CorrectionPolygon& polygon,
+                                            int64_t timelineFrame);
+bool correctionPolygonActiveAtTimelinePosition(const TimelineClip& clip,
+                                               const TimelineClip::CorrectionPolygon& polygon,
+                                               qreal timelineFramePosition);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip);
 TrackVisualMode trackVisualModeForClip(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
 bool clipVisualPlaybackEnabled(const TimelineClip& clip, const QVector<TimelineTrack>& tracks);
@@ -292,6 +300,14 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip&
 EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
                                                                 const QVector<TimelineTrack>& tracks,
                                                                 qreal timelineFramePosition);
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip& clip,
+                                                             const QVector<TimelineTrack>& tracks,
+                                                             int64_t timelineFrame,
+                                                             const QVector<RenderSyncMarker>& markers);
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
+                                                                const QVector<TimelineTrack>& tracks,
+                                                                qreal timelineFramePosition,
+                                                                const QVector<RenderSyncMarker>& markers);
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
                                               const QVector<RenderSyncMarker>& markers);

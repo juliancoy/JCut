@@ -26,6 +26,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
+#include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QWidget>
@@ -36,7 +37,17 @@
 namespace {
 
 constexpr int kUiInvokeTimeoutMs = 500;
+constexpr int kUiBackgroundInvokeTimeoutMs = 200;
 constexpr qint64 kUiHeartbeatStaleMs = 1000;
+constexpr qint64 kProfileCacheFreshMs = 250;
+constexpr qint64 kBackgroundRefreshTickMs = 50;
+constexpr qint64 kProfileRefreshIntervalMs = 100;
+constexpr qint64 kProfileDemandWindowMs = 15000;
+constexpr qint64 kStateRefreshIntervalMs = 100;
+constexpr qint64 kProjectRefreshIntervalMs = 750;
+constexpr qint64 kHistoryRefreshIntervalMs = 400;
+constexpr qint64 kUiTreeRefreshIntervalMs = 250;
+constexpr qint64 kScreenshotMinIntervalMs = 250;
 
 QString reasonPhrase(int statusCode) {
     switch (statusCode) {
@@ -44,6 +55,7 @@ QString reasonPhrase(int statusCode) {
     case 400: return QStringLiteral("Bad Request");
     case 404: return QStringLiteral("Not Found");
     case 405: return QStringLiteral("Method Not Allowed");
+    case 429: return QStringLiteral("Too Many Requests");
     case 408: return QStringLiteral("Request Timeout");
     case 500: return QStringLiteral("Internal Server Error");
     case 503: return QStringLiteral("Service Unavailable");
@@ -300,10 +312,19 @@ public:
         m_listenPort = m_server->serverPort();
         fprintf(stderr, "ControlServer listening on http://127.0.0.1: %u\n", static_cast<unsigned>(m_listenPort));
         fflush(stderr);
+        m_refreshTimer = std::make_unique<QTimer>();
+        m_refreshTimer->setInterval(static_cast<int>(kBackgroundRefreshTickMs));
+        connect(m_refreshTimer.get(), &QTimer::timeout, this, &ControlServerWorker::refreshBackgroundCaches);
+        m_refreshTimer->start();
+        QMetaObject::invokeMethod(this, &ControlServerWorker::refreshBackgroundCaches, Qt::QueuedConnection);
         return true;
     }
 
     void stopListening() {
+        if (m_refreshTimer) {
+            m_refreshTimer->stop();
+            m_refreshTimer.reset();
+        }
         for (QTcpSocket* socket : m_buffers.keys()) {
             socket->disconnectFromHost();
             socket->deleteLater();
@@ -328,6 +349,77 @@ private slots:
         }
     }
 
+    void refreshBackgroundCaches() {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const bool uiResponsive = uiThreadResponsive();
+        const bool profileInDemand = (now - m_lastProfileDemandMs) <= kProfileDemandWindowMs;
+        const qint64 profileIntervalMs = uiResponsive ? kProfileRefreshIntervalMs : 1000;
+        const qint64 stateIntervalMs = uiResponsive ? kStateRefreshIntervalMs : 1000;
+        const qint64 projectIntervalMs = uiResponsive ? kProjectRefreshIntervalMs : 2000;
+        const qint64 historyIntervalMs = uiResponsive ? kHistoryRefreshIntervalMs : 1500;
+        const qint64 uiTreeIntervalMs = uiResponsive ? kUiTreeRefreshIntervalMs : 2000;
+
+        // Refresh one cache per tick with fair scheduling (round-robin among due tasks).
+        for (int step = 0; step < 5; ++step) {
+            const int index = (m_refreshCursor + step) % 5;
+            if (index == 0 && profileInDemand && (now - m_lastProfileRefreshAttemptMs) >= profileIntervalMs) {
+                m_lastProfileRefreshAttemptMs = now;
+                QString error;
+                if (refreshProfileCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+                    m_lastProfileRefreshError.clear();
+                } else {
+                    m_lastProfileRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                }
+                m_refreshCursor = (index + 1) % 5;
+                return;
+            }
+            if (index == 1 && (now - m_lastStateRefreshAttemptMs) >= stateIntervalMs) {
+                m_lastStateRefreshAttemptMs = now;
+                QString error;
+                if (refreshStateCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+                    m_lastStateRefreshError.clear();
+                } else {
+                    m_lastStateRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                }
+                m_refreshCursor = (index + 1) % 5;
+                return;
+            }
+            if (index == 2 && (now - m_lastProjectRefreshAttemptMs) >= projectIntervalMs) {
+                m_lastProjectRefreshAttemptMs = now;
+                QString error;
+                if (refreshProjectCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+                    m_lastProjectRefreshError.clear();
+                } else {
+                    m_lastProjectRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                }
+                m_refreshCursor = (index + 1) % 5;
+                return;
+            }
+            if (index == 3 && (now - m_lastHistoryRefreshAttemptMs) >= historyIntervalMs) {
+                m_lastHistoryRefreshAttemptMs = now;
+                QString error;
+                if (refreshHistoryCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+                    m_lastHistoryRefreshError.clear();
+                } else {
+                    m_lastHistoryRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                }
+                m_refreshCursor = (index + 1) % 5;
+                return;
+            }
+            if (index == 4 && (now - m_lastUiTreeRefreshAttemptMs) >= uiTreeIntervalMs) {
+                m_lastUiTreeRefreshAttemptMs = now;
+                QString error;
+                if (refreshUiTreeCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+                    m_lastUiTreeRefreshError.clear();
+                } else {
+                    m_lastUiTreeRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                }
+                m_refreshCursor = (index + 1) % 5;
+                return;
+            }
+        }
+    }
+
 private:
     bool refreshProfileCacheFromUi(int timeoutMs, QString* errorOut) {
         QJsonObject profile;
@@ -347,6 +439,84 @@ private:
         return true;
     }
 
+    bool refreshStateCacheFromUi(int timeoutMs, QString* errorOut) {
+        if (!m_stateSnapshotCallback) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("state snapshot callback unavailable");
+            }
+            return false;
+        }
+        QJsonObject snapshot;
+        if (!invokeOnUiThread(m_window, timeoutMs, &snapshot, [this]() { return m_stateSnapshotCallback(); })) {
+            ++m_stateSnapshotTimeoutCount;
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for state snapshot");
+            }
+            return false;
+        }
+        m_lastStateSnapshot = snapshot;
+        m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_stateSnapshotSuccessCount;
+        return true;
+    }
+
+    bool refreshProjectCacheFromUi(int timeoutMs, QString* errorOut) {
+        if (!m_projectSnapshotCallback) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("project snapshot callback unavailable");
+            }
+            return false;
+        }
+        QJsonObject project;
+        if (!invokeOnUiThread(m_window, timeoutMs, &project, [this]() { return m_projectSnapshotCallback(); })) {
+            ++m_projectSnapshotTimeoutCount;
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for project snapshot");
+            }
+            return false;
+        }
+        m_lastProjectSnapshot = project;
+        m_lastProjectSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_projectSnapshotSuccessCount;
+        return true;
+    }
+
+    bool refreshHistoryCacheFromUi(int timeoutMs, QString* errorOut) {
+        if (!m_historySnapshotCallback) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("history snapshot callback unavailable");
+            }
+            return false;
+        }
+        QJsonObject history;
+        if (!invokeOnUiThread(m_window, timeoutMs, &history, [this]() { return m_historySnapshotCallback(); })) {
+            ++m_historySnapshotTimeoutCount;
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for history snapshot");
+            }
+            return false;
+        }
+        m_lastHistorySnapshot = history;
+        m_lastHistorySnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_historySnapshotSuccessCount;
+        return true;
+    }
+
+    bool refreshUiTreeCacheFromUi(int timeoutMs, QString* errorOut) {
+        QJsonObject tree;
+        if (!invokeOnUiThread(m_window, timeoutMs, &tree, [this]() { return widgetSnapshot(m_window); })) {
+            ++m_uiTreeSnapshotTimeoutCount;
+            if (errorOut) {
+                *errorOut = QStringLiteral("timed out waiting for ui hierarchy");
+            }
+            return false;
+        }
+        m_lastUiTreeSnapshot = tree;
+        m_lastUiTreeSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_uiTreeSnapshotSuccessCount;
+        return true;
+    }
+
     QJsonObject profileCacheMeta() const {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         return QJsonObject{
@@ -355,7 +525,8 @@ private:
             {QStringLiteral("last_snapshot_age_ms"),
              m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1},
             {QStringLiteral("success_count"), m_profileSuccessCount},
-            {QStringLiteral("timeout_count"), m_profileTimeoutCount}};
+            {QStringLiteral("timeout_count"), m_profileTimeoutCount},
+            {QStringLiteral("served_cached_count"), m_profileServedCachedCount}};
     }
 
     QJsonObject stateCacheMeta() const {
@@ -368,6 +539,42 @@ private:
             {QStringLiteral("success_count"), m_stateSnapshotSuccessCount},
             {QStringLiteral("timeout_count"), m_stateSnapshotTimeoutCount},
             {QStringLiteral("served_cached_count"), m_stateSnapshotServedCachedCount}};
+    }
+
+    QJsonObject projectCacheMeta() const {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        return QJsonObject{
+            {QStringLiteral("has_snapshot"), !m_lastProjectSnapshot.isEmpty()},
+            {QStringLiteral("last_snapshot_ms"), m_lastProjectSnapshotMs},
+            {QStringLiteral("last_snapshot_age_ms"),
+             m_lastProjectSnapshotMs > 0 ? now - m_lastProjectSnapshotMs : -1},
+            {QStringLiteral("success_count"), m_projectSnapshotSuccessCount},
+            {QStringLiteral("timeout_count"), m_projectSnapshotTimeoutCount}
+        };
+    }
+
+    QJsonObject historyCacheMeta() const {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        return QJsonObject{
+            {QStringLiteral("has_snapshot"), !m_lastHistorySnapshot.isEmpty()},
+            {QStringLiteral("last_snapshot_ms"), m_lastHistorySnapshotMs},
+            {QStringLiteral("last_snapshot_age_ms"),
+             m_lastHistorySnapshotMs > 0 ? now - m_lastHistorySnapshotMs : -1},
+            {QStringLiteral("success_count"), m_historySnapshotSuccessCount},
+            {QStringLiteral("timeout_count"), m_historySnapshotTimeoutCount}
+        };
+    }
+
+    QJsonObject uiTreeCacheMeta() const {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        return QJsonObject{
+            {QStringLiteral("has_snapshot"), !m_lastUiTreeSnapshot.isEmpty()},
+            {QStringLiteral("last_snapshot_ms"), m_lastUiTreeSnapshotMs},
+            {QStringLiteral("last_snapshot_age_ms"),
+             m_lastUiTreeSnapshotMs > 0 ? now - m_lastUiTreeSnapshotMs : -1},
+            {QStringLiteral("success_count"), m_uiTreeSnapshotSuccessCount},
+            {QStringLiteral("timeout_count"), m_uiTreeSnapshotTimeoutCount}
+        };
     }
 
     void onReadyRead(QTcpSocket* socket) {
@@ -427,78 +634,6 @@ private:
         return m_fastSnapshotCallback ? m_fastSnapshotCallback() : QJsonObject{};
     }
 
-    bool fetchStateSnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
-        if (!out) {
-            return false;
-        }
-        if (!m_stateSnapshotCallback) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("state snapshot callback unavailable");
-            }
-            return false;
-        }
-        QJsonObject snapshot;
-        if (invokeOnUiThread(m_window, timeoutMs, &snapshot, [this]() { return m_stateSnapshotCallback(); })) {
-            *out = snapshot;
-            m_lastStateSnapshot = snapshot;
-            m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
-            ++m_stateSnapshotSuccessCount;
-            return true;
-        }
-
-        ++m_stateSnapshotTimeoutCount;
-        if (!m_lastStateSnapshot.isEmpty()) {
-            *out = m_lastStateSnapshot;
-            ++m_stateSnapshotServedCachedCount;
-            if (errorOut) {
-                *errorOut = QStringLiteral("timed out waiting for state snapshot; served cached snapshot");
-            }
-            return true;
-        }
-        if (errorOut) {
-            *errorOut = QStringLiteral("timed out waiting for state snapshot");
-        }
-        return false;
-    }
-
-    bool fetchProjectSnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
-        if (!out) {
-            return false;
-        }
-        if (!m_projectSnapshotCallback) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("project snapshot callback unavailable");
-            }
-            return false;
-        }
-        if (!invokeOnUiThread(m_window, timeoutMs, out, [this]() { return m_projectSnapshotCallback(); })) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("timed out waiting for project snapshot");
-            }
-            return false;
-        }
-        return true;
-    }
-
-    bool fetchHistorySnapshot(int timeoutMs, QJsonObject* out, QString* errorOut) {
-        if (!out) {
-            return false;
-        }
-        if (!m_historySnapshotCallback) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("history snapshot callback unavailable");
-            }
-            return false;
-        }
-        if (!invokeOnUiThread(m_window, timeoutMs, out, [this]() { return m_historySnapshotCallback(); })) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("timed out waiting for history snapshot");
-            }
-            return false;
-        }
-        return true;
-    }
-
     bool uiThreadResponsive() const {
         const QJsonObject snapshot = fastSnapshot();
         return snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <= kUiHeartbeatStaleMs;
@@ -527,6 +662,7 @@ private:
     }
 
     void handleRequest(QTcpSocket* socket, const Request& request) {
+        const QString path = request.url.path();
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/health")) {
             QJsonObject snapshot = fastSnapshot();
             snapshot[QStringLiteral("ok")] = true;
@@ -562,6 +698,22 @@ private:
             return;
         }
 
+        const bool uiBoundRoute =
+            (request.method == QStringLiteral("POST") && path == QStringLiteral("/playhead")) ||
+            (request.method == QStringLiteral("GET") &&
+             (path == QStringLiteral("/windows") ||
+              path == QStringLiteral("/screenshot") || path == QStringLiteral("/menu"))) ||
+            ((request.method == QStringLiteral("POST")) &&
+             (path == QStringLiteral("/menu") || path == QStringLiteral("/click-item") ||
+              path == QStringLiteral("/click") || path == QStringLiteral("/profile/reset"))) ||
+            ((request.method == QStringLiteral("GET") || request.method == QStringLiteral("POST")) &&
+             path == QStringLiteral("/click"));
+
+        if (uiBoundRoute && !uiThreadResponsive()) {
+            writeError(socket, 503, QStringLiteral("ui thread is unresponsive"));
+            return;
+        }
+
         if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/playhead")) {
             const QJsonObject body = QJsonDocument::fromJson(request.body).object();
             const qint64 frame = body.value(QStringLiteral("frame")).toInteger(-1);
@@ -588,26 +740,31 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/state")) {
-            QJsonObject state;
-            QString error;
-            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+            if (m_lastStateSnapshot.isEmpty()) {
+                const QString error = m_lastStateRefreshError.isEmpty()
+                    ? QStringLiteral("state snapshot unavailable; cache warming")
+                    : m_lastStateRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
+            ++m_stateSnapshotServedCachedCount;
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
-                {QStringLiteral("state"), state}
+                {QStringLiteral("state"), m_lastStateSnapshot}
             });
             return;
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/timeline")) {
-            QJsonObject state;
-            QString error;
-            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+            if (m_lastStateSnapshot.isEmpty()) {
+                const QString error = m_lastStateRefreshError.isEmpty()
+                    ? QStringLiteral("state snapshot unavailable; cache warming")
+                    : m_lastStateRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
+            ++m_stateSnapshotServedCachedCount;
+            const QJsonObject& state = m_lastStateSnapshot;
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("currentFrame"), state.value(QStringLiteral("currentFrame")).toInteger()},
@@ -622,12 +779,15 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/tracks")) {
-            QJsonObject state;
-            QString error;
-            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+            if (m_lastStateSnapshot.isEmpty()) {
+                const QString error = m_lastStateRefreshError.isEmpty()
+                    ? QStringLiteral("state snapshot unavailable; cache warming")
+                    : m_lastStateRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
+            ++m_stateSnapshotServedCachedCount;
+            const QJsonObject& state = m_lastStateSnapshot;
             const QJsonArray tracks = state.value(QStringLiteral("tracks")).toArray();
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
@@ -638,12 +798,15 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/clips")) {
-            QJsonObject state;
-            QString error;
-            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+            if (m_lastStateSnapshot.isEmpty()) {
+                const QString error = m_lastStateRefreshError.isEmpty()
+                    ? QStringLiteral("state snapshot unavailable; cache warming")
+                    : m_lastStateRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
+            ++m_stateSnapshotServedCachedCount;
+            const QJsonObject& state = m_lastStateSnapshot;
 
             const QUrlQuery query(request.url);
             const QString idFilter = query.queryItemValue(QStringLiteral("id")).trimmed();
@@ -687,12 +850,15 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/clip")) {
-            QJsonObject state;
-            QString error;
-            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+            if (m_lastStateSnapshot.isEmpty()) {
+                const QString error = m_lastStateRefreshError.isEmpty()
+                    ? QStringLiteral("state snapshot unavailable; cache warming")
+                    : m_lastStateRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
+            ++m_stateSnapshotServedCachedCount;
+            const QJsonObject& state = m_lastStateSnapshot;
             const QUrlQuery query(request.url);
             const QString clipId = query.queryItemValue(QStringLiteral("id")).trimmed();
             if (clipId.isEmpty()) {
@@ -712,17 +878,20 @@ private:
                     return;
                 }
             }
-writeError(socket, 404, QStringLiteral("clip not found"));
+            writeError(socket, 404, QStringLiteral("clip not found"));
             return;
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/keyframes")) {
-            QJsonObject state;
-            QString error;
-            if (!fetchStateSnapshot(kUiInvokeTimeoutMs, &state, &error)) {
+            if (m_lastStateSnapshot.isEmpty()) {
+                const QString error = m_lastStateRefreshError.isEmpty()
+                    ? QStringLiteral("state snapshot unavailable; cache warming")
+                    : m_lastStateRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
+            ++m_stateSnapshotServedCachedCount;
+            const QJsonObject& state = m_lastStateSnapshot;
             const QUrlQuery query(request.url);
             const QString clipId = query.queryItemValue(QStringLiteral("id")).trimmed();
             if (clipId.isEmpty()) {
@@ -781,46 +950,48 @@ writeError(socket, 404, QStringLiteral("clip not found"));
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/project")) {
-            QJsonObject project;
-            QString error;
-            if (!fetchProjectSnapshot(kUiInvokeTimeoutMs, &project, &error)) {
+            if (m_lastProjectSnapshot.isEmpty()) {
+                const QString error = m_lastProjectRefreshError.isEmpty()
+                    ? QStringLiteral("project snapshot unavailable; cache warming")
+                    : m_lastProjectRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
-                {QStringLiteral("project"), project}
+                {QStringLiteral("project"), m_lastProjectSnapshot}
             });
             return;
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/history")) {
-            QJsonObject history;
-            QString error;
-            if (!fetchHistorySnapshot(kUiInvokeTimeoutMs, &history, &error)) {
+            if (m_lastHistorySnapshot.isEmpty()) {
+                const QString error = m_lastHistoryRefreshError.isEmpty()
+                    ? QStringLiteral("history snapshot unavailable; cache warming")
+                    : m_lastHistoryRefreshError;
                 writeError(socket, 503, error);
                 return;
             }
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
-                {QStringLiteral("history"), history}
+                {QStringLiteral("history"), m_lastHistorySnapshot}
             });
             return;
         }
 
-        if (!uiThreadResponsive()) {
-            writeError(socket, 503, QStringLiteral("ui thread is unresponsive"));
-            return;
-        }
-
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/profile")) {
-            QString uiError;
-            const bool live = refreshProfileCacheFromUi(kUiInvokeTimeoutMs, &uiError);
-            if (!live && m_lastProfileSnapshot.isEmpty()) {
-                writeError(socket, 503, uiError);
+            m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+            if (m_lastProfileSnapshot.isEmpty()) {
+                const QString error = m_lastProfileRefreshError.isEmpty()
+                    ? QStringLiteral("profile snapshot unavailable; cache warming")
+                    : m_lastProfileRefreshError;
+                writeError(socket, 503, error);
                 return;
             }
-
+            ++m_profileServedCachedCount;
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            const qint64 ageMs = m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1;
+            const bool live = ageMs >= 0 && ageMs <= kProfileCacheFreshMs;
             const QJsonObject snapshot = fastSnapshot();
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
@@ -828,8 +999,9 @@ writeError(socket, 404, QStringLiteral("clip not found"));
                 {QStringLiteral("ui_thread_responsive"),
                  snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
                      kUiHeartbeatStaleMs},
-                {QStringLiteral("ui_error"), live ? QString() : uiError},
+                {QStringLiteral("ui_error"), m_lastProfileRefreshError},
                 {QStringLiteral("profile"), m_lastProfileSnapshot},
+                {QStringLiteral("served_cached"), true},
                 {QStringLiteral("cache"), profileCacheMeta()}
             });
             return;
@@ -860,6 +1032,13 @@ writeError(socket, 404, QStringLiteral("clip not found"));
                 {QStringLiteral("fast_snapshot"), snapshot},
                 {QStringLiteral("profile_cache"), profileCacheMeta()},
                 {QStringLiteral("state_cache"), stateCacheMeta()},
+                {QStringLiteral("project_cache"), projectCacheMeta()},
+                {QStringLiteral("history_cache"), historyCacheMeta()},
+                {QStringLiteral("ui_tree_cache"), uiTreeCacheMeta()},
+                {QStringLiteral("rate_limit"), QJsonObject{
+                    {QStringLiteral("screenshot_count"), m_screenshotRateLimitedCount},
+                    {QStringLiteral("screenshot_min_interval_ms"), kScreenshotMinIntervalMs}
+                }},
                 {QStringLiteral("debug"), editor::debugControlsSnapshot()}
             });
             return;
@@ -940,17 +1119,17 @@ writeError(socket, 404, QStringLiteral("clip not found"));
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/ui")) {
-            QJsonObject tree;
-            if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &tree, [this]() {
-                    return widgetSnapshot(m_window);
-                })) {
-                writeError(socket, 503, QStringLiteral("timed out waiting for ui hierarchy"));
+            if (m_lastUiTreeSnapshot.isEmpty()) {
+                const QString error = m_lastUiTreeRefreshError.isEmpty()
+                    ? QStringLiteral("ui hierarchy unavailable; cache warming")
+                    : m_lastUiTreeRefreshError;
+                writeError(socket, 503, error);
                 return;
             }
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), true},
-                {QStringLiteral("ui"), tree},
-                {QStringLiteral("window"), tree}
+                {QStringLiteral("ui"), m_lastUiTreeSnapshot},
+                {QStringLiteral("window"), m_lastUiTreeSnapshot}
             });
             return;
         }
@@ -972,6 +1151,13 @@ writeError(socket, 404, QStringLiteral("clip not found"));
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/screenshot")) {
+            const qint64 now = QDateTime::currentMSecsSinceEpoch();
+            if (m_lastScreenshotRequestMs > 0 && (now - m_lastScreenshotRequestMs) < kScreenshotMinIntervalMs) {
+                ++m_screenshotRateLimitedCount;
+                writeError(socket, 429, QStringLiteral("screenshot requests are rate-limited"));
+                return;
+            }
+            m_lastScreenshotRequestMs = now;
             QByteArray pngBytes;
             if (!invokeOnUiThread(m_window, 500, &pngBytes, [this]() {
                     QByteArray bytes;
@@ -1167,18 +1353,46 @@ writeError(socket, 404, QStringLiteral("clip not found"));
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
     std::unique_ptr<QTcpServer> m_server;
+    std::unique_ptr<QTimer> m_refreshTimer;
     QHash<QTcpSocket*, QByteArray> m_buffers;
     quint16 m_listenPort = 0;
     qint64 m_startTimeMs = QDateTime::currentMSecsSinceEpoch();
     QJsonObject m_lastProfileSnapshot;
     qint64 m_lastProfileSnapshotMs = 0;
+    QString m_lastProfileRefreshError;
     qint64 m_profileSuccessCount = 0;
     qint64 m_profileTimeoutCount = 0;
+    qint64 m_profileServedCachedCount = 0;
+    qint64 m_lastProfileRefreshAttemptMs = 0;
+    qint64 m_lastProfileDemandMs = 0;
     QJsonObject m_lastStateSnapshot;
     qint64 m_lastStateSnapshotMs = 0;
+    QString m_lastStateRefreshError;
     qint64 m_stateSnapshotSuccessCount = 0;
     qint64 m_stateSnapshotTimeoutCount = 0;
     qint64 m_stateSnapshotServedCachedCount = 0;
+    qint64 m_lastStateRefreshAttemptMs = 0;
+    QJsonObject m_lastProjectSnapshot;
+    qint64 m_lastProjectSnapshotMs = 0;
+    QString m_lastProjectRefreshError;
+    qint64 m_projectSnapshotSuccessCount = 0;
+    qint64 m_projectSnapshotTimeoutCount = 0;
+    qint64 m_lastProjectRefreshAttemptMs = 0;
+    QJsonObject m_lastHistorySnapshot;
+    qint64 m_lastHistorySnapshotMs = 0;
+    QString m_lastHistoryRefreshError;
+    qint64 m_historySnapshotSuccessCount = 0;
+    qint64 m_historySnapshotTimeoutCount = 0;
+    qint64 m_lastHistoryRefreshAttemptMs = 0;
+    QJsonObject m_lastUiTreeSnapshot;
+    qint64 m_lastUiTreeSnapshotMs = 0;
+    QString m_lastUiTreeRefreshError;
+    qint64 m_uiTreeSnapshotSuccessCount = 0;
+    qint64 m_uiTreeSnapshotTimeoutCount = 0;
+    qint64 m_lastUiTreeRefreshAttemptMs = 0;
+    int m_refreshCursor = 0;
+    qint64 m_lastScreenshotRequestMs = 0;
+    qint64 m_screenshotRateLimitedCount = 0;
 };
 
 } // namespace

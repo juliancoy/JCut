@@ -1,5 +1,6 @@
 #include "render_internal.h"
 #include "visual_effects_shader.h"
+#include "polygon_triangulation.h"
 
 namespace render_detail {
 
@@ -23,7 +24,8 @@ QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
 class OffscreenGpuRendererPrivate : protected QOpenGLFunctions {
 public:
     OffscreenGpuRendererPrivate()
-        : m_quadBuffer(QOpenGLBuffer::VertexBuffer) {}
+        : m_quadBuffer(QOpenGLBuffer::VertexBuffer)
+        , m_polygonBuffer(QOpenGLBuffer::VertexBuffer) {}
 
     ~OffscreenGpuRendererPrivate() {
         releaseResources();
@@ -76,6 +78,15 @@ public:
             }
             return false;
         }
+        m_correctionMaskShaderProgram = std::make_unique<QOpenGLShaderProgram>();
+        if (!m_correctionMaskShaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, editor::correctionMaskVertexShaderSource()) ||
+            !m_correctionMaskShaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, editor::correctionMaskFragmentShaderSource()) ||
+            !m_correctionMaskShaderProgram->link()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to build correction mask shader pipeline.");
+            }
+            return false;
+        }
 
         static const GLfloat kQuadVertices[] = {
             -0.5f, -0.5f, 0.0f, 0.0f,
@@ -88,6 +99,7 @@ public:
         m_quadBuffer.bind();
         m_quadBuffer.allocate(kQuadVertices, sizeof(kQuadVertices));
         m_quadBuffer.release();
+        m_polygonBuffer.create();
 
         QOpenGLFramebufferObjectFormat fboFormat;
         fboFormat.setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
@@ -222,8 +234,11 @@ public:
                 continue;
             }
 
-            const EffectiveVisualEffects effects =
-                evaluateEffectiveVisualEffectsAtPosition(clip, request.tracks, static_cast<qreal>(timelineFrame));
+            EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+                clip, request.tracks, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
+            if (!request.correctionsEnabled) {
+                effects.correctionPolygons.clear();
+            }
             const TimelineClip::GradingKeyframe& grade = effects.grading;
             if (grade.opacity <= 0.0001) {
                 recordRenderSkip(skippedClips, skippedReasonCounts, clip, QStringLiteral("zero_opacity"), timelineFrame);
@@ -282,6 +297,52 @@ public:
 
             QElapsedTimer compositeTimer;
             compositeTimer.start();
+            const bool hasCorrections =
+                !effects.correctionPolygons.isEmpty() &&
+                m_correctionMaskShaderProgram &&
+                m_polygonBuffer.isCreated();
+            if (hasCorrections) {
+                glEnable(GL_STENCIL_TEST);
+                glStencilMask(0xFF);
+                glClear(GL_STENCIL_BUFFER_BIT);
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                glStencilFunc(GL_ALWAYS, 1, 0xFF);
+                glStencilOp(GL_REPLACE, GL_REPLACE, GL_REPLACE);
+
+                m_correctionMaskShaderProgram->bind();
+                m_correctionMaskShaderProgram->setUniformValue("u_mvp", projection * model);
+                const int correctionPositionLoc =
+                    m_correctionMaskShaderProgram->attributeLocation("a_position");
+                for (const TimelineClip::CorrectionPolygon& polygon : effects.correctionPolygons) {
+                    QVector<QPointF> triangleVertices;
+                    if (!editor::triangulatePolygon(polygon.pointsNormalized, &triangleVertices)) {
+                        continue;
+                    }
+                    QVector<GLfloat> vertices;
+                    vertices.reserve(triangleVertices.size() * 2);
+                    for (const QPointF& p : triangleVertices) {
+                        vertices.push_back(GLfloat(qBound<qreal>(0.0, p.x(), 1.0) - 0.5));
+                        vertices.push_back(GLfloat(qBound<qreal>(0.0, p.y(), 1.0) - 0.5));
+                    }
+                    m_polygonBuffer.bind();
+                    m_polygonBuffer.allocate(vertices.constData(),
+                                             int(vertices.size() * sizeof(GLfloat)));
+                    m_correctionMaskShaderProgram->enableAttributeArray(correctionPositionLoc);
+                    m_correctionMaskShaderProgram->setAttributeBuffer(
+                        correctionPositionLoc, GL_FLOAT, 0, 2, 2 * sizeof(GLfloat));
+                    glDrawArrays(GL_TRIANGLES, 0, vertices.size() / 2);
+                    m_correctionMaskShaderProgram->disableAttributeArray(correctionPositionLoc);
+                    m_polygonBuffer.release();
+                }
+                m_correctionMaskShaderProgram->release();
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                glStencilMask(0x00);
+                glStencilFunc(GL_EQUAL, 0, 0xFF);
+                glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+            } else {
+                glDisable(GL_STENCIL_TEST);
+            }
+
             m_shaderProgram->bind();
             m_shaderProgram->setUniformValue("u_mvp", projection * model);
             m_shaderProgram->setUniformValue("u_brightness", GLfloat(grade.brightness));
@@ -329,6 +390,11 @@ public:
             glBindTexture(GL_TEXTURE_2D, 0);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, 0);
+            if (hasCorrections) {
+                glStencilMask(0xFF);
+                glDisable(GL_STENCIL_TEST);
+            }
+
             const qint64 compositeElapsed = compositeTimer.elapsed();
             if (compositeMs) {
                 *compositeMs += compositeElapsed;
@@ -466,7 +532,11 @@ private:
             if (m_quadBuffer.isCreated()) {
                 m_quadBuffer.destroy();
             }
+            if (m_polygonBuffer.isCreated()) {
+                m_polygonBuffer.destroy();
+            }
             m_shaderProgram.reset();
+            m_correctionMaskShaderProgram.reset();
             m_nv12YShaderProgram.reset();
             m_nv12UvShaderProgram.reset();
             m_context->doneCurrent();
@@ -521,9 +591,11 @@ private:
     std::unique_ptr<QOpenGLFramebufferObject> m_nv12YFbo;
     std::unique_ptr<QOpenGLFramebufferObject> m_nv12UvFbo;
     std::unique_ptr<QOpenGLShaderProgram> m_shaderProgram;
+    std::unique_ptr<QOpenGLShaderProgram> m_correctionMaskShaderProgram;
     std::unique_ptr<QOpenGLShaderProgram> m_nv12YShaderProgram;
     std::unique_ptr<QOpenGLShaderProgram> m_nv12UvShaderProgram;
     QOpenGLBuffer m_quadBuffer;
+    QOpenGLBuffer m_polygonBuffer;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
     QHash<QString, editor::GlTextureCacheEntry> m_reusableTextureCache;
 };
@@ -583,8 +655,11 @@ QImage renderTimelineFrame(const RenderRequest& request,
             continue;
         }
 
-        const EffectiveVisualEffects effects =
-            evaluateEffectiveVisualEffectsAtFrame(clip, request.tracks, timelineFrame);
+        EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtFrame(
+            clip, request.tracks, timelineFrame, request.renderSyncMarkers);
+        if (!request.correctionsEnabled) {
+            effects.correctionPolygons.clear();
+        }
         if (effects.grading.opacity <= 0.0001) {
             recordRenderSkip(skippedClips, skippedReasonCounts, clip, QStringLiteral("zero_opacity"), timelineFrame);
             continue;

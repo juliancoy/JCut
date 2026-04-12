@@ -5,6 +5,7 @@
 #include <QLabel>
 #include <QPointF>
 #include <QPushButton>
+#include <QTableWidget>
 #include <QVector>
 #include <functional>
 
@@ -18,6 +19,9 @@ public:
     struct Widgets {
         QLabel* correctionsClipLabel = nullptr;
         QLabel* correctionsStatusLabel = nullptr;
+        QCheckBox* correctionsEnabledCheck = nullptr;
+        QTableWidget* correctionsPolygonTable = nullptr;
+        QTableWidget* correctionsVertexTable = nullptr;
         QCheckBox* correctionsDrawModeCheck = nullptr;
         QPushButton* correctionsDrawPolygonButton = nullptr;
         QPushButton* correctionsClosePolygonButton = nullptr;
@@ -34,7 +38,10 @@ public:
         std::function<void()> scheduleSaveState;
         std::function<void()> pushHistorySnapshot;
         std::function<bool(const TimelineClip&)> clipHasVisuals;
+        std::function<bool()> correctionsEnabled;
+        std::function<void(bool)> setCorrectionsEnabled;
         std::function<void(bool)> setCorrectionDrawMode;
+        std::function<void(int)> setSelectedCorrectionPolygon;
         std::function<void(const QVector<QPointF>&)> setCorrectionDraftPoints;
         std::function<void(TimelineWidget::ToolMode)> setTimelineToolMode;
         std::function<TimelineWidget::ToolMode()> getTimelineToolMode;
@@ -45,6 +52,7 @@ public:
 
     void wire();
     void refresh();
+    void stopDrawing();
     void handlePreviewPoint(const QString& clipId, qreal xNorm, qreal yNorm);
 
 private:
@@ -53,10 +61,16 @@ private:
     void clearDraftFromPreview();
     void syncDraftToPreview();
     void setDrawingEnabled(bool enabled);
+    void refreshPolygonTable(const TimelineClip* clip);
+    void refreshVertexTable(const TimelineClip* clip);
+    void applyPolygonCellEdit(QTableWidgetItem* item);
+    void applyVertexCellEdit(QTableWidgetItem* item);
+    int selectedPolygonIndex() const;
 
     Widgets m_widgets;
     Dependencies m_deps;
     QVector<QPointF> m_draftPoints;
+    int m_selectedPolygon = -1;
     bool m_updating = false;
     bool m_savedToolModeValid = false;
     TimelineWidget::ToolMode m_savedToolMode;

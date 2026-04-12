@@ -23,6 +23,7 @@ using namespace editor;
 PreviewWindow::PreviewWindow(QWidget* parent)
     : QOpenGLWidget(parent)
     , m_quadBuffer(QOpenGLBuffer::VertexBuffer)
+    , m_polygonBuffer(QOpenGLBuffer::VertexBuffer)
 {
     setMinimumSize(320, 180);
     setMouseTracking(true);
@@ -227,6 +228,14 @@ void PreviewWindow::setPreviewZoom(qreal zoom) {
 void PreviewWindow::setBypassGrading(bool bypass) {
     if (m_bypassGrading == bypass) return;
     m_bypassGrading = bypass;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setCorrectionsEnabled(bool enabled) {
+    if (m_correctionsEnabled == enabled) {
+        return;
+    }
+    m_correctionsEnabled = enabled;
     scheduleRepaint();
 }
 

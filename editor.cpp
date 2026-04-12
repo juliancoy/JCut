@@ -278,6 +278,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(0);
     const int speechFilterFadeSamples = root.value(QStringLiteral("speechFilterFadeSamples")).toInt(250);
     const bool transcriptFollowCurrentWord = root.value(QStringLiteral("transcriptFollowCurrentWord")).toBool(true);
+    const bool correctionsEnabled = root.value(QStringLiteral("correctionsEnabled")).toBool(true);
     const bool gradingFollowCurrent = root.value(QStringLiteral("gradingFollowCurrent")).toBool(true);
     const bool gradingAutoScroll = root.value(QStringLiteral("gradingAutoScroll")).toBool(true);
     const bool keyframesFollowCurrent = root.value(QStringLiteral("keyframesFollowCurrent")).toBool(true);
@@ -415,10 +416,27 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_gradingAutoScrollCheckBox) { QSignalBlocker block(m_gradingAutoScrollCheckBox); m_gradingAutoScrollCheckBox->setChecked(gradingAutoScroll); }
     if (m_keyframesFollowCurrentCheckBox) { QSignalBlocker block(m_keyframesFollowCurrentCheckBox); m_keyframesFollowCurrentCheckBox->setChecked(keyframesFollowCurrent); }
     if (m_keyframesAutoScrollCheckBox) { QSignalBlocker block(m_keyframesAutoScrollCheckBox); m_keyframesAutoScrollCheckBox->setChecked(keyframesAutoScroll); }
+    if (m_inspectorPane && m_inspectorPane->correctionsEnabledCheck()) {
+        QSignalBlocker block(m_inspectorPane->correctionsEnabledCheck());
+        m_inspectorPane->correctionsEnabledCheck()->setChecked(correctionsEnabled);
+    }
+    m_correctionsEnabled = correctionsEnabled;
+    if (m_preview) {
+        m_preview->setCorrectionsEnabled(m_correctionsEnabled);
+    }
     
     if (m_inspectorTabs && m_inspectorTabs->count() > 0) {
         QSignalBlocker block(m_inspectorTabs);
         m_inspectorTabs->setCurrentIndex(qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1));
+        if (m_preview) {
+            const int index = m_inspectorTabs->currentIndex();
+            const bool showCorrectionOverlays =
+                index >= 0 && m_inspectorTabs->tabText(index) == QStringLiteral("Corrections");
+            m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
+            if (!showCorrectionOverlays && m_correctionsTab) {
+                m_correctionsTab->stopDrawing();
+            }
+        }
     }
     if (m_playbackSpeedCombo) {
         QSignalBlocker block(m_playbackSpeedCombo);
@@ -1192,6 +1210,7 @@ void EditorWindow::renderFromOutputInspector()
 void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
 {
     RenderRequest effectiveRequest = request;
+    effectiveRequest.correctionsEnabled = m_correctionsEnabled;
     if (effectiveRequest.useProxyMedia)
     {
         for (TimelineClip &clip : effectiveRequest.clips)

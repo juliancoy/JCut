@@ -10,6 +10,8 @@
 #include <QDebug>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
+#include <QMutex>
 #include <QThread>
 
 #include <limits>
@@ -22,12 +24,31 @@ constexpr int64_t kMaxSequentialDecodeGap = 90;
 constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 4K WebP
 constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at 30fps
 constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
+constexpr qint64 kNoVideoWarningThrottleMs = 15000;
 
 #if defined(__SANITIZE_ADDRESS__)
 constexpr bool kAsanBuild = true;
 #else
 constexpr bool kAsanBuild = false;
 #endif
+
+void warnNoVideoStreamThrottled(const QString& path) {
+    static QMutex mutex;
+    static QHash<QString, qint64> lastWarningMsByPath;
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    bool shouldLog = false;
+    {
+        QMutexLocker lock(&mutex);
+        const qint64 last = lastWarningMsByPath.value(path, 0);
+        if (last <= 0 || (now - last) >= kNoVideoWarningThrottleMs) {
+            lastWarningMsByPath.insert(path, now);
+            shouldLog = true;
+        }
+    }
+    if (shouldLog) {
+        qWarning() << "No video stream found in:" << path;
+    }
+}
 
 } // namespace
 
@@ -151,7 +172,7 @@ bool DecoderContext::openInput() {
     }
 
     if (m_videoStreamIndex < 0) {
-        qWarning() << "No video stream found in:" << m_path;
+        warnNoVideoStreamThrottled(m_path);
         return false;
     }
 
@@ -375,7 +396,9 @@ bool DecoderContext::initCodec() {
                                                   : QStringLiteral("hardware_cpu_upload"))
                              : QStringLiteral("software");
 
-    qDebug() << "Decoder path for" << m_path << ":" << (hardwareEnabled ? "hardware" : "software");
+    if (debugDecodeEnabled()) {
+        qDebug() << "Decoder path for" << m_path << ":" << (hardwareEnabled ? "hardware" : "software");
+    }
     return true;
 }
 
@@ -468,7 +491,9 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
             m_codecCtx->get_format = get_hw_format;
             m_codecCtx->opaque = reinterpret_cast<void*>(static_cast<intptr_t>(m_hwPixFmt));
 
-            qDebug() << "Using hardware acceleration:" << type << "for" << m_path;
+            if (debugDecodeEnabled()) {
+                qDebug() << "Using hardware acceleration:" << type << "for" << m_path;
+            }
             return true;
         }
     }

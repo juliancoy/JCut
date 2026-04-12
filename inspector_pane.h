@@ -89,6 +89,9 @@ public:
     QCheckBox *maskFeatherEnabledCheck() const { return m_maskFeatherEnabledCheck; }
     QLabel *correctionsClipLabel() const { return m_correctionsClipLabel; }
     QLabel *correctionsStatusLabel() const { return m_correctionsStatusLabel; }
+    QCheckBox *correctionsEnabledCheck() const { return m_correctionsEnabledCheck; }
+    QTableWidget *correctionsPolygonTable() const { return m_correctionsPolygonTable; }
+    QTableWidget *correctionsVertexTable() const { return m_correctionsVertexTable; }
     QCheckBox *correctionsDrawModeCheck() const { return m_correctionsDrawModeCheck; }
     QPushButton *correctionsDrawPolygonButton() const { return m_correctionsDrawPolygonButton; }
     QPushButton *correctionsClosePolygonButton() const { return m_correctionsClosePolygonButton; }
@@ -246,6 +249,9 @@ private:
     QCheckBox *m_maskFeatherEnabledCheck = nullptr;
     QLabel *m_correctionsClipLabel = nullptr;
     QLabel *m_correctionsStatusLabel = nullptr;
+    QCheckBox *m_correctionsEnabledCheck = nullptr;
+    QTableWidget *m_correctionsPolygonTable = nullptr;
+    QTableWidget *m_correctionsVertexTable = nullptr;
     QCheckBox *m_correctionsDrawModeCheck = nullptr;
     QPushButton *m_correctionsDrawPolygonButton = nullptr;
     QPushButton *m_correctionsClosePolygonButton = nullptr;

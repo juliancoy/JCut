@@ -523,6 +523,29 @@ bool clipHasCorrections(const TimelineClip& clip) {
     return false;
 }
 
+bool correctionPolygonActiveAtTimelineFrame(const TimelineClip& clip,
+                                            const TimelineClip::CorrectionPolygon& polygon,
+                                            int64_t timelineFrame) {
+    if (!polygon.enabled || polygon.pointsNormalized.size() < 3) {
+        return false;
+    }
+    const int64_t localFrame = qMax<int64_t>(0, timelineFrame - clip.startFrame);
+    const int64_t start = qMax<int64_t>(0, polygon.startFrame);
+    if (localFrame < start) {
+        return false;
+    }
+    return polygon.endFrame < 0 || localFrame <= polygon.endFrame;
+}
+
+bool correctionPolygonActiveAtTimelinePosition(const TimelineClip& clip,
+                                               const TimelineClip::CorrectionPolygon& polygon,
+                                               qreal timelineFramePosition) {
+    return correctionPolygonActiveAtTimelineFrame(
+        clip,
+        polygon,
+        static_cast<int64_t>(std::floor(timelineFramePosition)));
+}
+
 bool clipVisualPlaybackEnabled(const TimelineClip& clip) {
     return clipHasVisuals(clip) && clip.videoEnabled;
 }
@@ -1144,9 +1167,35 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip&
     effects.grading = evaluateEffectiveClipGradingAtFrame(clip, tracks, timelineFrame);
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
-    effects.correctionPolygons = clip.correctionPolygons;
+    for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+        if (correctionPolygonActiveAtTimelineFrame(clip, polygon, timelineFrame)) {
+            effects.correctionPolygons.push_back(polygon);
+        }
+    }
     return effects;
 }
+
+namespace {
+qreal effectTimelinePositionForClip(const TimelineClip& clip,
+                                    qreal timelineFramePosition,
+                                    const QVector<RenderSyncMarker>& markers) {
+    if (!clip.transformSkipAwareTiming || markers.isEmpty()) {
+        return timelineFramePosition;
+    }
+
+    const qreal maxLocalFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
+    const qreal localTimelineFrame =
+        qBound<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxLocalFrame);
+    const int64_t steppedLocalTimelineFrame =
+        qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFrame)));
+    const qreal fractional = localTimelineFrame - static_cast<qreal>(steppedLocalTimelineFrame);
+    const int64_t adjustedLocalFrame =
+        adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
+    const qreal adjustedLocalFramePosition =
+        qBound<qreal>(0.0, static_cast<qreal>(adjustedLocalFrame) + fractional, maxLocalFrame);
+    return static_cast<qreal>(clip.startFrame) + adjustedLocalFramePosition;
+}
+}  // namespace
 
 EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
                                                                 const QVector<TimelineTrack>& tracks,
@@ -1155,8 +1204,29 @@ EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineCl
     effects.grading = evaluateEffectiveClipGradingAtPosition(clip, tracks, timelineFramePosition);
     effects.maskFeather = clip.maskFeather;
     effects.maskFeatherGamma = clip.maskFeatherGamma;
-    effects.correctionPolygons = clip.correctionPolygons;
+    for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+        if (correctionPolygonActiveAtTimelinePosition(clip, polygon, timelineFramePosition)) {
+            effects.correctionPolygons.push_back(polygon);
+        }
+    }
     return effects;
+}
+
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtFrame(const TimelineClip& clip,
+                                                             const QVector<TimelineTrack>& tracks,
+                                                             int64_t timelineFrame,
+                                                             const QVector<RenderSyncMarker>& markers) {
+    return evaluateEffectiveVisualEffectsAtPosition(
+        clip, tracks, static_cast<qreal>(timelineFrame), markers);
+}
+
+EffectiveVisualEffects evaluateEffectiveVisualEffectsAtPosition(const TimelineClip& clip,
+                                                                const QVector<TimelineTrack>& tracks,
+                                                                qreal timelineFramePosition,
+                                                                const QVector<RenderSyncMarker>& markers) {
+    const qreal adjustedTimelinePosition =
+        effectTimelinePositionForClip(clip, timelineFramePosition, markers);
+    return evaluateEffectiveVisualEffectsAtPosition(clip, tracks, adjustedTimelinePosition);
 }
 
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
@@ -1624,7 +1694,7 @@ QString interactivePreviewMediaPathForClip(const TimelineClip& clip) {
         return interactivePathAllowed(proxyPath) ? proxyPath : QString();
     }
     if (!clipHasVisuals(clip) || clip.filePath.isEmpty()) {
-        return clip.filePath;
+        return QString();
     }
 
     return interactivePathAllowed(clip.filePath) ? clip.filePath : QString();

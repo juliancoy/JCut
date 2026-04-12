@@ -46,6 +46,9 @@ public:
     void setOutputSize(const QSize& size);
     void setHideOutsideOutputWindow(bool hide);
     void setBypassGrading(bool bypass);
+    void setCorrectionsEnabled(bool enabled);
+    void setShowCorrectionOverlays(bool show) { m_showCorrectionOverlays = show; update(); }
+    void setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; update(); }
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
     void setCorrectionDrawMode(bool enabled) { m_correctionDrawMode = enabled; }
@@ -55,6 +58,7 @@ public:
     void resetPreviewPan() { m_previewPanOffset = QPointF(); }
     QSize outputSize() const { return m_outputSize; }
     bool bypassGrading() const;
+    bool correctionsEnabled() const { return m_correctionsEnabled; }
     bool audioMuted() const;
     int audioVolumePercent() const;
     QString activeAudioClipLabel() const;
@@ -157,7 +161,9 @@ private:
     std::unique_ptr<TimelineCache> m_cache;
     std::unique_ptr<PlaybackFramePipeline> m_playbackPipeline;
     std::unique_ptr<QOpenGLShaderProgram> m_shaderProgram;
+    std::unique_ptr<QOpenGLShaderProgram> m_correctionMaskShaderProgram;
     QOpenGLBuffer m_quadBuffer;
+    QOpenGLBuffer m_polygonBuffer;
 
     bool m_glInitialized = false;
     bool m_glResourcesReleased = false;
@@ -166,6 +172,7 @@ private:
     bool m_audioMuted = false;
     qreal m_audioVolume = 0.8;
     bool m_bypassGrading = false;
+    bool m_correctionsEnabled = true;
     int64_t m_currentFrame = 0;
     int64_t m_currentSample = 0;
     qreal m_currentFramePosition = 0.0;
@@ -205,5 +212,7 @@ private:
     QRectF m_dragOriginBounds;
     TimelineClip::TransformKeyframe m_dragOriginTransform;
     bool m_correctionDrawMode = false;
+    bool m_showCorrectionOverlays = false;
+    int m_selectedCorrectionPolygon = -1;
     QVector<QPointF> m_correctionDraftPoints;
 };

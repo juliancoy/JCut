@@ -497,6 +497,7 @@ QJsonObject EditorWindow::buildStateJson() const
         m_keyframesFollowCurrentCheckBox ? m_keyframesFollowCurrentCheckBox->isChecked() : true;
     root[QStringLiteral("keyframesAutoScroll")] =
         m_keyframesAutoScrollCheckBox ? m_keyframesAutoScrollCheckBox->isChecked() : true;
+    root[QStringLiteral("correctionsEnabled")] = m_correctionsEnabled;
     root[QStringLiteral("selectedInspectorTab")] =
         m_inspectorTabs ? m_inspectorTabs->currentIndex() : 0;
     root[QStringLiteral("playbackSpeed")] = m_playbackSpeed;

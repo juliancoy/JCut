@@ -3,6 +3,7 @@
 #include "editor_shared.h"
 
 #include <QByteArray>
+#include <QDateTime>
 #include <QDebug>
 #include <QFile>
 #include <QHash>
@@ -112,17 +113,45 @@ public:
         if (m_initialized) {
             return true;
         }
-
-        try {
-            m_rtaudio = std::make_unique<rt::audio::RtAudio>();
-        } catch (const std::exception& e) {
-            qWarning() << "RtAudio creation failed:" << e.what();
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (nowMs < m_audioInitBackoffUntilMs) {
             return false;
         }
 
+        bool created = false;
+#if defined(Q_OS_LINUX)
+        try {
+            m_rtaudio = std::make_unique<rt::audio::RtAudio>(rt::audio::RtAudio::LINUX_ALSA);
+            created = true;
+        } catch (const std::exception& e) {
+            if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
+                qWarning() << "RtAudio ALSA creation failed, falling back to default API:" << e.what();
+                m_lastAudioInitWarningMs = nowMs;
+            }
+        }
+#endif
+        if (!created) {
+            try {
+                m_rtaudio = std::make_unique<rt::audio::RtAudio>();
+                created = true;
+            } catch (const std::exception& e) {
+                if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
+                    qWarning() << "RtAudio creation failed:" << e.what();
+                    m_lastAudioInitWarningMs = nowMs;
+                }
+                m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
+                return false;
+            }
+        }
+        m_rtaudio->showWarnings(false);
+
         if (m_rtaudio->getDeviceCount() == 0) {
-            qWarning() << "No audio output devices found";
+            if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
+                qWarning() << "No audio output devices found";
+                m_lastAudioInitWarningMs = nowMs;
+            }
             m_rtaudio.reset();
+            m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
             return false;
         }
 
@@ -136,8 +165,13 @@ public:
             rt::audio::RTAUDIO_SINT16, m_sampleRate, &bufferFrames,
             &AudioEngine::rtAudioCallback, this);
         if (err != rt::audio::RTAUDIO_NO_ERROR) {
-            qWarning() << "RtAudio openStream failed";
+            if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
+                qWarning() << "RtAudio openStream failed:"
+                           << QString::fromStdString(m_rtaudio->getErrorText());
+                m_lastAudioInitWarningMs = nowMs;
+            }
             m_rtaudio.reset();
+            m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
             return false;
         }
 
@@ -793,5 +827,9 @@ private:
     static constexpr int m_periodFrames = 1024;
     static constexpr int m_mixLowWaterSamples = 2048 * 2; // samples (frames * channels)
     static constexpr int m_defaultFadeSamples = 250;
+    static constexpr qint64 kAudioInitBackoffMs = 10000;
+    static constexpr qint64 kAudioInitWarningThrottleMs = 10000;
     std::atomic<int> m_speechFilterFadeSamples{m_defaultFadeSamples};
+    qint64 m_audioInitBackoffUntilMs = 0;
+    qint64 m_lastAudioInitWarningMs = 0;
 };

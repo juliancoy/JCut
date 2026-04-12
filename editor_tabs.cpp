@@ -224,6 +224,9 @@ void EditorWindow::createCorrectionsTab()
         CorrectionsTab::Widgets{
             m_inspectorPane->correctionsClipLabel(),
             m_inspectorPane->correctionsStatusLabel(),
+            m_inspectorPane->correctionsEnabledCheck(),
+            m_inspectorPane->correctionsPolygonTable(),
+            m_inspectorPane->correctionsVertexTable(),
             m_inspectorPane->correctionsDrawModeCheck(),
             m_inspectorPane->correctionsDrawPolygonButton(),
             m_inspectorPane->correctionsClosePolygonButton(),
@@ -245,7 +248,24 @@ void EditorWindow::createCorrectionsTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
+            [this]() { return m_correctionsEnabled; },
+            [this](bool enabled) {
+                m_correctionsEnabled = enabled;
+                if (m_preview) {
+                    m_preview->setCorrectionsEnabled(enabled);
+                    if (m_timeline) {
+                        m_preview->setTimelineClips(m_timeline->clips());
+                    }
+                }
+                scheduleSaveState();
+                pushHistorySnapshot();
+            },
             [this](bool enabled) { if (m_preview) m_preview->setCorrectionDrawMode(enabled); },
+            [this](int polygonIndex) {
+                if (m_preview) {
+                    m_preview->setSelectedCorrectionPolygon(polygonIndex);
+                }
+            },
             [this](const QVector<QPointF>& points) {
                 if (m_preview) {
                     m_preview->setCorrectionDraftPoints(points);

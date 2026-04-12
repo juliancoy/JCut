@@ -129,6 +129,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
             }
             QJsonObject polygonObj;
             polygonObj[QStringLiteral("enabled")] = polygon.enabled;
+            polygonObj[QStringLiteral("startFrame")] = static_cast<qint64>(qMax<int64_t>(0, polygon.startFrame));
+            polygonObj[QStringLiteral("endFrame")] = static_cast<qint64>(polygon.endFrame);
             QJsonArray points;
             for (const QPointF& point : polygon.pointsNormalized) {
                 QJsonObject pointObj;
@@ -348,6 +350,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             const QJsonObject polygonObj = polygonValue.toObject();
             TimelineClip::CorrectionPolygon polygon;
             polygon.enabled = polygonObj.value(QStringLiteral("enabled")).toBool(true);
+            polygon.startFrame = qMax<int64_t>(
+                0,
+                polygonObj.value(QStringLiteral("startFrame")).toVariant().toLongLong());
+            polygon.endFrame = polygonObj.contains(QStringLiteral("endFrame"))
+                ? polygonObj.value(QStringLiteral("endFrame")).toVariant().toLongLong()
+                : -1;
             const QJsonArray points = polygonObj.value(QStringLiteral("points")).toArray();
             polygon.pointsNormalized.reserve(points.size());
             for (const QJsonValue& pointValue : points) {
@@ -360,6 +368,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                 polygon.pointsNormalized.push_back(QPointF(x, y));
             }
             if (polygon.pointsNormalized.size() >= 3) {
+                if (polygon.endFrame >= 0 && polygon.endFrame < polygon.startFrame) {
+                    polygon.endFrame = polygon.startFrame;
+                }
                 clip.correctionPolygons.push_back(polygon);
             }
         }

@@ -414,6 +414,45 @@ QWidget *InspectorPane::buildCorrectionsTab()
     m_correctionsStatusLabel->setWordWrap(true);
     layout->addWidget(m_correctionsStatusLabel);
 
+    m_correctionsEnabledCheck = new QCheckBox(QStringLiteral("Enable Corrections"), page);
+    m_correctionsEnabledCheck->setChecked(true);
+    m_correctionsEnabledCheck->setToolTip(
+        QStringLiteral("Apply correction polygons in GPU preview and render."));
+    layout->addWidget(m_correctionsEnabledCheck);
+
+    auto *polygonLabel = new QLabel(QStringLiteral("Polygon Ranges"), page);
+    polygonLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-weight: 600; }"));
+    layout->addWidget(polygonLabel);
+
+    m_correctionsPolygonTable = new QTableWidget(0, 4, page);
+    m_correctionsPolygonTable->setHorizontalHeaderLabels(
+        {QStringLiteral("On"), QStringLiteral("Start"), QStringLiteral("End"), QStringLiteral("Points")});
+    m_correctionsPolygonTable->verticalHeader()->setVisible(false);
+    m_correctionsPolygonTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_correctionsPolygonTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_correctionsPolygonTable->setAlternatingRowColors(true);
+    m_correctionsPolygonTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_correctionsPolygonTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_correctionsPolygonTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_correctionsPolygonTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_correctionsPolygonTable->setMinimumHeight(130);
+    layout->addWidget(m_correctionsPolygonTable);
+
+    auto *vertexLabel = new QLabel(QStringLiteral("Selected Polygon Vertices"), page);
+    vertexLabel->setStyleSheet(QStringLiteral("QLabel { color: #8fa0b5; font-weight: 600; }"));
+    layout->addWidget(vertexLabel);
+
+    m_correctionsVertexTable = new QTableWidget(0, 2, page);
+    m_correctionsVertexTable->setHorizontalHeaderLabels({QStringLiteral("X"), QStringLiteral("Y")});
+    m_correctionsVertexTable->verticalHeader()->setVisible(false);
+    m_correctionsVertexTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_correctionsVertexTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_correctionsVertexTable->setAlternatingRowColors(true);
+    m_correctionsVertexTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    m_correctionsVertexTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_correctionsVertexTable->setMinimumHeight(120);
+    layout->addWidget(m_correctionsVertexTable);
+
     m_correctionsDrawModeCheck = new QCheckBox(QStringLiteral("Draw Polygons In Preview"), page);
     m_correctionsDrawModeCheck->setChecked(false);
     m_correctionsDrawModeCheck->setToolTip(

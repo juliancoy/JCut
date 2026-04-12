@@ -419,6 +419,7 @@ private:
     bool m_renderInProgress = false;
     QJsonObject m_liveRenderProfile;
     QJsonObject m_lastRenderProfile;
+    bool m_correctionsEnabled = true;
 
     bool m_updatingTranscriptInspector = false;
     bool m_updatingSyncInspector = false;

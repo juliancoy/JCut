@@ -62,6 +62,26 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     m_inspectorPane = new InspectorPane(this);
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
+    if (m_inspectorTabs && m_preview) {
+        auto syncCorrectionOverlayVisibility = [this]() {
+            bool show = false;
+            if (m_inspectorTabs) {
+                const int index = m_inspectorTabs->currentIndex();
+                show = index >= 0 && m_inspectorTabs->tabText(index) == QStringLiteral("Corrections");
+            }
+            if (m_preview) {
+                m_preview->setShowCorrectionOverlays(show);
+            }
+            if (!show && m_correctionsTab) {
+                m_correctionsTab->stopDrawing();
+            }
+        };
+        connect(m_inspectorTabs, &QTabWidget::currentChanged, this, [this, syncCorrectionOverlayVisibility](int) {
+            syncCorrectionOverlayVisibility();
+            scheduleSaveState();
+        });
+        syncCorrectionOverlayVisibility();
+    }
 
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);

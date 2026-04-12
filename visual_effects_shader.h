@@ -2,6 +2,9 @@
 
 namespace editor {
 
+inline constexpr int kMaxShaderCorrectionPolygons = 8;
+inline constexpr int kMaxShaderCorrectionPoints = 128;
+
 inline const char* visualEffectsVertexShaderSource() {
     return R"(
         attribute vec2 a_position;
@@ -102,6 +105,24 @@ inline const char* visualEffectsFragmentShaderSource() {
             color.a = clamp(sourceAlpha * u_opacity, 0.0, 1.0);
             color.rgb = rgb * color.a;
             gl_FragColor = color;
+        }
+    )";
+}
+
+inline const char* correctionMaskVertexShaderSource() {
+    return R"(
+        attribute vec2 a_position;
+        uniform mat4 u_mvp;
+        void main() {
+            gl_Position = u_mvp * vec4(a_position, 0.0, 1.0);
+        }
+    )";
+}
+
+inline const char* correctionMaskFragmentShaderSource() {
+    return R"(
+        void main() {
+            gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
         }
     )";
 }

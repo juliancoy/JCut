@@ -51,6 +51,7 @@ struct RenderRequest {
     QString outputFormat;
     QSize outputSize;
     bool useProxyMedia = false;
+    bool correctionsEnabled = true;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;
