@@ -333,6 +333,7 @@ void GradingTab::syncTableToPlayhead()
         }
         updateSpinBoxesFromKeyframe(displayed);
     }
+}
 
 void GradingTab::onAutoScrollToggled(bool checked)
 {
@@ -988,4 +989,76 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
     } else if (chosen == actions.deleteRows && actions.deleteRows->isEnabled()) {
         removeSelectedKeyframes();
     }
+}
+
+void GradingTab::onBrightnessChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onContrastChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onContrastEditingFinished()
+}
+
+void GradingTab::onSaturationChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onSaturationEditingFinished()
+}
+
+void GradingTab::onShadowsRChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onShadowsGChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onShadowsBChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onMidtonesRChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onMidtonesGChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onMidtonesBChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onHighlightsRChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onHighlightsGChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
+}
+
+void GradingTab::onHighlightsBChanged(double value)
+{
+    Q_UNUSED(value);
+    // Real-time updates are handled by onBrightnessEditingFinished()
 }

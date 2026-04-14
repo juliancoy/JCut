@@ -49,9 +49,12 @@ struct RenderProgress {
 struct RenderRequest {
     QString outputPath;
     QString outputFormat;
+    QString imageSequenceFormat;  // "jpeg", "webp", or empty for none
     QSize outputSize;
     bool useProxyMedia = false;
     bool correctionsEnabled = true;
+    bool createVideoFromImageSequence = false;
+    bool disableParallelImageWrite = false;  // For debugging image write issues
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;
@@ -66,6 +69,7 @@ struct RenderResult {
     bool usedGpu = false;
     bool usedHardwareEncode = false;
     QString encoderLabel;
+    QString namedOutputDir;  // Directory with same name as output file (without extension)
     int64_t framesRendered = 0;
     qint64 elapsedMs = 0;
     qint64 renderStageMs = 0;

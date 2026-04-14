@@ -1737,6 +1737,16 @@ void EditorWindow::togglePlayback()
     setPlaybackActive(!playbackActive());
 }
 
+void EditorWindow::onRestartDecodersRequested()
+{
+    qDebug() << "Restart All Decoders requested";
+    // TODO: Implement actual decoder restart
+    // For now, just log and refresh the preview
+    if (m_preview) {
+        m_preview->update();
+    }
+}
+
 bool EditorWindow::playbackActive() const
 {
     return m_fastPlaybackActive.load();

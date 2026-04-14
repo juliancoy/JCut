@@ -1265,15 +1265,22 @@ int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
         qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFramePosition)));
     const int64_t adjustedLocalFrame =
         adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
-    const qreal sourceFpsScale =
-        resolvedSourceFps(clip) / static_cast<qreal>(kTimelineFps);
-    const qreal sourceFrameOffset =
-        std::floor(static_cast<qreal>(adjustedLocalFrame) *
-                   qMax<qreal>(0.001, clip.playbackRate) *
-                   sourceFpsScale);
+    
+    // Use fixed-point arithmetic for FPS scaling and playback rate
+    const qreal sourceFps = resolvedSourceFps(clip);
+    const int64_t sourceFpsScaled = qMax<int64_t>(1, static_cast<int64_t>(sourceFps * 1000.0));
+    const int64_t timelineFpsScaled = static_cast<int64_t>(kTimelineFps * 1000.0);
+    const int64_t playbackRateScaled = qMax<int64_t>(1, static_cast<int64_t>(clip.playbackRate * 1000.0));
+    
+    // Calculate source frame offset using 64-bit integer arithmetic
+    // (adjustedLocalFrame * playbackRate * sourceFps) / timelineFps
+    const int64_t numerator = adjustedLocalFrame * playbackRateScaled * sourceFpsScaled;
+    const int64_t denominator = timelineFpsScaled * 1000LL; // Extra 1000 for playbackRate scaling
+    const int64_t sourceFrameOffset = numerator / denominator;
+    
     return qMax<int64_t>(0,
                          qMin<int64_t>(qMax<int64_t>(0, clip.sourceDurationFrames - 1),
-                                       clip.sourceInFrame + static_cast<int64_t>(sourceFrameOffset)));
+                                       clip.sourceInFrame + sourceFrameOffset));
 }
 
 int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
@@ -1283,20 +1290,24 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
     const int64_t localTimelineSample = qMax<int64_t>(0, timelineSample - clipStartSample);
     const int64_t maxLocalTimelineSample =
         qMax<int64_t>(0, frameToSamples(qMax<int64_t>(0, clip.durationFrames)) - 1);
-    const qreal boundedLocalTimelineSample =
-        static_cast<qreal>(qMin<int64_t>(localTimelineSample, maxLocalTimelineSample));
-    const qreal localTimelineFramePosition = boundedLocalTimelineSample / static_cast<qreal>(kSamplesPerFrame);
-    const int64_t steppedLocalTimelineFrame =
-        qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFramePosition)));
-    const qreal sampleOffsetWithinFrame =
-        boundedLocalTimelineSample - static_cast<qreal>(frameToSamples(steppedLocalTimelineFrame));
+    const int64_t boundedLocalTimelineSample = qMin<int64_t>(localTimelineSample, maxLocalTimelineSample);
+    
+    // Use integer division for frame position to avoid floating-point errors
+    const int64_t steppedLocalTimelineFrame = boundedLocalTimelineSample / kSamplesPerFrame;
+    const int64_t sampleOffsetWithinFrame = boundedLocalTimelineSample % kSamplesPerFrame;
+    
     const int64_t adjustedLocalFrame =
         adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
-    const qreal sourceSampleOffset =
-        std::floor((static_cast<qreal>(frameToSamples(adjustedLocalFrame)) + sampleOffsetWithinFrame) *
-                   qMax<qreal>(0.001, clip.playbackRate));
-    const int64_t sourceSample =
-        clipSourceInSamples(clip) + static_cast<int64_t>(sourceSampleOffset);
+    
+    // Calculate source sample offset using integer arithmetic
+    // Convert adjusted frame to samples, add sample offset, then apply playback rate
+    const int64_t adjustedLocalSamples = frameToSamples(adjustedLocalFrame) + sampleOffsetWithinFrame;
+    
+    // Apply playback rate with fixed-point arithmetic (scaled by 1000 for precision)
+    const int64_t playbackRateScaled = qMax<int64_t>(1, static_cast<int64_t>(clip.playbackRate * 1000.0));
+    const int64_t sourceSampleOffset = (adjustedLocalSamples * playbackRateScaled) / 1000;
+    
+    const int64_t sourceSample = clipSourceInSamples(clip) + sourceSampleOffset;
     const int64_t maxSourceSample =
         clipSourceInSamples(clip) +
         qMax<int64_t>(0,

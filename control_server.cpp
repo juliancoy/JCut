@@ -291,7 +291,8 @@ public:
                         std::function<QJsonObject()> historySnapshotCallback,
                         std::function<QJsonObject()> profilingCallback,
                         std::function<void()> resetProfilingCallback,
-                        std::function<void(int64_t)> setPlayheadCallback)
+                        std::function<void(int64_t)> setPlayheadCallback,
+                        std::function<QJsonObject()> renderResultCallback)
         : m_window(window)
         , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
         , m_stateSnapshotCallback(std::move(stateSnapshotCallback))
@@ -299,7 +300,8 @@ public:
         , m_historySnapshotCallback(std::move(historySnapshotCallback))
         , m_profilingCallback(std::move(profilingCallback))
         , m_resetProfilingCallback(std::move(resetProfilingCallback))
-        , m_setPlayheadCallback(std::move(setPlayheadCallback)) {}
+        , m_setPlayheadCallback(std::move(setPlayheadCallback))
+        , m_renderResultCallback(std::move(renderResultCallback)) {}
 
     ~ControlServerWorker() override = default;
 
@@ -1152,6 +1154,25 @@ private:
             return;
         }
 
+        // New endpoint: /render/status - Returns GPU rendering status
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/render/status")) {
+            QJsonObject renderResult;
+            if (m_renderResultCallback) {
+                renderResult = m_renderResultCallback();
+            }
+            // Return the usedGpu flag from render result if available
+            const bool usedGpu = renderResult.value(QStringLiteral("usedGpu")).toBool(false);
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("usingGpu"), usedGpu},
+                {QStringLiteral("path"), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu_fallback")},
+                {QStringLiteral("encoder"), renderResult.value(QStringLiteral("encoderLabel")).toString()},
+                {QStringLiteral("usedHardwareEncode"), renderResult.value(QStringLiteral("usedHardwareEncode")).toBool(false)},
+                {QStringLiteral("lastRenderResult"), renderResult}
+            });
+            return;
+        }
+
         if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/debug")) {
             QString error;
             const QJsonObject body = parseJsonObject(request.body, &error);
@@ -1437,6 +1458,7 @@ private:
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
+    std::function<QJsonObject()> m_renderResultCallback;
     std::unique_ptr<QTcpServer> m_server;
     std::unique_ptr<QTimer> m_refreshTimer;
     QHash<QTcpSocket*, QByteArray> m_buffers;
@@ -1490,6 +1512,7 @@ ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> profilingCallback,
                              std::function<void()> resetProfilingCallback,
                              std::function<void(int64_t)> setPlayheadCallback,
+                             std::function<QJsonObject()> renderResultCallback,
                              QObject* parent)
     : QObject(parent)
     , m_window(window)
@@ -1499,7 +1522,8 @@ ControlServer::ControlServer(QWidget* window,
     , m_historySnapshotCallback(std::move(historySnapshotCallback))
     , m_profilingCallback(std::move(profilingCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback))
-    , m_setPlayheadCallback(std::move(setPlayheadCallback)) {}
+    , m_setPlayheadCallback(std::move(setPlayheadCallback))
+    , m_renderResultCallback(std::move(renderResultCallback)) {}
 
 ControlServer::~ControlServer() {
     if (m_worker) {
@@ -1529,7 +1553,8 @@ bool ControlServer::start(quint16 port) {
                                            m_historySnapshotCallback,
                                            m_profilingCallback,
                                            m_resetProfilingCallback,
-                                           m_setPlayheadCallback);
+                                           m_setPlayheadCallback,
+                                           m_renderResultCallback);
     m_worker = worker;
     worker->moveToThread(m_thread.get());
     connect(m_thread.get(), &QThread::finished, worker, &QObject::deleteLater);

@@ -415,4 +415,9 @@ void EditorWindow::setupPreviewControls()
         }
         scheduleSaveState();
     });
+
+    if (m_inspectorPane->restartDecodersButton()) {
+        connect(m_inspectorPane->restartDecodersButton(), &QPushButton::clicked,
+                this, &EditorWindow::onRestartDecodersRequested);
+    }
 }

@@ -12,7 +12,8 @@ void EditorWindow::createOutputTab()
         OutputTab::Widgets{
             m_outputWidthSpin, m_outputHeightSpin,
             m_exportStartSpin, m_exportEndSpin,
-            m_outputFormatCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox, m_renderButton},
+            m_outputFormatCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
+            m_createImageSequenceCheckBox, m_imageSequenceFormatCombo, m_renderButton},
         OutputTab::Dependencies{
             [this]() { return m_timeline != nullptr; },
             [this]() { return m_timeline && !m_timeline->clips().isEmpty(); },

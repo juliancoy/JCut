@@ -945,7 +945,12 @@ QWidget *InspectorPane::buildOutputTab()
     m_outputFormatCombo->addItem(QStringLiteral("MP4"), QStringLiteral("mp4"));
     m_outputFormatCombo->addItem(QStringLiteral("MOV"), QStringLiteral("mov"));
     m_outputFormatCombo->addItem(QStringLiteral("WebM"), QStringLiteral("webm"));
+    m_outputFormatCombo->addItem(QStringLiteral("PNG Sequence"), QStringLiteral("png"));
+    m_outputFormatCombo->addItem(QStringLiteral("JPEG Sequence"), QStringLiteral("jpg"));
     m_renderUseProxiesCheckBox = new QCheckBox(QStringLiteral("Use Proxies For Render"), page);
+    m_renderCreateVideoFromSequenceCheckBox = new QCheckBox(QStringLiteral("Also Create Video From Sequence"), page);
+    m_renderCreateVideoFromSequenceCheckBox->setChecked(true);
+    m_renderCreateVideoFromSequenceCheckBox->setToolTip(QStringLiteral("Create a video file from the image sequence with audio"));
 
     form->addRow(QStringLiteral("Output Width"), m_outputWidthSpin);
     form->addRow(QStringLiteral("Output Height"), m_outputHeightSpin);
@@ -966,6 +971,7 @@ QWidget *InspectorPane::buildOutputTab()
     layout->addWidget(m_outputRangeSummaryLabel);
     layout->addLayout(form);
     layout->addWidget(m_renderUseProxiesCheckBox);
+    layout->addWidget(m_renderCreateVideoFromSequenceCheckBox);
     layout->addWidget(m_renderButton);
     layout->addStretch(1);
 

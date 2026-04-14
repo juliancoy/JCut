@@ -150,6 +150,10 @@ void configureAudioCodecOptions(AVCodecContext* codecCtx, const QString& outputF
 AVSampleFormat audioSampleFormatForCodec(const AVCodec* codec);
 int audioSampleRateForCodec(const AVCodec* codec);
 
+bool isImageSequenceFormat(const QString& outputFormat);
+RenderResult renderTimelineToImageSequence(const RenderRequest& request,
+                                          const std::function<bool(const RenderProgress&)>& progressCallback);
+
 struct DecodedAudioClip {
     QVector<float> samples;
     bool valid = false;
@@ -226,5 +230,8 @@ QImage renderTimelineFrame(const RenderRequest& request,
                            QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
                            QJsonArray* skippedClips = nullptr,
                            QJsonObject* skippedReasonCounts = nullptr);
+
+RenderResult renderTimelineToImageSequenceAndVideo(const RenderRequest& request,
+                                                  const std::function<bool(const RenderProgress&)>& progressCallback);
 
 } // namespace render_detail

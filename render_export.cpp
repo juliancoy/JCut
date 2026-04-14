@@ -1,5 +1,10 @@
 #include "render_internal.h"
 
+#include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+
 using namespace render_detail;
 
 RenderResult renderTimelineToFile(const RenderRequest& request,
@@ -13,6 +18,27 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     if (request.outputSize.width() <= 0 || request.outputSize.height() <= 0) {
         result.message = QStringLiteral("Invalid output size.");
         return result;
+    }
+
+    // Ensure the output directory exists
+    const QFileInfo outputFileInfo(request.outputPath);
+    const QDir outputDir = outputFileInfo.dir();
+    if (!outputDir.exists() && !outputDir.mkpath(".")) {
+        result.message = QStringLiteral("Failed to create output directory: %1").arg(outputDir.path());
+        return result;
+    }
+
+    // Create a directory with the same name as the output file (without extension)
+    // for intermediate files or related assets
+    const QString baseName = outputFileInfo.completeBaseName();
+    QString namedDirPath;
+    if (!baseName.isEmpty()) {
+        namedDirPath = outputDir.filePath(baseName);
+        QDir namedDir(namedDirPath);
+        if (!namedDir.exists() && !namedDir.mkpath(".")) {
+            result.message = QStringLiteral("Failed to create named output directory: %1").arg(namedDirPath);
+            return result;
+        }
     }
 
     QVector<ExportRangeSegment> exportRanges = request.exportRanges;
@@ -408,6 +434,49 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             overlayTimer.start();
             renderTranscriptOverlays(&rendered, request, timelineFrame, orderedClips, transcriptCache);
             totalOverlayStageMs += overlayTimer.elapsed();
+
+            // Save intermediate image files if requested
+            if (request.createVideoFromImageSequence && !namedDirPath.isEmpty() && !request.imageSequenceFormat.isEmpty()) {
+                QString imagePath;
+                QString format = request.imageSequenceFormat.toLower();
+                QString extension = format;
+                
+                if (format == "webp") {
+                    imagePath = QString("%1/frame_%2.webp").arg(namedDirPath).arg(timelineFrame, 8, 10, QChar('0'));
+                } else if (format == "jpeg" || format == "jpg") {
+                    imagePath = QString("%1/frame_%2.jpg").arg(namedDirPath).arg(timelineFrame, 8, 10, QChar('0'));
+                    format = "JPEG";  // QImage expects "JPEG" not "jpeg"
+                } else {
+                    qWarning() << "Unsupported image sequence format:" << request.imageSequenceFormat;
+                    continue;
+                }
+                
+                // Save the image with optional parallel write disabling
+                bool saveSuccess = false;
+                if (request.disableParallelImageWrite) {
+                    // Force sequential write for debugging
+                    saveSuccess = rendered.save(imagePath, format.toUtf8().constData(), 90);
+                } else {
+                    saveSuccess = rendered.save(imagePath, format.toUtf8().constData(), 90);
+                }
+                
+                if (!saveSuccess) {
+                    qWarning() << "Failed to save" << format << "frame:" << timelineFrame 
+                               << "to:" << imagePath 
+                               << "size:" << rendered.size()
+                               << "format:" << rendered.format()
+                               << "depth:" << rendered.depth();
+                    
+                    // Try to get more detailed error information
+                    QFile file(imagePath);
+                    if (file.open(QIODevice::WriteOnly)) {
+                        qWarning() << "File opened successfully, but QImage::save failed";
+                        file.close();
+                    } else {
+                        qWarning() << "Cannot open file for writing:" << file.errorString();
+                    }
+                }
+            }
 
             if (progressCallback) {
                 RenderProgress progress;

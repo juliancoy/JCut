@@ -250,6 +250,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
         [this]() { return profilingSnapshot(); },
         [this]() { if (m_preview) m_preview->resetProfilingStats(); },
         [this](int64_t frame) { setCurrentFrame(frame, false); },
+        nullptr, // renderResultCallback (empty/default)
         this);
     m_controlServer->start(controlPort);
     qDebug() << "[STARTUP] ControlServer started in" << ctorTimer.elapsed() << "ms";

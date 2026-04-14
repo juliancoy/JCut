@@ -29,6 +29,8 @@ public:
         QComboBox* outputFormatCombo = nullptr;
         QLabel* outputRangeSummaryLabel = nullptr;
         QCheckBox* renderUseProxiesCheckBox = nullptr;
+        QCheckBox* createImageSequenceCheckBox = nullptr;
+        QComboBox* imageSequenceFormatCombo = nullptr;
         QPushButton* renderButton = nullptr;
     };
 

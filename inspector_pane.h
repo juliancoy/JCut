@@ -177,8 +177,10 @@ public:
     QComboBox *outputFormatCombo() const { return m_outputFormatCombo; }
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
+    QCheckBox *renderCreateVideoFromSequenceCheckBox() const { return m_renderCreateVideoFromSequenceCheckBox; }
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
+    QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
 
     QCheckBox *speechFilterEnabledCheckBox() const { return m_speechFilterEnabledCheckBox; }
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
@@ -363,6 +365,7 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QCheckBox *m_renderCreateVideoFromSequenceCheckBox = nullptr;
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
 

@@ -200,10 +200,13 @@ bool initializeExportAudio(const RenderRequest& request,
         }
     }
     if (audioClips.isEmpty()) {
+        // No audio clips to export - this is normal for video-only projects
         return true;
     }
 
     QHash<QString, DecodedAudioClip> audioCache;
+    int decodedCount = 0;
+    int failedCount = 0;
     for (const TimelineClip& clip : audioClips) {
         if (audioCache.contains(clip.filePath)) {
             continue;
@@ -211,6 +214,10 @@ bool initializeExportAudio(const RenderRequest& request,
         const DecodedAudioClip decoded = decodeClipAudio(clip.filePath);
         if (decoded.valid) {
             audioCache.insert(clip.filePath, decoded);
+            decodedCount++;
+        } else {
+            // Log failure but continue - other audio clips might work
+            failedCount++;
         }
     }
 
@@ -222,8 +229,15 @@ bool initializeExportAudio(const RenderRequest& request,
         }
     }
     if (!hasDecodedAudio) {
+        // All audio clips failed to decode - export will proceed without audio
+        // This matches the audio engine behavior which also silently ignores
+        // clips that fail to decode
         return true;
     }
+    
+    // At least one audio clip decoded successfully
+    // Note: We don't log here to avoid spamming the console during normal operation
+    // Debug logging can be added if needed for troubleshooting
 
     QString codecLabel;
     const AVCodec* audioCodec = audioCodecForRequest(request.outputFormat, &codecLabel);

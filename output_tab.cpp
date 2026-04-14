@@ -10,6 +10,33 @@ OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* 
     , m_widgets(widgets)
     , m_deps(deps)
 {
+    // Initialize output format combo box with video formats only
+    if (m_widgets.outputFormatCombo) {
+        m_widgets.outputFormatCombo->clear();
+        // Video formats only - no image formats
+        m_widgets.outputFormatCombo->addItem("MP4", "mp4");
+        m_widgets.outputFormatCombo->addItem("MOV", "mov");
+        m_widgets.outputFormatCombo->addItem("AVI", "avi");
+        m_widgets.outputFormatCombo->addItem("MKV", "mkv");
+        m_widgets.outputFormatCombo->addItem("WebM", "webm");
+        // Set default to MP4
+        m_widgets.outputFormatCombo->setCurrentIndex(0);
+    }
+    
+    // Initialize image sequence format combo box
+    if (m_widgets.imageSequenceFormatCombo) {
+        m_widgets.imageSequenceFormatCombo->clear();
+        m_widgets.imageSequenceFormatCombo->addItem("JPEG", "jpeg");
+        m_widgets.imageSequenceFormatCombo->addItem("WEBP", "webp");
+        m_widgets.imageSequenceFormatCombo->setCurrentIndex(0);
+        // Initially disabled until checkbox is checked
+        m_widgets.imageSequenceFormatCombo->setEnabled(false);
+    }
+    
+    // Set checkbox label if not already set
+    if (m_widgets.createImageSequenceCheckBox) {
+        m_widgets.createImageSequenceCheckBox->setText("Create intermediate image sequence");
+    }
 }
 
 void OutputTab::wire()
@@ -37,6 +64,14 @@ void OutputTab::wire()
     if (m_widgets.renderUseProxiesCheckBox) {
         connect(m_widgets.renderUseProxiesCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onRenderUseProxiesToggled);
+    }
+    if (m_widgets.createImageSequenceCheckBox) {
+        connect(m_widgets.createImageSequenceCheckBox, &QCheckBox::toggled,
+                this, [this](bool checked) {
+                    if (m_widgets.imageSequenceFormatCombo) {
+                        m_widgets.imageSequenceFormatCombo->setEnabled(checked);
+                    }
+                });
     }
     if (m_widgets.renderButton) {
         connect(m_widgets.renderButton, &QPushButton::clicked,
@@ -175,6 +210,17 @@ void OutputTab::renderFromInspector()
         m_widgets.outputHeightSpin ? m_widgets.outputHeightSpin->value() : 1920);
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
+    
+    // Image sequence settings
+    request.createVideoFromImageSequence = m_widgets.createImageSequenceCheckBox &&
+                                           m_widgets.createImageSequenceCheckBox->isChecked();
+    if (request.createVideoFromImageSequence && m_widgets.imageSequenceFormatCombo) {
+        request.imageSequenceFormat = m_widgets.imageSequenceFormatCombo->currentData().toString();
+        if (request.imageSequenceFormat.isEmpty()) {
+            request.imageSequenceFormat = "jpeg";  // Default to JPEG
+        }
+    }
+    
     request.clips = m_deps.getTimelineClips();
     request.tracks = m_deps.getTimelineTracks ? m_deps.getTimelineTracks() : QVector<TimelineTrack>{};
     request.renderSyncMarkers = m_deps.getRenderSyncMarkers

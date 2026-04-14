@@ -316,6 +316,8 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QCheckBox *m_createImageSequenceCheckBox = nullptr;
+    QComboBox *m_imageSequenceFormatCombo = nullptr;
 
     QDoubleSpinBox *m_videoTranslationXSpin = nullptr;
     QDoubleSpinBox *m_videoTranslationYSpin = nullptr;

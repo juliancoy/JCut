@@ -1,6 +1,7 @@
 #include "render_internal.h"
 #include "visual_effects_shader.h"
 #include "polygon_triangulation.h"
+#include "titles.h"
 
 namespace render_detail {
 
@@ -245,6 +246,141 @@ public:
                 continue;
             }
 
+            // Handle title clips specially - they don't have video files
+            if (clip.mediaType == ClipMediaType::Title) {
+                if (clip.titleKeyframes.isEmpty()) {
+                    // No title keyframes to render
+                    continue;
+                }
+                
+                const int64_t localFrame = timelineFrame - clip.startFrame;
+                const EvaluatedTitle title = evaluateTitleAtLocalFrame(clip, localFrame);
+                if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
+                    continue;
+                }
+                
+                QElapsedTimer decodeTimer;
+                decodeTimer.start();
+                
+                // Render title to an image
+                QImage titleImage(m_outputSize, QImage::Format_ARGB32_Premultiplied);
+                titleImage.fill(Qt::transparent);
+                QPainter titlePainter(&titleImage);
+                titlePainter.setRenderHint(QPainter::Antialiasing, true);
+                drawTitleOverlay(&titlePainter, QRect(QPoint(0, 0), m_outputSize), title, m_outputSize);
+                titlePainter.end();
+                
+                const qint64 decodeElapsed = decodeTimer.elapsed();
+                if (decodeMs) {
+                    *decodeMs += decodeElapsed;
+                }
+                
+                QElapsedTimer textureTimer;
+                textureTimer.start();
+                
+                // Create texture from title image
+                GLuint titleTextureId = 0;
+                glGenTextures(1, &titleTextureId);
+                glBindTexture(GL_TEXTURE_2D, titleTextureId);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                
+                // Convert QImage to RGBA format for OpenGL
+                QImage rgbaImage = titleImage.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rgbaImage.width(), rgbaImage.height(), 0,
+                            GL_RGBA, GL_UNSIGNED_BYTE, rgbaImage.constBits());
+                
+                const qint64 textureElapsed = textureTimer.elapsed();
+                if (textureMs) {
+                    *textureMs += textureElapsed;
+                }
+                
+                // Use a dummy texture entry for title
+                editor::GlTextureCacheEntry titleTextureEntry;
+                titleTextureEntry.textureId = titleTextureId;
+                titleTextureEntry.auxTextureId = 0;
+                titleTextureEntry.usesYuvTextures = false;
+                titleTextureEntry.decodeTimestamp = 0;
+                titleTextureEntry.lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+                
+                // Render title texture with transformations
+                const QRect fitted = fitRect(m_outputSize, m_outputSize); // Title fills output
+                const TimelineClip::TransformKeyframe transform =
+                    evaluateClipTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+                const QPointF center(fitted.center().x() + transform.translationX,
+                                     fitted.center().y() + transform.translationY);
+
+                QMatrix4x4 projection;
+                projection.ortho(0.0f, static_cast<float>(m_outputSize.width()),
+                                 static_cast<float>(m_outputSize.height()), 0.0f,
+                                 -1.0f, 1.0f);
+
+                QMatrix4x4 model;
+                model.translate(center.x(), center.y());
+                model.rotate(transform.rotation, 0.0f, 0.0f, 1.0f);
+                model.scale(fitted.width() * transform.scaleX, fitted.height() * transform.scaleY, 1.0f);
+
+                QElapsedTimer compositeTimer;
+                compositeTimer.start();
+                
+                // Apply opacity from grading effects
+                const float titleOpacity = grade.opacity * static_cast<float>(title.opacity);
+                
+                m_shaderProgram->bind();
+                m_shaderProgram->setUniformValue("u_mvp", projection * model);
+                m_shaderProgram->setUniformValue("u_brightness", 0.0f); // No brightness adjustment for titles
+                m_shaderProgram->setUniformValue("u_contrast", 1.0f);   // No contrast adjustment for titles
+                m_shaderProgram->setUniformValue("u_saturation", 1.0f); // No saturation adjustment for titles
+                m_shaderProgram->setUniformValue("u_opacity", titleOpacity);
+                m_shaderProgram->setUniformValue("u_shadows", QVector3D(1.0f, 1.0f, 1.0f));
+                m_shaderProgram->setUniformValue("u_midtones", QVector3D(1.0f, 1.0f, 1.0f));
+                m_shaderProgram->setUniformValue("u_highlights", QVector3D(1.0f, 1.0f, 1.0f));
+                m_shaderProgram->setUniformValue("u_feather_radius", 0.0f);
+                m_shaderProgram->setUniformValue("u_feather_gamma", 1.0f);
+                m_shaderProgram->setUniformValue("u_texel_size", QVector2D(0.0f, 0.0f));
+                m_shaderProgram->setUniformValue("u_texture", 0);
+                m_shaderProgram->setUniformValue("u_texture_uv", 1);
+                m_shaderProgram->setUniformValue("u_texture_mode", 0.0f); // RGB texture mode
+
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, titleTextureEntry.textureId);
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                
+                m_quadBuffer.bind();
+                const int positionLoc = m_shaderProgram->attributeLocation("a_position");
+                const int texCoordLoc = m_shaderProgram->attributeLocation("a_texCoord");
+                m_shaderProgram->enableAttributeArray(positionLoc);
+                m_shaderProgram->enableAttributeArray(texCoordLoc);
+                m_shaderProgram->setAttributeBuffer(positionLoc, GL_FLOAT, 0, 2, 4 * sizeof(GLfloat));
+                m_shaderProgram->setAttributeBuffer(texCoordLoc, GL_FLOAT, 2 * sizeof(GLfloat), 2, 4 * sizeof(GLfloat));
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                m_shaderProgram->disableAttributeArray(positionLoc);
+                m_shaderProgram->disableAttributeArray(texCoordLoc);
+                m_quadBuffer.release();
+                glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                
+                // Clean up title texture
+                glDeleteTextures(1, &titleTextureId);
+                
+                const qint64 compositeElapsed = compositeTimer.elapsed();
+                if (compositeMs) {
+                    *compositeMs += compositeElapsed;
+                }
+                accumulateClipStageStats(clipStageStats,
+                                         clip,
+                                         decodeElapsed,
+                                         textureElapsed,
+                                         compositeElapsed);
+                continue;
+            }
+
+            // Regular video/image clip processing
             const QString path = clip.filePath;
             const int64_t localFrame =
                 sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
@@ -665,6 +801,31 @@ QImage renderTimelineFrame(const RenderRequest& request,
             continue;
         }
 
+        // Handle title clips specially - they don't have video files to decode
+        if (clip.mediaType == ClipMediaType::Title) {
+            if (clip.titleKeyframes.isEmpty()) {
+                // No title keyframes to render
+                continue;
+            }
+            
+            const int64_t localFrame = timelineFrame - clip.startFrame;
+            const EvaluatedTitle title = evaluateTitleAtLocalFrame(clip, localFrame);
+            if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
+                continue;
+            }
+            
+            QElapsedTimer compositeTimer;
+            compositeTimer.start();
+            
+            // Draw title overlay directly onto the canvas
+            // Note: We use the full canvas rect for title rendering
+            drawTitleOverlay(&painter, QRect(QPoint(0, 0), request.outputSize), title, request.outputSize);
+            
+            accumulateClipStageStats(clipStageStats, clip, 0, 0, compositeTimer.elapsed());
+            continue;
+        }
+
+        // Regular video/image clip processing
         const QString path = clip.filePath;
         const int64_t localFrame =
             sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
