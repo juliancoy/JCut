@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QObject>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSet>
 #include <QTableWidget>
@@ -25,7 +26,7 @@ public:
         QLabel *titlesInspectorClipLabel = nullptr;
         QLabel *titlesInspectorDetailsLabel = nullptr;
         QTableWidget *titleKeyframeTable = nullptr;
-        QLineEdit *titleTextEdit = nullptr;
+        QPlainTextEdit *titleTextEdit = nullptr;
         QDoubleSpinBox *titleXSpin = nullptr;
         QDoubleSpinBox *titleYSpin = nullptr;
         QDoubleSpinBox *titleFontSizeSpin = nullptr;
@@ -81,6 +82,9 @@ private:
     void onTableItemClicked(QTableWidgetItem *item);
     void onTableCustomContextMenu(const QPoint &pos);
     void removeSelectedKeyframesFromCurrentTable() override { removeSelectedKeyframes(); }
+    
+    // Event filter for Ctrl+Enter handling
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     Widgets m_widgets;
 };

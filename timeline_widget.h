@@ -79,6 +79,7 @@ public:
     bool moveTrack(int fromTrack, int toTrack);
     bool renameTrack(int trackIndex);
     bool deleteTrack(int trackIndex);
+    void removeEmptyTracks();
 
     // Track state queries (for TrackSidebar)
     bool trackHasVisualClips(int trackIndex) const;

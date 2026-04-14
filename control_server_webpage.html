@@ -1,0 +1,1279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PanelVid2TikTok Editor - Real-time Stats</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e6e6e6;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #3498db;
+        }
+
+        h1 {
+            color: #3498db;
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 1.1rem;
+        }
+
+        .status-bar {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .status-indicator {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #e74c3c;
+            animation: pulse 2s infinite;
+        }
+
+        .status-indicator.connected {
+            background: #2ecc71;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: rgba(30, 30, 46, 0.8);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(52, 152, 219, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid rgba(52, 152, 219, 0.3);
+        }
+
+        .card-title {
+            color: #3498db;
+            font-size: 1.4rem;
+            font-weight: 600;
+        }
+
+        .refresh-btn {
+            background: rgba(52, 152, 219, 0.2);
+            border: 1px solid #3498db;
+            color: #3498db;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 0.9rem;
+        }
+
+        .refresh-btn:hover {
+            background: #3498db;
+            color: white;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+
+        .stat-item {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #3498db;
+        }
+
+        .stat-label {
+            color: #95a5a6;
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            color: #e6e6e6;
+            font-size: 1.8rem;
+            font-weight: 700;
+            font-family: 'Courier New', monospace;
+        }
+
+        .stat-unit {
+            color: #7f8c8d;
+            font-size: 0.9rem;
+            margin-left: 5px;
+        }
+
+        .chart-container {
+            height: 200px;
+            margin-top: 20px;
+            position: relative;
+        }
+
+        .chart {
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+
+        .data-table th {
+            background: rgba(52, 152, 219, 0.2);
+            color: #3498db;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            border-bottom: 2px solid rgba(52, 152, 219, 0.3);
+        }
+
+        .data-table td {
+            padding: 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .data-table tr:hover {
+            background: rgba(52, 152, 219, 0.1);
+        }
+
+        .error {
+            color: #e74c3c;
+            background: rgba(231, 76, 60, 0.1);
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+            border-left: 4px solid #e74c3c;
+        }
+
+        .success {
+            color: #2ecc71;
+            background: rgba(46, 204, 113, 0.1);
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+            border-left: 4px solid #2ecc71;
+        }
+
+        .warning {
+            color: #f39c12;
+            background: rgba(243, 156, 18, 0.1);
+            padding: 10px;
+            border-radius: 6px;
+            margin-top: 10px;
+            border-left: 4px solid #f39c12;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        /* Clips section styles */
+        .clips-stats {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        
+        .clips-summary {
+            display: flex;
+            justify-content: space-between;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 12px;
+            border-radius: 8px;
+            border-left: 4px solid #9b59b6;
+        }
+        
+        .summary-item {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        
+        .summary-label {
+            color: #95a5a6;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .summary-value {
+            color: #e6e6e6;
+            font-size: 1.2rem;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .clips-search {
+            display: flex;
+            gap: 10px;
+        }
+        
+        .clips-search input,
+        .clips-search select {
+            flex: 1;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(52, 152, 219, 0.3);
+            color: #e6e6e6;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+        }
+        
+        .clips-search input:focus,
+        .clips-search select:focus {
+            outline: none;
+            border-color: #3498db;
+        }
+        
+        .clips-list {
+            max-height: 300px;
+            overflow-y: auto;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, 0.1);
+            padding: 10px;
+        }
+        
+        .clip-item {
+            background: rgba(30, 30, 46, 0.6);
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 8px;
+            border-left: 4px solid #3498db;
+            transition: all 0.2s ease;
+            cursor: pointer;
+        }
+        
+        .clip-item:hover {
+            background: rgba(52, 152, 219, 0.1);
+            transform: translateX(2px);
+        }
+        
+        .clip-item.selected {
+            border-left-color: #2ecc71;
+            background: rgba(46, 204, 113, 0.1);
+        }
+        
+        .clip-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .clip-title {
+            font-weight: 600;
+            color: #3498db;
+            font-size: 1.1rem;
+        }
+        
+        .clip-id {
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            color: #95a5a6;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+        
+        .clip-details {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        
+        .clip-detail {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        
+        .detail-label {
+            color: #95a5a6;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .detail-value {
+            color: #e6e6e6;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .empty-state {
+            text-align: center;
+            color: #95a5a6;
+            padding: 30px;
+            font-style: italic;
+        }
+        
+        .track-badge {
+            display: inline-block;
+            background: rgba(155, 89, 182, 0.2);
+            color: #9b59b6;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        @media (max-width: 768px) {
+            .dashboard {
+                grid-template-columns: 1fr;
+            }
+            
+            .status-bar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            h1 {
+                font-size: 2rem;
+            }
+            
+            .clips-search {
+                flex-direction: column;
+            }
+            
+            .clip-details {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>PanelVid2TikTok Editor Dashboard</h1>
+            <p class="subtitle">Real-time performance monitoring and statistics</p>
+        </header>
+
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-indicator" id="connectionStatus"></div>
+                <span id="connectionText">Connecting...</span>
+            </div>
+            <div class="status-item">
+                <span>Last Update: </span>
+                <span id="lastUpdateTime">Never</span>
+            </div>
+            <div class="status-item">
+                <span>Server Port: </span>
+                <span id="serverPort">Unknown</span>
+            </div>
+            <div class="status-item">
+                <span>UI Thread: </span>
+                <span id="uiThreadStatus">Unknown</span>
+            </div>
+        </div>
+
+        <div class="dashboard">
+            <!-- Health & System Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">System Health</h2>
+                    <button class="refresh-btn" onclick="fetchHealth()">Refresh</button>
+                </div>
+                <div class="stats-grid" id="healthStats">
+                    <div class="stat-item">
+                        <div class="stat-label">PID</div>
+                        <div class="stat-value" id="pid">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Uptime</div>
+                        <div class="stat-value" id="uptime">-</div>
+                        <span class="stat-unit">seconds</span>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Heartbeat</div>
+                        <div class="stat-value" id="heartbeat">-</div>
+                        <span class="stat-unit">ms</span>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Build Time</div>
+                        <div class="stat-value" id="buildTime">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Playback Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Playback</h2>
+                    <button class="refresh-btn" onclick="fetchPlayhead()">Refresh</button>
+                </div>
+                <div class="stats-grid" id="playbackStats">
+                    <div class="stat-item">
+                        <div class="stat-label">Current Frame</div>
+                        <div class="stat-value" id="currentFrame">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Playback Active</div>
+                        <div class="stat-value" id="playbackActive">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Selected Clip</div>
+                        <div class="stat-value" id="selectedClip">-</div>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <div class="chart" id="frameChart"></div>
+                </div>
+            </div>
+
+            <!-- Performance Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Performance</h2>
+                    <button class="refresh-btn" onclick="fetchProfile()">Refresh</button>
+                </div>
+                <div class="stats-grid" id="performanceStats">
+                    <div class="stat-item">
+                        <div class="stat-label">FPS</div>
+                        <div class="stat-value" id="fps">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">CPU Usage</div>
+                        <div class="stat-value" id="cpuUsage">-</div>
+                        <span class="stat-unit">%</span>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Memory</div>
+                        <div class="stat-value" id="memoryUsage">-</div>
+                        <span class="stat-unit">MB</span>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">GPU Memory</div>
+                        <div class="stat-value" id="gpuMemory">-</div>
+                        <span class="stat-unit">MB</span>
+                    </div>
+                </div>
+                <div id="profileError" class="error" style="display: none;"></div>
+            </div>
+
+            <!-- Cache Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Cache Statistics</h2>
+                    <button class="refresh-btn" onclick="fetchDiagnostics()">Refresh</button>
+                </div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Cache Type</th>
+                            <th>Success</th>
+                            <th>Timeouts</th>
+                            <th>Age</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cacheTable">
+                        <tr><td colspan="4">Loading...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Timeline Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Timeline</h2>
+                    <button class="refresh-btn" onclick="fetchTimeline()">Refresh</button>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-label">Clips</div>
+                        <div class="stat-value" id="clipCount">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Tracks</div>
+                        <div class="stat-value" id="trackCount">-</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Zoom</div>
+                        <div class="stat-value" id="timelineZoom">-</div>
+                    </div>
+                </div>
+                <div id="timelineError" class="error" style="display: none;"></div>
+            </div>
+
+            <!-- Clips Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Clips</h2>
+                    <button class="refresh-btn" onclick="fetchClips()">Refresh</button>
+                </div>
+                <div id="clipsContainer">
+                    <div class="clips-stats">
+                        <div class="clips-summary">
+                            <div class="summary-item">
+                                <span class="summary-label">Total Clips:</span>
+                                <span class="summary-value" id="totalClips">0</span>
+                            </div>
+                            <div class="summary-item">
+                                <span class="summary-label">Selected:</span>
+                                <span class="summary-value" id="selectedClipId">None</span>
+                            </div>
+                        </div>
+                        <div class="clips-search">
+                            <input type="text" id="clipSearch" placeholder="Search clips..." oninput="searchClips()">
+                            <select id="trackFilter" onchange="filterClipsByTrack()">
+                                <option value="">All Tracks</option>
+                            </select>
+                        </div>
+                        <div class="clips-list" id="clipsList">
+                            <div class="empty-state">Loading clips...</div>
+                        </div>
+                    </div>
+                </div>
+                <div id="clipsError" class="error" style="display: none;"></div>
+            </div>
+
+            <!-- Project Stats Card -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Project Info</h2>
+                    <button class="refresh-btn" onclick="fetchProject()">Refresh</button>
+                </div>
+                <div id="projectInfo">
+                    <p>Loading project information...</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2 class="card-title">Controls</h2>
+            </div>
+            <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                <button class="refresh-btn" onclick="resetProfiling()">Reset Profiling</button>
+                <button class="refresh-btn" onclick="refreshAll()">Refresh All Data</button>
+                <button class="refresh-btn" onclick="toggleAutoRefresh()" id="autoRefreshBtn">Enable Auto-Refresh (5s)</button>
+                <div style="margin-left: auto;">
+                    <span>Refresh Interval: </span>
+                    <select id="refreshInterval" onchange="updateRefreshInterval()">
+                        <option value="1000">1 second</option>
+                        <option value="2000">2 seconds</option>
+                        <option value="5000" selected>5 seconds</option>
+                        <option value="10000">10 seconds</option>
+                        <option value="30000">30 seconds</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let serverPort = null;
+        let autoRefreshInterval = null;
+        let refreshIntervalMs = 5000;
+        let isConnected = false;
+        let frameHistory = [];
+        const maxHistory = 50;
+
+        // Format time
+        function formatTime(seconds) {
+            if (seconds < 60) return `${seconds}s`;
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}m ${secs}s`;
+        }
+
+        // Update connection status
+        function updateConnectionStatus(connected, message) {
+            const indicator = document.getElementById('connectionStatus');
+            const text = document.getElementById('connectionText');
+            isConnected = connected;
+            
+            if (connected) {
+                indicator.className = 'status-indicator connected';
+                text.textContent = 'Connected';
+                text.style.color = '#2ecc71';
+            } else {
+                indicator.className = 'status-indicator';
+                text.textContent = message || 'Disconnected';
+                text.style.color = '#e74c3c';
+            }
+        }
+
+        // Update last update time
+        function updateLastUpdateTime() {
+            const now = new Date();
+            document.getElementById('lastUpdateTime').textContent = 
+                now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
+        }
+
+        // Log for debugging
+        console.log('fetchAPI called with endpoint:', endpoint, 'serverPort:', serverPort, 'window.location.port:', window.location.port, 'protocol:', window.location.protocol);
+
+        // Fetch data from API
+        async function fetchAPI(endpoint) {
+            try {
+                // If we're opening the HTML as a file (file:// protocol), we can't fetch
+                if (window.location.protocol === 'file:') {
+                    throw new Error('Cannot connect from file:// URL. Please serve this page through HTTP.');
+                }
+
+                // Show what we're trying in the status for debugging
+                const debugStatus = document.getElementById('connectionText');
+                if (debugStatus) {
+                    debugStatus.textContent = `Fetching ${endpoint}...`;
+                }
+                
+                // Try to discover port if not known
+                if (!serverPort) {
+                    // First try the current window's port
+                    if (window.location.port) {
+                        serverPort = window.location.port;
+                    } else {
+                        // Try to fetch health to discover port
+                        try {
+                            const healthResponse = await fetch('/health');
+                            if (!healthResponse.ok) throw new Error('Health check failed');
+                            const healthData = await healthResponse.json();
+                            serverPort = healthData.port;
+                        } catch (healthError) {
+                            // If health fails, try common ports
+                            const commonPorts = [8080, 8081, 8888, 9000, 3000];
+                            for (const port of commonPorts) {
+                                try {
+                                    const testResponse = await fetch(`http://127.0.0.1:${port}/health`, { mode: 'cors' });
+                                    if (testResponse.ok) {
+                                        const data = await testResponse.json();
+                                        serverPort = port;
+                                        // Update page URL to use discovered port
+                                        window.history.replaceState({}, '', `http://127.0.0.1:${port}/`);
+                                        break;
+                                    }
+                                } catch (e) {
+                                    // Continue trying other ports
+                                }
+                            }
+                            
+                            if (!serverPort) {
+                                throw new Error('Cannot connect to ControlServer. Make sure the editor is running.');
+                            }
+                        }
+                    }
+                }
+                
+                // Build the full URL
+                const url = serverPort === window.location.port ? endpoint : `http://127.0.0.1:${serverPort}${endpoint}`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.json();
+            } catch (error) {
+                console.error(`Error fetching ${endpoint}:`, error);
+                updateConnectionStatus(false, error.message);
+                throw error;
+            }
+        }
+
+        // Fetch health data
+        async function fetchHealth() {
+            try {
+                const data = await fetchAPI('/health');
+                updateConnectionStatus(true);
+                
+                document.getElementById('pid').textContent = data.pid || '-';
+                document.getElementById('uptime').textContent = data.uptime_seconds ? 
+                    formatTime(data.uptime_seconds) : '-';
+                document.getElementById('heartbeat').textContent = 
+                    data.main_thread_heartbeat_age_ms || '-';
+                document.getElementById('serverPort').textContent = data.port || 'Unknown';
+                document.getElementById('uiThreadStatus').textContent = 
+                    data.main_thread_heartbeat_age_ms <= 1000 ? 'Responsive' : 'Slow';
+                document.getElementById('uiThreadStatus').style.color = 
+                    data.main_thread_heartbeat_age_ms <= 1000 ? '#2ecc71' : '#f39c12';
+                
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching health:', error);
+            }
+        }
+
+        // Fetch playhead data
+        async function fetchPlayhead() {
+            try {
+                const data = await fetchAPI('/playhead');
+                
+                document.getElementById('currentFrame').textContent = 
+                    data.current_frame || '0';
+                document.getElementById('playbackActive').textContent = 
+                    data.playback_active ? 'Yes' : 'No';
+                document.getElementById('playbackActive').style.color = 
+                    data.playback_active ? '#2ecc71' : '#e74c3c';
+                
+                // Update frame history for chart
+                frameHistory.push(data.current_frame || 0);
+                if (frameHistory.length > maxHistory) {
+                    frameHistory.shift();
+                }
+                
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching playhead:', error);
+            }
+        }
+
+        // Fetch profile data
+        async function fetchProfile() {
+            try {
+                const data = await fetchAPI('/profile');
+                const errorDiv = document.getElementById('profileError');
+                
+                if (!data.ok) {
+                    errorDiv.textContent = data.error || 'Failed to fetch profile';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                
+                errorDiv.style.display = 'none';
+                const profile = data.profile || {};
+                
+                document.getElementById('fps').textContent = 
+                    profile.fps ? profile.fps.toFixed(1) : '-';
+                document.getElementById('cpuUsage').textContent = 
+                    profile.cpu_percent ? profile.cpu_percent.toFixed(1) : '-';
+                document.getElementById('memoryUsage').textContent = 
+                    profile.memory_mb ? profile.memory_mb.toFixed(0) : '-';
+                document.getElementById('gpuMemory').textContent = 
+                    profile.gpu_memory_mb ? profile.gpu_memory_mb.toFixed(0) : '-';
+                
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching profile:', error);
+                document.getElementById('profileError').textContent = error.message;
+                document.getElementById('profileError').style.display = 'block';
+            }
+        }
+
+        // Fetch diagnostics data
+        async function fetchDiagnostics() {
+            try {
+                const data = await fetchAPI('/diag/perf');
+                const cacheTable = document.getElementById('cacheTable');
+                
+                if (!data.ok) {
+                    cacheTable.innerHTML = '<tr><td colspan="4">Error loading cache data</td></tr>';
+                    return;
+                }
+                
+                const caches = [
+                    { name: 'Profile', data: data.profile_cache },
+                    { name: 'State', data: data.state_cache },
+                    { name: 'Project', data: data.project_cache },
+                    { name: 'History', data: data.history_cache },
+                    { name: 'UI Tree', data: data.ui_tree_cache }
+                ];
+                
+                let html = '';
+                caches.forEach(cache => {
+                    const age = cache.data?.last_snapshot_age_ms || -1;
+                    const success = cache.data?.success_count || 0;
+                    const timeouts = cache.data?.timeout_count || 0;
+                    
+                    html += `
+                        <tr>
+                            <td>${cache.name}</td>
+                            <td>${success}</td>
+                            <td>${timeouts}</td>
+                            <td>${age >= 0 ? (age / 1000).toFixed(1) + 's' : 'Never'}</td>
+                        </tr>
+                    `;
+                });
+                
+                cacheTable.innerHTML = html;
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching diagnostics:', error);
+            }
+        }
+
+        // Fetch timeline data
+        async function fetchTimeline() {
+            try {
+                const data = await fetchAPI('/timeline');
+                const errorDiv = document.getElementById('timelineError');
+                
+                if (!data.ok) {
+                    errorDiv.textContent = data.error || 'Failed to fetch timeline';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                
+                errorDiv.style.display = 'none';
+                document.getElementById('clipCount').textContent = 
+                    data.timeline ? data.timeline.length : '0';
+                document.getElementById('trackCount').textContent = 
+                    data.tracks ? data.tracks.length : '0';
+                document.getElementById('timelineZoom').textContent = 
+                    data.timelineZoom ? data.timelineZoom.toFixed(2) : '1.00';
+                document.getElementById('selectedClip').textContent = 
+                    data.selectedClipId || 'None';
+                
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching timeline:', error);
+                document.getElementById('timelineError').textContent = error.message;
+                document.getElementById('timelineError').style.display = 'block';
+            }
+        }
+
+        // Fetch project data
+        async function fetchProject() {
+            try {
+                const data = await fetchAPI('/project');
+                const projectInfo = document.getElementById('projectInfo');
+                
+                if (!data.ok || !data.project) {
+                    projectInfo.innerHTML = '<p class="error">No project data available</p>';
+                    return;
+                }
+                
+                const project = data.project;
+                let html = '<div style="display: grid; gap: 10px;">';
+                
+                if (project.name) {
+                    html += `<div><strong>Name:</strong> ${project.name}</div>`;
+                }
+                if (project.path) {
+                    html += `<div><strong>Path:</strong> ${project.path}</div>`;
+                }
+                if (project.resolution) {
+                    html += `<div><strong>Resolution:</strong> ${project.resolution.width || 0}×${project.resolution.height || 0}</div>`;
+                }
+                if (project.frameRate) {
+                    html += `<div><strong>Frame Rate:</strong> ${project.frameRate || 0} fps</div>`;
+                }
+                if (project.duration) {
+                    html += `<div><strong>Duration:</strong> ${project.duration || 0} frames</div>`;
+                }
+                
+                html += '</div>';
+                projectInfo.innerHTML = html;
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching project:', error);
+                document.getElementById('projectInfo').innerHTML = 
+                    '<p class="error">Failed to load project info</p>';
+            }
+        }
+
+        // Reset profiling
+        async function resetProfiling() {
+            try {
+                const response = await fetch('/profile/reset', {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.ok) {
+                    alert('Profiling stats reset successfully');
+                    fetchProfile();
+                } else {
+                    alert('Failed to reset profiling: ' + (data.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Error resetting profiling:', error);
+                alert('Error resetting profiling: ' + error.message);
+            }
+        }
+
+        // Refresh all data
+        async function refreshAll() {
+            await Promise.all([
+                fetchHealth(),
+                fetchPlayhead(),
+                fetchProfile(),
+                fetchDiagnostics(),
+                fetchTimeline(),
+                fetchProject()
+            ]);
+        }
+
+        // Toggle auto-refresh
+        function toggleAutoRefresh() {
+            const button = document.getElementById('autoRefreshBtn');
+            
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                button.textContent = 'Enable Auto-Refresh';
+                button.style.background = 'rgba(52, 152, 219, 0.2)';
+            } else {
+                autoRefreshInterval = setInterval(refreshAll, refreshIntervalMs);
+                button.textContent = 'Disable Auto-Refresh';
+                button.style.background = 'rgba(46, 204, 113, 0.2)';
+            }
+        }
+
+        // Update refresh interval
+        function updateRefreshInterval() {
+            const select = document.getElementById('refreshInterval');
+            refreshIntervalMs = parseInt(select.value);
+            
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = setInterval(refreshAll, refreshIntervalMs);
+            }
+            
+            document.getElementById('autoRefreshBtn').textContent = 
+                `Auto-Refresh (${refreshIntervalMs / 1000}s)`;
+        }
+
+        // Simple frame chart
+        function drawFrameChart() {
+            const chart = document.getElementById('frameChart');
+            if (!chart || frameHistory.length < 2) return;
+            
+            const ctx = chart.getContext('2d');
+            if (!ctx) return;
+            
+            // Clear chart
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.1)';
+            ctx.fillRect(0, 0, chart.width, chart.height);
+            
+            // Draw grid
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+            ctx.lineWidth = 1;
+            
+            // Draw data line
+            ctx.beginPath();
+            ctx.strokeStyle = '#3498db';
+            ctx.lineWidth = 2;
+            
+            const maxVal = Math.max(...frameHistory);
+            const minVal = Math.min(...frameHistory);
+            const range = maxVal - minVal || 1;
+            
+            for (let i = 0; i < frameHistory.length; i++) {
+                const x = (i / (frameHistory.length - 1)) * chart.width;
+                const y = chart.height - ((frameHistory[i] - minVal) / range) * chart.height;
+                
+                if (i === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            
+            ctx.stroke();
+        }
+
+        // Clips data management
+        let allClips = [];
+        let filteredClips = [];
+        let tracks = new Set();
+
+        // Fetch clips data
+        async function fetchClips() {
+            try {
+                const data = await fetchAPI('/clips');
+                const errorDiv = document.getElementById('clipsError');
+                
+                if (!data.ok) {
+                    errorDiv.textContent = data.error || 'Failed to fetch clips';
+                    errorDiv.style.display = 'block';
+                    return;
+                }
+                
+                errorDiv.style.display = 'none';
+                allClips = data.clips || [];
+                filteredClips = [...allClips];
+                
+                // Update tracks filter
+                updateTracksFilter();
+                
+                // Update summary
+                document.getElementById('totalClips').textContent = allClips.length;
+                
+                // Get selected clip from timeline
+                const timelineData = await fetchAPI('/timeline').catch(() => ({}));
+                const selectedClipId = timelineData.selectedClipId || 'None';
+                document.getElementById('selectedClipId').textContent = selectedClipId;
+                
+                // Render clips
+                renderClips();
+                updateLastUpdateTime();
+            } catch (error) {
+                console.error('Error fetching clips:', error);
+                document.getElementById('clipsError').textContent = error.message;
+                document.getElementById('clipsError').style.display = 'block';
+            }
+        }
+
+        // Update tracks filter dropdown
+        function updateTracksFilter() {
+            const trackFilter = document.getElementById('trackFilter');
+            tracks.clear();
+            
+            allClips.forEach(clip => {
+                const trackIndex = clip.trackIndex || 0;
+                tracks.add(trackIndex);
+            });
+            
+            // Keep existing selection
+            const currentValue = trackFilter.value;
+            trackFilter.innerHTML = '<option value="">All Tracks</option>';
+            
+            Array.from(tracks).sort((a, b) => a - b).forEach(trackIndex => {
+                const option = document.createElement('option');
+                option.value = trackIndex;
+                option.textContent = `Track ${trackIndex}`;
+                trackFilter.appendChild(option);
+            });
+            
+            // Restore selection
+            trackFilter.value = currentValue;
+        }
+
+        // Render clips list
+        function renderClips() {
+            const clipsList = document.getElementById('clipsList');
+            if (filteredClips.length === 0) {
+                clipsList.innerHTML = '<div class="empty-state">No clips found</div>';
+                return;
+            }
+            
+            let html = '';
+            filteredClips.forEach(clip => {
+                const isSelected = clip.id === document.getElementById('selectedClipId').textContent;
+                const clipClass = isSelected ? 'clip-item selected' : 'clip-item';
+                
+                // Format file path for display
+                const filePath = clip.filePath || '';
+                const fileName = filePath.split('/').pop() || filePath;
+                
+                html += `
+                    <div class="${clipClass}" onclick="selectClip('${clip.id}')">
+                        <div class="clip-header">
+                            <div class="clip-title">${clip.label || fileName || 'Unnamed Clip'}</div>
+                            <div class="clip-id">${clip.id.substring(0, 8)}...</div>
+                        </div>
+                        <div class="clip-details">
+                            <div class="clip-detail">
+                                <div class="detail-label">Track</div>
+                                <div class="detail-value">
+                                    <span class="track-badge">Track ${clip.trackIndex || 0}</span>
+                                </div>
+                            </div>
+                            <div class="clip-detail">
+                                <div class="detail-label">Frames</div>
+                                <div class="detail-value">${clip.startFrame || 0}-${clip.endFrame || 0}</div>
+                            </div>
+                            <div class="clip-detail">
+                                <div class="detail-label">Duration</div>
+                                <div class="detail-value">${clip.durationFrames || 0} frames</div>
+                            </div>
+                            <div class="clip-detail">
+                                <div class="detail-label">File</div>
+                                <div class="detail-value" title="${filePath}">${fileName.substring(0, 20)}${fileName.length > 20 ? '...' : ''}</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            clipsList.innerHTML = html;
+        }
+
+        // Search clips by label or file name
+        function searchClips() {
+            const searchInput = document.getElementById('clipSearch');
+            const searchTerm = searchInput.value.toLowerCase().trim();
+            
+            if (!searchTerm) {
+                filteredClips = [...allClips];
+            } else {
+                filteredClips = allClips.filter(clip => {
+                    const label = (clip.label || '').toLowerCase();
+                    const filePath = (clip.filePath || '').toLowerCase();
+                    return label.includes(searchTerm) || filePath.includes(searchTerm);
+                });
+            }
+            
+            // Apply track filter if set
+            const trackFilter = document.getElementById('trackFilter');
+            if (trackFilter.value) {
+                filteredClips = filteredClips.filter(clip => 
+                    clip.trackIndex == trackFilter.value
+                );
+            }
+            
+            renderClips();
+        }
+
+        // Filter clips by track
+        function filterClipsByTrack() {
+            const trackFilter = document.getElementById('trackFilter');
+            const searchInput = document.getElementById('clipSearch');
+            const searchTerm = searchInput.value.toLowerCase().trim();
+            
+            // Start with all clips
+            let tempFiltered = [...allClips];
+            
+            // Apply search filter
+            if (searchTerm) {
+                tempFiltered = tempFiltered.filter(clip => {
+                    const label = (clip.label || '').toLowerCase();
+                    const filePath = (clip.filePath || '').toLowerCase();
+                    return label.includes(searchTerm) || filePath.includes(searchTerm);
+                });
+            }
+            
+            // Apply track filter
+            if (trackFilter.value) {
+                tempFiltered = tempFiltered.filter(clip => 
+                    clip.trackIndex == trackFilter.value
+                );
+            }
+            
+            filteredClips = tempFiltered;
+            renderClips();
+        }
+
+        // Select a clip
+        function selectClip(clipId) {
+            // Update selected clip display
+            document.getElementById('selectedClipId').textContent = clipId;
+            
+            // Highlight selected clip
+            const clipItems = document.querySelectorAll('.clip-item');
+            clipItems.forEach(item => {
+                item.classList.remove('selected');
+            });
+            
+            const selectedItem = document.querySelector(`.clip-item[onclick*="${clipId}"]`);
+            if (selectedItem) {
+                selectedItem.classList.add('selected');
+            }
+            
+            // You could also fetch detailed clip info here
+            // fetchClipDetails(clipId);
+        }
+
+        // Fetch detailed clip information
+        async function fetchClipDetails(clipId) {
+            try {
+                const data = await fetchAPI(`/clip?id=${clipId}`);
+                if (data.ok) {
+                    console.log('Clip details:', data.clip);
+                    // Could show a modal or expand the clip item with more details
+                }
+            } catch (error) {
+                console.error('Error fetching clip details:', error);
+            }
+        }
+
+        // Update refreshAll to include clips
+        async function refreshAll() {
+            await Promise.all([
+                fetchHealth(),
+                fetchPlayhead(),
+                fetchProfile(),
+                fetchDiagnostics(),
+                fetchTimeline(),
+                fetchProject(),
+                fetchClips()
+            ]);
+        }
+
+        // Initialize
+        async function init() {
+            console.log('init() called, DOM ready');
+            if (window.initStarted) {
+                console.log('init already started, skipping');
+                return;
+            }
+            window.initStarted = true;
+
+            // Set canvas size
+            const chart = document.getElementById('frameChart');
+            if (chart) {
+                chart.width = chart.offsetWidth;
+                chart.height = chart.offsetHeight;
+            }
+            
+            // Initial data fetch
+            await refreshAll();
+            
+            // Start with auto-refresh enabled
+            toggleAutoRefresh();
+            
+            // Redraw chart periodically
+            setInterval(drawFrameChart, 1000);
+        }
+
+        // Start when page loads
+        window.addEventListener('DOMContentLoaded', init);
+        window.addEventListener('load', function() {
+            console.log('Window loaded');
+            init();
+        });
+        // Fallback: also try immediately in case DOM is already ready
+        setTimeout(function() {
+            console.log('Fallback timeout fired, attempting init');
+            if (!window.initDone) init();
+        }, 2000);

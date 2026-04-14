@@ -9,6 +9,7 @@
 #include "debug_controls.h"
 #include "visual_effects_shader.h"
 #include "polygon_triangulation.h"
+#include "decoder_image_io.h"
 
 #include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
@@ -465,20 +466,37 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                     frame,
                                     m_currentFramePosition);
         if (frame.isNull()) {
-            ++nullCount;
-            selection = QStringLiteral("null");
-            waitingForFrame = true;
-            clipSelections.append(QJsonObject{
-                {QStringLiteral("id"), clip.id},
-                {QStringLiteral("label"), clip.label},
-                {QStringLiteral("media_type"), clipMediaTypeLabel(clip.mediaType)},
-                {QStringLiteral("source_kind"), mediaSourceKindLabel(clip.sourceKind)},
-                {QStringLiteral("playback_pipeline"), usePlaybackPipeline},
-                {QStringLiteral("local_frame"), static_cast<qint64>(localFrame)},
-                {QStringLiteral("selection"), selection},
-                {QStringLiteral("frame_storage"), QStringLiteral("none")}
-            });
-            continue;
+            // For static images, try to load them synchronously as a last resort
+            if (clip.mediaType == ClipMediaType::Image && !clip.filePath.isEmpty()) {
+                // Try to load the image synchronously
+                QImage image = editor::loadSingleImageFile(clip.filePath);
+                if (!image.isNull()) {
+                    // Create a frame handle from the loaded image
+                    frame = FrameHandle::createCpuFrame(image, localFrame, clip.filePath);
+                    // Store it in cache for future use
+                    if (m_cache) {
+                        m_cache->requestFrame(clip.id, localFrame, [](FrameHandle){});
+                    }
+                    selection = QStringLiteral("sync-loaded");
+                }
+            }
+            
+            if (frame.isNull()) {
+                ++nullCount;
+                selection = QStringLiteral("null");
+                waitingForFrame = true;
+                clipSelections.append(QJsonObject{
+                    {QStringLiteral("id"), clip.id},
+                    {QStringLiteral("label"), clip.label},
+                    {QStringLiteral("media_type"), clipMediaTypeLabel(clip.mediaType)},
+                    {QStringLiteral("source_kind"), mediaSourceKindLabel(clip.sourceKind)},
+                    {QStringLiteral("playback_pipeline"), usePlaybackPipeline},
+                    {QStringLiteral("local_frame"), static_cast<qint64>(localFrame)},
+                    {QStringLiteral("selection"), selection},
+                    {QStringLiteral("frame_storage"), QStringLiteral("none")}
+                });
+                continue;
+            }
         }
         clipSelections.append(QJsonObject{
             {QStringLiteral("id"), clip.id},

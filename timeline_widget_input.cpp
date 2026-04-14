@@ -812,6 +812,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
             }
             normalizeTrackIndices();
             sortClips();
+            removeEmptyTracks();
             if (clipsChanged) clipsChanged();
         }
         m_draggedTrackIndex = -1;
@@ -834,6 +835,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         }
         normalizeTrackIndices();
         sortClips();
+        removeEmptyTracks();
         m_draggedClipIndex = -1;
         m_dragMode = ClipDragMode::None;
         m_trackDropIndex = -1;
@@ -894,7 +896,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     clearRenderSyncAction->setEnabled(currentSyncMarker != nullptr);
 
     menu.addSeparator();
-    QAction* addTitleClipAction = menu.addAction(QStringLiteral("Add Title Clip"));
+    QAction* addTitleClipAction = menu.addAction(QStringLiteral("Create Title"));
 
     QAction* syncAction = nullptr;
     QAction* nudgeLeftAction = nullptr;

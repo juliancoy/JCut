@@ -159,6 +159,7 @@ private:
     void refreshClipInspector();
     void refreshTracksTab();
     void onTrackTableItemChanged(QTableWidgetItem* item);
+    void onRestartDecodersRequested();
     void refreshOutputInspector();
     void applyOutputRangeFromInspector();
     void renderFromOutputInspector();

@@ -257,14 +257,14 @@ QImage DecoderContext::loadCachedSequenceFrameImage(int64_t frameNumber) {
         return QImage();
     }
 
-    if (m_sequenceUsesWebp) {
-        cacheSequenceFrameImage(boundedFrame, image);
-    }
+    // Cache ALL image formats, not just WebP
+    // This fixes performance for PNG/JPEG slides that stay on screen for many frames
+    cacheSequenceFrameImage(boundedFrame, image);
     return image;
 }
 
 void DecoderContext::cacheSequenceFrameImage(int64_t frameNumber, const QImage& image) {
-    if (!m_sequenceUsesWebp || image.isNull()) {
+    if (image.isNull()) {
         return;
     }
 

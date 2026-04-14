@@ -694,9 +694,16 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
             keyframe.saturation = clip.saturation;
             normalized.push_back(keyframe);
         } else if (normalized.constFirst().frame > 0) {
-            TimelineClip::GradingKeyframe firstKeyframe = normalized.constFirst();
-            firstKeyframe.frame = 0;
-            normalized.push_front(firstKeyframe);
+            // FIX: Create a keyframe at frame 0 with clip's base values
+            // instead of duplicating the first keyframe
+            TimelineClip::GradingKeyframe baseKeyframe;
+            baseKeyframe.frame = 0;
+            baseKeyframe.brightness = clip.brightness;
+            baseKeyframe.contrast = clip.contrast;
+            baseKeyframe.saturation = clip.saturation;
+            // Use default values for shadows/midtones/highlights (0.0)
+            // This allows proper interpolation from frame 0 to first keyframe
+            normalized.push_front(baseKeyframe);
         } else {
             normalized.first().frame = 0;
         }

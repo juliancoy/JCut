@@ -243,7 +243,9 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
 
     m_selectedKeyframeFrame = targetFrame;
     m_selectedKeyframeFrames = {targetFrame};
-    m_deps.setPreviewTimelineClips();
+    if (m_deps.setPreviewTimelineClips) {
+        m_deps.setPreviewTimelineClips();
+    }
     m_deps.refreshInspector();
     m_deps.scheduleSaveState();
     if (pushHistory) {
@@ -298,39 +300,39 @@ void GradingTab::syncTableToPlayhead()
                             matchingRow,
                             m_widgets.gradingAutoScrollCheckBox &&
                                 m_widgets.gradingAutoScrollCheckBox->isChecked());
-}
-
-void GradingTab::onBrightnessChanged(double value)
-{
-    Q_UNUSED(value);
-    if (m_updating) return;
-    applyGradeFromInspector(false);
-}
-
-void GradingTab::onContrastChanged(double value)
-{
-    Q_UNUSED(value);
-    if (m_updating) return;
-    applyGradeFromInspector(false);
-}
-
-void GradingTab::onSaturationChanged(double value)
-{
-    Q_UNUSED(value);
-    if (m_updating) return;
-    applyGradeFromInspector(false);
-}
-
-// Shadows/Midtones/Highlights slots
-void GradingTab::onShadowsRChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onShadowsGChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onShadowsBChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onMidtonesRChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onMidtonesGChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onMidtonesBChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onHighlightsRChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onHighlightsGChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
-void GradingTab::onHighlightsBChanged(double value) { Q_UNUSED(value); if (m_updating) return; applyGradeFromInspector(false); }
+    
+    // Also update the spin boxes to match the new selection
+    // This is needed because onTableSelectionChanged() might be suppressed
+    // when m_syncingTableSelection is true
+    QTableWidgetItem* item = m_widgets.gradingKeyframeTable->item(matchingRow, 0);
+    if (item) {
+        const int64_t primaryFrame = item->data(Qt::UserRole).toLongLong();
+        m_selectedKeyframeFrame = primaryFrame;
+        m_selectedKeyframeFrames = {primaryFrame};
+        
+        // Update spin boxes with the selected keyframe's values
+        GradingKeyframeDisplay displayed = evaluateDisplayedGrading(*clip, clip->startFrame + primaryFrame);
+        for (const TimelineClip::GradingKeyframe& keyframe : clip->gradingKeyframes) {
+            if (keyframe.frame == primaryFrame) {
+                displayed.frame = keyframe.frame;
+                displayed.brightness = keyframe.brightness;
+                displayed.contrast = keyframe.contrast;
+                displayed.saturation = keyframe.saturation;
+                displayed.shadowsR = keyframe.shadowsR;
+                displayed.shadowsG = keyframe.shadowsG;
+                displayed.shadowsB = keyframe.shadowsB;
+                displayed.midtonesR = keyframe.midtonesR;
+                displayed.midtonesG = keyframe.midtonesG;
+                displayed.midtonesB = keyframe.midtonesB;
+                displayed.highlightsR = keyframe.highlightsR;
+                displayed.highlightsG = keyframe.highlightsG;
+                displayed.highlightsB = keyframe.highlightsB;
+                displayed.linearInterpolation = keyframe.linearInterpolation;
+                break;
+            }
+        }
+        updateSpinBoxesFromKeyframe(displayed);
+    }
 
 void GradingTab::onAutoScrollToggled(bool checked)
 {
@@ -448,11 +450,20 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
         refresh();
         return;
     }
+    edited.shadowsR = 0.0;
+    edited.shadowsG = 0.0;
+    edited.shadowsB = 0.0;
+    edited.midtonesR = 0.0;
+    edited.midtonesG = 0.0;
+    edited.midtonesB = 0.0;
+    edited.highlightsR = 0.0;
+    edited.highlightsG = 0.0;
+    edited.highlightsB = 0.0;
 
     edited.frame = qBound<int64_t>(0, edited.frame, qMax<int64_t>(0, selectedClip->durationFrames - 1));
     const int64_t originalFrame = changedItem->data(Qt::UserRole).toLongLong();
 
-    const bool updated = m_deps.updateClipById(selectedClip->id, [edited, originalFrame](TimelineClip& clip) {
+    const bool updated = m_deps.updateClipById(selectedClip->id, [edited, originalFrame](TimelineClip& clip) mutable {
         TimelineClip::GradingKeyframe originalKeyframe;
         bool foundOriginal = false;
         for (const TimelineClip::GradingKeyframe& existing : clip.gradingKeyframes) {
@@ -461,6 +472,18 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
                 foundOriginal = true;
                 break;
             }
+        }
+
+        if (foundOriginal) {
+            edited.shadowsR = originalKeyframe.shadowsR;
+            edited.shadowsG = originalKeyframe.shadowsG;
+            edited.shadowsB = originalKeyframe.shadowsB;
+            edited.midtonesR = originalKeyframe.midtonesR;
+            edited.midtonesG = originalKeyframe.midtonesG;
+            edited.midtonesB = originalKeyframe.midtonesB;
+            edited.highlightsR = originalKeyframe.highlightsR;
+            edited.highlightsG = originalKeyframe.highlightsG;
+            edited.highlightsB = originalKeyframe.highlightsB;
         }
 
         bool replaced = false;
@@ -506,7 +529,9 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
 
     m_selectedKeyframeFrame = edited.frame;
     m_selectedKeyframeFrames = {edited.frame};
-    m_deps.setPreviewTimelineClips();
+    if (m_deps.setPreviewTimelineClips) {
+        m_deps.setPreviewTimelineClips();
+    }
     if (m_deps.onKeyframeItemChanged) {
         m_deps.onKeyframeItemChanged(changedItem);
     }

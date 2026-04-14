@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSplitter>
 #include <QSpinBox>
@@ -502,13 +503,13 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titlesInspectorDetailsLabel = new QLabel;
     layout->addWidget(m_titlesInspectorDetailsLabel);
 
-    // Text input
-    auto *textRow = new QHBoxLayout;
-    textRow->addWidget(new QLabel(QStringLiteral("Text:")));
-    m_titleTextEdit = new QLineEdit;
+    // Text input with splitter for resizable height
+    auto *textGroup = new QGroupBox(QStringLiteral("Title Text"));
+    auto *textLayout = new QVBoxLayout(textGroup);
+    m_titleTextEdit = new QPlainTextEdit;
     m_titleTextEdit->setPlaceholderText(QStringLiteral("Enter title text..."));
-    textRow->addWidget(m_titleTextEdit, 1);
-    layout->addLayout(textRow);
+    textLayout->addWidget(m_titleTextEdit);
+    layout->addWidget(textGroup);
 
     // Position row
     auto *posRow = new QHBoxLayout;
@@ -576,11 +577,11 @@ QWidget *InspectorPane::buildTitlesTab()
 
     // Table
     m_titleKeyframeTable = new QTableWidget;
-    m_titleKeyframeTable->setColumnCount(7);
+    m_titleKeyframeTable->setColumnCount(9);
     m_titleKeyframeTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Frame"), QStringLiteral("Text"), QStringLiteral("X"),
-         QStringLiteral("Y"), QStringLiteral("Size"), QStringLiteral("Opacity"),
-         QStringLiteral("Interp")});
+        {QStringLiteral("Start"), QStringLiteral("End"), QStringLiteral("Frame"), 
+         QStringLiteral("Text"), QStringLiteral("X"), QStringLiteral("Y"), 
+         QStringLiteral("Size"), QStringLiteral("Opacity"), QStringLiteral("Interp")});
     m_titleKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_titleKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_titleKeyframeTable->setEditTriggers(
@@ -650,7 +651,7 @@ QWidget *InspectorPane::buildKeyframesTab()
     m_videoInterpolationCombo->addItem(QStringLiteral("Linear"));
     m_lockVideoScaleCheckBox->setChecked(false);
     m_keyframeSpaceCheckBox->setChecked(true);
-    m_keyframeSkipAwareTimingCheckBox->setChecked(false);
+    m_keyframeSkipAwareTimingCheckBox->setChecked(true);
 
     for (QDoubleSpinBox *spin : {
              m_videoTranslationXSpin, m_videoTranslationYSpin, m_videoRotationSpin,
@@ -1162,9 +1163,14 @@ QWidget *InspectorPane::buildProfileTab()
     m_profileSummaryTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
 
     m_profileBenchmarkButton = new QPushButton(QStringLiteral("Run Decode Benchmark"), page);
+    m_restartDecodersButton = new QPushButton(QStringLiteral("Restart All Decoders"), page);
+
+    connect(m_restartDecodersButton, &QPushButton::clicked,
+            this, &InspectorPane::restartDecodersRequested);
 
     layout->addWidget(m_profileSummaryTable, 1);
     layout->addWidget(m_profileBenchmarkButton);
+    layout->addWidget(m_restartDecodersButton);
     return page;
 }
 

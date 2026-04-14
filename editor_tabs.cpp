@@ -396,6 +396,24 @@ void EditorWindow::setupTabs()
     createVideoKeyframeTab();
     createClipsTab();
     createHistoryTab();
+
+    // Ensure correction draw mode is disabled when Corrections tab is not selected
+    if (m_inspectorPane && m_inspectorPane->tabs()) {
+        connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this, [this](int index) {
+            if (m_preview) {
+                // Check if the Corrections tab is at index 3 (0-based)
+                // Based on inspector_pane.cpp buildPane() function:
+                // 0: Grade, 1: Opacity, 2: Effects, 3: Corrections, ...
+                const bool isCorrectionsTab = (index == 3);
+                if (!isCorrectionsTab && m_preview->correctionDrawMode()) {
+                    m_preview->setCorrectionDrawMode(false);
+                    if (m_correctionsTab) {
+                        m_correctionsTab->stopDrawing();
+                    }
+                }
+            }
+        });
+    }
 }
 
 void EditorWindow::setupInspectorRefreshRouting()

@@ -139,7 +139,7 @@ struct TimelineClip {
     qreal baseRotation = 0.0;
     qreal baseScaleX = 1.0;
     qreal baseScaleY = 1.0;
-    bool transformSkipAwareTiming = false;
+    bool transformSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;
     QVector<GradingKeyframe> gradingKeyframes;
     QVector<OpacityKeyframe> opacityKeyframes;

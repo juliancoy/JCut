@@ -566,6 +566,49 @@ void TimelineCache::registerClip(const TimelineClip& clip) {
                                       clip.durationFrames,
                                       m_budget);
     m_playbackBuffers[clip.id] = new PlaybackBuffer();
+
+    // Pre-cache static images immediately
+    // For static images, we always want frame 0
+    if (info.isSingleFrame && m_decoder) {
+        const int64_t frameNumber = 0;
+        const QString key = requestKey(clip.id, frameNumber);
+
+        // Check if already cached - we need to release the mutex first
+        // because getCachedFrame will try to lock it again
+        lock.unlock();
+        FrameHandle cached = getCachedFrame(clip.id, frameNumber);
+        lock.relock();
+        
+        if (cached.isNull()) {
+            // Request the static image frame with high priority
+            m_decoder->requestFrame(info.decodePath.isEmpty() ? clip.filePath : info.decodePath,
+                                   frameNumber,
+                                   95,  // Very high priority for static images (increased from 90)
+                                   5000, // 5 second timeout (reduced from 10)
+                                   DecodeRequestKind::Visible, // Use Visible instead of Prefetch for immediate attention
+                                   [this, clipId = clip.id, frameNumber](FrameHandle frame) {
+                if (!frame.isNull()) {
+                    // Store in cache
+                    QMutexLocker lock(&m_clipsMutex);
+                    auto it = m_clips.find(clipId);
+                    if (it != m_clips.end()) {
+                        ClipCache* cache = m_caches.value(clipId);
+                        if (cache) {
+                            cache->insert(frameNumber, frame);
+                            // Emit signal that a static image frame was loaded
+                            // This will trigger repaint in preview windows
+                            QMetaObject::invokeMethod(this, [this, clipId, frameNumber, frame]() {
+                                emit frameLoaded(clipId, frameNumber, frame);
+                            }, Qt::QueuedConnection);
+                        }
+                    }
+                } else {
+                    // Log warning if static image fails to load
+                    qWarning() << "Failed to load static image for clip" << clipId << "frame" << frameNumber;
+                }
+            });
+        }
+    }
 }
 
 void TimelineCache::registerClip(const QString& id, const QString& path,

@@ -5,6 +5,7 @@
 #include <QHeaderView>
 #include <QMenu>
 #include <QSignalBlocker>
+#include <QKeyEvent>
 
 TitlesTab::TitlesTab(const Widgets &widgets, const Dependencies &deps, QObject *parent)
     : KeyframeTabBase(deps, parent)
@@ -34,7 +35,12 @@ void TitlesTab::wire()
     connectSpin(m_widgets.titleOpacitySpin);
 
     if (m_widgets.titleTextEdit) {
-        connect(m_widgets.titleTextEdit, &QLineEdit::editingFinished, this, &TitlesTab::applyKeyframeFromInspector);
+        // Connect textChanged signal for real-time updates
+        connect(m_widgets.titleTextEdit, &QPlainTextEdit::textChanged, this, [this]() {
+            if (!m_updating) applyKeyframeFromInspector();
+        });
+        // Install event filter for Ctrl+Enter handling
+        m_widgets.titleTextEdit->installEventFilter(this);
     }
     if (m_widgets.titleFontCombo) {
         connect(m_widgets.titleFontCombo, &QFontComboBox::currentFontChanged, this, [this]() {
@@ -147,18 +153,45 @@ void TitlesTab::populateTable(const TimelineClip &clip)
             item->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(kf.frame)));
             table->setItem(row, col, item);
         };
-        setCell(0, QString::number(kf.frame));
-        setCell(1, kf.text);
-        setCell(2, QString::number(kf.translationX, 'f', 1));
-        setCell(3, QString::number(kf.translationY, 'f', 1));
-        setCell(4, QString::number(kf.fontSize, 'f', 1));
-        setCell(5, QString::number(kf.opacity, 'f', 2));
+        
+        // Calculate start frame (this keyframe's frame)
+        int64_t startFrame = kf.frame;
+        
+        // Calculate end frame (next keyframe's frame - 1, or clip duration - 1 if last keyframe)
+        int64_t endFrame = clip.durationFrames - 1;
+        if (row + 1 < clip.titleKeyframes.size()) {
+            endFrame = clip.titleKeyframes[row + 1].frame - 1;
+        }
+        
+        // Ensure end frame is not less than start frame
+        if (endFrame < startFrame) {
+            endFrame = startFrame;
+        }
+        
+        // Set Start and End columns (read-only)
+        auto *startItem = new QTableWidgetItem(QString::number(startFrame));
+        startItem->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(kf.frame)));
+        startItem->setFlags(startItem->flags() & ~Qt::ItemIsEditable);
+        table->setItem(row, 0, startItem);
+        
+        auto *endItem = new QTableWidgetItem(QString::number(endFrame));
+        endItem->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(kf.frame)));
+        endItem->setFlags(endItem->flags() & ~Qt::ItemIsEditable);
+        table->setItem(row, 1, endItem);
+        
+        // Original Frame column (now column 2) - editable
+        setCell(2, QString::number(kf.frame));
+        setCell(3, kf.text);
+        setCell(4, QString::number(kf.translationX, 'f', 1));
+        setCell(5, QString::number(kf.translationY, 'f', 1));
+        setCell(6, QString::number(kf.fontSize, 'f', 1));
+        setCell(7, QString::number(kf.opacity, 'f', 2));
 
         auto *interpItem = new QTableWidgetItem(kf.linearInterpolation
             ? QStringLiteral("Linear") : QStringLiteral("Step"));
         interpItem->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(kf.frame)));
         interpItem->setFlags(interpItem->flags() & ~Qt::ItemIsEditable);
-        table->setItem(row, 6, interpItem);
+        table->setItem(row, 8, interpItem);
     }
 }
 
@@ -204,7 +237,7 @@ void TitlesTab::updateWidgetsFromKeyframe(const TitleKeyframeDisplay &display)
 
     if (m_widgets.titleTextEdit) {
         const QSignalBlocker b(m_widgets.titleTextEdit);
-        m_widgets.titleTextEdit->setText(display.text);
+        m_widgets.titleTextEdit->setPlainText(display.text);
     }
     if (m_widgets.titleFontCombo) {
         const QSignalBlocker b(m_widgets.titleFontCombo);
@@ -227,7 +260,7 @@ void TitlesTab::applyKeyframeFromInspector()
     if (clipId.isEmpty() || m_selectedKeyframeFrame < 0) return;
 
     const int64_t targetFrame = m_selectedKeyframeFrame;
-    const QString text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->text() : QString();
+    const QString text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->toPlainText() : QString();
     const double x = m_widgets.titleXSpin ? m_widgets.titleXSpin->value() : 0.0;
     const double y = m_widgets.titleYSpin ? m_widgets.titleYSpin->value() : 0.0;
     const double fontSize = m_widgets.titleFontSizeSpin ? m_widgets.titleFontSizeSpin->value() : 48.0;
@@ -283,7 +316,7 @@ void TitlesTab::upsertKeyframeAtPlayhead()
             TimelineClip::TitleKeyframe newKf;
             newKf.frame = clampedFrame;
             if (m_widgets.titleTextEdit)
-                newKf.text = m_widgets.titleTextEdit->text();
+                newKf.text = m_widgets.titleTextEdit->toPlainText();
             if (m_widgets.titleXSpin)
                 newKf.translationX = m_widgets.titleXSpin->value();
             if (m_widgets.titleYSpin)
@@ -458,14 +491,20 @@ void TitlesTab::onTableItemChanged(QTableWidgetItem *item)
     if (clipId.isEmpty()) return;
 
     bool ok = false;
-    const int64_t newFrame = table->item(row, 0) ? table->item(row, 0)->text().toLongLong(&ok) : originalFrame;
+    // Frame column is now at index 2 (0=Start, 1=End, 2=Frame)
+    const int64_t newFrame = table->item(row, 2) ? table->item(row, 2)->text().toLongLong(&ok) : originalFrame;
     if (!ok) { refresh(); return; }
 
-    const QString text = table->item(row, 1) ? table->item(row, 1)->text() : QString();
-    const double x = table->item(row, 2) ? table->item(row, 2)->text().toDouble() : 0.0;
-    const double y = table->item(row, 3) ? table->item(row, 3)->text().toDouble() : 0.0;
-    const double fontSize = table->item(row, 4) ? table->item(row, 4)->text().toDouble() : 48.0;
-    const double opacity = table->item(row, 5) ? table->item(row, 5)->text().toDouble() : 1.0;
+    // Text column is now at index 3
+    const QString text = table->item(row, 3) ? table->item(row, 3)->text() : QString();
+    // X column is now at index 4
+    const double x = table->item(row, 4) ? table->item(row, 4)->text().toDouble() : 0.0;
+    // Y column is now at index 5
+    const double y = table->item(row, 5) ? table->item(row, 5)->text().toDouble() : 0.0;
+    // Size column is now at index 6
+    const double fontSize = table->item(row, 6) ? table->item(row, 6)->text().toDouble() : 48.0;
+    // Opacity column is now at index 7
+    const double opacity = table->item(row, 7) ? table->item(row, 7)->text().toDouble() : 1.0;
 
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
@@ -540,8 +579,8 @@ void TitlesTab::onTableSelectionChanged()
 void TitlesTab::onTableItemClicked(QTableWidgetItem *item)
 {
     if (!item || m_updating) return;
-    // Column 6 = Interp toggle
-    if (item->column() == 6) {
+    // Column 8 = Interp toggle (0=Start, 1=End, 2=Frame, 3=Text, 4=X, 5=Y, 6=Size, 7=Opacity, 8=Interp)
+    if (item->column() == 8) {
         const bool isLinear = item->text() == QStringLiteral("Linear");
         item->setText(isLinear ? QStringLiteral("Step") : QStringLiteral("Linear"));
 
@@ -642,4 +681,21 @@ void TitlesTab::onTableCustomContextMenu(const QPoint &pos)
             }
         }
     }
+}
+
+bool TitlesTab::eventFilter(QObject *watched, QEvent *event)
+{
+    // Handle Ctrl+Enter in title text edit to insert line break
+    if (watched == m_widgets.titleTextEdit && event->type() == QEvent::KeyPress) {
+        QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+        if ((keyEvent->key() == Qt::Key_Return || keyEvent->key() == Qt::Key_Enter) &&
+            (keyEvent->modifiers() & Qt::ControlModifier)) {
+            // Insert a line break at cursor position
+            QTextCursor cursor = m_widgets.titleTextEdit->textCursor();
+            cursor.insertText("\n");
+            return true; // Event handled
+        }
+    }
+    // Pass the event to the parent class
+    return KeyframeTabBase::eventFilter(watched, event);
 }

@@ -1206,6 +1206,56 @@ bool TimelineWidget::deleteTrack(int trackIndex) {
     return true;
 }
 
+void TimelineWidget::removeEmptyTracks() {
+    if (m_tracks.size() <= 1) {
+        return;
+    }
+
+    QVector<int> emptyTrackIndices;
+    for (int i = static_cast<int>(m_tracks.size()) - 1; i >= 0; --i) {
+        bool hasClip = false;
+        for (const TimelineClip& clip : m_clips) {
+            if (clip.trackIndex == i) {
+                hasClip = true;
+                break;
+            }
+        }
+        if (!hasClip) {
+            emptyTrackIndices.push_back(i);
+        }
+    }
+
+    if (emptyTrackIndices.isEmpty()) {
+        return;
+    }
+
+    for (int idx : emptyTrackIndices) {
+        m_tracks.removeAt(idx);
+        for (TimelineClip& clip : m_clips) {
+            if (clip.trackIndex > idx) {
+                clip.trackIndex -= 1;
+            }
+        }
+    }
+
+    if (m_selectedTrackIndex >= m_tracks.size()) {
+        m_selectedTrackIndex = m_tracks.size() - 1;
+    } else if (m_selectedTrackIndex < 0) {
+        m_selectedTrackIndex = 0;
+    }
+
+    normalizeTrackIndices();
+    sortClips();
+
+    if (clipsChanged) {
+        clipsChanged();
+    }
+    if (trackLayoutChanged) {
+        trackLayoutChanged();
+    }
+    update();
+}
+
 bool TimelineWidget::applyCrossfadeToTrack(int trackIndex, double seconds, bool moveClips) {
     if (trackIndex < 0 || seconds <= 0.0) {
         return false;
@@ -1323,6 +1373,11 @@ bool TimelineWidget::isAudioMediaType(ClipMediaType type) const {
 bool TimelineWidget::wouldClipConflictWithTrack(const TimelineClip& clip, int trackIndex, const QString& excludeClipId) const {
     const bool clipIsVisual = isVisualMediaType(clip.mediaType);
     const bool clipIsAudio = isAudioMediaType(clip.mediaType);
+    
+    // Calculate clip time range
+    const int64_t clipStart = clip.startFrame;
+    const int64_t clipEnd = clip.startFrame + clip.durationFrames;
+    
     for (const TimelineClip& other : m_clips) {
         if (other.id == excludeClipId || other.id == clip.id) {
             continue;
@@ -1330,10 +1385,20 @@ bool TimelineWidget::wouldClipConflictWithTrack(const TimelineClip& clip, int tr
         if (other.trackIndex != trackIndex) {
             continue;
         }
+        
         const bool otherIsVisual = isVisualMediaType(other.mediaType);
         const bool otherIsAudio = isAudioMediaType(other.mediaType);
+        
+        // Only check for conflicts if they're the same media type
         if ((clipIsVisual && otherIsVisual) || (clipIsAudio && otherIsAudio)) {
-            return true;
+            // Check for time overlap
+            const int64_t otherStart = other.startFrame;
+            const int64_t otherEnd = other.startFrame + other.durationFrames;
+            
+            // Check if the clips overlap in time
+            if (clipEnd > otherStart && clipStart < otherEnd) {
+                return true;
+            }
         }
     }
     return false;

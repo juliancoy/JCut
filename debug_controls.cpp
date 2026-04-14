@@ -19,7 +19,7 @@ constexpr int kDefaultPrefetchMaxPerTick = 8;
 constexpr int kDefaultPrefetchSkipVisiblePendingThreshold = 2;
 constexpr int kDefaultVisibleQueueReserve = 24;
 constexpr int kDefaultPlaybackWindowAhead = 16;
-constexpr DecodePreference kDefaultDecodePreference = DecodePreference::Auto;
+constexpr DecodePreference kDefaultDecodePreference = DecodePreference::Hardware;
 
 bool envFlagEnabled(const char* name) {
     return qEnvironmentVariableIntValue(name) == 1;

@@ -12,6 +12,7 @@ class QFontComboBox;
 class QTableWidget;
 class QPushButton;
 class QLineEdit;
+class QPlainTextEdit;
 class QIcon;
 class QListWidget;
 
@@ -116,7 +117,7 @@ public:
     QLabel *titlesInspectorClipLabel() const { return m_titlesInspectorClipLabel; }
     QLabel *titlesInspectorDetailsLabel() const { return m_titlesInspectorDetailsLabel; }
     QTableWidget *titleKeyframeTable() const { return m_titleKeyframeTable; }
-    QLineEdit *titleTextEdit() const { return m_titleTextEdit; }
+    QPlainTextEdit *titleTextEdit() const { return m_titleTextEdit; }
     QDoubleSpinBox *titleXSpin() const { return m_titleXSpin; }
     QDoubleSpinBox *titleYSpin() const { return m_titleYSpin; }
     QDoubleSpinBox *titleFontSizeSpin() const { return m_titleFontSizeSpin; }
@@ -188,6 +189,7 @@ public:
 
 signals:
     void refreshRequested();
+    void restartDecodersRequested();
 
 private:
     QWidget *buildPane();
@@ -287,7 +289,7 @@ private:
     QLabel *m_titlesInspectorClipLabel = nullptr;
     QLabel *m_titlesInspectorDetailsLabel = nullptr;
     QTableWidget *m_titleKeyframeTable = nullptr;
-    QLineEdit *m_titleTextEdit = nullptr;
+    QPlainTextEdit *m_titleTextEdit = nullptr;
     QDoubleSpinBox *m_titleXSpin = nullptr;
     QDoubleSpinBox *m_titleYSpin = nullptr;
     QDoubleSpinBox *m_titleFontSizeSpin = nullptr;
@@ -334,6 +336,7 @@ private:
     QTableWidget *m_historyTable = nullptr;
     QTableWidget *m_tracksTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
+    QPushButton *m_restartDecodersButton = nullptr;
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
     QPushButton *m_newProjectButton = nullptr;

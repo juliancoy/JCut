@@ -53,7 +53,9 @@ struct AsyncDecoder::LaneState {
     bool running = false;
     int activeRequests = 0;
 
-    static constexpr int kMaxContexts = 4;
+    // Increased from 4 to 12 to handle projects with many clips from few source files
+    // This reduces decoder recreation when switching between clips from the same file
+    static constexpr int kMaxContexts = 12;
 };
 
 AsyncDecoder::AsyncDecoder(QObject* parent)
@@ -422,8 +424,12 @@ int AsyncDecoder::laneIndexForRequest(const QString& path, int64_t frameNumber) 
         return static_cast<int>(baseHash % laneCount);
     }
 
-    const int64_t shard = qMax<int64_t>(0, frameNumber) / kImageSequenceLaneShardSize;
-    return static_cast<int>((baseHash + static_cast<uint>(shard)) % laneCount);
+    // For image sequences: use round-robin distribution for better parallelism
+    // Original: shard = frameNumber / 8 (groups 8 frames together - bad for sequential)
+    // New: frameNumber % laneCount (perfect round-robin for sequential playback)
+    // Still include baseHash to distribute different sequences across lanes
+    const uint frameHash = static_cast<uint>(qMax<int64_t>(0, frameNumber));
+    return static_cast<int>((baseHash + frameHash) % laneCount);
 }
 
 AsyncDecoder::LaneState* AsyncDecoder::laneForRequest(const QString& path, int64_t frameNumber) const {

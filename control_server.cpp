@@ -10,6 +10,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QEvent>
+#include <QFile>
 #include <QHash>
 #include <QJsonArray>
 #include <QHostAddress>
@@ -310,7 +311,7 @@ public:
             return false;
         }
         m_listenPort = m_server->serverPort();
-        fprintf(stderr, "ControlServer listening on http://127.0.0.1: %u\n", static_cast<unsigned>(m_listenPort));
+        fprintf(stderr, "ControlServer listening on http://127.0.0.1:%u\n", static_cast<unsigned>(m_listenPort));
         fflush(stderr);
         m_refreshTimer = std::make_unique<QTimer>();
         m_refreshTimer->setInterval(static_cast<int>(kBackgroundRefreshTickMs));
@@ -663,6 +664,76 @@ private:
 
     void handleRequest(QTcpSocket* socket, const Request& request) {
         const QString path = request.url.path();
+        
+        // Serve HTML dashboard at root
+        if (request.method == QStringLiteral("GET") && (request.url.path() == QStringLiteral("/") || request.url.path() == QStringLiteral("/index.html"))) {
+            // Read the HTML file
+            QFile htmlFile("control_server_webpage.html");
+            if (htmlFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                QByteArray htmlContent = htmlFile.readAll();
+                htmlFile.close();
+                writeResponse(socket, 200, htmlContent, "text/html; charset=utf-8");
+            } else {
+                // Fallback: serve a simple HTML page
+                QByteArray simpleHtml = R"(
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PanelVid2TikTok Editor Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; background: #f0f0f0; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .endpoint { background: #e2e3e5; padding: 8px; margin: 5px 0; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>PanelVid2TikTok Editor Dashboard</h1>
+        <p>Real-time monitoring dashboard for the video editor.</p>
+        
+        <div class="status connected" id="status">Connected to Control Server</div>
+        
+        <h2>Available API Endpoints:</h2>
+        <div class="endpoint"><strong>GET /health</strong> - System health status</div>
+        <div class="endpoint"><strong>GET /version</strong> - Build information</div>
+        <div class="endpoint"><strong>GET /playhead</strong> - Current playback position</div>
+        <div class="endpoint"><strong>GET /state</strong> - Editor state snapshot</div>
+        <div class="endpoint"><strong>GET /profile</strong> - Performance profiling data</div>
+        <div class="endpoint"><strong>GET /diag/perf</strong> - Performance diagnostics</div>
+        <div class="endpoint"><strong>GET /timeline</strong> - Timeline information</div>
+        <div class="endpoint"><strong>GET /project</strong> - Project information</div>
+        <div class="endpoint"><strong>GET /history</strong> - History snapshot</div>
+        <div class="endpoint"><strong>GET /ui</strong> - UI hierarchy</div>
+        
+        <h2>Controls:</h2>
+        <div class="endpoint"><strong>POST /playhead</strong> - Set playhead position</div>
+        <div class="endpoint"><strong>POST /profile/reset</strong> - Reset profiling stats</div>
+        
+        <p>For the full interactive dashboard, ensure <code>control_server_webpage.html</code> exists in the working directory.</p>
+    </div>
+    
+    <script>
+        // Simple status check
+        fetch('/health').then(r => r.json()).then(data => {
+            document.getElementById('status').textContent = 
+                `Connected - PID: ${data.pid}, Port: ${data.port}, Uptime: ${data.uptime_seconds}s`;
+        }).catch(err => {
+            document.getElementById('status').className = 'status disconnected';
+            document.getElementById('status').textContent = 'Disconnected: ' + err.message;
+        });
+    </script>
+</body>
+</html>
+)";
+                writeResponse(socket, 200, simpleHtml, "text/html; charset=utf-8");
+            }
+            return;
+        }
+        
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/health")) {
             QJsonObject snapshot = fastSnapshot();
             snapshot[QStringLiteral("ok")] = true;
@@ -823,7 +894,7 @@ private:
                 if (!value.isObject()) {
                     continue;
                 }
-                const QJsonObject clip = value.toObject();
+                QJsonObject clip = value.toObject();
                 if (!idFilter.isEmpty() && clip.value(QStringLiteral("id")).toString() != idFilter) {
                     continue;
                 }
@@ -838,6 +909,12 @@ private:
                     !clip.value(QStringLiteral("filePath")).toString().toLower().contains(fileContains)) {
                     continue;
                 }
+                
+                // Add endFrame for easier overlap detection
+                const qint64 startFrame = clip.value(QStringLiteral("startFrame")).toInteger();
+                const qint64 durationFrames = clip.value(QStringLiteral("durationFrames")).toInteger();
+                clip[QStringLiteral("endFrame")] = startFrame + durationFrames;
+                
                 filtered.push_back(clip);
             }
 
@@ -1094,10 +1171,18 @@ private:
                     }
                 } else if (it.value().isString()) {
                     editor::DebugLogLevel level = editor::DebugLogLevel::Off;
-                    if (!editor::parseDebugLogLevel(it.value().toString(), &level) ||
-                        !editor::setDebugControlLevel(it.key(), level)) {
-                        writeError(socket, 400, QStringLiteral("invalid debug field: %1").arg(it.key()));
-                        return;
+                    if (editor::parseDebugLogLevel(it.value().toString(), &level)) {
+                        // Valid log level string
+                        if (!editor::setDebugControlLevel(it.key(), level)) {
+                            writeError(socket, 400, QStringLiteral("invalid debug field: %1").arg(it.key()));
+                            return;
+                        }
+                    } else {
+                        // Not a log level, try as a regular string option
+                        if (!editor::setDebugOption(it.key(), it.value())) {
+                            writeError(socket, 400, QStringLiteral("invalid debug field: %1").arg(it.key()));
+                            return;
+                        }
                     }
                 } else if (editor::setDebugOption(it.key(), it.value())) {
                     // handled
