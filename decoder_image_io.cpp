@@ -5,6 +5,7 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QSet>
+#include <QtConcurrent/QtConcurrent>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -351,6 +352,75 @@ QImage loadSingleImageFile(const QString& framePath) {
     }
 
     return decodedImage;
+}
+
+QVector<QImage> loadImageSequenceBatch(const QStringList& framePaths, const QVector<int64_t>& frameNumbers) {
+    QVector<QImage> results;
+    if (framePaths.isEmpty() || frameNumbers.isEmpty()) {
+        return results;
+    }
+    
+    results.reserve(frameNumbers.size());
+    
+    // Simple parallel loading using QtConcurrent
+    // This is more efficient than sequential loading for many small files
+    QVector<QImage> loadedImages = QtConcurrent::blockingMapped<QVector<QImage>>(
+        frameNumbers,
+        [&framePaths](int64_t frameNumber) -> QImage {
+            const int index = qBound(0, static_cast<int>(frameNumber), framePaths.size() - 1);
+            return loadSingleImageFile(framePaths.at(index));
+        }
+    );
+    
+    // Transfer results
+    results = std::move(loadedImages);
+    return results;
+}
+
+QImage loadSequenceFrameImageBatched(const QStringList& framePaths, int64_t frameNumber, 
+                                     QVector<int64_t>& additionalFrames, QVector<QImage>& batchCache) {
+    if (framePaths.isEmpty()) {
+        return QImage();
+    }
+    
+    // Check if we have this frame in cache
+    for (int i = 0; i < additionalFrames.size(); ++i) {
+        if (additionalFrames[i] == frameNumber && i < batchCache.size()) {
+            return batchCache[i];
+        }
+    }
+    
+    // If not in cache, load a batch
+    QVector<int64_t> framesToLoad;
+    framesToLoad.reserve(additionalFrames.size() + 1);
+    framesToLoad.append(frameNumber);
+    
+    for (int64_t additionalFrame : additionalFrames) {
+        if (additionalFrame >= 0 && additionalFrame < framePaths.size()) {
+            framesToLoad.append(additionalFrame);
+        }
+    }
+    
+    // Remove duplicates
+    std::sort(framesToLoad.begin(), framesToLoad.end());
+    framesToLoad.erase(std::unique(framesToLoad.begin(), framesToLoad.end()), framesToLoad.end());
+    
+    // Load batch
+    QVector<QImage> batch = loadImageSequenceBatch(framePaths, framesToLoad);
+    
+    // Update cache
+    additionalFrames = framesToLoad;
+    batchCache = batch;
+    
+    // Return requested frame
+    for (int i = 0; i < framesToLoad.size(); ++i) {
+        if (framesToLoad[i] == frameNumber && i < batch.size()) {
+            return batch[i];
+        }
+    }
+    
+    // Fallback to single load
+    return loadSequenceFrameImage(framePaths, frameNumber);
 }
 
 } // namespace editor
