@@ -984,20 +984,37 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
         cache = cacheIt.value();
     }
 
-    if (preferPlaybackBuffer && playbackBuffer) {
-        if (playbackBuffer->contains(frameNumber)) {
+    const auto isDisplayableCandidate = [this, frameNumber](const FrameHandle& frame) {
+        if (frame.isNull()) {
+            return false;
+        }
+        if (m_state.load() != PlaybackState::Playing) {
             return true;
         }
-        if (!playbackBuffer->getLatestAtOrBefore(frameNumber).isNull()) {
+        const int64_t candidateFrame = frame.frameNumber();
+        if (candidateFrame < 0) {
+            return true;
+        }
+        constexpr int64_t kMaxPlaybackStaleFrameDelta = 4;
+        return candidateFrame + kMaxPlaybackStaleFrameDelta >= frameNumber;
+    };
+
+    if (preferPlaybackBuffer && playbackBuffer) {
+        const FrameHandle playbackExact = playbackBuffer->get(frameNumber);
+        if (isDisplayableCandidate(playbackExact)) {
+            return true;
+        }
+        if (isDisplayableCandidate(playbackBuffer->getLatestAtOrBefore(frameNumber))) {
             return true;
         }
     }
 
     if (allowCacheFallback && cache) {
-        if (cache->contains(frameNumber)) {
+        const FrameHandle cacheExact = cache->get(frameNumber);
+        if (isDisplayableCandidate(cacheExact)) {
             return true;
         }
-        if (!cache->getLatestAtOrBefore(frameNumber).isNull()) {
+        if (isDisplayableCandidate(cache->getLatestAtOrBefore(frameNumber))) {
             return true;
         }
     }

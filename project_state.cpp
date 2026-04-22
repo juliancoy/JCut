@@ -493,6 +493,8 @@ QJsonObject EditorWindow::buildStateJson() const
         m_gradingFollowCurrentCheckBox ? m_gradingFollowCurrentCheckBox->isChecked() : true;
     root[QStringLiteral("gradingAutoScroll")] =
         m_gradingAutoScrollCheckBox ? m_gradingAutoScrollCheckBox->isChecked() : true;
+    root[QStringLiteral("gradingPreview")] =
+        m_bypassGradingCheckBox ? m_bypassGradingCheckBox->isChecked() : true;
     root[QStringLiteral("keyframesFollowCurrent")] =
         m_keyframesFollowCurrentCheckBox ? m_keyframesFollowCurrentCheckBox->isChecked() : true;
     root[QStringLiteral("keyframesAutoScroll")] =

@@ -18,7 +18,11 @@
 
 namespace {
 constexpr qint64 kManualTranscriptSelectionHoldMs = 1200;
-constexpr QLatin1StringView kTranscriptWordSkippedKey("skipped");
+const QLatin1String kTranscriptWordSkippedKey("skipped");
+
+bool clipSupportsTranscript(const TimelineClip& clip) {
+    return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
+}
 }
 
 TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
@@ -62,6 +66,10 @@ void TranscriptTab::wire()
     }
     if (m_widgets.transcriptOverlayEnabledCheckBox) {
         connect(m_widgets.transcriptOverlayEnabledCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptBackgroundVisibleCheckBox) {
+        connect(m_widgets.transcriptBackgroundVisibleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
     if (m_widgets.transcriptMaxLinesSpin) {
@@ -142,7 +150,7 @@ void TranscriptTab::refresh()
     m_loadedTranscriptPath.clear();
     m_loadedTranscriptDoc = QJsonDocument();
 
-    if (!clip || clip->mediaType != ClipMediaType::Audio) {
+    if (!clip || !clipSupportsTranscript(*clip)) {
         m_persistedSelectedClipId.clear();
         m_persistedSelectedSegmentIndex = -1;
         m_persistedSelectedWordIndex = -1;
@@ -176,6 +184,8 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
     const bool updated = m_deps.updateClipById(selectedClip->id, [this](TimelineClip& clip) {
         clip.transcriptOverlay.enabled = m_widgets.transcriptOverlayEnabledCheckBox &&
                                          m_widgets.transcriptOverlayEnabledCheckBox->isChecked();
+        clip.transcriptOverlay.showBackground = m_widgets.transcriptBackgroundVisibleCheckBox &&
+                                                m_widgets.transcriptBackgroundVisibleCheckBox->isChecked();
         clip.transcriptOverlay.maxLines = m_widgets.transcriptMaxLinesSpin
             ? m_widgets.transcriptMaxLinesSpin->value()
             : 2;
@@ -235,7 +245,7 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t 
     }
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip || clip->mediaType != ClipMediaType::Audio || m_loadedTranscriptPath.isEmpty()) {
+    if (!clip || !clipSupportsTranscript(*clip) || m_loadedTranscriptPath.isEmpty()) {
         m_widgets.transcriptTable->clearSelection();
         return;
     }
@@ -463,7 +473,7 @@ void TranscriptTab::scheduleSeekToTranscriptRow(int row)
     }
 
     const TimelineClip* selectedClip = m_deps.getSelectedClip();
-    if (!selectedClip || selectedClip->mediaType != ClipMediaType::Audio) {
+    if (!selectedClip || !clipSupportsTranscript(*selectedClip)) {
         return;
     }
 
@@ -620,6 +630,7 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     if (!m_widgets.transcriptOverlayEnabledCheckBox) return;
 
     QSignalBlocker enabledBlock(m_widgets.transcriptOverlayEnabledCheckBox);
+    QSignalBlocker backgroundBlock(m_widgets.transcriptBackgroundVisibleCheckBox);
     QSignalBlocker maxLinesBlock(m_widgets.transcriptMaxLinesSpin);
     QSignalBlocker maxCharsBlock(m_widgets.transcriptMaxCharsSpin);
     QSignalBlocker autoScrollBlock(m_widgets.transcriptAutoScrollCheckBox);
@@ -633,6 +644,9 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     QSignalBlocker italicBlock(m_widgets.transcriptItalicCheckBox);
 
     m_widgets.transcriptOverlayEnabledCheckBox->setChecked(clip.transcriptOverlay.enabled);
+    if (m_widgets.transcriptBackgroundVisibleCheckBox) {
+        m_widgets.transcriptBackgroundVisibleCheckBox->setChecked(clip.transcriptOverlay.showBackground);
+    }
     if (m_widgets.transcriptMaxLinesSpin) {
         m_widgets.transcriptMaxLinesSpin->setValue(clip.transcriptOverlay.maxLines);
     }

@@ -76,6 +76,7 @@ void EditorWindow::createTranscriptTab()
         TranscriptTab::Widgets{
             m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
             m_transcriptTable, m_transcriptOverlayEnabledCheckBox,
+            m_inspectorPane->transcriptBackgroundVisibleCheckBox(),
             m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
             m_transcriptAutoScrollCheckBox, m_transcriptFollowCurrentWordCheckBox,
             m_transcriptOverlayXSpin, m_transcriptOverlayYSpin,

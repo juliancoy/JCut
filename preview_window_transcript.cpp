@@ -1,17 +1,48 @@
 #include "preview.h"
+#include "gl_frame_texture_shared.h"
 
+#include <cmath>
 #include <QPainter>
 #include <QTextDocument>
 
+namespace {
+bool clipSupportsTranscript(const TimelineClip& clip) {
+    return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
+}
+
+int effectiveTranscriptLinesForBox(const TimelineClip& clip) {
+    const qreal estimatedLineHeight = qMax<qreal>(12.0, clip.transcriptOverlay.fontPointSize * 1.35);
+    const qreal usableHeight = qMax<qreal>(estimatedLineHeight, clip.transcriptOverlay.boxHeight - 28.0);
+    const int fittedLines = qMax(1, static_cast<int>(std::floor(usableHeight / estimatedLineHeight)));
+    return qMax(1, qMin(clip.transcriptOverlay.maxLines, fittedLines));
+}
+
+int effectiveTranscriptCharsForBox(const TimelineClip& clip) {
+    const qreal estimatedCharWidth = qMax<qreal>(6.0, clip.transcriptOverlay.fontPointSize * 0.62);
+    const qreal usableWidth = qMax<qreal>(estimatedCharWidth, clip.transcriptOverlay.boxWidth - 36.0);
+    const int fittedChars = qMax(1, static_cast<int>(std::floor(usableWidth / estimatedCharWidth)));
+    return qMax(1, qMin(clip.transcriptOverlay.maxCharsPerLine, fittedChars));
+}
+}
+
 bool PreviewWindow::clipShowsTranscriptOverlay(const TimelineClip& clip) const {
-    return clip.mediaType == ClipMediaType::Audio && clip.transcriptOverlay.enabled;
+    return clipSupportsTranscript(clip) && clip.transcriptOverlay.enabled;
 }
 
 void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath) {
     if (clipFilePath.isEmpty()) {
         m_transcriptSectionsCache.clear();
+        for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
+            editor::destroyGlTextureEntry(&it.value());
+        }
+        m_transcriptTextureCache.clear();
     } else {
         m_transcriptSectionsCache.remove(clipFilePath);
+        // Textures are content/style keyed; clear all to avoid keeping stale overlay textures.
+        for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
+            editor::destroyGlTextureEntry(&it.value());
+        }
+        m_transcriptTextureCache.clear();
     }
     scheduleRepaint();
 }
@@ -35,8 +66,8 @@ TranscriptOverlayLayout PreviewWindow::transcriptOverlayLayoutForClip(const Time
         if (sourceFrame <= section.endFrame) {
             return layoutTranscriptSection(section,
                                            sourceFrame,
-                                           clip.transcriptOverlay.maxCharsPerLine,
-                                           clip.transcriptOverlay.maxLines,
+                                           effectiveTranscriptCharsForBox(clip),
+                                           effectiveTranscriptLinesForBox(clip),
                                            clip.transcriptOverlay.autoScroll);
         }
     }
@@ -75,9 +106,11 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
     if (textHtml.isEmpty()) return;
 
     painter->save();
-    painter->setPen(Qt::NoPen);
-    painter->setBrush(QColor(0, 0, 0, 120));
-    painter->drawRoundedRect(bounds, 14.0, 14.0);
+    if (clip.transcriptOverlay.showBackground) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(0, 0, 0, 120));
+        painter->drawRoundedRect(bounds, 14.0, 14.0);
+    }
     QFont font(clip.transcriptOverlay.fontFamily);
     font.setPixelSize(qMax(8, qRound(clip.transcriptOverlay.fontPointSize * previewCanvasScale(targetRect).y())));
     font.setBold(clip.transcriptOverlay.bold);
@@ -92,20 +125,39 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
     textDoc.setDocumentMargin(0.0);
     textDoc.setTextWidth(textBounds.width());
     textDoc.setHtml(textHtml);
-    const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - textDoc.size().height()) / 2.0);
+    const qreal widthScale = textDoc.size().width() > textBounds.width()
+        ? textBounds.width() / textDoc.size().width()
+        : 1.0;
+    const qreal heightScale = textDoc.size().height() > textBounds.height()
+        ? textBounds.height() / textDoc.size().height()
+        : 1.0;
+    const qreal docScale = qMin(widthScale, heightScale);
+    const qreal scaledDocHeight = textDoc.size().height() * docScale;
+    const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - scaledDocHeight) / 2.0);
     painter->translate(textBounds.left() + 3.0, textY + 3.0);
+    if (docScale < 0.999) {
+        painter->scale(docScale, docScale);
+    }
     shadowDoc.drawContents(painter);
+    if (docScale < 0.999) {
+        painter->scale(1.0 / docScale, 1.0 / docScale);
+    }
     painter->translate(-3.0, -3.0);
+    if (docScale < 0.999) {
+        painter->scale(docScale, docScale);
+    }
     textDoc.drawContents(painter);
     painter->restore();
 
-    PreviewOverlayInfo info;
-    info.kind = PreviewOverlayKind::TranscriptOverlay;
-    info.bounds = bounds;
-    constexpr qreal kHandleSize = 12.0;
-    info.rightHandle = QRectF(bounds.right() - kHandleSize, bounds.center().y() - kHandleSize, kHandleSize, kHandleSize * 2.0);
-    info.bottomHandle = QRectF(bounds.center().x() - kHandleSize, bounds.bottom() - kHandleSize, kHandleSize * 2.0, kHandleSize);
-    info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5, bounds.bottom() - kHandleSize * 1.5, kHandleSize * 1.5, kHandleSize * 1.5);
-    m_overlayInfo.insert(clip.id, info);
-    m_paintOrder.push_back(clip.id);
+    if (m_transcriptOverlayInteractionEnabled) {
+        PreviewOverlayInfo info;
+        info.kind = PreviewOverlayKind::TranscriptOverlay;
+        info.bounds = bounds;
+        constexpr qreal kHandleSize = 12.0;
+        info.rightHandle = QRectF(bounds.right() - kHandleSize, bounds.center().y() - kHandleSize, kHandleSize, kHandleSize * 2.0);
+        info.bottomHandle = QRectF(bounds.center().x() - kHandleSize, bounds.bottom() - kHandleSize, kHandleSize * 2.0, kHandleSize);
+        info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5, bounds.bottom() - kHandleSize * 1.5, kHandleSize * 1.5, kHandleSize * 1.5);
+        m_overlayInfo.insert(clip.id, info);
+        m_paintOrder.push_back(clip.id);
+    }
 }

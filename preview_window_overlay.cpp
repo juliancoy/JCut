@@ -12,6 +12,10 @@
 
 #include <cmath>
 
+namespace {
+constexpr int64_t kMaxHeldPresentationFrameDelta = 8;
+}
+
 void PreviewWindow::paintEvent(QPaintEvent* event) {
     if (!usingCpuFallback()) {
         QOpenGLWidget::paintEvent(event);
@@ -118,6 +122,17 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                                                  const QList<TimelineClip>& activeClips,
                                                  bool drewAnyFrame,
                                                  bool waitingForFrame) {
+    const qint64 now = nowMs();
+    if (waitingForFrame) {
+        if (m_waitingForFrameSinceMs <= 0) {
+            m_waitingForFrameSinceMs = now;
+        }
+    } else {
+        m_waitingForFrameSinceMs = 0;
+    }
+    const bool showLoadingBadge =
+        waitingForFrame && (now - m_waitingForFrameSinceMs) >= 150;
+
     painter->save();
     painter->setPen(QPen(QColor(255, 255, 255, 40), 1.5));
     painter->setBrush(QColor(255, 255, 255, 18));
@@ -149,7 +164,7 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                              waitingForFrame
                                  ? QStringLiteral("Frame loading...")
                                  : QStringLiteral("No composited frame available"));
-    } else if (waitingForFrame) {
+    } else if (showLoadingBadge) {
         painter->save();
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor(9, 12, 16, 170));
@@ -162,9 +177,11 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         painter->restore();
     }
 
-    for (const TimelineClip& clip : activeClips) {
-        if (clipShowsTranscriptOverlay(clip)) {
-            drawTranscriptOverlay(painter, clip, compositeRect);
+    if (usingCpuFallback() || !m_overlayShaderProgram) {
+        for (const TimelineClip& clip : activeClips) {
+            if (clipShowsTranscriptOverlay(clip)) {
+                drawTranscriptOverlay(painter, clip, compositeRect);
+            }
         }
     }
 
@@ -336,6 +353,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     int exactCount = 0;
     int bestCount = 0;
     int heldCount = 0;
+    int staleRejectedCount = 0;
     int nullCount = 0;
     QJsonArray clipSelections;
 
@@ -423,12 +441,22 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
             if (!frame.isNull()) {
                 m_lastPresentedFrames.insert(clip.id, frame);
             } else {
-                frame = m_lastPresentedFrames.value(clip.id);
-                if (!frame.isNull()) {
+                const FrameHandle heldFrame = m_lastPresentedFrames.value(clip.id);
+                if (!heldFrame.isNull() &&
+                    qAbs(heldFrame.frameNumber() - localFrame) <= kMaxHeldPresentationFrameDelta) {
+                    frame = heldFrame;
                     ++heldCount;
                     selection = QStringLiteral("held");
+                } else {
+                    m_lastPresentedFrames.remove(clip.id);
                 }
             }
+        }
+        if (isFrameTooStaleForPlayback(clip, localFrame, frame)) {
+            frame = FrameHandle();
+            selection = QStringLiteral("stale");
+            ++staleRejectedCount;
+            m_lastPresentedFrames.remove(clip.id);
         }
         playbackFrameSelectionTrace(QStringLiteral("PreviewWindow::drawCompositedPreview.select"),
                                     clip,
@@ -437,6 +465,31 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                                     frame,
                                     m_currentFramePosition);
         if (frame.isNull()) {
+            if (usePlaybackPipeline && m_playbackPipeline && m_playing) {
+                static constexpr int kMaxVisibleBacklog = 4;
+                if (m_playbackPipeline->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
+                    m_lastFrameRequestMs = nowMs();
+                    m_playbackPipeline->requestFramesForSample(
+                        m_currentSample,
+                        [this]() {
+                            QMetaObject::invokeMethod(this, [this]() {
+                                scheduleRepaint();
+                            }, Qt::QueuedConnection);
+                        });
+                }
+            } else if (m_cache && !m_cache->isVisibleRequestPending(clip.id, localFrame)) {
+                m_lastFrameRequestMs = nowMs();
+                m_cache->requestFrame(
+                    clip.id,
+                    localFrame,
+                    [this](FrameHandle delivered) {
+                        Q_UNUSED(delivered)
+                        QMetaObject::invokeMethod(this, [this]() {
+                            scheduleRepaint();
+                        }, Qt::QueuedConnection);
+                    });
+            }
+
             // For static images, try to load them synchronously as a last resort
             if (clip.mediaType == ClipMediaType::Image && !clip.filePath.isEmpty()) {
                 // Try to load the image synchronously
@@ -490,6 +543,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         {QStringLiteral("exact"), exactCount},
         {QStringLiteral("best"), bestCount},
         {QStringLiteral("held"), heldCount},
+        {QStringLiteral("stale_rejected"), staleRejectedCount},
         {QStringLiteral("null"), nullCount},
         {QStringLiteral("clips"), clipSelections}
     };

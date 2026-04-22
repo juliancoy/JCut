@@ -12,6 +12,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QOpenGLWidget>
+#include <QThread>
 #include <QTimer>
 
 #include <algorithm>
@@ -28,9 +29,6 @@ PreviewWindow::PreviewWindow(QWidget* parent)
     setMinimumSize(320, 180);
     setMouseTracking(true);
     m_lastPaintMs = nowMs();
-    m_repaintTimer.setSingleShot(true);
-    m_repaintTimer.setInterval(16);
-    connect(&m_repaintTimer, &QTimer::timeout, this, [this]() { update(); });
     m_frameRequestTimer.setSingleShot(true);
     m_frameRequestTimer.setInterval(0);
     connect(&m_frameRequestTimer, &QTimer::timeout, this, [this]() {
@@ -88,12 +86,17 @@ void PreviewWindow::setCurrentPlaybackSample(int64_t samplePosition) {
     const int64_t sanitizedSample = qMax<int64_t>(0, samplePosition);
     const qreal framePosition = samplesToFramePosition(sanitizedSample);
     const int64_t displayFrame = qMax<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)));
+    const bool discontinuousFrameJump =
+        m_playing && qAbs(displayFrame - m_currentFrame) > 2;
     playbackTrace(QStringLiteral("PreviewWindow::setCurrentPlaybackSample"),
                   QStringLiteral("sample=%1 frame=%2 visible=%3 cache=%4")
                       .arg(sanitizedSample)
                       .arg(framePosition, 0, 'f', 3)
                       .arg(isVisible())
                       .arg(m_cache != nullptr));
+    if (discontinuousFrameJump) {
+        m_lastPresentedFrames.clear();
+    }
     m_currentSample = sanitizedSample;
     m_currentFramePosition = framePosition;
     m_currentFrame = displayFrame;
@@ -225,6 +228,21 @@ void PreviewWindow::setPreviewZoom(qreal zoom) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setTranscriptOverlayInteractionEnabled(bool enabled) {
+    if (m_transcriptOverlayInteractionEnabled == enabled) {
+        return;
+    }
+    m_transcriptOverlayInteractionEnabled = enabled;
+    if (!enabled && m_dragMode != PreviewDragMode::None) {
+        const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
+        if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
+            m_dragMode = PreviewDragMode::None;
+            m_dragOriginBounds = QRectF();
+        }
+    }
+    scheduleRepaint();
+}
+
 void PreviewWindow::setBypassGrading(bool bypass) {
     if (m_bypassGrading == bypass) return;
     m_bypassGrading = bypass;
@@ -271,6 +289,7 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("current_frame"), static_cast<qint64>(m_currentFrame)},
                          {QStringLiteral("clip_count"), m_clips.size()},
                          {QStringLiteral("pipeline_initialized"), m_cache != nullptr},
+                         {QStringLiteral("repaint_strategy"), QStringLiteral("direct_update")},
                          {QStringLiteral("last_frame_request_ms"), m_lastFrameRequestMs},
                          {QStringLiteral("last_frame_ready_ms"), m_lastFrameReadyMs},
                          {QStringLiteral("last_paint_ms"), m_lastPaintMs},
@@ -278,7 +297,7 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("last_frame_request_age_ms"), m_lastFrameRequestMs > 0 ? now - m_lastFrameRequestMs : -1},
                          {QStringLiteral("last_frame_ready_age_ms"), m_lastFrameReadyMs > 0 ? now - m_lastFrameReadyMs : -1},
                          {QStringLiteral("last_paint_age_ms"), m_lastPaintMs > 0 ? now - m_lastPaintMs : -1},
-                         {QStringLiteral("repaint_timer_active"), m_repaintTimer.isActive()},
+                         {QStringLiteral("repaint_timer_active"), false},
                          {QStringLiteral("bypass_grading"), m_bypassGrading}};
 
     // Render timing statistics
@@ -335,36 +354,12 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                                                                      {QStringLiteral("dropped_presentation_frames"), m_playbackPipeline->droppedPresentationFrameCount()}};
     }
 
-    // Kept intact from the original, but abbreviated here only in comments would lose behavior.
     if (!m_lastFrameSelectionStats.isEmpty()) {
+        // Keep REST profiling snapshots UI-thread cheap. Per-clip metadata
+        // enrichment can touch decoder state and cause the control server's
+        // UI-thread profile callback to time out during active playback.
         QJsonObject frameSelection = m_lastFrameSelectionStats;
-        if (m_decoder) {
-            QJsonArray enrichedClips;
-            const QJsonArray clips = frameSelection.value(QStringLiteral("clips")).toArray();
-            for (const QJsonValue& value : clips) {
-                if (!value.isObject()) continue;
-                QJsonObject clipObject = value.toObject();
-                const QString clipId = clipObject.value(QStringLiteral("id")).toString();
-                auto clipIt = std::find_if(m_clips.begin(), m_clips.end(), [&clipId](const TimelineClip& clip) {
-                    return clip.id == clipId;
-                });
-                if (clipIt != m_clips.end()) {
-                    const QString decodePath = interactivePreviewMediaPathForClip(*clipIt);
-                    if (!decodePath.isEmpty()) {
-                        const VideoStreamInfo info = m_decoder->getVideoInfo(decodePath);
-                        if (info.isValid) {
-                            clipObject[QStringLiteral("decode_path")] = info.decodePath;
-                            clipObject[QStringLiteral("interop_path")] = info.interopPath;
-                            clipObject[QStringLiteral("decode_mode_requested")] = info.requestedDecodeMode;
-                            clipObject[QStringLiteral("hardware_accelerated")] = info.hardwareAccelerated;
-                            clipObject[QStringLiteral("codec")] = info.codecName;
-                        }
-                    }
-                }
-                enrichedClips.append(clipObject);
-            }
-            frameSelection[QStringLiteral("clips")] = enrichedClips;
-        }
+        frameSelection[QStringLiteral("metadata_enriched")] = false;
         snapshot[QStringLiteral("frame_selection")] = frameSelection;
     }
 
@@ -380,9 +375,12 @@ void PreviewWindow::resetProfilingStats() {
 
 void PreviewWindow::scheduleRepaint() {
     m_lastRepaintScheduleMs = nowMs();
-    if (!m_repaintTimer.isActive()) {
-        m_repaintTimer.start();
+    if (QThread::currentThread() == thread()) {
+        update();
+        return;
     }
+
+    QMetaObject::invokeMethod(this, [this]() { update(); }, Qt::QueuedConnection);
 }
 
 void PreviewWindow::scheduleFrameRequest() {

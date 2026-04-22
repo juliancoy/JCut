@@ -3,6 +3,7 @@
 #endif
 
 #include "model.h"
+#include "engine.h"
 
 #include <cmath>
 #include <cstring>

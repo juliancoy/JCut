@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "ffmpeg_compat.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -544,16 +545,16 @@ private:
         }
 
         SwrContext* swr = swr_alloc();
-        AVChannelLayout outLayout;
-        av_channel_layout_default(&outLayout, m_channelCount);
-        av_opt_set_chlayout(swr, "in_chlayout", &codecCtx->ch_layout, 0);
-        av_opt_set_chlayout(swr, "out_chlayout", &outLayout, 0);
+        ffmpeg_compat::ChannelLayoutHandle outLayout{};
+        ffmpeg_compat::defaultChannelLayout(&outLayout, m_channelCount);
+        ffmpeg_compat::setSwrInputLayout(swr, codecCtx);
+        ffmpeg_compat::setSwrOutputLayout(swr, &outLayout);
         av_opt_set_int(swr, "in_sample_rate", codecCtx->sample_rate, 0);
         av_opt_set_int(swr, "out_sample_rate", m_sampleRate, 0);
         av_opt_set_sample_fmt(swr, "in_sample_fmt", codecCtx->sample_fmt, 0);
         av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
         if (!swr || swr_init(swr) < 0) {
-            av_channel_layout_uninit(&outLayout);
+            ffmpeg_compat::uninitChannelLayout(&outLayout);
             swr_free(&swr);
             avcodec_free_context(&codecCtx);
             avformat_close_input(&formatCtx);
@@ -625,7 +626,7 @@ private:
 
         av_frame_free(&frame);
         av_packet_free(&packet);
-        av_channel_layout_uninit(&outLayout);
+        ffmpeg_compat::uninitChannelLayout(&outLayout);
         swr_free(&swr);
         avcodec_free_context(&codecCtx);
         avformat_close_input(&formatCtx);

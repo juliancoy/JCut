@@ -7,6 +7,12 @@
 
 using namespace editor;
 
+namespace {
+bool clipSupportsTranscriptOverlay(const TimelineClip& clip) {
+    return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
+}
+}
+
 void EditorWindow::bindEditorPaneWidgets(EditorPane *pane)
 {
     m_editorPane = pane;
@@ -297,8 +303,9 @@ void EditorWindow::connectPreviewSignals()
     m_preview->resizeRequested = [this](const QString &clipId, qreal scaleX, qreal scaleY, bool finalize) {
         if (!m_timeline) return;
         const int64_t currentFrame = m_timeline->currentFrame();
-        const bool updated = m_timeline->updateClipById(clipId, [this, currentFrame, scaleX, scaleY](TimelineClip &clip) {
-            if (clip.mediaType == ClipMediaType::Audio && clip.transcriptOverlay.enabled) {
+        const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
+        const bool updated = m_timeline->updateClipById(clipId, [this, currentFrame, scaleX, scaleY, transcriptOverlaySelected](TimelineClip &clip) {
+            if (transcriptOverlaySelected && clipSupportsTranscriptOverlay(clip)) {
                 clip.transcriptOverlay.boxWidth = qMax<qreal>(80.0, scaleX);
                 clip.transcriptOverlay.boxHeight = qMax<qreal>(40.0, scaleY);
                 return;
@@ -334,8 +341,9 @@ void EditorWindow::connectPreviewSignals()
     m_preview->moveRequested = [this](const QString &clipId, qreal translationX, qreal translationY, bool finalize) {
         if (!m_timeline) return;
         const int64_t currentFrame = m_timeline->currentFrame();
-        const bool updated = m_timeline->updateClipById(clipId, [this, currentFrame, translationX, translationY](TimelineClip &clip) {
-            if (clip.mediaType == ClipMediaType::Audio && clip.transcriptOverlay.enabled) {
+        const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
+        const bool updated = m_timeline->updateClipById(clipId, [this, currentFrame, translationX, translationY, transcriptOverlaySelected](TimelineClip &clip) {
+            if (transcriptOverlaySelected && clipSupportsTranscriptOverlay(clip)) {
                 clip.transcriptOverlay.translationX = translationX;
                 clip.transcriptOverlay.translationY = translationY;
                 return;

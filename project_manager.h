@@ -4,6 +4,7 @@
 #include <QString>
 #include <QStringList>
 #include <QByteArray>
+#include <QJsonArray>
 #include <functional>
 
 class ProjectManager : public QObject
@@ -15,6 +16,7 @@ public:
     ~ProjectManager() override = default;
 
     // Root directory configuration (stored near executable)
+    QString applicationDirPath() const;
     QString configFilePath() const;
     QString rootDirPath() const;
     void setRootDirPath(const QString& path);

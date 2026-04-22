@@ -64,6 +64,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorTabs && m_preview) {
         static constexpr int kCorrectionsTabIndex = 3;
+        static constexpr int kTranscriptTabIndex = 7;
         auto syncCorrectionOverlayVisibility = [this]() {
             bool show = false;
             if (m_inspectorTabs) {
@@ -77,11 +78,25 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
                 m_correctionsTab->stopDrawing();
             }
         };
+        auto syncTranscriptOverlayInteraction = [this]() {
+            if (!m_preview) {
+                return;
+            }
+            bool enabled = false;
+            if (m_inspectorTabs) {
+                enabled = m_inspectorTabs->currentIndex() == kTranscriptTabIndex;
+            }
+            m_preview->setTranscriptOverlayInteractionEnabled(enabled);
+        };
         connect(m_inspectorTabs, &QTabWidget::currentChanged, this, [this, syncCorrectionOverlayVisibility](int) {
             syncCorrectionOverlayVisibility();
             scheduleSaveState();
         });
+        connect(m_inspectorTabs, &QTabWidget::currentChanged, this, [syncTranscriptOverlayInteraction](int) {
+            syncTranscriptOverlayInteraction();
+        });
         syncCorrectionOverlayVisibility();
+        syncTranscriptOverlayInteraction();
     }
 
     splitter->setStretchFactor(0, 0);

@@ -7,6 +7,7 @@
 #include "gl_frame_texture_shared.h"
 #include "media_pipeline_shared.h"
 #include "render_cpu_fallback.h"
+#include "ffmpeg_compat.h"
 
 #include <QDir>
 #include <QDateTime>

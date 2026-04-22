@@ -134,6 +134,13 @@ QStringList ProjectManager::availableProjectIds() const
     }
     return ids;
 }
+
+void ProjectManager::ensureDefaultProjectExists() const
+{
+    ensureProjectsDirectory();
+    QDir().mkpath(projectPath(QStringLiteral("default")));
+}
+
 void ProjectManager::loadProjectsFromFolders()
 {
     ensureDefaultProjectExists();
@@ -266,7 +273,7 @@ void ProjectManager::saveProjectAs(const QString &currentName,
     }
 
     const QString newProjectId = sanitizedProjectId(name);
-    const QByteArray statePayload = QJsonDocument(buildStateJson()).toJson(QJsonDocument::Indented);
+    const QByteArray statePayload = buildStateJson();
     QJsonObject historyRoot;
     historyRoot[QStringLiteral("index")] = historyIndex;
     historyRoot[QStringLiteral("entries")] = historyEntries;
@@ -314,4 +321,3 @@ void ProjectManager::renameProject(const QString &projectId)
     }
     refreshProjectsList();
 }
-

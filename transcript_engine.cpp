@@ -259,7 +259,7 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
 
         for (const TimelineClip &clip : clips)
         {
-            if (clip.mediaType != ClipMediaType::Audio || clip.durationFrames <= 0)
+            if ((clip.mediaType != ClipMediaType::Audio && !clip.hasAudio) || clip.durationFrames <= 0)
             {
                 continue;
             }

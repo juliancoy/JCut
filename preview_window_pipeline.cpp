@@ -111,6 +111,23 @@ int64_t PreviewWindow::sourceFrameForSample(const TimelineClip& clip, int64_t sa
     return sourceFrameForClipAtTimelinePosition(clip, samplesToFramePosition(samplePosition), m_renderSyncMarkers);
 }
 
+bool PreviewWindow::isFrameTooStaleForPlayback(const TimelineClip& clip,
+                                               int64_t localFrame,
+                                               const FrameHandle& frame) const {
+    if (!m_playing || frame.isNull()) {
+        return false;
+    }
+    if (clip.mediaType == ClipMediaType::Image || clip.durationFrames <= 1) {
+        return false;
+    }
+    const int64_t frameNumber = frame.frameNumber();
+    if (frameNumber < 0) {
+        return false;
+    }
+    constexpr int64_t kMaxPlaybackStaleFrameDelta = 4;
+    return frameNumber + kMaxPlaybackStaleFrameDelta < localFrame;
+}
+
 void PreviewWindow::requestFramesForCurrentPosition() {
     static constexpr int kMaxVisibleBacklog = 4;
     playbackTrace(QStringLiteral("PreviewWindow::requestFramesForCurrentPosition"),
@@ -158,7 +175,7 @@ void PreviewWindow::requestFramesForCurrentPosition() {
                                 : m_cache->hasDisplayableFrameForPreview(
                                       clip->id,
                                       localFrame,
-                                      false,
+                                      m_playing,
                                       true));
         const bool pending = usePlaybackPipeline
                                  ? m_playbackPipeline->pendingVisibleRequestCount() >= kMaxVisibleBacklog

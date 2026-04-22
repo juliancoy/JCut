@@ -44,27 +44,45 @@ fi
 if command -v nvidia-container-toolkit >/dev/null 2>&1 || command -v nvidia-ctk >/dev/null 2>&1; then
   HAS_NVIDIA_RUNTIME=1
 fi
-if [[ $HAS_NVIDIA_RUNTIME -ne 1 ]]; then
-  echo "ERROR: NVIDIA Container Toolkit does not appear to be installed or configured for Docker." >&2
-  echo "Install or configure it here: $NVIDIA_CONTAINER_URL" >&2
-  exit 1
+
+DOCKER_GPU_ARGS=()
+WHISPERX_DEVICE_ARGS=()
+WHISPERX_EXTRA_ARGS=()
+WHISPERX_TOKEN_ARGS=()
+WHISPERX_MODEL="large-v3"
+HF_TOKEN_REQUIRED=0
+
+if [[ $HAS_NVIDIA_RUNTIME -eq 1 ]]; then
+  DOCKER_GPU_ARGS=(--gpus all)
+  WHISPERX_EXTRA_ARGS=(--diarize)
+  HF_TOKEN_REQUIRED=1
+else
+  echo "WARNING: NVIDIA Container Toolkit is not available for Docker." >&2
+  echo "Falling back to CPU transcription with a smaller fast model and no diarization." >&2
+  echo "GPU setup docs: $NVIDIA_CONTAINER_URL" >&2
+  WHISPERX_DEVICE_ARGS=(--device cpu --compute_type int8)
+  WHISPERX_MODEL="small"
 fi
 
-if [[ ! -f "$TOKEN_FILE" ]]; then
-  echo "No Hugging Face token found at $TOKEN_FILE"
-  printf "Enter Hugging Face token: " >&2
-  read -r HF_TOKEN_INPUT
-  if [[ -z "${HF_TOKEN_INPUT:-}" ]]; then
-    echo "ERROR: token is required" >&2
-    exit 1
+HF_TOKEN=""
+if [[ $HF_TOKEN_REQUIRED -eq 1 ]]; then
+  if [[ ! -f "$TOKEN_FILE" ]]; then
+    echo "No Hugging Face token found at $TOKEN_FILE"
+    printf "Enter Hugging Face token: " >&2
+    read -r HF_TOKEN_INPUT
+    if [[ -z "${HF_TOKEN_INPUT:-}" ]]; then
+      echo "ERROR: token is required for diarization-enabled runs" >&2
+      exit 1
+    fi
+    printf '%s\n' "$HF_TOKEN_INPUT" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+    echo "Saved token to $TOKEN_FILE"
   fi
-  printf '%s\n' "$HF_TOKEN_INPUT" > "$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
-  echo "Saved token to $TOKEN_FILE"
-fi
 
-# read token and strip newline/carriage return
-HF_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+  # read token and strip newline/carriage return
+  HF_TOKEN="$(tr -d '\r\n' < "$TOKEN_FILE")"
+  WHISPERX_TOKEN_ARGS=(--hf_token "$HF_TOKEN")
+fi
 
 # ensure local cache dir exists (mapped into container)
 mkdir -p "$CACHE_DIR"
@@ -83,25 +101,27 @@ fi
 
 # optional: avoid exposing token in ps output by not using env var inline on the docker command line
 # (here we set it with -e so it is available inside the container)
-docker run --gpus all "${DOCKER_TTY_ARGS[@]}" \
+docker run "${DOCKER_GPU_ARGS[@]}" "${DOCKER_TTY_ARGS[@]}" \
   --user "$(id -u):$(id -g)" \
   -v "$CACHE_DIR":/.cache \
   -v "$CACHE_DIR":/tmp/.cache \
   -v "$PROJECT_ROOT":/app -w /app \
   -v "$INPUT_DIR":"$CONTAINER_MEDIA_DIR" \
   -e HOME="/tmp" \
-  -e HF_TOKEN="$HF_TOKEN" \
   -e MPLCONFIGDIR="/tmp/.cache/matplotlib" \
   -e HF_HOME="/tmp/.cache/huggingface" \
   -e HF_HUB_CACHE="/tmp/.cache/huggingface/hub" \
   -e TRANSFORMERS_CACHE="/tmp/.cache/huggingface/transformers" \
   -e TORCH_HOME="/tmp/.cache/torch" \
+  -e HF_TOKEN="$HF_TOKEN" \
   ghcr.io/jim60105/whisperx:large-v3-tl-77e20c4 \
   whisperx "$CONTAINER_INPUT_PATH" \
+    --model "$WHISPERX_MODEL" \
     --output_dir "$OUT_DIR" \
     --output_format json \
-    --diarize \
     --language en \
-    --hf_token "$HF_TOKEN"
+    "${WHISPERX_DEVICE_ARGS[@]}" \
+    "${WHISPERX_EXTRA_ARGS[@]}" \
+    "${WHISPERX_TOKEN_ARGS[@]}"
 
 #-v "$(pwd)/.cache":/.cache/torch/hub/checkpoints \

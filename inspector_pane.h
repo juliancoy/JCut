@@ -62,6 +62,7 @@ public:
     QCheckBox *keyframeSkipAwareTimingCheckBox() const { return m_keyframeSkipAwareTimingCheckBox; }
 
     QCheckBox *transcriptOverlayEnabledCheckBox() const { return m_transcriptOverlayEnabledCheckBox; }
+    QCheckBox *transcriptBackgroundVisibleCheckBox() const { return m_transcriptBackgroundVisibleCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
     QSpinBox *transcriptMaxCharsSpin() const { return m_transcriptMaxCharsSpin; }
     QCheckBox *transcriptAutoScrollCheckBox() const { return m_transcriptAutoScrollCheckBox; }
@@ -79,6 +80,7 @@ public:
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
     QCheckBox *gradingAutoScrollCheckBox() const { return m_gradingAutoScrollCheckBox; }
     QCheckBox *gradingFollowCurrentCheckBox() const { return m_gradingFollowCurrentCheckBox; }
+    QCheckBox *gradingPreviewCheckBox() const { return m_gradingPreviewCheckBox; }
     QPushButton *gradingKeyAtPlayheadButton() const { return m_gradingKeyAtPlayheadButton; }
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
@@ -236,6 +238,7 @@ private:
     QTableWidget *m_opacityKeyframeTable = nullptr;
     QCheckBox *m_gradingAutoScrollCheckBox = nullptr;
     QCheckBox *m_gradingFollowCurrentCheckBox = nullptr;
+    QCheckBox *m_gradingPreviewCheckBox = nullptr;
     QCheckBox *m_opacityAutoScrollCheckBox = nullptr;
     QCheckBox *m_opacityFollowCurrentCheckBox = nullptr;
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
@@ -345,6 +348,7 @@ private:
     QPushButton *m_saveProjectAsButton = nullptr;
     QPushButton *m_renameProjectButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
+    QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
     QSpinBox *m_transcriptMaxCharsSpin = nullptr;
     QCheckBox *m_transcriptAutoScrollCheckBox = nullptr;

@@ -26,6 +26,7 @@ public:
         QLabel* transcriptInspectorDetailsLabel = nullptr;
         QTableWidget* transcriptTable = nullptr;
         QCheckBox* transcriptOverlayEnabledCheckBox = nullptr;
+        QCheckBox* transcriptBackgroundVisibleCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;
         QSpinBox* transcriptMaxCharsSpin = nullptr;
         QCheckBox* transcriptAutoScrollCheckBox = nullptr;

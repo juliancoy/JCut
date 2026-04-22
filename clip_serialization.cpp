@@ -104,6 +104,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("titleKeyframes")] = titleKeyframes;
         QJsonObject transcriptOverlayObj;
         transcriptOverlayObj[QStringLiteral("enabled")] = clip.transcriptOverlay.enabled;
+        transcriptOverlayObj[QStringLiteral("showBackground")] = clip.transcriptOverlay.showBackground;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
         transcriptOverlayObj[QStringLiteral("translationX")] = clip.transcriptOverlay.translationX;
         transcriptOverlayObj[QStringLiteral("translationY")] = clip.transcriptOverlay.translationY;
@@ -322,6 +323,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         }
         const QJsonObject transcriptOverlayObj = obj.value(QStringLiteral("transcriptOverlay")).toObject();
         clip.transcriptOverlay.enabled = transcriptOverlayObj.value(QStringLiteral("enabled")).toBool(false);
+        clip.transcriptOverlay.showBackground = transcriptOverlayObj.value(QStringLiteral("showBackground")).toBool(true);
         clip.transcriptOverlay.autoScroll = transcriptOverlayObj.value(QStringLiteral("autoScroll")).toBool(false);
         clip.transcriptOverlay.translationX = transcriptOverlayObj.value(QStringLiteral("translationX")).toDouble(0.0);
         clip.transcriptOverlay.translationY = transcriptOverlayObj.value(QStringLiteral("translationY")).toDouble(640.0);

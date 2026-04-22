@@ -66,16 +66,16 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
     }
 
     SwrContext* swr = swr_alloc();
-    AVChannelLayout outLayout;
-    av_channel_layout_default(&outLayout, kRenderAudioChannels);
-    av_opt_set_chlayout(swr, "in_chlayout", &codecCtx->ch_layout, 0);
-    av_opt_set_chlayout(swr, "out_chlayout", &outLayout, 0);
+    ffmpeg_compat::ChannelLayoutHandle outLayout{};
+    ffmpeg_compat::defaultChannelLayout(&outLayout, kRenderAudioChannels);
+    ffmpeg_compat::setSwrInputLayout(swr, codecCtx);
+    ffmpeg_compat::setSwrOutputLayout(swr, &outLayout);
     av_opt_set_int(swr, "in_sample_rate", codecCtx->sample_rate, 0);
     av_opt_set_int(swr, "out_sample_rate", kRenderAudioSampleRate, 0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt", codecCtx->sample_fmt, 0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
     if (!swr || swr_init(swr) < 0) {
-        av_channel_layout_uninit(&outLayout);
+        ffmpeg_compat::uninitChannelLayout(&outLayout);
         swr_free(&swr);
         avcodec_free_context(&codecCtx);
         avformat_close_input(&formatCtx);
@@ -149,7 +149,7 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
 
     av_frame_free(&frame);
     av_packet_free(&packet);
-    av_channel_layout_uninit(&outLayout);
+    ffmpeg_compat::uninitChannelLayout(&outLayout);
     swr_free(&swr);
     avcodec_free_context(&codecCtx);
     avformat_close_input(&formatCtx);
@@ -284,7 +284,12 @@ bool initializeExportAudio(const RenderRequest& request,
 
     const int sampleRate = audioSampleRateForCodec(audioCodec);
     const AVSampleFormat sampleFormat = audioSampleFormatForCodec(audioCodec);
+#if LIBAVUTIL_VERSION_MAJOR >= 57
     av_channel_layout_default(&state->codecCtx->ch_layout, kRenderAudioChannels);
+#else
+    state->codecCtx->channel_layout = static_cast<uint64_t>(av_get_default_channel_layout(kRenderAudioChannels));
+    state->codecCtx->channels = kRenderAudioChannels;
+#endif
     state->codecCtx->codec_id = audioCodec->id;
     state->codecCtx->codec_type = AVMEDIA_TYPE_AUDIO;
     state->codecCtx->sample_rate = sampleRate;
@@ -328,10 +333,16 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     }
 
     SwrContext* swr = swr_alloc();
-    AVChannelLayout inputLayout;
-    av_channel_layout_default(&inputLayout, kRenderAudioChannels);
+    ffmpeg_compat::ChannelLayoutHandle inputLayout{};
+    ffmpeg_compat::defaultChannelLayout(&inputLayout, kRenderAudioChannels);
+#if LIBAVUTIL_VERSION_MAJOR >= 57
     av_opt_set_chlayout(swr, "in_chlayout", &inputLayout, 0);
     av_opt_set_chlayout(swr, "out_chlayout", &state.codecCtx->ch_layout, 0);
+#else
+    av_opt_set_int(swr, "in_channel_layout", static_cast<int64_t>(inputLayout), 0);
+    av_opt_set_int(swr, "out_channel_layout",
+                   static_cast<int64_t>(ffmpeg_compat::channelLayoutForCodecContext(state.codecCtx)), 0);
+#endif
     av_opt_set_int(swr, "in_sample_rate", kRenderAudioSampleRate, 0);
     av_opt_set_int(swr, "out_sample_rate", state.codecCtx->sample_rate, 0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
@@ -340,19 +351,19 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to create audio resampler for export.");
         }
-        av_channel_layout_uninit(&inputLayout);
+        ffmpeg_compat::uninitChannelLayout(&inputLayout);
         swr_free(&swr);
         return false;
     }
 
     AVAudioFifo* fifo = av_audio_fifo_alloc(state.codecCtx->sample_fmt,
-                                            state.codecCtx->ch_layout.nb_channels,
+                                            ffmpeg_compat::codecContextChannelCount(state.codecCtx),
                                             qMax(1, state.codecCtx->frame_size * 2));
     if (!fifo) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to allocate audio FIFO for export.");
         }
-        av_channel_layout_uninit(&inputLayout);
+        ffmpeg_compat::uninitChannelLayout(&inputLayout);
         swr_free(&swr);
         return false;
     }
@@ -363,7 +374,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
             *errorMessage = QStringLiteral("Failed to allocate audio frame.");
         }
         av_audio_fifo_free(fifo);
-        av_channel_layout_uninit(&inputLayout);
+        ffmpeg_compat::uninitChannelLayout(&inputLayout);
         swr_free(&swr);
         return false;
     }
@@ -382,7 +393,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
             audioFrame->nb_samples = frameSamples;
             audioFrame->format = state.codecCtx->sample_fmt;
             audioFrame->sample_rate = state.codecCtx->sample_rate;
-            av_channel_layout_copy(&audioFrame->ch_layout, &state.codecCtx->ch_layout);
+            ffmpeg_compat::copyFrameChannelLayout(audioFrame, state.codecCtx);
             if (av_frame_get_buffer(audioFrame, 0) < 0) {
                 if (errorMessage) {
                     *errorMessage = QStringLiteral("Failed to allocate encoded audio frame buffer.");
@@ -407,7 +418,9 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                 return false;
             }
             av_frame_unref(audioFrame);
+#if LIBAVUTIL_VERSION_MAJOR >= 57
             av_channel_layout_uninit(&audioFrame->ch_layout);
+#endif
         }
         return true;
     };
@@ -433,7 +446,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
             int convertedLineSize = 0;
             if (av_samples_alloc_array_and_samples(&convertedData,
                                                    &convertedLineSize,
-                                                   state.codecCtx->ch_layout.nb_channels,
+                                                   ffmpeg_compat::codecContextChannelCount(state.codecCtx),
                                                    estimatedOutSamples,
                                                    state.codecCtx->sample_fmt,
                                                    0) < 0) {
@@ -442,7 +455,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                 }
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
-                av_channel_layout_uninit(&inputLayout);
+                ffmpeg_compat::uninitChannelLayout(&inputLayout);
                 swr_free(&swr);
                 return false;
             }
@@ -460,7 +473,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                 av_freep(&convertedData);
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
-                av_channel_layout_uninit(&inputLayout);
+                ffmpeg_compat::uninitChannelLayout(&inputLayout);
                 swr_free(&swr);
                 return false;
             }
@@ -474,7 +487,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                 av_freep(&convertedData);
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
-                av_channel_layout_uninit(&inputLayout);
+                ffmpeg_compat::uninitChannelLayout(&inputLayout);
                 swr_free(&swr);
                 return false;
             }
@@ -485,7 +498,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
             if (!writeAvailableAudioFrames(false)) {
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
-                av_channel_layout_uninit(&inputLayout);
+                ffmpeg_compat::uninitChannelLayout(&inputLayout);
                 swr_free(&swr);
                 return false;
             }
@@ -501,7 +514,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
         }
         av_frame_free(&audioFrame);
         av_audio_fifo_free(fifo);
-        av_channel_layout_uninit(&inputLayout);
+        ffmpeg_compat::uninitChannelLayout(&inputLayout);
         swr_free(&swr);
         return false;
     }
@@ -510,14 +523,14 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
         !encodeFrame(state.codecCtx, state.stream, formatCtx, nullptr, errorMessage)) {
         av_frame_free(&audioFrame);
         av_audio_fifo_free(fifo);
-        av_channel_layout_uninit(&inputLayout);
+        ffmpeg_compat::uninitChannelLayout(&inputLayout);
         swr_free(&swr);
         return false;
     }
 
     av_frame_free(&audioFrame);
     av_audio_fifo_free(fifo);
-    av_channel_layout_uninit(&inputLayout);
+    ffmpeg_compat::uninitChannelLayout(&inputLayout);
     swr_free(&swr);
     return true;
 }

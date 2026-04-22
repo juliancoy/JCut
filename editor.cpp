@@ -83,7 +83,7 @@ void EditorWindow::syncTranscriptTableToPlayhead()
     if (!m_transcriptFollowCurrentWordCheckBox || !m_transcriptFollowCurrentWordCheckBox->isChecked()) return;
 
     const TimelineClip *clip = m_timeline->selectedClip();
-    if (!clip || clip->mediaType != ClipMediaType::Audio) {
+    if (!clip || !(clip->mediaType == ClipMediaType::Audio || clip->hasAudio)) {
         m_transcriptTable->clearSelection();
         return;
     }
@@ -281,6 +281,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool correctionsEnabled = root.value(QStringLiteral("correctionsEnabled")).toBool(true);
     const bool gradingFollowCurrent = root.value(QStringLiteral("gradingFollowCurrent")).toBool(true);
     const bool gradingAutoScroll = root.value(QStringLiteral("gradingAutoScroll")).toBool(true);
+    const bool gradingPreview = root.value(QStringLiteral("gradingPreview")).toBool(true);
     const bool keyframesFollowCurrent = root.value(QStringLiteral("keyframesFollowCurrent")).toBool(true);
     const bool keyframesAutoScroll = root.value(QStringLiteral("keyframesAutoScroll")).toBool(true);
     const int selectedInspectorTab = root.value(QStringLiteral("selectedInspectorTab")).toInt(0);
@@ -414,6 +415,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_transcriptFollowCurrentWordCheckBox) { QSignalBlocker block(m_transcriptFollowCurrentWordCheckBox); m_transcriptFollowCurrentWordCheckBox->setChecked(transcriptFollowCurrentWord); }
     if (m_gradingFollowCurrentCheckBox) { QSignalBlocker block(m_gradingFollowCurrentCheckBox); m_gradingFollowCurrentCheckBox->setChecked(gradingFollowCurrent); }
     if (m_gradingAutoScrollCheckBox) { QSignalBlocker block(m_gradingAutoScrollCheckBox); m_gradingAutoScrollCheckBox->setChecked(gradingAutoScroll); }
+    if (m_bypassGradingCheckBox) { QSignalBlocker block(m_bypassGradingCheckBox); m_bypassGradingCheckBox->setChecked(gradingPreview); }
     if (m_keyframesFollowCurrentCheckBox) { QSignalBlocker block(m_keyframesFollowCurrentCheckBox); m_keyframesFollowCurrentCheckBox->setChecked(keyframesFollowCurrent); }
     if (m_keyframesAutoScrollCheckBox) { QSignalBlocker block(m_keyframesAutoScrollCheckBox); m_keyframesAutoScrollCheckBox->setChecked(keyframesAutoScroll); }
     if (m_inspectorPane && m_inspectorPane->correctionsEnabledCheck()) {
@@ -427,12 +429,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     
     if (m_inspectorTabs && m_inspectorTabs->count() > 0) {
         static constexpr int kCorrectionsTabIndex = 3;
+        static constexpr int kTranscriptTabIndex = 7;
         QSignalBlocker block(m_inspectorTabs);
         m_inspectorTabs->setCurrentIndex(qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1));
         if (m_preview) {
             const int index = m_inspectorTabs->currentIndex();
             const bool showCorrectionOverlays = index == kCorrectionsTabIndex;
+            const bool transcriptOverlayInteractive = index == kTranscriptTabIndex;
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
+            m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }
@@ -450,6 +455,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
+        m_preview->setBypassGrading(!gradingPreview);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
     editor::setDebugLeadPrefetchEnabled(previewLeadPrefetchEnabled);

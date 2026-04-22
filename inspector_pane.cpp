@@ -239,8 +239,10 @@ QWidget *InspectorPane::buildGradingTab()
 
     m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
     m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
+    m_gradingPreviewCheckBox = new QCheckBox(QStringLiteral("Preview"), page);
     m_gradingAutoScrollCheckBox->setChecked(true);
     m_gradingFollowCurrentCheckBox->setChecked(true);
+    m_gradingPreviewCheckBox->setChecked(true);
     m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), page);
     m_gradingFadeInButton = new QPushButton(QStringLiteral("Fade In From Playhead"), page);
     m_gradingFadeOutButton = new QPushButton(QStringLiteral("Fade Out From Playhead"), page);
@@ -274,6 +276,7 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addWidget(highlightsGroup);
     layout->addWidget(m_gradingAutoScrollCheckBox);
     layout->addWidget(m_gradingFollowCurrentCheckBox);
+    layout->addWidget(m_gradingPreviewCheckBox);
     layout->addWidget(m_gradingKeyAtPlayheadButton);
     layout->addWidget(m_gradingKeyframeTable, 1);
     return page;
@@ -733,6 +736,7 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     auto *form = new QFormLayout;
     m_transcriptOverlayEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Overlay"), settingsContainer);
+    m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
     m_transcriptMaxCharsSpin = new QSpinBox(settingsContainer);
     m_transcriptAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), settingsContainer);
@@ -753,6 +757,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptFontSizeSpin->setRange(8, 256);
 
     form->addRow(QStringLiteral("Overlay"), m_transcriptOverlayEnabledCheckBox);
+    form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
     form->addRow(QStringLiteral("Max Lines"), m_transcriptMaxLinesSpin);
     form->addRow(QStringLiteral("Max Chars"), m_transcriptMaxCharsSpin);
     form->addRow(QStringLiteral("Auto Scroll"), m_transcriptAutoScrollCheckBox);

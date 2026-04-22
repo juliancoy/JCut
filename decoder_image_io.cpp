@@ -239,7 +239,7 @@ QImage loadSingleImageFile(const QString& framePath) {
     AVFormatContext* formatCtx = nullptr;
     const QByteArray pathBytes = QFile::encodeName(framePath);
 
-    const AVInputFormat* inputFormat = nullptr;
+    AVInputFormat* inputFormat = nullptr;
     if (suffix == QStringLiteral("webp")) {
         inputFormat = av_find_input_format("webp_pipe");
     } else {

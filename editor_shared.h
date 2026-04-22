@@ -80,6 +80,7 @@ struct TimelineClip {
 
     struct TranscriptOverlaySettings {
         bool enabled = false;
+        bool showBackground = true;
         bool autoScroll = false;
         qreal translationX = 0.0;
         qreal translationY = 640.0;

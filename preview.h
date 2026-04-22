@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QTransform>
+#include <QImage>
 #include <deque>
 #include <memory>
 #include <functional>
@@ -52,6 +53,7 @@ public:
     void setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; update(); }
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
+    void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
         if (m_correctionDrawMode == enabled) {
             return;
@@ -64,6 +66,7 @@ public:
         update();
     }
     bool correctionDrawMode() const { return m_correctionDrawMode; }
+    bool transcriptOverlayInteractionEnabled() const { return m_transcriptOverlayInteractionEnabled; }
     void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_correctionDraftPoints = points; update(); }
     qreal previewZoom() const { return m_previewZoom; }
     void resetPreviewPan() { m_previewPanOffset = QPointF(); }
@@ -77,6 +80,10 @@ public:
     bool preparePlaybackAdvanceSample(int64_t targetSample);
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
+    bool selectedOverlayIsTranscript() const {
+        return !m_selectedClipId.isEmpty() &&
+               m_overlayInfo.value(m_selectedClipId).kind == PreviewOverlayKind::TranscriptOverlay;
+    }
 
     std::function<void(const QString&)> selectionRequested;
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
@@ -129,6 +136,21 @@ private:
     QRectF transcriptOverlayRectForTarget(const TimelineClip& clip, const QRect& targetRect) const;
     QSizeF transcriptOverlaySizeForSelectedClip() const;
     void drawTranscriptOverlay(QPainter* painter, const TimelineClip& clip, const QRect& targetRect);
+    void drawTranscriptOverlayGL(const TimelineClip& clip, const QRect& targetRect);
+    QString transcriptOverlayTextureKey(const TimelineClip& clip,
+                                        const QRectF& bounds,
+                                        const QRectF& textBounds,
+                                        int fontPixelSize,
+                                        const QString& shadowHtml,
+                                        const QString& textHtml) const;
+    QImage renderTranscriptOverlayImage(const TimelineClip& clip,
+                                        const QRectF& bounds,
+                                        const QRectF& textBounds,
+                                        int fontPixelSize,
+                                        const QString& shadowHtml,
+                                        const QString& textHtml) const;
+    GLuint textureForTranscriptOverlay(const QString& key, const QImage& image);
+    void trimTranscriptTextureCache();
     bool usingCpuFallback() const;
     void ensurePipeline();
     void releaseGlResources();
@@ -137,6 +159,9 @@ private:
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceSampleForPlaybackSample(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
+    bool isFrameTooStaleForPlayback(const TimelineClip& clip,
+                                    int64_t localFrame,
+                                    const FrameHandle& frame) const;
     PreviewOverlayInfo renderFrameLayerGL(const QRect& targetRect, const TimelineClip& clip, const FrameHandle& frame);
     void renderCompositedPreviewGL(const QRect& compositeRect,
                                    const QList<TimelineClip>& activeClips,
@@ -177,6 +202,7 @@ private:
     std::unique_ptr<PlaybackFramePipeline> m_playbackPipeline;
     std::unique_ptr<QOpenGLShaderProgram> m_shaderProgram;
     std::unique_ptr<QOpenGLShaderProgram> m_correctionMaskShaderProgram;
+    std::unique_ptr<QOpenGLShaderProgram> m_overlayShaderProgram;
     QOpenGLBuffer m_quadBuffer;
     QOpenGLBuffer m_polygonBuffer;
 
@@ -201,6 +227,7 @@ private:
     qint64 m_lastFrameRequestMs = 0;
     qint64 m_lastFrameReadyMs = 0;
     qint64 m_lastPaintMs = 0;
+    qint64 m_waitingForFrameSinceMs = 0;
     qint64 m_lastRepaintScheduleMs = 0;
     qint64 m_lastRenderDurationMs = 0;
     qint64 m_maxRenderDurationMs = 0;
@@ -214,6 +241,7 @@ private:
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;
     mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
+    QHash<QString, editor::GlTextureCacheEntry> m_transcriptTextureCache;
     QHash<QString, FrameHandle> m_lastPresentedFrames;
     mutable QJsonObject m_lastFrameSelectionStats;
     static constexpr int kRenderTimeHistorySize = 60;
@@ -227,6 +255,7 @@ private:
     QRectF m_dragOriginBounds;
     TimelineClip::TransformKeyframe m_dragOriginTransform;
     bool m_correctionDrawMode = false;
+    bool m_transcriptOverlayInteractionEnabled = false;
     bool m_showCorrectionOverlays = false;
     int m_selectedCorrectionPolygon = -1;
     QVector<QPointF> m_correctionDraftPoints;

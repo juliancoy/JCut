@@ -480,7 +480,7 @@
                     </div>
                 </div>
                 <div class="chart-container">
-                    <div class="chart" id="frameChart"></div>
+                    <canvas class="chart" id="frameChart"></canvas>
                 </div>
             </div>
 
@@ -664,12 +664,10 @@
                 now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit', second:'2-digit'});
         }
 
-        // Log for debugging
-        console.log('fetchAPI called with endpoint:', endpoint, 'serverPort:', serverPort, 'window.location.port:', window.location.port, 'protocol:', window.location.protocol);
-
         // Fetch data from API
         async function fetchAPI(endpoint) {
             try {
+                console.log('fetchAPI called with endpoint:', endpoint, 'serverPort:', serverPort, 'window.location.port:', window.location.port, 'protocol:', window.location.protocol);
                 // If we're opening the HTML as a file (file:// protocol), we can't fetch
                 if (window.location.protocol === 'file:') {
                     throw new Error('Cannot connect from file:// URL. Please serve this page through HTTP.');
@@ -1258,6 +1256,7 @@
             
             // Initial data fetch
             await refreshAll();
+            window.initDone = true;
             
             // Start with auto-refresh enabled
             toggleAutoRefresh();

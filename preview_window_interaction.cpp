@@ -56,11 +56,15 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
     }
 
     const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
+    const bool transcriptOverlayInteractive =
+        selectedInfo.kind != PreviewOverlayKind::TranscriptOverlay || m_transcriptOverlayInteractionEnabled;
     if (!m_selectedClipId.isEmpty()) {
-        if (selectedInfo.cornerHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeBoth;
-        else if (selectedInfo.rightHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeX;
-        else if (selectedInfo.bottomHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeY;
-        else if (selectedInfo.bounds.contains(event->position())) m_dragMode = PreviewDragMode::Move;
+        if (transcriptOverlayInteractive) {
+            if (selectedInfo.cornerHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeBoth;
+            else if (selectedInfo.rightHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeX;
+            else if (selectedInfo.bottomHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeY;
+            else if (selectedInfo.bounds.contains(event->position())) m_dragMode = PreviewDragMode::Move;
+        }
         if (m_dragMode != PreviewDragMode::None) {
             m_dragOriginPos = event->position();
             m_dragOriginTransform = evaluateTransformForSelectedClip();
@@ -104,13 +108,29 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
             if (moveRequested) {
                 const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
                 const QPointF previewScale = previewCanvasScale(compositeRect);
+                const qreal deltaX =
+                    (event->position().x() - m_dragOriginPos.x()) /
+                    qMax<qreal>(0.0001, previewScale.x());
+                const qreal deltaY =
+                    (event->position().y() - m_dragOriginPos.y()) /
+                    qMax<qreal>(0.0001, previewScale.y());
+
+                if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
+                    for (const TimelineClip& clip : m_clips) {
+                        if (clip.id == m_selectedClipId) {
+                            moveRequested(m_selectedClipId,
+                                          clip.transcriptOverlay.translationX + deltaX,
+                                          clip.transcriptOverlay.translationY + deltaY,
+                                          false);
+                            event->accept();
+                            return;
+                        }
+                    }
+                }
+
                 moveRequested(m_selectedClipId,
-                              m_dragOriginTransform.translationX +
-                                  ((event->position().x() - m_dragOriginPos.x()) /
-                                   qMax<qreal>(0.0001, previewScale.x())),
-                              m_dragOriginTransform.translationY +
-                                  ((event->position().y() - m_dragOriginPos.y()) /
-                                   qMax<qreal>(0.0001, previewScale.y())),
+                              m_dragOriginTransform.translationX + deltaX,
+                              m_dragOriginTransform.translationY + deltaY,
                               false);
             }
             event->accept();
@@ -123,8 +143,12 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
         if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
             const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
             const QPointF previewScale = previewCanvasScale(compositeRect);
-            qreal width = transcriptOverlaySizeForSelectedClip().width();
-            qreal height = transcriptOverlaySizeForSelectedClip().height();
+            const qreal originWidth = m_dragOriginBounds.width() /
+                qMax<qreal>(0.0001, previewScale.x());
+            const qreal originHeight = m_dragOriginBounds.height() /
+                qMax<qreal>(0.0001, previewScale.y());
+            qreal width = originWidth;
+            qreal height = originHeight;
             
             if (m_dragMode == PreviewDragMode::ResizeX || m_dragMode == PreviewDragMode::ResizeBoth) {
                 width = qMax<qreal>(80.0, width + ((event->position().x() - m_dragOriginPos.x()) /
@@ -311,6 +335,11 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
     }
 
     const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
+    if (!m_transcriptOverlayInteractionEnabled &&
+        info.kind == PreviewOverlayKind::TranscriptOverlay) {
+        unsetCursor();
+        return;
+    }
     if (!m_selectedClipId.isEmpty()) {
         if (info.cornerHandle.contains(position)) {
             setCursor(Qt::SizeFDiagCursor);

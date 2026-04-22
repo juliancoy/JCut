@@ -216,6 +216,109 @@ void PlaybackFramePipeline::setPlaybackActive(bool active) {
 
 void PlaybackFramePipeline::setPlayheadFrame(int64_t playheadFrame) {
     m_playheadFrame.store(playheadFrame);
+    if (m_active.load()) {
+        dropStaleRequestsForPlayhead(playheadFrame);
+    }
+}
+
+void PlaybackFramePipeline::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
+    QHash<QString, int64_t> activeLocalFrames;
+    QVector<RenderSyncMarker> markers;
+    {
+        QMutexLocker markersLock(&m_markersMutex);
+        markers = m_renderSyncMarkers;
+    }
+    {
+        QMutexLocker lock(&m_clipsMutex);
+        for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
+            const ClipInfo& info = it.value();
+            if (!isImageSequencePlaybackClip(info.clip) ||
+                playheadFrame < info.clip.startFrame ||
+                playheadFrame >= info.clip.startFrame + info.clip.durationFrames) {
+                continue;
+            }
+
+            const int64_t activeSourceFrame = normalizeFrameNumber(
+                info,
+                sourceFrameForClipAtTimelinePosition(info.clip,
+                                                     static_cast<qreal>(playheadFrame),
+                                                     markers));
+            activeLocalFrames.insert(it.key(), activeSourceFrame);
+        }
+    }
+
+    if (activeLocalFrames.isEmpty()) {
+        return;
+    }
+
+    const int64_t maxAheadFrame =
+        qMax<int64_t>(debugPlaybackWindowAhead(), kMaxPresentationFutureFrameDelta);
+    QMutexLocker pendingLock(&m_pendingMutex);
+
+    for (auto it = m_pendingVisibleRequests.begin(); it != m_pendingVisibleRequests.end();) {
+        const QString key = *it;
+        const int separator = key.indexOf(QLatin1Char(':'));
+        if (separator <= 0) {
+            ++it;
+            continue;
+        }
+
+        const QString clipId = key.left(separator);
+        const auto activeIt = activeLocalFrames.find(clipId);
+        if (activeIt == activeLocalFrames.end()) {
+            ++it;
+            continue;
+        }
+
+        bool ok = false;
+        const int64_t pendingFrame = key.mid(separator + 1).toLongLong(&ok);
+        if (!ok) {
+            ++it;
+            continue;
+        }
+
+        const int64_t minFrame = qMax<int64_t>(0, activeIt.value() - kSequenceLateBufferSeedSlack);
+        const int64_t maxFrame = activeIt.value() + maxAheadFrame;
+        if (pendingFrame >= minFrame && pendingFrame <= maxFrame) {
+            ++it;
+            continue;
+        }
+
+        m_latestVisibleTargets.remove(clipId);
+        it = m_pendingVisibleRequests.erase(it);
+    }
+
+    for (auto it = m_pendingPrefetchRequests.begin(); it != m_pendingPrefetchRequests.end();) {
+        const QString key = *it;
+        const int separator = key.indexOf(QLatin1Char(':'));
+        if (separator <= 0) {
+            ++it;
+            continue;
+        }
+
+        const QString clipId = key.left(separator);
+        const auto activeIt = activeLocalFrames.find(clipId);
+        if (activeIt == activeLocalFrames.end()) {
+            ++it;
+            continue;
+        }
+
+        bool ok = false;
+        const int64_t pendingFrame = key.mid(separator + 1).toLongLong(&ok);
+        if (!ok) {
+            ++it;
+            continue;
+        }
+
+        const int64_t minFrame = qMax<int64_t>(0, activeIt.value() - kSequenceLateBufferSeedSlack);
+        const int64_t maxFrame = activeIt.value() + maxAheadFrame;
+        if (pendingFrame >= minFrame && pendingFrame <= maxFrame) {
+            ++it;
+            continue;
+        }
+
+        it = m_pendingPrefetchRequests.erase(it);
+    }
 }
 
 void PlaybackFramePipeline::requestFramesForSample(int64_t samplePosition,

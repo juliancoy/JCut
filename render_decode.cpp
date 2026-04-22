@@ -186,7 +186,7 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
                                                         int64_t timelineFrame,
                                                         const QVector<RenderSyncMarker>& markers,
                                                         QHash<QString, QVector<TranscriptSection>>& transcriptCache) {
-    if (!(clip.mediaType == ClipMediaType::Audio && clip.transcriptOverlay.enabled)) {
+    if (!((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled)) {
         return {};
     }
     const QString cacheKey = clip.filePath;
@@ -205,10 +205,16 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
             return {};
         }
         if (sourceFrame <= section.endFrame) {
+            const qreal estimatedLineHeight = qMax<qreal>(12.0, clip.transcriptOverlay.fontPointSize * 1.35);
+            const qreal usableHeight = qMax<qreal>(estimatedLineHeight, clip.transcriptOverlay.boxHeight - 28.0);
+            const int fittedLines = qMax(1, static_cast<int>(std::floor(usableHeight / estimatedLineHeight)));
+            const qreal estimatedCharWidth = qMax<qreal>(6.0, clip.transcriptOverlay.fontPointSize * 0.62);
+            const qreal usableWidth = qMax<qreal>(estimatedCharWidth, clip.transcriptOverlay.boxWidth - 36.0);
+            const int fittedChars = qMax(1, static_cast<int>(std::floor(usableWidth / estimatedCharWidth)));
             return layoutTranscriptSection(section,
                                            sourceFrame,
-                                           clip.transcriptOverlay.maxCharsPerLine,
-                                           clip.transcriptOverlay.maxLines,
+                                           qMax(1, qMin(clip.transcriptOverlay.maxCharsPerLine, fittedChars)),
+                                           qMax(1, qMin(clip.transcriptOverlay.maxLines, fittedLines)),
                                            clip.transcriptOverlay.autoScroll);
         }
     }
@@ -243,9 +249,11 @@ void renderTranscriptOverlays(QImage* canvas,
                                 (clip.transcriptOverlay.boxHeight / 2.0),
                             clip.transcriptOverlay.boxWidth,
                             clip.transcriptOverlay.boxHeight);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0, 0, 0, 120));
-        painter.drawRoundedRect(bounds, 14.0, 14.0);
+        if (clip.transcriptOverlay.showBackground) {
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(0, 0, 0, 120));
+            painter.drawRoundedRect(bounds, 14.0, 14.0);
+        }
         QFont font(clip.transcriptOverlay.fontFamily);
         font.setPixelSize(clip.transcriptOverlay.fontPointSize);
         font.setBold(clip.transcriptOverlay.bold);
@@ -269,11 +277,28 @@ void renderTranscriptOverlays(QImage* canvas,
                                               clip.transcriptOverlay.textColor,
                                               highlightTextColor,
                                               highlightFillColor));
-        const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - textDoc.size().height()) / 2.0);
+        const qreal widthScale = textDoc.size().width() > textBounds.width()
+            ? textBounds.width() / textDoc.size().width()
+            : 1.0;
+        const qreal heightScale = textDoc.size().height() > textBounds.height()
+            ? textBounds.height() / textDoc.size().height()
+            : 1.0;
+        const qreal docScale = qMin(widthScale, heightScale);
+        const qreal scaledDocHeight = textDoc.size().height() * docScale;
+        const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - scaledDocHeight) / 2.0);
         painter.save();
         painter.translate(textBounds.left() + 5.0, textY + 5.0);
+        if (docScale < 0.999) {
+            painter.scale(docScale, docScale);
+        }
         shadowDoc.drawContents(&painter);
+        if (docScale < 0.999) {
+            painter.scale(1.0 / docScale, 1.0 / docScale);
+        }
         painter.translate(-5.0, -5.0);
+        if (docScale < 0.999) {
+            painter.scale(docScale, docScale);
+        }
         textDoc.drawContents(&painter);
         painter.restore();
     }

@@ -126,6 +126,7 @@ void EditorWindow::bindInspectorWidgets()
     m_gradingKeyframeTable = m_inspectorPane->gradingKeyframeTable();
     m_gradingAutoScrollCheckBox = m_inspectorPane->gradingAutoScrollCheckBox();
     m_gradingFollowCurrentCheckBox = m_inspectorPane->gradingFollowCurrentCheckBox();
+    m_bypassGradingCheckBox = m_inspectorPane->gradingPreviewCheckBox();
     m_gradingKeyAtPlayheadButton = m_inspectorPane->gradingKeyAtPlayheadButton();
     m_gradingFadeInButton = m_inspectorPane->gradingFadeInButton();
     m_gradingFadeOutButton = m_inspectorPane->gradingFadeOutButton();
@@ -322,6 +323,20 @@ void EditorWindow::setupPreviewControls()
     const auto persistPreviewBufferingSettings = [this]() {
         scheduleSaveState();
     };
+
+    if (m_bypassGradingCheckBox) {
+        connect(m_bypassGradingCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setBypassGrading(!checked);
+            }
+            updateTransportLabels();
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+        if (m_preview) {
+            m_preview->setBypassGrading(!m_bypassGradingCheckBox->isChecked());
+        }
+    }
 
     connect(m_previewHideOutsideOutputCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
         if (m_preview) {

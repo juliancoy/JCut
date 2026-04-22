@@ -1803,6 +1803,12 @@ QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath)
             words.push_back({startFrame, endFrame, text, false});
         }
     }
+    std::sort(words.begin(), words.end(), [](const TranscriptWord& a, const TranscriptWord& b) {
+        if (a.startFrame == b.startFrame) {
+            return a.endFrame < b.endFrame;
+        }
+        return a.startFrame < b.startFrame;
+    });
 
     QVector<TranscriptSection> sections;
     TranscriptSection current;
@@ -1883,6 +1889,12 @@ TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section
             activeWordIndex = i;
             break;
         }
+        if (sourceFrame > word.endFrame) {
+            activeWordIndex = i;
+        } else if (activeWordIndex < 0 && sourceFrame < word.startFrame) {
+            activeWordIndex = i;
+            break;
+        }
     }
 
     QVector<TranscriptOverlayLine> allLines;
@@ -1925,8 +1937,14 @@ TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section
     }
 
     int startLine = 0;
-    if (autoScroll && activeLineIndex >= 0 && allLines.size() > linesAllowed) {
-        startLine = qBound(0, activeLineIndex - (linesAllowed - 1), allLines.size() - linesAllowed);
+    if (activeLineIndex >= 0 && allLines.size() > linesAllowed) {
+        if (autoScroll) {
+            startLine = qBound(0, activeLineIndex - (linesAllowed - 1), allLines.size() - linesAllowed);
+        } else {
+            startLine = qBound(0,
+                               (activeLineIndex / linesAllowed) * linesAllowed,
+                               allLines.size() - linesAllowed);
+        }
     }
 
     const int endLine = qMin(allLines.size(), startLine + linesAllowed);

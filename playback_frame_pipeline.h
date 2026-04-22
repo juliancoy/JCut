@@ -76,6 +76,7 @@ private:
     int64_t normalizeFrameNumber(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const ClipInfo& info, int64_t frameNumber) const;
     void clearBuffers();
+    void dropStaleRequestsForPlayhead(int64_t playheadFrame);
     void schedulePlaybackWindow(const ClipInfo& info,
                                 int64_t canonicalFrame,
                                 const std::function<void()>& onFrameReady);

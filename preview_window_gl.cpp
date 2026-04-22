@@ -20,6 +20,33 @@
 
 using namespace editor;
 
+namespace {
+constexpr int64_t kMaxHeldPresentationFrameDelta = 8;
+
+const char* overlayVertexShaderSource() {
+    return R"(
+        attribute vec2 a_position;
+        attribute vec2 a_texCoord;
+        uniform mat4 u_mvp;
+        varying vec2 v_texCoord;
+        void main() {
+            v_texCoord = a_texCoord;
+            gl_Position = u_mvp * vec4(a_position, 0.0, 1.0);
+        }
+    )";
+}
+
+const char* overlayFragmentShaderSource() {
+    return R"(
+        varying vec2 v_texCoord;
+        uniform sampler2D u_texture;
+        void main() {
+            gl_FragColor = texture2D(u_texture, v_texCoord);
+        }
+    )";
+}
+}
+
 void PreviewWindow::initializeGL() {
     m_glInitialized = true;
     initializeOpenGLFunctions();
@@ -42,6 +69,14 @@ void PreviewWindow::initializeGL() {
         qWarning() << "Failed to build preview correction mask shader program"
                    << m_correctionMaskShaderProgram->log();
         m_correctionMaskShaderProgram.reset();
+        return;
+    }
+    m_overlayShaderProgram = std::make_unique<QOpenGLShaderProgram>();
+    if (!m_overlayShaderProgram->addShaderFromSourceCode(QOpenGLShader::Vertex, overlayVertexShaderSource()) ||
+        !m_overlayShaderProgram->addShaderFromSourceCode(QOpenGLShader::Fragment, overlayFragmentShaderSource()) ||
+        !m_overlayShaderProgram->link()) {
+        qWarning() << "Failed to build preview overlay shader program" << m_overlayShaderProgram->log();
+        m_overlayShaderProgram.reset();
         return;
     }
 
@@ -77,6 +112,8 @@ void PreviewWindow::releaseGlResources() {
 
     if (!m_glInitialized || !context() || !context()->isValid()) {
         m_textureCache.clear();
+        m_transcriptTextureCache.clear();
+        m_overlayShaderProgram.reset();
         m_correctionMaskShaderProgram.reset();
         m_shaderProgram.reset();
         return;
@@ -85,8 +122,13 @@ void PreviewWindow::releaseGlResources() {
         editor::destroyGlTextureEntry(&it.value());
     }
     m_textureCache.clear();
+    for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
+        editor::destroyGlTextureEntry(&it.value());
+    }
+    m_transcriptTextureCache.clear();
     if (m_polygonBuffer.isCreated()) m_polygonBuffer.destroy();
     if (m_quadBuffer.isCreated()) m_quadBuffer.destroy();
+    m_overlayShaderProgram.reset();
     m_correctionMaskShaderProgram.reset();
     m_shaderProgram.reset();
 }
@@ -344,6 +386,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
     int exactCount = 0;
     int bestCount = 0;
     int heldCount = 0;
+    int staleRejectedCount = 0;
     int nullCount = 0;
     int skippedZeroOpacityCount = 0;
     QJsonArray clipSelections;
@@ -452,12 +495,22 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             if (!frame.isNull()) {
                 m_lastPresentedFrames.insert(clip.id, frame);
             } else {
-                frame = m_lastPresentedFrames.value(clip.id);
-                if (!frame.isNull()) {
+                const FrameHandle heldFrame = m_lastPresentedFrames.value(clip.id);
+                if (!heldFrame.isNull() &&
+                    qAbs(heldFrame.frameNumber() - localFrame) <= kMaxHeldPresentationFrameDelta) {
+                    frame = heldFrame;
                     ++heldCount;
                     selection = QStringLiteral("held");
+                } else {
+                    m_lastPresentedFrames.remove(clip.id);
                 }
             }
+        }
+        if (isFrameTooStaleForPlayback(clip, localFrame, frame)) {
+            frame = FrameHandle();
+            selection = QStringLiteral("stale");
+            ++staleRejectedCount;
+            m_lastPresentedFrames.remove(clip.id);
         }
         playbackFrameSelectionTrace(QStringLiteral("PreviewWindow::renderCompositedPreviewGL.select"),
                                     clip,
@@ -466,6 +519,31 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                     frame,
                                     m_currentFramePosition);
         if (frame.isNull()) {
+            if (usePlaybackPipeline && m_playbackPipeline && m_playing) {
+                static constexpr int kMaxVisibleBacklog = 4;
+                if (m_playbackPipeline->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
+                    m_lastFrameRequestMs = nowMs();
+                    m_playbackPipeline->requestFramesForSample(
+                        m_currentSample,
+                        [this]() {
+                            QMetaObject::invokeMethod(this, [this]() {
+                                scheduleRepaint();
+                            }, Qt::QueuedConnection);
+                        });
+                }
+            } else if (m_cache && !m_cache->isVisibleRequestPending(clip.id, localFrame)) {
+                m_lastFrameRequestMs = nowMs();
+                m_cache->requestFrame(
+                    clip.id,
+                    localFrame,
+                    [this](FrameHandle delivered) {
+                        Q_UNUSED(delivered)
+                        QMetaObject::invokeMethod(this, [this]() {
+                            scheduleRepaint();
+                        }, Qt::QueuedConnection);
+                    });
+            }
+
             // For static images, try to load them synchronously as a last resort
             if (clip.mediaType == ClipMediaType::Image && !clip.filePath.isEmpty()) {
                 // Try to load the image synchronously
@@ -541,6 +619,11 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             glDisable(GL_SCISSOR_TEST);
         }
     }
+    for (const TimelineClip& clip : activeClips) {
+        if (clipShowsTranscriptOverlay(clip)) {
+            drawTranscriptOverlayGL(clip, compositeRect);
+        }
+    }
     m_lastFrameSelectionStats = QJsonObject{
         {QStringLiteral("path"), QStringLiteral("gl")},
         {QStringLiteral("active_visual_clips"), activeClips.size()},
@@ -549,6 +632,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
         {QStringLiteral("exact"), exactCount},
         {QStringLiteral("best"), bestCount},
         {QStringLiteral("held"), heldCount},
+        {QStringLiteral("stale_rejected"), staleRejectedCount},
         {QStringLiteral("null"), nullCount},
         {QStringLiteral("skipped_zero_opacity"), skippedZeroOpacityCount},
         {QStringLiteral("clips"), clipSelections}

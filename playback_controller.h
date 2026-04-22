@@ -16,7 +16,7 @@ public:
 
     void advanceFrame();
     bool speechFilterPlaybackEnabled() const;
-    QVector<editor::ExportRangeSegment> effectivePlaybackRanges() const;
+    QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
 
 private:
