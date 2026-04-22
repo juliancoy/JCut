@@ -316,6 +316,8 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
+    QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QCheckBox *m_createImageSequenceCheckBox = nullptr;
     QComboBox *m_imageSequenceFormatCombo = nullptr;
 
@@ -396,6 +398,11 @@ private:
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;
     bool m_pendingSaveAfterLoad = false;
+    bool m_pendingSaveAfterPlayback = false;
+    static constexpr int kDefaultAutosaveIntervalMinutes = 5;
+    static constexpr int kDefaultAutosaveMaxBackups = 20;
+    int m_autosaveIntervalMinutes = kDefaultAutosaveIntervalMinutes;
+    int m_autosaveMaxBackups = kDefaultAutosaveMaxBackups;
     bool m_restoringHistory = false;
     bool m_suppressHistorySnapshots = false;
     bool m_updatingTracksTab = false;
@@ -403,6 +410,8 @@ private:
     QColor m_backgroundColor = QColor(Qt::black);
     int64_t m_absolutePlaybackSample = 0;
     int64_t m_filteredPlaybackSample = 0;
+    int64_t m_lastPlaybackUiSyncMs = 0;
+    int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
     QTimer m_transcriptClickSeekTimer;
     int64_t m_pendingTranscriptClickTimelineFrame = -1;

@@ -180,6 +180,8 @@ public:
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
     QCheckBox *renderCreateVideoFromSequenceCheckBox() const { return m_renderCreateVideoFromSequenceCheckBox; }
+    QSpinBox *autosaveIntervalMinutesSpin() const { return m_autosaveIntervalMinutesSpin; }
+    QSpinBox *autosaveMaxBackupsSpin() const { return m_autosaveMaxBackupsSpin; }
     QPushButton *renderButton() const { return m_renderButton; }
     QPushButton *backgroundColorButton() const { return m_backgroundColorButton; }
     QPushButton *restartDecodersButton() const { return m_restartDecodersButton; }
@@ -370,6 +372,8 @@ private:
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_renderCreateVideoFromSequenceCheckBox = nullptr;
+    QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
+    QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QPushButton *m_renderButton = nullptr;
     QPushButton *m_backgroundColorButton = nullptr;
 

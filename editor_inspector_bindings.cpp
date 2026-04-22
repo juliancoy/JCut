@@ -159,6 +159,8 @@ void EditorWindow::bindInspectorWidgets()
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
+    m_autosaveIntervalMinutesSpin = m_inspectorPane->autosaveIntervalMinutesSpin();
+    m_autosaveMaxBackupsSpin = m_inspectorPane->autosaveMaxBackupsSpin();
     m_renderButton = m_inspectorPane->renderButton();
     m_profileSummaryTable = m_inspectorPane->profileSummaryTable();
     m_profileBenchmarkButton = m_inspectorPane->profileBenchmarkButton();

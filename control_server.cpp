@@ -16,6 +16,7 @@
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFile>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QJsonArray>
 #include <QHostAddress>
@@ -27,6 +28,7 @@
 #include <QPoint>
 #include <QPointer>
 #include <QAction>
+#include <QProcess>
 #include <QSemaphore>
 #include <QSlider>
 #include <QTcpServer>
@@ -36,9 +38,11 @@
 #include <QUrl>
 #include <QUrlQuery>
 #include <QWidget>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <memory>
 #include <optional>
+#include <atomic>
 
 namespace {
 
@@ -54,6 +58,17 @@ constexpr qint64 kProjectRefreshIntervalMs = 750;
 constexpr qint64 kHistoryRefreshIntervalMs = 400;
 constexpr qint64 kUiTreeRefreshIntervalMs = 250;
 constexpr qint64 kScreenshotMinIntervalMs = 250;
+constexpr qint64 kUiRefreshCooldownAfterTimeoutMs = 750;
+constexpr qint64 kFrameTraceSampleCap = 300;
+constexpr qint64 kFreezeEventCap = 64;
+constexpr qint64 kStallDetectHeartbeatMs = 300;
+constexpr int kStallConsecutiveThreshold = 3;
+
+bool queryBool(const QUrlQuery& query, const QString& key) {
+    const QString value = query.queryItemValue(key).trimmed().toLower();
+    return value == QStringLiteral("1") || value == QStringLiteral("true") ||
+           value == QStringLiteral("yes") || value == QStringLiteral("on");
+}
 
 QString reasonPhrase(int statusCode) {
     switch (statusCode) {
@@ -97,12 +112,17 @@ bool invokeOnUiThread(QWidget* window, int timeoutMs, Result* out, Fn&& fn) {
         QSemaphore semaphore;
         Result result{};
         bool invoked = false;
+        std::atomic_bool canceled{false};
     };
 
     auto state = std::make_shared<SharedState>();
     const bool scheduled = QMetaObject::invokeMethod(
         window,
         [state, fn = std::forward<Fn>(fn)]() mutable {
+            if (state->canceled.load(std::memory_order_acquire)) {
+                state->semaphore.release();
+                return;
+            }
             state->result = fn();
             state->invoked = true;
             state->semaphore.release();
@@ -113,6 +133,7 @@ bool invokeOnUiThread(QWidget* window, int timeoutMs, Result* out, Fn&& fn) {
         return false;
     }
     if (!state->semaphore.tryAcquire(1, timeoutMs)) {
+        state->canceled.store(true, std::memory_order_release);
         return false;
     }
 
@@ -574,6 +595,12 @@ public:
         m_refreshTimer->setInterval(static_cast<int>(kBackgroundRefreshTickMs));
         connect(m_refreshTimer.get(), &QTimer::timeout, this, &ControlServerWorker::refreshBackgroundCaches);
         m_refreshTimer->start();
+        m_decodeRatesWatcher = std::make_unique<QFutureWatcher<QJsonObject>>();
+        m_decodeSeeksWatcher = std::make_unique<QFutureWatcher<QJsonObject>>();
+        connect(m_decodeRatesWatcher.get(), &QFutureWatcher<QJsonObject>::finished, this,
+                &ControlServerWorker::onDecodeRatesJobFinished);
+        connect(m_decodeSeeksWatcher.get(), &QFutureWatcher<QJsonObject>::finished, this,
+                &ControlServerWorker::onDecodeSeeksJobFinished);
         QMetaObject::invokeMethod(this, &ControlServerWorker::refreshBackgroundCaches, Qt::QueuedConnection);
         return true;
     }
@@ -590,6 +617,14 @@ public:
         m_buffers.clear();
         if (m_server) {
             m_server->close();
+        }
+        if (m_decodeRatesWatcher) {
+            m_decodeRatesWatcher->cancel();
+            m_decodeRatesWatcher.reset();
+        }
+        if (m_decodeSeeksWatcher) {
+            m_decodeSeeksWatcher->cancel();
+            m_decodeSeeksWatcher.reset();
         }
     }
 
@@ -609,12 +644,32 @@ private slots:
 
     void refreshBackgroundCaches() {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const bool uiResponsive = uiThreadResponsive();
+        const QJsonObject snapshot = fastSnapshot();
+        recordFrameTraceSample(snapshot, now);
+        const bool uiResponsive = uiThreadResponsive(snapshot);
+        const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
+
+        // Best-effort isolation: avoid any UI-thread cache work while playback is active.
+        if (playbackActive) {
+            m_cacheRefreshPausedForPlayback = true;
+            return;
+        }
+        m_cacheRefreshPausedForPlayback = false;
+
+        // Backpressure after UI timeout to avoid piling UI invocations.
+        if (m_lastUiRefreshTimeoutMs > 0 &&
+            (now - m_lastUiRefreshTimeoutMs) < kUiRefreshCooldownAfterTimeoutMs) {
+            return;
+        }
+
         const bool profileInDemand = (now - m_lastProfileDemandMs) <= kProfileDemandWindowMs;
         const qint64 profileIntervalMs = uiResponsive ? kProfileRefreshIntervalMs : 1000;
-        const qint64 stateIntervalMs = uiResponsive ? kStateRefreshIntervalMs : 1000;
-        const qint64 projectIntervalMs = uiResponsive ? kProjectRefreshIntervalMs : 2000;
-        const qint64 historyIntervalMs = uiResponsive ? kHistoryRefreshIntervalMs : 1500;
+        const qint64 stateIntervalMs =
+            uiResponsive ? (playbackActive ? 500 : kStateRefreshIntervalMs) : 1000;
+        const qint64 projectIntervalMs =
+            uiResponsive ? (playbackActive ? 1500 : kProjectRefreshIntervalMs) : 2000;
+        const qint64 historyIntervalMs =
+            uiResponsive ? (playbackActive ? 1000 : kHistoryRefreshIntervalMs) : 1500;
         const qint64 uiTreeIntervalMs = uiResponsive ? kUiTreeRefreshIntervalMs : 2000;
 
         // Refresh one cache per tick with fair scheduling (round-robin among due tasks).
@@ -627,6 +682,9 @@ private slots:
                     m_lastProfileRefreshError.clear();
                 } else {
                     m_lastProfileRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                    if (error.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)) {
+                        m_lastUiRefreshTimeoutMs = now;
+                    }
                 }
                 m_refreshCursor = (index + 1) % 5;
                 return;
@@ -638,6 +696,9 @@ private slots:
                     m_lastStateRefreshError.clear();
                 } else {
                     m_lastStateRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                    if (error.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)) {
+                        m_lastUiRefreshTimeoutMs = now;
+                    }
                 }
                 m_refreshCursor = (index + 1) % 5;
                 return;
@@ -649,6 +710,9 @@ private slots:
                     m_lastProjectRefreshError.clear();
                 } else {
                     m_lastProjectRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                    if (error.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)) {
+                        m_lastUiRefreshTimeoutMs = now;
+                    }
                 }
                 m_refreshCursor = (index + 1) % 5;
                 return;
@@ -660,6 +724,9 @@ private slots:
                     m_lastHistoryRefreshError.clear();
                 } else {
                     m_lastHistoryRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                    if (error.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)) {
+                        m_lastUiRefreshTimeoutMs = now;
+                    }
                 }
                 m_refreshCursor = (index + 1) % 5;
                 return;
@@ -671,6 +738,9 @@ private slots:
                     m_lastUiTreeRefreshError.clear();
                 } else {
                     m_lastUiTreeRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
+                    if (error.contains(QStringLiteral("timed out"), Qt::CaseInsensitive)) {
+                        m_lastUiRefreshTimeoutMs = now;
+                    }
                 }
                 m_refreshCursor = (index + 1) % 5;
                 return;
@@ -678,7 +748,260 @@ private slots:
         }
     }
 
+    void onDecodeRatesJobFinished() {
+        m_decodeRatesJob.running = false;
+        m_decodeRatesJob.lastFinishMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_decodeRatesJob.completedCount;
+        if (m_decodeRatesWatcher && !m_decodeRatesWatcher->isCanceled()) {
+            m_decodeRatesJob.lastResult = m_decodeRatesWatcher->result();
+            m_decodeRatesJob.lastError.clear();
+        } else {
+            m_decodeRatesJob.lastResult = QJsonObject{};
+            m_decodeRatesJob.lastError = QStringLiteral("decode rates job canceled");
+            ++m_decodeRatesJob.errorCount;
+        }
+    }
+
+    void onDecodeSeeksJobFinished() {
+        m_decodeSeeksJob.running = false;
+        m_decodeSeeksJob.lastFinishMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_decodeSeeksJob.completedCount;
+        if (m_decodeSeeksWatcher && !m_decodeSeeksWatcher->isCanceled()) {
+            m_decodeSeeksJob.lastResult = m_decodeSeeksWatcher->result();
+            m_decodeSeeksJob.lastError.clear();
+        } else {
+            m_decodeSeeksJob.lastResult = QJsonObject{};
+            m_decodeSeeksJob.lastError = QStringLiteral("decode seeks job canceled");
+            ++m_decodeSeeksJob.errorCount;
+        }
+    }
+
 private:
+    struct DecodeJobState {
+        bool running = false;
+        qint64 lastStartMs = 0;
+        qint64 lastFinishMs = 0;
+        qint64 startCount = 0;
+        qint64 completedCount = 0;
+        qint64 errorCount = 0;
+        QString lastError;
+        QJsonObject lastResult;
+        QJsonObject inputSnapshotMeta;
+    };
+
+    static QJsonObject decodeSnapshotMeta(const QJsonObject& stateSnapshot) {
+        return QJsonObject{
+            {QStringLiteral("currentFrame"), stateSnapshot.value(QStringLiteral("currentFrame")).toInteger()},
+            {QStringLiteral("timeline_count"), stateSnapshot.value(QStringLiteral("timeline")).toArray().size()},
+            {QStringLiteral("tracks_count"), stateSnapshot.value(QStringLiteral("tracks")).toArray().size()}
+        };
+    }
+
+    QJsonObject decodeJobMeta(const DecodeJobState& job, const QString& name) const {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        return QJsonObject{
+            {QStringLiteral("name"), name},
+            {QStringLiteral("running"), job.running},
+            {QStringLiteral("last_start_ms"), job.lastStartMs},
+            {QStringLiteral("last_finish_ms"), job.lastFinishMs},
+            {QStringLiteral("running_for_ms"), job.running ? (now - job.lastStartMs) : 0},
+            {QStringLiteral("start_count"), job.startCount},
+            {QStringLiteral("completed_count"), job.completedCount},
+            {QStringLiteral("error_count"), job.errorCount},
+            {QStringLiteral("last_error"), job.lastError},
+            {QStringLiteral("input_snapshot"), job.inputSnapshotMeta}
+        };
+    }
+
+    QJsonObject decodeJobResponse(const DecodeJobState& job, const QString& name) const {
+        QJsonObject response = decodeJobMeta(job, name);
+        response[QStringLiteral("ok")] = true;
+        response[QStringLiteral("status")] =
+            job.running ? QStringLiteral("running")
+                        : (job.lastResult.isEmpty() ? QStringLiteral("idle") : QStringLiteral("completed"));
+        if (!job.lastResult.isEmpty()) {
+            response[QStringLiteral("result")] = job.lastResult;
+        }
+        return response;
+    }
+
+    bool startDecodeRatesJob(QString* errorOut) {
+        if (m_decodeRatesJob.running) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("decode rates job is already running");
+            }
+            return false;
+        }
+        if (!m_decodeRatesWatcher) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("decode rates watcher unavailable");
+            }
+            return false;
+        }
+
+        if (m_lastStateSnapshot.isEmpty()) {
+            QString error;
+            if (!refreshStateCacheFromUi(kUiInvokeTimeoutMs, &error)) {
+                if (errorOut) {
+                    *errorOut = error.isEmpty() ? QStringLiteral("state snapshot unavailable") : error;
+                }
+                return false;
+            }
+        }
+
+        const QJsonObject stateSnapshot = m_lastStateSnapshot;
+        m_decodeRatesJob.running = true;
+        m_decodeRatesJob.lastStartMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_decodeRatesJob.startCount;
+        m_decodeRatesJob.inputSnapshotMeta = decodeSnapshotMeta(stateSnapshot);
+        m_decodeRatesJob.lastError.clear();
+        m_decodeRatesJob.lastResult = QJsonObject{};
+        m_decodeRatesWatcher->setFuture(QtConcurrent::run([stateSnapshot]() {
+            return benchmarkDecodeRatesForState(stateSnapshot);
+        }));
+        return true;
+    }
+
+    bool startDecodeSeeksJob(QString* errorOut) {
+        if (m_decodeSeeksJob.running) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("decode seeks job is already running");
+            }
+            return false;
+        }
+        if (!m_decodeSeeksWatcher) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("decode seeks watcher unavailable");
+            }
+            return false;
+        }
+
+        if (m_lastStateSnapshot.isEmpty()) {
+            QString error;
+            if (!refreshStateCacheFromUi(kUiInvokeTimeoutMs, &error)) {
+                if (errorOut) {
+                    *errorOut = error.isEmpty() ? QStringLiteral("state snapshot unavailable") : error;
+                }
+                return false;
+            }
+        }
+
+        const QJsonObject stateSnapshot = m_lastStateSnapshot;
+        m_decodeSeeksJob.running = true;
+        m_decodeSeeksJob.lastStartMs = QDateTime::currentMSecsSinceEpoch();
+        ++m_decodeSeeksJob.startCount;
+        m_decodeSeeksJob.inputSnapshotMeta = decodeSnapshotMeta(stateSnapshot);
+        m_decodeSeeksJob.lastError.clear();
+        m_decodeSeeksJob.lastResult = QJsonObject{};
+        m_decodeSeeksWatcher->setFuture(QtConcurrent::run([stateSnapshot]() {
+            return benchmarkSeekRatesForState(stateSnapshot);
+        }));
+        return true;
+    }
+
+    void appendFreezeEvent(QJsonObject event) {
+        event[QStringLiteral("event_index")] = static_cast<qint64>(m_freezeEvents.size());
+        m_freezeEvents.append(std::move(event));
+        while (m_freezeEvents.size() > kFreezeEventCap) {
+            m_freezeEvents.removeAt(0);
+        }
+    }
+
+    void recordFrameTraceSample(const QJsonObject& snapshot, qint64 nowMs) {
+        const qint64 heartbeatAgeMs =
+            snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1);
+        const qint64 playheadAdvanceAgeMs =
+            snapshot.value(QStringLiteral("last_playhead_advance_age_ms")).toInteger(-1);
+        const bool uiResponsive = heartbeatAgeMs >= 0 && heartbeatAgeMs <= kUiHeartbeatStaleMs;
+        const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
+
+        QJsonObject sample{
+            {QStringLiteral("time_ms"), nowMs},
+            {QStringLiteral("current_frame"), snapshot.value(QStringLiteral("current_frame")).toInteger()},
+            {QStringLiteral("playback_active"), playbackActive},
+            {QStringLiteral("main_thread_heartbeat_age_ms"), heartbeatAgeMs},
+            {QStringLiteral("last_playhead_advance_age_ms"), playheadAdvanceAgeMs},
+            {QStringLiteral("ui_thread_responsive"), uiResponsive},
+            {QStringLiteral("state_snapshot_age_ms"), m_lastStateSnapshotMs > 0 ? nowMs - m_lastStateSnapshotMs : -1},
+            {QStringLiteral("state_snapshot_timeout_count"), m_stateSnapshotTimeoutCount},
+            {QStringLiteral("project_snapshot_age_ms"),
+             m_lastProjectSnapshotMs > 0 ? nowMs - m_lastProjectSnapshotMs : -1},
+            {QStringLiteral("history_snapshot_age_ms"),
+             m_lastHistorySnapshotMs > 0 ? nowMs - m_lastHistorySnapshotMs : -1},
+            {QStringLiteral("decode_rates_running"), m_decodeRatesJob.running},
+            {QStringLiteral("decode_seeks_running"), m_decodeSeeksJob.running}
+        };
+        m_frameTraceSamples.append(sample);
+        while (m_frameTraceSamples.size() > kFrameTraceSampleCap) {
+            m_frameTraceSamples.removeAt(0);
+        }
+
+        if (heartbeatAgeMs >= kStallDetectHeartbeatMs) {
+            ++m_stallConsecutiveOverThreshold;
+            if (!m_stallActive && m_stallConsecutiveOverThreshold >= kStallConsecutiveThreshold) {
+                m_stallActive = true;
+                m_stallStartedMs = nowMs;
+                appendFreezeEvent(QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("stall_start")},
+                    {QStringLiteral("time_ms"), nowMs},
+                    {QStringLiteral("heartbeat_age_ms"), heartbeatAgeMs},
+                    {QStringLiteral("playhead_advance_age_ms"), playheadAdvanceAgeMs},
+                    {QStringLiteral("playback_active"), playbackActive},
+                    {QStringLiteral("current_frame"),
+                     snapshot.value(QStringLiteral("current_frame")).toInteger()},
+                    {QStringLiteral("decode_rates_running"), m_decodeRatesJob.running},
+                    {QStringLiteral("decode_seeks_running"), m_decodeSeeksJob.running}
+                });
+            }
+        } else {
+            if (m_stallActive) {
+                appendFreezeEvent(QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("stall_end")},
+                    {QStringLiteral("time_ms"), nowMs},
+                    {QStringLiteral("duration_ms"), nowMs - m_stallStartedMs},
+                    {QStringLiteral("heartbeat_age_ms"), heartbeatAgeMs},
+                    {QStringLiteral("playhead_advance_age_ms"), playheadAdvanceAgeMs},
+                    {QStringLiteral("current_frame"),
+                     snapshot.value(QStringLiteral("current_frame")).toInteger()}
+                });
+                m_stallActive = false;
+                m_stallStartedMs = 0;
+            }
+            m_stallConsecutiveOverThreshold = 0;
+        }
+    }
+
+    QJsonObject frameTraceSnapshot(const QUrlQuery& query) const {
+        int limit = query.queryItemValue(QStringLiteral("limit")).toInt();
+        if (limit <= 0) {
+            limit = 120;
+        }
+        limit = qMin(limit, static_cast<int>(kFrameTraceSampleCap));
+        const int start = qMax(0, m_frameTraceSamples.size() - limit);
+
+        QJsonArray samples;
+        for (int i = start; i < m_frameTraceSamples.size(); ++i) {
+            samples.append(m_frameTraceSamples.at(i));
+        }
+
+        return QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("sample_limit"), limit},
+            {QStringLiteral("sample_count"), samples.size()},
+            {QStringLiteral("samples"), samples},
+            {QStringLiteral("freeze_events"), m_freezeEvents},
+            {QStringLiteral("stall_active"), m_stallActive},
+            {QStringLiteral("stall_started_ms"), m_stallStartedMs},
+            {QStringLiteral("stall_consecutive_over_threshold"), m_stallConsecutiveOverThreshold},
+            {QStringLiteral("stall_threshold_ms"), kStallDetectHeartbeatMs},
+            {QStringLiteral("stall_threshold_consecutive"), kStallConsecutiveThreshold},
+            {QStringLiteral("decode_jobs"), QJsonObject{
+                {QStringLiteral("rates"), decodeJobMeta(m_decodeRatesJob, QStringLiteral("decode/rates"))},
+                {QStringLiteral("seeks"), decodeJobMeta(m_decodeSeeksJob, QStringLiteral("decode/seeks"))}
+            }}
+        };
+    }
+
     bool refreshProfileCacheFromUi(int timeoutMs, QString* errorOut) {
         QJsonObject profile;
         if (!invokeOnUiThread(m_window, timeoutMs, &profile, [this]() {
@@ -892,8 +1215,7 @@ private:
         return m_fastSnapshotCallback ? m_fastSnapshotCallback() : QJsonObject{};
     }
 
-    bool uiThreadResponsive() const {
-        const QJsonObject snapshot = fastSnapshot();
+    static bool uiThreadResponsive(const QJsonObject& snapshot) {
         return snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <= kUiHeartbeatStaleMs;
     }
 
@@ -963,6 +1285,7 @@ private:
         <div class="endpoint"><strong>GET /decode/rates</strong> - Decode benchmark for current project media</div>
         <div class="endpoint"><strong>GET /decode/seeks</strong> - Seek benchmark for current project media</div>
         <div class="endpoint"><strong>GET /diag/perf</strong> - Performance diagnostics</div>
+        <div class="endpoint"><strong>GET /diag/frame-trace</strong> - Recent frame/heartbeat trace and freeze events</div>
         <div class="endpoint"><strong>GET /timeline</strong> - Timeline information</div>
         <div class="endpoint"><strong>GET /project</strong> - Project information</div>
         <div class="endpoint"><strong>GET /history</strong> - History snapshot</div>
@@ -1039,7 +1362,7 @@ private:
             ((request.method == QStringLiteral("GET") || request.method == QStringLiteral("POST")) &&
              path == QStringLiteral("/click"));
 
-        if (uiBoundRoute && !uiThreadResponsive()) {
+        if (uiBoundRoute && !uiThreadResponsive(fastSnapshot())) {
             writeError(socket, 503, QStringLiteral("ui thread is unresponsive"));
             return;
         }
@@ -1301,30 +1624,28 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/decode/rates")) {
-            if (m_lastStateSnapshot.isEmpty()) {
-                QString error;
-                if (!refreshStateCacheFromUi(kUiInvokeTimeoutMs, &error)) {
-                    writeError(socket, 503, error.isEmpty()
-                                             ? QStringLiteral("state snapshot unavailable; cache warming")
-                                             : error);
-                    return;
-                }
+            const QUrlQuery query(request.url);
+            const bool refresh = queryBool(query, QStringLiteral("refresh"));
+            QString error;
+            if ((refresh || m_decodeRatesJob.lastResult.isEmpty()) && !m_decodeRatesJob.running &&
+                !startDecodeRatesJob(&error)) {
+                writeError(socket, 503, error.isEmpty() ? QStringLiteral("failed to start decode rates job") : error);
+                return;
             }
-            writeJson(socket, 200, benchmarkDecodeRatesForState(m_lastStateSnapshot));
+            writeJson(socket, 200, decodeJobResponse(m_decodeRatesJob, QStringLiteral("decode/rates")));
             return;
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/decode/seeks")) {
-            if (m_lastStateSnapshot.isEmpty()) {
-                QString error;
-                if (!refreshStateCacheFromUi(kUiInvokeTimeoutMs, &error)) {
-                    writeError(socket, 503, error.isEmpty()
-                                             ? QStringLiteral("state snapshot unavailable; cache warming")
-                                             : error);
-                    return;
-                }
+            const QUrlQuery query(request.url);
+            const bool refresh = queryBool(query, QStringLiteral("refresh"));
+            QString error;
+            if ((refresh || m_decodeSeeksJob.lastResult.isEmpty()) && !m_decodeSeeksJob.running &&
+                !startDecodeSeeksJob(&error)) {
+                writeError(socket, 503, error.isEmpty() ? QStringLiteral("failed to start decode seeks job") : error);
+                return;
             }
-            writeJson(socket, 200, benchmarkSeekRatesForState(m_lastStateSnapshot));
+            writeJson(socket, 200, decodeJobResponse(m_decodeSeeksJob, QStringLiteral("decode/seeks")));
             return;
         }
 
@@ -1403,8 +1724,32 @@ private:
                     {QStringLiteral("screenshot_count"), m_screenshotRateLimitedCount},
                     {QStringLiteral("screenshot_min_interval_ms"), kScreenshotMinIntervalMs}
                 }},
+                {QStringLiteral("freeze_monitor"), QJsonObject{
+                    {QStringLiteral("stall_threshold_ms"), kStallDetectHeartbeatMs},
+                    {QStringLiteral("stall_threshold_consecutive"), kStallConsecutiveThreshold},
+                    {QStringLiteral("stall_active"), m_stallActive},
+                    {QStringLiteral("stall_started_ms"), m_stallStartedMs},
+                    {QStringLiteral("stall_consecutive_over_threshold"), m_stallConsecutiveOverThreshold},
+                    {QStringLiteral("frame_trace_sample_count"), m_frameTraceSamples.size()},
+                    {QStringLiteral("freeze_event_count"), m_freezeEvents.size()},
+                    {QStringLiteral("cache_refresh_paused_for_playback"), m_cacheRefreshPausedForPlayback},
+                    {QStringLiteral("last_ui_refresh_timeout_ms"), m_lastUiRefreshTimeoutMs},
+                    {QStringLiteral("ui_refresh_cooldown_remaining_ms"),
+                     qMax<qint64>(0, kUiRefreshCooldownAfterTimeoutMs -
+                                     (QDateTime::currentMSecsSinceEpoch() - m_lastUiRefreshTimeoutMs))}
+                }},
+                {QStringLiteral("decode_jobs"), QJsonObject{
+                    {QStringLiteral("rates"), decodeJobMeta(m_decodeRatesJob, QStringLiteral("decode/rates"))},
+                    {QStringLiteral("seeks"), decodeJobMeta(m_decodeSeeksJob, QStringLiteral("decode/seeks"))}
+                }},
                 {QStringLiteral("debug"), editor::debugControlsSnapshot()}
             });
+            return;
+        }
+
+        if (request.method == QStringLiteral("GET") &&
+            request.url.path() == QStringLiteral("/diag/frame-trace")) {
+            writeJson(socket, 200, frameTraceSnapshot(QUrlQuery(request.url)));
             return;
         }
 
@@ -1454,6 +1799,137 @@ private:
                 {QStringLiteral("encoder"), renderResult.value(QStringLiteral("encoderLabel")).toString()},
                 {QStringLiteral("usedHardwareEncode"), renderResult.value(QStringLiteral("usedHardwareEncode")).toBool(false)},
                 {QStringLiteral("lastRenderResult"), renderResult}
+            });
+            return;
+        }
+
+        // New endpoint: /hardware - Returns hardware information about the current machine
+        if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/hardware")) {
+            QJsonObject hardware;
+
+            // CPU info
+            QProcess cpuProc;
+            cpuProc.start("lscpu");
+            cpuProc.waitForFinished(2000);
+            QString cpuInfo = QString::fromUtf8(cpuProc.readAllStandardOutput());
+            QStringList cpuLines = cpuInfo.split('\n');
+            QString cpuModel, cpuCores, cpuThreads, cpuMHz;
+            for (const QString& line : cpuLines) {
+                if (line.startsWith("Model name:")) {
+                    cpuModel = line.mid(11).trimmed();
+                } else if (line.startsWith("CPU(s):")) {
+                    cpuCores = line.mid(7).trimmed();
+                } else if (line.startsWith("Thread(s) per core:")) {
+                    cpuThreads = line.mid(18).trimmed().remove(':');
+                } else if (line.startsWith("CPU MHz:")) {
+                    cpuMHz = line.mid(8).trimmed();
+                }
+            }
+            hardware[QStringLiteral("cpu_model")] = cpuModel;
+            hardware[QStringLiteral("cpu_cores")] = cpuCores;
+            hardware[QStringLiteral("cpu_threads")] = cpuThreads;
+            hardware[QStringLiteral("cpu_mhz")] = cpuMHz;
+
+            // Memory info
+            QProcess memProc;
+            memProc.start("free", QStringList() << "-h");
+            memProc.waitForFinished(2000);
+            QString memInfo = QString::fromUtf8(memProc.readAllStandardOutput());
+            QStringList memLines = memInfo.split('\n');
+            for (const QString& line : memLines) {
+                if (line.startsWith("Mem:")) {
+                    QStringList parts = line.simplified().split(' ');
+                    if (parts.size() >= 2) {
+                        hardware[QStringLiteral("memory_total")] = parts.at(1);
+                    }
+                    if (parts.size() >= 3) {
+                        hardware[QStringLiteral("memory_used")] = parts.at(2);
+                    }
+                    if (parts.size() >= 4) {
+                        hardware[QStringLiteral("memory_free")] = parts.at(3);
+                    }
+                    break;
+                }
+            }
+
+            // GPU info - try nvidia-smi first
+            QProcess gpuProc;
+            gpuProc.start("nvidia-smi", QStringList() << "--query-gpu=name,memory.total,memory.used,utilization.gpu" << "--format=csv,noheader");
+            gpuProc.waitForFinished(2000);
+            if (gpuProc.exitCode() == 0) {
+                QString gpuInfo = QString::fromUtf8(gpuProc.readAllStandardOutput()).trimmed();
+                if (!gpuInfo.isEmpty()) {
+                    QStringList gpuParts = gpuInfo.split(',');
+                    if (gpuParts.size() >= 1) {
+                        hardware[QStringLiteral("nvidia_gpu")] = gpuParts.at(0).trimmed();
+                    }
+                    if (gpuParts.size() >= 2) {
+                        hardware[QStringLiteral("nvidia_memory")] = gpuParts.at(1).trimmed();
+                    }
+                    if (gpuParts.size() >= 4) {
+                        hardware[QStringLiteral("nvidia_utilization")] = gpuParts.at(3).trimmed();
+                    }
+                }
+            }
+
+            // Check for AMD GPU
+            QProcess amdProc;
+            amdProc.start("lspci", QStringList() << "-v" << "-mm");
+            amdProc.waitForFinished(2000);
+            QString pciInfo = QString::fromUtf8(amdProc.readAllStandardOutput());
+            if (pciInfo.contains("AMD") || pciInfo.contains("Radeon")) {
+                hardware[QStringLiteral("amd_gpu_detected")] = true;
+            }
+
+            // OpenGL info
+            QProcess glProc;
+            glProc.start("glxinfo");
+            glProc.waitForFinished(2000);
+            QString glInfo = QString::fromUtf8(glProc.readAllStandardOutput());
+            QStringList glLines = glInfo.split('\n');
+            QString glVendor, glRenderer, glVersion;
+            for (const QString& line : glLines) {
+                if (line.startsWith("OpenGL vendor string:")) {
+                    glVendor = line.mid(20).trimmed();
+                } else if (line.startsWith("OpenGL renderer string:")) {
+                    glRenderer = line.mid(23).trimmed();
+                } else if (line.startsWith("OpenGL version string:")) {
+                    glVersion = line.mid(22).trimmed();
+                }
+            }
+            hardware[QStringLiteral("opengl_vendor")] = glVendor;
+            hardware[QStringLiteral("opengl_renderer")] = glRenderer;
+            hardware[QStringLiteral("opengl_version")] = glVersion;
+
+            // Check for CUDA
+            QProcess cudaProc;
+            cudaProc.start("nvcc", QStringList() << "--version");
+            cudaProc.waitForFinished(2000);
+            if (cudaProc.exitCode() == 0) {
+                QString cudaVersion = QString::fromUtf8(cudaProc.readAllStandardOutput());
+                if (cudaVersion.contains("release")) {
+                    int start = cudaVersion.indexOf("release") + 8;
+                    int end = cudaVersion.indexOf(',', start);
+                    if (end > start) {
+                        hardware[QStringLiteral("cuda_version")] = cudaVersion.mid(start, end - start).trimmed();
+                    }
+                }
+            }
+
+            // Check for VA-API (Video Acceleration API)
+            QProcess vaapiProc;
+            vaapiProc.start("vainfo");
+            vaapiProc.waitForFinished(2000);
+            if (vaapiProc.exitCode() == 0) {
+                QString vaapiInfo = QString::fromUtf8(vaapiProc.readAllStandardOutput());
+                if (vaapiInfo.contains("VAProfile")) {
+                    hardware[QStringLiteral("vaapi_available")] = true;
+                }
+            }
+
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("hardware"), hardware}
             });
             return;
         }
@@ -1785,6 +2261,17 @@ private:
     int m_refreshCursor = 0;
     qint64 m_lastScreenshotRequestMs = 0;
     qint64 m_screenshotRateLimitedCount = 0;
+    qint64 m_lastUiRefreshTimeoutMs = 0;
+    bool m_cacheRefreshPausedForPlayback = false;
+    QJsonArray m_frameTraceSamples;
+    QJsonArray m_freezeEvents;
+    bool m_stallActive = false;
+    qint64 m_stallStartedMs = 0;
+    int m_stallConsecutiveOverThreshold = 0;
+    DecodeJobState m_decodeRatesJob;
+    DecodeJobState m_decodeSeeksJob;
+    std::unique_ptr<QFutureWatcher<QJsonObject>> m_decodeRatesWatcher;
+    std::unique_ptr<QFutureWatcher<QJsonObject>> m_decodeSeeksWatcher;
 };
 
 } // namespace

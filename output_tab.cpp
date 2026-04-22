@@ -65,6 +65,14 @@ void OutputTab::wire()
         connect(m_widgets.renderUseProxiesCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onRenderUseProxiesToggled);
     }
+    if (m_widgets.autosaveIntervalMinutesSpin) {
+        connect(m_widgets.autosaveIntervalMinutesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onAutosaveIntervalMinutesChanged);
+    }
+    if (m_widgets.autosaveMaxBackupsSpin) {
+        connect(m_widgets.autosaveMaxBackupsSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onAutosaveMaxBackupsChanged);
+    }
     if (m_widgets.createImageSequenceCheckBox) {
         connect(m_widgets.createImageSequenceCheckBox, &QCheckBox::toggled,
                 this, [this](bool checked) {
@@ -104,6 +112,14 @@ void OutputTab::refresh()
         m_widgets.exportEndSpin->setEnabled(hasTimeline);
         m_widgets.exportStartSpin->setValue(static_cast<int>(startFrame));
         m_widgets.exportEndSpin->setValue(static_cast<int>(endFrame));
+    }
+    if (m_widgets.autosaveIntervalMinutesSpin && m_deps.autosaveIntervalMinutes) {
+        QSignalBlocker blocker(m_widgets.autosaveIntervalMinutesSpin);
+        m_widgets.autosaveIntervalMinutesSpin->setValue(m_deps.autosaveIntervalMinutes());
+    }
+    if (m_widgets.autosaveMaxBackupsSpin && m_deps.autosaveMaxBackups) {
+        QSignalBlocker blocker(m_widgets.autosaveMaxBackupsSpin);
+        m_widgets.autosaveMaxBackupsSpin->setValue(m_deps.autosaveMaxBackups());
     }
 
     updateRangeSummary();
@@ -289,6 +305,26 @@ void OutputTab::onRenderUseProxiesToggled(bool checked)
 {
     Q_UNUSED(checked);
     if (m_updating) return;
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onAutosaveIntervalMinutesChanged(int value)
+{
+    if (m_updating) return;
+    if (m_deps.setAutosaveIntervalMinutes) {
+        m_deps.setAutosaveIntervalMinutes(value);
+    }
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onAutosaveMaxBackupsChanged(int value)
+{
+    if (m_updating) return;
+    if (m_deps.setAutosaveMaxBackups) {
+        m_deps.setAutosaveMaxBackups(value);
+    }
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }

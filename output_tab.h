@@ -29,6 +29,8 @@ public:
         QComboBox* outputFormatCombo = nullptr;
         QLabel* outputRangeSummaryLabel = nullptr;
         QCheckBox* renderUseProxiesCheckBox = nullptr;
+        QSpinBox* autosaveIntervalMinutesSpin = nullptr;
+        QSpinBox* autosaveMaxBackupsSpin = nullptr;
         QCheckBox* createImageSequenceCheckBox = nullptr;
         QComboBox* imageSequenceFormatCombo = nullptr;
         QPushButton* renderButton = nullptr;
@@ -51,6 +53,10 @@ public:
         std::function<void(const RenderRequest&)> renderTimeline;
         std::function<QString()> lastRenderOutputPath;
         std::function<void(const QString&)> setLastRenderOutputPath;
+        std::function<int()> autosaveIntervalMinutes;
+        std::function<void(int)> setAutosaveIntervalMinutes;
+        std::function<int()> autosaveMaxBackups;
+        std::function<void(int)> setAutosaveMaxBackups;
         std::function<void()> scheduleSaveState;
         std::function<void()> pushHistorySnapshot;
     };
@@ -70,6 +76,8 @@ private slots:
     void onExportEndChanged(int value);
     void onOutputFormatChanged(int index);
     void onRenderUseProxiesToggled(bool checked);
+    void onAutosaveIntervalMinutesChanged(int value);
+    void onAutosaveMaxBackupsChanged(int value);
     void onRenderClicked();
 
 private:

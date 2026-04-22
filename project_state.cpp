@@ -480,6 +480,8 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();
     root[QStringLiteral("previewPlaybackWindowAhead")] = editor::debugPlaybackWindowAhead();
     root[QStringLiteral("previewVisibleQueueReserve")] = editor::debugVisibleQueueReserve();
+    root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;
+    root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
     root[QStringLiteral("speechFilterEnabled")] =
         m_speechFilterEnabledCheckBox ? m_speechFilterEnabledCheckBox->isChecked() : false;
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
@@ -574,6 +576,12 @@ void EditorWindow::scheduleSaveState()
     {
         return;
     }
+    if (playbackActive())
+    {
+        // Avoid synchronous state serialization work while the playback loop is active.
+        m_pendingSaveAfterPlayback = true;
+        return;
+    }
     m_stateSaveTimer.start();
 }
 
@@ -586,6 +594,11 @@ void EditorWindow::saveStateNow()
     if (m_loadingState)
     {
         m_pendingSaveAfterLoad = true;
+        return;
+    }
+    if (playbackActive())
+    {
+        m_pendingSaveAfterPlayback = true;
         return;
     }
 
@@ -618,6 +631,7 @@ void EditorWindow::saveStateNow()
     }
 
     m_lastSavedState = serializedState;
+    m_pendingSaveAfterPlayback = false;
 }
 
 void EditorWindow::saveHistoryNow()
@@ -678,8 +692,10 @@ void EditorWindow::pushHistorySnapshot()
 
 void EditorWindow::setupAutosaveTimer()
 {
+    m_autosaveIntervalMinutes = qBound(1, m_autosaveIntervalMinutes, 120);
+    m_autosaveMaxBackups = qBound(1, m_autosaveMaxBackups, 200);
     m_autosaveTimer.setSingleShot(false);
-    m_autosaveTimer.setInterval(15 * 60 * 1000);
+    m_autosaveTimer.setInterval(m_autosaveIntervalMinutes * 60 * 1000);
     connect(&m_autosaveTimer, &QTimer::timeout, this, [this]() { saveAutosaveBackup(); });
     m_autosaveTimer.start();
     saveAutosaveBackup();
@@ -719,9 +735,11 @@ void EditorWindow::saveAutosaveBackup()
 
     QDir autosaveDir(projectDir);
     const QStringList backups = autosaveDir.entryList(QStringList(QStringLiteral("state_backup_*.json")), QDir::Files, QDir::Name);
-    if (backups.size() > 10)
+    if (backups.size() > m_autosaveMaxBackups)
     {
-        const QString oldest = backups.first();
-        QDir(projectDir).remove(oldest);
+        const int removeCount = backups.size() - m_autosaveMaxBackups;
+        for (int i = 0; i < removeCount; ++i) {
+            QDir(projectDir).remove(backups.at(i));
+        }
     }
 }

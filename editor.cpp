@@ -263,6 +263,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
+    const int autosaveIntervalMinutes = qBound(
+        1,
+        root.value(QStringLiteral("autosaveIntervalMinutes"))
+            .toInt(kDefaultAutosaveIntervalMinutes),
+        120);
+    const int autosaveMaxBackups = qBound(
+        1,
+        root.value(QStringLiteral("autosaveMaxBackups"))
+            .toInt(kDefaultAutosaveMaxBackups),
+        200);
     const bool previewPlaybackCacheFallback =
         root.value(QStringLiteral("previewPlaybackCacheFallback")).toBool(editor::debugPlaybackCacheFallbackEnabled());
     const bool previewLeadPrefetchEnabled =
@@ -377,6 +387,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_renderUseProxiesCheckBox);
         m_renderUseProxiesCheckBox->setChecked(renderUseProxies);
     }
+    m_autosaveIntervalMinutes = autosaveIntervalMinutes;
+    m_autosaveMaxBackups = autosaveMaxBackups;
+    if (m_autosaveIntervalMinutesSpin) {
+        QSignalBlocker block(m_autosaveIntervalMinutesSpin);
+        m_autosaveIntervalMinutesSpin->setValue(m_autosaveIntervalMinutes);
+    }
+    if (m_autosaveMaxBackupsSpin) {
+        QSignalBlocker block(m_autosaveMaxBackupsSpin);
+        m_autosaveMaxBackupsSpin->setValue(m_autosaveMaxBackups);
+    }
+    m_autosaveTimer.setInterval(m_autosaveIntervalMinutes * 60 * 1000);
     if (m_previewHideOutsideOutputCheckBox) {
         QSignalBlocker block(m_previewHideOutsideOutputCheckBox);
         m_previewHideOutsideOutputCheckBox->setChecked(previewHideOutsideOutput);
@@ -1575,8 +1596,11 @@ QStringList EditorWindow::availableHardwareDeviceTypes() const
 
 void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAudio, bool duringPlayback)
 {
+    static constexpr qint64 kPlaybackUiSyncMinIntervalMs = 100;
+    static constexpr qint64 kPlaybackStateSaveMinIntervalMs = 1000;
     QElapsedTimer seekUpdateTimer;
     seekUpdateTimer.start();
+    const qint64 tickNowMs = nowMs();
     const int64_t boundedSample = qBound<int64_t>(0, samplePosition, frameToSamples(m_timeline->totalFrames()));
     const qreal framePosition = samplesToFramePosition(boundedSample);
     const int64_t bounded = qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), m_timeline->totalFrames());
@@ -1586,7 +1610,7 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
                       .arg(samplePosition).arg(boundedSample).arg(framePosition, 0, 'f', 3));
     
     if (!m_timeline || bounded != m_timeline->currentFrame()) {
-        m_lastPlayheadAdvanceMs.store(nowMs());
+        m_lastPlayheadAdvanceMs.store(tickNowMs);
     }
     
     m_absolutePlaybackSample = boundedSample;
@@ -1608,17 +1632,24 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     
     updateTransportLabels();
     if (duringPlayback) {
-        syncTranscriptTableToPlayhead();
-        syncKeyframeTableToPlayhead();
-        syncGradingTableToPlayhead();
-        m_titlesTab->syncTableToPlayhead();
+        if ((tickNowMs - m_lastPlaybackUiSyncMs) >= kPlaybackUiSyncMinIntervalMs) {
+            syncTranscriptTableToPlayhead();
+            syncKeyframeTableToPlayhead();
+            syncGradingTableToPlayhead();
+            m_titlesTab->syncTableToPlayhead();
+            m_lastPlaybackUiSyncMs = tickNowMs;
+        }
     } else {
         m_inspectorPane->refresh();
         syncKeyframeTableToPlayhead();
         syncGradingTableToPlayhead();
         m_titlesTab->syncTableToPlayhead();
+        m_lastPlaybackUiSyncMs = tickNowMs;
     }
-    scheduleSaveState();
+    if (!duringPlayback || (tickNowMs - m_lastPlaybackStateSaveMs) >= kPlaybackStateSaveMinIntervalMs) {
+        scheduleSaveState();
+        m_lastPlaybackStateSaveMs = tickNowMs;
+    }
 
     const qint64 elapsedMs = seekUpdateTimer.elapsed();
     m_lastSetCurrentPlaybackSampleDurationMs.store(elapsedMs);

@@ -13,6 +13,7 @@ void EditorWindow::createOutputTab()
             m_outputWidthSpin, m_outputHeightSpin,
             m_exportStartSpin, m_exportEndSpin,
             m_outputFormatCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
+            m_autosaveIntervalMinutesSpin, m_autosaveMaxBackupsSpin,
             m_createImageSequenceCheckBox, m_imageSequenceFormatCombo, m_renderButton},
         OutputTab::Dependencies{
             [this]() { return m_timeline != nullptr; },
@@ -32,6 +33,15 @@ void EditorWindow::createOutputTab()
             [this](const QString& path) {
                 m_lastRenderOutputPath = path;
                 scheduleSaveState();
+            },
+            [this]() { return m_autosaveIntervalMinutes; },
+            [this](int minutes) {
+                m_autosaveIntervalMinutes = qBound(1, minutes, 120);
+                m_autosaveTimer.setInterval(m_autosaveIntervalMinutes * 60 * 1000);
+            },
+            [this]() { return m_autosaveMaxBackups; },
+            [this](int maxBackups) {
+                m_autosaveMaxBackups = qBound(1, maxBackups, 200);
             },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); }});

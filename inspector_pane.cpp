@@ -963,6 +963,21 @@ QWidget *InspectorPane::buildOutputTab()
     form->addRow(QStringLiteral("Export End Frame"), m_exportEndSpin);
     form->addRow(QStringLiteral("Output Format"), m_outputFormatCombo);
 
+    m_autosaveIntervalMinutesSpin = new QSpinBox(page);
+    m_autosaveIntervalMinutesSpin->setRange(1, 120);
+    m_autosaveIntervalMinutesSpin->setValue(5);
+    m_autosaveIntervalMinutesSpin->setSuffix(QStringLiteral(" min"));
+    m_autosaveIntervalMinutesSpin->setToolTip(
+        QStringLiteral("How often editor state backups are written."));
+    form->addRow(QStringLiteral("Autosave Interval"), m_autosaveIntervalMinutesSpin);
+
+    m_autosaveMaxBackupsSpin = new QSpinBox(page);
+    m_autosaveMaxBackupsSpin->setRange(1, 200);
+    m_autosaveMaxBackupsSpin->setValue(20);
+    m_autosaveMaxBackupsSpin->setToolTip(
+        QStringLiteral("How many autosave backup files to keep per project."));
+    form->addRow(QStringLiteral("Autosave Backups"), m_autosaveMaxBackupsSpin);
+
     m_backgroundColorButton = new QPushButton(page);
     m_backgroundColorButton->setText(QStringLiteral("Black"));
     m_backgroundColorButton->setToolTip(QStringLiteral("Background color for the rendered output"));
