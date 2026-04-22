@@ -366,6 +366,9 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                                      clip.mediaType != ClipMediaType::Image;
         const bool usePlaybackPipeline = m_playing && isImageSequence;
         const bool usePlaybackBuffer = !isImageSequence && m_playing && m_cache;
+        const bool allowApproximateFrame =
+            !m_playing || usePlaybackPipeline || !m_cache ||
+            m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs());
         QString selection = QStringLiteral("none");
         const FrameHandle exactFrame = usePlaybackPipeline
                                            ? m_playbackPipeline->getFrame(clip.id, localFrame)
@@ -382,7 +385,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
             }
         } else {
             frame = exactFrame;
-            if (frame.isNull() && m_cache) {
+            if (frame.isNull() && m_cache && allowApproximateFrame) {
                 if (usePlaybackBuffer) {
                     frame = m_cache->getLatestPlaybackFrame(clip.id, localFrame);
                     if (frame.isNull() && editor::debugPlaybackCacheFallbackEnabled()) {
@@ -477,7 +480,9 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                             }, Qt::QueuedConnection);
                         });
                 }
-            } else if (m_cache && !m_cache->isVisibleRequestPending(clip.id, localFrame)) {
+            } else if (m_cache &&
+                       (!m_cache->isVisibleRequestPending(clip.id, localFrame) ||
+                        m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 250))) {
                 m_lastFrameRequestMs = nowMs();
                 m_cache->requestFrame(
                     clip.id,

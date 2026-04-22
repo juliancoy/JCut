@@ -540,7 +540,7 @@ void EditorWindow::advanceFrame()
 
         if (audioFrame == m_timeline->currentFrame()) {
             ++m_audioClockStallTicks;
-            constexpr int kAudioClockStallThresholdTicks = 3;
+            constexpr int kAudioClockStallThresholdTicks = 1;  // Reduced from 3 to 1
             if (m_audioClockStallTicks <= kAudioClockStallThresholdTicks) {
                 if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
                 return;

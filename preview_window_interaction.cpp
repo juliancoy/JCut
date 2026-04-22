@@ -12,6 +12,9 @@ void PreviewWindow::showEvent(QShowEvent* event) {
     QOpenGLWidget::showEvent(event);
     m_frameRequestsArmed = true;
     m_pendingFrameRequest = true;
+    if (!m_repaintTimer.isActive()) {
+        m_repaintTimer.start();
+    }
     scheduleFrameRequest();
 }
 

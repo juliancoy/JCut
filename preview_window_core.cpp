@@ -29,6 +29,33 @@ PreviewWindow::PreviewWindow(QWidget* parent)
     setMinimumSize(320, 180);
     setMouseTracking(true);
     m_lastPaintMs = nowMs();
+    m_repaintTimer.setSingleShot(false);
+    m_repaintTimer.setInterval(16);
+    connect(&m_repaintTimer, &QTimer::timeout, this, [this]() {
+        if (!isVisible() || m_bulkUpdateDepth > 0) {
+            return;
+        }
+
+        const qint64 now = nowMs();
+        const bool pendingDecodeWork =
+            (m_cache && m_cache->pendingVisibleRequestCount() > 0) ||
+            (m_decoder && m_decoder->pendingRequestCount() > 0) ||
+            m_pendingFrameRequest;
+        const bool stalledPresentation =
+            m_lastPaintMs <= 0 || (now - m_lastPaintMs) > 100;
+
+        if (m_frameRequestsArmed && m_pendingFrameRequest && !m_frameRequestTimer.isActive()) {
+            m_frameRequestTimer.start();
+        }
+
+        if (stalledPresentation && (m_playing || pendingDecodeWork)) {
+            update();
+        }
+
+        if (!m_playing && !pendingDecodeWork) {
+            m_repaintTimer.stop();
+        }
+    });
     m_frameRequestTimer.setSingleShot(true);
     m_frameRequestTimer.setInterval(0);
     connect(&m_frameRequestTimer, &QTimer::timeout, this, [this]() {
@@ -70,6 +97,11 @@ void PreviewWindow::setPlaybackState(bool playing) {
     }
     if (!playing) {
         m_lastPresentedFrames.clear();
+    }
+    if (playing && isVisible() && !m_repaintTimer.isActive()) {
+        m_repaintTimer.start();
+    } else if (!playing && !m_pendingFrameRequest && m_repaintTimer.isActive()) {
+        m_repaintTimer.stop();
     }
 }
 
@@ -113,6 +145,9 @@ void PreviewWindow::setCurrentPlaybackSample(int64_t samplePosition) {
         scheduleFrameRequest();
     } else if (isVisible()) {
         m_pendingFrameRequest = true;
+    }
+    if (isVisible() && !m_repaintTimer.isActive()) {
+        m_repaintTimer.start();
     }
     scheduleRepaint();
 }
@@ -297,7 +332,13 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("last_frame_request_age_ms"), m_lastFrameRequestMs > 0 ? now - m_lastFrameRequestMs : -1},
                          {QStringLiteral("last_frame_ready_age_ms"), m_lastFrameReadyMs > 0 ? now - m_lastFrameReadyMs : -1},
                          {QStringLiteral("last_paint_age_ms"), m_lastPaintMs > 0 ? now - m_lastPaintMs : -1},
-                         {QStringLiteral("repaint_timer_active"), false},
+                         {QStringLiteral("last_repaint_schedule_age_ms"), m_lastRepaintScheduleMs > 0 ? now - m_lastRepaintScheduleMs : -1},
+                         {QStringLiteral("repaint_timer_active"), m_repaintTimer.isActive()},
+                         {QStringLiteral("frame_request_timer_active"), m_frameRequestTimer.isActive()},
+                         {QStringLiteral("frame_requests_armed"), m_frameRequestsArmed},
+                         {QStringLiteral("pending_frame_request"), m_pendingFrameRequest},
+                         {QStringLiteral("widget_visible"), isVisible()},
+                         {QStringLiteral("updates_enabled"), updatesEnabled()},
                          {QStringLiteral("bypass_grading"), m_bypassGrading}};
 
     // Render timing statistics
@@ -344,7 +385,8 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
         snapshot[QStringLiteral("cache")] = QJsonObject{{QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
                                                          {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
                                                          {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
-                                                         {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()}};
+                                                         {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
+                                                         {QStringLiteral("pending_visible_debug"), m_cache->pendingVisibleDebugSnapshot(now)}};
     }
 
     if (m_playbackPipeline) {
@@ -375,6 +417,10 @@ void PreviewWindow::resetProfilingStats() {
 
 void PreviewWindow::scheduleRepaint() {
     m_lastRepaintScheduleMs = nowMs();
+    if (isVisible() && !m_repaintTimer.isActive() &&
+        (m_playing || m_pendingFrameRequest || (m_cache && m_cache->pendingVisibleRequestCount() > 0))) {
+        m_repaintTimer.start();
+    }
     if (QThread::currentThread() == thread()) {
         update();
         return;

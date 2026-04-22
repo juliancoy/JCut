@@ -75,6 +75,21 @@ void PreviewWindow::ensurePipeline() {
 
     m_cache = std::make_unique<TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(), this);
     m_playbackPipeline = std::make_unique<PlaybackFramePipeline>(m_decoder.get(), this);
+    connect(m_cache.get(), &TimelineCache::frameLoaded, this,
+            [this](const QString&, int64_t, FrameHandle frame) {
+                if (frame.isNull()) {
+                    return;
+                }
+                m_lastFrameReadyMs = nowMs();
+                scheduleRepaint();
+            },
+            Qt::QueuedConnection);
+    connect(m_playbackPipeline.get(), &PlaybackFramePipeline::frameAvailable, this,
+            [this]() {
+                m_lastFrameReadyMs = nowMs();
+                scheduleRepaint();
+            },
+            Qt::QueuedConnection);
     m_cache->setMaxMemory(768 * 1024 * 1024);
     m_cache->setLookaheadFrames(36);
     m_cache->setPlaybackSpeed(1.0);
@@ -180,7 +195,9 @@ void PreviewWindow::requestFramesForCurrentPosition() {
         const bool pending = usePlaybackPipeline
                                  ? m_playbackPipeline->pendingVisibleRequestCount() >= kMaxVisibleBacklog
                                  : m_cache->isVisibleRequestPending(clip->id, localFrame);
-        if (!cached && !pending) {
+        const bool forceRetry = !usePlaybackPipeline &&
+                                m_cache->shouldForceVisibleRequestRetry(clip->id, localFrame, 250);
+        if (!cached && (!pending || forceRetry)) {
             m_lastFrameRequestMs = nowMs();
             if (usePlaybackPipeline) {
                 m_playbackPipeline->requestFramesForSample(

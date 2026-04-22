@@ -5,6 +5,7 @@
 #include "memory_budget.h"
 #include "async_decoder.h"
 #include "editor_shared.h"
+#include "timeline_cache_seek_resync.h"
 
 #include <QObject>
 #include <QHash>
@@ -13,6 +14,7 @@
 #include <QMutex>
 #include <QSet>
 #include <QVector>
+#include <QJsonArray>
 #include <memory>
 #include <functional>
 
@@ -160,6 +162,13 @@ public:
     double cacheHitRate() const;
     int pendingVisibleRequestCount() const;
     bool isVisibleRequestPending(const QString& clipId, int64_t frameNumber) const;
+    bool shouldForceVisibleRequestRetry(const QString& clipId,
+                                        int64_t frameNumber,
+                                        qint64 staleAfterMs) const;
+    QJsonArray pendingVisibleDebugSnapshot(qint64 nowMs, int limit = 8) const;
+    bool shouldAllowApproximatePreviewFrame(const QString& clipId,
+                                            int64_t frameNumber,
+                                            qint64 nowMs) const;
     
     // Manual cache management
     void clearCache();
@@ -186,6 +195,8 @@ private:
 
     struct PendingVisibleRequest {
         QVector<std::function<void(FrameHandle)>> callbacks;
+        uint64_t generation = 0;
+        qint64 requestedAtMs = 0;
     };
 
     class PlaybackBuffer {
@@ -209,6 +220,7 @@ private:
     int64_t normalizeFrameNumber(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const ClipInfo& info, int64_t frameNumber) const;
     void dropStaleRequestsForPlayhead(int64_t playheadFrame);
+    void beginSeekResyncForPlayhead(int64_t playheadFrame);
     void scheduleImmediateLeadPrefetch(const ClipInfo& info, int64_t canonicalFrame);
     void schedulePredictiveLoads();
     int calculatePriority(int64_t frameNumber) const;
@@ -236,6 +248,7 @@ private:
     QHash<QString, PendingVisibleRequest> m_pendingVisibleRequests;
     QSet<QString> m_pendingPrefetchRequests;
     QHash<QString, int64_t> m_latestVisibleTargets;
+    TimelineCacheSeekResyncTracker m_seekResync;
     
     // Export ranges for speech filter awareness
     mutable QMutex m_exportRangesMutex;
@@ -250,6 +263,7 @@ private:
     std::atomic<int> m_prefetches{0};
     std::atomic<int> m_prefetchHits{0};
     std::shared_ptr<std::atomic<bool>> m_aliveToken = std::make_shared<std::atomic<bool>>(true);
+    std::atomic<uint64_t> m_visibleRequestGeneration{1};
 };
 
 } // namespace editor
