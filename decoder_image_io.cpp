@@ -246,7 +246,10 @@ QImage loadSingleImageFile(const QString& framePath) {
         inputFormat = av_find_input_format("image2");
     }
 
-    if (avformat_open_input(&formatCtx, pathBytes.constData(), inputFormat, nullptr) < 0) {
+    // libavformat's avformat_open_input() uses AVInputFormat* in some ABI variants
+    // even though av_find_input_format() returns const AVInputFormat*.
+    AVInputFormat* openInputFormat = const_cast<AVInputFormat*>(inputFormat);
+    if (avformat_open_input(&formatCtx, pathBytes.constData(), openInputFormat, nullptr) < 0) {
         return QImage();
     }
 

@@ -228,6 +228,7 @@ private:
     QVector<TimelineTrack> m_tracks;
     QVector<RenderSyncMarker> m_renderSyncMarkers;
     QSet<QString> m_registeredClips;
+    QHash<QString, QString> m_registeredClipRegistrationKeys;
     QTimer m_repaintTimer;
     QTimer m_frameRequestTimer;
     qint64 m_lastFrameRequestMs = 0;

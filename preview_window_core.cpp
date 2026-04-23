@@ -21,6 +21,22 @@
 
 using namespace editor;
 
+namespace {
+QString cacheRegistrationKeyForClip(const TimelineClip& clip) {
+    const QString decodePath = interactivePreviewMediaPathForClip(clip);
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+        .arg(decodePath)
+        .arg(clip.filePath)
+        .arg(static_cast<int>(clip.sourceKind))
+        .arg(clip.startFrame)
+        .arg(clip.durationFrames)
+        .arg(clip.sourceInFrame)
+        .arg(clip.sourceDurationFrames)
+        .arg(QString::number(clip.playbackRate, 'f', 6))
+        .arg(QString::number(clip.sourceFps, 'f', 6));
+}
+} // namespace
+
 PreviewWindow::PreviewWindow(QWidget* parent)
     : QOpenGLWidget(parent)
     , m_quadBuffer(QOpenGLBuffer::VertexBuffer)
@@ -176,23 +192,37 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
     if (m_playbackPipeline) m_playbackPipeline->setTimelineClips(clips);
     if (!m_cache) {
         m_registeredClips.clear();
+        m_registeredClipRegistrationKeys.clear();
         scheduleRepaint();
         return;
     }
 
     QSet<QString> registeredIds;
+    QHash<QString, QString> nextRegisteredClipRegistrationKeys;
     for (const auto& clip : clips) {
         if (!clipVisualPlaybackEnabled(clip, m_tracks)) continue;
         registeredIds.insert(clip.id);
-        if (!m_registeredClips.contains(clip.id)) {
+
+        const QString registrationKey = cacheRegistrationKeyForClip(clip);
+        nextRegisteredClipRegistrationKeys.insert(clip.id, registrationKey);
+
+        const bool alreadyRegistered = m_registeredClips.contains(clip.id);
+        const bool registrationChanged =
+            m_registeredClipRegistrationKeys.value(clip.id) != registrationKey;
+
+        if (!alreadyRegistered || registrationChanged) {
+            if (alreadyRegistered) {
+                m_cache->unregisterClip(clip.id);
+                m_lastPresentedFrames.remove(clip.id);
+            }
             m_cache->registerClip(clip);
-            m_registeredClips.insert(clip.id);
         }
     }
     for (const QString& id : m_registeredClips) {
         if (!registeredIds.contains(id)) m_cache->unregisterClip(id);
     }
     m_registeredClips = registeredIds;
+    m_registeredClipRegistrationKeys = nextRegisteredClipRegistrationKeys;
 
     if (m_bulkUpdateDepth > 0) m_pendingFrameRequest = true;
     else if (m_frameRequestsArmed) { m_pendingFrameRequest = true; scheduleFrameRequest(); }

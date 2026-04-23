@@ -37,7 +37,9 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     m_explorerPane = new ExplorerPane(this);
     splitter->addWidget(m_explorerPane);
 
-    connect(m_explorerPane, &ExplorerPane::fileActivated, this, &EditorWindow::addFileToTimeline);
+    connect(m_explorerPane, &ExplorerPane::fileActivated, this, [this](const QString& filePath) {
+        addFileToTimeline(filePath);
+    });
     connect(m_explorerPane, &ExplorerPane::transcriptionRequested, this, &EditorWindow::openTranscriptionWindow);
     connect(m_explorerPane, &ExplorerPane::folderRootChanged, this, [this](const QString& path) {
         // Update the projects root directory when explorer root changes
