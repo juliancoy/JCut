@@ -2,7 +2,7 @@
 
 #include <QColor>
 #include <QFileInfo>
-#include <QJsonArray>
+#include <QJsonArray> 
 
 namespace editor
 {
@@ -226,7 +226,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.durationFrames = 120;
         if (clip.mediaType == ClipMediaType::Unknown && !clip.filePath.isEmpty())
         {
-            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames);
+            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
             clip.mediaType = probe.mediaType;
             clip.sourceKind = probe.sourceKind;
             clip.hasAudio = probe.hasAudio;
@@ -239,7 +239,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.sourceDurationFrames = probe.durationFrames;
         }
         if (!hasSourceFps && !clip.filePath.isEmpty()) {
-            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames);
+            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
             if (probe.fps > 0.001) {
                 clip.sourceFps = probe.fps;
             }
@@ -248,7 +248,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.mediaType != ClipMediaType::Image &&
             clip.mediaType != ClipMediaType::Title) {
             const bool lookedLikeFullSourceDuration = clipLooksLikeFullSourceDuration(clip);
-            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames);
+            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
             if (probe.fps > 0.001) {
                 const bool suspiciousLegacySourceFps =
                     qAbs(clip.sourceFps - static_cast<qreal>(kTimelineFps)) <= 0.001 &&

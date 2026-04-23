@@ -341,7 +341,7 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
                                             int64_t timelineSample,
                                             const QVector<RenderSyncMarker>& markers);
 
-MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames = 120);
+MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds = 4.0);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects);

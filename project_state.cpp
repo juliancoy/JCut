@@ -522,7 +522,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("exportStartFrame")] =
         m_timeline ? static_cast<qint64>(m_timeline->exportStartFrame()) : 0;
     root[QStringLiteral("exportEndFrame")] =
-        m_timeline ? static_cast<qint64>(m_timeline->exportEndFrame()) : 300;
+        m_timeline ? static_cast<qint64>(m_timeline->exportEndFrame()) : 0;
 
     QJsonArray exportRanges;
     if (m_timeline)

@@ -3,6 +3,7 @@
 #include "build_info.h"
 #include "clip_serialization.h"
 #include "debug_controls.h"
+#include "editor.h"
 #include "editor_shared.h"
 #include "control_server_media_diag.h"
 #include "control_server_ui_utils.h"
@@ -750,7 +751,8 @@ bool ControlServerWorker::handleUiBoundRouteGuard(QTcpSocket* socket, const Requ
           path == QStringLiteral("/screenshot") || path == QStringLiteral("/menu"))) ||
         ((request.method == QStringLiteral("POST")) &&
          (path == QStringLiteral("/menu") || path == QStringLiteral("/click-item") ||
-          path == QStringLiteral("/click") || path == QStringLiteral("/profile/reset"))) ||
+          path == QStringLiteral("/click") || path == QStringLiteral("/profile/reset") ||
+          path == QStringLiteral("/clips"))) ||
         ((request.method == QStringLiteral("GET") || request.method == QStringLiteral("POST")) &&
          path == QStringLiteral("/click"));
 
@@ -980,6 +982,46 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             {QStringLiteral("ok"), true},
             {QStringLiteral("count"), tracks.size()},
             {QStringLiteral("tracks"), tracks}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/clips")) {
+        const QString parseErrorMessage;
+        QString error;
+        const QJsonObject body = control_server::parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+
+        const QString filePath = body.value(QStringLiteral("filePath")).toString().trimmed();
+        if (filePath.isEmpty()) {
+            writeError(socket, 400, QStringLiteral("missing filePath"));
+            return true;
+        }
+
+        const qint64 startFrame = body.contains(QStringLiteral("startFrame"))
+            ? body.value(QStringLiteral("startFrame")).toInteger(-1)
+            : -1;
+
+        bool success = false;
+        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &success, [this, filePath, startFrame]() {
+                const auto editor = qobject_cast<EditorWindow*>(m_window);
+                if (!editor) {
+                    return false;
+                }
+                editor->addFileToTimeline(filePath, startFrame);
+                return true;
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for UI thread"));
+            return true;
+        }
+
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), success},
+            {QStringLiteral("filePath"), filePath},
+            {QStringLiteral("startFrame"), startFrame}
         });
         return true;
     }

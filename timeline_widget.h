@@ -201,7 +201,7 @@ private:
 
     int64_t mediaDurationFrames(const QFileInfo& info) const;
     bool hasFileUrls(const QMimeData* mimeData) const;
-    int64_t guessDurationFrames(const QString& suffix) const;
+    qreal guessDurationSeconds(const QString& suffix) const;
     QColor colorForPath(const QString& path) const;
     TimelineClip buildClipFromFile(const QString& filePath, int64_t startFrame, int trackIndex) const;
 

@@ -193,7 +193,7 @@ QString TimelineWidget::timecodeForFrame(int64_t frame) const {
 
 int64_t TimelineWidget::mediaDurationFrames(const QFileInfo& info) const {
     const QString suffix = info.suffix().toLower();
-    return probeMediaFile(info.absoluteFilePath(), guessDurationFrames(suffix)).durationFrames;
+    return probeMediaFile(info.absoluteFilePath(), guessDurationSeconds(suffix)).durationFrames;
 }
 
 bool TimelineWidget::hasFileUrls(const QMimeData* mimeData) const {
@@ -204,18 +204,20 @@ bool TimelineWidget::hasFileUrls(const QMimeData* mimeData) const {
     return false;
 }
 
-int64_t TimelineWidget::guessDurationFrames(const QString& suffix) const {
-    static const QHash<QString, int64_t> kDurations = {
-        {QStringLiteral("mp4"), 180},
-        {QStringLiteral("mov"), 180},
-        {QStringLiteral("mkv"), 180},
-        {QStringLiteral("webm"), 180},
-        {QStringLiteral("png"), 90},
-        {QStringLiteral("jpg"), 90},
-        {QStringLiteral("jpeg"), 90},
-        {QStringLiteral("webp"), 90},
+qreal TimelineWidget::guessDurationSeconds(const QString& suffix) const {
+    static const QHash<QString, qreal> kDurations = {
+        {QStringLiteral("mp4"), 60.0},
+        {QStringLiteral("mov"), 60.0},
+        {QStringLiteral("mkv"), 60.0},
+        {QStringLiteral("webm"), 60.0},
+        {QStringLiteral("avi"), 60.0},
+        {QStringLiteral("webc"), 60.0},
+        {QStringLiteral("png"), 3.0},
+        {QStringLiteral("jpg"), 3.0},
+        {QStringLiteral("jpeg"), 3.0},
+        {QStringLiteral("webp"), 3.0},
     };
-    return kDurations.value(suffix, 120);
+    return kDurations.value(suffix, 60.0);
 }
 
 QColor TimelineWidget::colorForPath(const QString& path) const {
@@ -227,7 +229,7 @@ TimelineClip TimelineWidget::buildClipFromFile(const QString& filePath,
                                                int64_t startFrame,
                                                int trackIndex) const {
     const QFileInfo info(filePath);
-    const MediaProbeResult probe = probeMediaFile(filePath, guessDurationFrames(info.suffix().toLower()));
+    const MediaProbeResult probe = probeMediaFile(filePath, guessDurationSeconds(info.suffix().toLower()));
     const qreal sourceFps = probe.fps > 0.001 ? probe.fps : static_cast<qreal>(kTimelineFps);
     const int64_t timelineDurationFrames = qMax<int64_t>(
         1,
@@ -1485,7 +1487,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             const bool lookedLikeFullSourceDuration = clipLooksLikeFullSourceDuration(clip);
             const MediaProbeResult probe = probeMediaFile(
                 clip.filePath,
-                qMax<int64_t>(1, clip.sourceDurationFrames > 0 ? clip.sourceDurationFrames : clip.durationFrames));
+                4.0);
 
             clip.mediaType = probe.mediaType;
             clip.sourceKind = probe.sourceKind;

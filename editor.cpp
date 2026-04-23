@@ -704,13 +704,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_timeline->setClips(loadedClips);
     m_timeline->setTimelineZoom(timelineZoom);
     m_timeline->setVerticalScrollOffset(timelineVerticalScroll);
-    
+
     if (!loadedExportRanges.isEmpty()) {
         m_timeline->setExportRanges(loadedExportRanges);
-    } else {
-        m_timeline->setExportRange(exportStartFrame, exportEndFrame > 0 ? exportEndFrame : m_timeline->totalFrames());
     }
-    
+
     m_timeline->setRenderSyncMarkers(loadedRenderSyncMarkers);
     m_timeline->setSelectedClipId(selectedClipId);
     syncSliderRange();

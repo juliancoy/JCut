@@ -311,7 +311,7 @@ void EditorWindow::createProxyForClip(const QString &clipId, bool continueGenera
     }
 
     const QString probePath = imageSequenceProxy ? sequenceFrames.constFirst() : clip->filePath;
-    const MediaProbeResult sourceProbe = probeMediaFile(probePath, clip->durationFrames);
+    const MediaProbeResult sourceProbe = probeMediaFile(probePath, clip->durationFrames / kTimelineFps);
     const QString existingProxyPath = playbackProxyPathForClip(*clip);
     const QString outputPath = defaultProxyOutputPath(*clip, &sourceProbe, ProxyFormat::ImageSequence);
     const QString overwriteTarget = !existingProxyPath.isEmpty() ? existingProxyPath : outputPath;

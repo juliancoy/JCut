@@ -921,22 +921,13 @@ void TimelineWidget::normalizeExportRanges() {
     const int64_t total = totalFrames();
     if (m_exportRanges.isEmpty()) {
         m_exportRanges = {ExportRangeSegment{0, total}};
-    }
-
-    // Legacy bootstrap projects start with a synthetic 0..300 export range.
-    // Treat it as "full timeline" and auto-expand once real media extends past it.
-    if (m_exportRanges.size() == 1 &&
-        m_exportRanges.constFirst().startFrame == 0 &&
-        m_exportRanges.constFirst().endFrame == 300 &&
-        total > 300) {
-        m_exportRanges[0].endFrame = total;
-    }
-
-    for (ExportRangeSegment& segment : m_exportRanges) {
-        segment.startFrame = qBound<int64_t>(0, segment.startFrame, total);
-        segment.endFrame = qBound<int64_t>(0, segment.endFrame, total);
-        if (segment.endFrame < segment.startFrame) {
-            std::swap(segment.startFrame, segment.endFrame);
+    } else {
+        for (ExportRangeSegment& segment : m_exportRanges) {
+            segment.startFrame = qBound<int64_t>(0, segment.startFrame, total);
+            segment.endFrame = qBound<int64_t>(0, segment.endFrame, total);
+            if (segment.endFrame < segment.startFrame) {
+                std::swap(segment.startFrame, segment.endFrame);
+            }
         }
     }
     std::sort(m_exportRanges.begin(), m_exportRanges.end(), [](const ExportRangeSegment& a, const ExportRangeSegment& b) {

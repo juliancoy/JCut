@@ -606,18 +606,21 @@ bool clipAudioPlaybackEnabled(const TimelineClip& clip) {
     return clip.hasAudio && clip.audioEnabled;
 }
 
-MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames) {
+MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) {
     QElapsedTimer probeTimer;
     probeTimer.start();
     MediaProbeResult result;
-    result.durationFrames = fallbackFrames;
+    // result.durationFrames will be set later based on fallbackSeconds and detected fps
 
     if (filePath.trimmed().isEmpty()) {
+        // For empty path, set default
+        result.durationFrames = qRound64(fallbackSeconds * 30.0);
         return result;
     }
 
     const QFileInfo info(filePath);
     if (!info.exists()) {
+        result.durationFrames = qRound64(fallbackSeconds * 30.0);
         return result;
     }
     if (info.exists() && info.isDir()) {
@@ -633,24 +636,30 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
             if (!firstImage.isNull()) {
                 result.frameSize = firstImage.size();
             }
+        } else {
+            result.durationFrames = qRound64(fallbackSeconds * 30.0);
         }
         return result;
     }
     const QString suffix = info.suffix().toLower();
     if (isImageSuffix(suffix)) {
         result.mediaType = ClipMediaType::Image;
+        result.durationFrames = qRound64(fallbackSeconds * 30.0); // For images, assume 30 fps
         return result;
     }
 
     AVFormatContext* formatCtx = nullptr;
     const QByteArray pathBytes = QFile::encodeName(filePath);
     if (avformat_open_input(&formatCtx, pathBytes.constData(), nullptr, nullptr) < 0) {
+        result.durationFrames = qRound64(fallbackSeconds * 30.0);
         return result;
     }
 
+    double sourceFps = 30.0;
+    bool durationFound = false;
+
     if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {
         double durationSeconds = 0.0;
-        double sourceFps = 30.0;
         if (formatCtx->duration > 0) {
             durationSeconds = formatCtx->duration / static_cast<double>(AV_TIME_BASE);
         }
@@ -693,10 +702,22 @@ MediaProbeResult probeMediaFile(const QString& filePath, int64_t fallbackFrames)
         if (durationSeconds > 0.0) {
             result.durationFrames = qMax<int64_t>(1, qRound64(durationSeconds * sourceFps));
             result.fps = sourceFps;
+            durationFound = true;
         }
     }
 
     avformat_close_input(&formatCtx);
+
+    if (!durationFound) {
+        result.durationFrames = qRound64(fallbackSeconds * sourceFps);
+        result.fps = sourceFps;
+    }
+
+    if (result.hasVideo) {
+        result.mediaType = ClipMediaType::Video;
+    } else if (result.hasAudio) {
+        result.mediaType = ClipMediaType::Audio;
+    }
 
     if (result.hasVideo) {
         result.mediaType = ClipMediaType::Video;
@@ -737,7 +758,7 @@ qreal effectiveFpsForClip(const TimelineClip& clip) {
     // Otherwise probe the media file
     const QString mediaPath = playbackMediaPathForClip(clip);
     if (!mediaPath.isEmpty()) {
-        const MediaProbeResult probe = probeMediaFile(mediaPath, clip.durationFrames);
+        const MediaProbeResult probe = probeMediaFile(mediaPath, clip.durationFrames / kTimelineFps);
         return probe.fps;
     }
     return kTimelineFps;
@@ -948,7 +969,7 @@ QString interactivePreviewMediaPathForClip(const TimelineClip& clip) {
         if (path.isEmpty()) {
             return false;
         }
-        const MediaProbeResult probe = probeMediaFile(path, durationFrames);
+        const MediaProbeResult probe = probeMediaFile(path, durationFrames / kTimelineFps);
         const QString suffix = QFileInfo(path).suffix().toLower();
         const bool disallowAlphaProresMov =
             probe.mediaType == ClipMediaType::Video &&

@@ -166,7 +166,7 @@ void EditorWindow::connectTimelineSignals()
         if (!clip || !clipHasVisuals(*clip)) return;
 
         const QString mediaPath = playbackMediaPathForClip(*clip);
-        const MediaProbeResult probe = probeMediaFile(mediaPath, clip->durationFrames);
+        const MediaProbeResult probe = probeMediaFile(mediaPath, clip->durationFrames / kTimelineFps);
         if (!probe.hasVideo || probe.frameSize.isEmpty()) return;
 
         const QSize outputSize = m_preview->outputSize();
@@ -426,10 +426,10 @@ QWidget *EditorWindow::buildEditorPane()
     return pane;
 }
 
-void EditorWindow::addFileToTimeline(const QString &filePath)
+void EditorWindow::addFileToTimeline(const QString &filePath, int64_t startFrame)
 {
     if (m_timeline) {
-        m_timeline->addClipFromFile(filePath);
+        m_timeline->addClipFromFile(filePath, startFrame);
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
     }

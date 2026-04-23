@@ -59,6 +59,8 @@ public:
     explicit EditorWindow(quint16 controlPort);
     ~EditorWindow() override;
 
+    void addFileToTimeline(const QString &filePath, int64_t startFrame = -1);
+
 protected:
     void closeEvent(QCloseEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -79,7 +81,6 @@ private:
     void deleteProxyForClip(const QString &clipId);
     void requestAutoSyncForSelection(const QSet<QString>& selectedClipIds);
 
-    void addFileToTimeline(const QString &filePath);
     void syncSliderRange();
     void focusGradingTab();
     void updateTransportLabels();
