@@ -1,6 +1,7 @@
 #include "grading_tab.h"
 #include "clip_serialization.h"
 #include "editor_shared.h"
+#include "grading_histogram_widget.h"
 #include "keyframe_table_shared.h"
 
 #include <QMenu>
@@ -11,11 +12,13 @@
 #include <QApplication>
 #include <QDir>
 #include <QColor>
+#include <QImage>
 #include <cmath>
 
 GradingTab::GradingTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : KeyframeTabBase(deps, parent)
     , m_widgets(widgets)
+    , m_gradingDeps(deps)
 {
     m_deferredSeekTimer.setSingleShot(true);
     connect(&m_deferredSeekTimer, &QTimer::timeout, this, [this]() {
@@ -75,6 +78,14 @@ void GradingTab::wire()
     if (m_widgets.gradingKeyAtPlayheadButton) {
         connect(m_widgets.gradingKeyAtPlayheadButton, &QPushButton::clicked,
                 this, &GradingTab::onKeyAtPlayheadClicked);
+    }
+    if (m_widgets.gradingCurveChannelCombo) {
+        connect(m_widgets.gradingCurveChannelCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &GradingTab::onCurveChannelChanged);
+    }
+    if (m_widgets.gradingHistogramWidget) {
+        connect(m_widgets.gradingHistogramWidget, &GradingHistogramWidget::curveAdjusted,
+                this, &GradingTab::onCurveAdjusted);
     }
     if (m_widgets.gradingKeyframeTable) {
         connect(m_widgets.gradingKeyframeTable, &QTableWidget::itemSelectionChanged,
@@ -140,6 +151,7 @@ void GradingTab::refresh()
         if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(0.0);
         m_selectedKeyframeFrame = -1;
         m_selectedKeyframeFrames.clear();
+        updateHistogramAndCurve(true);
         m_updating = false;
         return;
     }
@@ -188,6 +200,7 @@ void GradingTab::refresh()
 
     editor::restoreSelectionByFrameRole(m_widgets.gradingKeyframeTable, m_selectedKeyframeFrames);
 
+    updateHistogramAndCurve(true);
     m_updating = false;
     syncTableToPlayhead();
 }
@@ -333,6 +346,7 @@ void GradingTab::syncTableToPlayhead()
         }
         updateSpinBoxesFromKeyframe(displayed);
     }
+    updateHistogramAndCurve();
 }
 
 void GradingTab::onAutoScrollToggled(bool checked)
@@ -411,6 +425,7 @@ void GradingTab::onTableSelectionChanged()
         }
         updateSpinBoxesFromKeyframe(displayed);
     }
+    updateHistogramAndCurve();
 
     if (m_deps.onKeyframeSelectionChanged) {
         m_deps.onKeyframeSelectionChanged();
@@ -991,74 +1006,210 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
     }
 }
 
+void GradingTab::onCurveChannelChanged(int index)
+{
+    if (m_updating || !m_widgets.gradingHistogramWidget) {
+        return;
+    }
+
+    GradingHistogramWidget::Channel channel = GradingHistogramWidget::Channel::Red;
+    if (index == 1) {
+        channel = GradingHistogramWidget::Channel::Green;
+    } else if (index == 2) {
+        channel = GradingHistogramWidget::Channel::Blue;
+    }
+    m_widgets.gradingHistogramWidget->setSelectedChannel(channel);
+    double shadows = 0.0;
+    double midtones = 0.0;
+    double highlights = 0.0;
+    currentChannelToneValues(&shadows, &midtones, &highlights);
+    m_widgets.gradingHistogramWidget->setCurveValues(shadows, midtones, highlights);
+}
+
+void GradingTab::onCurveAdjusted(double shadows, double midtones, double highlights, bool finalized)
+{
+    if (m_updating) {
+        return;
+    }
+    applyToneValuesToCurrentChannel(shadows, midtones, highlights);
+    applyGradeFromInspector(finalized);
+}
+
+void GradingTab::updateHistogramAndCurve(bool forceHistogramRefresh)
+{
+    if (!m_widgets.gradingHistogramWidget) {
+        return;
+    }
+
+    const bool paused = !m_gradingDeps.isPlaybackPaused || m_gradingDeps.isPlaybackPaused();
+    m_widgets.gradingHistogramWidget->setVisible(paused);
+    updateCurveFromInspectorValues();
+    if (!paused) {
+        return;
+    }
+
+    if (!m_gradingDeps.getCurrentFrameImage) {
+        if (forceHistogramRefresh) {
+            m_widgets.gradingHistogramWidget->clearHistogram();
+        }
+        return;
+    }
+
+    const QImage frameImage = m_gradingDeps.getCurrentFrameImage();
+    if (frameImage.isNull()) {
+        if (forceHistogramRefresh) {
+            m_lastHistogramImageKey = 0;
+            m_widgets.gradingHistogramWidget->clearHistogram();
+        }
+        return;
+    }
+
+    const int64_t imageKey = static_cast<int64_t>(frameImage.cacheKey());
+    if (!forceHistogramRefresh && imageKey == m_lastHistogramImageKey) {
+        return;
+    }
+    m_lastHistogramImageKey = imageKey;
+    m_widgets.gradingHistogramWidget->setHistogramFromImage(frameImage);
+}
+
+void GradingTab::updateCurveFromInspectorValues()
+{
+    if (!m_widgets.gradingHistogramWidget) {
+        return;
+    }
+
+    if (m_widgets.gradingCurveChannelCombo) {
+        const int channelIndex = qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2);
+        GradingHistogramWidget::Channel channel = GradingHistogramWidget::Channel::Red;
+        if (channelIndex == 1) {
+            channel = GradingHistogramWidget::Channel::Green;
+        } else if (channelIndex == 2) {
+            channel = GradingHistogramWidget::Channel::Blue;
+        }
+        m_widgets.gradingHistogramWidget->setSelectedChannel(channel);
+    }
+
+    double shadows = 0.0;
+    double midtones = 0.0;
+    double highlights = 0.0;
+    currentChannelToneValues(&shadows, &midtones, &highlights);
+    m_widgets.gradingHistogramWidget->setCurveValues(shadows, midtones, highlights);
+}
+
+void GradingTab::currentChannelToneValues(double* shadows, double* midtones, double* highlights) const
+{
+    const int channelIndex = m_widgets.gradingCurveChannelCombo
+                                 ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2)
+                                 : 0;
+    if (channelIndex == 1) {
+        if (shadows && m_widgets.shadowsGSpin) *shadows = m_widgets.shadowsGSpin->value();
+        if (midtones && m_widgets.midtonesGSpin) *midtones = m_widgets.midtonesGSpin->value();
+        if (highlights && m_widgets.highlightsGSpin) *highlights = m_widgets.highlightsGSpin->value();
+        return;
+    }
+    if (channelIndex == 2) {
+        if (shadows && m_widgets.shadowsBSpin) *shadows = m_widgets.shadowsBSpin->value();
+        if (midtones && m_widgets.midtonesBSpin) *midtones = m_widgets.midtonesBSpin->value();
+        if (highlights && m_widgets.highlightsBSpin) *highlights = m_widgets.highlightsBSpin->value();
+        return;
+    }
+
+    if (shadows && m_widgets.shadowsRSpin) *shadows = m_widgets.shadowsRSpin->value();
+    if (midtones && m_widgets.midtonesRSpin) *midtones = m_widgets.midtonesRSpin->value();
+    if (highlights && m_widgets.highlightsRSpin) *highlights = m_widgets.highlightsRSpin->value();
+}
+
+void GradingTab::applyToneValuesToCurrentChannel(double shadows, double midtones, double highlights)
+{
+    const int channelIndex = m_widgets.gradingCurveChannelCombo
+                                 ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2)
+                                 : 0;
+    if (channelIndex == 1) {
+        if (m_widgets.shadowsGSpin) m_widgets.shadowsGSpin->setValue(shadows);
+        if (m_widgets.midtonesGSpin) m_widgets.midtonesGSpin->setValue(midtones);
+        if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(highlights);
+        return;
+    }
+    if (channelIndex == 2) {
+        if (m_widgets.shadowsBSpin) m_widgets.shadowsBSpin->setValue(shadows);
+        if (m_widgets.midtonesBSpin) m_widgets.midtonesBSpin->setValue(midtones);
+        if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(highlights);
+        return;
+    }
+
+    if (m_widgets.shadowsRSpin) m_widgets.shadowsRSpin->setValue(shadows);
+    if (m_widgets.midtonesRSpin) m_widgets.midtonesRSpin->setValue(midtones);
+    if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(highlights);
+}
+
 void GradingTab::onBrightnessChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onContrastChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onContrastEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onSaturationChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onSaturationEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onShadowsRChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onShadowsGChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onShadowsBChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onMidtonesRChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onMidtonesGChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onMidtonesBChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onHighlightsRChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onHighlightsGChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }
 
 void GradingTab::onHighlightsBChanged(double value)
 {
     Q_UNUSED(value);
-    // Real-time updates are handled by onBrightnessEditingFinished()
+    updateCurveFromInspectorValues();
 }

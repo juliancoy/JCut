@@ -1,6 +1,7 @@
 #include "debug_controls.h"
 
 #include <QByteArray>
+#include <QFile>
 #include <QtGlobal>
 
 #include <atomic>
@@ -54,6 +55,7 @@ std::atomic<int> g_debugDecoderLaneCount{kDefaultDecoderLaneCount};
 std::atomic<int> g_decodePreference{static_cast<int>(kDefaultDecodePreference)};
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
 std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
+std::atomic<bool> g_debugDeterministicPipelineEnabled{false};
 std::mutex g_decoderLaneCountCallbackMutex;
 DecoderLaneCountChangedCallback g_decoderLaneCountChangedCallback;
 
@@ -253,6 +255,10 @@ bool debugPlaybackCacheFallbackEnabled() {
     return g_debugPlaybackCacheFallbackEnabled.load();
 }
 
+bool debugDeterministicPipelineEnabled() {
+    return g_debugDeterministicPipelineEnabled.load();
+}
+
 void setDebugPlaybackEnabled(bool enabled) {
     g_debugPlayback.store(static_cast<int>(enabled ? DebugLogLevel::Debug : DebugLogLevel::Off));
 }
@@ -338,6 +344,47 @@ void setDebugPlaybackCacheFallbackEnabled(bool enabled) {
     g_debugPlaybackCacheFallbackEnabled.store(enabled);
 }
 
+void setDebugDeterministicPipelineEnabled(bool enabled) {
+    g_debugDeterministicPipelineEnabled.store(enabled);
+}
+
+RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
+    RenderPipelineDefaults defaults;
+
+    defaults.decodePreference = DecodePreference::Software;
+#if defined(Q_OS_LINUX)
+    const bool hasVaapiRenderNode =
+        QFile::exists(QStringLiteral("/dev/dri/renderD128")) ||
+        QFile::exists(QStringLiteral("/dev/dri/renderD129")) ||
+        QFile::exists(QStringLiteral("/dev/dri/renderD130"));
+    const bool hasNvidiaDriver = QFile::exists(QStringLiteral("/proc/driver/nvidia/version"));
+    const bool headlessOffscreen =
+        qEnvironmentVariable("QT_QPA_PLATFORM") == QStringLiteral("offscreen");
+    if (!headlessOffscreen) {
+        if (hasVaapiRenderNode) {
+            defaults.decodePreference = DecodePreference::HardwareZeroCopy;
+        } else if (hasNvidiaDriver) {
+            defaults.decodePreference = DecodePreference::Hardware;
+        }
+    }
+#elif defined(Q_OS_MACOS) || defined(Q_OS_WIN)
+    defaults.decodePreference = DecodePreference::Hardware;
+#endif
+
+    defaults.deterministicPipeline = false;
+    defaults.playbackCacheFallback = true;
+    defaults.leadPrefetchEnabled = true;
+    defaults.leadPrefetchCount = kDefaultLeadPrefetchCount;
+    defaults.playbackWindowAhead = kDefaultPlaybackWindowAhead;
+    defaults.visibleQueueReserve = kDefaultVisibleQueueReserve;
+    defaults.prefetchMaxQueueDepth = kDefaultPrefetchMaxQueueDepth;
+    defaults.prefetchMaxInflight = kDefaultPrefetchMaxInflight;
+    defaults.prefetchMaxPerTick = kDefaultPrefetchMaxPerTick;
+    defaults.prefetchSkipVisiblePendingThreshold = kDefaultPrefetchSkipVisiblePendingThreshold;
+    defaults.decoderLaneCount = kDefaultDecoderLaneCount;
+    return defaults;
+}
+
 QJsonObject debugControlsSnapshot() {
     return QJsonObject{
         {QStringLiteral("playback"), debugPlaybackEnabled()},
@@ -357,7 +404,8 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("decoder_lane_count"), debugDecoderLaneCount()},
         {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())},
         {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()},
-        {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()}
+        {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()},
+        {QStringLiteral("deterministic_pipeline"), debugDeterministicPipelineEnabled()}
     };
 }
 
@@ -456,6 +504,10 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
     }
     if (name == QStringLiteral("playback_cache_fallback") && value.isBool()) {
         setDebugPlaybackCacheFallbackEnabled(value.toBool());
+        return true;
+    }
+    if (name == QStringLiteral("deterministic_pipeline") && value.isBool()) {
+        setDebugDeterministicPipelineEnabled(value.toBool());
         return true;
     }
     return false;

@@ -7,6 +7,30 @@
 namespace editor
 {
 
+namespace {
+
+int64_t timelineFramesFromSourceFrames(int64_t sourceFrames, qreal sourceFps)
+{
+    const qreal resolvedSourceFps =
+        sourceFps > 0.001 ? sourceFps : static_cast<qreal>(kTimelineFps);
+    return qMax<int64_t>(
+        1,
+        qRound64((static_cast<qreal>(qMax<int64_t>(1, sourceFrames)) / resolvedSourceFps) *
+                 static_cast<qreal>(kTimelineFps)));
+}
+
+bool clipLooksLikeFullSourceDuration(const TimelineClip& clip)
+{
+    if (clip.sourceInFrame != 0 || clip.sourceDurationFrames <= 0 || clip.durationFrames <= 0) {
+        return false;
+    }
+    const int64_t expectedDuration =
+        timelineFramesFromSourceFrames(clip.sourceDurationFrames, clip.sourceFps);
+    return qAbs(clip.durationFrames - expectedDuration) <= 1;
+}
+
+}
+
 QJsonObject clipToJson(const TimelineClip &clip)
     {
         QJsonObject obj;
@@ -223,6 +247,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         if (!clip.filePath.isEmpty() &&
             clip.mediaType != ClipMediaType::Image &&
             clip.mediaType != ClipMediaType::Title) {
+            const bool lookedLikeFullSourceDuration = clipLooksLikeFullSourceDuration(clip);
             const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames);
             if (probe.fps > 0.001) {
                 const bool suspiciousLegacySourceFps =
@@ -232,8 +257,14 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                     clip.sourceFps = probe.fps;
                 }
             }
-            if (probe.durationFrames > 0 && clip.sourceDurationFrames <= 0) {
+            if (probe.durationFrames > 0 &&
+                (clip.sourceDurationFrames <= 0 ||
+                 qAbs(probe.durationFrames - clip.sourceDurationFrames) > 1)) {
                 clip.sourceDurationFrames = probe.durationFrames;
+            }
+            if (lookedLikeFullSourceDuration && clip.sourceDurationFrames > 0) {
+                clip.durationFrames =
+                    timelineFramesFromSourceFrames(clip.sourceDurationFrames, clip.sourceFps);
             }
             const bool looksLikeLegacyDuration =
                 clip.sourceDurationFrames > 0 &&

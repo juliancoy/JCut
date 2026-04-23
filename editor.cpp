@@ -300,6 +300,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("debugDecodeMode"))
             .toString(editor::decodePreferenceToString(editor::debugDecodePreference()));
     editor::parseDecodePreference(debugDecodeModeText, &debugDecodePreference);
+    const bool debugDeterministicPipeline =
+        root.value(QStringLiteral("debugDeterministicPipeline"))
+            .toBool(editor::debugDeterministicPipelineEnabled());
     const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(0);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(0);
@@ -619,6 +622,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
         }
     }
+    if (m_outputDeterministicPipelineCheckBox) {
+        QSignalBlocker block(m_outputDeterministicPipelineCheckBox);
+        m_outputDeterministicPipelineCheckBox->setChecked(debugDeterministicPipeline);
+    }
     if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(speechFilterEnabled); }
     
     m_transcriptPrependMs = transcriptPrependMs;
@@ -691,6 +698,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     editor::setDebugPrefetchSkipVisiblePendingThreshold(debugPrefetchSkipVisiblePendingThreshold);
     editor::setDebugDecoderLaneCount(debugDecoderLaneCount);
     editor::setDebugDecodePreference(debugDecodePreference);
+    editor::setDebugDeterministicPipelineEnabled(debugDeterministicPipeline);
 
     m_timeline->setTracks(loadedTracks);
     m_timeline->setClips(loadedClips);

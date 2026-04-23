@@ -488,6 +488,8 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("debugDecoderLaneCount")] = editor::debugDecoderLaneCount();
     root[QStringLiteral("debugDecodeMode")] =
         editor::decodePreferenceToString(editor::debugDecodePreference());
+    root[QStringLiteral("debugDeterministicPipeline")] =
+        editor::debugDeterministicPipelineEnabled();
     root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;
     root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
     root[QStringLiteral("speechFilterEnabled")] =

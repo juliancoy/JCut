@@ -6,4 +6,5 @@ CMakeFiles
 editor_autogen
 generated
 tests
-ffmpeg-install
+ffmpeg-*
+nv-codec-headers

@@ -15,6 +15,7 @@ class QLineEdit;
 class QPlainTextEdit;
 class QIcon;
 class QListWidget;
+class GradingHistogramWidget;
 
 class InspectorPane final : public QWidget
 {
@@ -85,6 +86,8 @@ public:
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
     QDoubleSpinBox *gradingFadeDurationSpin() const { return m_gradingFadeDurationSpin; }
+    QComboBox *gradingCurveChannelCombo() const { return m_gradingCurveChannelCombo; }
+    GradingHistogramWidget *gradingHistogramWidget() const { return m_gradingHistogramWidget; }
     
     QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
     QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
@@ -206,6 +209,8 @@ public:
     QSpinBox *outputPrefetchSkipVisiblePendingThresholdSpin() const { return m_outputPrefetchSkipVisiblePendingThresholdSpin; }
     QSpinBox *outputDecoderLaneCountSpin() const { return m_outputDecoderLaneCountSpin; }
     QComboBox *outputDecodeModeCombo() const { return m_outputDecodeModeCombo; }
+    QCheckBox *outputDeterministicPipelineCheckBox() const { return m_outputDeterministicPipelineCheckBox; }
+    QPushButton *outputResetPipelineDefaultsButton() const { return m_outputResetPipelineDefaultsButton; }
     QSpinBox *autosaveIntervalMinutesSpin() const { return m_autosaveIntervalMinutesSpin; }
     QSpinBox *autosaveMaxBackupsSpin() const { return m_autosaveMaxBackupsSpin; }
     QPushButton *renderButton() const { return m_renderButton; }
@@ -276,6 +281,8 @@ private:
     QPushButton *m_opacityFadeInButton = nullptr;
     QPushButton *m_opacityFadeOutButton = nullptr;
     QDoubleSpinBox *m_gradingFadeDurationSpin = nullptr;
+    QComboBox *m_gradingCurveChannelCombo = nullptr;
+    GradingHistogramWidget *m_gradingHistogramWidget = nullptr;
     QDoubleSpinBox *m_opacityFadeDurationSpin = nullptr;
 
     QLabel *m_effectsPathLabel = nullptr;
@@ -424,6 +431,8 @@ private:
     QSpinBox *m_outputPrefetchSkipVisiblePendingThresholdSpin = nullptr;
     QSpinBox *m_outputDecoderLaneCountSpin = nullptr;
     QComboBox *m_outputDecodeModeCombo = nullptr;
+    QCheckBox *m_outputDeterministicPipelineCheckBox = nullptr;
+    QPushButton *m_outputResetPipelineDefaultsButton = nullptr;
     QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
     QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QPushButton *m_renderButton = nullptr;

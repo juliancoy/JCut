@@ -1426,6 +1426,30 @@ gpu_compositor.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/gpu_compositor.cpp.s
 .PHONY : gpu_compositor.cpp.s
 
+grading_histogram_widget.o: grading_histogram_widget.cpp.o
+.PHONY : grading_histogram_widget.o
+
+# target to build an object file
+grading_histogram_widget.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/grading_histogram_widget.cpp.o
+.PHONY : grading_histogram_widget.cpp.o
+
+grading_histogram_widget.i: grading_histogram_widget.cpp.i
+.PHONY : grading_histogram_widget.i
+
+# target to preprocess a source file
+grading_histogram_widget.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/grading_histogram_widget.cpp.i
+.PHONY : grading_histogram_widget.cpp.i
+
+grading_histogram_widget.s: grading_histogram_widget.cpp.s
+.PHONY : grading_histogram_widget.s
+
+# target to generate assembly for a file
+grading_histogram_widget.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/grading_histogram_widget.cpp.s
+.PHONY : grading_histogram_widget.cpp.s
+
 grading_tab.o: grading_tab.cpp.o
 .PHONY : grading_tab.o
 
@@ -2645,6 +2669,9 @@ help:
 	@echo "... gpu_compositor.o"
 	@echo "... gpu_compositor.i"
 	@echo "... gpu_compositor.s"
+	@echo "... grading_histogram_widget.o"
+	@echo "... grading_histogram_widget.i"
+	@echo "... grading_histogram_widget.s"
 	@echo "... grading_tab.o"
 	@echo "... grading_tab.i"
 	@echo "... grading_tab.s"

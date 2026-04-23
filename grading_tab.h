@@ -9,9 +9,13 @@
 #include <QCheckBox>
 #include <QPushButton>
 #include <QTimer>
+#include <QComboBox>
 #include <functional>
 
 #include "editor_shared.h"
+
+class QImage;
+class GradingHistogramWidget;
 
 class GradingTab : public KeyframeTabBase
 {
@@ -38,10 +42,14 @@ public:
         QCheckBox* gradingAutoScrollCheckBox = nullptr;
         QCheckBox* gradingFollowCurrentCheckBox = nullptr;
         QPushButton* gradingKeyAtPlayheadButton = nullptr;
+        QComboBox* gradingCurveChannelCombo = nullptr;
+        GradingHistogramWidget* gradingHistogramWidget = nullptr;
     };
 
     struct Dependencies : public KeyframeTabBase::Dependencies
     {
+        std::function<QImage()> getCurrentFrameImage;
+        std::function<bool()> isPlaybackPaused;
     };
 
     explicit GradingTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -83,6 +91,8 @@ private slots:
     void onTableItemChanged(QTableWidgetItem* item);
     void onTableItemClicked(QTableWidgetItem* item);
     void onTableCustomContextMenu(const QPoint& pos);
+    void onCurveChannelChanged(int index);
+    void onCurveAdjusted(double shadows, double midtones, double highlights, bool finalized);
     void removeSelectedKeyframesFromCurrentTable() override { removeSelectedKeyframes(); }
 
 private:
@@ -109,8 +119,14 @@ private:
     GradingKeyframeDisplay evaluateDisplayedGrading(const TimelineClip& clip, int64_t localFrame) const;
     void updateSpinBoxesFromKeyframe(const GradingKeyframeDisplay& keyframe);
     void populateTable(const TimelineClip& clip);
+    void updateHistogramAndCurve(bool forceHistogramRefresh = false);
+    void updateCurveFromInspectorValues();
+    void currentChannelToneValues(double* shadows, double* midtones, double* highlights) const;
+    void applyToneValuesToCurrentChannel(double shadows, double midtones, double highlights);
 
     Widgets m_widgets;
+    Dependencies m_gradingDeps;
     QTimer m_deferredSeekTimer;
     int64_t m_pendingSeekTimelineFrame = -1;
+    int64_t m_lastHistogramImageKey = 0;
 };

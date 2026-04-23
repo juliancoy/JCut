@@ -40,6 +40,8 @@ public:
         QSpinBox* outputPrefetchSkipVisiblePendingThresholdSpin = nullptr;
         QSpinBox* outputDecoderLaneCountSpin = nullptr;
         QComboBox* outputDecodeModeCombo = nullptr;
+        QCheckBox* outputDeterministicPipelineCheckBox = nullptr;
+        QPushButton* outputResetPipelineDefaultsButton = nullptr;
         QSpinBox* autosaveIntervalMinutesSpin = nullptr;
         QSpinBox* autosaveMaxBackupsSpin = nullptr;
         QCheckBox* createImageSequenceCheckBox = nullptr;
@@ -98,6 +100,8 @@ private slots:
     void onOutputPrefetchSkipVisiblePendingThresholdChanged(int value);
     void onOutputDecoderLaneCountChanged(int value);
     void onOutputDecodeModeChanged(int index);
+    void onOutputDeterministicPipelineToggled(bool checked);
+    void onOutputResetPipelineDefaultsClicked();
     void onAutosaveIntervalMinutesChanged(int value);
     void onAutosaveMaxBackupsChanged(int value);
     void onRenderClicked();

@@ -51,6 +51,7 @@ int debugDecoderLaneCount();
 DecodePreference debugDecodePreference();
 bool debugPlayheadNoRepaint();
 bool debugPlaybackCacheFallbackEnabled();
+bool debugDeterministicPipelineEnabled();
 
 void setDebugPlaybackEnabled(bool enabled);
 void setDebugCacheEnabled(bool enabled);
@@ -70,6 +71,24 @@ void setDebugDecoderLaneCount(int count);
 void setDebugDecodePreference(DecodePreference preference);
 void setDebugPlayheadNoRepaint(bool enabled);
 void setDebugPlaybackCacheFallbackEnabled(bool enabled);
+void setDebugDeterministicPipelineEnabled(bool enabled);
+
+struct RenderPipelineDefaults {
+    DecodePreference decodePreference = DecodePreference::Software;
+    bool deterministicPipeline = false;
+    bool playbackCacheFallback = true;
+    bool leadPrefetchEnabled = true;
+    int leadPrefetchCount = 8;
+    int playbackWindowAhead = 16;
+    int visibleQueueReserve = 24;
+    int prefetchMaxQueueDepth = 24;
+    int prefetchMaxInflight = 8;
+    int prefetchMaxPerTick = 8;
+    int prefetchSkipVisiblePendingThreshold = 2;
+    int decoderLaneCount = 0;
+};
+
+RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem();
 
 QJsonObject debugControlsSnapshot();
 bool setDebugControl(const QString& name, bool enabled);

@@ -427,39 +427,6 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
             event->accept();
             return;
         }
-        const int trackHit = trackIndexAt(event->position().toPoint());
-        if (trackHit >= 0) {
-            if (trackVisualToggleRect(trackHit).contains(event->position().toPoint()) &&
-                trackHasVisualClips(trackHit)) {
-                TrackVisualMode nextMode = TrackVisualMode::Enabled;
-                switch (trackVisualMode(trackHit)) {
-                case TrackVisualMode::Enabled:
-                    nextMode = TrackVisualMode::ForceOpaque;
-                    break;
-                case TrackVisualMode::ForceOpaque:
-                    nextMode = TrackVisualMode::Hidden;
-                    break;
-                case TrackVisualMode::Hidden:
-                default:
-                    nextMode = TrackVisualMode::Enabled;
-                    break;
-                }
-                setTrackVisualMode(trackHit, nextMode);
-                event->accept();
-                return;
-            }
-            if (trackAudioToggleRect(trackHit).contains(event->position().toPoint()) &&
-                trackHasAudioClips(trackHit)) {
-                setTrackAudioEnabled(trackHit, !trackAudioEnabled(trackHit));
-                event->accept();
-                return;
-            }
-            setSelectedTrackIndex(trackHit);
-            m_draggedTrackIndex = trackHit;
-            m_trackDropIndex = trackHit;
-            update();
-            return;
-        }
         const int hitIndex = clipIndexAt(event->position().toPoint());
         if (hitIndex >= 0 && m_toolMode == ToolMode::Razor) {
             const QString clickedClipId = m_clips[hitIndex].id;
@@ -529,6 +496,39 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
                     }
                 }
             }
+            update();
+            return;
+        }
+        const int trackHit = trackIndexAt(event->position().toPoint());
+        if (trackHit >= 0) {
+            if (trackVisualToggleRect(trackHit).contains(event->position().toPoint()) &&
+                trackHasVisualClips(trackHit)) {
+                TrackVisualMode nextMode = TrackVisualMode::Enabled;
+                switch (trackVisualMode(trackHit)) {
+                case TrackVisualMode::Enabled:
+                    nextMode = TrackVisualMode::ForceOpaque;
+                    break;
+                case TrackVisualMode::ForceOpaque:
+                    nextMode = TrackVisualMode::Hidden;
+                    break;
+                case TrackVisualMode::Hidden:
+                default:
+                    nextMode = TrackVisualMode::Enabled;
+                    break;
+                }
+                setTrackVisualMode(trackHit, nextMode);
+                event->accept();
+                return;
+            }
+            if (trackAudioToggleRect(trackHit).contains(event->position().toPoint()) &&
+                trackHasAudioClips(trackHit)) {
+                setTrackAudioEnabled(trackHit, !trackAudioEnabled(trackHit));
+                event->accept();
+                return;
+            }
+            setSelectedTrackIndex(trackHit);
+            m_draggedTrackIndex = trackHit;
+            m_trackDropIndex = trackHit;
             update();
             return;
         }
@@ -628,6 +628,28 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
     }
     if (m_draggedClipIndex >= 0 && (event->buttons() & Qt::LeftButton)) {
         TimelineClip& clip = m_clips[m_draggedClipIndex];
+        const QRect contentRect = timelineContentRect();
+        constexpr int kAutoScrollEdgePixels = 24;
+        const qreal stablePixelsPerFrame = qMax<qreal>(0.25, m_pixelsPerFrame);
+        if (!contentRect.isEmpty()) {
+            int64_t autoScrollFrames = 0;
+            const qreal leftEdge = static_cast<qreal>(contentRect.left() + kAutoScrollEdgePixels);
+            const qreal rightEdge = static_cast<qreal>(contentRect.right() - kAutoScrollEdgePixels);
+            if (event->position().x() < leftEdge) {
+                const qreal pixelsBeyond = leftEdge - event->position().x();
+                autoScrollFrames = -qMax<int64_t>(1, qRound64(pixelsBeyond / stablePixelsPerFrame));
+            } else if (event->position().x() > rightEdge) {
+                const qreal pixelsBeyond = event->position().x() - rightEdge;
+                autoScrollFrames = qMax<int64_t>(1, qRound64(pixelsBeyond / stablePixelsPerFrame));
+            }
+            if (autoScrollFrames != 0) {
+                const int64_t visibleFrames =
+                    qMax<int64_t>(1, qRound64(static_cast<qreal>(contentRect.width()) / stablePixelsPerFrame));
+                const int64_t currentMaxOffset = qMax<int64_t>(0, totalFrames() - visibleFrames);
+                const int64_t expandedMaxOffset = qMax<int64_t>(currentMaxOffset, m_frameOffset + autoScrollFrames);
+                m_frameOffset = qBound<int64_t>(0, m_frameOffset + autoScrollFrames, expandedMaxOffset);
+            }
+        }
         const int64_t pointerFrame = frameFromX(event->position().x());
         static constexpr int64_t kMinClipFrames = 1;
         const bool isImage = clip.mediaType == ClipMediaType::Image;
@@ -1391,6 +1413,23 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     }
 
     if (selected == refreshMetadataAction) {
+        auto timelineFramesFromSourceFrames = [](int64_t sourceFrames, qreal sourceFps) {
+            const qreal resolvedSourceFps =
+                sourceFps > 0.001 ? sourceFps : static_cast<qreal>(kTimelineFps);
+            return qMax<int64_t>(
+                1,
+                qRound64((static_cast<qreal>(qMax<int64_t>(1, sourceFrames)) / resolvedSourceFps) *
+                         static_cast<qreal>(kTimelineFps)));
+        };
+        auto clipLooksLikeFullSourceDuration = [&timelineFramesFromSourceFrames](const TimelineClip& clip) {
+            if (clip.sourceInFrame != 0 || clip.sourceDurationFrames <= 0 || clip.durationFrames <= 0) {
+                return false;
+            }
+            const int64_t expectedDuration =
+                timelineFramesFromSourceFrames(clip.sourceDurationFrames, clip.sourceFps);
+            return qAbs(clip.durationFrames - expectedDuration) <= 1;
+        };
+
         QSet<QString> refreshIds = contextSelection;
         if (refreshIds.isEmpty() && clipIndex >= 0) {
             refreshIds.insert(m_clips[clipIndex].id);
@@ -1417,6 +1456,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             }
 
             const TimelineClip before = clip;
+            const bool lookedLikeFullSourceDuration = clipLooksLikeFullSourceDuration(clip);
             const MediaProbeResult probe = probeMediaFile(
                 clip.filePath,
                 qMax<int64_t>(1, clip.sourceDurationFrames > 0 ? clip.sourceDurationFrames : clip.durationFrames));
@@ -1429,6 +1469,10 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             }
             if (probe.durationFrames > 0) {
                 clip.sourceDurationFrames = probe.durationFrames;
+            }
+            if (lookedLikeFullSourceDuration && clip.sourceDurationFrames > 0) {
+                clip.durationFrames =
+                    timelineFramesFromSourceFrames(clip.sourceDurationFrames, clip.sourceFps);
             }
 
             if (clip.sourceDurationFrames > 0) {

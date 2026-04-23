@@ -362,11 +362,17 @@ bool DecoderContext::initCodec() {
         !headlessOffscreen &&
         !m_streamHasAlphaTag;
     const bool hardwareEnabled = allowHardware && initHardwareAccel(decoder);
+    const bool deterministicPipeline = debugDeterministicPipelineEnabled();
     const bool softwareProResWorkaround =
         !hardwareEnabled &&
         stream->codecpar->codec_id == AV_CODEC_ID_PRORES;
 
-    if (hardwareEnabled) {
+    if (deterministicPipeline) {
+        // Deterministic mode disables frame/slice threading and fast decode shortcuts.
+        m_codecCtx->thread_count = 1;
+        m_codecCtx->thread_type = 0;
+        m_codecCtx->flags2 &= ~AV_CODEC_FLAG2_FAST;
+    } else if (hardwareEnabled) {
         m_codecCtx->thread_count = 0;
         m_codecCtx->thread_type = FF_THREAD_FRAME;
     } else if (softwareProResWorkaround) {

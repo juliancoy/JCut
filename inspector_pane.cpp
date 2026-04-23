@@ -1,6 +1,7 @@
 #include "inspector_pane.h"
 #include "editor_shared.h"
 #include "debug_controls.h"
+#include "grading_histogram_widget.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -237,6 +238,20 @@ QWidget *InspectorPane::buildGradingTab()
     highlightsLayout->addWidget(m_highlightsGSpin);
     highlightsLayout->addWidget(m_highlightsBSpin);
 
+    auto *curveChannelLayout = new QHBoxLayout;
+    curveChannelLayout->addWidget(new QLabel(QStringLiteral("Curve Channel:"), page));
+    m_gradingCurveChannelCombo = new QComboBox(page);
+    m_gradingCurveChannelCombo->addItem(QStringLiteral("Red"));
+    m_gradingCurveChannelCombo->addItem(QStringLiteral("Green"));
+    m_gradingCurveChannelCombo->addItem(QStringLiteral("Blue"));
+    curveChannelLayout->addWidget(m_gradingCurveChannelCombo);
+    curveChannelLayout->addStretch();
+
+    m_gradingHistogramWidget = new GradingHistogramWidget(page);
+    m_gradingHistogramWidget->setToolTip(QStringLiteral(
+        "Current-frame RGB histogram.\n"
+        "Select a channel and drag curve points to adjust Shadows/Midtones/Highlights."));
+
     m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
     m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
     m_gradingPreviewCheckBox = new QCheckBox(QStringLiteral("Preview"), page);
@@ -274,6 +289,8 @@ QWidget *InspectorPane::buildGradingTab()
     layout->addWidget(shadowsGroup);
     layout->addWidget(midtonesGroup);
     layout->addWidget(highlightsGroup);
+    layout->addLayout(curveChannelLayout);
+    layout->addWidget(m_gradingHistogramWidget);
     layout->addWidget(m_gradingAutoScrollCheckBox);
     layout->addWidget(m_gradingFollowCurrentCheckBox);
     layout->addWidget(m_gradingPreviewCheckBox);
@@ -1134,15 +1151,26 @@ QWidget *InspectorPane::buildOutputTab()
 
     m_outputDecodeModeCombo = new QComboBox(page);
     m_outputDecodeModeCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("Hardware (CPU Upload)"), QStringLiteral("hardware"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("Hardware Zero-Copy (CUDA/VAAPI)"), QStringLiteral("hardware_zero_copy"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("Software (CPU)"), QStringLiteral("software"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Upload"), QStringLiteral("hardware"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Zero-Copy"), QStringLiteral("hardware_zero_copy"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("CPU Software"), QStringLiteral("software"));
     const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
     const int decodeModeIndex = m_outputDecodeModeCombo->findData(decodeMode);
     if (decodeModeIndex >= 0) {
         m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
     }
-    decodeForm->addRow(QStringLiteral("Decode Mode"), m_outputDecodeModeCombo);
+    decodeForm->addRow(QStringLiteral("Render Pipeline"), m_outputDecodeModeCombo);
+
+    m_outputDeterministicPipelineCheckBox =
+        new QCheckBox(QStringLiteral("Deterministic Pipeline"), page);
+    m_outputDeterministicPipelineCheckBox->setChecked(editor::debugDeterministicPipelineEnabled());
+    m_outputDeterministicPipelineCheckBox->setToolTip(
+        QStringLiteral("Prioritize reproducible decode/render behavior over throughput."));
+
+    m_outputResetPipelineDefaultsButton =
+        new QPushButton(QStringLiteral("Reset Pipeline Defaults"), page);
+    m_outputResetPipelineDefaultsButton->setToolTip(
+        QStringLiteral("Restore decoder/cache defaults chosen for available hardware and software."));
 
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 
@@ -1155,6 +1183,8 @@ QWidget *InspectorPane::buildOutputTab()
     layout->addWidget(m_outputPlaybackCacheFallbackCheckBox);
     layout->addWidget(m_outputLeadPrefetchEnabledCheckBox);
     layout->addLayout(decodeForm);
+    layout->addWidget(m_outputDeterministicPipelineCheckBox);
+    layout->addWidget(m_outputResetPipelineDefaultsButton);
     layout->addWidget(m_renderButton);
     layout->addStretch(1);
 

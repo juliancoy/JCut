@@ -110,6 +110,14 @@ void OutputTab::wire()
         connect(m_widgets.outputDecodeModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &OutputTab::onOutputDecodeModeChanged);
     }
+    if (m_widgets.outputDeterministicPipelineCheckBox) {
+        connect(m_widgets.outputDeterministicPipelineCheckBox, &QCheckBox::toggled,
+                this, &OutputTab::onOutputDeterministicPipelineToggled);
+    }
+    if (m_widgets.outputResetPipelineDefaultsButton) {
+        connect(m_widgets.outputResetPipelineDefaultsButton, &QPushButton::clicked,
+                this, &OutputTab::onOutputResetPipelineDefaultsClicked);
+    }
     if (m_widgets.autosaveIntervalMinutesSpin) {
         connect(m_widgets.autosaveIntervalMinutesSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &OutputTab::onAutosaveIntervalMinutesChanged);
@@ -217,6 +225,11 @@ void OutputTab::refresh()
         if (index >= 0) {
             m_widgets.outputDecodeModeCombo->setCurrentIndex(index);
         }
+    }
+    if (m_widgets.outputDeterministicPipelineCheckBox) {
+        QSignalBlocker blocker(m_widgets.outputDeterministicPipelineCheckBox);
+        m_widgets.outputDeterministicPipelineCheckBox->setChecked(
+            editor::debugDeterministicPipelineEnabled());
     }
 
     updateRangeSummary();
@@ -488,6 +501,50 @@ void OutputTab::onOutputDecodeModeChanged(int index)
         return;
     }
     editor::setDebugDecodePreference(preference);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputDeterministicPipelineToggled(bool checked)
+{
+    if (m_updating) return;
+    editor::setDebugDeterministicPipelineEnabled(checked);
+    if (checked) {
+        // Deterministic profile: remove queueing/thread nondeterminism.
+        editor::setDebugPlaybackCacheFallbackEnabled(false);
+        editor::setDebugLeadPrefetchEnabled(false);
+        editor::setDebugLeadPrefetchCount(0);
+        editor::setDebugPlaybackWindowAhead(1);
+        editor::setDebugVisibleQueueReserve(0);
+        editor::setDebugPrefetchMaxQueueDepth(1);
+        editor::setDebugPrefetchMaxInflight(1);
+        editor::setDebugPrefetchMaxPerTick(1);
+        editor::setDebugPrefetchSkipVisiblePendingThreshold(0);
+        editor::setDebugDecoderLaneCount(1);
+    }
+    refresh();
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputResetPipelineDefaultsClicked()
+{
+    if (m_updating) return;
+
+    const editor::RenderPipelineDefaults defaults =
+        editor::defaultRenderPipelineDefaultsForCurrentSystem();
+    editor::setDebugDecodePreference(defaults.decodePreference);
+    editor::setDebugDeterministicPipelineEnabled(defaults.deterministicPipeline);
+    editor::setDebugPlaybackCacheFallbackEnabled(defaults.playbackCacheFallback);
+    editor::setDebugLeadPrefetchEnabled(defaults.leadPrefetchEnabled);
+    editor::setDebugLeadPrefetchCount(defaults.leadPrefetchCount);
+    editor::setDebugPlaybackWindowAhead(defaults.playbackWindowAhead);
+    editor::setDebugVisibleQueueReserve(defaults.visibleQueueReserve);
+    editor::setDebugPrefetchMaxQueueDepth(defaults.prefetchMaxQueueDepth);
+    editor::setDebugPrefetchMaxInflight(defaults.prefetchMaxInflight);
+    editor::setDebugPrefetchMaxPerTick(defaults.prefetchMaxPerTick);
+    editor::setDebugPrefetchSkipVisiblePendingThreshold(defaults.prefetchSkipVisiblePendingThreshold);
+    editor::setDebugDecoderLaneCount(defaults.decoderLaneCount);
+
+    refresh();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
 }
 

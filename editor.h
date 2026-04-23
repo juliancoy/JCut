@@ -328,6 +328,8 @@ private:
     QSpinBox *m_outputPrefetchSkipVisiblePendingThresholdSpin = nullptr;
     QSpinBox *m_outputDecoderLaneCountSpin = nullptr;
     QComboBox *m_outputDecodeModeCombo = nullptr;
+    QCheckBox *m_outputDeterministicPipelineCheckBox = nullptr;
+    QPushButton *m_outputResetPipelineDefaultsButton = nullptr;
     QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
     QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QCheckBox *m_createImageSequenceCheckBox = nullptr;

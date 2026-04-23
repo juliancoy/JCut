@@ -18,6 +18,7 @@ void EditorWindow::createOutputTab()
             m_outputPrefetchMaxQueueDepthSpin, m_outputPrefetchMaxInflightSpin,
             m_outputPrefetchMaxPerTickSpin, m_outputPrefetchSkipVisiblePendingThresholdSpin,
             m_outputDecoderLaneCountSpin, m_outputDecodeModeCombo,
+            m_outputDeterministicPipelineCheckBox, m_outputResetPipelineDefaultsButton,
             m_autosaveIntervalMinutesSpin, m_autosaveMaxBackupsSpin,
             m_createImageSequenceCheckBox, m_imageSequenceFormatCombo, m_renderButton},
         OutputTab::Dependencies{
@@ -155,7 +156,9 @@ void EditorWindow::createGradingTab()
             m_highlightsRSpin, m_highlightsGSpin, m_highlightsBSpin,
             m_gradingKeyframeTable,
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
-            m_gradingKeyAtPlayheadButton},
+            m_gradingKeyAtPlayheadButton,
+            m_inspectorPane->gradingCurveChannelCombo(),
+            m_inspectorPane->gradingHistogramWidget()},
         GradingTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
@@ -173,7 +176,20 @@ void EditorWindow::createGradingTab()
             [this]() -> QString { return m_timeline ? m_timeline->selectedClipId() : QString(); },
             [this](int64_t frame) { setCurrentFrame(frame); },
             {},
-            {}});
+            {},
+            [this]() -> QImage {
+                if (!m_preview || !m_timeline) {
+                    return QImage();
+                }
+                const QString clipId = m_timeline->selectedClipId();
+                if (clipId.isEmpty()) {
+                    return QImage();
+                }
+                return m_preview->latestPresentedFrameImageForClip(clipId);
+            },
+            [this]() -> bool {
+                return !playbackActive();
+            }});
     m_gradingTab->wire();
 }
 

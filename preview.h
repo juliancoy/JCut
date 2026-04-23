@@ -81,6 +81,7 @@ public:
     bool preparePlaybackAdvance(int64_t targetFrame);
     bool preparePlaybackAdvanceSample(int64_t targetSample);
     bool warmPlaybackLookahead(int futureFrames, int timeoutMs);
+    QImage latestPresentedFrameImageForClip(const QString& clipId) const;
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
     bool selectedOverlayIsTranscript() const {

@@ -317,6 +317,39 @@ QString PreviewWindow::activeAudioClipLabel() const {
     return QString();
 }
 
+QImage PreviewWindow::latestPresentedFrameImageForClip(const QString& clipId) const
+{
+    if (clipId.isEmpty()) {
+        return QImage();
+    }
+
+    const FrameHandle presented = m_lastPresentedFrames.value(clipId);
+    if (!presented.isNull() && presented.hasCpuImage()) {
+        return presented.cpuImage();
+    }
+
+    if (!m_cache) {
+        return QImage();
+    }
+
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.id != clipId || clip.durationFrames <= 0) {
+            continue;
+        }
+        const int64_t localFrame = qBound<int64_t>(
+            0,
+            static_cast<int64_t>(std::floor(m_currentFramePosition)) - clip.startFrame,
+            qMax<int64_t>(0, clip.durationFrames - 1));
+        const FrameHandle cached = m_cache->getCachedFrame(clip.id, localFrame);
+        if (!cached.isNull() && cached.hasCpuImage()) {
+            return cached.cpuImage();
+        }
+        break;
+    }
+
+    return QImage();
+}
+
 bool PreviewWindow::clipIdIsTitle(const QString& clipId) const {
     if (clipId.isEmpty()) {
         return false;

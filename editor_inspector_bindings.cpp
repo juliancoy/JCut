@@ -171,6 +171,8 @@ void EditorWindow::bindInspectorWidgets()
         m_inspectorPane->outputPrefetchSkipVisiblePendingThresholdSpin();
     m_outputDecoderLaneCountSpin = m_inspectorPane->outputDecoderLaneCountSpin();
     m_outputDecodeModeCombo = m_inspectorPane->outputDecodeModeCombo();
+    m_outputDeterministicPipelineCheckBox = m_inspectorPane->outputDeterministicPipelineCheckBox();
+    m_outputResetPipelineDefaultsButton = m_inspectorPane->outputResetPipelineDefaultsButton();
     m_createImageSequenceCheckBox = m_inspectorPane->renderCreateVideoFromSequenceCheckBox();
     m_autosaveIntervalMinutesSpin = m_inspectorPane->autosaveIntervalMinutesSpin();
     m_autosaveMaxBackupsSpin = m_inspectorPane->autosaveMaxBackupsSpin();
