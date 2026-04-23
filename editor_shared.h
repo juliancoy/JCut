@@ -283,6 +283,8 @@ bool clipHasAlpha(const TimelineClip& clip);
 
 int64_t frameToSamples(int64_t frame);
 qreal samplesToFramePosition(int64_t samples);
+qreal resolvedSourceFps(const TimelineClip& clip);
+int64_t sourceFramesToSamples(const TimelineClip& clip, qreal sourceFrames);
 int64_t clipTimelineStartSamples(const TimelineClip& clip);
 int64_t clipSourceInSamples(const TimelineClip& clip);
 void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples);

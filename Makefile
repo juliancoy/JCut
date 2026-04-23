@@ -898,6 +898,102 @@ control_server.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server.cpp.s
 .PHONY : control_server.cpp.s
 
+control_server_http_utils.o: control_server_http_utils.cpp.o
+.PHONY : control_server_http_utils.o
+
+# target to build an object file
+control_server_http_utils.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_http_utils.cpp.o
+.PHONY : control_server_http_utils.cpp.o
+
+control_server_http_utils.i: control_server_http_utils.cpp.i
+.PHONY : control_server_http_utils.i
+
+# target to preprocess a source file
+control_server_http_utils.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_http_utils.cpp.i
+.PHONY : control_server_http_utils.cpp.i
+
+control_server_http_utils.s: control_server_http_utils.cpp.s
+.PHONY : control_server_http_utils.s
+
+# target to generate assembly for a file
+control_server_http_utils.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_http_utils.cpp.s
+.PHONY : control_server_http_utils.cpp.s
+
+control_server_media_diag.o: control_server_media_diag.cpp.o
+.PHONY : control_server_media_diag.o
+
+# target to build an object file
+control_server_media_diag.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_media_diag.cpp.o
+.PHONY : control_server_media_diag.cpp.o
+
+control_server_media_diag.i: control_server_media_diag.cpp.i
+.PHONY : control_server_media_diag.i
+
+# target to preprocess a source file
+control_server_media_diag.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_media_diag.cpp.i
+.PHONY : control_server_media_diag.cpp.i
+
+control_server_media_diag.s: control_server_media_diag.cpp.s
+.PHONY : control_server_media_diag.s
+
+# target to generate assembly for a file
+control_server_media_diag.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_media_diag.cpp.s
+.PHONY : control_server_media_diag.cpp.s
+
+control_server_ui_utils.o: control_server_ui_utils.cpp.o
+.PHONY : control_server_ui_utils.o
+
+# target to build an object file
+control_server_ui_utils.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_ui_utils.cpp.o
+.PHONY : control_server_ui_utils.cpp.o
+
+control_server_ui_utils.i: control_server_ui_utils.cpp.i
+.PHONY : control_server_ui_utils.i
+
+# target to preprocess a source file
+control_server_ui_utils.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_ui_utils.cpp.i
+.PHONY : control_server_ui_utils.cpp.i
+
+control_server_ui_utils.s: control_server_ui_utils.cpp.s
+.PHONY : control_server_ui_utils.s
+
+# target to generate assembly for a file
+control_server_ui_utils.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_ui_utils.cpp.s
+.PHONY : control_server_ui_utils.cpp.s
+
+control_server_worker.o: control_server_worker.cpp.o
+.PHONY : control_server_worker.o
+
+# target to build an object file
+control_server_worker.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_worker.cpp.o
+.PHONY : control_server_worker.cpp.o
+
+control_server_worker.i: control_server_worker.cpp.i
+.PHONY : control_server_worker.i
+
+# target to preprocess a source file
+control_server_worker.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_worker.cpp.i
+.PHONY : control_server_worker.cpp.i
+
+control_server_worker.s: control_server_worker.cpp.s
+.PHONY : control_server_worker.s
+
+# target to generate assembly for a file
+control_server_worker.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/control_server_worker.cpp.s
+.PHONY : control_server_worker.cpp.s
+
 corrections_tab.o: corrections_tab.cpp.o
 .PHONY : corrections_tab.o
 
@@ -1258,29 +1354,149 @@ editor_setup.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_setup.cpp.s
 .PHONY : editor_setup.cpp.s
 
-editor_shared.o: editor_shared.cpp.o
-.PHONY : editor_shared.o
+editor_shared_effects.o: editor_shared_effects.cpp.o
+.PHONY : editor_shared_effects.o
 
 # target to build an object file
-editor_shared.cpp.o:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared.cpp.o
-.PHONY : editor_shared.cpp.o
+editor_shared_effects.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_effects.cpp.o
+.PHONY : editor_shared_effects.cpp.o
 
-editor_shared.i: editor_shared.cpp.i
-.PHONY : editor_shared.i
+editor_shared_effects.i: editor_shared_effects.cpp.i
+.PHONY : editor_shared_effects.i
 
 # target to preprocess a source file
-editor_shared.cpp.i:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared.cpp.i
-.PHONY : editor_shared.cpp.i
+editor_shared_effects.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_effects.cpp.i
+.PHONY : editor_shared_effects.cpp.i
 
-editor_shared.s: editor_shared.cpp.s
-.PHONY : editor_shared.s
+editor_shared_effects.s: editor_shared_effects.cpp.s
+.PHONY : editor_shared_effects.s
 
 # target to generate assembly for a file
-editor_shared.cpp.s:
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared.cpp.s
-.PHONY : editor_shared.cpp.s
+editor_shared_effects.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_effects.cpp.s
+.PHONY : editor_shared_effects.cpp.s
+
+editor_shared_keyframes.o: editor_shared_keyframes.cpp.o
+.PHONY : editor_shared_keyframes.o
+
+# target to build an object file
+editor_shared_keyframes.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_keyframes.cpp.o
+.PHONY : editor_shared_keyframes.cpp.o
+
+editor_shared_keyframes.i: editor_shared_keyframes.cpp.i
+.PHONY : editor_shared_keyframes.i
+
+# target to preprocess a source file
+editor_shared_keyframes.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_keyframes.cpp.i
+.PHONY : editor_shared_keyframes.cpp.i
+
+editor_shared_keyframes.s: editor_shared_keyframes.cpp.s
+.PHONY : editor_shared_keyframes.s
+
+# target to generate assembly for a file
+editor_shared_keyframes.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_keyframes.cpp.s
+.PHONY : editor_shared_keyframes.cpp.s
+
+editor_shared_media.o: editor_shared_media.cpp.o
+.PHONY : editor_shared_media.o
+
+# target to build an object file
+editor_shared_media.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_media.cpp.o
+.PHONY : editor_shared_media.cpp.o
+
+editor_shared_media.i: editor_shared_media.cpp.i
+.PHONY : editor_shared_media.i
+
+# target to preprocess a source file
+editor_shared_media.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_media.cpp.i
+.PHONY : editor_shared_media.cpp.i
+
+editor_shared_media.s: editor_shared_media.cpp.s
+.PHONY : editor_shared_media.s
+
+# target to generate assembly for a file
+editor_shared_media.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_media.cpp.s
+.PHONY : editor_shared_media.cpp.s
+
+editor_shared_render_sync.o: editor_shared_render_sync.cpp.o
+.PHONY : editor_shared_render_sync.o
+
+# target to build an object file
+editor_shared_render_sync.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_render_sync.cpp.o
+.PHONY : editor_shared_render_sync.cpp.o
+
+editor_shared_render_sync.i: editor_shared_render_sync.cpp.i
+.PHONY : editor_shared_render_sync.i
+
+# target to preprocess a source file
+editor_shared_render_sync.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_render_sync.cpp.i
+.PHONY : editor_shared_render_sync.cpp.i
+
+editor_shared_render_sync.s: editor_shared_render_sync.cpp.s
+.PHONY : editor_shared_render_sync.s
+
+# target to generate assembly for a file
+editor_shared_render_sync.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_render_sync.cpp.s
+.PHONY : editor_shared_render_sync.cpp.s
+
+editor_shared_timing.o: editor_shared_timing.cpp.o
+.PHONY : editor_shared_timing.o
+
+# target to build an object file
+editor_shared_timing.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_timing.cpp.o
+.PHONY : editor_shared_timing.cpp.o
+
+editor_shared_timing.i: editor_shared_timing.cpp.i
+.PHONY : editor_shared_timing.i
+
+# target to preprocess a source file
+editor_shared_timing.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_timing.cpp.i
+.PHONY : editor_shared_timing.cpp.i
+
+editor_shared_timing.s: editor_shared_timing.cpp.s
+.PHONY : editor_shared_timing.s
+
+# target to generate assembly for a file
+editor_shared_timing.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_timing.cpp.s
+.PHONY : editor_shared_timing.cpp.s
+
+editor_shared_transcript.o: editor_shared_transcript.cpp.o
+.PHONY : editor_shared_transcript.o
+
+# target to build an object file
+editor_shared_transcript.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_transcript.cpp.o
+.PHONY : editor_shared_transcript.cpp.o
+
+editor_shared_transcript.i: editor_shared_transcript.cpp.i
+.PHONY : editor_shared_transcript.i
+
+# target to preprocess a source file
+editor_shared_transcript.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_transcript.cpp.i
+.PHONY : editor_shared_transcript.cpp.i
+
+editor_shared_transcript.s: editor_shared_transcript.cpp.s
+.PHONY : editor_shared_transcript.s
+
+# target to generate assembly for a file
+editor_shared_transcript.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/editor_shared_transcript.cpp.s
+.PHONY : editor_shared_transcript.cpp.s
 
 editor_tabs.o: editor_tabs.cpp.o
 .PHONY : editor_tabs.o
@@ -1882,6 +2098,30 @@ preview_window_transcript.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/preview_window_transcript.cpp.s
 .PHONY : preview_window_transcript.cpp.s
 
+preview_window_transcript_gpu.o: preview_window_transcript_gpu.cpp.o
+.PHONY : preview_window_transcript_gpu.o
+
+# target to build an object file
+preview_window_transcript_gpu.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/preview_window_transcript_gpu.cpp.o
+.PHONY : preview_window_transcript_gpu.cpp.o
+
+preview_window_transcript_gpu.i: preview_window_transcript_gpu.cpp.i
+.PHONY : preview_window_transcript_gpu.i
+
+# target to preprocess a source file
+preview_window_transcript_gpu.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/preview_window_transcript_gpu.cpp.i
+.PHONY : preview_window_transcript_gpu.cpp.i
+
+preview_window_transcript_gpu.s: preview_window_transcript_gpu.cpp.s
+.PHONY : preview_window_transcript_gpu.s
+
+# target to generate assembly for a file
+preview_window_transcript_gpu.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/preview_window_transcript_gpu.cpp.s
+.PHONY : preview_window_transcript_gpu.cpp.s
+
 profile_tab.o: profile_tab.cpp.o
 .PHONY : profile_tab.o
 
@@ -2169,6 +2409,54 @@ timeline_cache.s: timeline_cache.cpp.s
 timeline_cache.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache.cpp.s
 .PHONY : timeline_cache.cpp.s
+
+timeline_cache_requests.o: timeline_cache_requests.cpp.o
+.PHONY : timeline_cache_requests.o
+
+# target to build an object file
+timeline_cache_requests.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache_requests.cpp.o
+.PHONY : timeline_cache_requests.cpp.o
+
+timeline_cache_requests.i: timeline_cache_requests.cpp.i
+.PHONY : timeline_cache_requests.i
+
+# target to preprocess a source file
+timeline_cache_requests.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache_requests.cpp.i
+.PHONY : timeline_cache_requests.cpp.i
+
+timeline_cache_requests.s: timeline_cache_requests.cpp.s
+.PHONY : timeline_cache_requests.s
+
+# target to generate assembly for a file
+timeline_cache_requests.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache_requests.cpp.s
+.PHONY : timeline_cache_requests.cpp.s
+
+timeline_cache_seek_resync.o: timeline_cache_seek_resync.cpp.o
+.PHONY : timeline_cache_seek_resync.o
+
+# target to build an object file
+timeline_cache_seek_resync.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache_seek_resync.cpp.o
+.PHONY : timeline_cache_seek_resync.cpp.o
+
+timeline_cache_seek_resync.i: timeline_cache_seek_resync.cpp.i
+.PHONY : timeline_cache_seek_resync.i
+
+# target to preprocess a source file
+timeline_cache_seek_resync.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache_seek_resync.cpp.i
+.PHONY : timeline_cache_seek_resync.cpp.i
+
+timeline_cache_seek_resync.s: timeline_cache_seek_resync.cpp.s
+.PHONY : timeline_cache_seek_resync.s
+
+# target to generate assembly for a file
+timeline_cache_seek_resync.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/editor.dir/build.make CMakeFiles/editor.dir/timeline_cache_seek_resync.cpp.s
+.PHONY : timeline_cache_seek_resync.cpp.s
 
 timeline_container.o: timeline_container.cpp.o
 .PHONY : timeline_container.o
@@ -2603,6 +2891,18 @@ help:
 	@echo "... control_server.o"
 	@echo "... control_server.i"
 	@echo "... control_server.s"
+	@echo "... control_server_http_utils.o"
+	@echo "... control_server_http_utils.i"
+	@echo "... control_server_http_utils.s"
+	@echo "... control_server_media_diag.o"
+	@echo "... control_server_media_diag.i"
+	@echo "... control_server_media_diag.s"
+	@echo "... control_server_ui_utils.o"
+	@echo "... control_server_ui_utils.i"
+	@echo "... control_server_ui_utils.s"
+	@echo "... control_server_worker.o"
+	@echo "... control_server_worker.i"
+	@echo "... control_server_worker.s"
 	@echo "... corrections_tab.o"
 	@echo "... corrections_tab.i"
 	@echo "... corrections_tab.s"
@@ -2648,9 +2948,24 @@ help:
 	@echo "... editor_setup.o"
 	@echo "... editor_setup.i"
 	@echo "... editor_setup.s"
-	@echo "... editor_shared.o"
-	@echo "... editor_shared.i"
-	@echo "... editor_shared.s"
+	@echo "... editor_shared_effects.o"
+	@echo "... editor_shared_effects.i"
+	@echo "... editor_shared_effects.s"
+	@echo "... editor_shared_keyframes.o"
+	@echo "... editor_shared_keyframes.i"
+	@echo "... editor_shared_keyframes.s"
+	@echo "... editor_shared_media.o"
+	@echo "... editor_shared_media.i"
+	@echo "... editor_shared_media.s"
+	@echo "... editor_shared_render_sync.o"
+	@echo "... editor_shared_render_sync.i"
+	@echo "... editor_shared_render_sync.s"
+	@echo "... editor_shared_timing.o"
+	@echo "... editor_shared_timing.i"
+	@echo "... editor_shared_timing.s"
+	@echo "... editor_shared_transcript.o"
+	@echo "... editor_shared_transcript.i"
+	@echo "... editor_shared_transcript.s"
 	@echo "... editor_tabs.o"
 	@echo "... editor_tabs.i"
 	@echo "... editor_tabs.s"
@@ -2726,6 +3041,9 @@ help:
 	@echo "... preview_window_transcript.o"
 	@echo "... preview_window_transcript.i"
 	@echo "... preview_window_transcript.s"
+	@echo "... preview_window_transcript_gpu.o"
+	@echo "... preview_window_transcript_gpu.i"
+	@echo "... preview_window_transcript_gpu.s"
 	@echo "... profile_tab.o"
 	@echo "... profile_tab.i"
 	@echo "... profile_tab.s"
@@ -2762,6 +3080,12 @@ help:
 	@echo "... timeline_cache.o"
 	@echo "... timeline_cache.i"
 	@echo "... timeline_cache.s"
+	@echo "... timeline_cache_requests.o"
+	@echo "... timeline_cache_requests.i"
+	@echo "... timeline_cache_requests.s"
+	@echo "... timeline_cache_seek_resync.o"
+	@echo "... timeline_cache_seek_resync.i"
+	@echo "... timeline_cache_seek_resync.s"
 	@echo "... timeline_container.o"
 	@echo "... timeline_container.i"
 	@echo "... timeline_container.s"
