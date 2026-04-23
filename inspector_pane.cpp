@@ -547,6 +547,10 @@ QWidget *InspectorPane::buildTitlesTab()
     styleRow->addWidget(m_titleBoldCheck);
     m_titleItalicCheck = new QCheckBox(QStringLiteral("Italic"));
     styleRow->addWidget(m_titleItalicCheck);
+    m_titleColorButton = new QPushButton(QStringLiteral("Color"));
+    m_titleColorButton->setToolTip(QStringLiteral("Title text color"));
+    m_titleColorButton->setStyleSheet(QStringLiteral("QPushButton { background: #ffffffff; color: #000000; }"));
+    styleRow->addWidget(m_titleColorButton);
     styleRow->addWidget(new QLabel(QStringLiteral("Opacity:")));
     m_titleOpacitySpin = new QDoubleSpinBox;
     m_titleOpacitySpin->setRange(0.0, 1.0);
@@ -555,6 +559,92 @@ QWidget *InspectorPane::buildTitlesTab()
     m_titleOpacitySpin->setValue(1.0);
     styleRow->addWidget(m_titleOpacitySpin);
     layout->addLayout(styleRow);
+
+    // Drop shadow row
+    auto *shadowRow = new QHBoxLayout;
+    m_titleShadowEnabledCheck = new QCheckBox(QStringLiteral("Shadow"));
+    m_titleShadowEnabledCheck->setChecked(true);
+    shadowRow->addWidget(m_titleShadowEnabledCheck);
+    m_titleShadowColorButton = new QPushButton(QStringLiteral("Shadow Color"));
+    m_titleShadowColorButton->setStyleSheet(QStringLiteral("QPushButton { background: #ff000000; color: #ffffff; }"));
+    shadowRow->addWidget(m_titleShadowColorButton);
+    shadowRow->addWidget(new QLabel(QStringLiteral("Opacity:")));
+    m_titleShadowOpacitySpin = new QDoubleSpinBox;
+    m_titleShadowOpacitySpin->setRange(0.0, 1.0);
+    m_titleShadowOpacitySpin->setDecimals(2);
+    m_titleShadowOpacitySpin->setSingleStep(0.05);
+    m_titleShadowOpacitySpin->setValue(0.6);
+    shadowRow->addWidget(m_titleShadowOpacitySpin);
+    shadowRow->addWidget(new QLabel(QStringLiteral("DX:")));
+    m_titleShadowOffsetXSpin = new QDoubleSpinBox;
+    m_titleShadowOffsetXSpin->setRange(-200.0, 200.0);
+    m_titleShadowOffsetXSpin->setDecimals(1);
+    m_titleShadowOffsetXSpin->setSingleStep(0.5);
+    m_titleShadowOffsetXSpin->setValue(2.0);
+    shadowRow->addWidget(m_titleShadowOffsetXSpin);
+    shadowRow->addWidget(new QLabel(QStringLiteral("DY:")));
+    m_titleShadowOffsetYSpin = new QDoubleSpinBox;
+    m_titleShadowOffsetYSpin->setRange(-200.0, 200.0);
+    m_titleShadowOffsetYSpin->setDecimals(1);
+    m_titleShadowOffsetYSpin->setSingleStep(0.5);
+    m_titleShadowOffsetYSpin->setValue(2.0);
+    shadowRow->addWidget(m_titleShadowOffsetYSpin);
+    layout->addLayout(shadowRow);
+
+    // Text window row
+    auto *windowRow = new QHBoxLayout;
+    m_titleWindowEnabledCheck = new QCheckBox(QStringLiteral("Window"));
+    windowRow->addWidget(m_titleWindowEnabledCheck);
+    m_titleWindowColorButton = new QPushButton(QStringLiteral("Window Color"));
+    m_titleWindowColorButton->setStyleSheet(
+        QStringLiteral("QPushButton { background: #ff000000; color: #ffffff; }"));
+    windowRow->addWidget(m_titleWindowColorButton);
+    windowRow->addWidget(new QLabel(QStringLiteral("Opacity:")));
+    m_titleWindowOpacitySpin = new QDoubleSpinBox;
+    m_titleWindowOpacitySpin->setRange(0.0, 1.0);
+    m_titleWindowOpacitySpin->setDecimals(2);
+    m_titleWindowOpacitySpin->setSingleStep(0.05);
+    m_titleWindowOpacitySpin->setValue(0.35);
+    windowRow->addWidget(m_titleWindowOpacitySpin);
+    windowRow->addWidget(new QLabel(QStringLiteral("Pad:")));
+    m_titleWindowPaddingSpin = new QDoubleSpinBox;
+    m_titleWindowPaddingSpin->setRange(0.0, 400.0);
+    m_titleWindowPaddingSpin->setDecimals(1);
+    m_titleWindowPaddingSpin->setSingleStep(1.0);
+    m_titleWindowPaddingSpin->setValue(16.0);
+    windowRow->addWidget(m_titleWindowPaddingSpin);
+    layout->addLayout(windowRow);
+
+    // Window frame row
+    auto *windowFrameRow = new QHBoxLayout;
+    m_titleWindowFrameEnabledCheck = new QCheckBox(QStringLiteral("Frame"));
+    windowFrameRow->addWidget(m_titleWindowFrameEnabledCheck);
+    m_titleWindowFrameColorButton = new QPushButton(QStringLiteral("Frame Color"));
+    m_titleWindowFrameColorButton->setStyleSheet(
+        QStringLiteral("QPushButton { background: #ffffffff; color: #000000; }"));
+    windowFrameRow->addWidget(m_titleWindowFrameColorButton);
+    windowFrameRow->addWidget(new QLabel(QStringLiteral("Opacity:")));
+    m_titleWindowFrameOpacitySpin = new QDoubleSpinBox;
+    m_titleWindowFrameOpacitySpin->setRange(0.0, 1.0);
+    m_titleWindowFrameOpacitySpin->setDecimals(2);
+    m_titleWindowFrameOpacitySpin->setSingleStep(0.05);
+    m_titleWindowFrameOpacitySpin->setValue(1.0);
+    windowFrameRow->addWidget(m_titleWindowFrameOpacitySpin);
+    windowFrameRow->addWidget(new QLabel(QStringLiteral("W:")));
+    m_titleWindowFrameWidthSpin = new QDoubleSpinBox;
+    m_titleWindowFrameWidthSpin->setRange(0.0, 120.0);
+    m_titleWindowFrameWidthSpin->setDecimals(1);
+    m_titleWindowFrameWidthSpin->setSingleStep(0.5);
+    m_titleWindowFrameWidthSpin->setValue(2.0);
+    windowFrameRow->addWidget(m_titleWindowFrameWidthSpin);
+    windowFrameRow->addWidget(new QLabel(QStringLiteral("Gap:")));
+    m_titleWindowFrameGapSpin = new QDoubleSpinBox;
+    m_titleWindowFrameGapSpin->setRange(0.0, 200.0);
+    m_titleWindowFrameGapSpin->setDecimals(1);
+    m_titleWindowFrameGapSpin->setSingleStep(1.0);
+    m_titleWindowFrameGapSpin->setValue(4.0);
+    windowFrameRow->addWidget(m_titleWindowFrameGapSpin);
+    layout->addLayout(windowFrameRow);
 
     // Buttons
     auto *buttonRow = new QHBoxLayout;
@@ -986,14 +1076,91 @@ QWidget *InspectorPane::buildOutputTab()
                         "border: 1px solid #2e3b4a; border-radius: 4px; padding: 4px 8px; }"));
     form->addRow(QStringLiteral("Background"), m_backgroundColorButton);
 
+    m_outputPlaybackCacheFallbackCheckBox =
+        new QCheckBox(QStringLiteral("Allow Cached-Frame Fallback During Playback"), page);
+    m_outputPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
+    m_outputPlaybackCacheFallbackCheckBox->setToolTip(
+        QStringLiteral("Reuse timeline-cache frames when decode misses during playback."));
+
+    m_outputLeadPrefetchEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Lead Prefetch"), page);
+    m_outputLeadPrefetchEnabledCheckBox->setChecked(editor::debugLeadPrefetchEnabled());
+    m_outputLeadPrefetchEnabledCheckBox->setToolTip(
+        QStringLiteral("Prefetch frames ahead of the playhead."));
+
+    auto *decodeForm = new QFormLayout();
+    m_outputLeadPrefetchCountSpin = new QSpinBox(page);
+    m_outputLeadPrefetchCountSpin->setRange(0, 8);
+    m_outputLeadPrefetchCountSpin->setValue(editor::debugLeadPrefetchCount());
+    decodeForm->addRow(QStringLiteral("Lead Prefetch Count"), m_outputLeadPrefetchCountSpin);
+
+    m_outputPlaybackWindowAheadSpin = new QSpinBox(page);
+    m_outputPlaybackWindowAheadSpin->setRange(1, 24);
+    m_outputPlaybackWindowAheadSpin->setValue(editor::debugPlaybackWindowAhead());
+    decodeForm->addRow(QStringLiteral("Playback Window Ahead"), m_outputPlaybackWindowAheadSpin);
+
+    m_outputVisibleQueueReserveSpin = new QSpinBox(page);
+    m_outputVisibleQueueReserveSpin->setRange(0, 64);
+    m_outputVisibleQueueReserveSpin->setValue(editor::debugVisibleQueueReserve());
+    decodeForm->addRow(QStringLiteral("Visible Queue Reserve"), m_outputVisibleQueueReserveSpin);
+
+    m_outputPrefetchMaxQueueDepthSpin = new QSpinBox(page);
+    m_outputPrefetchMaxQueueDepthSpin->setRange(1, 32);
+    m_outputPrefetchMaxQueueDepthSpin->setValue(editor::debugPrefetchMaxQueueDepth());
+    decodeForm->addRow(QStringLiteral("Prefetch Max Queue"), m_outputPrefetchMaxQueueDepthSpin);
+
+    m_outputPrefetchMaxInflightSpin = new QSpinBox(page);
+    m_outputPrefetchMaxInflightSpin->setRange(1, 16);
+    m_outputPrefetchMaxInflightSpin->setValue(editor::debugPrefetchMaxInflight());
+    decodeForm->addRow(QStringLiteral("Prefetch Max Inflight"), m_outputPrefetchMaxInflightSpin);
+
+    m_outputPrefetchMaxPerTickSpin = new QSpinBox(page);
+    m_outputPrefetchMaxPerTickSpin->setRange(1, 16);
+    m_outputPrefetchMaxPerTickSpin->setValue(editor::debugPrefetchMaxPerTick());
+    decodeForm->addRow(QStringLiteral("Prefetch Max Per Tick"), m_outputPrefetchMaxPerTickSpin);
+
+    m_outputPrefetchSkipVisiblePendingThresholdSpin = new QSpinBox(page);
+    m_outputPrefetchSkipVisiblePendingThresholdSpin->setRange(0, 16);
+    m_outputPrefetchSkipVisiblePendingThresholdSpin->setValue(editor::debugPrefetchSkipVisiblePendingThreshold());
+    decodeForm->addRow(QStringLiteral("Skip Visible Pending Threshold"),
+                       m_outputPrefetchSkipVisiblePendingThresholdSpin);
+
+    m_outputDecoderLaneCountSpin = new QSpinBox(page);
+    m_outputDecoderLaneCountSpin->setRange(0, 16);
+    m_outputDecoderLaneCountSpin->setSpecialValueText(QStringLiteral("Auto"));
+    m_outputDecoderLaneCountSpin->setValue(editor::debugDecoderLaneCount());
+    m_outputDecoderLaneCountSpin->setToolTip(
+        QStringLiteral("Decoder worker lane count. 0 uses automatic lane count."));
+    decodeForm->addRow(QStringLiteral("Decoder Lane Count"), m_outputDecoderLaneCountSpin);
+
+    m_outputDecodeModeCombo = new QComboBox(page);
+    m_outputDecodeModeCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("Hardware (CPU Upload)"), QStringLiteral("hardware"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("Hardware Zero-Copy (CUDA/VAAPI)"), QStringLiteral("hardware_zero_copy"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("Software (CPU)"), QStringLiteral("software"));
+    const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
+    const int decodeModeIndex = m_outputDecodeModeCombo->findData(decodeMode);
+    if (decodeModeIndex >= 0) {
+        m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
+    }
+    decodeForm->addRow(QStringLiteral("Decode Mode"), m_outputDecodeModeCombo);
+
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 
     layout->addWidget(m_outputRangeSummaryLabel);
     layout->addLayout(form);
     layout->addWidget(m_renderUseProxiesCheckBox);
     layout->addWidget(m_renderCreateVideoFromSequenceCheckBox);
+    layout->addSpacing(8);
+    layout->addWidget(createTabHeading(QStringLiteral("Decoder + Cache"), page));
+    layout->addWidget(m_outputPlaybackCacheFallbackCheckBox);
+    layout->addWidget(m_outputLeadPrefetchEnabledCheckBox);
+    layout->addLayout(decodeForm);
     layout->addWidget(m_renderButton);
     layout->addStretch(1);
+
+    if (m_outputLeadPrefetchCountSpin && m_outputLeadPrefetchEnabledCheckBox) {
+        m_outputLeadPrefetchCountSpin->setEnabled(m_outputLeadPrefetchEnabledCheckBox->isChecked());
+    }
 
     return page;
 }

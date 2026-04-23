@@ -80,6 +80,9 @@ private:
     void schedulePlaybackWindow(const ClipInfo& info,
                                 int64_t canonicalFrame,
                                 const std::function<void()>& onFrameReady);
+    void cancelDecoderBeforeThrottled(const QString& playbackPath,
+                                      int64_t keepFromFrame,
+                                      qint64 nowMs = -1);
 
     AsyncDecoder* m_decoder = nullptr;
 
@@ -91,6 +94,8 @@ private:
     QSet<QString> m_pendingVisibleRequests;
     QSet<QString> m_pendingPrefetchRequests;
     QHash<QString, int64_t> m_latestVisibleTargets;
+    QHash<QString, int64_t> m_lastCancelKeepFromByPath;
+    QHash<QString, qint64> m_lastCancelAtMsByPath;
 
     mutable QMutex m_markersMutex;
     QVector<RenderSyncMarker> m_renderSyncMarkers;

@@ -480,6 +480,14 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();
     root[QStringLiteral("previewPlaybackWindowAhead")] = editor::debugPlaybackWindowAhead();
     root[QStringLiteral("previewVisibleQueueReserve")] = editor::debugVisibleQueueReserve();
+    root[QStringLiteral("debugPrefetchMaxQueueDepth")] = editor::debugPrefetchMaxQueueDepth();
+    root[QStringLiteral("debugPrefetchMaxInflight")] = editor::debugPrefetchMaxInflight();
+    root[QStringLiteral("debugPrefetchMaxPerTick")] = editor::debugPrefetchMaxPerTick();
+    root[QStringLiteral("debugPrefetchSkipVisiblePendingThreshold")] =
+        editor::debugPrefetchSkipVisiblePendingThreshold();
+    root[QStringLiteral("debugDecoderLaneCount")] = editor::debugDecoderLaneCount();
+    root[QStringLiteral("debugDecodeMode")] =
+        editor::decodePreferenceToString(editor::debugDecodePreference());
     root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;
     root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
     root[QStringLiteral("speechFilterEnabled")] =

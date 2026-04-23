@@ -18,7 +18,7 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kVisibleDecodeKeepWindow = 2;
+constexpr int64_t kVisibleDecodeKeepWindow = 10;
 constexpr int64_t kObsoleteVisibleFrameSlack = 0;
 constexpr qint64 kVisiblePendingRetryMs = 250;
 
@@ -189,7 +189,7 @@ void TimelineCache::requestFrame(const QString& clipId,
 
     if (m_state.load() == PlaybackState::Playing && !info.isSingleFrame) {
         const int64_t keepFromFrame = qMax<int64_t>(0, canonicalFrame - kVisibleDecodeKeepWindow);
-        m_decoder->cancelForFileBefore(info.decodePath, keepFromFrame);
+        cancelDecoderBeforeThrottled(info.decodePath, keepFromFrame, requestedAtWallMs);
     }
 
     const int priority = calculatePriority(canonicalFrame);

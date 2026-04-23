@@ -3,6 +3,7 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QString>
+#include <functional>
 
 namespace editor {
 
@@ -46,6 +47,7 @@ int debugPrefetchMaxPerTick();
 int debugPrefetchSkipVisiblePendingThreshold();
 int debugVisibleQueueReserve();
 int debugPlaybackWindowAhead();
+int debugDecoderLaneCount();
 DecodePreference debugDecodePreference();
 bool debugPlayheadNoRepaint();
 bool debugPlaybackCacheFallbackEnabled();
@@ -64,6 +66,7 @@ void setDebugPrefetchMaxPerTick(int perTick);
 void setDebugPrefetchSkipVisiblePendingThreshold(int threshold);
 void setDebugVisibleQueueReserve(int reserve);
 void setDebugPlaybackWindowAhead(int ahead);
+void setDebugDecoderLaneCount(int count);
 void setDebugDecodePreference(DecodePreference preference);
 void setDebugPlayheadNoRepaint(bool enabled);
 void setDebugPlaybackCacheFallbackEnabled(bool enabled);
@@ -76,5 +79,8 @@ QString debugLogLevelToString(DebugLogLevel level);
 bool parseDebugLogLevel(const QString& text, DebugLogLevel* levelOut);
 QString decodePreferenceToString(DecodePreference preference);
 bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut);
+
+using DecoderLaneCountChangedCallback = std::function<void(int)>;
+void setDecoderLaneCountChangedCallback(DecoderLaneCountChangedCallback callback);
 
 } // namespace editor

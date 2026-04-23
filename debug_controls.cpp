@@ -4,6 +4,8 @@
 #include <QtGlobal>
 
 #include <atomic>
+#include <mutex>
+#include <utility>
 
 namespace editor {
 namespace {
@@ -19,6 +21,7 @@ constexpr int kDefaultPrefetchMaxPerTick = 8;
 constexpr int kDefaultPrefetchSkipVisiblePendingThreshold = 2;
 constexpr int kDefaultVisibleQueueReserve = 24;
 constexpr int kDefaultPlaybackWindowAhead = 16;
+constexpr int kDefaultDecoderLaneCount = 0; // 0 => auto lane count
 constexpr DecodePreference kDefaultDecodePreference = DecodePreference::Hardware;
 
 bool envFlagEnabled(const char* name) {
@@ -47,9 +50,12 @@ std::atomic<int> g_debugPrefetchMaxPerTick{kDefaultPrefetchMaxPerTick};
 std::atomic<int> g_debugPrefetchSkipVisiblePendingThreshold{kDefaultPrefetchSkipVisiblePendingThreshold};
 std::atomic<int> g_debugVisibleQueueReserve{kDefaultVisibleQueueReserve};
 std::atomic<int> g_debugPlaybackWindowAhead{kDefaultPlaybackWindowAhead};
+std::atomic<int> g_debugDecoderLaneCount{kDefaultDecoderLaneCount};
 std::atomic<int> g_decodePreference{static_cast<int>(kDefaultDecodePreference)};
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
 std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
+std::mutex g_decoderLaneCountCallbackMutex;
+DecoderLaneCountChangedCallback g_decoderLaneCountChangedCallback;
 
 }
 
@@ -231,6 +237,10 @@ int debugPlaybackWindowAhead() {
     return g_debugPlaybackWindowAhead.load();
 }
 
+int debugDecoderLaneCount() {
+    return g_debugDecoderLaneCount.load();
+}
+
 DecodePreference debugDecodePreference() {
     return static_cast<DecodePreference>(g_decodePreference.load());
 }
@@ -299,6 +309,23 @@ void setDebugPlaybackWindowAhead(int ahead) {
     g_debugPlaybackWindowAhead.store(qBound(1, ahead, 24));
 }
 
+void setDebugDecoderLaneCount(int count) {
+    const int clamped = qBound(0, count, 16);
+    const int previous = g_debugDecoderLaneCount.exchange(clamped);
+    if (previous == clamped) {
+        return;
+    }
+
+    DecoderLaneCountChangedCallback callback;
+    {
+        std::lock_guard<std::mutex> lock(g_decoderLaneCountCallbackMutex);
+        callback = g_decoderLaneCountChangedCallback;
+    }
+    if (callback) {
+        callback(clamped);
+    }
+}
+
 void setDebugDecodePreference(DecodePreference preference) {
     g_decodePreference.store(static_cast<int>(preference));
 }
@@ -327,6 +354,7 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("prefetch_skip_visible_pending_threshold"), debugPrefetchSkipVisiblePendingThreshold()},
         {QStringLiteral("visible_queue_reserve"), debugVisibleQueueReserve()},
         {QStringLiteral("playback_window_ahead"), debugPlaybackWindowAhead()},
+        {QStringLiteral("decoder_lane_count"), debugDecoderLaneCount()},
         {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())},
         {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()},
         {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()}
@@ -410,6 +438,10 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
         setDebugPlaybackWindowAhead(value.toInt());
         return true;
     }
+    if (name == QStringLiteral("decoder_lane_count") && value.isDouble()) {
+        setDebugDecoderLaneCount(value.toInt());
+        return true;
+    }
     if (name == QStringLiteral("decode_mode") && value.isString()) {
         DecodePreference preference = DecodePreference::Auto;
         if (!parseDecodePreference(value.toString(), &preference)) {
@@ -427,6 +459,11 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
         return true;
     }
     return false;
+}
+
+void setDecoderLaneCountChangedCallback(DecoderLaneCountChangedCallback callback) {
+    std::lock_guard<std::mutex> lock(g_decoderLaneCountCallbackMutex);
+    g_decoderLaneCountChangedCallback = std::move(callback);
 }
 
 } // namespace editor

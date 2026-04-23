@@ -74,7 +74,8 @@ private:
                                    ProxyFormat format = ProxyFormat::ImageSequence) const;
     QString clipFileInfoSummary(const QString &filePath,
                                 const MediaProbeResult *knownProbe = nullptr) const;
-    void createProxyForClip(const QString &clipId);
+    void createProxyForClip(const QString &clipId, bool continueGeneration = false);
+    void continueProxyForClip(const QString &clipId);
     void deleteProxyForClip(const QString &clipId);
     void requestAutoSyncForSelection(const QSet<QString>& selectedClipIds);
 
@@ -316,6 +317,17 @@ private:
     QComboBox *m_outputFormatCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
+    QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;
+    QCheckBox *m_outputLeadPrefetchEnabledCheckBox = nullptr;
+    QSpinBox *m_outputLeadPrefetchCountSpin = nullptr;
+    QSpinBox *m_outputPlaybackWindowAheadSpin = nullptr;
+    QSpinBox *m_outputVisibleQueueReserveSpin = nullptr;
+    QSpinBox *m_outputPrefetchMaxQueueDepthSpin = nullptr;
+    QSpinBox *m_outputPrefetchMaxInflightSpin = nullptr;
+    QSpinBox *m_outputPrefetchMaxPerTickSpin = nullptr;
+    QSpinBox *m_outputPrefetchSkipVisiblePendingThresholdSpin = nullptr;
+    QSpinBox *m_outputDecoderLaneCountSpin = nullptr;
+    QComboBox *m_outputDecodeModeCombo = nullptr;
     QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
     QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QCheckBox *m_createImageSequenceCheckBox = nullptr;

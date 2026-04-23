@@ -28,6 +28,7 @@ struct GlTextureCacheEntry {
 };
 
 bool frameUsesCudaZeroCopyCandidate(const FrameHandle& frame);
+bool frameUsesVaapiZeroCopyCandidate(const FrameHandle& frame);
 bool uploadCudaNv12FrameToTextures(const FrameHandle& frame, GLuint textureId, GLuint uvTextureId);
 
 QString textureCacheKey(const FrameHandle& frame);

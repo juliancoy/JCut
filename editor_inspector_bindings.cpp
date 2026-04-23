@@ -159,6 +159,19 @@ void EditorWindow::bindInspectorWidgets()
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
+    m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
+    m_outputLeadPrefetchEnabledCheckBox = m_inspectorPane->outputLeadPrefetchEnabledCheckBox();
+    m_outputLeadPrefetchCountSpin = m_inspectorPane->outputLeadPrefetchCountSpin();
+    m_outputPlaybackWindowAheadSpin = m_inspectorPane->outputPlaybackWindowAheadSpin();
+    m_outputVisibleQueueReserveSpin = m_inspectorPane->outputVisibleQueueReserveSpin();
+    m_outputPrefetchMaxQueueDepthSpin = m_inspectorPane->outputPrefetchMaxQueueDepthSpin();
+    m_outputPrefetchMaxInflightSpin = m_inspectorPane->outputPrefetchMaxInflightSpin();
+    m_outputPrefetchMaxPerTickSpin = m_inspectorPane->outputPrefetchMaxPerTickSpin();
+    m_outputPrefetchSkipVisiblePendingThresholdSpin =
+        m_inspectorPane->outputPrefetchSkipVisiblePendingThresholdSpin();
+    m_outputDecoderLaneCountSpin = m_inspectorPane->outputDecoderLaneCountSpin();
+    m_outputDecodeModeCombo = m_inspectorPane->outputDecodeModeCombo();
+    m_createImageSequenceCheckBox = m_inspectorPane->renderCreateVideoFromSequenceCheckBox();
     m_autosaveIntervalMinutesSpin = m_inspectorPane->autosaveIntervalMinutesSpin();
     m_autosaveMaxBackupsSpin = m_inspectorPane->autosaveMaxBackupsSpin();
     m_renderButton = m_inspectorPane->renderButton();

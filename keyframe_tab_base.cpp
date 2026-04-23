@@ -221,9 +221,12 @@ KeyframeTabBase::ContextMenuActions KeyframeTabBase::buildStandardContextMenu(
 bool KeyframeTabBase::eventFilter(QObject* watched, QEvent* event)
 {
     if (event->type() == QEvent::KeyPress) {
-        auto* keyEvent = static_cast<QKeyEvent*>(event);
-        if (handleTableKeyPress(keyEvent)) {
-            return true;
+        // Delete/Backspace row-removal shortcuts must only run for keyframe tables.
+        if (qobject_cast<QTableWidget*>(watched) != nullptr) {
+            auto* keyEvent = static_cast<QKeyEvent*>(event);
+            if (handleTableKeyPress(keyEvent)) {
+                return true;
+            }
         }
     }
     return QObject::eventFilter(watched, event);

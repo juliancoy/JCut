@@ -219,6 +219,9 @@ private:
     QString requestKey(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const ClipInfo& info, int64_t frameNumber) const;
+    void cancelDecoderBeforeThrottled(const QString& decodePath,
+                                      int64_t keepFromFrame,
+                                      qint64 nowMs = -1);
     void dropStaleRequestsForPlayhead(int64_t playheadFrame);
     void beginSeekResyncForPlayhead(int64_t playheadFrame);
     void scheduleImmediateLeadPrefetch(const ClipInfo& info, int64_t canonicalFrame);
@@ -248,6 +251,8 @@ private:
     QHash<QString, PendingVisibleRequest> m_pendingVisibleRequests;
     QSet<QString> m_pendingPrefetchRequests;
     QHash<QString, int64_t> m_latestVisibleTargets;
+    QHash<QString, int64_t> m_lastCancelKeepFromByPath;
+    QHash<QString, qint64> m_lastCancelAtMsByPath;
     TimelineCacheSeekResyncTracker m_seekResync;
     
     // Export ranges for speech filter awareness

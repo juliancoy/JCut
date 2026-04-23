@@ -54,6 +54,7 @@ public:
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
     void setTranscriptOverlayInteractionEnabled(bool enabled);
+    void setTitleOverlayInteractionOnly(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
         if (m_correctionDrawMode == enabled) {
             return;
@@ -67,6 +68,7 @@ public:
     }
     bool correctionDrawMode() const { return m_correctionDrawMode; }
     bool transcriptOverlayInteractionEnabled() const { return m_transcriptOverlayInteractionEnabled; }
+    bool titleOverlayInteractionOnly() const { return m_titleOverlayInteractionOnly; }
     void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_correctionDraftPoints = points; update(); }
     qreal previewZoom() const { return m_previewZoom; }
     void resetPreviewPan() { m_previewPanOffset = QPointF(); }
@@ -78,6 +80,7 @@ public:
     QString activeAudioClipLabel() const;
     bool preparePlaybackAdvance(int64_t targetFrame);
     bool preparePlaybackAdvanceSample(int64_t targetSample);
+    bool warmPlaybackLookahead(int futureFrames, int timeoutMs);
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
     bool selectedOverlayIsTranscript() const {
@@ -157,6 +160,7 @@ private:
     GLuint textureForFrame(const FrameHandle& frame);
     void trimTextureCache();
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
+    bool hasPlaybackLookaheadBuffered(int futureFrames) const;
     int64_t sourceSampleForPlaybackSample(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
     bool isFrameTooStaleForPlayback(const TimelineClip& clip,
@@ -194,6 +198,7 @@ private:
     QPointF mapScreenPointToNormalizedClip(const PreviewOverlayInfo& info, const QPointF& screenPoint) const;
     void drawPreviewChrome(QPainter* painter, const QRect& safeRect, int activeClipCount) const;
     QString clipIdAtPosition(const QPointF& position) const;
+    bool clipIdIsTitle(const QString& clipId) const;
     TimelineClip::TransformKeyframe evaluateTransformForSelectedClip() const;
     void updatePreviewCursor(const QPointF& position);
 
@@ -254,8 +259,10 @@ private:
     QPointF m_dragOriginPos;
     QRectF m_dragOriginBounds;
     TimelineClip::TransformKeyframe m_dragOriginTransform;
+    QPointF m_dragOriginTranscriptTranslation;
     bool m_correctionDrawMode = false;
     bool m_transcriptOverlayInteractionEnabled = false;
+    bool m_titleOverlayInteractionOnly = false;
     bool m_showCorrectionOverlays = false;
     int m_selectedCorrectionPolygon = -1;
     QVector<QPointF> m_correctionDraftPoints;

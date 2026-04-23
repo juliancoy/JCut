@@ -3,6 +3,7 @@
 #include "debug_controls.h"
 #include "decode_trace.h"
 #include "decoder_context.h"
+#include "decoder_image_io.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -31,6 +32,8 @@ namespace editor {
 
 namespace {
 constexpr int64_t kImageSequenceLaneShardSize = 8;
+constexpr int64_t kVideoLaneShardSize = 24;
+constexpr int kMaxDecoderLaneCount = 16;
 } // namespace
 
 struct AsyncDecoder::LaneState {
@@ -73,9 +76,18 @@ bool AsyncDecoder::initialize() {
         return true;
     }
 
-    m_workerCount = qBound(2, QThread::idealThreadCount(), 6);
+    m_workerCount = resolveWorkerCount(debugDecoderLaneCount());
     m_lanes.reserve(m_workerCount);
     m_shuttingDown = false;
+
+    setDecoderLaneCountChangedCallback([this](int laneCount) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, laneCount]() {
+                setWorkerCount(laneCount);
+            },
+            Qt::QueuedConnection);
+    });
 
     // Create one shared hw device context per supported type.
     // Worker threads borrow a ref instead of creating their own.
@@ -93,6 +105,7 @@ bool AsyncDecoder::initialize() {
 }
 
 void AsyncDecoder::shutdown() {
+    setDecoderLaneCountChangedCallback({});
     m_shuttingDown = true;
     for (const auto& lane : m_lanes) {
         stopLane(lane.get());
@@ -101,6 +114,35 @@ void AsyncDecoder::shutdown() {
     releaseSharedHwDevices();
     m_initialized = false;
     m_workerCount = 0;
+}
+
+void AsyncDecoder::setWorkerCount(int workerCount) {
+    const int targetWorkerCount = resolveWorkerCount(workerCount);
+    if (targetWorkerCount == m_workerCount) {
+        return;
+    }
+
+    if (!m_initialized) {
+        m_workerCount = targetWorkerCount;
+        return;
+    }
+
+    cancelAll();
+    for (const auto& lane : m_lanes) {
+        stopLane(lane.get());
+    }
+    m_lanes.clear();
+
+    m_workerCount = targetWorkerCount;
+    m_lanes.reserve(m_workerCount);
+    for (int i = 0; i < m_workerCount; ++i) {
+        auto lane = std::make_unique<LaneState>(i);
+        startLane(lane.get());
+        m_lanes.push_back(std::move(lane));
+    }
+
+    qDebug() << "AsyncDecoder reconfigured to" << m_workerCount << "workers";
+    emit queuePressureChanged(totalPendingRequests());
 }
 
 uint64_t AsyncDecoder::requestFrame(const QString& path,
@@ -122,7 +164,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                                     int timeoutMs,
                                     DecodeRequestKind kind,
                                     std::function<void(FrameHandle)> callback) {
-    LaneState* lane = laneForRequest(path, frameNumber);
+    LaneState* lane = laneForRequest(path, frameNumber, kind);
     if (!lane || m_shuttingDown) {
         invokeRequestCallback(std::move(callback), FrameHandle());
         return 0;
@@ -403,6 +445,13 @@ void AsyncDecoder::trimCaches() {
     }
 }
 
+int AsyncDecoder::resolveWorkerCount(int requestedCount) const {
+    if (requestedCount > 0) {
+        return qBound(1, requestedCount, kMaxDecoderLaneCount);
+    }
+    return qBound(2, QThread::idealThreadCount(), 6);
+}
+
 int AsyncDecoder::totalPendingRequests() const {
     int total = 0;
     for (const auto& lane : m_lanes) {
@@ -412,7 +461,9 @@ int AsyncDecoder::totalPendingRequests() const {
     return total;
 }
 
-int AsyncDecoder::laneIndexForRequest(const QString& path, int64_t frameNumber) const {
+int AsyncDecoder::laneIndexForRequest(const QString& path,
+                                      int64_t frameNumber,
+                                      DecodeRequestKind kind) const {
     if (m_lanes.empty()) {
         return -1;
     }
@@ -420,20 +471,34 @@ int AsyncDecoder::laneIndexForRequest(const QString& path, int64_t frameNumber) 
     const uint laneCount = static_cast<uint>(m_lanes.size());
     const uint baseHash = qHash(path);
 
-    if (!isImageSequencePath(path) || laneCount == 1) {
+    if (laneCount == 1 || isStillImagePath(path)) {
         return static_cast<int>(baseHash % laneCount);
     }
 
-    // For image sequences: use round-robin distribution for better parallelism
-    // Original: shard = frameNumber / 8 (groups 8 frames together - bad for sequential)
-    // New: frameNumber % laneCount (perfect round-robin for sequential playback)
-    // Still include baseHash to distribute different sequences across lanes
-    const uint frameHash = static_cast<uint>(qMax<int64_t>(0, frameNumber));
-    return static_cast<int>((baseHash + frameHash) % laneCount);
+    if (isImageSequencePath(path)) {
+        // Image sequences benefit from aggressive striping because random access
+        // cost is dominated by per-frame file I/O and decode.
+        const uint frameHash = static_cast<uint>(qMax<int64_t>(0, frameNumber));
+        return static_cast<int>((baseHash + frameHash) % laneCount);
+    }
+
+    // For regular video, keep nearby frames on the same lane while allowing
+    // seeks/prefetch windows to fan out across workers.
+    const bool shouldShardVideo =
+        laneCount > 2 && kind != DecodeRequestKind::Visible;
+    if (!shouldShardVideo) {
+        return static_cast<int>(baseHash % laneCount);
+    }
+
+    const uint frameShard =
+        static_cast<uint>(qMax<int64_t>(0, frameNumber) / kVideoLaneShardSize);
+    return static_cast<int>((baseHash + frameShard) % laneCount);
 }
 
-AsyncDecoder::LaneState* AsyncDecoder::laneForRequest(const QString& path, int64_t frameNumber) const {
-    const int index = laneIndexForRequest(path, frameNumber);
+AsyncDecoder::LaneState* AsyncDecoder::laneForRequest(const QString& path,
+                                                      int64_t frameNumber,
+                                                      DecodeRequestKind kind) const {
+    const int index = laneIndexForRequest(path, frameNumber, kind);
     if (index < 0 || index >= m_lanes.size()) {
         return nullptr;
     }
@@ -446,8 +511,10 @@ std::vector<AsyncDecoder::LaneState*> AsyncDecoder::lanesForPath(const QString& 
         return lanes;
     }
 
-    if (!isImageSequencePath(path)) {
-        if (LaneState* lane = laneForRequest(path, 0)) {
+    const bool shardedPath =
+        isImageSequencePath(path) || (!isStillImagePath(path) && m_lanes.size() > 2);
+    if (!shardedPath) {
+        if (LaneState* lane = laneForRequest(path, 0, DecodeRequestKind::Visible)) {
             lanes.push_back(lane);
         }
         return lanes;
@@ -459,6 +526,7 @@ std::vector<AsyncDecoder::LaneState*> AsyncDecoder::lanesForPath(const QString& 
     }
     return lanes;
 }
+
 
 void AsyncDecoder::startLane(LaneState* lane) {
     if (!lane || lane->thread) {

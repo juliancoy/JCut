@@ -254,7 +254,9 @@ public:
                 }
                 
                 const int64_t localFrame = timelineFrame - clip.startFrame;
-                const EvaluatedTitle title = evaluateTitleAtLocalFrame(clip, localFrame);
+                const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+                const EvaluatedTitle title =
+                    composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(grade.opacity));
                 if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
                     continue;
                 }
@@ -288,7 +290,8 @@ public:
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
                 
                 // Convert QImage to RGBA format for OpenGL
-                QImage rgbaImage = titleImage.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+                // Feed title overlays as straight-alpha RGBA and skip shader unpremultiply.
+                QImage rgbaImage = titleImage.convertToFormat(QImage::Format_RGBA8888);
                 glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rgbaImage.width(), rgbaImage.height(), 0,
                             GL_RGBA, GL_UNSIGNED_BYTE, rgbaImage.constBits());
                 
@@ -325,24 +328,23 @@ public:
                 QElapsedTimer compositeTimer;
                 compositeTimer.start();
                 
-                // Apply opacity from grading effects
-                const float titleOpacity = grade.opacity * static_cast<float>(title.opacity);
-                
                 m_shaderProgram->bind();
                 m_shaderProgram->setUniformValue("u_mvp", projection * model);
                 m_shaderProgram->setUniformValue("u_brightness", 0.0f); // No brightness adjustment for titles
                 m_shaderProgram->setUniformValue("u_contrast", 1.0f);   // No contrast adjustment for titles
                 m_shaderProgram->setUniformValue("u_saturation", 1.0f); // No saturation adjustment for titles
-                m_shaderProgram->setUniformValue("u_opacity", titleOpacity);
-                m_shaderProgram->setUniformValue("u_shadows", QVector3D(1.0f, 1.0f, 1.0f));
-                m_shaderProgram->setUniformValue("u_midtones", QVector3D(1.0f, 1.0f, 1.0f));
-                m_shaderProgram->setUniformValue("u_highlights", QVector3D(1.0f, 1.0f, 1.0f));
+                m_shaderProgram->setUniformValue("u_opacity", 1.0f);
+                // Neutral color grading for titles: avoid tint/brightening drift.
+                m_shaderProgram->setUniformValue("u_shadows", QVector3D(0.0f, 0.0f, 0.0f));
+                m_shaderProgram->setUniformValue("u_midtones", QVector3D(0.0f, 0.0f, 0.0f));
+                m_shaderProgram->setUniformValue("u_highlights", QVector3D(0.0f, 0.0f, 0.0f));
                 m_shaderProgram->setUniformValue("u_feather_radius", 0.0f);
                 m_shaderProgram->setUniformValue("u_feather_gamma", 1.0f);
                 m_shaderProgram->setUniformValue("u_texel_size", QVector2D(0.0f, 0.0f));
                 m_shaderProgram->setUniformValue("u_texture", 0);
                 m_shaderProgram->setUniformValue("u_texture_uv", 1);
                 m_shaderProgram->setUniformValue("u_texture_mode", 0.0f); // RGB texture mode
+                m_shaderProgram->setUniformValue("u_unpremultiply_input", 0.0f);
 
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, titleTextureEntry.textureId);
@@ -502,6 +504,7 @@ public:
             m_shaderProgram->setUniformValue("u_texture", 0);
             m_shaderProgram->setUniformValue("u_texture_uv", 1);
             m_shaderProgram->setUniformValue("u_texture_mode", textureEntry->usesYuvTextures ? 1.0f : 0.0f);
+            m_shaderProgram->setUniformValue("u_unpremultiply_input", 1.0f);
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, textureEntry->textureId);
@@ -809,7 +812,9 @@ QImage renderTimelineFrame(const RenderRequest& request,
             }
             
             const int64_t localFrame = timelineFrame - clip.startFrame;
-            const EvaluatedTitle title = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle title =
+                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
             if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
                 continue;
             }

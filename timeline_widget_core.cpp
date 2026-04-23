@@ -304,6 +304,7 @@ void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     m_clips = clips;
     for (TimelineClip& clip : m_clips) {
         normalizeClipTiming(clip);
+        refreshClipAudioSource(clip);
     }
     normalizeTrackIndices();
     sortClips();
@@ -384,6 +385,7 @@ bool TimelineWidget::updateClipById(const QString& clipId, const std::function<v
         if (clip.id == clipId) {
             updater(clip);
             normalizeClipTiming(clip);
+            refreshClipAudioSource(clip);
             update();
             return true;
         }

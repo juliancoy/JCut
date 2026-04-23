@@ -120,6 +120,7 @@ public:
     std::function<void()> renderSyncMarkersChanged;
     std::function<void(const QString&, const QString&)> transcribeRequested;
     std::function<void(const QString&)> createProxyRequested;
+    std::function<void(const QString&)> continueProxyRequested;
     std::function<void(const QString&)> deleteProxyRequested;
     std::function<void(const QSet<QString>&)> syncRequested;
     std::function<void()> exportRangeChanged;
@@ -272,6 +273,7 @@ private:
     int64_t m_dragOriginalDurationFrames = 0;
     int64_t m_dragOriginalSourceInFrame = 0;
     QVector<TimelineClip::TransformKeyframe> m_dragOriginalTransformKeyframes;
+    QVector<TimelineClip::TitleKeyframe> m_dragOriginalTitleKeyframes;
     int64_t m_dragOffsetFrames = 0;
     QSet<QString> m_dragMoveClipIds;
     QHash<QString, int64_t> m_dragMoveOriginalStartFrames;

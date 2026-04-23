@@ -59,8 +59,12 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
     }
 
     const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
+    const bool selectedClipIsTitle = clipIdIsTitle(m_selectedClipId);
+    const bool allowSelectedClipInteraction =
+        !m_titleOverlayInteractionOnly || selectedClipIsTitle;
     const bool transcriptOverlayInteractive =
-        selectedInfo.kind != PreviewOverlayKind::TranscriptOverlay || m_transcriptOverlayInteractionEnabled;
+        (selectedInfo.kind != PreviewOverlayKind::TranscriptOverlay || m_transcriptOverlayInteractionEnabled) &&
+        allowSelectedClipInteraction;
     if (!m_selectedClipId.isEmpty()) {
         if (transcriptOverlayInteractive) {
             if (selectedInfo.cornerHandle.contains(event->position())) m_dragMode = PreviewDragMode::ResizeBoth;
@@ -72,12 +76,26 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
             m_dragOriginPos = event->position();
             m_dragOriginTransform = evaluateTransformForSelectedClip();
             m_dragOriginBounds = selectedInfo.bounds;
+            m_dragOriginTranscriptTranslation = QPointF();
+            if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
+                for (const TimelineClip& clip : m_clips) {
+                    if (clip.id == m_selectedClipId) {
+                        m_dragOriginTranscriptTranslation = QPointF(
+                            clip.transcriptOverlay.translationX,
+                            clip.transcriptOverlay.translationY);
+                        break;
+                    }
+                }
+            }
             event->accept();
             return;
         }
     }
 
-    const QString hitClipId = clipIdAtPosition(event->position());
+    QString hitClipId = clipIdAtPosition(event->position());
+    if (m_titleOverlayInteractionOnly && !clipIdIsTitle(hitClipId)) {
+        hitClipId.clear();
+    }
     if (!hitClipId.isEmpty()) {
         m_selectedClipId = hitClipId;
         if (selectionRequested) selectionRequested(hitClipId);
@@ -102,6 +120,10 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
         return;
     }
 
+    if (m_titleOverlayInteractionOnly && !clipIdIsTitle(m_selectedClipId)) {
+        m_dragMode = PreviewDragMode::None;
+    }
+
     if (m_dragMode != PreviewDragMode::None && (event->buttons() & Qt::LeftButton) &&
         !m_selectedClipId.isEmpty() && m_dragOriginBounds.width() > 1.0 && m_dragOriginBounds.height() > 1.0) {
         
@@ -119,16 +141,12 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
                     qMax<qreal>(0.0001, previewScale.y());
 
                 if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
-                    for (const TimelineClip& clip : m_clips) {
-                        if (clip.id == m_selectedClipId) {
-                            moveRequested(m_selectedClipId,
-                                          clip.transcriptOverlay.translationX + deltaX,
-                                          clip.transcriptOverlay.translationY + deltaY,
-                                          false);
-                            event->accept();
-                            return;
-                        }
-                    }
+                    moveRequested(m_selectedClipId,
+                                  m_dragOriginTranscriptTranslation.x() + deltaX,
+                                  m_dragOriginTranscriptTranslation.y() + deltaY,
+                                  false);
+                    event->accept();
+                    return;
                 }
 
                 moveRequested(m_selectedClipId,
@@ -241,6 +259,7 @@ void PreviewWindow::mouseReleaseEvent(QMouseEvent* event) {
         
         m_dragMode = PreviewDragMode::None;
         m_dragOriginBounds = QRectF();
+        m_dragOriginTranscriptTranslation = QPointF();
         updatePreviewCursor(event->position());
         event->accept();
         return;
@@ -272,7 +291,10 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
 }
 
 void PreviewWindow::contextMenuEvent(QContextMenuEvent* event) {
-    const QString hitClipId = clipIdAtPosition(event->pos());
+    QString hitClipId = clipIdAtPosition(event->pos());
+    if (m_titleOverlayInteractionOnly && !clipIdIsTitle(hitClipId)) {
+        hitClipId.clear();
+    }
     if (hitClipId.isEmpty()) {
         QWidget::contextMenuEvent(event);
         return;
@@ -338,6 +360,10 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
     }
 
     const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
+    if (m_titleOverlayInteractionOnly && !clipIdIsTitle(m_selectedClipId)) {
+        unsetCursor();
+        return;
+    }
     if (!m_transcriptOverlayInteractionEnabled &&
         info.kind == PreviewOverlayKind::TranscriptOverlay) {
         unsetCursor();

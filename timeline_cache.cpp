@@ -23,11 +23,13 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kVisibleDecodeKeepWindow = 2;
+constexpr int64_t kVisibleDecodeKeepWindow = 10;
 constexpr int64_t kObsoleteVisibleFrameSlack = 0;
 constexpr int64_t kSeekGenerationDeltaFrames = 6;
 constexpr qint64 kVisiblePendingRetryMs = 250;
 constexpr qint64 kSeekResyncWindowMs = 400;
+constexpr qint64 kCancelBeforeMinIntervalMs = 45;
+constexpr int64_t kCancelBeforeMinFrameAdvance = 6;
 
 QElapsedTimer& cacheTraceTimer() {
     static QElapsedTimer timer = []() {
@@ -638,6 +640,8 @@ void TimelineCache::registerClip(const QString& id, const QString& path,
 void TimelineCache::unregisterClip(const QString& id) {
     QMutexLocker lock(&m_clipsMutex);
 
+    const QString decodePath =
+        m_clips.contains(id) ? m_clips.value(id).decodePath : QString();
     m_clips.remove(id);
     ClipCache* cache = m_caches.take(id);
     PlaybackBuffer* playbackBuffer = m_playbackBuffers.take(id);
@@ -647,6 +651,10 @@ void TimelineCache::unregisterClip(const QString& id) {
 
     QMutexLocker pendingLock(&m_pendingMutex);
     m_latestVisibleTargets.remove(id);
+    if (!decodePath.isEmpty()) {
+        m_lastCancelKeepFromByPath.remove(decodePath);
+        m_lastCancelAtMsByPath.remove(decodePath);
+    }
 }
 
 void TimelineCache::clearClips() {
@@ -666,6 +674,8 @@ void TimelineCache::clearClips() {
 
     QMutexLocker pendingLock(&m_pendingMutex);
     m_latestVisibleTargets.clear();
+    m_lastCancelKeepFromByPath.clear();
+    m_lastCancelAtMsByPath.clear();
 }
 
 FrameHandle TimelineCache::getCachedFrame(const QString& clipId, int64_t frameNumber) {
@@ -1020,9 +1030,40 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
             if (clipIt == m_clips.end() || clipIt->decodePath.isEmpty()) {
                 continue;
             }
-            const int64_t keepFromFrame = qMax<int64_t>(0, it.value() - 2);
-            m_decoder->cancelForFileBefore(clipIt->decodePath, keepFromFrame);
+            const int64_t keepFromFrame = qMax<int64_t>(0, it.value() - kVisibleDecodeKeepWindow);
+            cancelDecoderBeforeThrottled(clipIt->decodePath, keepFromFrame);
         }
+    }
+}
+
+void TimelineCache::cancelDecoderBeforeThrottled(const QString& decodePath,
+                                                 int64_t keepFromFrame,
+                                                 qint64 nowMs) {
+    if (!m_decoder || decodePath.isEmpty()) {
+        return;
+    }
+    if (nowMs < 0) {
+        nowMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
+    bool shouldCancel = false;
+    {
+        QMutexLocker pendingLock(&m_pendingMutex);
+        const int64_t previousKeepFrom =
+            m_lastCancelKeepFromByPath.value(decodePath, std::numeric_limits<int64_t>::min());
+        const qint64 previousCancelAt = m_lastCancelAtMsByPath.value(decodePath, 0);
+        const bool advancedEnough =
+            keepFromFrame >= previousKeepFrom + kCancelBeforeMinFrameAdvance;
+        const bool overdue = previousCancelAt <= 0 || (nowMs - previousCancelAt) >= kCancelBeforeMinIntervalMs;
+        shouldCancel = advancedEnough || overdue;
+        if (shouldCancel) {
+            m_lastCancelKeepFromByPath.insert(decodePath, keepFromFrame);
+            m_lastCancelAtMsByPath.insert(decodePath, nowMs);
+        }
+    }
+
+    if (shouldCancel) {
+        m_decoder->cancelForFileBefore(decodePath, keepFromFrame);
     }
 }
 

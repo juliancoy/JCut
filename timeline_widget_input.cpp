@@ -147,7 +147,9 @@ bool TimelineWidget::clipHasProxyAvailable(const TimelineClip& clip) const {
     if (clip.mediaType != ClipMediaType::Video) {
         return false;
     }
-    return !playbackProxyPathForClip(clip).isEmpty();
+    TimelineClip probeClip = clip;
+    probeClip.useProxy = true;
+    return !playbackProxyPathForClip(probeClip).isEmpty();
 }
 
 int64_t TimelineWidget::frameFromX(qreal x) const {
@@ -232,6 +234,7 @@ TimelineClip TimelineWidget::buildClipFromFile(const QString& filePath,
     if (clip.mediaType == ClipMediaType::Audio) {
         clip.color = QColor(QStringLiteral("#2f7f93"));
     }
+    refreshClipAudioSource(clip);
     normalizeClipTransformKeyframes(clip);
     normalizeClipGradingKeyframes(clip);
     normalizeClipOpacityKeyframes(clip);
@@ -488,6 +491,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event) {
             m_dragOriginalDurationFrames = m_clips[hitIndex].durationFrames;
             m_dragOriginalSourceInFrame = m_clips[hitIndex].sourceInFrame;
             m_dragOriginalTransformKeyframes = m_clips[hitIndex].transformKeyframes;
+            m_dragOriginalTitleKeyframes = m_clips[hitIndex].titleKeyframes;
             m_dragOffsetFrames = frameFromX(event->position().x()) - m_clips[hitIndex].startFrame;
             m_dragMoveClipIds.clear();
             m_dragMoveOriginalStartFrames.clear();
@@ -553,15 +557,23 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             hoveredClip.mediaType == ClipMediaType::Audio ? QStringLiteral("Audio")
             : (hoveredClip.mediaType == ClipMediaType::Image ? QStringLiteral("Image")
                : (isSequence ? QStringLiteral("Sequence") : QStringLiteral("Video")));
+        const bool proxyVideoAvailable = clipHasProxyAvailable(hoveredClip);
+        const bool proxyAudioAvailable = playbackUsesAlternateAudioSource(hoveredClip);
+        const QString transcriptPath = transcriptWorkingPathForClipFile(hoveredClip.filePath);
+        const bool transcriptAvailable =
+            !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
         const int64_t localTimelineFrame =
             qBound<int64_t>(0,
                             m_currentFrame - hoveredClip.startFrame,
                             qMax<int64_t>(0, hoveredClip.durationFrames - 1));
         const int64_t clipFrame =
             adjustedClipLocalFrameAtTimelineFrame(hoveredClip, localTimelineFrame, m_renderSyncMarkers);
-        setToolTip(QStringLiteral("%1\n%2\nFrame %3")
+        setToolTip(QStringLiteral("%1\n%2\nFrame %3\nProxy Video: %4\nProxy Audio: %5\nTranscript: %6")
                        .arg(hoveredClip.label, typeLabel)
-                       .arg(clipFrame));
+                       .arg(clipFrame)
+                       .arg(proxyVideoAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
+                       .arg(proxyAudioAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
+                       .arg(transcriptAvailable ? QStringLiteral("Yes") : QStringLiteral("No")));
     } else {
         setToolTip(QString());
     }
@@ -619,6 +631,8 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
         const int64_t pointerFrame = frameFromX(event->position().x());
         static constexpr int64_t kMinClipFrames = 1;
         const bool isImage = clip.mediaType == ClipMediaType::Image;
+        const bool isTitle = clip.mediaType == ClipMediaType::Title;
+        const bool isElasticDuration = isImage || isTitle;
         m_snapIndicatorFrame = -1;
         if (m_dragMode == ClipDragMode::Move) {
             if (m_dragLockedTrackOnly) {
@@ -700,6 +714,20 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 clip.durationFrames = m_dragOriginalDurationFrames + (m_dragOriginalStartFrame - newStartFrame);
                 clip.sourceDurationFrames = clip.durationFrames;
                 clip.transformKeyframes = m_dragOriginalTransformKeyframes;
+            } else if (isTitle) {
+                clip.sourceInFrame = 0;
+                clip.durationFrames = m_dragOriginalDurationFrames + (m_dragOriginalStartFrame - newStartFrame);
+                clip.sourceDurationFrames = clip.durationFrames;
+                clip.titleKeyframes.clear();
+                for (const TimelineClip::TitleKeyframe& keyframe : m_dragOriginalTitleKeyframes) {
+                    if (keyframe.frame < trimDelta) {
+                        continue;
+                    }
+                    TimelineClip::TitleKeyframe shifted = keyframe;
+                    shifted.frame -= trimDelta;
+                    clip.titleKeyframes.push_back(shifted);
+                }
+                normalizeClipTitleKeyframes(clip);
             } else {
                 const qreal playbackRate = qBound<qreal>(0.001, clip.playbackRate, 4.0);
                 const int64_t consumedSourceFrames =
@@ -720,7 +748,7 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             m_currentFrame = newStartFrame;
         } else if (m_dragMode == ClipDragMode::TrimRight) {
             const int64_t minEndFrame = m_dragOriginalStartFrame + kMinClipFrames;
-            const int64_t maxEndFrame = isImage
+            const int64_t maxEndFrame = isElasticDuration
                 ? std::numeric_limits<int64_t>::max()
                 : m_dragOriginalStartFrame +
                       qMax<int64_t>(kMinClipFrames,
@@ -729,10 +757,10 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                                         qBound<qreal>(0.001, clip.playbackRate, 4.0))));
             bool snapped = false;
             int64_t snappedBoundaryFrame = -1;
-            const int64_t boundedPointerFrame = isImage
+            const int64_t boundedPointerFrame = isElasticDuration
                 ? qMax<int64_t>(minEndFrame, pointerFrame)
                 : qBound<int64_t>(minEndFrame, pointerFrame, maxEndFrame);
-            const int64_t newEndFrame = isImage
+            const int64_t newEndFrame = isElasticDuration
                 ? qMax<int64_t>(minEndFrame,
                                 snapTrimRightFrame(clip, boundedPointerFrame, &snapped, &snappedBoundaryFrame))
                 : qBound<int64_t>(minEndFrame,
@@ -743,6 +771,9 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
             if (isImage) {
                 clip.sourceDurationFrames = clip.durationFrames;
                 clip.transformKeyframes = m_dragOriginalTransformKeyframes;
+            } else if (isTitle) {
+                clip.sourceDurationFrames = clip.durationFrames;
+                normalizeClipTitleKeyframes(clip);
             } else {
                 clip.transformKeyframes.clear();
                 for (const TimelineClip::TransformKeyframe& keyframe : m_dragOriginalTransformKeyframes) {
@@ -846,6 +877,7 @@ void TimelineWidget::mouseReleaseEvent(QMouseEvent* event) {
         m_dragOriginalDurationFrames = 0;
         m_dragOriginalSourceInFrame = 0;
         m_dragOriginalTransformKeyframes.clear();
+        m_dragOriginalTitleKeyframes.clear();
         m_dragMoveClipIds.clear();
         m_dragMoveOriginalStartFrames.clear();
         m_dragLockedTrackOnly = false;
@@ -911,7 +943,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* propertiesAction = nullptr;
     QAction* refreshMetadataAction = nullptr;
     QAction* transcribeAction = nullptr;
+    QAction* useProxyAction = nullptr;
     QAction* createProxyAction = nullptr;
+    QAction* continueProxyAction = nullptr;
     QAction* deleteProxyAction = nullptr;
 
     QSet<QString> contextSelection = selectedClipIds();
@@ -983,16 +1017,35 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
             !m_clips[clipIndex].locked);
         transcribeAction = menu.addAction(QStringLiteral("Transcribe"));
-        const QString detectedProxyPath = playbackProxyPathForClip(m_clips[clipIndex]);
-        createProxyAction = menu.addAction(
+        TimelineClip proxyDetectionClip = m_clips[clipIndex];
+        proxyDetectionClip.useProxy = true;
+        const QString detectedProxyPath = !m_clips[clipIndex].proxyPath.isEmpty()
+                                              ? m_clips[clipIndex].proxyPath
+                                              : playbackProxyPathForClip(proxyDetectionClip);
+        const bool canProxy = m_clips[clipIndex].mediaType == ClipMediaType::Video;
+        QMenu* proxyMenu = menu.addMenu(QStringLiteral("Proxy"));
+        useProxyAction = proxyMenu->addAction(QStringLiteral("Use Proxy"));
+        useProxyAction->setCheckable(true);
+        useProxyAction->setChecked(m_clips[clipIndex].useProxy);
+        useProxyAction->setEnabled(canProxy);
+        proxyMenu->addSeparator();
+        createProxyAction = proxyMenu->addAction(
             detectedProxyPath.isEmpty() ? QStringLiteral("Create Proxy...")
                                         : QStringLiteral("Recreate Proxy..."));
-        createProxyAction->setEnabled(
-            m_clips[clipIndex].mediaType == ClipMediaType::Video);
+        createProxyAction->setEnabled(canProxy);
+        const QFileInfo proxyInfo(detectedProxyPath);
+        const bool proxyFramesPresent =
+            proxyInfo.isDir() &&
+            !QDir(detectedProxyPath)
+                 .entryList({QStringLiteral("frame_*.jpg"), QStringLiteral("frame_*.png")},
+                            QDir::Files,
+                            QDir::Name)
+                 .isEmpty();
+        continueProxyAction = proxyMenu->addAction(QStringLiteral("Continue Proxy Gen"));
+        continueProxyAction->setEnabled(canProxy && proxyFramesPresent);
         if (!detectedProxyPath.isEmpty()) {
-            deleteProxyAction = menu.addAction(QStringLiteral("Delete Proxy"));
-            deleteProxyAction->setEnabled(
-                m_clips[clipIndex].mediaType == ClipMediaType::Video);
+            deleteProxyAction = proxyMenu->addAction(QStringLiteral("Delete Proxy"));
+            deleteProxyAction->setEnabled(canProxy);
         }
         propertiesAction = menu.addAction(QStringLiteral("Properties"));
         menu.addSeparator();
@@ -1013,24 +1066,59 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
 
     if (selected == addTitleClipAction) {
         const int64_t insertFrame = frameFromX(event->pos().x());
-        const int track = trackIndexAt(event->pos());
-        int targetTrack = track >= 0 ? track : (m_tracks.isEmpty() ? 0 : m_tracks.size());
+        auto isTitleTrack = [this](int trackIndex) {
+            if (trackIndex < 0 || trackIndex >= m_tracks.size()) {
+                return false;
+            }
+            return m_tracks[trackIndex].name.trimmed().startsWith(
+                QStringLiteral("Titles"), Qt::CaseInsensitive);
+        };
+        auto nextTitleTrackName = [this]() {
+            int titleTrackCount = 0;
+            for (const TimelineTrack& track : m_tracks) {
+                if (track.name.trimmed().startsWith(QStringLiteral("Titles"), Qt::CaseInsensitive)) {
+                    ++titleTrackCount;
+                }
+            }
+            return titleTrackCount <= 0
+                ? QStringLiteral("Titles")
+                : QStringLiteral("Titles %1").arg(titleTrackCount + 1);
+        };
+
+        int preferredTitleTrack = -1;
+        for (int i = 0; i < m_tracks.size(); ++i) {
+            if (m_tracks[i].name.trimmed().compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0) {
+                preferredTitleTrack = i;
+                break;
+            }
+        }
+        if (preferredTitleTrack < 0) {
+            preferredTitleTrack = m_tracks.size();
+            insertTrackAt(preferredTitleTrack);
+            m_tracks[preferredTitleTrack].name = QStringLiteral("Titles");
+            m_tracks[preferredTitleTrack].audioEnabled = false;
+        }
+
+        int targetTrack = preferredTitleTrack;
         TimelineClip titleClip = createDefaultTitleClip(insertFrame, targetTrack);
-        
-        // Check for conflict with audio clips on this track
+
         if (wouldClipConflictWithTrack(titleClip, targetTrack)) {
-            // Find the next available track that doesn't have a conflict
-            bool foundNonConflictingTrack = false;
-            for (int t = 0; t <= trackCount(); ++t) {
+            bool placedOnTitleTrack = false;
+            for (int t = 0; t < m_tracks.size(); ++t) {
+                if (!isTitleTrack(t)) {
+                    continue;
+                }
                 if (!wouldClipConflictWithTrack(titleClip, t)) {
                     targetTrack = t;
-                    foundNonConflictingTrack = true;
+                    placedOnTitleTrack = true;
                     break;
                 }
             }
-            if (!foundNonConflictingTrack) {
+            if (!placedOnTitleTrack) {
                 targetTrack = trackCount();
                 insertTrackAt(targetTrack);
+                m_tracks[targetTrack].name = nextTitleTrackName();
+                m_tracks[targetTrack].audioEnabled = false;
             }
             titleClip.trackIndex = targetTrack;
         }
@@ -1242,9 +1330,27 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         return;
     }
 
+    if (selected == useProxyAction) {
+        if (clipIndex >= 0) {
+            m_clips[clipIndex].useProxy = useProxyAction->isChecked();
+            if (clipsChanged) {
+                clipsChanged();
+            }
+            update();
+        }
+        return;
+    }
+
     if (selected == createProxyAction) {
         if (createProxyRequested && clipIndex >= 0) {
             createProxyRequested(m_clips[clipIndex].id);
+        }
+        return;
+    }
+
+    if (selected == continueProxyAction) {
+        if (continueProxyRequested && clipIndex >= 0) {
+            continueProxyRequested(m_clips[clipIndex].id);
         }
         return;
     }
@@ -1258,12 +1364,18 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
 
     if (selected == propertiesAction) {
         const TimelineClip& clip = m_clips[clipIndex];
+        TimelineClip proxyDisplayClip = clip;
+        proxyDisplayClip.useProxy = true;
+        const QString displayProxyPath = !clip.proxyPath.isEmpty()
+                                             ? clip.proxyPath
+                                             : playbackProxyPathForClip(proxyDisplayClip);
         QMessageBox::information(this, QStringLiteral("Clip Properties"),
-            QStringLiteral("Name: %1\nPath: %2\nProxy: %3\nType: %4\nSource Kind: %5\nStart: %6\nSource In: %7\nDuration: %8 frames\nAudio start offset: %9 ms\nBrightness: %10\nContrast: %11\nSaturation: %12\nOpacity: %13\nLocked: %14")
+            QStringLiteral("Name: %1\nPath: %2\nProxy: %3\nUse Proxy: %4\nType: %5\nSource Kind: %6\nStart: %7\nSource In: %8\nDuration: %9 frames\nAudio start offset: %10 ms\nBrightness: %11\nContrast: %12\nSaturation: %13\nOpacity: %14\nLocked: %15")
                 .arg(clip.label)
                 .arg(QDir::toNativeSeparators(clip.filePath))
-                .arg(playbackProxyPathForClip(clip).isEmpty() ? QStringLiteral("None")
-                                                               : QDir::toNativeSeparators(playbackProxyPathForClip(clip)))
+                .arg(displayProxyPath.isEmpty() ? QStringLiteral("None")
+                                                : QDir::toNativeSeparators(displayProxyPath))
+                .arg(clip.useProxy ? QStringLiteral("Yes") : QStringLiteral("No"))
                 .arg(clipMediaTypeLabel(clip.mediaType))
                 .arg(mediaSourceKindLabel(clip.sourceKind))
                 .arg(timecodeForFrame(clip.startFrame))
@@ -1331,7 +1443,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                 clip.durationFrames = qMin<int64_t>(clip.durationFrames, maxTimelineDuration);
             }
 
-            const QString detectedProxyPath = playbackProxyPathForClip(clip);
+            TimelineClip proxyDetectionClip = clip;
+            proxyDetectionClip.useProxy = true;
+            const QString detectedProxyPath = playbackProxyPathForClip(proxyDetectionClip);
             if (detectedProxyPath.isEmpty()) {
                 clip.proxyPath.clear();
             } else {

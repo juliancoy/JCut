@@ -53,10 +53,15 @@ constexpr qint64 kProfileCacheFreshMs = 250;
 constexpr qint64 kBackgroundRefreshTickMs = 50;
 constexpr qint64 kProfileRefreshIntervalMs = 100;
 constexpr qint64 kProfileDemandWindowMs = 15000;
+constexpr qint64 kSnapshotDemandWindowMs = 15000;
 constexpr qint64 kStateRefreshIntervalMs = 100;
 constexpr qint64 kProjectRefreshIntervalMs = 750;
 constexpr qint64 kHistoryRefreshIntervalMs = 400;
 constexpr qint64 kUiTreeRefreshIntervalMs = 250;
+constexpr qint64 kIdleStateRefreshIntervalMs = 5000;
+constexpr qint64 kIdleProjectRefreshIntervalMs = 8000;
+constexpr qint64 kIdleHistoryRefreshIntervalMs = 8000;
+constexpr qint64 kIdleUiTreeRefreshIntervalMs = 12000;
 constexpr qint64 kScreenshotMinIntervalMs = 250;
 constexpr qint64 kUiRefreshCooldownAfterTimeoutMs = 750;
 constexpr qint64 kFrameTraceSampleCap = 300;
@@ -100,6 +105,32 @@ QJsonObject parseJsonObject(const QByteArray& body, QString* error) {
         return {};
     }
     return document.object();
+}
+
+QJsonObject enrichClipForApi(const QJsonObject& clipObject) {
+    QJsonObject enriched = clipObject;
+    const TimelineClip clip = editor::clipFromJson(clipObject);
+    const QString playbackPath = playbackMediaPathForClip(clip);
+    const QString audioPath = playbackAudioPathForClip(clip);
+    const QString detectedProxyPath = playbackProxyPathForClip(clip);
+    const QString transcriptPath = transcriptWorkingPathForClipFile(clip.filePath);
+    const qint64 startFrame = clip.startFrame;
+    const qint64 durationFrames = clip.durationFrames;
+
+    enriched[QStringLiteral("endFrame")] = startFrame + durationFrames;
+    enriched[QStringLiteral("playbackMediaPath")] = QDir::toNativeSeparators(playbackPath);
+    enriched[QStringLiteral("playbackAudioPath")] = QDir::toNativeSeparators(audioPath);
+    enriched[QStringLiteral("detectedProxyPath")] = QDir::toNativeSeparators(detectedProxyPath);
+    enriched[QStringLiteral("proxyVideoAvailable")] = !detectedProxyPath.isEmpty();
+    enriched[QStringLiteral("proxyVideoActive")] = !playbackPath.isEmpty() &&
+        QFileInfo(playbackPath).absoluteFilePath() != QFileInfo(clip.filePath).absoluteFilePath();
+    enriched[QStringLiteral("proxyAudioActive")] = playbackUsesAlternateAudioSource(clip);
+    enriched[QStringLiteral("transcriptPath")] = QDir::toNativeSeparators(transcriptPath);
+    enriched[QStringLiteral("transcriptAvailable")] =
+        !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
+    enriched[QStringLiteral("audioSourceModeResolved")] = clip.audioSourceMode;
+    enriched[QStringLiteral("audioSourceStatusResolved")] = clip.audioSourceStatus;
+    return enriched;
 }
 
 template <typename Result, typename Fn>
@@ -663,14 +694,27 @@ private slots:
         }
 
         const bool profileInDemand = (now - m_lastProfileDemandMs) <= kProfileDemandWindowMs;
+        const bool stateInDemand =
+            m_lastStateSnapshot.isEmpty() || (now - m_lastStateDemandMs) <= kSnapshotDemandWindowMs;
+        const bool projectInDemand =
+            m_lastProjectSnapshot.isEmpty() || (now - m_lastProjectDemandMs) <= kSnapshotDemandWindowMs;
+        const bool historyInDemand =
+            m_lastHistorySnapshot.isEmpty() || (now - m_lastHistoryDemandMs) <= kSnapshotDemandWindowMs;
+        const bool uiTreeInDemand =
+            m_lastUiTreeSnapshot.isEmpty() || (now - m_lastUiTreeDemandMs) <= kSnapshotDemandWindowMs;
         const qint64 profileIntervalMs = uiResponsive ? kProfileRefreshIntervalMs : 1000;
-        const qint64 stateIntervalMs =
-            uiResponsive ? (playbackActive ? 500 : kStateRefreshIntervalMs) : 1000;
-        const qint64 projectIntervalMs =
-            uiResponsive ? (playbackActive ? 1500 : kProjectRefreshIntervalMs) : 2000;
-        const qint64 historyIntervalMs =
-            uiResponsive ? (playbackActive ? 1000 : kHistoryRefreshIntervalMs) : 1500;
-        const qint64 uiTreeIntervalMs = uiResponsive ? kUiTreeRefreshIntervalMs : 2000;
+        const qint64 stateIntervalMs = uiResponsive
+            ? (stateInDemand ? kStateRefreshIntervalMs : kIdleStateRefreshIntervalMs)
+            : 1000;
+        const qint64 projectIntervalMs = uiResponsive
+            ? (projectInDemand ? kProjectRefreshIntervalMs : kIdleProjectRefreshIntervalMs)
+            : 2000;
+        const qint64 historyIntervalMs = uiResponsive
+            ? (historyInDemand ? kHistoryRefreshIntervalMs : kIdleHistoryRefreshIntervalMs)
+            : 1500;
+        const qint64 uiTreeIntervalMs = uiResponsive
+            ? (uiTreeInDemand ? kUiTreeRefreshIntervalMs : kIdleUiTreeRefreshIntervalMs)
+            : 2000;
 
         // Refresh one cache per tick with fair scheduling (round-robin among due tasks).
         for (int step = 0; step < 5; ++step) {
@@ -689,7 +733,7 @@ private slots:
                 m_refreshCursor = (index + 1) % 5;
                 return;
             }
-            if (index == 1 && (now - m_lastStateRefreshAttemptMs) >= stateIntervalMs) {
+            if (index == 1 && stateInDemand && (now - m_lastStateRefreshAttemptMs) >= stateIntervalMs) {
                 m_lastStateRefreshAttemptMs = now;
                 QString error;
                 if (refreshStateCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
@@ -703,7 +747,7 @@ private slots:
                 m_refreshCursor = (index + 1) % 5;
                 return;
             }
-            if (index == 2 && (now - m_lastProjectRefreshAttemptMs) >= projectIntervalMs) {
+            if (index == 2 && projectInDemand && (now - m_lastProjectRefreshAttemptMs) >= projectIntervalMs) {
                 m_lastProjectRefreshAttemptMs = now;
                 QString error;
                 if (refreshProjectCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
@@ -717,7 +761,7 @@ private slots:
                 m_refreshCursor = (index + 1) % 5;
                 return;
             }
-            if (index == 3 && (now - m_lastHistoryRefreshAttemptMs) >= historyIntervalMs) {
+            if (index == 3 && historyInDemand && (now - m_lastHistoryRefreshAttemptMs) >= historyIntervalMs) {
                 m_lastHistoryRefreshAttemptMs = now;
                 QString error;
                 if (refreshHistoryCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
@@ -731,7 +775,7 @@ private slots:
                 m_refreshCursor = (index + 1) % 5;
                 return;
             }
-            if (index == 4 && (now - m_lastUiTreeRefreshAttemptMs) >= uiTreeIntervalMs) {
+            if (index == 4 && uiTreeInDemand && (now - m_lastUiTreeRefreshAttemptMs) >= uiTreeIntervalMs) {
                 m_lastUiTreeRefreshAttemptMs = now;
                 QString error;
                 if (refreshUiTreeCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
@@ -777,6 +821,22 @@ private slots:
     }
 
 private:
+    void markStateDemand() {
+        m_lastStateDemandMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
+    void markProjectDemand() {
+        m_lastProjectDemandMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
+    void markHistoryDemand() {
+        m_lastHistoryDemandMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
+    void markUiTreeDemand() {
+        m_lastUiTreeDemandMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
     struct DecodeJobState {
         bool running = false;
         qint64 lastStartMs = 0;
@@ -1367,6 +1427,27 @@ private:
             return;
         }
 
+        const bool stateDemandRoute =
+            request.method == QStringLiteral("GET") &&
+            (path == QStringLiteral("/state") ||
+             path == QStringLiteral("/timeline") ||
+             path == QStringLiteral("/tracks") ||
+             path == QStringLiteral("/clips") ||
+             path == QStringLiteral("/clip") ||
+             path == QStringLiteral("/keyframes"));
+        if (stateDemandRoute) {
+            markStateDemand();
+        }
+        if (request.method == QStringLiteral("GET") && path == QStringLiteral("/project")) {
+            markProjectDemand();
+        }
+        if (request.method == QStringLiteral("GET") && path == QStringLiteral("/history")) {
+            markHistoryDemand();
+        }
+        if (request.method == QStringLiteral("GET") && path == QStringLiteral("/ui")) {
+            markUiTreeDemand();
+        }
+
         if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/playhead")) {
             const QJsonObject body = QJsonDocument::fromJson(request.body).object();
             const qint64 frame = body.value(QStringLiteral("frame")).toInteger(-1);
@@ -1492,12 +1573,7 @@ private:
                     continue;
                 }
                 
-                // Add endFrame for easier overlap detection
-                const qint64 startFrame = clip.value(QStringLiteral("startFrame")).toInteger();
-                const qint64 durationFrames = clip.value(QStringLiteral("durationFrames")).toInteger();
-                clip[QStringLiteral("endFrame")] = startFrame + durationFrames;
-                
-                filtered.push_back(clip);
+                filtered.push_back(enrichClipForApi(clip));
             }
 
             writeJson(socket, 200, QJsonObject{
@@ -1532,7 +1608,7 @@ private:
                     writeJson(socket, 200, QJsonObject{
                         {QStringLiteral("ok"), true},
                         {QStringLiteral("index"), i},
-                        {QStringLiteral("clip"), clip}
+                        {QStringLiteral("clip"), enrichClipForApi(clip)}
                     });
                     return;
                 }
@@ -1624,6 +1700,7 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/decode/rates")) {
+            markStateDemand();
             const QUrlQuery query(request.url);
             const bool refresh = queryBool(query, QStringLiteral("refresh"));
             QString error;
@@ -1637,6 +1714,7 @@ private:
         }
 
         if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/decode/seeks")) {
+            markStateDemand();
             const QUrlQuery query(request.url);
             const bool refresh = queryBool(query, QStringLiteral("refresh"));
             QString error;
@@ -2240,24 +2318,28 @@ private:
     qint64 m_stateSnapshotTimeoutCount = 0;
     qint64 m_stateSnapshotServedCachedCount = 0;
     qint64 m_lastStateRefreshAttemptMs = 0;
+    qint64 m_lastStateDemandMs = 0;
     QJsonObject m_lastProjectSnapshot;
     qint64 m_lastProjectSnapshotMs = 0;
     QString m_lastProjectRefreshError;
     qint64 m_projectSnapshotSuccessCount = 0;
     qint64 m_projectSnapshotTimeoutCount = 0;
     qint64 m_lastProjectRefreshAttemptMs = 0;
+    qint64 m_lastProjectDemandMs = 0;
     QJsonObject m_lastHistorySnapshot;
     qint64 m_lastHistorySnapshotMs = 0;
     QString m_lastHistoryRefreshError;
     qint64 m_historySnapshotSuccessCount = 0;
     qint64 m_historySnapshotTimeoutCount = 0;
     qint64 m_lastHistoryRefreshAttemptMs = 0;
+    qint64 m_lastHistoryDemandMs = 0;
     QJsonObject m_lastUiTreeSnapshot;
     qint64 m_lastUiTreeSnapshotMs = 0;
     QString m_lastUiTreeRefreshError;
     qint64 m_uiTreeSnapshotSuccessCount = 0;
     qint64 m_uiTreeSnapshotTimeoutCount = 0;
     qint64 m_lastUiTreeRefreshAttemptMs = 0;
+    qint64 m_lastUiTreeDemandMs = 0;
     int m_refreshCursor = 0;
     qint64 m_lastScreenshotRequestMs = 0;
     qint64 m_screenshotRateLimitedCount = 0;

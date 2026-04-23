@@ -1,4 +1,5 @@
 #include "output_tab.h"
+#include "debug_controls.h"
 
 #include <QFileDialog>
 #include <QFileInfo>
@@ -65,6 +66,50 @@ void OutputTab::wire()
         connect(m_widgets.renderUseProxiesCheckBox, &QCheckBox::toggled,
                 this, &OutputTab::onRenderUseProxiesToggled);
     }
+    if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
+        connect(m_widgets.outputPlaybackCacheFallbackCheckBox, &QCheckBox::toggled,
+                this, &OutputTab::onOutputPlaybackCacheFallbackToggled);
+    }
+    if (m_widgets.outputLeadPrefetchEnabledCheckBox) {
+        connect(m_widgets.outputLeadPrefetchEnabledCheckBox, &QCheckBox::toggled,
+                this, &OutputTab::onOutputLeadPrefetchEnabledToggled);
+    }
+    if (m_widgets.outputLeadPrefetchCountSpin) {
+        connect(m_widgets.outputLeadPrefetchCountSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputLeadPrefetchCountChanged);
+    }
+    if (m_widgets.outputPlaybackWindowAheadSpin) {
+        connect(m_widgets.outputPlaybackWindowAheadSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputPlaybackWindowAheadChanged);
+    }
+    if (m_widgets.outputVisibleQueueReserveSpin) {
+        connect(m_widgets.outputVisibleQueueReserveSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputVisibleQueueReserveChanged);
+    }
+    if (m_widgets.outputPrefetchMaxQueueDepthSpin) {
+        connect(m_widgets.outputPrefetchMaxQueueDepthSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputPrefetchMaxQueueDepthChanged);
+    }
+    if (m_widgets.outputPrefetchMaxInflightSpin) {
+        connect(m_widgets.outputPrefetchMaxInflightSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputPrefetchMaxInflightChanged);
+    }
+    if (m_widgets.outputPrefetchMaxPerTickSpin) {
+        connect(m_widgets.outputPrefetchMaxPerTickSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputPrefetchMaxPerTickChanged);
+    }
+    if (m_widgets.outputPrefetchSkipVisiblePendingThresholdSpin) {
+        connect(m_widgets.outputPrefetchSkipVisiblePendingThresholdSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputPrefetchSkipVisiblePendingThresholdChanged);
+    }
+    if (m_widgets.outputDecoderLaneCountSpin) {
+        connect(m_widgets.outputDecoderLaneCountSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &OutputTab::onOutputDecoderLaneCountChanged);
+    }
+    if (m_widgets.outputDecodeModeCombo) {
+        connect(m_widgets.outputDecodeModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, &OutputTab::onOutputDecodeModeChanged);
+    }
     if (m_widgets.autosaveIntervalMinutesSpin) {
         connect(m_widgets.autosaveIntervalMinutesSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &OutputTab::onAutosaveIntervalMinutesChanged);
@@ -120,6 +165,58 @@ void OutputTab::refresh()
     if (m_widgets.autosaveMaxBackupsSpin && m_deps.autosaveMaxBackups) {
         QSignalBlocker blocker(m_widgets.autosaveMaxBackupsSpin);
         m_widgets.autosaveMaxBackupsSpin->setValue(m_deps.autosaveMaxBackups());
+    }
+    if (m_widgets.outputPlaybackCacheFallbackCheckBox) {
+        QSignalBlocker blocker(m_widgets.outputPlaybackCacheFallbackCheckBox);
+        m_widgets.outputPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
+    }
+    if (m_widgets.outputLeadPrefetchEnabledCheckBox) {
+        QSignalBlocker blocker(m_widgets.outputLeadPrefetchEnabledCheckBox);
+        m_widgets.outputLeadPrefetchEnabledCheckBox->setChecked(editor::debugLeadPrefetchEnabled());
+    }
+    if (m_widgets.outputLeadPrefetchCountSpin) {
+        QSignalBlocker blocker(m_widgets.outputLeadPrefetchCountSpin);
+        m_widgets.outputLeadPrefetchCountSpin->setValue(editor::debugLeadPrefetchCount());
+        if (m_widgets.outputLeadPrefetchEnabledCheckBox) {
+            m_widgets.outputLeadPrefetchCountSpin->setEnabled(
+                m_widgets.outputLeadPrefetchEnabledCheckBox->isChecked());
+        }
+    }
+    if (m_widgets.outputPlaybackWindowAheadSpin) {
+        QSignalBlocker blocker(m_widgets.outputPlaybackWindowAheadSpin);
+        m_widgets.outputPlaybackWindowAheadSpin->setValue(editor::debugPlaybackWindowAhead());
+    }
+    if (m_widgets.outputVisibleQueueReserveSpin) {
+        QSignalBlocker blocker(m_widgets.outputVisibleQueueReserveSpin);
+        m_widgets.outputVisibleQueueReserveSpin->setValue(editor::debugVisibleQueueReserve());
+    }
+    if (m_widgets.outputPrefetchMaxQueueDepthSpin) {
+        QSignalBlocker blocker(m_widgets.outputPrefetchMaxQueueDepthSpin);
+        m_widgets.outputPrefetchMaxQueueDepthSpin->setValue(editor::debugPrefetchMaxQueueDepth());
+    }
+    if (m_widgets.outputPrefetchMaxInflightSpin) {
+        QSignalBlocker blocker(m_widgets.outputPrefetchMaxInflightSpin);
+        m_widgets.outputPrefetchMaxInflightSpin->setValue(editor::debugPrefetchMaxInflight());
+    }
+    if (m_widgets.outputPrefetchMaxPerTickSpin) {
+        QSignalBlocker blocker(m_widgets.outputPrefetchMaxPerTickSpin);
+        m_widgets.outputPrefetchMaxPerTickSpin->setValue(editor::debugPrefetchMaxPerTick());
+    }
+    if (m_widgets.outputPrefetchSkipVisiblePendingThresholdSpin) {
+        QSignalBlocker blocker(m_widgets.outputPrefetchSkipVisiblePendingThresholdSpin);
+        m_widgets.outputPrefetchSkipVisiblePendingThresholdSpin->setValue(editor::debugPrefetchSkipVisiblePendingThreshold());
+    }
+    if (m_widgets.outputDecoderLaneCountSpin) {
+        QSignalBlocker blocker(m_widgets.outputDecoderLaneCountSpin);
+        m_widgets.outputDecoderLaneCountSpin->setValue(editor::debugDecoderLaneCount());
+    }
+    if (m_widgets.outputDecodeModeCombo) {
+        QSignalBlocker blocker(m_widgets.outputDecodeModeCombo);
+        const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
+        const int index = m_widgets.outputDecodeModeCombo->findData(decodeMode);
+        if (index >= 0) {
+            m_widgets.outputDecodeModeCombo->setCurrentIndex(index);
+        }
     }
 
     updateRangeSummary();
@@ -307,6 +404,91 @@ void OutputTab::onRenderUseProxiesToggled(bool checked)
     if (m_updating) return;
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onOutputPlaybackCacheFallbackToggled(bool checked)
+{
+    if (m_updating) return;
+    editor::setDebugPlaybackCacheFallbackEnabled(checked);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputLeadPrefetchEnabledToggled(bool checked)
+{
+    if (m_updating) return;
+    editor::setDebugLeadPrefetchEnabled(checked);
+    if (m_widgets.outputLeadPrefetchCountSpin) {
+        m_widgets.outputLeadPrefetchCountSpin->setEnabled(checked);
+    }
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputLeadPrefetchCountChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugLeadPrefetchCount(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputPlaybackWindowAheadChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugPlaybackWindowAhead(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputVisibleQueueReserveChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugVisibleQueueReserve(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputPrefetchMaxQueueDepthChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugPrefetchMaxQueueDepth(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputPrefetchMaxInflightChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugPrefetchMaxInflight(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputPrefetchMaxPerTickChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugPrefetchMaxPerTick(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputPrefetchSkipVisiblePendingThresholdChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugPrefetchSkipVisiblePendingThreshold(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputDecoderLaneCountChanged(int value)
+{
+    if (m_updating) return;
+    editor::setDebugDecoderLaneCount(value);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+}
+
+void OutputTab::onOutputDecodeModeChanged(int index)
+{
+    Q_UNUSED(index);
+    if (m_updating || !m_widgets.outputDecodeModeCombo) return;
+    editor::DecodePreference preference = editor::DecodePreference::Auto;
+    if (!editor::parseDecodePreference(m_widgets.outputDecodeModeCombo->currentData().toString(), &preference)) {
+        return;
+    }
+    editor::setDebugDecodePreference(preference);
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
 }
 
 void OutputTab::onAutosaveIntervalMinutesChanged(int value)

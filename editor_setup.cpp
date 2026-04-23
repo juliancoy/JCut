@@ -63,14 +63,15 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorTabs && m_preview) {
-        static constexpr int kCorrectionsTabIndex = 3;
-        static constexpr int kTranscriptTabIndex = 7;
-        auto syncCorrectionOverlayVisibility = [this]() {
-            bool show = false;
-            if (m_inspectorTabs) {
-                const int index = m_inspectorTabs->currentIndex();
-                show = index == kCorrectionsTabIndex;
+        const auto isTabNamed = [this](const QString& name) -> bool {
+            if (!m_inspectorTabs) {
+                return false;
             }
+            const int index = m_inspectorTabs->currentIndex();
+            return index >= 0 && m_inspectorTabs->tabText(index).compare(name, Qt::CaseInsensitive) == 0;
+        };
+        auto syncCorrectionOverlayVisibility = [this, isTabNamed]() {
+            const bool show = isTabNamed(QStringLiteral("Corrections"));
             if (m_preview) {
                 m_preview->setShowCorrectionOverlays(show);
             }
@@ -78,15 +79,19 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
                 m_correctionsTab->stopDrawing();
             }
         };
-        auto syncTranscriptOverlayInteraction = [this]() {
+        auto syncTranscriptOverlayInteraction = [this, isTabNamed]() {
             if (!m_preview) {
                 return;
             }
-            bool enabled = false;
-            if (m_inspectorTabs) {
-                enabled = m_inspectorTabs->currentIndex() == kTranscriptTabIndex;
-            }
+            const bool enabled = isTabNamed(QStringLiteral("Transcript"));
             m_preview->setTranscriptOverlayInteractionEnabled(enabled);
+        };
+        auto syncTitleOverlayInteraction = [this, isTabNamed]() {
+            if (!m_preview) {
+                return;
+            }
+            const bool titlesOnly = isTabNamed(QStringLiteral("Titles"));
+            m_preview->setTitleOverlayInteractionOnly(titlesOnly);
         };
         connect(m_inspectorTabs, &QTabWidget::currentChanged, this, [this, syncCorrectionOverlayVisibility](int) {
             syncCorrectionOverlayVisibility();
@@ -95,8 +100,12 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
         connect(m_inspectorTabs, &QTabWidget::currentChanged, this, [syncTranscriptOverlayInteraction](int) {
             syncTranscriptOverlayInteraction();
         });
+        connect(m_inspectorTabs, &QTabWidget::currentChanged, this, [syncTitleOverlayInteraction](int) {
+            syncTitleOverlayInteraction();
+        });
         syncCorrectionOverlayVisibility();
         syncTranscriptOverlayInteraction();
+        syncTitleOverlayInteraction();
     }
 
     splitter->setStretchFactor(0, 0);
@@ -225,6 +234,11 @@ void EditorWindow::setupDeferredSeekTimers()
 
 void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTimer)
 {
+    if (controlPort == 0) {
+        qDebug() << "[STARTUP] ControlServer disabled (--no-rest)";
+        return;
+    }
+
     m_controlServer = std::make_unique<ControlServer>(
         this,
         [this]() {

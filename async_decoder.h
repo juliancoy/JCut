@@ -132,6 +132,7 @@ public:
     // Statistics
     int pendingRequestCount() const { return totalPendingRequests(); }
     int workerCount() const { return m_workerCount; }
+    void setWorkerCount(int workerCount);
     
     // Memory budget access
     MemoryBudget* memoryBudget() const { return m_budget; }
@@ -154,9 +155,14 @@ private:
     void trimCaches();
     void initSharedHwDevices();
     void releaseSharedHwDevices();
+    int resolveWorkerCount(int requestedCount) const;
     int totalPendingRequests() const;
-    int laneIndexForRequest(const QString& path, int64_t frameNumber) const;
-    LaneState* laneForRequest(const QString& path, int64_t frameNumber) const;
+    int laneIndexForRequest(const QString& path,
+                            int64_t frameNumber,
+                            DecodeRequestKind kind) const;
+    LaneState* laneForRequest(const QString& path,
+                              int64_t frameNumber,
+                              DecodeRequestKind kind) const;
     std::vector<LaneState*> lanesForPath(const QString& path) const;
     void startLane(LaneState* lane);
     void stopLane(LaneState* lane);

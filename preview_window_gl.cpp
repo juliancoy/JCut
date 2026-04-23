@@ -431,8 +431,9 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             clip.sourceKind == MediaSourceKind::ImageSequence &&
             clip.mediaType != ClipMediaType::Image;
         const bool allowApproximateFrame =
-            !m_playing || usePlaybackPipeline || !m_cache ||
-            m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs());
+            m_playing &&
+            (usePlaybackPipeline || !m_cache ||
+             m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs()));
         QString selection = QStringLiteral("none");
         const FrameHandle exactFrame = usePlaybackPipeline
                                            ? m_playbackPipeline->getFrame(clip.id, localFrame)

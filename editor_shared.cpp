@@ -3,7 +3,7 @@
 #include "debug_controls.h"
 
 #include <QDir>
-#include <QCollator>
+#include <QDateTime>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -28,6 +28,8 @@ extern "C" {
 }
 
 namespace {
+QStringList collectSequenceFrames(const QString& path);
+
 bool isImageSuffix(const QString& suffix) {
     static const QSet<QString> kImageSuffixes = {
         QStringLiteral("png"),
@@ -105,6 +107,136 @@ bool detectVariableFrameRate(const QString& path) {
     return isVfr;
 }
 
+struct ProxyResolutionInput {
+    bool useProxy = false;
+    bool hasVisuals = false;
+    QString filePath;
+    QString proxyPath;
+    QString sourceAbsPath;
+    qint64 sourceMtimeMs = -1;
+    qint64 sourceDirMtimeMs = -1;
+};
+
+ProxyResolutionInput proxyResolutionInputForClip(const TimelineClip& clip) {
+    ProxyResolutionInput input;
+    input.useProxy = clip.useProxy;
+    input.hasVisuals = clipHasVisuals(clip);
+    input.filePath = clip.filePath;
+    input.proxyPath = clip.proxyPath;
+
+    const QFileInfo sourceInfo(clip.filePath);
+    input.sourceAbsPath = sourceInfo.absoluteFilePath();
+    const QFileInfo sourceDirInfo(sourceInfo.absolutePath());
+    if (sourceDirInfo.exists()) {
+        input.sourceDirMtimeMs = sourceDirInfo.lastModified().toMSecsSinceEpoch();
+    }
+    if (sourceInfo.exists()) {
+        input.sourceMtimeMs = sourceInfo.lastModified().toMSecsSinceEpoch();
+    }
+    return input;
+}
+
+QString proxyResolutionKey(const ProxyResolutionInput& input) {
+    return QStringLiteral("use=%1|vis=%2|src=%3|srcm=%4|dirm=%5|stored=%6")
+        .arg(input.useProxy ? 1 : 0)
+        .arg(input.hasVisuals ? 1 : 0)
+        .arg(input.sourceAbsPath)
+        .arg(input.sourceMtimeMs)
+        .arg(input.sourceDirMtimeMs)
+        .arg(input.proxyPath);
+}
+
+bool cachedIsImageSequencePathImpl(const QString& path) {
+    static QMutex cacheMutex;
+    static QHash<QString, bool> cachedResultByKey;
+
+    const QFileInfo info(path);
+    const QFileInfo parentInfo(info.absolutePath());
+    const qint64 pathMtime =
+        (info.exists() && info.isDir()) ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const qint64 parentMtime =
+        parentInfo.exists() ? parentInfo.lastModified().toMSecsSinceEpoch() : -1;
+    const QString key = info.absoluteFilePath() + QLatin1Char('|') +
+                        QString::number(pathMtime) + QLatin1Char('|') +
+                        QString::number(parentMtime);
+
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto it = cachedResultByKey.constFind(key);
+        if (it != cachedResultByKey.cend()) {
+            return it.value();
+        }
+    }
+
+    const bool isSequence = !collectSequenceFrames(path).isEmpty();
+    {
+        QMutexLocker locker(&cacheMutex);
+        cachedResultByKey.insert(key, isSequence);
+    }
+    return isSequence;
+}
+
+bool naturalFileNameLessCaseInsensitive(const QString& a, const QString& b) {
+    int ia = 0;
+    int ib = 0;
+    const int na = a.size();
+    const int nb = b.size();
+
+    while (ia < na && ib < nb) {
+        const QChar ca = a.at(ia);
+        const QChar cb = b.at(ib);
+        const bool aDigit = ca.isDigit();
+        const bool bDigit = cb.isDigit();
+
+        if (aDigit && bDigit) {
+            int sa = ia;
+            int sb = ib;
+            while (sa < na && a.at(sa) == QLatin1Char('0')) ++sa;
+            while (sb < nb && b.at(sb) == QLatin1Char('0')) ++sb;
+
+            int ea = sa;
+            int eb = sb;
+            while (ea < na && a.at(ea).isDigit()) ++ea;
+            while (eb < nb && b.at(eb).isDigit()) ++eb;
+
+            const int lenA = ea - sa;
+            const int lenB = eb - sb;
+            if (lenA != lenB) {
+                return lenA < lenB;
+            }
+
+            for (int i = 0; i < lenA; ++i) {
+                const QChar da = a.at(sa + i);
+                const QChar db = b.at(sb + i);
+                if (da != db) {
+                    return da < db;
+                }
+            }
+
+            const int runA = ea - ia;
+            const int runB = eb - ib;
+            if (runA != runB) {
+                return runA < runB;
+            }
+
+            ia = ea;
+            ib = eb;
+            continue;
+        }
+
+        const QChar fa = ca.toCaseFolded();
+        const QChar fb = cb.toCaseFolded();
+        if (fa != fb) {
+            return fa < fb;
+        }
+
+        ++ia;
+        ++ib;
+    }
+
+    return na < nb;
+}
+
 QStringList collectSequenceFrames(const QString& path) {
     static QMutex cacheMutex;
     static QHash<QString, QStringList> cachedFramesByKey;
@@ -125,7 +257,7 @@ QStringList collectSequenceFrames(const QString& path) {
     }
 
     const QDir dir(dirInfo.absoluteFilePath());
-    QFileInfoList entries = dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::Name | QDir::IgnoreCase);
+    QFileInfoList entries = dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::NoSort);
     if (entries.size() < 2) {
         return {};
     }
@@ -160,11 +292,8 @@ QStringList collectSequenceFrames(const QString& path) {
         return {};
     }
 
-    QCollator collator;
-    collator.setNumericMode(true);
-    collator.setCaseSensitivity(Qt::CaseInsensitive);
-    std::sort(bestGroup.begin(), bestGroup.end(), [&collator](const QFileInfo& a, const QFileInfo& b) {
-        return collator.compare(a.fileName(), b.fileName()) < 0;
+    std::sort(bestGroup.begin(), bestGroup.end(), [](const QFileInfo& a, const QFileInfo& b) {
+        return naturalFileNameLessCaseInsensitive(a.fileName(), b.fileName());
     });
 
     // Safety limit: don't treat directories with too many files as image sequences
@@ -1615,81 +1744,203 @@ qreal effectiveFpsForClip(const TimelineClip& clip) {
 }
 
 QString playbackProxyPathForClip(const TimelineClip& clip) {
-    // Validate stored proxy path - must be a valid media file
-    if (!clip.proxyPath.isEmpty() && isValidMediaFile(clip.proxyPath)) {
-        return clip.proxyPath;
-    }
-    if (clip.filePath.isEmpty() || !clipHasVisuals(clip)) {
-        return QString();
-    }
+    static QMutex cacheMutex;
+    static QHash<QString, QString> cachedProxyPathByKey;
 
-    const QFileInfo sourceInfo(clip.filePath);
-    if (!sourceInfo.exists()) {
-        return QString();
-    }
-
-    const QString baseName = sourceInfo.completeBaseName();
-    const QDir sourceDir = sourceInfo.dir();
-
-    // Check for image sequence proxy directory first (preferred format)
-    const QStringList seqDirCandidates = {
-        baseName + QStringLiteral(".proxy"),
-        baseName + QStringLiteral("_proxy"),
-        baseName + QStringLiteral("-proxy"),
-    };
-    for (const QString& dirName : seqDirCandidates) {
-        const QString dirPath = sourceDir.filePath(dirName);
-        if (isImageSequencePath(dirPath)) {
-            return dirPath;
+    const ProxyResolutionInput input = proxyResolutionInputForClip(clip);
+    const QString cacheKey = proxyResolutionKey(input);
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto it = cachedProxyPathByKey.constFind(cacheKey);
+        if (it != cachedProxyPathByKey.cend()) {
+            return it.value();
         }
     }
 
-    const QStringList candidateNames = {
-        baseName + QStringLiteral(".proxy.mov"),
-        baseName + QStringLiteral(".proxy.mp4"),
-        baseName + QStringLiteral(".proxy.mkv"),
-        baseName + QStringLiteral(".proxy.webm"),
-        baseName + QStringLiteral("_proxy.mov"),
-        baseName + QStringLiteral("_proxy.mp4"),
-        baseName + QStringLiteral("_proxy.mkv"),
-        baseName + QStringLiteral("_proxy.webm"),
-        baseName + QStringLiteral("-proxy.mov"),
-        baseName + QStringLiteral("-proxy.mp4"),
-        baseName + QStringLiteral("-proxy.mkv"),
-        baseName + QStringLiteral("-proxy.webm"),
-    };
+    QString resolvedProxyPath;
+    if (input.useProxy &&
+        input.hasVisuals &&
+        !input.filePath.isEmpty()) {
+        // Validate stored proxy path - must be a valid media file
+        if (!input.proxyPath.isEmpty() && isValidMediaFile(input.proxyPath)) {
+            resolvedProxyPath = input.proxyPath;
+        } else {
+            const QFileInfo sourceInfo(input.filePath);
+            if (sourceInfo.exists()) {
+                const QString baseName = sourceInfo.completeBaseName();
+                const QDir sourceDir = sourceInfo.dir();
 
-    for (const QString& candidateName : candidateNames) {
-        const QString candidatePath = sourceDir.filePath(candidateName);
-        const QFileInfo candidateInfo(candidatePath);
-        if (candidateInfo.exists() && isValidMediaFile(candidatePath)) {
-            return candidatePath;
-        }
-    }
+                // Check for image sequence proxy directory first (preferred format)
+                const QStringList seqDirCandidates = {
+                    baseName + QStringLiteral(".proxy"),
+                    baseName + QStringLiteral("_proxy"),
+                    baseName + QStringLiteral("-proxy"),
+                };
+                for (const QString& dirName : seqDirCandidates) {
+                    const QString dirPath = sourceDir.filePath(dirName);
+                    if (cachedIsImageSequencePathImpl(dirPath)) {
+                        resolvedProxyPath = dirPath;
+                        break;
+                    }
+                }
 
-    const QDir proxiesDir(sourceDir.filePath(QStringLiteral("proxies")));
-    if (proxiesDir.exists()) {
-        const QStringList proxySuffixes = {
-            QStringLiteral(".mov"),
-            QStringLiteral(".mp4"),
-            QStringLiteral(".mkv"),
-            QStringLiteral(".webm")
-        };
-        for (const QString& suffix : proxySuffixes) {
-            const QString candidatePath = proxiesDir.filePath(baseName + suffix);
-            const QFileInfo candidateInfo(candidatePath);
-            if (candidateInfo.exists() && isValidMediaFile(candidatePath)) {
-                return candidatePath;
+                if (resolvedProxyPath.isEmpty()) {
+                    const QStringList candidateNames = {
+                        baseName + QStringLiteral(".proxy.mov"),
+                        baseName + QStringLiteral(".proxy.mp4"),
+                        baseName + QStringLiteral(".proxy.mkv"),
+                        baseName + QStringLiteral(".proxy.webm"),
+                        baseName + QStringLiteral("_proxy.mov"),
+                        baseName + QStringLiteral("_proxy.mp4"),
+                        baseName + QStringLiteral("_proxy.mkv"),
+                        baseName + QStringLiteral("_proxy.webm"),
+                        baseName + QStringLiteral("-proxy.mov"),
+                        baseName + QStringLiteral("-proxy.mp4"),
+                        baseName + QStringLiteral("-proxy.mkv"),
+                        baseName + QStringLiteral("-proxy.webm"),
+                    };
+
+                    for (const QString& candidateName : candidateNames) {
+                        const QString candidatePath = sourceDir.filePath(candidateName);
+                        const QFileInfo candidateInfo(candidatePath);
+                        if (candidateInfo.exists() && isValidMediaFile(candidatePath)) {
+                            resolvedProxyPath = candidatePath;
+                            break;
+                        }
+                    }
+                }
+
+                if (resolvedProxyPath.isEmpty()) {
+                    const QDir proxiesDir(sourceDir.filePath(QStringLiteral("proxies")));
+                    if (proxiesDir.exists()) {
+                        const QStringList proxySuffixes = {
+                            QStringLiteral(".mov"),
+                            QStringLiteral(".mp4"),
+                            QStringLiteral(".mkv"),
+                            QStringLiteral(".webm")
+                        };
+                        for (const QString& suffix : proxySuffixes) {
+                            const QString candidatePath = proxiesDir.filePath(baseName + suffix);
+                            const QFileInfo candidateInfo(candidatePath);
+                            if (candidateInfo.exists() && isValidMediaFile(candidatePath)) {
+                                resolvedProxyPath = candidatePath;
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 
-    return QString();
+    {
+        QMutexLocker locker(&cacheMutex);
+        cachedProxyPathByKey.insert(cacheKey, resolvedProxyPath);
+    }
+    return resolvedProxyPath;
 }
 
 QString playbackMediaPathForClip(const TimelineClip& clip) {
     const QString proxyPath = playbackProxyPathForClip(clip);
     return proxyPath.isEmpty() ? clip.filePath : proxyPath;
+}
+
+void refreshClipAudioSource(TimelineClip& clip) {
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    clip.audioSourceLastVerifiedMs = nowMs;
+    clip.audioSourceOriginalPath = QFileInfo(clip.filePath).absoluteFilePath();
+
+    if (!clip.hasAudio || clip.filePath.isEmpty()) {
+        clip.audioSourceMode = QStringLiteral("embedded");
+        clip.audioSourcePath = clip.filePath;
+        clip.audioSourceStatus = QStringLiteral("disabled");
+        return;
+    }
+
+    // Explicit external audio file chosen by user takes precedence when valid.
+    if (clip.audioSourceMode == QStringLiteral("explicit_file") &&
+        !clip.audioSourcePath.trimmed().isEmpty()) {
+        const QFileInfo explicitInfo(clip.audioSourcePath);
+        if (explicitInfo.exists() && explicitInfo.isFile()) {
+            clip.audioSourcePath = explicitInfo.absoluteFilePath();
+            clip.audioSourceStatus = QStringLiteral("ok");
+            return;
+        }
+    }
+
+    const QFileInfo sourceInfo(clip.filePath);
+    if (!sourceInfo.exists() || !sourceInfo.isFile()) {
+        clip.audioSourceMode = QStringLiteral("embedded");
+        clip.audioSourcePath = sourceInfo.absoluteFilePath();
+        clip.audioSourceStatus = QStringLiteral("missing");
+        return;
+    }
+
+    const QString sourceAbsolutePath = sourceInfo.absoluteFilePath();
+    const bool sourceIsWav =
+        sourceInfo.suffix().compare(QStringLiteral("wav"), Qt::CaseInsensitive) == 0;
+    if (sourceIsWav) {
+        clip.audioSourceMode = QStringLiteral("explicit_file");
+        clip.audioSourcePath = sourceAbsolutePath;
+        clip.audioSourceStatus = QStringLiteral("ok");
+        return;
+    }
+
+    const QString sidecarPath =
+        sourceInfo.dir().filePath(sourceInfo.completeBaseName() + QStringLiteral(".wav"));
+    const QFileInfo sidecarInfo(sidecarPath);
+    if (sidecarInfo.exists() && sidecarInfo.isFile()) {
+        clip.audioSourceMode = QStringLiteral("sidecar");
+        clip.audioSourcePath = sidecarInfo.absoluteFilePath();
+        clip.audioSourceStatus = QStringLiteral("ok");
+        return;
+    }
+
+    clip.audioSourceMode = QStringLiteral("embedded");
+    clip.audioSourcePath = sourceAbsolutePath;
+    clip.audioSourceStatus = QStringLiteral("ok");
+}
+
+QString playbackAudioPathForClip(const TimelineClip& clip) {
+    if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
+        return clip.filePath;
+    }
+
+    if (!clip.audioSourcePath.trimmed().isEmpty() &&
+        clip.audioSourceStatus == QStringLiteral("ok")) {
+        const QFileInfo trackedInfo(clip.audioSourcePath);
+        if (trackedInfo.exists() && trackedInfo.isFile()) {
+            return trackedInfo.absoluteFilePath();
+        }
+    }
+
+    const QFileInfo sourceInfo(clip.filePath);
+    if (!sourceInfo.exists() || !sourceInfo.isFile()) {
+        return sourceInfo.absoluteFilePath();
+    }
+    if (sourceInfo.suffix().compare(QStringLiteral("wav"), Qt::CaseInsensitive) == 0) {
+        return sourceInfo.absoluteFilePath();
+    }
+
+    const QString alternatePath =
+        sourceInfo.dir().filePath(sourceInfo.completeBaseName() + QStringLiteral(".wav"));
+    const QFileInfo alternateInfo(alternatePath);
+    if (alternateInfo.exists() && alternateInfo.isFile()) {
+        return alternateInfo.absoluteFilePath();
+    }
+    return clip.filePath;
+}
+
+bool playbackUsesAlternateAudioSource(const TimelineClip& clip) {
+    if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
+        return false;
+    }
+    const QString resolvedAudioPath = playbackAudioPathForClip(clip);
+    if (resolvedAudioPath.isEmpty()) {
+        return false;
+    }
+    return QFileInfo(resolvedAudioPath).absoluteFilePath() !=
+           QFileInfo(clip.filePath).absoluteFilePath();
 }
 
 QString interactivePreviewMediaPathForClip(const TimelineClip& clip) {
@@ -1719,7 +1970,7 @@ QString interactivePreviewMediaPathForClip(const TimelineClip& clip) {
 }
 
 bool isImageSequencePath(const QString& path) {
-    return !collectSequenceFrames(path).isEmpty();
+    return cachedIsImageSequencePathImpl(path);
 }
 
 QStringList imageSequenceFramePaths(const QString& path) {

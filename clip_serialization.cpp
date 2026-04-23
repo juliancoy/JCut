@@ -13,10 +13,16 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("id")] = clip.id;
         obj[QStringLiteral("filePath")] = clip.filePath;
         obj[QStringLiteral("proxyPath")] = clip.proxyPath;
+        obj[QStringLiteral("useProxy")] = clip.useProxy;
         obj[QStringLiteral("label")] = clip.label;
         obj[QStringLiteral("mediaType")] = clipMediaTypeToString(clip.mediaType);
         obj[QStringLiteral("sourceKind")] = mediaSourceKindToString(clip.sourceKind);
         obj[QStringLiteral("hasAudio")] = clip.hasAudio;
+        obj[QStringLiteral("audioSourceMode")] = clip.audioSourceMode;
+        obj[QStringLiteral("audioSourcePath")] = clip.audioSourcePath;
+        obj[QStringLiteral("audioSourceOriginalPath")] = clip.audioSourceOriginalPath;
+        obj[QStringLiteral("audioSourceStatus")] = clip.audioSourceStatus;
+        obj[QStringLiteral("audioSourceLastVerifiedMs")] = static_cast<qint64>(clip.audioSourceLastVerifiedMs);
         obj[QStringLiteral("sourceFps")] = clip.sourceFps;
         obj[QStringLiteral("sourceDurationFrames")] = static_cast<qint64>(clip.sourceDurationFrames);
         obj[QStringLiteral("sourceInFrame")] = static_cast<qint64>(clip.sourceInFrame);
@@ -98,6 +104,23 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("bold")] = keyframe.bold;
             keyframeObj[QStringLiteral("italic")] = keyframe.italic;
             keyframeObj[QStringLiteral("color")] = keyframe.color.name(QColor::HexArgb);
+            keyframeObj[QStringLiteral("dropShadowEnabled")] = keyframe.dropShadowEnabled;
+            keyframeObj[QStringLiteral("dropShadowColor")] =
+                keyframe.dropShadowColor.name(QColor::HexArgb);
+            keyframeObj[QStringLiteral("dropShadowOpacity")] = keyframe.dropShadowOpacity;
+            keyframeObj[QStringLiteral("dropShadowOffsetX")] = keyframe.dropShadowOffsetX;
+            keyframeObj[QStringLiteral("dropShadowOffsetY")] = keyframe.dropShadowOffsetY;
+            keyframeObj[QStringLiteral("windowEnabled")] = keyframe.windowEnabled;
+            keyframeObj[QStringLiteral("windowColor")] =
+                keyframe.windowColor.name(QColor::HexArgb);
+            keyframeObj[QStringLiteral("windowOpacity")] = keyframe.windowOpacity;
+            keyframeObj[QStringLiteral("windowPadding")] = keyframe.windowPadding;
+            keyframeObj[QStringLiteral("windowFrameEnabled")] = keyframe.windowFrameEnabled;
+            keyframeObj[QStringLiteral("windowFrameColor")] =
+                keyframe.windowFrameColor.name(QColor::HexArgb);
+            keyframeObj[QStringLiteral("windowFrameOpacity")] = keyframe.windowFrameOpacity;
+            keyframeObj[QStringLiteral("windowFrameWidth")] = keyframe.windowFrameWidth;
+            keyframeObj[QStringLiteral("windowFrameGap")] = keyframe.windowFrameGap;
             keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
             titleKeyframes.push_back(keyframeObj);
         }
@@ -153,10 +176,17 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.id = obj.value(QStringLiteral("id")).toString();
         clip.filePath = obj.value(QStringLiteral("filePath")).toString();
         clip.proxyPath = obj.value(QStringLiteral("proxyPath")).toString();
+        clip.useProxy = obj.value(QStringLiteral("useProxy")).toBool(true);
         clip.label = obj.value(QStringLiteral("label")).toString(QFileInfo(clip.filePath).fileName());
         clip.mediaType = clipMediaTypeFromString(obj.value(QStringLiteral("mediaType")).toString());
         clip.sourceKind = mediaSourceKindFromString(obj.value(QStringLiteral("sourceKind")).toString());
         clip.hasAudio = obj.value(QStringLiteral("hasAudio")).toBool(false);
+        clip.audioSourceMode = obj.value(QStringLiteral("audioSourceMode")).toString(QStringLiteral("embedded"));
+        clip.audioSourcePath = obj.value(QStringLiteral("audioSourcePath")).toString();
+        clip.audioSourceOriginalPath = obj.value(QStringLiteral("audioSourceOriginalPath")).toString();
+        clip.audioSourceStatus = obj.value(QStringLiteral("audioSourceStatus")).toString(QStringLiteral("unknown"));
+        clip.audioSourceLastVerifiedMs =
+            obj.value(QStringLiteral("audioSourceLastVerifiedMs")).toVariant().toLongLong();
         clip.sourceFps = obj.value(QStringLiteral("sourceFps")).toDouble(30.0);
         clip.sourceDurationFrames = obj.value(QStringLiteral("sourceDurationFrames")).toVariant().toLongLong();
         clip.sourceInFrame = obj.value(QStringLiteral("sourceInFrame")).toVariant().toLongLong();
@@ -392,6 +422,37 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.bold = keyframeObj.value(QStringLiteral("bold")).toBool(true);
             keyframe.italic = keyframeObj.value(QStringLiteral("italic")).toBool(false);
             keyframe.color = QColor(keyframeObj.value(QStringLiteral("color")).toString(QStringLiteral("#ffffffff")));
+            keyframe.dropShadowEnabled =
+                keyframeObj.value(QStringLiteral("dropShadowEnabled")).toBool(true);
+            keyframe.dropShadowColor = QColor(
+                keyframeObj.value(QStringLiteral("dropShadowColor"))
+                    .toString(QStringLiteral("#ff000000")));
+            keyframe.dropShadowOpacity =
+                qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("dropShadowOpacity")).toDouble(0.6), 1.0);
+            keyframe.dropShadowOffsetX =
+                keyframeObj.value(QStringLiteral("dropShadowOffsetX")).toDouble(2.0);
+            keyframe.dropShadowOffsetY =
+                keyframeObj.value(QStringLiteral("dropShadowOffsetY")).toDouble(2.0);
+            keyframe.windowEnabled =
+                keyframeObj.value(QStringLiteral("windowEnabled")).toBool(false);
+            keyframe.windowColor = QColor(
+                keyframeObj.value(QStringLiteral("windowColor"))
+                    .toString(QStringLiteral("#ff000000")));
+            keyframe.windowOpacity =
+                qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("windowOpacity")).toDouble(0.35), 1.0);
+            keyframe.windowPadding =
+                qMax<qreal>(0.0, keyframeObj.value(QStringLiteral("windowPadding")).toDouble(16.0));
+            keyframe.windowFrameEnabled =
+                keyframeObj.value(QStringLiteral("windowFrameEnabled")).toBool(false);
+            keyframe.windowFrameColor = QColor(
+                keyframeObj.value(QStringLiteral("windowFrameColor"))
+                    .toString(QStringLiteral("#ffffffff")));
+            keyframe.windowFrameOpacity =
+                qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("windowFrameOpacity")).toDouble(1.0), 1.0);
+            keyframe.windowFrameWidth =
+                qMax<qreal>(0.0, keyframeObj.value(QStringLiteral("windowFrameWidth")).toDouble(2.0));
+            keyframe.windowFrameGap =
+                qMax<qreal>(0.0, keyframeObj.value(QStringLiteral("windowFrameGap")).toDouble(4.0));
             keyframe.linearInterpolation = keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
             clip.titleKeyframes.push_back(keyframe);
         }
@@ -399,6 +460,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         normalizeClipGradingKeyframes(clip);
         normalizeClipOpacityKeyframes(clip);
         normalizeClipTitleKeyframes(clip);
+        refreshClipAudioSource(clip);
         return clip;
     }
 

@@ -278,6 +278,18 @@ void PreviewWindow::setTranscriptOverlayInteractionEnabled(bool enabled) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setTitleOverlayInteractionOnly(bool enabled) {
+    if (m_titleOverlayInteractionOnly == enabled) {
+        return;
+    }
+    m_titleOverlayInteractionOnly = enabled;
+    if (m_titleOverlayInteractionOnly && !clipIdIsTitle(m_selectedClipId)) {
+        m_dragMode = PreviewDragMode::None;
+        m_dragOriginBounds = QRectF();
+    }
+    scheduleRepaint();
+}
+
 void PreviewWindow::setBypassGrading(bool bypass) {
     if (m_bypassGrading == bypass) return;
     m_bypassGrading = bypass;
@@ -303,6 +315,18 @@ QString PreviewWindow::activeAudioClipLabel() const {
         }
     }
     return QString();
+}
+
+bool PreviewWindow::clipIdIsTitle(const QString& clipId) const {
+    if (clipId.isEmpty()) {
+        return false;
+    }
+    for (const TimelineClip& clip : m_clips) {
+        if (clip.id == clipId) {
+            return clip.mediaType == ClipMediaType::Title;
+        }
+    }
+    return false;
 }
 
 QList<TimelineClip> PreviewWindow::getActiveClips() const {

@@ -17,6 +17,7 @@
 #include <QPushButton>
 #include <QProgressDialog>
 #include <QProgressBar>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryFile>
 #include <QTextCursor>
@@ -266,7 +267,12 @@ QString EditorWindow::clipFileInfoSummary(const QString &filePath, const MediaPr
     lines << QStringLiteral("Video: %1").arg(probe.hasVideo ? QStringLiteral("Yes") : QStringLiteral("No"));
     return lines.join(QLatin1Char('\n'));
 }
-void EditorWindow::createProxyForClip(const QString &clipId)
+void EditorWindow::continueProxyForClip(const QString &clipId)
+{
+    createProxyForClip(clipId, true);
+}
+
+void EditorWindow::createProxyForClip(const QString &clipId, bool continueGeneration)
 {
     if (!m_timeline) return;
 
@@ -323,7 +329,40 @@ void EditorWindow::createProxyForClip(const QString &clipId)
         if (response != QMessageBox::Yes) return;
     }
     
-    if (QFileInfo::exists(overwriteTarget))
+    int resumeNextFrameNumber = 1;
+    if (continueGeneration) {
+        const QFileInfo proxyInfo(overwriteTarget);
+        if (!proxyInfo.exists() || !proxyInfo.isDir()) {
+            QMessageBox::information(
+                this,
+                QStringLiteral("Continue Proxy Gen"),
+                QStringLiteral("A generated image-sequence proxy directory was not found for this clip."));
+            return;
+        }
+        const QStringList generatedFrames = QDir(overwriteTarget).entryList(
+            {QStringLiteral("frame_*.jpg"), QStringLiteral("frame_*.png")},
+            QDir::Files,
+            QDir::Name);
+        if (generatedFrames.isEmpty()) {
+            QMessageBox::information(
+                this,
+                QStringLiteral("Continue Proxy Gen"),
+                QStringLiteral("No generated proxy frames were found. Use Create Proxy instead."));
+            return;
+        }
+        static const QRegularExpression kFrameNumberPattern(QStringLiteral("^frame_(\\d+)\\.(?:jpg|png)$"),
+                                                            QRegularExpression::CaseInsensitiveOption);
+        int maxFrameNumber = 0;
+        for (const QString& fileName : generatedFrames) {
+            const QRegularExpressionMatch match = kFrameNumberPattern.match(fileName);
+            if (!match.hasMatch()) {
+                continue;
+            }
+            const int parsed = match.captured(1).toInt();
+            maxFrameNumber = qMax(maxFrameNumber, parsed);
+        }
+        resumeNextFrameNumber = qMax(1, maxFrameNumber + 1);
+    } else if (QFileInfo::exists(overwriteTarget))
     {
         const auto response = QMessageBox::question(
             this,
@@ -337,7 +376,10 @@ void EditorWindow::createProxyForClip(const QString &clipId)
 
     auto *dialog = new QDialog(this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->setWindowTitle(QStringLiteral("Create Proxy  %1").arg(clip->label));
+    dialog->setWindowTitle(QStringLiteral("%1  %2")
+                               .arg(continueGeneration ? QStringLiteral("Continue Proxy Gen")
+                                                       : QStringLiteral("Create Proxy"))
+                               .arg(clip->label));
     dialog->resize(920, 560);
 
     auto *layout = new QVBoxLayout(dialog);
@@ -358,6 +400,10 @@ void EditorWindow::createProxyForClip(const QString &clipId)
     formatCombo->addItem(QStringLiteral("Motion JPEG (MOV)"), static_cast<int>(ProxyFormat::MJPEG));
 #endif
     formatCombo->setCurrentIndex(0);
+    if (continueGeneration) {
+        formatCombo->setCurrentIndex(0);
+        formatCombo->setEnabled(false);
+    }
     formatRow->addWidget(formatCombo);
     formatRow->addStretch(1);
     layout->addLayout(formatRow);
@@ -403,14 +449,20 @@ void EditorWindow::createProxyForClip(const QString &clipId)
         }
 
         QTextStream stream(sequenceListFile.get());
-        for (const QString &framePath : sequenceFrames)
+        int sequenceStartIndex = 0;
+        if (continueGeneration) {
+            sequenceStartIndex = qBound(0, resumeNextFrameNumber - 1, qMax(0, sequenceFrames.size() - 1));
+        }
+
+        for (int i = sequenceStartIndex; i < sequenceFrames.size(); ++i)
         {
+            const QString& framePath = sequenceFrames[i];
             QString escapedFramePath = QFileInfo(framePath).absoluteFilePath();
             escapedFramePath.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
              stream << "file '" << escapedFramePath << "'\n";
              stream << "duration " << QString::number(1.0 / sourceProbe.fps, 'f', 6) << '\n';
         }
-        if (!sequenceFrames.isEmpty())
+        if (sequenceStartIndex < sequenceFrames.size())
         {
             QString escapedFramePath = QFileInfo(sequenceFrames.constLast()).absoluteFilePath();
             escapedFramePath.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
@@ -427,6 +479,13 @@ void EditorWindow::createProxyForClip(const QString &clipId)
     {
         const auto selectedFormat = static_cast<ProxyFormat>(
             formatCombo->currentData().toInt());
+
+        if (continueGeneration) {
+            const qreal seekSeconds = qMax<qreal>(0.0, static_cast<qreal>(resumeNextFrameNumber - 1) /
+                                                           static_cast<qreal>(qMax(1, qRound(sourceProbe.fps))));
+            arguments << QStringLiteral("-ss")
+                      << QString::number(static_cast<double>(seekSeconds), 'f', 6);
+        }
 
         arguments << QStringLiteral("-i") << QFileInfo(clip->filePath).absoluteFilePath()
                   << QStringLiteral("-map") << QStringLiteral("0:v:0");
@@ -467,6 +526,9 @@ void EditorWindow::createProxyForClip(const QString &clipId)
             outDir.mkpath(QStringLiteral("."));
         }
         arguments << QStringLiteral("-vf") << baseVideoFilters.join(QStringLiteral(","));
+        if (continueGeneration && resumeNextFrameNumber > 1) {
+            arguments << QStringLiteral("-start_number") << QString::number(resumeNextFrameNumber);
+        }
         if (alphaProxy) {
             arguments << QStringLiteral("-pix_fmt") << QStringLiteral("rgba")
                       << QStringLiteral("%1/frame_%06d.png").arg(QDir(finalOutputPath).absolutePath());
@@ -510,10 +572,12 @@ void EditorWindow::createProxyForClip(const QString &clipId)
         confirm.setWindowTitle(QStringLiteral("Confirm Proxy Command"));
         confirm.setText(QStringLiteral("Run ffmpeg to create this proxy?"));
         confirm.setInformativeText(
-            QStringLiteral("Source VFR: %1\nCFR normalization: %2 (%3 fps)")
+            QStringLiteral("Source VFR: %1\nCFR normalization: %2 (%3 fps)\nMode: %4")
                 .arg(sourceIsVfr ? QStringLiteral("Yes") : QStringLiteral("No"))
                 .arg(normalizeToCfr ? QStringLiteral("Enabled") : QStringLiteral("Disabled"))
-                .arg(proxyFps));
+                .arg(proxyFps)
+                .arg(continueGeneration ? QStringLiteral("Continue from frame %1").arg(resumeNextFrameNumber)
+                                        : QStringLiteral("Full regeneration")));
         confirm.setDetailedText(commandPreview);
         confirm.setStandardButtons(QMessageBox::Yes | QMessageBox::Cancel);
         confirm.setDefaultButton(QMessageBox::Yes);

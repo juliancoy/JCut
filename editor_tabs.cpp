@@ -13,6 +13,11 @@ void EditorWindow::createOutputTab()
             m_outputWidthSpin, m_outputHeightSpin,
             m_exportStartSpin, m_exportEndSpin,
             m_outputFormatCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
+            m_outputPlaybackCacheFallbackCheckBox, m_outputLeadPrefetchEnabledCheckBox,
+            m_outputLeadPrefetchCountSpin, m_outputPlaybackWindowAheadSpin, m_outputVisibleQueueReserveSpin,
+            m_outputPrefetchMaxQueueDepthSpin, m_outputPrefetchMaxInflightSpin,
+            m_outputPrefetchMaxPerTickSpin, m_outputPrefetchSkipVisiblePendingThresholdSpin,
+            m_outputDecoderLaneCountSpin, m_outputDecodeModeCombo,
             m_autosaveIntervalMinutesSpin, m_autosaveMaxBackupsSpin,
             m_createImageSequenceCheckBox, m_imageSequenceFormatCombo, m_renderButton},
         OutputTab::Dependencies{
@@ -303,6 +308,21 @@ void EditorWindow::createTitlesTab()
             m_inspectorPane->titleFontCombo(),
             m_inspectorPane->titleBoldCheck(),
             m_inspectorPane->titleItalicCheck(),
+            m_inspectorPane->titleColorButton(),
+            m_inspectorPane->titleShadowEnabledCheck(),
+            m_inspectorPane->titleShadowColorButton(),
+            m_inspectorPane->titleShadowOpacitySpin(),
+            m_inspectorPane->titleShadowOffsetXSpin(),
+            m_inspectorPane->titleShadowOffsetYSpin(),
+            m_inspectorPane->titleWindowEnabledCheck(),
+            m_inspectorPane->titleWindowColorButton(),
+            m_inspectorPane->titleWindowOpacitySpin(),
+            m_inspectorPane->titleWindowPaddingSpin(),
+            m_inspectorPane->titleWindowFrameEnabledCheck(),
+            m_inspectorPane->titleWindowFrameColorButton(),
+            m_inspectorPane->titleWindowFrameOpacitySpin(),
+            m_inspectorPane->titleWindowFrameWidthSpin(),
+            m_inspectorPane->titleWindowFrameGapSpin(),
             m_inspectorPane->titleAutoScrollCheck(),
             m_inspectorPane->addTitleKeyframeButton(),
             m_inspectorPane->removeTitleKeyframeButton(),
@@ -413,16 +433,16 @@ void EditorWindow::setupTabs()
     if (m_inspectorPane && m_inspectorPane->tabs()) {
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this, [this](int index) {
             if (m_preview) {
-                // Check if the Corrections tab is at index 3 (0-based)
-                // Based on inspector_pane.cpp buildPane() function:
-                // 0: Grade, 1: Opacity, 2: Effects, 3: Corrections, ...
-                const bool isCorrectionsTab = (index == 3);
+                const QString tabName = m_inspectorPane->tabs()->tabText(index);
+                const bool isCorrectionsTab = tabName.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0;
+                const bool isTitlesTab = tabName.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0;
                 if (!isCorrectionsTab && m_preview->correctionDrawMode()) {
                     m_preview->setCorrectionDrawMode(false);
                     if (m_correctionsTab) {
                         m_correctionsTab->stopDrawing();
                     }
                 }
+                m_preview->setTitleOverlayInteractionOnly(isTitlesTab);
             }
         });
     }

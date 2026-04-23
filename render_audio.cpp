@@ -1,5 +1,6 @@
 #include "render_internal.h"
 
+#include <QDebug>
 #include <cstdlib>
 
 namespace render_detail {
@@ -66,6 +67,11 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
     }
 
     SwrContext* swr = swr_alloc();
+    if (!swr) {
+        avcodec_free_context(&codecCtx);
+        avformat_close_input(&formatCtx);
+        return cache;
+    }
     ffmpeg_compat::ChannelLayoutHandle outLayout{};
     ffmpeg_compat::defaultChannelLayout(&outLayout, kRenderAudioChannels);
     ffmpeg_compat::setSwrInputLayout(swr, codecCtx);
@@ -74,7 +80,7 @@ DecodedAudioClip decodeClipAudio(const QString& path) {
     av_opt_set_int(swr, "out_sample_rate", kRenderAudioSampleRate, 0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt", codecCtx->sample_fmt, 0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
-    if (!swr || swr_init(swr) < 0) {
+    if (swr_init(swr) < 0) {
         ffmpeg_compat::uninitChannelLayout(&outLayout);
         swr_free(&swr);
         avcodec_free_context(&codecCtx);
@@ -168,10 +174,11 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
         if (!clipAudioPlaybackEnabled(clip)) {
             continue;
         }
-        const DecodedAudioClip audio = audioCache.value(clip.filePath);
-        if (!audio.valid) {
+        const auto audioIt = audioCache.constFind(playbackAudioPathForClip(clip));
+        if (audioIt == audioCache.constEnd() || !audioIt->valid) {
             continue;
         }
+        const DecodedAudioClip& audio = audioIt.value();
 
         const int64_t clipStartSample = clipTimelineStartSamples(clip);
         const int64_t sourceInSample = clipSourceInSamples(clip);
@@ -219,29 +226,37 @@ bool initializeExportAudio(const RenderRequest& request,
     }
     if (audioClips.isEmpty()) {
         // No audio clips to export - this is normal for video-only projects
+        qDebug() << "Audio export: No audio clips found (video-only export)";
         return true;
     }
+
+    qDebug() << "Audio export: Found" << audioClips.size() << "audio clip(s)";
 
     QHash<QString, DecodedAudioClip> audioCache;
     int decodedCount = 0;
     int failedCount = 0;
     for (const TimelineClip& clip : audioClips) {
-        if (audioCache.contains(clip.filePath)) {
+        const QString audioPath = playbackAudioPathForClip(clip);
+        if (audioPath.isEmpty() || audioCache.contains(audioPath)) {
             continue;
         }
-        const DecodedAudioClip decoded = decodeClipAudio(clip.filePath);
+        const DecodedAudioClip decoded = decodeClipAudio(audioPath);
         if (decoded.valid) {
-            audioCache.insert(clip.filePath, decoded);
+            audioCache.insert(audioPath, decoded);
             decodedCount++;
+            qDebug() << "Audio export: Successfully decoded audio clip:" << audioPath
+                     << "samples:" << decoded.samples.size();
         } else {
             // Log failure but continue - other audio clips might work
             failedCount++;
+            qWarning() << "Audio export: Failed to decode audio clip:" << audioPath;
         }
     }
 
     bool hasDecodedAudio = false;
     for (const TimelineClip& clip : audioClips) {
-        if (audioCache.value(clip.filePath).valid) {
+        const auto audioIt = audioCache.constFind(playbackAudioPathForClip(clip));
+        if (audioIt != audioCache.constEnd() && audioIt->valid) {
             hasDecodedAudio = true;
             break;
         }
@@ -250,12 +265,12 @@ bool initializeExportAudio(const RenderRequest& request,
         // All audio clips failed to decode - export will proceed without audio
         // This matches the audio engine behavior which also silently ignores
         // clips that fail to decode
+        qWarning() << "Audio export: All" << audioClips.size() << "audio clip(s) failed to decode";
         return true;
     }
     
     // At least one audio clip decoded successfully
-    // Note: We don't log here to avoid spamming the console during normal operation
-    // Debug logging can be added if needed for troubleshooting
+    qDebug() << "Audio export:" << decodedCount << "clip(s) decoded successfully," << failedCount << "failed";
 
     QString codecLabel;
     const AVCodec* audioCodec = audioCodecForRequest(request.outputFormat, &codecLabel);
@@ -333,6 +348,12 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     }
 
     SwrContext* swr = swr_alloc();
+    if (!swr) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to allocate audio resampler for export.");
+        }
+        return false;
+    }
     ffmpeg_compat::ChannelLayoutHandle inputLayout{};
     ffmpeg_compat::defaultChannelLayout(&inputLayout, kRenderAudioChannels);
 #if LIBAVUTIL_VERSION_MAJOR >= 57
@@ -347,7 +368,7 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     av_opt_set_int(swr, "out_sample_rate", state.codecCtx->sample_rate, 0);
     av_opt_set_sample_fmt(swr, "in_sample_fmt", AV_SAMPLE_FMT_FLT, 0);
     av_opt_set_sample_fmt(swr, "out_sample_fmt", state.codecCtx->sample_fmt, 0);
-    if (!swr || swr_init(swr) < 0) {
+    if (swr_init(swr) < 0) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to create audio resampler for export.");
         }
@@ -507,16 +528,65 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
         }
     }
 
-    const int flushedSamples = swr_convert(swr, nullptr, 0, nullptr, 0);
-    if (flushedSamples < 0) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("Failed to flush audio resampler.");
+    while (swr_get_delay(swr, kRenderAudioSampleRate) > 0) {
+        const int delayedInputSamples = static_cast<int>(swr_get_delay(swr, kRenderAudioSampleRate));
+        const int estimatedOutSamples = swr_get_out_samples(swr, delayedInputSamples);
+        if (estimatedOutSamples <= 0) {
+            break;
         }
-        av_frame_free(&audioFrame);
-        av_audio_fifo_free(fifo);
-        ffmpeg_compat::uninitChannelLayout(&inputLayout);
-        swr_free(&swr);
-        return false;
+
+        uint8_t** convertedData = nullptr;
+        int convertedLineSize = 0;
+        if (av_samples_alloc_array_and_samples(&convertedData,
+                                               &convertedLineSize,
+                                               ffmpeg_compat::codecContextChannelCount(state.codecCtx),
+                                               estimatedOutSamples,
+                                               state.codecCtx->sample_fmt,
+                                               0) < 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to allocate resampler flush buffer.");
+            }
+            av_frame_free(&audioFrame);
+            av_audio_fifo_free(fifo);
+            ffmpeg_compat::uninitChannelLayout(&inputLayout);
+            swr_free(&swr);
+            return false;
+        }
+
+        const int convertedSamples = swr_convert(swr, convertedData, estimatedOutSamples, nullptr, 0);
+        if (convertedSamples < 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to flush audio resampler.");
+            }
+            av_freep(&convertedData[0]);
+            av_freep(&convertedData);
+            av_frame_free(&audioFrame);
+            av_audio_fifo_free(fifo);
+            ffmpeg_compat::uninitChannelLayout(&inputLayout);
+            swr_free(&swr);
+            return false;
+        }
+        if (convertedSamples > 0) {
+            if (av_audio_fifo_realloc(fifo, av_audio_fifo_size(fifo) + convertedSamples) < 0 ||
+                av_audio_fifo_write(fifo, reinterpret_cast<void**>(convertedData), convertedSamples) < convertedSamples) {
+                if (errorMessage) {
+                    *errorMessage = QStringLiteral("Failed to queue resampler flush audio for encoding.");
+                }
+                av_freep(&convertedData[0]);
+                av_freep(&convertedData);
+                av_frame_free(&audioFrame);
+                av_audio_fifo_free(fifo);
+                ffmpeg_compat::uninitChannelLayout(&inputLayout);
+                swr_free(&swr);
+                return false;
+            }
+        }
+        av_freep(&convertedData[0]);
+        av_freep(&convertedData);
+
+        if (convertedSamples == 0) {
+            break;
+        }
     }
 
     if (!writeAvailableAudioFrames(true) ||

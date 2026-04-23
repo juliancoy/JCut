@@ -23,6 +23,7 @@ inline const char* visualEffectsFragmentShaderSource() {
         uniform sampler2D u_texture;
         uniform sampler2D u_texture_uv;
         uniform float u_texture_mode;
+        uniform float u_unpremultiply_input;
         uniform float u_brightness;
         uniform float u_contrast;
         uniform float u_saturation;
@@ -61,10 +62,10 @@ inline const char* visualEffectsFragmentShaderSource() {
                 color = texture2D(u_texture, v_texCoord);
                 sourceAlpha = color.a;
                 rgb = color.rgb;
-                if (sourceAlpha > 0.0001) {
-                    rgb /= sourceAlpha;
-                } else {
+                if (sourceAlpha <= 0.0001) {
                     rgb = vec3(0.0);
+                } else if (u_unpremultiply_input > 0.5) {
+                    rgb /= sourceAlpha;
                 }
             }
 

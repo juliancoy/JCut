@@ -184,6 +184,18 @@ void TimelineRenderer::paint(QPainter* painter) {
         const int barHeight = qBound(3, visibleClipRect.height() / 10, 6);
         int barBottom = visibleClipRect.bottom() - 1;
 
+        const bool alternateAudioInUse = playbackUsesAlternateAudioSource(clip);
+        if (alternateAudioInUse) {
+            const QRect alternateAudioBarRect(visibleClipRect.left() + 2,
+                                              barBottom - barHeight + 1,
+                                              qMax(1, visibleClipRect.width() - 4),
+                                              barHeight);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(QStringLiteral("#36c96a")));
+            painter->drawRoundedRect(alternateAudioBarRect, 2, 2);
+            barBottom -= (barHeight + 1);
+        }
+
         const QString transcriptPath = transcriptWorkingPathForClipFile(clip.filePath);
         const bool transcriptExists =
             !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);

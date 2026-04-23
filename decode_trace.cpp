@@ -42,7 +42,8 @@ bool linuxNvidiaDetected() {
 
 bool zeroCopyInteropSupportedForCurrentBuild() {
 #if defined(Q_OS_LINUX)
-    return linuxNvidiaDetected();
+    return linuxNvidiaDetected() ||
+           QFile::exists(QStringLiteral("/dev/dri/renderD128"));
 #else
     return false;
 #endif

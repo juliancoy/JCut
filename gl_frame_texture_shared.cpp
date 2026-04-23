@@ -21,12 +21,115 @@ namespace editor {
 
 bool frameUsesCudaZeroCopyCandidate(const FrameHandle& frame) {
 #ifdef EDITOR_HAS_CUDA
-    return frame.hasHardwareFrame() && frame.hardwareSwPixelFormat() == AV_PIX_FMT_NV12;
+    return frame.hasHardwareFrame() &&
+           frame.hardwarePixelFormat() == AV_PIX_FMT_CUDA &&
+           frame.hardwareSwPixelFormat() == AV_PIX_FMT_NV12;
 #else
     Q_UNUSED(frame);
     return false;
 #endif
 }
+
+bool frameUsesVaapiZeroCopyCandidate(const FrameHandle& frame) {
+    return frame.hasHardwareFrame() &&
+           frame.hardwarePixelFormat() == AV_PIX_FMT_VAAPI &&
+           frame.hardwareSwPixelFormat() == AV_PIX_FMT_NV12;
+}
+
+namespace {
+#ifdef EDITOR_HAS_CUDA
+bool uploadCudaNv12FrameToRegisteredTextures(const FrameHandle& frame, GlTextureCacheEntry* entry);
+#endif
+
+bool frameUsesHardwareNv12UploadCandidate(const FrameHandle& frame) {
+    return frameUsesCudaZeroCopyCandidate(frame) || frameUsesVaapiZeroCopyCandidate(frame);
+}
+
+bool uploadNv12PlanesToTextures(const AVFrame* frame, GlTextureCacheEntry* entry) {
+    if (!frame || !entry) {
+        return false;
+    }
+    const int width = frame->width;
+    const int height = frame->height;
+    if (width <= 0 || height <= 0 || !frame->data[0] || !frame->data[1]) {
+        return false;
+    }
+
+    const int uvWidth = qMax(1, (width + 1) / 2);
+    const int uvHeight = qMax(1, (height + 1) / 2);
+    const QSize frameSize(width, height);
+    const bool needsAllocate =
+        entry->textureId == 0 ||
+        entry->auxTextureId == 0 ||
+        entry->size != frameSize ||
+        !entry->usesYuvTextures;
+
+    if (needsAllocate) {
+        destroyGlTextureEntry(entry);
+        glGenTextures(1, &entry->textureId);
+        glBindTexture(GL_TEXTURE_2D, entry->textureId);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
+
+        glGenTextures(1, &entry->auxTextureId);
+        glBindTexture(GL_TEXTURE_2D, entry->auxTextureId);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, uvWidth, uvHeight, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        entry->size = frameSize;
+        entry->usesYuvTextures = true;
+    }
+
+    glBindTexture(GL_TEXTURE_2D, entry->textureId);
+    for (int y = 0; y < height; ++y) {
+        const uint8_t* row = frame->data[0] + (y * frame->linesize[0]);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, width, 1, GL_RED, GL_UNSIGNED_BYTE, row);
+    }
+    glBindTexture(GL_TEXTURE_2D, entry->auxTextureId);
+    for (int y = 0; y < uvHeight; ++y) {
+        const uint8_t* row = frame->data[1] + (y * frame->linesize[1]);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, y, uvWidth, 1, GL_RG, GL_UNSIGNED_BYTE, row);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+    return true;
+}
+
+bool uploadHardwareNv12FrameToTextures(const FrameHandle& frame, GlTextureCacheEntry* entry) {
+    if (!frame.hasHardwareFrame() || !entry) {
+        return false;
+    }
+
+#ifdef EDITOR_HAS_CUDA
+    if (frameUsesCudaZeroCopyCandidate(frame) && uploadCudaNv12FrameToRegisteredTextures(frame, entry)) {
+        entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
+        return true;
+    }
+#endif
+
+    AVFrame* swFrame = av_frame_alloc();
+    if (!swFrame) {
+        return false;
+    }
+
+    const AVFrame* hwFrame = frame.hardwareFrame();
+    const int transferRet = av_hwframe_transfer_data(swFrame, hwFrame, 0);
+    if (transferRet < 0) {
+        av_frame_free(&swFrame);
+        return false;
+    }
+
+    const bool uploaded = uploadNv12PlanesToTextures(swFrame, entry);
+    av_frame_free(&swFrame);
+    return uploaded;
+}
+} // namespace
 
 #ifdef EDITOR_HAS_CUDA
 bool uploadCudaNv12FrameToTextures(const FrameHandle& frame, GLuint textureId, GLuint uvTextureId) {
@@ -233,7 +336,7 @@ QString textureCacheKey(const FrameHandle& frame) {
 QString reusableTextureCacheKey(const FrameHandle& frame) {
     return QStringLiteral("%1|%2")
         .arg(frame.sourcePath())
-        .arg(frameUsesCudaZeroCopyCandidate(frame) ? QStringLiteral("nv12") : QStringLiteral("rgba"));
+        .arg(frameUsesHardwareNv12UploadCandidate(frame) ? QStringLiteral("nv12") : QStringLiteral("rgba"));
 }
 
 bool shouldUseReusableTextureCache(const FrameHandle& frame) {
@@ -271,52 +374,13 @@ bool uploadFrameToGlTextureEntry(const FrameHandle& frame, GlTextureCacheEntry* 
         return false;
     }
 
-    const bool wantsYuv = frameUsesCudaZeroCopyCandidate(frame);
+    const bool wantsYuv = frameUsesHardwareNv12UploadCandidate(frame);
     if (wantsYuv) {
-#ifdef EDITOR_HAS_CUDA
-        const QSize frameSize = frame.size();
-        if (!frameSize.isValid()) {
-            return false;
-        }
-        const int width = frameSize.width();
-        const int height = frameSize.height();
-        const int uvWidth = qMax(1, (width + 1) / 2);
-        const int uvHeight = qMax(1, (height + 1) / 2);
-        const bool needsAllocate =
-            entry->textureId == 0 ||
-            entry->auxTextureId == 0 ||
-            entry->size != frameSize ||
-            !entry->usesYuvTextures;
-        if (needsAllocate) {
-            destroyGlTextureEntry(entry);
-            glGenTextures(1, &entry->textureId);
-            glBindTexture(GL_TEXTURE_2D, entry->textureId);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width, height, 0, GL_RED, GL_UNSIGNED_BYTE, nullptr);
-
-            glGenTextures(1, &entry->auxTextureId);
-            glBindTexture(GL_TEXTURE_2D, entry->auxTextureId);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RG8, uvWidth, uvHeight, 0, GL_RG, GL_UNSIGNED_BYTE, nullptr);
-            glBindTexture(GL_TEXTURE_2D, 0);
-            entry->size = frameSize;
-            entry->usesYuvTextures = true;
-        }
-        if (!uploadCudaNv12FrameToRegisteredTextures(frame, entry)) {
+        if (!uploadHardwareNv12FrameToTextures(frame, entry)) {
             destroyGlTextureEntry(entry);
             return false;
         }
-        entry->lastUsedMs = QDateTime::currentMSecsSinceEpoch();
         return true;
-#else
-        return false;
-#endif
     }
 
     if (!frame.hasCpuImage()) {

@@ -9,6 +9,11 @@
 #include "timeline_cache.h"
 #include "debug_controls.h"
 
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QThread>
+
 using namespace editor;
 
 bool PreviewWindow::preparePlaybackAdvance(int64_t targetFrame) {
@@ -23,6 +28,10 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
 
     for (const TimelineClip& clip : m_clips) {
         if (!clipVisualPlaybackEnabled(clip, m_tracks) || !isSampleWithinClip(clip, targetSample)) {
+            continue;
+        }
+        if (clip.mediaType == ClipMediaType::Title) {
+            // Title clips are overlay-only and do not require decoded frame readiness.
             continue;
         }
 
@@ -58,6 +67,87 @@ bool PreviewWindow::preparePlaybackAdvanceSample(int64_t targetSample) {
         }
     }
 
+    return true;
+}
+
+bool PreviewWindow::warmPlaybackLookahead(int futureFrames, int timeoutMs) {
+    if (futureFrames <= 0) {
+        return true;
+    }
+
+    ensurePipeline();
+    if (!m_cache) {
+        return false;
+    }
+
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setPlaybackActive(true);
+        m_playbackPipeline->setPlayheadFrame(m_currentFrame);
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        if (hasPlaybackLookaheadBuffered(futureFrames)) {
+            return true;
+        }
+
+        for (int offset = 0; offset <= futureFrames; ++offset) {
+            const int64_t targetSample = m_currentSample + frameToSamples(offset);
+            preparePlaybackAdvanceSample(targetSample);
+            if (m_playbackPipeline) {
+                m_playbackPipeline->requestFramesForSample(
+                    targetSample,
+                    [this]() {
+                        QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection);
+                    });
+            }
+        }
+
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
+        QThread::msleep(8);
+    }
+
+    return hasPlaybackLookaheadBuffered(futureFrames);
+}
+
+bool PreviewWindow::hasPlaybackLookaheadBuffered(int futureFrames) const {
+    if (futureFrames < 0 || !m_cache) {
+        return true;
+    }
+
+    for (int offset = 0; offset <= futureFrames; ++offset) {
+        const int64_t samplePosition = m_currentSample + frameToSamples(offset);
+        const qreal framePosition = samplesToFramePosition(samplePosition);
+        for (const TimelineClip& clip : m_clips) {
+            if (!clipVisualPlaybackEnabled(clip, m_tracks) || !isSampleWithinClip(clip, samplePosition)) {
+                continue;
+            }
+            if (clip.mediaType == ClipMediaType::Title) {
+                continue;
+            }
+            if (!editor::clipIsActiveAtTimelineFrame(clip, m_tracks, framePosition, m_bypassGrading)) {
+                continue;
+            }
+            const int64_t localFrame = sourceFrameForSample(clip, samplePosition);
+            const bool isImageSequence = clip.sourceKind == MediaSourceKind::ImageSequence &&
+                                         clip.mediaType != ClipMediaType::Image;
+            if (isImageSequence) {
+                if (!m_playbackPipeline || !m_playbackPipeline->isFrameBuffered(clip.id, localFrame)) {
+                    return false;
+                }
+                continue;
+            }
+
+            if (!m_cache->hasDisplayableFrameForPreview(
+                    clip.id,
+                    localFrame,
+                    true,
+                    editor::debugPlaybackCacheFallbackEnabled())) {
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -182,10 +272,10 @@ void PreviewWindow::requestFramesForCurrentPosition() {
                                      clip->mediaType != ClipMediaType::Image;
         const bool usePlaybackPipeline = m_playing && isImageSequence;
 
-        const bool pausedSequenceNeedsExact = !m_playing && isImageSequence;
+        const bool pausedNeedsExact = !m_playing;
         const bool cached = usePlaybackPipeline
                                 ? m_playbackPipeline->isFrameBuffered(clip->id, localFrame)
-                                : (pausedSequenceNeedsExact
+                                : (pausedNeedsExact
                                       ? m_cache->isFrameCached(clip->id, localFrame)
                                 : m_cache->hasDisplayableFrameForPreview(
                                       clip->id,

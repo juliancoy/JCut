@@ -166,6 +166,9 @@ void EditorPane::setupTransportControls()
     m_playbackSpeedCombo->addItem(QStringLiteral("50%"), 0.5);
     m_playbackSpeedCombo->addItem(QStringLiteral("75%"), 0.75);
     m_playbackSpeedCombo->addItem(QStringLiteral("100%"), 1.0);
+    m_playbackSpeedCombo->addItem(QStringLiteral("150%"), 1.5);
+    m_playbackSpeedCombo->addItem(QStringLiteral("200%"), 2.0);
+    m_playbackSpeedCombo->addItem(QStringLiteral("300%"), 3.0);
     m_playbackSpeedCombo->setCurrentIndex(4);
     m_playbackSpeedCombo->setToolTip(
         QStringLiteral("Timeline playback speed. Audio clock remains authoritative when audio is active."));

@@ -127,6 +127,21 @@ public:
     QFontComboBox *titleFontCombo() const { return m_titleFontCombo; }
     QCheckBox *titleBoldCheck() const { return m_titleBoldCheck; }
     QCheckBox *titleItalicCheck() const { return m_titleItalicCheck; }
+    QPushButton *titleColorButton() const { return m_titleColorButton; }
+    QCheckBox *titleShadowEnabledCheck() const { return m_titleShadowEnabledCheck; }
+    QPushButton *titleShadowColorButton() const { return m_titleShadowColorButton; }
+    QDoubleSpinBox *titleShadowOpacitySpin() const { return m_titleShadowOpacitySpin; }
+    QDoubleSpinBox *titleShadowOffsetXSpin() const { return m_titleShadowOffsetXSpin; }
+    QDoubleSpinBox *titleShadowOffsetYSpin() const { return m_titleShadowOffsetYSpin; }
+    QCheckBox *titleWindowEnabledCheck() const { return m_titleWindowEnabledCheck; }
+    QPushButton *titleWindowColorButton() const { return m_titleWindowColorButton; }
+    QDoubleSpinBox *titleWindowOpacitySpin() const { return m_titleWindowOpacitySpin; }
+    QDoubleSpinBox *titleWindowPaddingSpin() const { return m_titleWindowPaddingSpin; }
+    QCheckBox *titleWindowFrameEnabledCheck() const { return m_titleWindowFrameEnabledCheck; }
+    QPushButton *titleWindowFrameColorButton() const { return m_titleWindowFrameColorButton; }
+    QDoubleSpinBox *titleWindowFrameOpacitySpin() const { return m_titleWindowFrameOpacitySpin; }
+    QDoubleSpinBox *titleWindowFrameWidthSpin() const { return m_titleWindowFrameWidthSpin; }
+    QDoubleSpinBox *titleWindowFrameGapSpin() const { return m_titleWindowFrameGapSpin; }
     QCheckBox *titleAutoScrollCheck() const { return m_titleAutoScrollCheck; }
     QPushButton *addTitleKeyframeButton() const { return m_addTitleKeyframeButton; }
     QPushButton *removeTitleKeyframeButton() const { return m_removeTitleKeyframeButton; }
@@ -180,6 +195,17 @@ public:
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
     QCheckBox *renderCreateVideoFromSequenceCheckBox() const { return m_renderCreateVideoFromSequenceCheckBox; }
+    QCheckBox *outputPlaybackCacheFallbackCheckBox() const { return m_outputPlaybackCacheFallbackCheckBox; }
+    QCheckBox *outputLeadPrefetchEnabledCheckBox() const { return m_outputLeadPrefetchEnabledCheckBox; }
+    QSpinBox *outputLeadPrefetchCountSpin() const { return m_outputLeadPrefetchCountSpin; }
+    QSpinBox *outputPlaybackWindowAheadSpin() const { return m_outputPlaybackWindowAheadSpin; }
+    QSpinBox *outputVisibleQueueReserveSpin() const { return m_outputVisibleQueueReserveSpin; }
+    QSpinBox *outputPrefetchMaxQueueDepthSpin() const { return m_outputPrefetchMaxQueueDepthSpin; }
+    QSpinBox *outputPrefetchMaxInflightSpin() const { return m_outputPrefetchMaxInflightSpin; }
+    QSpinBox *outputPrefetchMaxPerTickSpin() const { return m_outputPrefetchMaxPerTickSpin; }
+    QSpinBox *outputPrefetchSkipVisiblePendingThresholdSpin() const { return m_outputPrefetchSkipVisiblePendingThresholdSpin; }
+    QSpinBox *outputDecoderLaneCountSpin() const { return m_outputDecoderLaneCountSpin; }
+    QComboBox *outputDecodeModeCombo() const { return m_outputDecodeModeCombo; }
     QSpinBox *autosaveIntervalMinutesSpin() const { return m_autosaveIntervalMinutesSpin; }
     QSpinBox *autosaveMaxBackupsSpin() const { return m_autosaveMaxBackupsSpin; }
     QPushButton *renderButton() const { return m_renderButton; }
@@ -304,6 +330,21 @@ private:
     QFontComboBox *m_titleFontCombo = nullptr;
     QCheckBox *m_titleBoldCheck = nullptr;
     QCheckBox *m_titleItalicCheck = nullptr;
+    QPushButton *m_titleColorButton = nullptr;
+    QCheckBox *m_titleShadowEnabledCheck = nullptr;
+    QPushButton *m_titleShadowColorButton = nullptr;
+    QDoubleSpinBox *m_titleShadowOpacitySpin = nullptr;
+    QDoubleSpinBox *m_titleShadowOffsetXSpin = nullptr;
+    QDoubleSpinBox *m_titleShadowOffsetYSpin = nullptr;
+    QCheckBox *m_titleWindowEnabledCheck = nullptr;
+    QPushButton *m_titleWindowColorButton = nullptr;
+    QDoubleSpinBox *m_titleWindowOpacitySpin = nullptr;
+    QDoubleSpinBox *m_titleWindowPaddingSpin = nullptr;
+    QCheckBox *m_titleWindowFrameEnabledCheck = nullptr;
+    QPushButton *m_titleWindowFrameColorButton = nullptr;
+    QDoubleSpinBox *m_titleWindowFrameOpacitySpin = nullptr;
+    QDoubleSpinBox *m_titleWindowFrameWidthSpin = nullptr;
+    QDoubleSpinBox *m_titleWindowFrameGapSpin = nullptr;
     QCheckBox *m_titleAutoScrollCheck = nullptr;
     QPushButton *m_addTitleKeyframeButton = nullptr;
     QPushButton *m_removeTitleKeyframeButton = nullptr;
@@ -372,6 +413,17 @@ private:
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_renderCreateVideoFromSequenceCheckBox = nullptr;
+    QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;
+    QCheckBox *m_outputLeadPrefetchEnabledCheckBox = nullptr;
+    QSpinBox *m_outputLeadPrefetchCountSpin = nullptr;
+    QSpinBox *m_outputPlaybackWindowAheadSpin = nullptr;
+    QSpinBox *m_outputVisibleQueueReserveSpin = nullptr;
+    QSpinBox *m_outputPrefetchMaxQueueDepthSpin = nullptr;
+    QSpinBox *m_outputPrefetchMaxInflightSpin = nullptr;
+    QSpinBox *m_outputPrefetchMaxPerTickSpin = nullptr;
+    QSpinBox *m_outputPrefetchSkipVisiblePendingThresholdSpin = nullptr;
+    QSpinBox *m_outputDecoderLaneCountSpin = nullptr;
+    QComboBox *m_outputDecodeModeCombo = nullptr;
     QSpinBox *m_autosaveIntervalMinutesSpin = nullptr;
     QSpinBox *m_autosaveMaxBackupsSpin = nullptr;
     QPushButton *m_renderButton = nullptr;

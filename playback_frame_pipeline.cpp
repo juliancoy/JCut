@@ -13,11 +13,13 @@ namespace editor {
 namespace {
 constexpr int64_t kVisibleDecodeKeepWindow = 8;
 constexpr int64_t kObsoleteVisibleFrameSlack = 2;
-constexpr int64_t kSequenceVisibleDecodeKeepWindow = 24;
+constexpr int64_t kSequenceVisibleDecodeKeepWindow = 32;
 constexpr int64_t kSequenceObsoleteVisibleFrameSlack = 8;
 constexpr int64_t kSequenceLateBufferSeedSlack = 16;
 constexpr int64_t kMaxPresentationPastFrameDelta = 6;
 constexpr int64_t kMaxPresentationFutureFrameDelta = 1;
+constexpr qint64 kCancelBeforeMinIntervalMs = 45;
+constexpr int64_t kCancelBeforeMinFrameAdvance = 6;
 
 qint64 playbackPipelineTraceMs() {
     static QElapsedTimer timer;
@@ -512,7 +514,40 @@ void PlaybackFramePipeline::clearBuffers() {
     m_pendingVisibleRequests.clear();
     m_pendingPrefetchRequests.clear();
     m_latestVisibleTargets.clear();
+    m_lastCancelKeepFromByPath.clear();
+    m_lastCancelAtMsByPath.clear();
     m_droppedPresentationFrames.store(0);
+}
+
+void PlaybackFramePipeline::cancelDecoderBeforeThrottled(const QString& playbackPath,
+                                                         int64_t keepFromFrame,
+                                                         qint64 nowMs) {
+    if (!m_decoder || playbackPath.isEmpty()) {
+        return;
+    }
+    if (nowMs < 0) {
+        nowMs = QDateTime::currentMSecsSinceEpoch();
+    }
+
+    bool shouldCancel = false;
+    {
+        QMutexLocker pendingLock(&m_pendingMutex);
+        const int64_t previousKeepFrom =
+            m_lastCancelKeepFromByPath.value(playbackPath, std::numeric_limits<int64_t>::min());
+        const qint64 previousCancelAt = m_lastCancelAtMsByPath.value(playbackPath, 0);
+        const bool advancedEnough =
+            keepFromFrame >= previousKeepFrom + kCancelBeforeMinFrameAdvance;
+        const bool overdue = previousCancelAt <= 0 || (nowMs - previousCancelAt) >= kCancelBeforeMinIntervalMs;
+        shouldCancel = advancedEnough || overdue;
+        if (shouldCancel) {
+            m_lastCancelKeepFromByPath.insert(playbackPath, keepFromFrame);
+            m_lastCancelAtMsByPath.insert(playbackPath, nowMs);
+        }
+    }
+
+    if (shouldCancel) {
+        m_decoder->cancelForFileBefore(playbackPath, keepFromFrame);
+    }
 }
 
 void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
@@ -534,8 +569,8 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                                             ? kSequenceLateBufferSeedSlack
                                             : obsoleteVisibleFrameSlack;
 
-    m_decoder->cancelForFileBefore(info.playbackPath,
-                                   qMax<int64_t>(0, canonicalFrame - keepWindow));
+    cancelDecoderBeforeThrottled(info.playbackPath,
+                                 qMax<int64_t>(0, canonicalFrame - keepWindow));
 
     for (int offset = 0; offset <= playbackWindowAhead; ++offset) {
         const int64_t targetFrame = normalizeFrameNumber(info, canonicalFrame + offset);

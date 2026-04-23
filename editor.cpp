@@ -283,6 +283,23 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         qBound(1, root.value(QStringLiteral("previewPlaybackWindowAhead")).toInt(editor::debugPlaybackWindowAhead()), 24);
     const int previewVisibleQueueReserve =
         qBound(0, root.value(QStringLiteral("previewVisibleQueueReserve")).toInt(editor::debugVisibleQueueReserve()), 64);
+    const int debugPrefetchMaxQueueDepth =
+        qBound(1, root.value(QStringLiteral("debugPrefetchMaxQueueDepth")).toInt(editor::debugPrefetchMaxQueueDepth()), 32);
+    const int debugPrefetchMaxInflight =
+        qBound(1, root.value(QStringLiteral("debugPrefetchMaxInflight")).toInt(editor::debugPrefetchMaxInflight()), 16);
+    const int debugPrefetchMaxPerTick =
+        qBound(1, root.value(QStringLiteral("debugPrefetchMaxPerTick")).toInt(editor::debugPrefetchMaxPerTick()), 16);
+    const int debugPrefetchSkipVisiblePendingThreshold =
+        qBound(0, root.value(QStringLiteral("debugPrefetchSkipVisiblePendingThreshold"))
+                     .toInt(editor::debugPrefetchSkipVisiblePendingThreshold()),
+               16);
+    const int debugDecoderLaneCount =
+        qBound(0, root.value(QStringLiteral("debugDecoderLaneCount")).toInt(editor::debugDecoderLaneCount()), 16);
+    editor::DecodePreference debugDecodePreference = editor::debugDecodePreference();
+    const QString debugDecodeModeText =
+        root.value(QStringLiteral("debugDecodeMode"))
+            .toString(editor::decodePreferenceToString(editor::debugDecodePreference()));
+    editor::parseDecodePreference(debugDecodeModeText, &debugDecodePreference);
     const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(0);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(0);
@@ -295,7 +312,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool keyframesFollowCurrent = root.value(QStringLiteral("keyframesFollowCurrent")).toBool(true);
     const bool keyframesAutoScroll = root.value(QStringLiteral("keyframesAutoScroll")).toBool(true);
     const int selectedInspectorTab = root.value(QStringLiteral("selectedInspectorTab")).toInt(0);
-    const qreal playbackSpeed = qBound<qreal>(0.1, root.value(QStringLiteral("playbackSpeed")).toDouble(1.0), 1.0);
+    const qreal playbackSpeed = qBound<qreal>(0.1, root.value(QStringLiteral("playbackSpeed")).toDouble(1.0), 3.0);
     const qreal timelineZoom = root.value(QStringLiteral("timelineZoom")).toDouble(4.0);
     const int timelineVerticalScroll = root.value(QStringLiteral("timelineVerticalScroll")).toInt(0);
     const int64_t exportStartFrame = root.value(QStringLiteral("exportStartFrame")).toVariant().toLongLong();
@@ -336,6 +353,136 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         if (clip.trackIndex < 0) clip.trackIndex = loadedClips.size();
         if (!clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title)
             loadedClips.push_back(clip);
+    }
+
+    if (!m_restoringHistory && !loadedClips.isEmpty()) {
+        const auto clipSourceExists = [](const TimelineClip& clip) {
+            if (clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title) {
+                return true;
+            }
+            const QFileInfo info(clip.filePath);
+            return info.exists() &&
+                   (info.isFile() || (info.isDir() && isImageSequencePath(info.absoluteFilePath())));
+        };
+
+        QHash<QString, QString> relocatedByOriginalPath;
+        QHash<QString, QString> relocatedDirByOriginalDir;
+        bool skipRelocatePrompts = false;
+        int relocatedCount = 0;
+        int unresolvedCount = 0;
+
+        for (TimelineClip& clip : loadedClips) {
+            if (clipSourceExists(clip)) {
+                continue;
+            }
+
+            const QString originalPath = QFileInfo(clip.filePath).absoluteFilePath();
+            const QFileInfo originalInfo(originalPath);
+            QString relocatedPath = relocatedByOriginalPath.value(originalPath);
+
+            if (relocatedPath.isEmpty()) {
+                const QString mappedDir = relocatedDirByOriginalDir.value(originalInfo.absolutePath());
+                if (!mappedDir.isEmpty()) {
+                    const QString candidatePath = QDir(mappedDir).filePath(originalInfo.fileName());
+                    const QFileInfo candidateInfo(candidatePath);
+                    if (candidateInfo.exists() &&
+                        (candidateInfo.isFile() ||
+                         (candidateInfo.isDir() && isImageSequencePath(candidateInfo.absoluteFilePath())))) {
+                        relocatedPath = candidateInfo.absoluteFilePath();
+                    }
+                }
+            }
+
+            if (relocatedPath.isEmpty() && !skipRelocatePrompts) {
+                QMessageBox prompt(this);
+                prompt.setIcon(QMessageBox::Warning);
+                prompt.setWindowTitle(QStringLiteral("Missing Media"));
+                prompt.setText(QStringLiteral("Could not find media file:\n%1")
+                                   .arg(QDir::toNativeSeparators(originalPath)));
+                prompt.setInformativeText(QStringLiteral("Relocate this clip to a new file or folder?"));
+                QPushButton* relocateButton =
+                    prompt.addButton(QStringLiteral("Relocate"), QMessageBox::AcceptRole);
+                QPushButton* skipButton =
+                    prompt.addButton(QStringLiteral("Skip"), QMessageBox::RejectRole);
+                QPushButton* skipAllButton =
+                    prompt.addButton(QStringLiteral("Skip All"), QMessageBox::DestructiveRole);
+                Q_UNUSED(skipButton);
+                prompt.setDefaultButton(relocateButton);
+                prompt.exec();
+
+                if (prompt.clickedButton() == skipAllButton) {
+                    skipRelocatePrompts = true;
+                    ++unresolvedCount;
+                    continue;
+                }
+                if (prompt.clickedButton() != relocateButton) {
+                    ++unresolvedCount;
+                    continue;
+                }
+
+                const QString startDir = originalInfo.dir().exists()
+                    ? originalInfo.absolutePath()
+                    : rootPath;
+                QString selectedPath;
+                if (clip.sourceKind == MediaSourceKind::ImageSequence) {
+                    selectedPath = QFileDialog::getExistingDirectory(
+                        this,
+                        QStringLiteral("Locate Image Sequence Folder"),
+                        startDir,
+                        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+                } else {
+                    selectedPath = QFileDialog::getOpenFileName(
+                        this,
+                        QStringLiteral("Locate Media File"),
+                        startDir);
+                }
+
+                if (selectedPath.isEmpty()) {
+                    ++unresolvedCount;
+                    continue;
+                }
+                relocatedPath = QFileInfo(selectedPath).absoluteFilePath();
+            }
+
+            if (relocatedPath.isEmpty()) {
+                ++unresolvedCount;
+                continue;
+            }
+
+            const QFileInfo relocatedInfo(relocatedPath);
+            const bool relocatedValid =
+                relocatedInfo.exists() &&
+                (relocatedInfo.isFile() ||
+                 (relocatedInfo.isDir() && isImageSequencePath(relocatedInfo.absoluteFilePath())));
+            if (!relocatedValid) {
+                ++unresolvedCount;
+                continue;
+            }
+
+            const QString oldFileName = originalInfo.fileName();
+            if (clip.label.trimmed().isEmpty() || clip.label == oldFileName) {
+                clip.label = relocatedInfo.fileName();
+            }
+            clip.filePath = relocatedInfo.absoluteFilePath();
+            clip.proxyPath.clear();
+
+            relocatedByOriginalPath.insert(originalPath, clip.filePath);
+            relocatedDirByOriginalDir.insert(originalInfo.absolutePath(), relocatedInfo.absolutePath());
+            ++relocatedCount;
+        }
+
+        if (relocatedCount > 0) {
+            m_pendingSaveAfterLoad = true;
+        }
+
+        if (relocatedCount > 0 || unresolvedCount > 0) {
+            QString summary = QStringLiteral("Relocated %1 clip source(s).").arg(relocatedCount);
+            if (unresolvedCount > 0) {
+                summary += QStringLiteral("\n%1 clip source(s) are still missing.")
+                               .arg(unresolvedCount);
+            }
+            QMessageBox::information(this, QStringLiteral("Media Relocation"), summary);
+        }
     }
 
     const QJsonArray tracks = root.value(QStringLiteral("tracks")).toArray();
@@ -423,6 +570,55 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_previewVisibleQueueReserveSpin);
         m_previewVisibleQueueReserveSpin->setValue(previewVisibleQueueReserve);
     }
+    if (m_outputPlaybackCacheFallbackCheckBox) {
+        QSignalBlocker block(m_outputPlaybackCacheFallbackCheckBox);
+        m_outputPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
+    }
+    if (m_outputLeadPrefetchEnabledCheckBox) {
+        QSignalBlocker block(m_outputLeadPrefetchEnabledCheckBox);
+        m_outputLeadPrefetchEnabledCheckBox->setChecked(previewLeadPrefetchEnabled);
+    }
+    if (m_outputLeadPrefetchCountSpin) {
+        QSignalBlocker block(m_outputLeadPrefetchCountSpin);
+        m_outputLeadPrefetchCountSpin->setValue(previewLeadPrefetchCount);
+        m_outputLeadPrefetchCountSpin->setEnabled(previewLeadPrefetchEnabled);
+    }
+    if (m_outputPlaybackWindowAheadSpin) {
+        QSignalBlocker block(m_outputPlaybackWindowAheadSpin);
+        m_outputPlaybackWindowAheadSpin->setValue(previewPlaybackWindowAhead);
+    }
+    if (m_outputVisibleQueueReserveSpin) {
+        QSignalBlocker block(m_outputVisibleQueueReserveSpin);
+        m_outputVisibleQueueReserveSpin->setValue(previewVisibleQueueReserve);
+    }
+    if (m_outputPrefetchMaxQueueDepthSpin) {
+        QSignalBlocker block(m_outputPrefetchMaxQueueDepthSpin);
+        m_outputPrefetchMaxQueueDepthSpin->setValue(debugPrefetchMaxQueueDepth);
+    }
+    if (m_outputPrefetchMaxInflightSpin) {
+        QSignalBlocker block(m_outputPrefetchMaxInflightSpin);
+        m_outputPrefetchMaxInflightSpin->setValue(debugPrefetchMaxInflight);
+    }
+    if (m_outputPrefetchMaxPerTickSpin) {
+        QSignalBlocker block(m_outputPrefetchMaxPerTickSpin);
+        m_outputPrefetchMaxPerTickSpin->setValue(debugPrefetchMaxPerTick);
+    }
+    if (m_outputPrefetchSkipVisiblePendingThresholdSpin) {
+        QSignalBlocker block(m_outputPrefetchSkipVisiblePendingThresholdSpin);
+        m_outputPrefetchSkipVisiblePendingThresholdSpin->setValue(debugPrefetchSkipVisiblePendingThreshold);
+    }
+    if (m_outputDecoderLaneCountSpin) {
+        QSignalBlocker block(m_outputDecoderLaneCountSpin);
+        m_outputDecoderLaneCountSpin->setValue(debugDecoderLaneCount);
+    }
+    if (m_outputDecodeModeCombo) {
+        QSignalBlocker block(m_outputDecodeModeCombo);
+        const int decodeModeIndex =
+            m_outputDecodeModeCombo->findData(editor::decodePreferenceToString(debugDecodePreference));
+        if (decodeModeIndex >= 0) {
+            m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
+        }
+    }
     if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(speechFilterEnabled); }
     
     m_transcriptPrependMs = transcriptPrependMs;
@@ -449,16 +645,22 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     
     if (m_inspectorTabs && m_inspectorTabs->count() > 0) {
-        static constexpr int kCorrectionsTabIndex = 3;
-        static constexpr int kTranscriptTabIndex = 7;
+        const auto isTabNamed = [this](const QString& name) -> bool {
+            if (!m_inspectorTabs) {
+                return false;
+            }
+            const int index = m_inspectorTabs->currentIndex();
+            return index >= 0 && m_inspectorTabs->tabText(index).compare(name, Qt::CaseInsensitive) == 0;
+        };
         QSignalBlocker block(m_inspectorTabs);
         m_inspectorTabs->setCurrentIndex(qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1));
         if (m_preview) {
-            const int index = m_inspectorTabs->currentIndex();
-            const bool showCorrectionOverlays = index == kCorrectionsTabIndex;
-            const bool transcriptOverlayInteractive = index == kTranscriptTabIndex;
+            const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
+            const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
+            const bool titleOverlayOnly = isTabNamed(QStringLiteral("Titles"));
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
+            m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }
@@ -483,6 +685,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     editor::setDebugLeadPrefetchCount(previewLeadPrefetchCount);
     editor::setDebugPlaybackWindowAhead(previewPlaybackWindowAhead);
     editor::setDebugVisibleQueueReserve(previewVisibleQueueReserve);
+    editor::setDebugPrefetchMaxQueueDepth(debugPrefetchMaxQueueDepth);
+    editor::setDebugPrefetchMaxInflight(debugPrefetchMaxInflight);
+    editor::setDebugPrefetchMaxPerTick(debugPrefetchMaxPerTick);
+    editor::setDebugPrefetchSkipVisiblePendingThreshold(debugPrefetchSkipVisiblePendingThreshold);
+    editor::setDebugDecoderLaneCount(debugDecoderLaneCount);
+    editor::setDebugDecodePreference(debugDecodePreference);
 
     m_timeline->setTracks(loadedTracks);
     m_timeline->setClips(loadedClips);
@@ -1025,8 +1233,12 @@ void EditorWindow::refreshClipInspector()
                           mediaSourceKindLabel(clip->sourceKind))));
         m_clipProxyUsageLabel->setText(QStringLiteral("Proxy In Use: %1")
             .arg(playbackPath != clip->filePath ? QStringLiteral("Yes") : QStringLiteral("No")));
-        m_clipPlaybackSourceLabel->setText(QStringLiteral("Playback Source\n%1")
-            .arg(QDir::toNativeSeparators(playbackPath)));
+        if (clip->mediaType == ClipMediaType::Title) {
+            m_clipPlaybackSourceLabel->setText(QStringLiteral("Playback Source\nInline title overlay (no source file)"));
+        } else {
+            m_clipPlaybackSourceLabel->setText(QStringLiteral("Playback Source\n%1")
+                .arg(QDir::toNativeSeparators(playbackPath)));
+        }
         if (m_clipPlaybackRateSpin) {
             QSignalBlocker block(m_clipPlaybackRateSpin);
             m_clipPlaybackRateSpin->setValue(clip->playbackRate);
@@ -1036,10 +1248,17 @@ void EditorWindow::refreshClipInspector()
                     ? QStringLiteral("Visual retime control. Audio playback is not time-stretched.")
                     : QStringLiteral("Playback speed multiplier for this clip."));
         }
-        m_clipOriginalInfoLabel->setText(QStringLiteral("Original\n%1")
-            .arg(clipFileInfoSummary(clip->filePath, &originalProbe)));
+        if (clip->mediaType == ClipMediaType::Title) {
+            m_clipOriginalInfoLabel->setText(
+                QStringLiteral("Original\nTitle clips are generated overlays and do not have an associated media file."));
+        } else {
+            m_clipOriginalInfoLabel->setText(QStringLiteral("Original\n%1")
+                .arg(clipFileInfoSummary(clip->filePath, &originalProbe)));
+        }
         
-        if (proxyPath.isEmpty()) {
+        if (clip->mediaType == ClipMediaType::Title) {
+            m_clipProxyInfoLabel->setText(QStringLiteral("Proxy\nNot applicable for title clips."));
+        } else if (proxyPath.isEmpty()) {
             const QString configuredProxyPath = clip->proxyPath.isEmpty()
                 ? defaultProxyOutputPath(*clip)
                 : clip->proxyPath;
@@ -1291,6 +1510,16 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
     renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
     progressLayout->addWidget(renderPreviewLabel);
 
+    auto *renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), &progressDialog);
+    renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    progressLayout->addWidget(renderSourcesLabel);
+
+    auto *renderSourcesList = new QPlainTextEdit(&progressDialog);
+    renderSourcesList->setReadOnly(true);
+    renderSourcesList->setMinimumHeight(140);
+    renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
+    progressLayout->addWidget(renderSourcesList);
+
     auto *renderProgressBar = new QProgressBar(&progressDialog);
     renderProgressBar->setRange(0, static_cast<int>(qMin<int64_t>(totalFramesToRender, std::numeric_limits<int>::max())));
     renderProgressBar->setValue(0);
@@ -1457,9 +1686,41 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
         {QStringLiteral("total_frames"), static_cast<qint64>(totalFramesToRender)}};
     refreshProfileInspector();
 
-        const RenderResult result = renderTimelineToFile(
+    const auto activeRenderSourcesText = [&effectiveRequest](int64_t timelineFrame) -> QString {
+        QStringList lines;
+        lines.reserve(effectiveRequest.clips.size() * 2);
+        for (const TimelineClip& clip : effectiveRequest.clips) {
+            if (timelineFrame < clip.startFrame ||
+                timelineFrame >= clip.startFrame + qMax<int64_t>(1, clip.durationFrames)) {
+                continue;
+            }
+            const QString clipLabel = clip.label.isEmpty() ? QStringLiteral("(unnamed clip)") : clip.label;
+            if (clipVisualPlaybackEnabled(clip, effectiveRequest.tracks) && !clip.filePath.isEmpty()) {
+                lines.push_back(QStringLiteral("V | %1 | %2")
+                                    .arg(clipLabel, QDir::toNativeSeparators(clip.filePath)));
+            }
+            if (clipAudioPlaybackEnabled(clip)) {
+                const QString audioPath = playbackAudioPathForClip(clip);
+                if (!audioPath.isEmpty()) {
+                    lines.push_back(QStringLiteral("A | %1 | %2")
+                                        .arg(clipLabel, QDir::toNativeSeparators(audioPath)));
+                }
+            }
+        }
+        if (lines.isEmpty()) {
+            return QStringLiteral("No active clip sources at this frame.");
+        }
+        lines.removeDuplicates();
+        std::sort(lines.begin(), lines.end());
+        return lines.join(QLatin1Char('\n'));
+    };
+
+    const RenderResult result = renderTimelineToFile(
         effectiveRequest,
-            [this, &progressDialog, renderStatusLabel, renderProgressBar, renderPreviewLabel, showRenderPreviewCheckBox, &renderCancelled, formatEta, stageSummary, renderProfileFromProgress, outputPath](const RenderProgress &progress)
+        [this, &progressDialog, renderStatusLabel, renderProgressBar, renderPreviewLabel,
+         renderSourcesList, showRenderPreviewCheckBox, &renderCancelled,
+         formatEta, stageSummary, renderProfileFromProgress, outputPath,
+         activeRenderSourcesText](const RenderProgress &progress)
         {
             renderProgressBar->setMaximum(qMax(1, static_cast<int>(qMin<int64_t>(progress.totalFrames, std::numeric_limits<int>::max()))));
             renderProgressBar->setValue(static_cast<int>(qMin<int64_t>(progress.framesCompleted, std::numeric_limits<int>::max())));
@@ -1524,6 +1785,7 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
                 renderPreviewLabel->setPixmap(pixmap);
                 renderPreviewLabel->setText(QString());
             }
+            renderSourcesList->setPlainText(activeRenderSourcesText(progress.timelineFrame));
             QCoreApplication::processEvents();
             return !renderCancelled;
         });
@@ -1685,7 +1947,7 @@ void EditorWindow::setCurrentFrame(int64_t frame, bool syncAudio)
 
 void EditorWindow::setPlaybackSpeed(qreal speed)
 {
-    const qreal clampedSpeed = qBound<qreal>(0.1, speed, 1.0);
+    const qreal clampedSpeed = qBound<qreal>(0.1, speed, 3.0);
     if (qAbs(m_playbackSpeed - clampedSpeed) < 0.0001) {
         return;
     }
@@ -1709,7 +1971,7 @@ void EditorWindow::setPlaybackSpeed(qreal speed)
 
 void EditorWindow::updatePlaybackTimerInterval()
 {
-    const qreal speed = qBound<qreal>(0.1, m_playbackSpeed, 1.0);
+    const qreal speed = qBound<qreal>(0.1, m_playbackSpeed, 3.0);
 
     // Determine effective FPS for playback timer
     qreal effectiveFps = kTimelineFps;
@@ -1735,12 +1997,25 @@ void EditorWindow::updatePlaybackTimerInterval()
 
 void EditorWindow::setPlaybackActive(bool playing)
 {
+    static constexpr int kPlaybackStartLookaheadFrames = 5;
+    static constexpr int kPlaybackStartLookaheadTimeoutMs = 1200;
+
     if (playing == playbackActive()) {
         updateTransportLabels();
         return;
     }
 
     if (playing) {
+        if (m_preview &&
+            !m_preview->warmPlaybackLookahead(kPlaybackStartLookaheadFrames,
+                                              kPlaybackStartLookaheadTimeoutMs)) {
+            qWarning().noquote()
+                << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for %1 buffered future frames timed out")
+                       .arg(kPlaybackStartLookaheadFrames);
+            updateTransportLabels();
+            return;
+        }
+
         const auto ranges = effectivePlaybackRanges();
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
@@ -1794,7 +2069,8 @@ namespace {
 bool zeroCopyPreferredEnvironmentDetected() {
 #if defined(Q_OS_LINUX)
     return QFile::exists(QStringLiteral("/proc/driver/nvidia/version")) ||
-           QFile::exists(QStringLiteral("/sys/module/nvidia"));
+           QFile::exists(QStringLiteral("/sys/module/nvidia")) ||
+           QFile::exists(QStringLiteral("/dev/dri/renderD128"));
 #else
     return false;
 #endif
@@ -1823,8 +2099,8 @@ int main(int argc, char **argv)
 
     if (!zeroCopyPreferredEnvironmentDetected()) {
         qWarning().noquote() << QStringLiteral(
-            "[STARTUP][WARN] Preferred zero-copy decode path requires Linux + NVIDIA detection; "
-            "falling back to hardware CPU-upload or software decode.");
+            "[STARTUP][WARN] Preferred zero-copy decode path requires Linux GPU interop "
+            "(CUDA or VAAPI render node); falling back to hardware CPU-upload or software decode.");
     }
 
     QCommandLineParser parser;
@@ -1842,11 +2118,15 @@ int main(int argc, char **argv)
         QStringList{QStringLiteral("control-port")},
         QStringLiteral("Control server port."),
         QStringLiteral("port"));
+    QCommandLineOption noRestOption(
+        QStringList{QStringLiteral("no-rest")},
+        QStringLiteral("Disable the local REST/control server."));
     parser.addOption(debugPlaybackOption);
     parser.addOption(debugCacheOption);
     parser.addOption(debugDecodeOption);
     parser.addOption(debugAllOption);
     parser.addOption(controlPortOption);
+    parser.addOption(noRestOption);
     parser.process(app);
 
     if (parser.isSet(debugAllOption)) {
@@ -1879,6 +2159,10 @@ int main(int argc, char **argv)
         if (portOk && parsed <= std::numeric_limits<quint16>::max()) {
             controlPort = static_cast<quint16>(parsed);
         }
+    }
+
+    if (parser.isSet(noRestOption)) {
+        controlPort = 0;
     }
 
     EditorWindow window(controlPort);

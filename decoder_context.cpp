@@ -355,7 +355,8 @@ bool DecoderContext::initCodec() {
         zeroCopyPreferred &&
         !headlessOffscreen &&
         !m_streamHasAlphaTag &&
-        zeroCopyInteropSupportedForCurrentBuild();
+        (decodePreference == DecodePreference::HardwareZeroCopy ||
+         zeroCopyInteropSupportedForCurrentBuild());
     const bool allowHardware =
         decodePreference != DecodePreference::Software &&
         !headlessOffscreen &&
@@ -391,10 +392,15 @@ bool DecoderContext::initCodec() {
     m_info.hardwareAccelerated = hardwareEnabled;
     m_info.decodePath = hardwareEnabled ? QStringLiteral("hardware")
                                         : QStringLiteral("software");
-    m_info.interopPath = hardwareEnabled
-                             ? (zeroCopySupported ? QStringLiteral("cuda_gl_nv12_copy_candidate")
-                                                  : QStringLiteral("hardware_cpu_upload"))
-                             : QStringLiteral("software");
+    if (!hardwareEnabled) {
+        m_info.interopPath = QStringLiteral("software");
+    } else if (zeroCopySupported && m_hwPixFmt == AV_PIX_FMT_CUDA) {
+        m_info.interopPath = QStringLiteral("cuda_gl_nv12_copy_candidate");
+    } else if (zeroCopySupported && m_hwPixFmt == AV_PIX_FMT_VAAPI) {
+        m_info.interopPath = QStringLiteral("vaapi_gl_nv12_upload_candidate");
+    } else {
+        m_info.interopPath = QStringLiteral("hardware_cpu_upload");
+    }
 
     if (debugDecodeEnabled()) {
         qDebug() << "Decoder path for" << m_path << ":" << (hardwareEnabled ? "hardware" : "software");
@@ -730,11 +736,11 @@ bool DecoderContext::seekToKeyframe(int64_t targetFrame) {
 }
 
 FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber) {
-#ifdef EDITOR_HAS_CUDA
+    const DecodePreference decodePreference = debugDecodePreference();
     if (avFrame->format == m_hwPixFmt &&
         m_hwPixFmt != AV_PIX_FMT_NONE &&
-        (debugDecodePreference() == DecodePreference::HardwareZeroCopy ||
-         debugDecodePreference() == DecodePreference::Auto) &&
+        (decodePreference == DecodePreference::HardwareZeroCopy ||
+         decodePreference == DecodePreference::Auto) &&
         avFrame->hw_frames_ctx) {
         auto* framesContext = reinterpret_cast<AVHWFramesContext*>(avFrame->hw_frames_ctx->data);
         const int swPixelFormat = framesContext ? framesContext->sw_format : AV_PIX_FMT_NONE;
@@ -746,17 +752,11 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
             }
         }
     }
-#endif
 
     QImage image = convertAVFrameToImage(avFrame);
     if (image.isNull()) {
         return FrameHandle();
     }
-
-    if (image.format() != QImage::Format_ARGB32_Premultiplied) {
-        image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    }
-
     return FrameHandle::createCpuFrame(image, frameNumber, m_path);
 }
 

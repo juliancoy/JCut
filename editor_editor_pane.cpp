@@ -155,6 +155,7 @@ void EditorWindow::connectTimelineSignals()
         requestAutoSyncForSelection(selectedClipIds);
     };
     m_timeline->createProxyRequested = [this](const QString &clipId) { createProxyForClip(clipId); };
+    m_timeline->continueProxyRequested = [this](const QString &clipId) { continueProxyForClip(clipId); };
     m_timeline->deleteProxyRequested = [this](const QString &clipId) { deleteProxyForClip(clipId); };
     m_timeline->scaleToFillRequested = [this](const QString &clipId) {
         if (!m_timeline) return;
@@ -237,6 +238,20 @@ void EditorWindow::connectPreviewSignals()
                 keyframe.bold = evaluated.bold;
                 keyframe.italic = evaluated.italic;
                 keyframe.color = evaluated.color;
+                keyframe.dropShadowEnabled = evaluated.dropShadowEnabled;
+                keyframe.dropShadowColor = evaluated.dropShadowColor;
+                keyframe.dropShadowOpacity = evaluated.dropShadowOpacity;
+                keyframe.dropShadowOffsetX = evaluated.dropShadowOffsetX;
+                keyframe.dropShadowOffsetY = evaluated.dropShadowOffsetY;
+                keyframe.windowEnabled = evaluated.windowEnabled;
+                keyframe.windowColor = evaluated.windowColor;
+                keyframe.windowOpacity = evaluated.windowOpacity;
+                keyframe.windowPadding = evaluated.windowPadding;
+                keyframe.windowFrameEnabled = evaluated.windowFrameEnabled;
+                keyframe.windowFrameColor = evaluated.windowFrameColor;
+                keyframe.windowFrameOpacity = evaluated.windowFrameOpacity;
+                keyframe.windowFrameWidth = evaluated.windowFrameWidth;
+                keyframe.windowFrameGap = evaluated.windowFrameGap;
                 for (const TimelineClip::TitleKeyframe &existing : clip.titleKeyframes) {
                     if (existing.frame > localFrame) {
                         keyframe.linearInterpolation = existing.linearInterpolation;

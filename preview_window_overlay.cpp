@@ -190,7 +190,11 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         if (clip.mediaType == ClipMediaType::Title && !clip.titleKeyframes.isEmpty()) {
             const int64_t localFrame = qMax<int64_t>(0,
                 m_currentFrame - clip.startFrame);
-            const EvaluatedTitle title = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+                clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+            const EvaluatedTitle title =
+                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
             drawTitleOverlay(painter, compositeRect, title, m_outputSize);
 
             // Register overlay bounds so the title is draggable in the preview
@@ -203,13 +207,20 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                 font.setPointSizeF(title.fontSize * qMin(sx, sy));
                 font.setBold(title.bold);
                 font.setItalic(title.italic);
-                const QFontMetricsF fm(font);
-                const qreal textWidth = fm.horizontalAdvance(title.text);
-                const qreal textHeight = fm.height();
+                const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
                 const qreal cx = compositeRect.center().x() + title.x * sx;
                 const qreal cy = compositeRect.center().y() + title.y * sy;
-                const QRectF bounds(cx - textWidth / 2.0 - 4, cy - textHeight / 2.0 - 4,
-                                    textWidth + 8, textHeight + 8);
+                const qreal windowPaddingPx = title.windowEnabled
+                    ? qMax<qreal>(0.0, title.windowPadding * qMin(sx, sy))
+                    : 0.0;
+                const qreal frameExtraPx = title.windowFrameEnabled
+                    ? (qMax<qreal>(0.0, title.windowFrameGap * qMin(sx, sy)) +
+                       (qMax<qreal>(0.0, title.windowFrameWidth * qMin(sx, sy)) * 0.5))
+                    : 0.0;
+                const QRectF bounds(cx - metrics.width / 2.0 - 4 - windowPaddingPx - frameExtraPx,
+                                    cy - metrics.height / 2.0 - 4 - windowPaddingPx - frameExtraPx,
+                                    metrics.width + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0),
+                                    metrics.height + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0));
                 PreviewOverlayInfo info;
                 info.bounds = bounds;
                 m_overlayInfo.insert(clip.id, info);
@@ -367,8 +378,9 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         const bool usePlaybackPipeline = m_playing && isImageSequence;
         const bool usePlaybackBuffer = !isImageSequence && m_playing && m_cache;
         const bool allowApproximateFrame =
-            !m_playing || usePlaybackPipeline || !m_cache ||
-            m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs());
+            m_playing &&
+            (usePlaybackPipeline || !m_cache ||
+             m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs()));
         QString selection = QStringLiteral("none");
         const FrameHandle exactFrame = usePlaybackPipeline
                                            ? m_playbackPipeline->getFrame(clip.id, localFrame)
@@ -590,7 +602,11 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     for (const TimelineClip& clip : activeClips) {
         if (clip.mediaType == ClipMediaType::Title && !clip.titleKeyframes.isEmpty()) {
             const int64_t localFrame = qMax<int64_t>(0, m_currentFrame - clip.startFrame);
-            const EvaluatedTitle title = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+                clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+            const EvaluatedTitle title =
+                composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
             drawTitleOverlay(painter, compositeRect, title, m_outputSize);
             if (title.valid && !title.text.isEmpty()) {
                 const qreal sx = m_outputSize.width() > 0
@@ -601,14 +617,21 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                 font.setPointSizeF(title.fontSize * qMin(sx, sy));
                 font.setBold(title.bold);
                 font.setItalic(title.italic);
-                const QFontMetricsF fm(font);
-                const qreal textWidth = fm.horizontalAdvance(title.text);
-                const qreal textHeight = fm.height();
+                const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
                 const qreal cx = compositeRect.center().x() + title.x * sx;
                 const qreal cy = compositeRect.center().y() + title.y * sy;
+                const qreal windowPaddingPx = title.windowEnabled
+                    ? qMax<qreal>(0.0, title.windowPadding * qMin(sx, sy))
+                    : 0.0;
+                const qreal frameExtraPx = title.windowFrameEnabled
+                    ? (qMax<qreal>(0.0, title.windowFrameGap * qMin(sx, sy)) +
+                       (qMax<qreal>(0.0, title.windowFrameWidth * qMin(sx, sy)) * 0.5))
+                    : 0.0;
                 PreviewOverlayInfo info;
-                info.bounds = QRectF(cx - textWidth / 2.0 - 4, cy - textHeight / 2.0 - 4,
-                                     textWidth + 8, textHeight + 8);
+                info.bounds = QRectF(cx - metrics.width / 2.0 - 4 - windowPaddingPx - frameExtraPx,
+                                     cy - metrics.height / 2.0 - 4 - windowPaddingPx - frameExtraPx,
+                                     metrics.width + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0),
+                                     metrics.height + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0));
                 m_overlayInfo.insert(clip.id, info);
                 m_paintOrder.push_back(clip.id);
             }

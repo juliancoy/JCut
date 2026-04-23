@@ -146,7 +146,29 @@ public:
         }
         m_rtaudio->showWarnings(false);
 
-        if (m_rtaudio->getDeviceCount() == 0) {
+        m_lastKnownDeviceCount = 0;
+        m_lastKnownDefaultOutputValid = false;
+        m_lastKnownDefaultOutputId = 0;
+        m_lastKnownDefaultOutputName.clear();
+        m_lastKnownDefaultOutputChannels = 0;
+        m_lastDeviceInfoError.clear();
+
+        unsigned int deviceCount = 0;
+        try {
+            deviceCount = m_rtaudio->getDeviceCount();
+            m_lastKnownDeviceCount = static_cast<qint64>(deviceCount);
+        } catch (const std::exception& e) {
+            m_lastDeviceInfoError = QString::fromUtf8(e.what());
+            if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
+                qWarning() << "RtAudio getDeviceCount failed:" << m_lastDeviceInfoError;
+                m_lastAudioInitWarningMs = nowMs;
+            }
+            m_rtaudio.reset();
+            m_audioInitBackoffUntilMs = nowMs + kAudioInitBackoffMs;
+            return false;
+        }
+
+        if (deviceCount == 0) {
             if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
                 qWarning() << "No audio output devices found";
                 m_lastAudioInitWarningMs = nowMs;
@@ -157,7 +179,22 @@ public:
         }
 
         rt::audio::RtAudio::StreamParameters params;
-        params.deviceId = m_rtaudio->getDefaultOutputDevice();
+        try {
+            params.deviceId = m_rtaudio->getDefaultOutputDevice();
+            m_lastKnownDefaultOutputId = params.deviceId;
+            if (params.deviceId < deviceCount) {
+                const auto info = m_rtaudio->getDeviceInfo(params.deviceId);
+                m_lastKnownDefaultOutputValid = true;
+                m_lastKnownDefaultOutputName = QString::fromStdString(info.name);
+                m_lastKnownDefaultOutputChannels = info.outputChannels;
+            }
+        } catch (const std::exception& e) {
+            m_lastDeviceInfoError = QString::fromUtf8(e.what());
+            if (nowMs - m_lastAudioInitWarningMs >= kAudioInitWarningThrottleMs) {
+                qWarning() << "RtAudio default output query failed:" << m_lastDeviceInfoError;
+                m_lastAudioInitWarningMs = nowMs;
+            }
+        }
         params.nChannels = m_channelCount;
 
         unsigned int bufferFrames = m_periodFrames;
@@ -210,6 +247,12 @@ public:
             }
             m_rtaudio.reset();
         }
+        m_lastKnownDeviceCount = 0;
+        m_lastKnownDefaultOutputValid = false;
+        m_lastKnownDefaultOutputId = 0;
+        m_lastKnownDefaultOutputName.clear();
+        m_lastKnownDefaultOutputChannels = 0;
+        m_lastDeviceInfoError.clear();
         m_ringBuffer.clear();
         std::lock_guard<std::mutex> lock(m_stateMutex);
         m_initialized = false;
@@ -325,19 +368,18 @@ public:
 
         snapshot[QStringLiteral("api")] =
             QString::fromStdString(rt::audio::RtAudio::getApiName(m_rtaudio->getCurrentApi()));
-        snapshot[QStringLiteral("device_count")] = static_cast<qint64>(m_rtaudio->getDeviceCount());
+        snapshot[QStringLiteral("device_count")] = m_lastKnownDeviceCount;
         snapshot[QStringLiteral("stream_open")] = m_rtaudio->isStreamOpen();
         snapshot[QStringLiteral("stream_running")] = m_rtaudio->isStreamRunning();
         snapshot[QStringLiteral("stream_latency_frames")] = static_cast<qint64>(m_rtaudio->getStreamLatency());
-
-        try {
-            const unsigned int defaultOutputId = m_rtaudio->getDefaultOutputDevice();
-            snapshot[QStringLiteral("default_output_device_id")] = static_cast<qint64>(defaultOutputId);
-            const auto info = m_rtaudio->getDeviceInfo(defaultOutputId);
-            snapshot[QStringLiteral("default_output_device_name")] = QString::fromStdString(info.name);
-            snapshot[QStringLiteral("default_output_channels")] = static_cast<qint64>(info.outputChannels);
-        } catch (const std::exception& e) {
-            snapshot[QStringLiteral("device_info_error")] = QString::fromUtf8(e.what());
+        snapshot[QStringLiteral("default_output_device_id")] =
+            static_cast<qint64>(m_lastKnownDefaultOutputId);
+        snapshot[QStringLiteral("default_output_device_valid")] = m_lastKnownDefaultOutputValid;
+        snapshot[QStringLiteral("default_output_device_name")] = m_lastKnownDefaultOutputName;
+        snapshot[QStringLiteral("default_output_channels")] =
+            static_cast<qint64>(m_lastKnownDefaultOutputChannels);
+        if (!m_lastDeviceInfoError.isEmpty()) {
+            snapshot[QStringLiteral("device_info_error")] = m_lastDeviceInfoError;
         }
 
         return snapshot;
@@ -431,11 +473,15 @@ private:
             if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
                 continue;
             }
-            if (m_audioCache.contains(clip.filePath) || m_pendingDecodeSet.contains(clip.filePath)) {
+            const QString audioPath = playbackAudioPathForClip(clip);
+            if (audioPath.isEmpty()) {
                 continue;
             }
-            m_pendingDecodePaths.push_back(clip.filePath);
-            m_pendingDecodeSet.insert(clip.filePath);
+            if (m_audioCache.contains(audioPath) || m_pendingDecodeSet.contains(audioPath)) {
+                continue;
+            }
+            m_pendingDecodePaths.push_back(audioPath);
+            m_pendingDecodeSet.insert(audioPath);
         }
     }
 
@@ -652,7 +698,7 @@ private:
             if (!clipAudioPlaybackEnabled(clip)) {
                 continue;
             }
-            const AudioClipCacheEntry audio = clipCacheForPathCopy(clip.filePath);
+            const AudioClipCacheEntry audio = clipCacheForPathCopy(playbackAudioPathForClip(clip));
             if (!audio.valid) {
                 continue;
             }
@@ -833,4 +879,10 @@ private:
     std::atomic<int> m_speechFilterFadeSamples{m_defaultFadeSamples};
     qint64 m_audioInitBackoffUntilMs = 0;
     qint64 m_lastAudioInitWarningMs = 0;
+    qint64 m_lastKnownDeviceCount = 0;
+    bool m_lastKnownDefaultOutputValid = false;
+    unsigned int m_lastKnownDefaultOutputId = 0;
+    QString m_lastKnownDefaultOutputName;
+    int m_lastKnownDefaultOutputChannels = 0;
+    QString m_lastDeviceInfoError;
 };
