@@ -10,6 +10,22 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 
+namespace {
+
+bool exportRangesEqual(const QVector<ExportRangeSegment>& a, const QVector<ExportRangeSegment>& b) {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (int i = 0; i < a.size(); ++i) {
+        if (a[i].startFrame != b[i].startFrame || a[i].endFrame != b[i].endFrame) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
 int TimelineWidget::trackIndexAt(const QPoint& pos) const {
     for (int i = 0; i < trackCount(); ++i) {
         if (trackLabelRect(i).contains(pos)) {
@@ -245,12 +261,17 @@ void TimelineWidget::addClipFromFile(const QString& filePath, int64_t startFrame
     const QFileInfo info(filePath);
     if (!info.exists() || (!info.isFile() && !isImageSequencePath(filePath))) return;
 
+    const QVector<ExportRangeSegment> beforeRanges = m_exportRanges;
     TimelineClip clip = buildClipFromFile(filePath,
                                           startFrame >= 0 ? startFrame : totalFrames(),
                                           nextTrackIndex());
     m_clips.push_back(clip);
     normalizeTrackIndices();
     sortClips();
+    normalizeExportRange();
+    if (exportRangeChanged && !exportRangesEqual(beforeRanges, m_exportRanges)) {
+        exportRangeChanged();
+    }
 
     if (clipsChanged) clipsChanged();
     update();
@@ -301,6 +322,7 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
         insertTrackAt(targetTrack);
     }
 
+    const QVector<ExportRangeSegment> beforeRanges = m_exportRanges;
     for (const QUrl& url : event->mimeData()->urls()) {
         if (!url.isLocalFile()) continue;
 
@@ -337,11 +359,15 @@ void TimelineWidget::dropEvent(QDropEvent* event) {
 
     normalizeTrackIndices();
     sortClips();
+    normalizeExportRange();
     m_dropFrame = -1;
     m_trackDropIndex = -1;
     m_trackDropInGap = false;
     event->acceptProposedAction();
 
+    if (exportRangeChanged && !exportRangesEqual(beforeRanges, m_exportRanges)) {
+        exportRangeChanged();
+    }
     if (clipsChanged) clipsChanged();
     update();
 }

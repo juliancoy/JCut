@@ -160,7 +160,7 @@ double GradingHistogramWidget::yToNormalizedValue(qreal y) const
 {
     const QRectF rect = chartRect();
     if (rect.height() <= 0.0) {
-        return 0.5;
+        return 0.0;
     }
     const qreal clampedY = qBound(rect.top(), y, rect.bottom());
     return qBound(0.0, static_cast<double>((rect.bottom() - clampedY) / rect.height()), 1.0);
@@ -168,14 +168,14 @@ double GradingHistogramWidget::yToNormalizedValue(qreal y) const
 
 double GradingHistogramWidget::parameterToNormalizedValue(int index, double parameter) const
 {
-    const double base = (index == 0) ? 0.0 : ((index == 1) ? 0.5 : 1.0);
-    return qBound(0.0, base + (std::tanh(parameter * kCurveScale) * kCurveStrength), 1.0);
+    Q_UNUSED(index);
+    return qBound(0.0, std::tanh(parameter * kCurveScale) * kCurveStrength, 1.0);
 }
 
 double GradingHistogramWidget::normalizedValueToParameter(int index, double normalizedValue) const
 {
-    const double base = (index == 0) ? 0.0 : ((index == 1) ? 0.5 : 1.0);
-    const double centered = qBound(-0.98, (normalizedValue - base) / kCurveStrength, 0.98);
+    Q_UNUSED(index);
+    const double centered = qBound(-0.98, normalizedValue / kCurveStrength, 0.98);
     return qBound(-2.0, std::atanh(centered) / kCurveScale, 2.0);
 }
 
@@ -223,7 +223,7 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
     painter.drawRect(rect);
 
     painter.setPen(QPen(QColor(40, 52, 66, 180), 1.0, Qt::DashLine));
-    painter.drawLine(QPointF(rect.left(), rect.center().y()), QPointF(rect.right(), rect.center().y()));
+    painter.drawLine(QPointF(rect.left(), rect.bottom()), QPointF(rect.right(), rect.bottom()));
 
     if (m_hasHistogram) {
         const auto drawHist = [&painter, &rect](const std::array<float, kBins>& hist, const QColor& color) {
@@ -330,4 +330,3 @@ void GradingHistogramWidget::leaveEvent(QEvent* event)
         update();
     }
 }
-

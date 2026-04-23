@@ -922,6 +922,16 @@ void TimelineWidget::normalizeExportRanges() {
     if (m_exportRanges.isEmpty()) {
         m_exportRanges = {ExportRangeSegment{0, total}};
     }
+
+    // Legacy bootstrap projects start with a synthetic 0..300 export range.
+    // Treat it as "full timeline" and auto-expand once real media extends past it.
+    if (m_exportRanges.size() == 1 &&
+        m_exportRanges.constFirst().startFrame == 0 &&
+        m_exportRanges.constFirst().endFrame == 300 &&
+        total > 300) {
+        m_exportRanges[0].endFrame = total;
+    }
+
     for (ExportRangeSegment& segment : m_exportRanges) {
         segment.startFrame = qBound<int64_t>(0, segment.startFrame, total);
         segment.endFrame = qBound<int64_t>(0, segment.endFrame, total);
