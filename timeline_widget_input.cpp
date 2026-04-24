@@ -780,9 +780,12 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
                 normalizeClipTitleKeyframes(clip);
             } else {
                 const qreal playbackRate = qBound<qreal>(0.001, clip.playbackRate, 4.0);
+                const qreal sourceFps = clip.sourceFps > 0.001 ? clip.sourceFps : static_cast<qreal>(kTimelineFps);
                 const int64_t consumedSourceFrames =
-                    static_cast<int64_t>(std::floor(static_cast<qreal>(trimDelta) * playbackRate));
-                clip.sourceInFrame = m_dragOriginalSourceInFrame + consumedSourceFrames;
+                    static_cast<int64_t>(std::floor(static_cast<qreal>(trimDelta) * playbackRate * sourceFps / static_cast<qreal>(kTimelineFps)));
+                // Prevent extending clip before the beginning of the media
+                // Clamp sourceInFrame to not go below 0
+                clip.sourceInFrame = qBound<int64_t>(0, m_dragOriginalSourceInFrame + consumedSourceFrames, clip.sourceDurationFrames - 1);
                 clip.durationFrames = m_dragOriginalDurationFrames - trimDelta;
                 clip.transformKeyframes.clear();
                 for (const TimelineClip::TransformKeyframe& keyframe : m_dragOriginalTransformKeyframes) {
