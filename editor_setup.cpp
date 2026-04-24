@@ -1,8 +1,10 @@
 #include "editor.h"
 #include "preview_debug.h"
 
+#include <QApplication>
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QFont>
 #include <QHBoxLayout>
 #include <QShortcut>
 #include <QSignalBlocker>
@@ -204,6 +206,38 @@ void EditorWindow::setupShortcuts()
         }
         if (m_timeline) togglePlayback();
     });
+
+    auto bindGlobalFontShortcut = [this](const QKeySequence &sequence, int deltaPoints) {
+        auto *shortcut = new QShortcut(sequence, this);
+        shortcut->setContext(Qt::ApplicationShortcut);
+        connect(shortcut, &QShortcut::activated, this, [this, deltaPoints]() {
+            adjustGlobalFontSize(deltaPoints);
+        });
+    };
+
+    bindGlobalFontShortcut(QKeySequence::ZoomIn, +1);
+    bindGlobalFontShortcut(QKeySequence::ZoomOut, -1);
+    bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl++")), +1);
+    bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+=")), +1);
+    bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+KP_Add")), +1);
+    bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+-")), -1);
+    bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+_")), -1);
+    bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+KP_Subtract")), -1);
+}
+
+void EditorWindow::adjustGlobalFontSize(int deltaPoints)
+{
+    if (deltaPoints == 0) {
+        return;
+    }
+    QFont appFont = QApplication::font();
+    int pointSize = appFont.pointSize();
+    if (pointSize <= 0) {
+        pointSize = 10;
+    }
+    pointSize = qBound(8, pointSize + deltaPoints, 36);
+    appFont.setPointSize(pointSize);
+    QApplication::setFont(appFont);
 }
 
 void EditorWindow::setupHeartbeat()

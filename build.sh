@@ -36,6 +36,13 @@ ensure_ffmpeg_installed() {
     fi
     echo "Bootstrapping FFmpeg profile '${FFMPEG_PROFILE}' into ${FFMPEG_INSTALL_DIR}..."
 
+    if [[ -f "${FFMPEG_SRC_DIR}/config.h" ]]; then
+        echo "Found in-tree FFmpeg configure artifacts; cleaning ${FFMPEG_SRC_DIR}..."
+        rm -f "${FFMPEG_SRC_DIR}/config.h" \
+              "${FFMPEG_SRC_DIR}/config.mak" \
+              "${FFMPEG_SRC_DIR}/config.asm"
+    fi
+
     mkdir -p "${FFMPEG_BUILD_DIR}" "${FFMPEG_INSTALL_DIR}"
 
     pushd "${FFMPEG_BUILD_DIR}" >/dev/null

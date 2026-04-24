@@ -203,6 +203,7 @@ private:
     bool handleVideoKeyframeTableDelete(QObject* watched, QEvent* event);
     bool handleGradingKeyframeTableDelete(QObject* watched, QEvent* event);
     bool handleOpacityKeyframeTableDelete(QObject* watched, QEvent* event);
+    void adjustGlobalFontSize(int deltaPoints);
 
     // Tab creation methods (editor_tabs.cpp)
     void createOutputTab();
