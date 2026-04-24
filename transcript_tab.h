@@ -10,6 +10,8 @@
 #include <QJsonDocument>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QComboBox>
+#include <QPushButton>
 #include <functional>
 
 #include "editor_shared.h"
@@ -43,6 +45,15 @@ public:
         QSpinBox* transcriptPostpendMsSpin = nullptr;
         QCheckBox* speechFilterEnabledCheckBox = nullptr;
         QSpinBox* speechFilterFadeSamplesSpin = nullptr;
+        QCheckBox* transcriptUnifiedEditModeCheckBox = nullptr;
+        QComboBox* transcriptSpeakerFilterCombo = nullptr;
+        QComboBox* transcriptScriptVersionCombo = nullptr;
+        QPushButton* transcriptNewVersionButton = nullptr;
+        QPushButton* transcriptDeleteVersionButton = nullptr;
+        QCheckBox* transcriptShowExcludedLinesCheckBox = nullptr;
+        QLabel* speakersInspectorClipLabel = nullptr;
+        QLabel* speakersInspectorDetailsLabel = nullptr;
+        QTableWidget* speakersTable = nullptr;
     };
 
     struct Dependencies
@@ -80,6 +91,7 @@ private slots:
     void onTranscriptItemClicked(QTableWidgetItem* item);
     void onTranscriptItemDoubleClicked(QTableWidgetItem* item);
     void onTranscriptCustomContextMenu(const QPoint& pos);
+    void onTranscriptHeaderContextMenu(const QPoint& pos);
     void onTranscriptSelectionChanged();
     void onFollowCurrentWordToggled(bool checked);
     void onOverlaySettingChanged();
@@ -87,17 +99,37 @@ private slots:
     void onPostpendMsChanged(int value);
     void onSpeechFilterEnabledToggled(bool enabled);
     void onSpeechFilterFadeSamplesChanged(int value);
+    void onTranscriptScriptVersionChanged(int index);
+    void onTranscriptCreateVersion();
+    void onTranscriptDeleteVersion();
+    void onSpeakersTableItemChanged(QTableWidgetItem* item);
 
 private:
     struct TranscriptRow
     {
+        enum EditFlag
+        {
+            EditNone = 0,
+            EditTiming = 1 << 0,
+            EditText = 1 << 1,
+            EditSkip = 1 << 2,
+            EditInserted = 1 << 3
+        };
+
         int64_t startFrame = 0;
         int64_t endFrame = 0;
+        int64_t renderStartFrame = 0;
+        int64_t renderEndFrame = 0;
+        QString speaker;
         QString text;
         bool isGap = false;
+        bool isOutsideActiveCut = false;
         bool isSkipped = false;
+        int editFlags = EditNone;
         int segmentIndex = -1;
         int wordIndex = -1;
+        int originalSegmentIndex = -1;
+        int originalWordIndex = -1;
     };
 
     void updateOverlayWidgetsFromClip(const TimelineClip& clip);
@@ -109,8 +141,28 @@ private:
     void expandSelectedRow(int row);
     void applyTranscriptRowState(QTableWidgetItem* startItem,
                                  QTableWidgetItem* endItem,
+                                 QTableWidgetItem* speakerItem,
                                  QTableWidgetItem* textItem,
+                                 QTableWidgetItem* editsItem,
                                  const TranscriptRow& entry) const;
+    void refreshSpeakerFilter(const QVector<TranscriptRow>& rows);
+    QString activeSpeakerFilter() const;
+    QVector<TranscriptRow> filteredRowsForSpeaker(const QVector<TranscriptRow>& rows) const;
+    QStringList editLabelsForFlags(int flags) const;
+    bool unifiedEditColorsEnabled() const;
+    void refreshScriptVersionSelector(const QString& clipFilePath, const QString& selectedPath);
+    QStringList scriptVersionPathsForClip(const QString& clipFilePath) const;
+    QString scriptVersionLabelForPath(const QString& path, const QString& clipFilePath) const;
+    QString defaultEditablePathForClip(const QString& clipFilePath) const;
+    QString originalTranscriptPathForClip(const QString& clipFilePath) const;
+    QString nextScriptVersionPathForClip(const QString& clipFilePath) const;
+    bool activeCutMutable() const;
+    bool showOutsideCutLinesEnabled() const;
+    QString originalWordKey(const TranscriptRow& row) const;
+    void refreshSpeakersTable(const QVector<TranscriptRow>& rows);
+    bool saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText);
+    void persistRenderOrderFromTable();
+    void computeRenderFrames(QVector<TranscriptRow>* rows) const;
     void scheduleSeekToTranscriptRow(int row);
     bool hasActiveManualSelection() const;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -120,6 +172,7 @@ private:
     editor::TranscriptEngine m_transcriptEngine;
     bool m_updating = false;
     QString m_loadedTranscriptPath;
+    QString m_loadedClipFilePath;
     QJsonDocument m_loadedTranscriptDoc;
     int m_transcriptPrependMs = 0;
     int m_transcriptPostpendMs = 0;
@@ -132,4 +185,5 @@ private:
     QString m_persistedSelectedClipId;
     int m_persistedSelectedSegmentIndex = -1;
     int m_persistedSelectedWordIndex = -1;
+    bool m_updatingScriptVersionSelector = false;
 };
