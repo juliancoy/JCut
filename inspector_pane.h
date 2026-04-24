@@ -76,6 +76,15 @@ public:
     QCheckBox *transcriptBoldCheckBox() const { return m_transcriptBoldCheckBox; }
     QCheckBox *transcriptItalicCheckBox() const { return m_transcriptItalicCheckBox; }
     QCheckBox *transcriptFollowCurrentWordCheckBox() const { return m_transcriptFollowCurrentWordCheckBox; }
+    QCheckBox *transcriptUnifiedEditModeCheckBox() const { return m_transcriptUnifiedEditModeCheckBox; }
+    QComboBox *transcriptSpeakerFilterCombo() const { return m_transcriptSpeakerFilterCombo; }
+    QComboBox *transcriptScriptVersionCombo() const { return m_transcriptScriptVersionCombo; }
+    QPushButton *transcriptNewVersionButton() const { return m_transcriptNewVersionButton; }
+    QPushButton *transcriptDeleteVersionButton() const { return m_transcriptDeleteVersionButton; }
+    QCheckBox *transcriptShowExcludedLinesCheckBox() const { return m_transcriptShowExcludedLinesCheckBox; }
+    QLabel *speakersInspectorClipLabel() const { return m_speakersInspectorClipLabel; }
+    QLabel *speakersInspectorDetailsLabel() const { return m_speakersInspectorDetailsLabel; }
+    QTableWidget *speakersTable() const { return m_speakersTable; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -240,6 +249,7 @@ private:
     QWidget *buildSyncTab();
     QWidget *buildKeyframesTab();
     QWidget *buildTranscriptTab();
+    QWidget *buildSpeakersTab();
     QWidget *buildClipTab();
     QWidget *buildClipsTab();
     QWidget *buildTracksTab();
@@ -413,6 +423,15 @@ private:
     QCheckBox *m_transcriptBoldCheckBox = nullptr;
     QCheckBox *m_transcriptItalicCheckBox = nullptr;
     QCheckBox *m_transcriptFollowCurrentWordCheckBox = nullptr;
+    QCheckBox *m_transcriptUnifiedEditModeCheckBox = nullptr;
+    QComboBox *m_transcriptSpeakerFilterCombo = nullptr;
+    QComboBox *m_transcriptScriptVersionCombo = nullptr;
+    QPushButton *m_transcriptNewVersionButton = nullptr;
+    QPushButton *m_transcriptDeleteVersionButton = nullptr;
+    QCheckBox *m_transcriptShowExcludedLinesCheckBox = nullptr;
+    QLabel *m_speakersInspectorClipLabel = nullptr;
+    QLabel *m_speakersInspectorDetailsLabel = nullptr;
+    QTableWidget *m_speakersTable = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;

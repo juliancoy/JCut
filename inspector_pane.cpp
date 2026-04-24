@@ -11,6 +11,7 @@
 #include <QFrame>
 #include <QGroupBox>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -76,6 +77,7 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
     m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
     m_inspectorTabs->addTab(buildTranscriptTab(), QStringLiteral("Transcript"));
+    m_inspectorTabs->addTab(buildSpeakersTab(), QStringLiteral("Speakers"));
     m_inspectorTabs->addTab(buildClipTab(), QStringLiteral("Properties"));
     m_inspectorTabs->addTab(buildClipsTab(), QStringLiteral("Clips"));
     m_inspectorTabs->addTab(buildHistoryTab(), QStringLiteral("History"));
@@ -119,12 +121,13 @@ void InspectorPane::configureInspectorTabs()
         {5, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
         {6, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
         {7, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
-        {8, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {9, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
-        {10, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {11, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {12, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {13, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {8, QStyle::SP_MediaVolume, "Speakers: speaker identity and on-screen location for the active cut"},
+        {9, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
+        {10, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
+        {11, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
+        {12, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {13, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {14, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -856,6 +859,18 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptFontSizeSpin = new QSpinBox(settingsContainer);
     m_transcriptBoldCheckBox = new QCheckBox(QStringLiteral("Bold"), settingsContainer);
     m_transcriptItalicCheckBox = new QCheckBox(QStringLiteral("Italic"), settingsContainer);
+    m_transcriptUnifiedEditModeCheckBox = new QCheckBox(QStringLiteral("Unified Edit Colors"), settingsContainer);
+    m_transcriptUnifiedEditModeCheckBox->setChecked(true);
+    m_transcriptSpeakerFilterCombo = new QComboBox(settingsContainer);
+    m_transcriptSpeakerFilterCombo->addItem(QStringLiteral("All Speakers"));
+    m_transcriptSpeakerFilterCombo->setToolTip(
+        QStringLiteral("Filter transcript rows by speaker label from the transcript JSON."));
+    m_transcriptScriptVersionCombo = new QComboBox(settingsContainer);
+    m_transcriptScriptVersionCombo->addItem(QStringLiteral("Default"));
+    m_transcriptNewVersionButton = new QPushButton(QStringLiteral("Copy Cut"), settingsContainer);
+    m_transcriptDeleteVersionButton = new QPushButton(QStringLiteral("Delete Cut"), settingsContainer);
+    m_transcriptShowExcludedLinesCheckBox =
+        new QCheckBox(QStringLiteral("Show Lines Not In Active Cut"), settingsContainer);
 
     m_transcriptMaxLinesSpin->setRange(1, 20);
     m_transcriptMaxCharsSpin->setRange(1, 200);
@@ -877,6 +892,14 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Font Size"), m_transcriptFontSizeSpin);
     form->addRow(QStringLiteral("Bold"), m_transcriptBoldCheckBox);
     form->addRow(QStringLiteral("Italic"), m_transcriptItalicCheckBox);
+    form->addRow(QStringLiteral("Edit Colors"), m_transcriptUnifiedEditModeCheckBox);
+    form->addRow(QStringLiteral("Speaker"), m_transcriptSpeakerFilterCombo);
+    form->addRow(QStringLiteral("Cut"), m_transcriptScriptVersionCombo);
+    auto *versionButtonsLayout = new QHBoxLayout;
+    versionButtonsLayout->addWidget(m_transcriptNewVersionButton);
+    versionButtonsLayout->addWidget(m_transcriptDeleteVersionButton);
+    form->addRow(QStringLiteral("Cut Actions"), versionButtonsLayout);
+    form->addRow(QStringLiteral("Visibility"), m_transcriptShowExcludedLinesCheckBox);
 
     auto *speechSectionLabel = new QLabel(QStringLiteral("Speech Filter"), settingsContainer);
     speechSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
@@ -908,15 +931,28 @@ QWidget *InspectorPane::buildTranscriptTab()
     speechForm->addRow(QStringLiteral("Fade Length"), m_speechFilterFadeSamplesSpin);
 
     m_transcriptTable = new QTableWidget(splitter);
-    m_transcriptTable->setColumnCount(3);
+    m_transcriptTable->setColumnCount(7);
     m_transcriptTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Start"), QStringLiteral("End"), QStringLiteral("Text")});
+        {QStringLiteral("Source Start"),
+         QStringLiteral("Source End"),
+         QStringLiteral("Render Start"),
+         QStringLiteral("Render End"),
+         QStringLiteral("Speaker"),
+         QStringLiteral("Text"),
+         QStringLiteral("Edits")});
     m_transcriptTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_transcriptTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_transcriptTable->setEditTriggers(QAbstractItemView::DoubleClicked |
                                        QAbstractItemView::EditKeyPressed);
     m_transcriptTable->verticalHeader()->setVisible(false);
     m_transcriptTable->horizontalHeader()->setStretchLastSection(true);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
 
     settingsLayout->addWidget(m_transcriptInspectorClipLabel);
     settingsLayout->addWidget(m_transcriptInspectorDetailsLabel);
@@ -938,6 +974,40 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     layout->addWidget(splitter);
 
+    return page;
+}
+
+QWidget *InspectorPane::buildSpeakersTab()
+{
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Speakers"), page));
+    layout->setContentsMargins(8, 8, 8, 8);
+
+    m_speakersInspectorClipLabel = new QLabel(QStringLiteral("No transcript cut selected"), page);
+    m_speakersInspectorDetailsLabel = new QLabel(
+        QStringLiteral("Select a transcript cut to name speakers and set on-screen locations."),
+        page);
+    m_speakersInspectorDetailsLabel->setWordWrap(true);
+
+    m_speakersTable = new QTableWidget(page);
+    m_speakersTable->setColumnCount(4);
+    m_speakersTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Speaker ID"), QStringLiteral("Name"), QStringLiteral("X"), QStringLiteral("Y")});
+    m_speakersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_speakersTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_speakersTable->setEditTriggers(QAbstractItemView::DoubleClicked |
+                                     QAbstractItemView::EditKeyPressed);
+    m_speakersTable->verticalHeader()->setVisible(false);
+    m_speakersTable->horizontalHeader()->setStretchLastSection(false);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+
+    layout->addWidget(m_speakersInspectorClipLabel);
+    layout->addWidget(m_speakersInspectorDetailsLabel);
+    layout->addWidget(m_speakersTable, 1);
     return page;
 }
 

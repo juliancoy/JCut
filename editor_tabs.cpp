@@ -104,7 +104,16 @@ void EditorWindow::createTranscriptTab()
             m_transcriptFontFamilyCombo, m_transcriptFontSizeSpin,
             m_transcriptBoldCheckBox, m_transcriptItalicCheckBox,
             m_transcriptPrependMsSpin, m_transcriptPostpendMsSpin,
-            m_speechFilterEnabledCheckBox, m_speechFilterFadeSamplesSpin},
+            m_speechFilterEnabledCheckBox, m_speechFilterFadeSamplesSpin,
+            m_inspectorPane->transcriptUnifiedEditModeCheckBox(),
+            m_inspectorPane->transcriptSpeakerFilterCombo(),
+            m_inspectorPane->transcriptScriptVersionCombo(),
+            m_inspectorPane->transcriptNewVersionButton(),
+            m_inspectorPane->transcriptDeleteVersionButton(),
+            m_inspectorPane->transcriptShowExcludedLinesCheckBox(),
+            m_inspectorPane->speakersInspectorClipLabel(),
+            m_inspectorPane->speakersInspectorDetailsLabel(),
+            m_inspectorPane->speakersTable()},
         TranscriptTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
