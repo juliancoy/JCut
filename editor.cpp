@@ -300,6 +300,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("debugDecodeMode"))
             .toString(editor::decodePreferenceToString(editor::debugDecodePreference()));
     editor::parseDecodePreference(debugDecodeModeText, &debugDecodePreference);
+    editor::H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode =
+        editor::debugH26xSoftwareThreadingMode();
+    const QString debugH26xSoftwareThreadingModeText =
+        root.value(QStringLiteral("debugH26xSoftwareThreadingMode"))
+            .toString(editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode()));
+    editor::parseH26xSoftwareThreadingMode(debugH26xSoftwareThreadingModeText,
+                                           &debugH26xSoftwareThreadingMode);
     const bool debugDeterministicPipeline =
         root.value(QStringLiteral("debugDeterministicPipeline"))
             .toBool(editor::debugDeterministicPipelineEnabled());
@@ -698,6 +705,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     editor::setDebugPrefetchSkipVisiblePendingThreshold(debugPrefetchSkipVisiblePendingThreshold);
     editor::setDebugDecoderLaneCount(debugDecoderLaneCount);
     editor::setDebugDecodePreference(debugDecodePreference);
+    editor::setDebugH26xSoftwareThreadingMode(debugH26xSoftwareThreadingMode);
     editor::setDebugDeterministicPipelineEnabled(debugDeterministicPipeline);
 
     m_timeline->setTracks(loadedTracks);

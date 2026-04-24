@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QTableWidget>
 #include <QPushButton>
+#include <QComboBox>
 #include <QString>
 #include <QJsonObject>
 #include <functional>
@@ -18,6 +19,7 @@ public:
     {
         QTableWidget* profileSummaryTable = nullptr;
         QPushButton* profileBenchmarkButton = nullptr;
+        QComboBox* profileH26xThreadingModeCombo = nullptr;
     };
 
     struct Dependencies
@@ -26,6 +28,7 @@ public:
         std::function<bool(TimelineClip*)> profileBenchmarkClip;
         std::function<QString(const TimelineClip&)> playbackMediaPath;
         std::function<void()> refreshInspector;
+        std::function<void()> scheduleSaveState;
     };
 
     explicit ProfileTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);

@@ -22,6 +22,13 @@ enum class DecodePreference : int {
     Software = 3,
 };
 
+enum class H26xSoftwareThreadingMode : int {
+    Auto = 0,
+    SingleThread = 1,
+    SliceThreads = 2,
+    FrameAndSliceThreads = 3,
+};
+
 DebugLogLevel debugPlaybackLevel();
 DebugLogLevel debugCacheLevel();
 DebugLogLevel debugDecodeLevel();
@@ -49,6 +56,7 @@ int debugVisibleQueueReserve();
 int debugPlaybackWindowAhead();
 int debugDecoderLaneCount();
 DecodePreference debugDecodePreference();
+H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode();
 bool debugPlayheadNoRepaint();
 bool debugPlaybackCacheFallbackEnabled();
 bool debugDeterministicPipelineEnabled();
@@ -69,12 +77,14 @@ void setDebugVisibleQueueReserve(int reserve);
 void setDebugPlaybackWindowAhead(int ahead);
 void setDebugDecoderLaneCount(int count);
 void setDebugDecodePreference(DecodePreference preference);
+void setDebugH26xSoftwareThreadingMode(H26xSoftwareThreadingMode mode);
 void setDebugPlayheadNoRepaint(bool enabled);
 void setDebugPlaybackCacheFallbackEnabled(bool enabled);
 void setDebugDeterministicPipelineEnabled(bool enabled);
 
 struct RenderPipelineDefaults {
     DecodePreference decodePreference = DecodePreference::Software;
+    H26xSoftwareThreadingMode h26xSoftwareThreadingMode = H26xSoftwareThreadingMode::Auto;
     bool deterministicPipeline = false;
     bool playbackCacheFallback = true;
     bool leadPrefetchEnabled = true;
@@ -98,6 +108,8 @@ QString debugLogLevelToString(DebugLogLevel level);
 bool parseDebugLogLevel(const QString& text, DebugLogLevel* levelOut);
 QString decodePreferenceToString(DecodePreference preference);
 bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut);
+QString h26xSoftwareThreadingModeToString(H26xSoftwareThreadingMode mode);
+bool parseH26xSoftwareThreadingMode(const QString& text, H26xSoftwareThreadingMode* modeOut);
 
 using DecoderLaneCountChangedCallback = std::function<void(int)>;
 void setDecoderLaneCountChangedCallback(DecoderLaneCountChangedCallback callback);

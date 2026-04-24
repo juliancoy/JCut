@@ -180,6 +180,7 @@ public:
     QSpinBox *previewPlaybackWindowAheadSpin() const { return m_previewPlaybackWindowAheadSpin; }
     QSpinBox *previewVisibleQueueReserveSpin() const { return m_previewVisibleQueueReserveSpin; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
+    QComboBox *profileH26xThreadingModeCombo() const { return m_profileH26xThreadingModeCombo; }
     QTableWidget *clipsTable() const { return m_clipsTable; }
     QTableWidget *historyTable() const { return m_historyTable; }
     QTableWidget *tracksTable() const { return m_tracksTable; }
@@ -387,6 +388,7 @@ private:
     QSpinBox *m_previewPlaybackWindowAheadSpin = nullptr;
     QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
+    QComboBox *m_profileH26xThreadingModeCombo = nullptr;
     QTableWidget *m_clipsTable = nullptr;
     QTableWidget *m_historyTable = nullptr;
     QTableWidget *m_tracksTable = nullptr;

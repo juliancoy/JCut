@@ -94,6 +94,7 @@ private:
     quint64 m_sequenceFrameUseCounter = 0;
 
     bool m_streamHasAlphaTag = false;
+    bool m_serializeSoftwareDecode = false;
     bool m_loggedSourceFormat = false;
     bool m_reportedAlphaMismatch = false;
     bool m_loggedAlphaProbe = false;

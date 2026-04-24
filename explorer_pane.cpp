@@ -1,5 +1,6 @@
 // explorer_pane.cpp
 #include "explorer_pane.h"
+#include "decoder_ffmpeg_utils.h"
 #include "preview.h"
 #include "render.h"
 
@@ -145,8 +146,16 @@ void ThumbnailWorker::generateThumbnail(const QString &filePath, const QString &
                     const AVCodec *dec = avcodec_find_decoder(
                         formatCtx->streams[vidIdx]->codecpar->codec_id);
                     AVCodecContext *ctx = dec ? avcodec_alloc_context3(dec) : nullptr;
-                    if (ctx &&
-                        avcodec_parameters_to_context(ctx, formatCtx->streams[vidIdx]->codecpar) >= 0 &&
+                    const bool ctxReady = ctx &&
+                        avcodec_parameters_to_context(ctx, formatCtx->streams[vidIdx]->codecpar) >= 0;
+                    if (ctxReady) {
+                        editor::applyVideoDecoderThreadingPolicy(ctx,
+                                                                 dec,
+                                                                 formatCtx->streams[vidIdx]->codecpar->codec_id,
+                                                                 false,
+                                                                 false);
+                    }
+                    if (ctxReady &&
                         avcodec_open2(ctx, dec, nullptr) >= 0)
                     {
                         AVPacket *pkt = av_packet_alloc();
@@ -919,7 +928,12 @@ QImage ExplorerPane::decodeVideoThumbnail(const QString &filePath) const
     }
 
     if (avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
-        avcodec_open2(codecCtx, decoder, nullptr) < 0)
+        (editor::applyVideoDecoderThreadingPolicy(codecCtx,
+                                                  decoder,
+                                                  stream->codecpar->codec_id,
+                                                  false,
+                                                  false),
+         avcodec_open2(codecCtx, decoder, nullptr) < 0))
     {
         avcodec_free_context(&codecCtx);
         avformat_close_input(&formatCtx);

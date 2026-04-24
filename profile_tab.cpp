@@ -3,6 +3,7 @@
 #include "decoder_context.h"
 #include "frame_handle.h"
 #include "editor_shared.h"
+#include "debug_controls.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -14,6 +15,7 @@
 #include <QTableWidgetItem>
 #include <QDir>
 #include <QCoreApplication>
+#include <QSignalBlocker>
 
 extern "C"
 {
@@ -33,10 +35,42 @@ void ProfileTab::wire()
         connect(m_widgets.profileBenchmarkButton, &QPushButton::clicked,
                 this, &ProfileTab::onBenchmarkClicked);
     }
+    if (m_widgets.profileH26xThreadingModeCombo) {
+        connect(m_widgets.profileH26xThreadingModeCombo,
+                qOverload<int>(&QComboBox::currentIndexChanged),
+                this,
+                [this](int) {
+                    if (!m_widgets.profileH26xThreadingModeCombo) {
+                        return;
+                    }
+                    editor::H26xSoftwareThreadingMode mode = editor::H26xSoftwareThreadingMode::Auto;
+                    if (!editor::parseH26xSoftwareThreadingMode(
+                            m_widgets.profileH26xThreadingModeCombo->currentData().toString(),
+                            &mode)) {
+                        return;
+                    }
+                    editor::setDebugH26xSoftwareThreadingMode(mode);
+                    if (m_deps.scheduleSaveState) {
+                        m_deps.scheduleSaveState();
+                    }
+                    if (m_deps.refreshInspector) {
+                        m_deps.refreshInspector();
+                    }
+                });
+    }
 }
 
 void ProfileTab::refresh()
 {
+    if (m_widgets.profileH26xThreadingModeCombo) {
+        QSignalBlocker blocker(m_widgets.profileH26xThreadingModeCombo);
+        const QString currentMode =
+            editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode());
+        const int modeIndex = m_widgets.profileH26xThreadingModeCombo->findData(currentMode);
+        if (modeIndex >= 0) {
+            m_widgets.profileH26xThreadingModeCombo->setCurrentIndex(modeIndex);
+        }
+    }
     if (!m_widgets.profileSummaryTable) return;
 
     const QJsonObject previewProfile = m_deps.profilingSnapshot();
@@ -191,6 +225,8 @@ void ProfileTab::updateProfileTable(const QJsonObject& previewProfile,
                : availableHardwareDeviceTypes().join(QStringLiteral(", ")));
     addRow(QStringLiteral("Decode Policy"),
            QStringLiteral("Opaque video: hardware when supported"));
+    addRow(QStringLiteral("H.264/H.265 CPU Threading"),
+           editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode()));
     addRow(QStringLiteral("Decode Policy (Alpha/Images)"),
            QStringLiteral("Software decode"));
     addRow(QStringLiteral("Export Encode Policy"),

@@ -1,4 +1,5 @@
 #include "decoder_image_io.h"
+#include "decoder_ffmpeg_utils.h"
 
 #include <QDebug>
 #include <QFile>
@@ -286,7 +287,12 @@ QImage loadSingleImageFile(const QString& framePath) {
     }
 
     if (avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
-        avcodec_open2(codecCtx, decoder, nullptr) < 0) {
+        (applyVideoDecoderThreadingPolicy(codecCtx,
+                                          decoder,
+                                          stream->codecpar->codec_id,
+                                          false,
+                                          false),
+         avcodec_open2(codecCtx, decoder, nullptr) < 0)) {
         avcodec_free_context(&codecCtx);
         avformat_close_input(&formatCtx);
         return QImage();

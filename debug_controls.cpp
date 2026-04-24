@@ -53,6 +53,7 @@ std::atomic<int> g_debugVisibleQueueReserve{kDefaultVisibleQueueReserve};
 std::atomic<int> g_debugPlaybackWindowAhead{kDefaultPlaybackWindowAhead};
 std::atomic<int> g_debugDecoderLaneCount{kDefaultDecoderLaneCount};
 std::atomic<int> g_decodePreference{static_cast<int>(kDefaultDecodePreference)};
+std::atomic<int> g_h26xSoftwareThreadingMode{static_cast<int>(H26xSoftwareThreadingMode::Auto)};
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
 std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
 std::atomic<bool> g_debugDeterministicPipelineEnabled{false};
@@ -142,6 +143,46 @@ bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut)
         normalized == QStringLiteral("cpu") ||
         normalized == QStringLiteral("software_only")) {
         *preferenceOut = DecodePreference::Software;
+        return true;
+    }
+    return false;
+}
+
+QString h26xSoftwareThreadingModeToString(H26xSoftwareThreadingMode mode) {
+    switch (mode) {
+    case H26xSoftwareThreadingMode::Auto: return QStringLiteral("auto");
+    case H26xSoftwareThreadingMode::SingleThread: return QStringLiteral("single_thread");
+    case H26xSoftwareThreadingMode::SliceThreads: return QStringLiteral("slice_threads");
+    case H26xSoftwareThreadingMode::FrameAndSliceThreads: return QStringLiteral("frame_and_slice_threads");
+    }
+    return QStringLiteral("auto");
+}
+
+bool parseH26xSoftwareThreadingMode(const QString& text, H26xSoftwareThreadingMode* modeOut) {
+    if (!modeOut) {
+        return false;
+    }
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("auto")) {
+        *modeOut = H26xSoftwareThreadingMode::Auto;
+        return true;
+    }
+    if (normalized == QStringLiteral("single_thread") ||
+        normalized == QStringLiteral("single") ||
+        normalized == QStringLiteral("stability")) {
+        *modeOut = H26xSoftwareThreadingMode::SingleThread;
+        return true;
+    }
+    if (normalized == QStringLiteral("slice_threads") ||
+        normalized == QStringLiteral("slice") ||
+        normalized == QStringLiteral("balanced")) {
+        *modeOut = H26xSoftwareThreadingMode::SliceThreads;
+        return true;
+    }
+    if (normalized == QStringLiteral("frame_and_slice_threads") ||
+        normalized == QStringLiteral("frame_slice") ||
+        normalized == QStringLiteral("performance")) {
+        *modeOut = H26xSoftwareThreadingMode::FrameAndSliceThreads;
         return true;
     }
     return false;
@@ -247,6 +288,10 @@ DecodePreference debugDecodePreference() {
     return static_cast<DecodePreference>(g_decodePreference.load());
 }
 
+H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode() {
+    return static_cast<H26xSoftwareThreadingMode>(g_h26xSoftwareThreadingMode.load());
+}
+
 bool debugPlayheadNoRepaint() {
     return g_debugPlayheadNoRepaint.load();
 }
@@ -336,6 +381,10 @@ void setDebugDecodePreference(DecodePreference preference) {
     g_decodePreference.store(static_cast<int>(preference));
 }
 
+void setDebugH26xSoftwareThreadingMode(H26xSoftwareThreadingMode mode) {
+    g_h26xSoftwareThreadingMode.store(static_cast<int>(mode));
+}
+
 void setDebugPlayheadNoRepaint(bool enabled) {
     g_debugPlayheadNoRepaint.store(enabled);
 }
@@ -352,6 +401,7 @@ RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
     RenderPipelineDefaults defaults;
 
     defaults.decodePreference = DecodePreference::Software;
+    defaults.h26xSoftwareThreadingMode = H26xSoftwareThreadingMode::Auto;
 #if defined(Q_OS_LINUX)
     const bool hasVaapiRenderNode =
         QFile::exists(QStringLiteral("/dev/dri/renderD128")) ||
@@ -403,6 +453,8 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("playback_window_ahead"), debugPlaybackWindowAhead()},
         {QStringLiteral("decoder_lane_count"), debugDecoderLaneCount()},
         {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())},
+        {QStringLiteral("h26x_software_threading_mode"),
+         h26xSoftwareThreadingModeToString(debugH26xSoftwareThreadingMode())},
         {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()},
         {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()},
         {QStringLiteral("deterministic_pipeline"), debugDeterministicPipelineEnabled()}
@@ -496,6 +548,14 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
             return false;
         }
         setDebugDecodePreference(preference);
+        return true;
+    }
+    if (name == QStringLiteral("h26x_software_threading_mode") && value.isString()) {
+        H26xSoftwareThreadingMode mode = H26xSoftwareThreadingMode::Auto;
+        if (!parseH26xSoftwareThreadingMode(value.toString(), &mode)) {
+            return false;
+        }
+        setDebugH26xSoftwareThreadingMode(mode);
         return true;
     }
     if (name == QStringLiteral("playhead_no_repaint") && value.isBool()) {

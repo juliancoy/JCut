@@ -57,12 +57,16 @@ void EditorWindow::createOutputTab()
 void EditorWindow::createProfileTab()
 {
     m_profileTab = std::make_unique<ProfileTab>(
-        ProfileTab::Widgets{m_profileSummaryTable, m_profileBenchmarkButton},
+        ProfileTab::Widgets{
+            m_profileSummaryTable,
+            m_profileBenchmarkButton,
+            m_inspectorPane ? m_inspectorPane->profileH26xThreadingModeCombo() : nullptr},
         ProfileTab::Dependencies{
             [this]() { return profilingSnapshot(); },
             [this](TimelineClip* clipOut) { return profileBenchmarkClip(clipOut); },
             [this](const TimelineClip& clip) { return playbackMediaPathForClip(clip); },
-            [this]() { m_inspectorPane->refresh(); }});
+            [this]() { m_inspectorPane->refresh(); },
+            [this]() { scheduleSaveState(); }});
     m_profileTab->wire();
 }
 

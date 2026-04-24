@@ -39,6 +39,22 @@ void restoreSelectionByFrameRole(QTableWidget* table, const QSet<int64_t>& frame
     if (!table || frames.isEmpty()) {
         return;
     }
+    QItemSelectionModel* selectionModel = table->selectionModel();
+    if (!selectionModel) {
+        return;
+    }
+
+    int targetCurrentRow = -1;
+    if (QTableWidgetItem* current = table->currentItem()) {
+        const QVariant frameData = current->data(Qt::UserRole);
+        if (frameData.isValid() && frames.contains(frameData.toLongLong())) {
+            targetCurrentRow = current->row();
+        }
+    }
+
+    selectionModel->clearSelection();
+
+    int firstSelectedRow = -1;
     for (int row = 0; row < table->rowCount(); ++row) {
         QTableWidgetItem* item = table->item(row, 0);
         if (!item) {
@@ -49,10 +65,20 @@ void restoreSelectionByFrameRole(QTableWidget* table, const QSet<int64_t>& frame
             continue;
         }
         if (frames.contains(frameData.toLongLong())) {
-            table->selectRow(row);
-            if (!table->currentItem()) {
-                table->setCurrentItem(item, QItemSelectionModel::Select);
+            const QModelIndex index = table->model()->index(row, 0);
+            selectionModel->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+            if (firstSelectedRow < 0) {
+                firstSelectedRow = row;
             }
+        }
+    }
+
+    if (targetCurrentRow < 0) {
+        targetCurrentRow = firstSelectedRow;
+    }
+    if (targetCurrentRow >= 0 && targetCurrentRow < table->rowCount()) {
+        if (QTableWidgetItem* item = table->item(targetCurrentRow, 0)) {
+            table->setCurrentItem(item, QItemSelectionModel::NoUpdate);
         }
     }
 }

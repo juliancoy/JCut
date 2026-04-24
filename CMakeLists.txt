@@ -27,6 +27,24 @@ find_package(OpenGL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent OpenGLWidgets Test)
 
+set(EDITOR_FFMPEG_PREFIX
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-install"
+    CACHE PATH "Pinned FFmpeg install prefix used by this project")
+set(EDITOR_FFMPEG_PKGCONFIG_DIR "${EDITOR_FFMPEG_PREFIX}/lib/pkgconfig")
+
+if(NOT EXISTS "${EDITOR_FFMPEG_PKGCONFIG_DIR}/libavcodec.pc")
+    message(FATAL_ERROR
+        "Bundled FFmpeg pkg-config files not found at ${EDITOR_FFMPEG_PKGCONFIG_DIR}. "
+        "Run ./build.sh to bootstrap the pinned FFmpeg build.")
+endif()
+
+set(_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
+if(_saved_pkg_config_path)
+    set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}:${_saved_pkg_config_path}")
+else()
+    set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}")
+endif()
+
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libavcodec
     libavformat
@@ -34,6 +52,14 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libswscale
     libswresample
 )
+
+set(_expected_ffmpeg_libdir "${EDITOR_FFMPEG_PREFIX}/lib")
+list(FIND FFMPEG_LIBRARY_DIRS "${_expected_ffmpeg_libdir}" _ffmpeg_libdir_match)
+if(_ffmpeg_libdir_match EQUAL -1)
+    message(FATAL_ERROR
+        "Resolved FFmpeg libraries are not from the pinned prefix. "
+        "Expected ${_expected_ffmpeg_libdir}, got: ${FFMPEG_LIBRARY_DIRS}")
+endif()
 
 set(GLM_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d/glm")
 set(TINYGLTF_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d/tinygltf")
@@ -136,6 +162,10 @@ target_link_libraries(editor_core
         rtaudio
 )
 
+set_target_properties(editor_core PROPERTIES
+    BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+)
+
 if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_core PUBLIC Qt6::GuiPrivate)
 endif()
@@ -213,6 +243,9 @@ target_compile_definitions(editor_test_support
 
 add_executable(editor ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp)
 target_link_libraries(editor PRIVATE editor_core)
+set_target_properties(editor PROPERTIES
+    BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+)
 
 if(APPLE)
     set_target_properties(editor PROPERTIES MACOSX_BUNDLE TRUE)

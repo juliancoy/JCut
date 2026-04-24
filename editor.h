@@ -34,6 +34,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHash>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
@@ -451,6 +452,7 @@ private:
 
     bool m_updatingTranscriptInspector = false;
     bool m_updatingSyncInspector = false;
+    QHash<QString, int64_t> m_previewDragAnchorFrameByClip;
 
     std::atomic<qint64> m_fastCurrentFrame{0};
     std::atomic<bool> m_fastPlaybackActive{false};

@@ -9,6 +9,7 @@ FFMPEG_BUILD_DIR="${SCRIPT_DIR}/ffmpeg-build"
 FFMPEG_INSTALL_DIR="${SCRIPT_DIR}/ffmpeg-install"
 FFMPEG_PKGCONFIG_DIR="${SCRIPT_DIR}/ffmpeg-install/lib/pkgconfig"
 FFMPEG_PROFILE_FILE="${FFMPEG_INSTALL_DIR}/.build-profile"
+FFMPEG_VERSION_FILE="${FFMPEG_INSTALL_DIR}/.build-version"
 ASAN="OFF"
 FFMPEG_PROFILE="safe"
 BUILD_TARGET="editor"
@@ -21,16 +22,24 @@ ensure_ffmpeg_installed() {
     local sws_pc="${FFMPEG_PKGCONFIG_DIR}/libswscale.pc"
 
     local installed_profile=""
+    local installed_version=""
+    local current_version=""
+    current_version="$(git -C "${FFMPEG_SRC_DIR}" rev-parse HEAD)"
     if [[ -f "${FFMPEG_PROFILE_FILE}" ]]; then
         installed_profile="$(<"${FFMPEG_PROFILE_FILE}")"
     fi
+    if [[ -f "${FFMPEG_VERSION_FILE}" ]]; then
+        installed_version="$(<"${FFMPEG_VERSION_FILE}")"
+    fi
 
-    if [[ -f "${codec_pc}" && -f "${format_pc}" && -f "${util_pc}" && -f "${swr_pc}" && -f "${sws_pc}" && "${installed_profile}" == "${FFMPEG_PROFILE}" ]]; then
+    if [[ -f "${codec_pc}" && -f "${format_pc}" && -f "${util_pc}" && -f "${swr_pc}" && -f "${sws_pc}" && "${installed_profile}" == "${FFMPEG_PROFILE}" && "${installed_version}" == "${current_version}" ]]; then
         return 0
     fi
 
     if [[ "${installed_profile}" != "${FFMPEG_PROFILE}" && -n "${installed_profile}" ]]; then
         echo "FFmpeg profile mismatch: installed='${installed_profile}', requested='${FFMPEG_PROFILE}'"
+    elif [[ "${installed_version}" != "${current_version}" && -n "${installed_version}" ]]; then
+        echo "FFmpeg source revision mismatch: installed='${installed_version}', requested='${current_version}'"
     else
         echo "FFmpeg pkg-config files missing in ${FFMPEG_PKGCONFIG_DIR}"
     fi
@@ -53,8 +62,7 @@ ensure_ffmpeg_installed() {
         --disable-static \
         --disable-programs \
         --disable-doc \
-        --disable-debug \
-        --disable-x86asm
+        --disable-debug
     )
 
     if [[ "${FFMPEG_PROFILE}" == "safe" ]]; then
@@ -91,6 +99,7 @@ EOF
 
     make install
     printf '%s\n' "${FFMPEG_PROFILE}" > "${FFMPEG_PROFILE_FILE}"
+    printf '%s\n' "${current_version}" > "${FFMPEG_VERSION_FILE}"
     popd >/dev/null
 
     if [[ ! -f "${codec_pc}" ]]; then

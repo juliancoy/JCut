@@ -532,6 +532,7 @@ void OutputTab::onOutputResetPipelineDefaultsClicked()
     const editor::RenderPipelineDefaults defaults =
         editor::defaultRenderPipelineDefaultsForCurrentSystem();
     editor::setDebugDecodePreference(defaults.decodePreference);
+    editor::setDebugH26xSoftwareThreadingMode(defaults.h26xSoftwareThreadingMode);
     editor::setDebugDeterministicPipelineEnabled(defaults.deterministicPipeline);
     editor::setDebugPlaybackCacheFallbackEnabled(defaults.playbackCacheFallback);
     editor::setDebugLeadPrefetchEnabled(defaults.leadPrefetchEnabled);

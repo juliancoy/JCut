@@ -30,6 +30,18 @@ bool KeyframeTabBase::shouldSkipSyncToPlayhead(QTableWidget* table, QCheckBox* f
     if (focus && table->isAncestorOf(focus)) {
         return true;
     }
+
+    // Preserve explicit multi-row selection (Shift/Ctrl range selection) and
+    // avoid collapsing it to a single playhead-follow row.
+    if (table->selectionModel() && table->selectionModel()->selectedRows().size() > 1) {
+        return true;
+    }
+
+    // While Shift is pressed on the keyframe table, defer playhead-sync updates.
+    if ((QApplication::keyboardModifiers() & Qt::ShiftModifier) && focus &&
+        (focus == table || table->isAncestorOf(focus))) {
+        return true;
+    }
     
     // Skip if the current timeline frame matches the one we just manually selected.
     // This prevents the table from jumping to follow the playhead immediately after

@@ -3,6 +3,7 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
@@ -165,7 +166,60 @@ bool cachedIsImageSequencePathImpl(const QString& path) {
         }
     }
 
-    const bool isSequence = !collectSequenceFrames(path).isEmpty();
+    const QFileInfo dirInfo(path);
+    if (!dirInfo.exists() || !dirInfo.isDir()) {
+        QMutexLocker locker(&cacheMutex);
+        cachedResultByKey.insert(key, false);
+        return false;
+    }
+
+    static const QRegularExpression kDigitsPattern(QStringLiteral("(\\d+)"));
+    constexpr int kFastSequenceProbeLimit = 4096;
+
+    QHash<QString, int> suffixCounts;
+    QHash<QString, int> numberedSuffixCounts;
+    int visited = 0;
+    bool isSequence = false;
+
+    QDirIterator it(dirInfo.absoluteFilePath(), QDir::Files | QDir::NoDotAndDotDot);
+    while (it.hasNext() && visited < kFastSequenceProbeLimit) {
+        it.next();
+        ++visited;
+
+        const QFileInfo entry = it.fileInfo();
+        const QString suffix = entry.suffix().toLower();
+        if (!isImageSuffix(suffix)) {
+            continue;
+        }
+
+        const int suffixCount = suffixCounts.value(suffix, 0) + 1;
+        suffixCounts.insert(suffix, suffixCount);
+
+        int numberedCount = numberedSuffixCounts.value(suffix, 0);
+        if (kDigitsPattern.match(entry.completeBaseName()).hasMatch()) {
+            ++numberedCount;
+            numberedSuffixCounts.insert(suffix, numberedCount);
+        }
+
+        if (suffixCount >= 8 && numberedCount >= 4 && (numberedCount * 2) >= suffixCount) {
+            isSequence = true;
+            break;
+        }
+    }
+
+    if (!isSequence) {
+        QString bestSuffix;
+        int bestCount = 0;
+        for (auto it = suffixCounts.cbegin(); it != suffixCounts.cend(); ++it) {
+            if (it.value() > bestCount) {
+                bestCount = it.value();
+                bestSuffix = it.key();
+            }
+        }
+        const int bestNumbered = numberedSuffixCounts.value(bestSuffix, 0);
+        isSequence = bestCount >= 2 && bestNumbered >= 2 && (bestNumbered * 2) >= bestCount;
+    }
+
     {
         QMutexLocker locker(&cacheMutex);
         cachedResultByKey.insert(key, isSequence);
@@ -254,58 +308,59 @@ QStringList collectSequenceFrames(const QString& path) {
     }
 
     const QDir dir(dirInfo.absoluteFilePath());
-    QFileInfoList entries = dir.entryInfoList(QDir::Files | QDir::NoDotAndDotDot, QDir::NoSort);
-    if (entries.size() < 2) {
-        return {};
-    }
+    static const QRegularExpression kDigitsPattern(QStringLiteral("(\\d+)"));
+    QHash<QString, int> suffixCounts;
+    QHash<QString, int> numberedSuffixCounts;
 
-    QHash<QString, QFileInfoList> bySuffix;
-    for (const QFileInfo& entry : entries) {
+    QDirIterator countIt(dir.absolutePath(), QDir::Files | QDir::NoDotAndDotDot);
+    while (countIt.hasNext()) {
+        countIt.next();
+        const QFileInfo entry = countIt.fileInfo();
         const QString suffix = entry.suffix().toLower();
         if (!isImageSuffix(suffix)) {
             continue;
         }
-        bySuffix[suffix].push_back(entry);
-    }
-
-    QFileInfoList bestGroup;
-    for (auto it = bySuffix.begin(); it != bySuffix.end(); ++it) {
-        if (it.value().size() > bestGroup.size()) {
-            bestGroup = it.value();
-        }
-    }
-    if (bestGroup.size() < 2) {
-        return {};
-    }
-
-    static const QRegularExpression kDigitsPattern(QStringLiteral("(\\d+)"));
-    int numberedCount = 0;
-    for (const QFileInfo& entry : bestGroup) {
+        const int count = suffixCounts.value(suffix, 0) + 1;
+        suffixCounts.insert(suffix, count);
         if (kDigitsPattern.match(entry.completeBaseName()).hasMatch()) {
-            ++numberedCount;
+            numberedSuffixCounts.insert(suffix, numberedSuffixCounts.value(suffix, 0) + 1);
         }
     }
-    if (numberedCount < 2 || (numberedCount * 2) < bestGroup.size()) {
+
+    QString bestSuffix;
+    int bestCount = 0;
+    for (auto it = suffixCounts.cbegin(); it != suffixCounts.cend(); ++it) {
+        if (it.value() > bestCount) {
+            bestCount = it.value();
+            bestSuffix = it.key();
+        }
+    }
+    const int bestNumberedCount = numberedSuffixCounts.value(bestSuffix, 0);
+    if (bestCount < 2 || bestNumberedCount < 2 || (bestNumberedCount * 2) < bestCount) {
+        QMutexLocker locker(&cacheMutex);
+        cachedFramesByKey.insert(cacheKey, {});
         return {};
     }
 
-    std::sort(bestGroup.begin(), bestGroup.end(), [](const QFileInfo& a, const QFileInfo& b) {
-        return naturalFileNameLessCaseInsensitive(a.fileName(), b.fileName());
+    QStringList frameNames;
+    frameNames.reserve(bestCount);
+    QDirIterator collectIt(dir.absolutePath(), QDir::Files | QDir::NoDotAndDotDot);
+    while (collectIt.hasNext()) {
+        collectIt.next();
+        const QFileInfo entry = collectIt.fileInfo();
+        if (entry.suffix().compare(bestSuffix, Qt::CaseInsensitive) == 0) {
+            frameNames.push_back(entry.fileName());
+        }
+    }
+
+    std::sort(frameNames.begin(), frameNames.end(), [](const QString& a, const QString& b) {
+        return naturalFileNameLessCaseInsensitive(a, b);
     });
 
-    // Safety limit: don't treat directories with too many files as image sequences
-    // This prevents memory exhaustion and potential heap corruption with large directories
-    constexpr int kMaxSequenceFrames = 500000;
-    if (bestGroup.size() > kMaxSequenceFrames) {
-        qWarning() << "Directory has too many image files to be a sequence:"
-                   << bestGroup.size() << "(max:" << kMaxSequenceFrames << ")";
-        return {};
-    }
-
     QStringList frames;
-    frames.reserve(bestGroup.size());
-    for (const QFileInfo& entry : bestGroup) {
-        frames.push_back(entry.absoluteFilePath());
+    frames.reserve(frameNames.size());
+    for (const QString& frameName : frameNames) {
+        frames.push_back(dir.absoluteFilePath(frameName));
     }
     {
         QMutexLocker locker(&cacheMutex);
@@ -783,7 +838,8 @@ QString playbackProxyPathForClip(const TimelineClip& clip) {
         input.hasVisuals &&
         !input.filePath.isEmpty()) {
         // Validate stored proxy path - must be a valid media file
-        if (!input.proxyPath.isEmpty() && isValidMediaFile(input.proxyPath)) {
+        if (!input.proxyPath.isEmpty() &&
+            (isValidMediaFile(input.proxyPath) || cachedIsImageSequencePathImpl(input.proxyPath))) {
             resolvedProxyPath = input.proxyPath;
         } else {
             const QFileInfo sourceInfo(input.filePath);
@@ -1001,4 +1057,3 @@ QStringList imageSequenceFramePaths(const QString& path) {
 QString imageSequenceDisplayLabel(const QString& path) {
     return QFileInfo(path).fileName();
 }
-

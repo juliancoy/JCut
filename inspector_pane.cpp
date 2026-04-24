@@ -1374,6 +1374,23 @@ QWidget *InspectorPane::buildProfileTab()
     auto *layout = new QVBoxLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("System"), page));
 
+    auto *decodeForm = new QFormLayout;
+    m_profileH26xThreadingModeCombo = new QComboBox(page);
+    m_profileH26xThreadingModeCombo->addItem(QStringLiteral("Auto (Recommended)"), QStringLiteral("auto"));
+    m_profileH26xThreadingModeCombo->addItem(QStringLiteral("Single Thread (Safest)"), QStringLiteral("single_thread"));
+    m_profileH26xThreadingModeCombo->addItem(QStringLiteral("Slice Threads (Balanced)"), QStringLiteral("slice_threads"));
+    m_profileH26xThreadingModeCombo->addItem(QStringLiteral("Frame + Slice Threads (Fastest)"), QStringLiteral("frame_and_slice_threads"));
+    m_profileH26xThreadingModeCombo->setToolTip(
+        QStringLiteral("Software decode threading policy for H.264/H.265 clips. "
+                       "Auto selects a stable default for this FFmpeg build."));
+    const QString h26xThreadingMode =
+        editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode());
+    const int h26xThreadingModeIndex = m_profileH26xThreadingModeCombo->findData(h26xThreadingMode);
+    if (h26xThreadingModeIndex >= 0) {
+        m_profileH26xThreadingModeCombo->setCurrentIndex(h26xThreadingModeIndex);
+    }
+    decodeForm->addRow(QStringLiteral("H.264/H.265 CPU Threading"), m_profileH26xThreadingModeCombo);
+
     m_profileSummaryTable = new QTableWidget(page);
     m_profileSummaryTable->setColumnCount(2);
     m_profileSummaryTable->setHorizontalHeaderLabels({QStringLiteral("Property"), QStringLiteral("Value")});
@@ -1391,6 +1408,7 @@ QWidget *InspectorPane::buildProfileTab()
     connect(m_restartDecodersButton, &QPushButton::clicked,
             this, &InspectorPane::restartDecodersRequested);
 
+    layout->addLayout(decodeForm);
     layout->addWidget(m_profileSummaryTable, 1);
     layout->addWidget(m_profileBenchmarkButton);
     layout->addWidget(m_restartDecodersButton);

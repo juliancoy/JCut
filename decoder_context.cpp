@@ -12,9 +12,9 @@
 #include <QFileInfo>
 #include <QHash>
 #include <QMutex>
-#include <QThread>
 
 #include <limits>
+#include <mutex>
 
 namespace editor {
 
@@ -25,6 +25,7 @@ constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 
 constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at 30fps
 constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
 constexpr qint64 kNoVideoWarningThrottleMs = 15000;
+std::mutex g_h26xSoftwareDecodeMutex;
 
 #if defined(__SANITIZE_ADDRESS__)
 constexpr bool kAsanBuild = true;
@@ -366,22 +367,34 @@ bool DecoderContext::initCodec() {
     const bool softwareProResWorkaround =
         !hardwareEnabled &&
         stream->codecpar->codec_id == AV_CODEC_ID_PRORES;
-
-    if (deterministicPipeline) {
-        // Deterministic mode disables frame/slice threading and fast decode shortcuts.
+    m_serializeSoftwareDecode = false;
+    const auto applySingleThreadPolicy = [this]() {
         m_codecCtx->thread_count = 1;
         m_codecCtx->thread_type = 0;
         m_codecCtx->flags2 &= ~AV_CODEC_FLAG2_FAST;
+    };
+
+    if (deterministicPipeline) {
+        // Deterministic mode disables frame/slice threading and fast decode shortcuts.
+        applySingleThreadPolicy();
     } else if (hardwareEnabled) {
-        m_codecCtx->thread_count = 0;
-        m_codecCtx->thread_type = FF_THREAD_FRAME;
+        const VideoDecoderThreadingPolicy policy =
+            applyVideoDecoderThreadingPolicy(m_codecCtx,
+                                             decoder,
+                                             stream->codecpar->codec_id,
+                                             hardwareEnabled,
+                                             deterministicPipeline);
+        m_serializeSoftwareDecode = policy.serializeH26xSoftwareDecode;
     } else if (softwareProResWorkaround) {
-        m_codecCtx->thread_count = 1;
-        m_codecCtx->thread_type = 0;
+        applySingleThreadPolicy();
     } else {
-        m_codecCtx->thread_count = qBound(2, QThread::idealThreadCount(), 8);
-        m_codecCtx->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-        m_codecCtx->flags2 |= AV_CODEC_FLAG2_FAST;
+        const VideoDecoderThreadingPolicy policy =
+            applyVideoDecoderThreadingPolicy(m_codecCtx,
+                                             decoder,
+                                             stream->codecpar->codec_id,
+                                             hardwareEnabled,
+                                             deterministicPipeline);
+        m_serializeSoftwareDecode = policy.serializeH26xSoftwareDecode;
     }
 
     if (m_streamHasAlphaTag) {
@@ -638,6 +651,14 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
     if (m_isStillImage) {
         decodedFrames.push_back(FrameHandle::createCpuFrame(m_stillImage, 0, m_path));
         return decodedFrames;
+    }
+
+    // FFmpeg 61 software H.264/H.265 decode can crash when multiple contexts
+    // drive avcodec_send_packet/receive_frame concurrently across threads.
+    // Serialize this path for stability.
+    std::unique_lock<std::mutex> h26xDecodeLock(g_h26xSoftwareDecodeMutex, std::defer_lock);
+    if (m_serializeSoftwareDecode) {
+        h26xDecodeLock.lock();
     }
 
     if (forceSeek && !seekToKeyframe(targetFrame)) {

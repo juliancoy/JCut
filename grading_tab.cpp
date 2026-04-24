@@ -259,7 +259,9 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
     if (m_deps.setPreviewTimelineClips) {
         m_deps.setPreviewTimelineClips();
     }
-    m_deps.refreshInspector();
+    if (pushHistory) {
+        m_deps.refreshInspector();
+    }
     m_deps.scheduleSaveState();
     if (pushHistory) {
         m_deps.pushHistorySnapshot();
@@ -1125,18 +1127,27 @@ void GradingTab::applyToneValuesToCurrentChannel(double shadows, double midtones
                                  ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2)
                                  : 0;
     if (channelIndex == 1) {
+        QSignalBlocker shadowsBlock(m_widgets.shadowsGSpin);
+        QSignalBlocker midtonesBlock(m_widgets.midtonesGSpin);
+        QSignalBlocker highlightsBlock(m_widgets.highlightsGSpin);
         if (m_widgets.shadowsGSpin) m_widgets.shadowsGSpin->setValue(shadows);
         if (m_widgets.midtonesGSpin) m_widgets.midtonesGSpin->setValue(midtones);
         if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(highlights);
         return;
     }
     if (channelIndex == 2) {
+        QSignalBlocker shadowsBlock(m_widgets.shadowsBSpin);
+        QSignalBlocker midtonesBlock(m_widgets.midtonesBSpin);
+        QSignalBlocker highlightsBlock(m_widgets.highlightsBSpin);
         if (m_widgets.shadowsBSpin) m_widgets.shadowsBSpin->setValue(shadows);
         if (m_widgets.midtonesBSpin) m_widgets.midtonesBSpin->setValue(midtones);
         if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(highlights);
         return;
     }
 
+    QSignalBlocker shadowsBlock(m_widgets.shadowsRSpin);
+    QSignalBlocker midtonesBlock(m_widgets.midtonesRSpin);
+    QSignalBlocker highlightsBlock(m_widgets.highlightsRSpin);
     if (m_widgets.shadowsRSpin) m_widgets.shadowsRSpin->setValue(shadows);
     if (m_widgets.midtonesRSpin) m_widgets.midtonesRSpin->setValue(midtones);
     if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(highlights);
@@ -1146,70 +1157,82 @@ void GradingTab::onBrightnessChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onContrastChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onSaturationChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onShadowsRChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onShadowsGChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onShadowsBChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onMidtonesRChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onMidtonesGChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onMidtonesBChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onHighlightsRChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onHighlightsGChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
 
 void GradingTab::onHighlightsBChanged(double value)
 {
     Q_UNUSED(value);
     updateCurveFromInspectorValues();
+    applyGradeFromInspector(false);
 }
