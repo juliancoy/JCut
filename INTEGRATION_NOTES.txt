@@ -1,0 +1,17 @@
+Files generated from your original monolithic implementation:
+
+- async_decoder.cpp
+- decoder_context.h
+- decoder_context.cpp
+- decoder_image_io.h
+- decoder_image_io.cpp
+- decoder_ffmpeg_utils.h
+- decoder_ffmpeg_utils.cpp
+- decode_trace.h
+- decode_trace.cpp
+
+Notes:
+1. async_decoder.h will need to include or forward-declare DecoderContext if it references it directly.
+2. decoder_context.cpp still includes async_decoder.h because it depends on DecodePreference/debug-facing types already referenced in your original code path.
+3. If DecoderContext was originally declared inside async_decoder.h, move that declaration into decoder_context.h and remove the duplicate from async_decoder.h.
+4. Add the new .cpp files to your build system.

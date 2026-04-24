@@ -1,0 +1,24 @@
+Refactor package updated with the provided model.h.
+
+Contents:
+- model.h
+- model.cpp
+- model_import_shared.h / .cpp
+- gltf_import.h / .cpp
+- fbx_import.h / .cpp
+- model_runtime.cpp
+
+What was changed:
+1. The package now uses your exact header shape, including:
+   - raw tinygltf::Model* tgltfModel
+   - std::unique_ptr<motive::animation::FbxRuntime> fbxAnimationRuntime
+   - GltfCombinedPrimitiveData living in model.h
+2. The FBX import duplication inside model.cpp was reduced by adding a shared helper:
+   - importFbxVerticesIntoModel(...)
+3. The bytesPerLine-aware texture upload call from your newer source was preserved in fbx_import.cpp.
+
+Caveats:
+- This was updated to match the header you provided, but it still depends on the rest of your codebase
+  (primitive.h / primitive.cpp, animation.h / animation.cpp, engine.h / engine.cpp, etc.).
+- I did not change the raw tgltfModel pointer to std::unique_ptr because your header explicitly keeps it raw.
+- updateAnimation() still contains vkQueueWaitIdle(), matching the original behavior.
