@@ -1,0 +1,7 @@
+[submodule "rtaudio"]
+	path = rtaudio
+	url = https://github.com/thestk/rtaudio.git
+[submodule "ffmpeg"]
+	path = ffmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+	branch = release/6.0
