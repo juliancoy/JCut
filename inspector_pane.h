@@ -163,7 +163,7 @@ public:
     QLabel *audioInspectorClipLabel() const { return m_audioInspectorClipLabel; }
     QLabel *audioInspectorDetailsLabel() const { return m_audioInspectorDetailsLabel; }
 
-    QLabel *transcriptInspectorClipLabel() const { return m_transcriptInspectorClipLabel; }
+    QLineEdit *transcriptInspectorClipLabel() const { return m_transcriptInspectorClipLabel; }
     QLabel *transcriptInspectorDetailsLabel() const { return m_transcriptInspectorDetailsLabel; }
     QTableWidget *transcriptTable() const { return m_transcriptTable; }
     QLabel *clipInspectorClipLabel() const { return m_clipInspectorClipLabel; }
@@ -372,7 +372,7 @@ private:
     QLabel *m_audioInspectorClipLabel = nullptr;
     QLabel *m_audioInspectorDetailsLabel = nullptr;
 
-    QLabel *m_transcriptInspectorClipLabel = nullptr;
+    QLineEdit *m_transcriptInspectorClipLabel = nullptr;
     QLabel *m_transcriptInspectorDetailsLabel = nullptr;
     QTableWidget *m_transcriptTable = nullptr;
     QLabel *m_clipInspectorClipLabel = nullptr;

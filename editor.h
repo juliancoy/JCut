@@ -266,7 +266,7 @@ private:
     QSpinBox *m_audioFadeSamplesSpin = nullptr;
     bool m_updatingAudioInspector = false;
 
-    QLabel *m_transcriptInspectorClipLabel = nullptr;
+    QLineEdit *m_transcriptInspectorClipLabel = nullptr;
     QLabel *m_transcriptInspectorDetailsLabel = nullptr;
     QLabel *m_clipInspectorClipLabel = nullptr;
     QLabel *m_clipProxyUsageLabel = nullptr;
@@ -361,9 +361,9 @@ private:
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
-    int m_transcriptPrependMs = 0;
-    int m_transcriptPostpendMs = 0;
-    int m_speechFilterFadeSamples = 250;
+    int m_transcriptPrependMs = 150;
+    int m_transcriptPostpendMs = 70;
+    int m_speechFilterFadeSamples = 300;
     mutable TranscriptEngine m_transcriptEngine;
 
     QDoubleSpinBox *m_transcriptOverlayXSpin = nullptr;

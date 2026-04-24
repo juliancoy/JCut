@@ -16,6 +16,7 @@
 #include <QJsonParseError>
 #include <QHeaderView>
 #include <QKeyEvent>
+#include <QLineEdit>
 #include <QMenu>
 #include <QRegularExpression>
 #include <QSignalBlocker>
@@ -116,6 +117,39 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
 
 void TranscriptTab::wire()
 {
+    // Wire up the editable cut title
+    if (m_widgets.transcriptInspectorClipLabel) {
+        connect(m_widgets.transcriptInspectorClipLabel, &QLineEdit::editingFinished, this, [this]() {
+            if (m_updating || !m_deps.getSelectedClip || !m_deps.updateClipById) {
+                return;
+            }
+            const TimelineClip* clip = m_deps.getSelectedClip();
+            if (!clip) {
+                return;
+            }
+            const QString newLabel = m_widgets.transcriptInspectorClipLabel->text().trimmed();
+            if (newLabel.isEmpty() || newLabel == clip->label) {
+                // Revert to actual clip label if empty or unchanged
+                if (newLabel.isEmpty()) {
+                    m_widgets.transcriptInspectorClipLabel->setText(clip->label);
+                }
+                return;
+            }
+            m_deps.updateClipById(clip->id, [&newLabel](TimelineClip& editableClip) {
+                editableClip.label = newLabel;
+            });
+            if (m_deps.scheduleSaveState) {
+                m_deps.scheduleSaveState();
+            }
+            if (m_deps.pushHistorySnapshot) {
+                m_deps.pushHistorySnapshot();
+            }
+            if (m_deps.refreshInspector) {
+                m_deps.refreshInspector();
+            }
+        });
+    }
+
     if (m_widgets.transcriptTable) {
         m_widgets.transcriptTable->setDragEnabled(true);
         m_widgets.transcriptTable->setAcceptDrops(true);
@@ -240,6 +274,11 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptScriptVersionCombo) {
         connect(m_widgets.transcriptScriptVersionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &TranscriptTab::onTranscriptScriptVersionChanged);
+        // Wire up editable combo for renaming cut versions
+        if (m_widgets.transcriptScriptVersionCombo->lineEdit()) {
+            connect(m_widgets.transcriptScriptVersionCombo->lineEdit(), &QLineEdit::editingFinished,
+                    this, &TranscriptTab::onTranscriptCutLabelEdited);
+        }
     }
     if (m_widgets.transcriptNewVersionButton) {
         connect(m_widgets.transcriptNewVersionButton, &QPushButton::clicked,
@@ -277,7 +316,8 @@ void TranscriptTab::refresh()
         m_persistedSelectedSegmentIndex = -1;
         m_persistedSelectedWordIndex = -1;
         if (m_widgets.transcriptInspectorClipLabel) {
-            m_widgets.transcriptInspectorClipLabel->setText(QStringLiteral("No transcript selected"));
+            m_widgets.transcriptInspectorClipLabel->setText(QString());
+            m_widgets.transcriptInspectorClipLabel->setPlaceholderText(QStringLiteral("No transcript selected"));
         }
         if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(
@@ -302,6 +342,7 @@ void TranscriptTab::refresh()
 
     if (m_widgets.transcriptInspectorClipLabel) {
         m_widgets.transcriptInspectorClipLabel->setText(clip->label);
+        m_widgets.transcriptInspectorClipLabel->setPlaceholderText(QString());
     }
 
     updateOverlayWidgetsFromClip(*clip);
@@ -1235,6 +1276,11 @@ void TranscriptTab::refreshSpeakerFilter(const QVector<TranscriptRow>& rows)
     }
 
     QString selectedValue = activeSpeakerFilter();
+    const QString pendingFilterValue =
+        m_widgets.transcriptSpeakerFilterCombo->property("pendingSpeakerFilterValue").toString();
+    if (!pendingFilterValue.isEmpty()) {
+        selectedValue = pendingFilterValue;
+    }
     if (selectedValue.isEmpty()) {
         selectedValue = QString(kAllSpeakersFilterValue);
     }
@@ -1260,6 +1306,9 @@ void TranscriptTab::refreshSpeakerFilter(const QVector<TranscriptRow>& rows)
 
     const int index = m_widgets.transcriptSpeakerFilterCombo->findData(selectedValue);
     m_widgets.transcriptSpeakerFilterCombo->setCurrentIndex(index >= 0 ? index : 0);
+    if (!pendingFilterValue.isEmpty()) {
+        m_widgets.transcriptSpeakerFilterCombo->setProperty("pendingSpeakerFilterValue", QVariant());
+    }
 }
 
 QString TranscriptTab::activeSpeakerFilter() const
@@ -1334,16 +1383,25 @@ void TranscriptTab::refreshScriptVersionSelector(const QString& clipFilePath, co
         return;
     }
 
+    QString resolvedSelectedPath = selectedPath;
+    const QString pendingCutPath = m_widgets.transcriptScriptVersionCombo->property("pendingCutPath").toString();
+    if (!pendingCutPath.isEmpty()) {
+        resolvedSelectedPath = pendingCutPath;
+    }
+
     const QStringList versionPaths = scriptVersionPathsForClip(clipFilePath);
     for (const QString& path : versionPaths) {
         m_widgets.transcriptScriptVersionCombo->addItem(scriptVersionLabelForPath(path, clipFilePath), path);
     }
 
-    int selectedIndex = m_widgets.transcriptScriptVersionCombo->findData(selectedPath);
+    int selectedIndex = m_widgets.transcriptScriptVersionCombo->findData(resolvedSelectedPath);
     if (selectedIndex < 0) {
         selectedIndex = 0;
     }
     m_widgets.transcriptScriptVersionCombo->setCurrentIndex(selectedIndex);
+    if (!pendingCutPath.isEmpty()) {
+        m_widgets.transcriptScriptVersionCombo->setProperty("pendingCutPath", QVariant());
+    }
 
     if (m_widgets.transcriptNewVersionButton) {
         m_widgets.transcriptNewVersionButton->setEnabled(!versionPaths.isEmpty());
@@ -1418,6 +1476,24 @@ QString TranscriptTab::scriptVersionLabelForPath(const QString& path, const QStr
     if (path == originalPath) {
         return QStringLiteral("Original (Immutable)");
     }
+
+    // Check for a custom label stored in the transcript JSON
+    QFile file(path);
+    if (file.open(QIODevice::ReadOnly)) {
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+        file.close();
+        if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+            const QJsonObject root = doc.object();
+            if (root.contains(QStringLiteral("cut_label"))) {
+                const QString customLabel = root.value(QStringLiteral("cut_label")).toString();
+                if (!customLabel.isEmpty()) {
+                    return customLabel;
+                }
+            }
+        }
+    }
+
     const QString base = defaultEditablePathForClip(clipFilePath);
     if (path == base) {
         return QStringLiteral("Cut 1");
@@ -1755,6 +1831,46 @@ void TranscriptTab::onTranscriptCreateVersion()
     }
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
+    }
+}
+
+void TranscriptTab::onTranscriptCutLabelEdited()
+{
+    if (!m_widgets.transcriptScriptVersionCombo || m_loadedClipFilePath.isEmpty()) {
+        return;
+    }
+    const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
+    if (selectedPath.isEmpty()) {
+        return;
+    }
+    const QString newLabel = m_widgets.transcriptScriptVersionCombo->currentText().trimmed();
+    if (newLabel.isEmpty()) {
+        // Revert to auto-generated label
+        m_widgets.transcriptScriptVersionCombo->setItemText(
+            m_widgets.transcriptScriptVersionCombo->currentIndex(),
+            scriptVersionLabelForPath(selectedPath, m_loadedClipFilePath));
+        return;
+    }
+
+    // Persist the custom label into the transcript JSON's root as "cut_label"
+    QFile file(selectedPath);
+    if (file.open(QIODevice::ReadOnly)) {
+        QJsonParseError parseError;
+        QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+        file.close();
+        if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+            QJsonObject root = doc.object();
+            root[QStringLiteral("cut_label")] = newLabel;
+            m_transcriptEngine.saveTranscriptJson(selectedPath, QJsonDocument(root));
+        }
+    }
+
+    // Update the combo item text immediately
+    m_widgets.transcriptScriptVersionCombo->setItemText(
+        m_widgets.transcriptScriptVersionCombo->currentIndex(), newLabel);
+
+    if (m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
     }
 }
 

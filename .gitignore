@@ -3,6 +3,7 @@ build-asan
 *.o
 perf.*
 CMakeFiles
+*/CMakeCache.txt
 editor_autogen
 generated
 tests

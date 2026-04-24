@@ -499,6 +499,30 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;
+    root[QStringLiteral("transcriptUnifiedEditColors")] =
+        m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()
+            ? m_inspectorPane->transcriptUnifiedEditModeCheckBox()->isChecked()
+            : true;
+    root[QStringLiteral("transcriptShowExcludedLines")] =
+        m_inspectorPane && m_inspectorPane->transcriptShowExcludedLinesCheckBox()
+            ? m_inspectorPane->transcriptShowExcludedLinesCheckBox()->isChecked()
+            : false;
+    root[QStringLiteral("transcriptSpeakerFilterValue")] =
+        m_inspectorPane && m_inspectorPane->transcriptSpeakerFilterCombo()
+            ? m_inspectorPane->transcriptSpeakerFilterCombo()->currentData().toString()
+            : QString();
+    root[QStringLiteral("transcriptActiveCutPath")] =
+        m_inspectorPane && m_inspectorPane->transcriptScriptVersionCombo()
+            ? m_inspectorPane->transcriptScriptVersionCombo()->currentData().toString()
+            : QString();
+    QJsonArray transcriptColumnHidden;
+    if (m_transcriptTable) {
+        transcriptColumnHidden = QJsonArray();
+        for (int i = 0; i < m_transcriptTable->columnCount(); ++i) {
+            transcriptColumnHidden.push_back(m_transcriptTable->isColumnHidden(i));
+        }
+    }
+    root[QStringLiteral("transcriptColumnHidden")] = transcriptColumnHidden;
     root[QStringLiteral("transcriptFollowCurrentWord")] =
         m_transcriptFollowCurrentWordCheckBox
             ? m_transcriptFollowCurrentWordCheckBox->isChecked()

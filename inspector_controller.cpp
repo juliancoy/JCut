@@ -123,7 +123,8 @@ void refreshTranscriptInspector()
 
         if (!clip || clip->mediaType != ClipMediaType::Audio)
         {
-            m_transcriptInspectorClipLabel->setText(QStringLiteral("No transcript selected"));
+            m_transcriptInspectorClipLabel->setText(QString());
+            m_transcriptInspectorClipLabel->setPlaceholderText(QStringLiteral("No transcript selected"));
             m_transcriptInspectorDetailsLabel->setText(QStringLiteral("Select an audio clip with a WhisperX JSON transcript."));
             m_updatingTranscriptInspector = false;
             return;

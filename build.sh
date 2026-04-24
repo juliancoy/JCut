@@ -13,6 +13,7 @@ FFMPEG_VERSION_FILE="${FFMPEG_INSTALL_DIR}/.build-version"
 ASAN="OFF"
 FFMPEG_PROFILE="safe"
 BUILD_TARGET="editor"
+RUN_EDITOR="no"
 
 ensure_ffmpeg_installed() {
     local codec_pc="${FFMPEG_PKGCONFIG_DIR}/libavcodec.pc"
@@ -119,9 +120,12 @@ for arg in "$@"; do
         --with-tests)
             BUILD_TARGET="all"
             ;;
+        --run)
+            RUN_EDITOR="yes"
+            ;;
         *)
             echo "Unknown argument: $arg" >&2
-            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia] [--with-tests]" >&2
+            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia] [--with-tests] [--run]" >&2
             exit 1
             ;;
     esac
@@ -161,4 +165,14 @@ if [[ "${BUILD_TARGET}" == "all" ]]; then
     cmake --build "${BUILD_DIR}" -j
 else
     cmake --build "${BUILD_DIR}" --target editor -j
+fi
+
+# Fix for snap library conflicts (snap's libpthread is incompatible with system glibc)
+# Preload system libpthread to avoid snap version being picked up
+export LD_PRELOAD="/lib/x86_64-linux-gnu/libpthread.so.0"
+
+if [[ "${RUN_EDITOR}" == "yes" ]]; then
+    # Filter out --run from args passed to editor
+    shift  # Remove --run from "$@"
+    exec "${BUILD_DIR}/editor" "$@"
 fi

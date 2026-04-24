@@ -839,12 +839,78 @@ QWidget *InspectorPane::buildTranscriptTab()
     auto *settingsContainer = new QWidget(splitter);
     auto *settingsLayout = new QVBoxLayout(settingsContainer);
     settingsLayout->setContentsMargins(8, 8, 8, 8);
+    settingsLayout->setSpacing(6);
 
-    m_transcriptInspectorClipLabel = new QLabel(QStringLiteral("No transcript selected"), settingsContainer);
+    // --- Prominent, editable cut title ---
+    m_transcriptInspectorClipLabel = new QLineEdit(settingsContainer);
+    m_transcriptInspectorClipLabel->setPlaceholderText(QStringLiteral("No transcript selected"));
+    m_transcriptInspectorClipLabel->setStyleSheet(
+        QStringLiteral("QLineEdit {"
+                       "  font-size: 16px;"
+                       "  font-weight: 700;"
+                       "  padding: 6px 8px;"
+                       "  border: 1px solid #3a4a5a;"
+                       "  border-radius: 4px;"
+                       "  background: #1e2a36;"
+                       "  color: #e0e8f0;"
+                       "}"
+                       "QLineEdit:focus {"
+                       "  border-color: #5a8ab5;"
+                       "  background: #243240;"
+                       "}"));
+    m_transcriptInspectorClipLabel->setToolTip(
+        QStringLiteral("Edit the clip label for this transcript cut. Changes are saved automatically."));
+
     m_transcriptInspectorDetailsLabel = new QLabel(QStringLiteral("Select a clip with a WhisperX JSON transcript."), settingsContainer);
     m_transcriptInspectorDetailsLabel->setWordWrap(true);
+    m_transcriptInspectorDetailsLabel->setStyleSheet(
+        QStringLiteral("font-size: 11px; color: #8fa3b8; padding: 0 4px 4px 4px;"));
+
+    // --- Cut version controls (prominent, right below title) ---
+    auto *cutHeaderLayout = new QHBoxLayout;
+    cutHeaderLayout->setContentsMargins(0, 0, 0, 0);
+    auto *cutLabel = new QLabel(QStringLiteral("Cut Version:"), settingsContainer);
+    cutLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #b0c4d8;"));
+    m_transcriptScriptVersionCombo = new QComboBox(settingsContainer);
+    m_transcriptScriptVersionCombo->setEditable(true);
+    m_transcriptScriptVersionCombo->setInsertPolicy(QComboBox::NoInsert);
+    m_transcriptScriptVersionCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_transcriptScriptVersionCombo->lineEdit()->setPlaceholderText(QStringLiteral("Cut version name"));
+    m_transcriptScriptVersionCombo->lineEdit()->setStyleSheet(
+        QStringLiteral("QLineEdit {"
+                       "  padding: 4px 6px;"
+                       "  background: #151b22;"
+                       "  border: 1px solid #30363d;"
+                       "  color: #c9d1d9;"
+                       "  border-radius: 4px;"
+                       "}"));
+    cutHeaderLayout->addWidget(cutLabel);
+    cutHeaderLayout->addWidget(m_transcriptScriptVersionCombo, 1);
+
+    auto *versionButtonsLayout = new QHBoxLayout;
+    versionButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    versionButtonsLayout->setSpacing(4);
+    m_transcriptNewVersionButton = new QPushButton(QStringLiteral("+ New Cut"), settingsContainer);
+    m_transcriptNewVersionButton->setStyleSheet(
+        QStringLiteral("QPushButton { padding: 4px 12px; font-weight: 600; }"));
+    m_transcriptDeleteVersionButton = new QPushButton(QStringLiteral("Delete"), settingsContainer);
+    m_transcriptDeleteVersionButton->setStyleSheet(
+        QStringLiteral("QPushButton { padding: 4px 12px; color: #d47a7a; }"));
+    versionButtonsLayout->addWidget(m_transcriptNewVersionButton);
+    versionButtonsLayout->addWidget(m_transcriptDeleteVersionButton);
+
+    // --- Separator ---
+    auto *separator = new QFrame(settingsContainer);
+    separator->setFrameShape(QFrame::HLine);
+    separator->setFrameShadow(QFrame::Sunken);
+    separator->setStyleSheet(QStringLiteral("color: #2a3a4a;"));
+
+    // --- Overlay settings section ---
+    auto *overlaySectionLabel = new QLabel(QStringLiteral("Overlay Settings"), settingsContainer);
+    overlaySectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; font-size: 12px; padding-top: 4px;"));
 
     auto *form = new QFormLayout;
+    form->setSpacing(4);
     m_transcriptOverlayEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Overlay"), settingsContainer);
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
@@ -865,10 +931,6 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptSpeakerFilterCombo->addItem(QStringLiteral("All Speakers"));
     m_transcriptSpeakerFilterCombo->setToolTip(
         QStringLiteral("Filter transcript rows by speaker label from the transcript JSON."));
-    m_transcriptScriptVersionCombo = new QComboBox(settingsContainer);
-    m_transcriptScriptVersionCombo->addItem(QStringLiteral("Default"));
-    m_transcriptNewVersionButton = new QPushButton(QStringLiteral("Copy Cut"), settingsContainer);
-    m_transcriptDeleteVersionButton = new QPushButton(QStringLiteral("Delete Cut"), settingsContainer);
     m_transcriptShowExcludedLinesCheckBox =
         new QCheckBox(QStringLiteral("Show Lines Not In Active Cut"), settingsContainer);
 
@@ -894,34 +956,31 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Italic"), m_transcriptItalicCheckBox);
     form->addRow(QStringLiteral("Edit Colors"), m_transcriptUnifiedEditModeCheckBox);
     form->addRow(QStringLiteral("Speaker"), m_transcriptSpeakerFilterCombo);
-    form->addRow(QStringLiteral("Cut"), m_transcriptScriptVersionCombo);
-    auto *versionButtonsLayout = new QHBoxLayout;
-    versionButtonsLayout->addWidget(m_transcriptNewVersionButton);
-    versionButtonsLayout->addWidget(m_transcriptDeleteVersionButton);
-    form->addRow(QStringLiteral("Cut Actions"), versionButtonsLayout);
     form->addRow(QStringLiteral("Visibility"), m_transcriptShowExcludedLinesCheckBox);
 
+    // --- Speech filter section ---
     auto *speechSectionLabel = new QLabel(QStringLiteral("Speech Filter"), settingsContainer);
-    speechSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
+    speechSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; font-size: 12px; padding-top: 4px;"));
 
     auto *speechForm = new QFormLayout;
+    speechForm->setSpacing(4);
     m_speechFilterEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Speech Filter"), settingsContainer);
     m_transcriptPrependMsSpin = new QSpinBox(settingsContainer);
     m_transcriptPostpendMsSpin = new QSpinBox(settingsContainer);
     m_speechFilterFadeSamplesSpin = new QSpinBox(settingsContainer);
 
     m_transcriptPrependMsSpin->setRange(0, 10000);
-    m_transcriptPrependMsSpin->setValue(0);
+    m_transcriptPrependMsSpin->setValue(150);
     m_transcriptPrependMsSpin->setSuffix(QStringLiteral(" ms"));
     m_transcriptPrependMsSpin->setToolTip(QStringLiteral("Milliseconds to add before each word"));
 
     m_transcriptPostpendMsSpin->setRange(0, 10000);
-    m_transcriptPostpendMsSpin->setValue(0);
+    m_transcriptPostpendMsSpin->setValue(70);
     m_transcriptPostpendMsSpin->setSuffix(QStringLiteral(" ms"));
     m_transcriptPostpendMsSpin->setToolTip(QStringLiteral("Milliseconds to add after each word"));
 
     m_speechFilterFadeSamplesSpin->setRange(0, 5000);
-    m_speechFilterFadeSamplesSpin->setValue(250);
+    m_speechFilterFadeSamplesSpin->setValue(300);
     m_speechFilterFadeSamplesSpin->setSuffix(QStringLiteral(" samples"));
     m_speechFilterFadeSamplesSpin->setToolTip(QStringLiteral("Crossfade duration at speech boundaries (0 = no fade)"));
 
@@ -930,6 +989,24 @@ QWidget *InspectorPane::buildTranscriptTab()
     speechForm->addRow(QStringLiteral("Postpend Time"), m_transcriptPostpendMsSpin);
     speechForm->addRow(QStringLiteral("Fade Length"), m_speechFilterFadeSamplesSpin);
 
+    // --- Assemble settings layout ---
+    settingsLayout->addWidget(m_transcriptInspectorClipLabel);
+    settingsLayout->addWidget(m_transcriptInspectorDetailsLabel);
+    settingsLayout->addLayout(cutHeaderLayout);
+    settingsLayout->addLayout(versionButtonsLayout);
+    settingsLayout->addWidget(separator);
+    settingsLayout->addWidget(overlaySectionLabel);
+    settingsLayout->addLayout(form);
+    settingsLayout->addWidget(speechSectionLabel);
+    settingsLayout->addLayout(speechForm);
+    settingsLayout->addStretch(1);
+
+    auto *settingsScroll = new QScrollArea(page);
+    settingsScroll->setWidgetResizable(true);
+    settingsScroll->setFrameShape(QFrame::NoFrame);
+    settingsScroll->setWidget(settingsContainer);
+
+    // --- Transcript table ---
     m_transcriptTable = new QTableWidget(splitter);
     m_transcriptTable->setColumnCount(7);
     m_transcriptTable->setHorizontalHeaderLabels(
@@ -953,18 +1030,6 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-
-    settingsLayout->addWidget(m_transcriptInspectorClipLabel);
-    settingsLayout->addWidget(m_transcriptInspectorDetailsLabel);
-    settingsLayout->addLayout(form);
-    settingsLayout->addWidget(speechSectionLabel);
-    settingsLayout->addLayout(speechForm);
-    settingsLayout->addStretch(1);
-
-    auto *settingsScroll = new QScrollArea(page);
-    settingsScroll->setWidgetResizable(true);
-    settingsScroll->setFrameShape(QFrame::NoFrame);
-    settingsScroll->setWidget(settingsContainer);
 
     splitter->addWidget(settingsScroll);
     splitter->addWidget(m_transcriptTable);

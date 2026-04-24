@@ -3,6 +3,7 @@
 #include <QObject>
 #include <QTableWidget>
 #include <QLabel>
+#include <QLineEdit>
 #include <QCheckBox>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
@@ -11,6 +12,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QComboBox>
+#include <QLineEdit>
 #include <QPushButton>
 #include <functional>
 
@@ -24,7 +26,7 @@ class TranscriptTab : public QObject
 public:
     struct Widgets
     {
-        QLabel* transcriptInspectorClipLabel = nullptr;
+        QLineEdit* transcriptInspectorClipLabel = nullptr;
         QLabel* transcriptInspectorDetailsLabel = nullptr;
         QTableWidget* transcriptTable = nullptr;
         QCheckBox* transcriptOverlayEnabledCheckBox = nullptr;
@@ -100,6 +102,7 @@ private slots:
     void onSpeechFilterEnabledToggled(bool enabled);
     void onSpeechFilterFadeSamplesChanged(int value);
     void onTranscriptScriptVersionChanged(int index);
+    void onTranscriptCutLabelEdited();
     void onTranscriptCreateVersion();
     void onTranscriptDeleteVersion();
     void onSpeakersTableItemChanged(QTableWidgetItem* item);
@@ -174,9 +177,9 @@ private:
     QString m_loadedTranscriptPath;
     QString m_loadedClipFilePath;
     QJsonDocument m_loadedTranscriptDoc;
-    int m_transcriptPrependMs = 0;
-    int m_transcriptPostpendMs = 0;
-    int m_speechFilterFadeSamples = 250;
+    int m_transcriptPrependMs = 150;
+    int m_transcriptPostpendMs = 70;
+    int m_speechFilterFadeSamples = 300;
     bool m_speechFilterEnabled = false;
     QTimer m_deferredSeekTimer;
     int64_t m_pendingSeekTimelineFrame = -1;

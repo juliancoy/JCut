@@ -311,9 +311,19 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("debugDeterministicPipeline"))
             .toBool(editor::debugDeterministicPipelineEnabled());
     const bool speechFilterEnabled = root.value(QStringLiteral("speechFilterEnabled")).toBool(false);
-    const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(0);
-    const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(0);
-    const int speechFilterFadeSamples = root.value(QStringLiteral("speechFilterFadeSamples")).toInt(250);
+    const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(150);
+    const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(70);
+    const int speechFilterFadeSamples = root.value(QStringLiteral("speechFilterFadeSamples")).toInt(300);
+    const bool transcriptUnifiedEditColors =
+        root.value(QStringLiteral("transcriptUnifiedEditColors")).toBool(true);
+    const bool transcriptShowExcludedLines =
+        root.value(QStringLiteral("transcriptShowExcludedLines")).toBool(false);
+    const QString transcriptSpeakerFilterValue =
+        root.value(QStringLiteral("transcriptSpeakerFilterValue")).toString();
+    const QString transcriptActiveCutPath =
+        root.value(QStringLiteral("transcriptActiveCutPath")).toString();
+    const QJsonArray transcriptColumnHidden =
+        root.value(QStringLiteral("transcriptColumnHidden")).toArray();
     const bool transcriptFollowCurrentWord = root.value(QStringLiteral("transcriptFollowCurrentWord")).toBool(true);
     const bool correctionsEnabled = root.value(QStringLiteral("correctionsEnabled")).toBool(true);
     const bool gradingFollowCurrent = root.value(QStringLiteral("gradingFollowCurrent")).toBool(true);
@@ -642,6 +652,32 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_transcriptPrependMsSpin) { QSignalBlocker block(m_transcriptPrependMsSpin); m_transcriptPrependMsSpin->setValue(m_transcriptPrependMs); }
     if (m_transcriptPostpendMsSpin) { QSignalBlocker block(m_transcriptPostpendMsSpin); m_transcriptPostpendMsSpin->setValue(m_transcriptPostpendMs); }
     if (m_speechFilterFadeSamplesSpin) { QSignalBlocker block(m_speechFilterFadeSamplesSpin); m_speechFilterFadeSamplesSpin->setValue(m_speechFilterFadeSamples); }
+    if (m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()) {
+        QSignalBlocker block(m_inspectorPane->transcriptUnifiedEditModeCheckBox());
+        m_inspectorPane->transcriptUnifiedEditModeCheckBox()->setChecked(transcriptUnifiedEditColors);
+    }
+    if (m_inspectorPane && m_inspectorPane->transcriptShowExcludedLinesCheckBox()) {
+        QSignalBlocker block(m_inspectorPane->transcriptShowExcludedLinesCheckBox());
+        m_inspectorPane->transcriptShowExcludedLinesCheckBox()->setChecked(transcriptShowExcludedLines);
+    }
+    if (m_inspectorPane && m_inspectorPane->transcriptSpeakerFilterCombo()) {
+        m_inspectorPane->transcriptSpeakerFilterCombo()->setProperty(
+            "pendingSpeakerFilterValue", transcriptSpeakerFilterValue);
+    }
+    if (m_inspectorPane && m_inspectorPane->transcriptScriptVersionCombo()) {
+        m_inspectorPane->transcriptScriptVersionCombo()->setProperty(
+            "pendingCutPath", transcriptActiveCutPath);
+    }
+    if (m_transcriptTable && !transcriptColumnHidden.isEmpty()) {
+        const int limit = qMin(m_transcriptTable->columnCount(), transcriptColumnHidden.size());
+        for (int i = 0; i < limit; ++i) {
+            if (i == 5) { // Text column must always be visible
+                m_transcriptTable->setColumnHidden(i, false);
+                continue;
+            }
+            m_transcriptTable->setColumnHidden(i, transcriptColumnHidden.at(i).toBool(false));
+        }
+    }
     
     if (m_transcriptFollowCurrentWordCheckBox) { QSignalBlocker block(m_transcriptFollowCurrentWordCheckBox); m_transcriptFollowCurrentWordCheckBox->setChecked(transcriptFollowCurrentWord); }
     if (m_gradingFollowCurrentCheckBox) { QSignalBlocker block(m_gradingFollowCurrentCheckBox); m_gradingFollowCurrentCheckBox->setChecked(gradingFollowCurrent); }
