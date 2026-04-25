@@ -102,6 +102,12 @@ public:
     QPushButton *speakerRunAutoTrackButton() const { return m_speakerRunAutoTrackButton; }
     QPushButton *speakerGuideButton() const { return m_speakerGuideButton; }
     QLabel *speakerTrackingStatusLabel() const { return m_speakerTrackingStatusLabel; }
+    QDoubleSpinBox *speakerFramingTargetXSpin() const { return m_speakerFramingTargetXSpin; }
+    QDoubleSpinBox *speakerFramingTargetYSpin() const { return m_speakerFramingTargetYSpin; }
+    QDoubleSpinBox *speakerFramingTargetBoxSpin() const { return m_speakerFramingTargetBoxSpin; }
+    QCheckBox *speakerFramingZoomEnabledCheckBox() const { return m_speakerFramingZoomEnabledCheckBox; }
+    QCheckBox *speakerApplyFramingToClipCheckBox() const { return m_speakerApplyFramingToClipCheckBox; }
+    QLabel *speakerClipFramingStatusLabel() const { return m_speakerClipFramingStatusLabel; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -475,6 +481,12 @@ private:
     QPushButton *m_speakerRunAutoTrackButton = nullptr;
     QPushButton *m_speakerGuideButton = nullptr;
     QLabel *m_speakerTrackingStatusLabel = nullptr;
+    QDoubleSpinBox *m_speakerFramingTargetXSpin = nullptr;
+    QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;
+    QDoubleSpinBox *m_speakerFramingTargetBoxSpin = nullptr;
+    QCheckBox *m_speakerFramingZoomEnabledCheckBox = nullptr;
+    QCheckBox *m_speakerApplyFramingToClipCheckBox = nullptr;
+    QLabel *m_speakerClipFramingStatusLabel = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;

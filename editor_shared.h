@@ -164,8 +164,14 @@ struct TimelineClip {
     qreal baseRotation = 0.0;
     qreal baseScaleX = 1.0;
     qreal baseScaleY = 1.0;
+    bool speakerFramingEnabled = false;
+    qreal speakerFramingTargetXNorm = 0.5;
+    qreal speakerFramingTargetYNorm = 0.35;
+    qreal speakerFramingTargetBoxNorm = -1.0;
+    qreal speakerFramingMinConfidence = 0.08;
     bool transformSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;
+    QVector<TransformKeyframe> speakerFramingKeyframes;
     QVector<GradingKeyframe> gradingKeyframes;
     QVector<OpacityKeyframe> opacityKeyframes;
     QVector<TitleKeyframe> titleKeyframes;
@@ -329,6 +335,13 @@ void normalizeClipTitleKeyframes(TimelineClip& clip);
 TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::TransformKeyframe& base,
+                                                      const TimelineClip::TransformKeyframe& overlay);
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame);
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
+                                                                      qreal timelineFramePosition);
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
 qreal evaluateClipOpacityAtFrame(const TimelineClip& clip, int64_t timelineFrame);

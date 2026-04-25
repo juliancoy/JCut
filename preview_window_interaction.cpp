@@ -438,7 +438,7 @@ TimelineClip::TransformKeyframe PreviewWindow::evaluateTransformForSelectedClip(
                 kf.translationY = title.y;
                 return kf;
             }
-            return evaluateClipTransformAtPosition(clip, m_currentFramePosition);
+            return evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition);
         }
     }
     return TimelineClip::TransformKeyframe();

@@ -1297,6 +1297,48 @@ QWidget *InspectorPane::buildSpeakersTab()
     selectedActionsRow->addWidget(m_selectedSpeakerNextSentenceButton);
     selectedActionsRow->addWidget(m_selectedSpeakerRandomSentenceButton);
 
+    auto *targetTitle = new QLabel(QStringLiteral("Ideal Face Target (Yellow Box)"), page);
+    targetTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
+    m_speakerFramingZoomEnabledCheckBox =
+        new QCheckBox(QStringLiteral("Enable Ideal Face Box Zoom"), page);
+    m_speakerFramingTargetXSpin = new QDoubleSpinBox(page);
+    m_speakerFramingTargetXSpin->setDecimals(3);
+    m_speakerFramingTargetXSpin->setRange(0.0, 1.0);
+    m_speakerFramingTargetXSpin->setSingleStep(0.01);
+    m_speakerFramingTargetXSpin->setValue(0.5);
+    m_speakerFramingTargetXSpin->setToolTip(
+        QStringLiteral("Target horizontal face position in output space (0.0 left, 1.0 right)."));
+    m_speakerFramingTargetYSpin = new QDoubleSpinBox(page);
+    m_speakerFramingTargetYSpin->setDecimals(3);
+    m_speakerFramingTargetYSpin->setRange(0.0, 1.0);
+    m_speakerFramingTargetYSpin->setSingleStep(0.01);
+    m_speakerFramingTargetYSpin->setValue(0.35);
+    m_speakerFramingTargetYSpin->setToolTip(
+        QStringLiteral("Target vertical face position in output space (0.0 top, 1.0 bottom)."));
+    m_speakerFramingTargetBoxSpin = new QDoubleSpinBox(page);
+    m_speakerFramingTargetBoxSpin->setDecimals(3);
+    m_speakerFramingTargetBoxSpin->setRange(0.01, 1.0);
+    m_speakerFramingTargetBoxSpin->setSingleStep(0.01);
+    m_speakerFramingTargetBoxSpin->setValue(0.20);
+    m_speakerFramingTargetBoxSpin->setToolTip(
+        QStringLiteral("Ideal normalized face box side length used by Auto-Frame zoom."));
+    auto *targetForm = new QFormLayout;
+    targetForm->addRow(QStringLiteral("Yellow Box X"), m_speakerFramingTargetXSpin);
+    targetForm->addRow(QStringLiteral("Yellow Box Y"), m_speakerFramingTargetYSpin);
+    targetForm->addRow(QStringLiteral("Yellow Box Size"), m_speakerFramingTargetBoxSpin);
+    auto *targetHelpLabel = new QLabel(
+        QStringLiteral("Adjust X/Y/Size here to move and scale the yellow target box in Preview.\n"
+                       "Changes apply immediately to the target box and are used by Auto-Frame."),
+        page);
+    targetHelpLabel->setWordWrap(true);
+    targetHelpLabel->setStyleSheet(QStringLiteral("color: #9bb0c5; font-size: 11px;"));
+    m_speakerApplyFramingToClipCheckBox =
+        new QCheckBox(QStringLiteral("Apply Framing To Clip"), page);
+    m_speakerApplyFramingToClipCheckBox->setToolTip(
+        QStringLiteral("When enabled, generated speaker framing keyframes are applied to the whole clip."));
+    m_speakerClipFramingStatusLabel = new QLabel(QStringLiteral("Clip Framing: OFF | 0 keys"), page);
+    m_speakerClipFramingStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
+
     auto *currentSentenceTitle = new QLabel(QStringLiteral("Current Speaker Sentence"), page);
     currentSentenceTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     m_speakerCurrentSentenceLabel = new QLabel(QStringLiteral("Select a speaker to view sentence context."), page);
@@ -1317,6 +1359,12 @@ QWidget *InspectorPane::buildSpeakersTab()
     layout->addWidget(m_selectedSpeakerIdLabel);
     layout->addLayout(selectedImagesRow);
     layout->addLayout(selectedActionsRow);
+    layout->addWidget(targetTitle);
+    layout->addWidget(m_speakerFramingZoomEnabledCheckBox);
+    layout->addLayout(targetForm);
+    layout->addWidget(targetHelpLabel);
+    layout->addWidget(m_speakerApplyFramingToClipCheckBox);
+    layout->addWidget(m_speakerClipFramingStatusLabel);
     layout->addWidget(currentSentenceTitle);
     layout->addWidget(m_speakerCurrentSentenceLabel);
     layout->addWidget(m_speakerTrackingStatusLabel);

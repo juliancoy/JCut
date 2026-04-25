@@ -193,7 +193,13 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerClearReferencesButton(),
             m_inspectorPane->speakerRunAutoTrackButton(),
             m_inspectorPane->speakerGuideButton(),
-            m_inspectorPane->speakerTrackingStatusLabel()},
+            m_inspectorPane->speakerTrackingStatusLabel(),
+            m_inspectorPane->speakerFramingTargetXSpin(),
+            m_inspectorPane->speakerFramingTargetYSpin(),
+            m_inspectorPane->speakerFramingTargetBoxSpin(),
+            m_inspectorPane->speakerFramingZoomEnabledCheckBox(),
+            m_inspectorPane->speakerApplyFramingToClipCheckBox(),
+            m_inspectorPane->speakerClipFramingStatusLabel()},
         SpeakersTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { scheduleSaveState(); },
@@ -203,6 +209,12 @@ void EditorWindow::createSpeakersTab()
             [this](int64_t frame) { setCurrentFrame(frame); },
             [this]() -> QVector<RenderSyncMarker> {
                 return m_timeline ? m_timeline->renderSyncMarkers() : QVector<RenderSyncMarker>{};
+            },
+            [this](const QString& clipId, const std::function<void(TimelineClip&)>& updater) -> bool {
+                return m_timeline && m_timeline->updateClipById(clipId, updater);
+            },
+            [this]() -> QSize {
+                return m_preview ? m_preview->outputSize() : QSize(1080, 1920);
             }});
     m_speakersTab->wire();
 

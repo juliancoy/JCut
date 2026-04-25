@@ -12,6 +12,8 @@
 
 class QLabel;
 class QPushButton;
+class QDoubleSpinBox;
+class QCheckBox;
 
 class SpeakersTab : public TableTabBase {
     Q_OBJECT
@@ -36,10 +38,18 @@ public:
         QPushButton* speakerRunAutoTrackButton = nullptr;
         QPushButton* speakerGuideButton = nullptr;
         QLabel* speakerTrackingStatusLabel = nullptr;
+        QDoubleSpinBox* speakerFramingTargetXSpin = nullptr;
+        QDoubleSpinBox* speakerFramingTargetYSpin = nullptr;
+        QDoubleSpinBox* speakerFramingTargetBoxSpin = nullptr;
+        QCheckBox* speakerFramingZoomEnabledCheckBox = nullptr;
+        QCheckBox* speakerApplyFramingToClipCheckBox = nullptr;
+        QLabel* speakerClipFramingStatusLabel = nullptr;
     };
 
     struct Dependencies : public TableTabBase::Dependencies {
         std::function<QVector<RenderSyncMarker>()> getRenderSyncMarkers;
+        std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
+        std::function<QSize()> getOutputSize;
     };
 
     explicit SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -68,6 +78,9 @@ private slots:
     void onSpeakerClearReferencesClicked();
     void onSpeakerRunAutoTrackClicked();
     void onSpeakerGuideClicked();
+    void onSpeakerFramingTargetChanged();
+    void onSpeakerFramingZoomEnabledChanged(bool checked);
+    void onSpeakerApplyFramingToClipChanged(bool checked);
 
 private:
     enum class SentenceNavAction {
@@ -145,6 +158,9 @@ private:
     bool selectedSpeakerReferenceObject(int referenceIndex,
                                         QString* speakerIdOut,
                                         QJsonObject* refOut) const;
+    bool saveClipSpeakerFramingTargetsFromControls();
+    bool saveClipSpeakerFramingEnabledFromControls();
+    void updateSpeakerFramingTargetControls();
     bool adjustSelectedReferenceAvatarZoom(int referenceIndex, int wheelDelta);
     QPointF referenceNormPerPixelFromSourceFrame(const TimelineClip& clip,
                                                  const QJsonObject& refObj,
@@ -164,4 +180,7 @@ private:
     QJsonObject m_selectedAvatarDragRefObj;
     QPointF m_selectedAvatarDragNormPerPixel;
     QString m_lastSelectedSpeakerIdHint;
+    bool m_updatingSpeakerFramingTargetControls = false;
+    QString m_lastSelectionSeekSpeakerId;
+    QString m_lastSelectionSeekClipId;
 };

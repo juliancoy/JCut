@@ -156,6 +156,9 @@ private:
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
     void drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
+    void drawSpeakerFramingTargetOverlay(QPainter* painter,
+                                         const QList<TimelineClip>& activeClips,
+                                         const QRect& compositeRect);
     TranscriptOverlayLayout transcriptOverlayLayoutForClip(const TimelineClip& clip) const;
     QRectF transcriptOverlayRectForTarget(const TimelineClip& clip, const QRect& targetRect) const;
     QSizeF transcriptOverlaySizeForSelectedClip() const;

@@ -190,6 +190,86 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
     painter->restore();
 }
 
+void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
+                                                    const QList<TimelineClip>& activeClips,
+                                                    const QRect& compositeRect) {
+    if (!painter || !compositeRect.isValid() || activeClips.isEmpty()) {
+        return;
+    }
+
+    const TimelineClip* selectedClip = nullptr;
+    const QString selectedId = m_selectedClipId.trimmed();
+    if (!selectedId.isEmpty()) {
+        for (const TimelineClip& clip : activeClips) {
+            if (clip.id == selectedId) {
+                selectedClip = &clip;
+                break;
+            }
+        }
+    }
+    // Fallback: if selection is stale, still show target box for the first
+    // active clip that has a valid target box configured.
+    if (!selectedClip) {
+        for (const TimelineClip& clip : activeClips) {
+            if (qBound<qreal>(-1.0, clip.speakerFramingTargetBoxNorm, 1.0) > 0.0) {
+                selectedClip = &clip;
+                break;
+            }
+        }
+    }
+    if (!selectedClip) {
+        return;
+    }
+
+    const qreal targetXNorm = qBound<qreal>(0.0, selectedClip->speakerFramingTargetXNorm, 1.0);
+    const qreal targetYNorm = qBound<qreal>(0.0, selectedClip->speakerFramingTargetYNorm, 1.0);
+    const qreal targetBoxNorm = qBound<qreal>(-1.0, selectedClip->speakerFramingTargetBoxNorm, 1.0);
+    if (targetBoxNorm <= 0.0) {
+        return;
+    }
+
+    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(outputSize.width()));
+    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(outputSize.height()));
+    const qreal scaleX = static_cast<qreal>(compositeRect.width()) / outputWidth;
+    const qreal scaleY = static_cast<qreal>(compositeRect.height()) / outputHeight;
+    const qreal uniformScale = qMin(scaleX, scaleY);
+
+    const qreal centerX = compositeRect.left() + (targetXNorm * compositeRect.width());
+    const qreal centerY = compositeRect.top() + (targetYNorm * compositeRect.height());
+
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    const QColor accentColor(255, 226, 74, 235);
+    painter->setPen(QPen(accentColor, 2.0, Qt::DashLine));
+    painter->setBrush(QColor(255, 226, 74, 28));
+
+    const qreal targetSideOutputPx = targetBoxNorm * qMin(outputWidth, outputHeight);
+    const qreal targetSideScreenPx = targetSideOutputPx * uniformScale;
+    const qreal halfSide = targetSideScreenPx * 0.5;
+    const QRectF box(centerX - halfSide, centerY - halfSide, targetSideScreenPx, targetSideScreenPx);
+    painter->drawRect(box);
+
+    painter->setPen(QPen(accentColor, 1.8));
+    painter->drawLine(QPointF(centerX - 9.0, centerY), QPointF(centerX + 9.0, centerY));
+    painter->drawLine(QPointF(centerX, centerY - 9.0), QPointF(centerX, centerY + 9.0));
+
+    const QRectF badgeRect(centerX + 12.0, centerY - 40.0, 260.0, 34.0);
+    painter->setPen(Qt::NoPen);
+    painter->setBrush(QColor(17, 19, 22, 190));
+    painter->drawRoundedRect(badgeRect, 6.0, 6.0);
+    painter->setPen(QColor(255, 238, 153, 245));
+    painter->drawText(badgeRect.adjusted(8.0, 0.0, -8.0, 0.0),
+                      Qt::AlignLeft | Qt::AlignVCenter,
+                      QStringLiteral("Ideal Face Box  X:%1 Y:%2 S:%3")
+                          .arg(QString::number(targetXNorm, 'f', 2))
+                          .arg(QString::number(targetYNorm, 'f', 2))
+                          .arg(QString::number(targetBoxNorm, 'f', 2)));
+
+    painter->restore();
+}
+
 TranscriptOverlayLayout PreviewWindow::transcriptOverlayLayoutForClip(const TimelineClip& clip) const {
     if (!clipShowsTranscriptOverlay(clip)) return {};
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);

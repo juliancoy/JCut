@@ -221,7 +221,7 @@ PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect&
     const editor::GlTextureCacheEntry entry = m_textureCache.value(cacheKey);
 
     const QRect fitted = fitRect(frame.size(), targetRect);
-    const TimelineClip::TransformKeyframe transform = evaluateClipTransformAtPosition(clip, m_currentFramePosition);
+    const TimelineClip::TransformKeyframe transform = evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition);
     const QPointF previewScale = previewCanvasScale(targetRect);
     const QPointF center(fitted.center().x() + (transform.translationX * previewScale.x()),
                          fitted.center().y() + (transform.translationY * previewScale.y()));

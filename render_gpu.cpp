@@ -311,7 +311,7 @@ public:
                 // Render title texture with transformations
                 const QRect fitted = fitRect(m_outputSize, m_outputSize); // Title fills output
                 const TimelineClip::TransformKeyframe transform =
-                    evaluateClipTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+                    evaluateClipRenderTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
                 const QPointF center(fitted.center().x() + transform.translationX,
                                      fitted.center().y() + transform.translationY);
 
@@ -419,7 +419,7 @@ public:
 
             const QRect fitted = fitRect(frame.size(), m_outputSize);
             const TimelineClip::TransformKeyframe transform =
-                evaluateClipTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+                evaluateClipRenderTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
             const QPointF center(fitted.center().x() + transform.translationX,
                                  fitted.center().y() + transform.translationY);
 
@@ -857,7 +857,7 @@ QImage renderTimelineFrame(const RenderRequest& request,
         
         const QRect fitted = fitRect(graded.size(), request.outputSize);
         const TimelineClip::TransformKeyframe transform =
-            evaluateClipTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+            evaluateClipRenderTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
 
         QElapsedTimer compositeTimer;
         compositeTimer.start();
