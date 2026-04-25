@@ -120,6 +120,15 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/playback_controller\\.cpp$"
     ".*/professional_example\\.cpp$"
     ".*/test[0-9]*\\.cpp$"
+    # 3D model import/runtime sources depend on motive3d engine files that are not
+    # part of this repository build graph (eg. primitive/texture engine runtime).
+    # Exclude them from the editor target so standard builds remain reproducible.
+    ".*/animation\\.cpp$"
+    ".*/fbx_import\\.cpp$"
+    ".*/gltf_import\\.cpp$"
+    ".*/model\\.cpp$"
+    ".*/model_import_shared\\.cpp$"
+    ".*/model_runtime\\.cpp$"
 )
 
 set(EDITOR_APP_SOURCES "${EDITOR_ALL_CPP}")
@@ -195,6 +204,9 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache_requests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache_seek_resync.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/clip_serialization.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_engine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transform_skip_aware_timing.cpp
 )
 

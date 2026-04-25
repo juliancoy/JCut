@@ -505,6 +505,119 @@ QString renderSyncActionLabel(RenderSyncAction action) {
     }
 }
 
+QString playbackClockSourceToString(PlaybackClockSource source) {
+    switch (source) {
+    case PlaybackClockSource::Audio:
+        return QStringLiteral("audio");
+    case PlaybackClockSource::Timeline:
+        return QStringLiteral("timeline");
+    case PlaybackClockSource::Auto:
+    default:
+        return QStringLiteral("auto");
+    }
+}
+
+PlaybackClockSource playbackClockSourceFromString(const QString& value) {
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("audio")) {
+        return PlaybackClockSource::Audio;
+    }
+    if (normalized == QStringLiteral("timeline")) {
+        return PlaybackClockSource::Timeline;
+    }
+    return PlaybackClockSource::Auto;
+}
+
+QString playbackClockSourceLabel(PlaybackClockSource source) {
+    switch (source) {
+    case PlaybackClockSource::Audio:
+        return QStringLiteral("Audio Clock");
+    case PlaybackClockSource::Timeline:
+        return QStringLiteral("Timeline Clock");
+    case PlaybackClockSource::Auto:
+    default:
+        return QStringLiteral("Auto");
+    }
+}
+
+QString playbackAudioWarpModeToString(PlaybackAudioWarpMode mode) {
+    switch (mode) {
+    case PlaybackAudioWarpMode::Varispeed:
+        return QStringLiteral("varispeed");
+    case PlaybackAudioWarpMode::TimeStretch:
+        return QStringLiteral("time_stretch");
+    case PlaybackAudioWarpMode::Disabled:
+    default:
+        return QStringLiteral("disabled");
+    }
+}
+
+PlaybackAudioWarpMode playbackAudioWarpModeFromString(const QString& value) {
+    const QString normalized = value.trimmed().toLower();
+    if (normalized == QStringLiteral("varispeed")) {
+        return PlaybackAudioWarpMode::Varispeed;
+    }
+    if (normalized == QStringLiteral("time_stretch") || normalized == QStringLiteral("time-stretch")) {
+        return PlaybackAudioWarpMode::TimeStretch;
+    }
+    return PlaybackAudioWarpMode::Disabled;
+}
+
+QString playbackAudioWarpModeLabel(PlaybackAudioWarpMode mode) {
+    switch (mode) {
+    case PlaybackAudioWarpMode::Varispeed:
+        return QStringLiteral("Varispeed");
+    case PlaybackAudioWarpMode::TimeStretch:
+        return QStringLiteral("Time-Stretch");
+    case PlaybackAudioWarpMode::Disabled:
+    default:
+        return QStringLiteral("Disabled");
+    }
+}
+
+qreal normalizedPlaybackSpeed(qreal speed) {
+    return qBound<qreal>(0.1, speed, 3.0);
+}
+
+PlaybackAudioWarpMode normalizedPlaybackAudioWarpMode(qreal playbackSpeed, PlaybackAudioWarpMode mode) {
+    const bool speedIsUnity = qAbs(normalizedPlaybackSpeed(playbackSpeed) - 1.0) < 0.0001;
+    if (!speedIsUnity && mode == PlaybackAudioWarpMode::Disabled) {
+        // Non-unity preview without audio warping causes unstable/no-audio playback.
+        return PlaybackAudioWarpMode::Varispeed;
+    }
+    return mode;
+}
+
+qreal effectivePlaybackAudioWarpRate(qreal playbackSpeed, PlaybackAudioWarpMode mode) {
+    const PlaybackAudioWarpMode effectiveMode =
+        normalizedPlaybackAudioWarpMode(playbackSpeed, mode);
+    if (effectiveMode == PlaybackAudioWarpMode::Disabled) {
+        return 1.0;
+    }
+    return normalizedPlaybackSpeed(playbackSpeed);
+}
+
+bool shouldUseAudioMasterClock(PlaybackClockSource source,
+                               PlaybackAudioWarpMode mode,
+                               qreal playbackSpeed,
+                               bool hasPlayableAudio) {
+    if (!hasPlayableAudio) {
+        return false;
+    }
+    const PlaybackAudioWarpMode effectiveMode =
+        normalizedPlaybackAudioWarpMode(playbackSpeed, mode);
+    const bool speedIsUnity = qAbs(normalizedPlaybackSpeed(playbackSpeed) - 1.0) < 0.0001;
+    switch (source) {
+    case PlaybackClockSource::Audio:
+        return speedIsUnity || effectiveMode != PlaybackAudioWarpMode::Disabled;
+    case PlaybackClockSource::Timeline:
+        return false;
+    case PlaybackClockSource::Auto:
+    default:
+        return speedIsUnity || effectiveMode != PlaybackAudioWarpMode::Disabled;
+    }
+}
+
 bool clipHasVisuals(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Image ||
            clip.mediaType == ClipMediaType::Video ||

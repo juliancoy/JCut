@@ -6,6 +6,8 @@ CMakeFiles
 */CMakeCache.txt
 editor_autogen
 generated
-tests
 ffmpeg-*
 nv-codec-headers
+.cache
+# Local secrets
+hftoken.txt

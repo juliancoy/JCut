@@ -13,6 +13,7 @@
 #include <QVBoxLayout>
 #include <QLabel>
 #include <QComboBox>
+#include <QSizePolicy>
 
 EditorPane::EditorPane(QWidget *parent)
     : QWidget(parent)
@@ -51,7 +52,7 @@ EditorPane::EditorPane(QWidget *parent)
     m_preview = new PreviewWindow;
     m_preview->setObjectName(QStringLiteral("preview.window"));
     m_preview->setFocusPolicy(Qt::StrongFocus);
-    m_preview->setMinimumSize(320, 180);
+    m_preview->setMinimumSize(160, 120);
     m_preview->setOutputSize(QSize(1080, 1920));
 
     auto *overlay = new QWidget;
@@ -111,6 +112,8 @@ void EditorPane::setupTransportControls()
         qWarning() << "Transport widget not found in TimelineContainer";
         return;
     }
+    transportWidget->setMinimumWidth(0);
+    transportWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     
     // Get the transport widget's layout
     QHBoxLayout *transportLayout = qobject_cast<QHBoxLayout*>(transportWidget->layout());
@@ -118,6 +121,8 @@ void EditorPane::setupTransportControls()
         qWarning() << "Transport layout not found";
         return;
     }
+    transportLayout->setSizeConstraint(QLayout::SetNoConstraint);
+    transportLayout->setSpacing(4);
     
     // Clear the placeholder stretch
     QLayoutItem *item;
@@ -127,6 +132,10 @@ void EditorPane::setupTransportControls()
 
     m_playButton = new QPushButton(style()->standardIcon(QStyle::SP_MediaPlay), QStringLiteral("Play"));
     m_playButton->setObjectName(QStringLiteral("transport.play"));
+    m_playButton->setMinimumWidth(0);
+    m_playButton->setMaximumWidth(38);
+    m_playButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    m_playButton->setToolTip(QStringLiteral("Play / Pause"));
 
     m_startButton = new QToolButton;
     m_endButton = new QToolButton;
@@ -142,12 +151,21 @@ void EditorPane::setupTransportControls()
     m_nextFrameButton->setText(QStringLiteral(">"));
     m_prevFrameButton->setToolTip(QStringLiteral("Step back 1 frame"));
     m_nextFrameButton->setToolTip(QStringLiteral("Step forward 1 frame"));
+    for (QToolButton* btn : {m_startButton, m_endButton, m_prevFrameButton, m_nextFrameButton}) {
+        btn->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        btn->setMinimumWidth(0);
+        btn->setMaximumWidth(30);
+        btn->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    }
 
     m_razorButton = new QToolButton;
     m_razorButton->setObjectName(QStringLiteral("transport.razor"));
-    m_razorButton->setText(QStringLiteral("Razor"));
+    m_razorButton->setText(QStringLiteral("R"));
     m_razorButton->setCheckable(true);
     m_razorButton->setToolTip(QStringLiteral("Razor tool (B) \u2014 click to split clips"));
+    m_razorButton->setMinimumWidth(0);
+    m_razorButton->setMaximumWidth(28);
+    m_razorButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
     m_razorButton->setStyleSheet(QStringLiteral(
         "QToolButton:checked { background: #3a4d63; border-color: #a0e0ff; color: #a0e0ff; }"));
 
@@ -157,7 +175,8 @@ void EditorPane::setupTransportControls()
 
     m_timecodeLabel = new QLabel;
     m_timecodeLabel->setObjectName(QStringLiteral("transport.timecode"));
-    m_timecodeLabel->setMinimumWidth(96);
+    m_timecodeLabel->setMinimumWidth(64);
+    m_timecodeLabel->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
 
     m_playbackSpeedCombo = new QComboBox;
     m_playbackSpeedCombo->setObjectName(QStringLiteral("transport.playback_speed"));
@@ -170,29 +189,41 @@ void EditorPane::setupTransportControls()
     m_playbackSpeedCombo->addItem(QStringLiteral("200%"), 2.0);
     m_playbackSpeedCombo->addItem(QStringLiteral("300%"), 3.0);
     m_playbackSpeedCombo->setCurrentIndex(4);
+    m_playbackSpeedCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_playbackSpeedCombo->setMinimumContentsLength(4);
+    m_playbackSpeedCombo->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Preferred);
     m_playbackSpeedCombo->setToolTip(
         QStringLiteral("Timeline playback speed. Audio clock remains authoritative when audio is active."));
 
     m_audioMuteButton = new QToolButton;
     m_audioMuteButton->setObjectName(QStringLiteral("transport.audio_mute"));
-    m_audioMuteButton->setText(QStringLiteral("Mute"));
+    m_audioMuteButton->setToolButtonStyle(Qt::ToolButtonIconOnly);
+    m_audioMuteButton->setIcon(style()->standardIcon(QStyle::SP_MediaVolume));
+    m_audioMuteButton->setToolTip(QStringLiteral("Mute / Unmute"));
+    m_audioMuteButton->setMinimumWidth(0);
+    m_audioMuteButton->setMaximumWidth(28);
+    m_audioMuteButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
 
     m_audioVolumeSlider = new QSlider(Qt::Horizontal);
     m_audioVolumeSlider->setObjectName(QStringLiteral("transport.audio_volume"));
     m_audioVolumeSlider->setRange(0, 100);
     m_audioVolumeSlider->setValue(80);
-    m_audioVolumeSlider->setFixedWidth(110);
+    m_audioVolumeSlider->setMinimumWidth(56);
+    m_audioVolumeSlider->setMaximumWidth(90);
+    m_audioVolumeSlider->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
     m_audioNowPlayingLabel = new QLabel(QStringLiteral("Audio idle"));
     m_audioNowPlayingLabel->setObjectName(QStringLiteral("transport.audio_status"));
-    m_audioNowPlayingLabel->setMinimumWidth(80);
+    m_audioNowPlayingLabel->setMinimumWidth(0);
+    m_audioNowPlayingLabel->setMaximumWidth(80);
+    m_audioNowPlayingLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     transportLayout->addWidget(m_startButton);
     transportLayout->addWidget(m_playButton);
     transportLayout->addWidget(m_prevFrameButton);
     transportLayout->addWidget(m_nextFrameButton);
     transportLayout->addWidget(m_endButton);
-    transportLayout->addSpacing(12);
+    transportLayout->addSpacing(4);
     transportLayout->addWidget(m_razorButton);
     transportLayout->addWidget(m_seekSlider, 1);
     transportLayout->addWidget(m_timecodeLabel);

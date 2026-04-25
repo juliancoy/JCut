@@ -1,0 +1,19 @@
+sequenceDiagram
+    participant TL as TimelineWidget
+    participant PV as PreviewWindow
+    participant TC as TimelineCache
+    participant AD as AsyncDecoder
+    participant AE as AudioEngine
+
+    TL->>PV: current frame / selection changes
+    PV->>TC: request frame(clipId, frame)
+    alt cache hit
+        TC-->>PV: FrameHandle
+    else cache miss
+        TC->>AD: schedule decode request
+        AD-->>TC: decoded FrameHandle
+        TC-->>PV: FrameHandle
+    end
+    PV->>PV: composite layers + overlays
+    TL->>AE: playback sample position
+    AE->>AE: mix tracks / apply speech filter

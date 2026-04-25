@@ -18,13 +18,14 @@
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMessageBox>
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSet>
 #include <cmath>
+#include <limits>
 
 namespace {
-constexpr qint64 kManualTranscriptSelectionHoldMs = 1200;
 const QLatin1String kTranscriptWordSkippedKey("skipped");
 const QLatin1String kTranscriptWordSpeakerKey("speaker");
 const QLatin1String kTranscriptSegmentSpeakerKey("speaker");
@@ -37,21 +38,14 @@ const QLatin1String kTranscriptEditInsertedTag("inserted");
 const QLatin1String kTranscriptWordRenderOrderKey("render_order");
 const QLatin1String kTranscriptWordOriginalSegmentKey("original_segment_index");
 const QLatin1String kTranscriptWordOriginalWordKey("original_word_index");
-const QLatin1String kTranscriptSpeakerProfilesKey("speaker_profiles");
-const QLatin1String kTranscriptSpeakerNameKey("name");
-const QLatin1String kTranscriptSpeakerLocationKey("location");
-const QLatin1String kTranscriptSpeakerLocationXKey("x");
-const QLatin1String kTranscriptSpeakerLocationYKey("y");
 const QLatin1String kAllSpeakersFilterValue("__all__");
 
 enum TranscriptTableColumn {
     kTranscriptColSourceStart = 0,
     kTranscriptColSourceEnd = 1,
-    kTranscriptColRenderStart = 2,
-    kTranscriptColRenderEnd = 3,
-    kTranscriptColSpeaker = 4,
-    kTranscriptColText = 5,
-    kTranscriptColEdits = 6
+    kTranscriptColSpeaker = 2,
+    kTranscriptColText = 3,
+    kTranscriptColEdits = 4
 };
 
 constexpr int kEditFlagNone = 0;
@@ -96,6 +90,16 @@ void transcriptAppendEditTag(QJsonObject* word, const QString& tag)
 
 bool clipSupportsTranscript(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
+}
+
+QString transcriptCutStateLabel(bool mutableCut)
+{
+    return mutableCut ? QStringLiteral("Editable Cut") : QStringLiteral("Original (Immutable)");
+}
+
+QString transcriptFollowStateLabel(bool enabled)
+{
+    return enabled ? QStringLiteral("Follow Playback: On") : QStringLiteral("Follow Playback: Off");
 }
 }
 
@@ -274,6 +278,9 @@ void TranscriptTab::wire()
     if (m_widgets.transcriptScriptVersionCombo) {
         connect(m_widgets.transcriptScriptVersionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &TranscriptTab::onTranscriptScriptVersionChanged);
+        m_widgets.transcriptScriptVersionCombo->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.transcriptScriptVersionCombo, &QWidget::customContextMenuRequested,
+                this, &TranscriptTab::onTranscriptScriptVersionContextMenu);
         // Wire up editable combo for renaming cut versions
         if (m_widgets.transcriptScriptVersionCombo->lineEdit()) {
             connect(m_widgets.transcriptScriptVersionCombo->lineEdit(), &QLineEdit::editingFinished,
@@ -288,10 +295,6 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptDeleteVersionButton, &QPushButton::clicked,
                 this, &TranscriptTab::onTranscriptDeleteVersion);
     }
-    if (m_widgets.speakersTable) {
-        connect(m_widgets.speakersTable, &QTableWidget::itemChanged,
-                this, &TranscriptTab::onSpeakersTableItemChanged);
-    }
 }
 
 void TranscriptTab::refresh()
@@ -303,6 +306,7 @@ void TranscriptTab::refresh()
     m_updating = true;
     m_manualSelectionTimer.invalidate();
 
+    const QString previousClipFilePath = m_loadedClipFilePath;
     if (m_widgets.transcriptTable) {
         m_widgets.transcriptTable->clearContents();
         m_widgets.transcriptTable->setRowCount(0);
@@ -310,8 +314,22 @@ void TranscriptTab::refresh()
     m_loadedTranscriptPath.clear();
     m_loadedClipFilePath.clear();
     m_loadedTranscriptDoc = QJsonDocument();
+    m_followRanges.clear();
+    if (m_widgets.transcriptPrependMsSpin) {
+        m_transcriptPrependMs = qMax(0, m_widgets.transcriptPrependMsSpin->value());
+    }
+    if (m_widgets.transcriptPostpendMsSpin) {
+        m_transcriptPostpendMs = qMax(0, m_widgets.transcriptPostpendMsSpin->value());
+    }
+    if (m_widgets.speechFilterFadeSamplesSpin) {
+        m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
+    }
+    if (m_widgets.speechFilterEnabledCheckBox) {
+        m_speechFilterEnabled = m_widgets.speechFilterEnabledCheckBox->isChecked();
+    }
 
     if (!clip || !clipSupportsTranscript(*clip)) {
+        clearActiveTranscriptPathForClipFile(previousClipFilePath);
         m_persistedSelectedClipId.clear();
         m_persistedSelectedSegmentIndex = -1;
         m_persistedSelectedWordIndex = -1;
@@ -321,19 +339,8 @@ void TranscriptTab::refresh()
         }
         if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(
-                QStringLiteral("Select an audio clip with a WhisperX JSON transcript."));
-        }
-        if (m_widgets.speakersInspectorClipLabel) {
-            m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("No transcript cut selected"));
-        }
-        if (m_widgets.speakersInspectorDetailsLabel) {
-            m_widgets.speakersInspectorDetailsLabel->setText(
-                QStringLiteral("Select a transcript cut to name speakers and set on-screen locations."));
-        }
-        if (m_widgets.speakersTable) {
-            m_widgets.speakersTable->clearContents();
-            m_widgets.speakersTable->setRowCount(0);
-            m_widgets.speakersTable->setEnabled(false);
+                QStringLiteral("Select an audio clip with a WhisperX JSON transcript.\n"
+                               "Workflow: 1) Select/Create Cut  2) Edit Transcript/Speakers  3) Preview  4) Render"));
         }
         refreshScriptVersionSelector(QString(), QString());
         m_updating = false;
@@ -368,8 +375,10 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
         clip.transcriptOverlay.maxCharsPerLine = m_widgets.transcriptMaxCharsSpin
             ? m_widgets.transcriptMaxCharsSpin->value()
             : 28;
-        clip.transcriptOverlay.autoScroll = m_widgets.transcriptAutoScrollCheckBox &&
-                                            m_widgets.transcriptAutoScrollCheckBox->isChecked();
+        if (m_widgets.transcriptAutoScrollCheckBox) {
+            clip.transcriptOverlay.autoScroll =
+                m_widgets.transcriptAutoScrollCheckBox->isChecked();
+        }
         clip.transcriptOverlay.translationX = m_widgets.transcriptOverlayXSpin
             ? m_widgets.transcriptOverlayXSpin->value()
             : 0.0;
@@ -402,22 +411,29 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
     if (pushHistory && m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
 
-void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t sourceFrame)
+void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double sourceSeconds)
 {
-    Q_UNUSED(absolutePlaybackSample);
     if (!m_widgets.transcriptTable || m_updating) return;
+    const double previousSourceSeconds = m_lastSyncSourceSeconds;
+    m_lastSyncSourceSeconds = sourceSeconds;
     if (!m_widgets.transcriptFollowCurrentWordCheckBox ||
         !m_widgets.transcriptFollowCurrentWordCheckBox->isChecked()) {
+        m_lastSyncAbsolutePlaybackSample = absolutePlaybackSample;
         return;
     }
-    
-    // Skip sync if table has focus (user is manually selecting a row)
-    QWidget* focus = QApplication::focusWidget();
-    if (focus && m_widgets.transcriptTable->isAncestorOf(focus)) {
+
+    const bool playbackAdvanced =
+        (m_lastSyncAbsolutePlaybackSample >= 0 &&
+         absolutePlaybackSample != m_lastSyncAbsolutePlaybackSample);
+    m_lastSyncAbsolutePlaybackSample = absolutePlaybackSample;
+
+    // Hold manual selection while paused, but resume follow immediately once
+    // playback advances so click-to-seek + play tracks words in time.
+    if (hasActiveManualSelection() && !playbackAdvanced) {
         return;
     }
-    if (hasActiveManualSelection()) {
-        return;
+    if (playbackAdvanced) {
+        m_manualSelectionTimer.invalidate();
     }
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -426,20 +442,101 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t 
         return;
     }
 
+    if (m_followRanges.isEmpty()) {
+        m_widgets.transcriptTable->clearSelection();
+        return;
+    }
+
     int matchingRow = -1;
-    for (int row = 0; row < m_widgets.transcriptTable->rowCount(); ++row) {
-        QTableWidgetItem* startItem = m_widgets.transcriptTable->item(row, 0);
-        if (!startItem) continue;
-        if (startItem->data(Qt::UserRole + 12).toBool()) continue;
-        const int64_t startFrame = startItem->data(Qt::UserRole + 2).toLongLong();
-        const int64_t endFrame = startItem->data(Qt::UserRole + 3).toLongLong();
-        if (sourceFrame >= startFrame && sourceFrame <= endFrame) {
-            matchingRow = row;
+    int previousEligibleRow = -1;
+    int nextEligibleRow = -1;
+    int nearestEligibleRow = -1;
+    double nearestDistance = std::numeric_limits<double>::max();
+
+    const auto upperIt = std::upper_bound(
+        m_followRanges.cbegin(), m_followRanges.cend(), sourceSeconds,
+        [](double value, const FollowRange& range) { return value < range.startSeconds; });
+    const int upperIndex = static_cast<int>(std::distance(m_followRanges.cbegin(), upperIt));
+
+    int previousIndex = upperIndex - 1;
+    if (previousIndex >= 0) {
+        previousEligibleRow = m_followRanges.at(previousIndex).row;
+    }
+    if (upperIndex < m_followRanges.size()) {
+        nextEligibleRow = m_followRanges.at(upperIndex).row;
+    }
+
+    for (int i = previousIndex; i >= 0; --i) {
+        const FollowRange& range = m_followRanges.at(i);
+        if (range.endSeconds <= sourceSeconds) {
             break;
+        }
+        if (sourceSeconds >= range.startSeconds && sourceSeconds < range.endSeconds) {
+            matchingRow = range.row;
+            break;
+        }
+    }
+    if (matchingRow < 0) {
+        for (int i = upperIndex; i < m_followRanges.size(); ++i) {
+            const FollowRange& range = m_followRanges.at(i);
+            if (range.startSeconds > sourceSeconds) {
+                break;
+            }
+            if (sourceSeconds >= range.startSeconds && sourceSeconds < range.endSeconds) {
+                matchingRow = range.row;
+                break;
+            }
+        }
+    }
+
+    if (previousIndex >= 0) {
+        const FollowRange& range = m_followRanges.at(previousIndex);
+        const double distance = qMax(0.0, sourceSeconds - range.endSeconds);
+        nearestDistance = distance;
+        nearestEligibleRow = range.row;
+    }
+    if (upperIndex < m_followRanges.size()) {
+        const FollowRange& range = m_followRanges.at(upperIndex);
+        const double distance = qMax(0.0, range.startSeconds - sourceSeconds);
+        if (distance < nearestDistance) {
+            nearestDistance = distance;
+            nearestEligibleRow = range.row;
         }
     }
 
     if (matchingRow < 0) {
+        const double sourceDelta = std::isfinite(previousSourceSeconds)
+            ? qAbs(sourceSeconds - previousSourceSeconds)
+            : 0.0;
+        const double maxGapSeconds =
+            qMax(1.0 / static_cast<double>(kTimelineFps), (sourceDelta * 1.5) + 0.005);
+        const bool forwardMotion = std::isfinite(previousSourceSeconds) &&
+                                   sourceSeconds > previousSourceSeconds;
+        const bool backwardMotion = std::isfinite(previousSourceSeconds) &&
+                                    sourceSeconds < previousSourceSeconds;
+        if (forwardMotion && nextEligibleRow >= 0) {
+            QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(nextEligibleRow, 0);
+            if (nextItem) {
+                const double nextStartTime = nextItem->data(Qt::UserRole).toDouble();
+                if ((nextStartTime - sourceSeconds) <= maxGapSeconds) {
+                    matchingRow = nextEligibleRow;
+                }
+            }
+        } else if (backwardMotion && previousEligibleRow >= 0) {
+            QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(previousEligibleRow, 0);
+            if (prevItem) {
+                const double prevEndTime = prevItem->data(Qt::UserRole + 1).toDouble();
+                if ((sourceSeconds - prevEndTime) <= maxGapSeconds) {
+                    matchingRow = previousEligibleRow;
+                }
+            }
+        } else if (nearestEligibleRow >= 0 && nearestDistance <= maxGapSeconds) {
+            matchingRow = nearestEligibleRow;
+        }
+    }
+
+    if (matchingRow < 0) {
+        m_widgets.transcriptTable->clearSelection();
         return;
     }
 
@@ -450,8 +547,7 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t 
         m_suppressSelectionSideEffects = false;
     }
 
-    if ((!m_widgets.transcriptAutoScrollCheckBox || m_widgets.transcriptAutoScrollCheckBox->isChecked()) &&
-        m_widgets.transcriptTable->item(matchingRow, 0)) {
+    if (m_widgets.transcriptTable->item(matchingRow, 0)) {
         QTableWidgetItem* item = m_widgets.transcriptTable->item(matchingRow, 0);
         m_widgets.transcriptTable->scrollToItem(item, QAbstractItemView::PositionAtCenter);
     }
@@ -783,7 +879,12 @@ bool TranscriptTab::hasActiveManualSelection() const
     if (!m_manualSelectionTimer.isValid()) {
         return false;
     }
-    return m_manualSelectionTimer.elapsed() < kManualTranscriptSelectionHoldMs;
+    return m_manualSelectionTimer.elapsed() < qMax(0, m_manualSelectionHoldMs);
+}
+
+void TranscriptTab::setManualSelectionHoldMs(int valueMs)
+{
+    m_manualSelectionHoldMs = qMax(0, valueMs);
 }
 
 void TranscriptTab::onFollowCurrentWordToggled(bool checked)
@@ -908,12 +1009,14 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
         }
     }
     refreshScriptVersionSelector(clip.filePath, transcriptPath);
+    setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
 
     QFile transcriptFile(transcriptPath);
     if (!transcriptFile.open(QIODevice::ReadOnly)) {
         if (transcriptPath != baseEditablePath) {
             transcriptPath = baseEditablePath;
             refreshScriptVersionSelector(clip.filePath, transcriptPath);
+            setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
             transcriptFile.setFileName(transcriptPath);
             if (transcriptFile.open(QIODevice::ReadOnly)) {
                 // continue with fallback file
@@ -956,15 +1059,56 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
         }
     }
     const int deletedEdits = transcriptDoc.object().value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
+    const bool mutableCut = activeCutMutable();
+    const QString activeCutName =
+        m_widgets.transcriptScriptVersionCombo
+            ? m_widgets.transcriptScriptVersionCombo->currentText().trimmed()
+            : QString();
+    const QString resolvedCutName =
+        activeCutName.isEmpty() ? scriptVersionLabelForPath(transcriptPath, clip.filePath) : activeCutName;
+    const bool followEnabled =
+        m_widgets.transcriptFollowCurrentWordCheckBox &&
+        m_widgets.transcriptFollowCurrentWordCheckBox->isChecked();
+    const QString speechFilterState =
+        (m_widgets.speechFilterEnabledCheckBox && m_widgets.speechFilterEnabledCheckBox->isChecked())
+            ? QStringLiteral("Speech Filter: On")
+            : QStringLiteral("Speech Filter: Off");
+    const int speakerCount = [&segments]() {
+        QSet<QString> speakers;
+        for (const QJsonValue& segValue : segments) {
+            const QJsonObject segmentObj = segValue.toObject();
+            const QString segmentSpeaker = segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
+            if (!segmentSpeaker.isEmpty()) {
+                speakers.insert(segmentSpeaker);
+            }
+            const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+            for (const QJsonValue& wordValue : words) {
+                const QString wordSpeaker =
+                    wordValue.toObject().value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
+                if (!wordSpeaker.isEmpty()) {
+                    speakers.insert(wordSpeaker);
+                }
+            }
+        }
+        return speakers.size();
+    }();
 
     if (m_widgets.transcriptInspectorDetailsLabel) {
         m_widgets.transcriptInspectorDetailsLabel->setText(
-            QStringLiteral("%1 words across %2 segments, %3 edited words, %4 deletions. "
-                           "Source time reflects transcript timing; Render time follows row order.")
+            QStringLiteral("Now Editing: %1 | %2\n"
+                           "Stats: %3 words, %4 segments, %5 speakers, %6 edited, %7 deleted\n"
+                           "State: %8 | %9 | %10\n"
+                           "Workflow: 1) Select/Create Cut  2) Edit Transcript/Speakers  3) Preview  4) Render")
+                .arg(clip.label)
+                .arg(resolvedCutName)
                 .arg(totalWords)
                 .arg(segments.size())
+                .arg(speakerCount)
                 .arg(editedWords)
-                .arg(deletedEdits));
+                .arg(deletedEdits)
+                .arg(transcriptCutStateLabel(mutableCut))
+                .arg(transcriptFollowStateLabel(followEnabled))
+                .arg(speechFilterState));
     }
 
     QVector<TranscriptRow> allRows = parseTranscriptRows(segments, m_transcriptPrependMs, m_transcriptPostpendMs);
@@ -1014,19 +1158,6 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
             canDragRows
                 ? QStringLiteral("Drag rows to change render order.")
                 : QStringLiteral("Switch speaker filter to All Speakers to reorder rows."));
-    }
-    refreshSpeakersTable(allRows);
-    if (m_widgets.speakersTable) {
-        m_widgets.speakersTable->setEnabled(activeCutMutable());
-    }
-    if (m_widgets.speakersInspectorClipLabel) {
-        m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip.label));
-    }
-    if (m_widgets.speakersInspectorDetailsLabel) {
-        m_widgets.speakersInspectorDetailsLabel->setText(
-            activeCutMutable()
-                ? QStringLiteral("Edit speaker names and on-screen locations for this cut.")
-                : QStringLiteral("Original cut is immutable. Use Copy Cut to edit speaker metadata."));
     }
 }
 
@@ -1139,26 +1270,17 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         const TranscriptRow& entry = rows.at(row);
         const double sourceStartTime = static_cast<double>(entry.startFrame) / kTimelineFps;
         const double sourceEndTime = static_cast<double>(entry.endFrame + 1) / kTimelineFps;
-        const bool hasRenderTime = entry.renderStartFrame >= 0 && entry.renderEndFrame >= entry.renderStartFrame;
-        const double renderStartTime = hasRenderTime ? static_cast<double>(entry.renderStartFrame) / kTimelineFps : -1.0;
-        const double renderEndTime = hasRenderTime ? static_cast<double>(entry.renderEndFrame + 1) / kTimelineFps : -1.0;
 
         auto* sourceStartItem = new QTableWidgetItem(m_transcriptEngine.secondsToTranscriptTime(sourceStartTime));
         auto* sourceEndItem = new QTableWidgetItem(m_transcriptEngine.secondsToTranscriptTime(sourceEndTime));
-        auto* renderStartItem = new QTableWidgetItem(
-            hasRenderTime ? m_transcriptEngine.secondsToTranscriptTime(renderStartTime) : QStringLiteral("--"));
-        auto* renderEndItem = new QTableWidgetItem(
-            hasRenderTime ? m_transcriptEngine.secondsToTranscriptTime(renderEndTime) : QStringLiteral("--"));
         auto* speakerItem = new QTableWidgetItem(entry.speaker);
         auto* textItem = new QTableWidgetItem(entry.text);
         auto* editsItem = new QTableWidgetItem(editLabelsForFlags(entry.editFlags).join(QStringLiteral(", ")));
         speakerItem->setFlags(speakerItem->flags() & ~Qt::ItemIsEditable);
         editsItem->setFlags(editsItem->flags() & ~Qt::ItemIsEditable);
-        renderStartItem->setFlags(renderStartItem->flags() & ~Qt::ItemIsEditable);
-        renderEndItem->setFlags(renderEndItem->flags() & ~Qt::ItemIsEditable);
 
         QTableWidgetItem* rowItems[] = {
-            sourceStartItem, sourceEndItem, renderStartItem, renderEndItem, speakerItem, textItem, editsItem};
+            sourceStartItem, sourceEndItem, speakerItem, textItem, editsItem};
         for (QTableWidgetItem* tableItem : rowItems) {
             tableItem->setData(Qt::UserRole, sourceStartTime);
             tableItem->setData(Qt::UserRole + 1, sourceEndTime);
@@ -1188,8 +1310,6 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
 
         m_widgets.transcriptTable->setItem(row, kTranscriptColSourceStart, sourceStartItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColSourceEnd, sourceEndItem);
-        m_widgets.transcriptTable->setItem(row, kTranscriptColRenderStart, renderStartItem);
-        m_widgets.transcriptTable->setItem(row, kTranscriptColRenderEnd, renderEndItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColSpeaker, speakerItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColText, textItem);
         m_widgets.transcriptTable->setItem(row, kTranscriptColEdits, editsItem);
@@ -1203,6 +1323,35 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
         m_widgets.transcriptTable->selectRow(restoreRow);
         m_suppressSelectionSideEffects = false;
     }
+
+    rebuildFollowRanges(rows);
+}
+
+void TranscriptTab::rebuildFollowRanges(const QVector<TranscriptRow>& rows)
+{
+    m_followRanges.clear();
+    m_followRanges.reserve(rows.size());
+    for (int row = 0; row < rows.size(); ++row) {
+        const TranscriptRow& entry = rows.at(row);
+        if (entry.isGap || entry.isSkipped || entry.isOutsideActiveCut) {
+            continue;
+        }
+        const double startSeconds = static_cast<double>(entry.startFrame) / kTimelineFps;
+        const double endSeconds = static_cast<double>(entry.endFrame + 1) / kTimelineFps;
+        if (endSeconds <= startSeconds) {
+            continue;
+        }
+        m_followRanges.push_back(FollowRange{startSeconds, endSeconds, row});
+    }
+    std::sort(m_followRanges.begin(), m_followRanges.end(), [](const FollowRange& a, const FollowRange& b) {
+        if (a.startSeconds != b.startSeconds) {
+            return a.startSeconds < b.startSeconds;
+        }
+        if (a.endSeconds != b.endSeconds) {
+            return a.endSeconds < b.endSeconds;
+        }
+        return a.row < b.row;
+    });
 }
 
 void TranscriptTab::applyTranscriptRowState(QTableWidgetItem* startItem,
@@ -1646,121 +1795,6 @@ void TranscriptTab::persistRenderOrderFromTable()
     refresh();
 }
 
-void TranscriptTab::refreshSpeakersTable(const QVector<TranscriptRow>& rows)
-{
-    if (!m_widgets.speakersTable) {
-        return;
-    }
-    m_updating = true;
-    QSignalBlocker blocker(m_widgets.speakersTable);
-    m_widgets.speakersTable->clearContents();
-
-    QSet<QString> speakerIds;
-    for (const TranscriptRow& row : rows) {
-        if (!row.speaker.trimmed().isEmpty()) {
-            speakerIds.insert(row.speaker.trimmed());
-        }
-    }
-    QStringList ids = speakerIds.values();
-    std::sort(ids.begin(), ids.end(), [](const QString& a, const QString& b) {
-        return a.localeAwareCompare(b) < 0;
-    });
-
-    const QJsonObject root = m_loadedTranscriptDoc.object();
-    const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-
-    m_widgets.speakersTable->setRowCount(ids.size());
-    for (int row = 0; row < ids.size(); ++row) {
-        const QString id = ids.at(row);
-        const QJsonObject profile = profiles.value(id).toObject();
-        const QString name = profile.value(QString(kTranscriptSpeakerNameKey)).toString(id);
-        const QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
-        const double x = location.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5);
-        const double y = location.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85);
-
-        auto* idItem = new QTableWidgetItem(id);
-        idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
-        idItem->setData(Qt::UserRole, id);
-        auto* nameItem = new QTableWidgetItem(name);
-        nameItem->setData(Qt::UserRole, id);
-        auto* xItem = new QTableWidgetItem(QString::number(x, 'f', 3));
-        xItem->setData(Qt::UserRole, id);
-        auto* yItem = new QTableWidgetItem(QString::number(y, 'f', 3));
-        yItem->setData(Qt::UserRole, id);
-
-        m_widgets.speakersTable->setItem(row, 0, idItem);
-        m_widgets.speakersTable->setItem(row, 1, nameItem);
-        m_widgets.speakersTable->setItem(row, 2, xItem);
-        m_widgets.speakersTable->setItem(row, 3, yItem);
-    }
-    m_updating = false;
-}
-
-bool TranscriptTab::saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText)
-{
-    if (!m_widgets.speakersTable || !m_loadedTranscriptDoc.isObject()) {
-        return false;
-    }
-    QTableWidgetItem* idItem = m_widgets.speakersTable->item(tableRow, 0);
-    if (!idItem) {
-        return false;
-    }
-    const QString speakerId = idItem->data(Qt::UserRole).toString().trimmed();
-    if (speakerId.isEmpty()) {
-        return false;
-    }
-
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    QJsonObject profile = profiles.value(speakerId).toObject();
-    QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
-
-    if (column == 1) {
-        profile[QString(kTranscriptSpeakerNameKey)] = valueText.trimmed().isEmpty() ? speakerId : valueText.trimmed();
-    } else if (column == 2 || column == 3) {
-        bool ok = false;
-        const double parsed = valueText.toDouble(&ok);
-        if (!ok) {
-            return false;
-        }
-        const double bounded = qBound(0.0, parsed, 1.0);
-        if (column == 2) {
-            location[QString(kTranscriptSpeakerLocationXKey)] = bounded;
-        } else {
-            location[QString(kTranscriptSpeakerLocationYKey)] = bounded;
-        }
-        profile[QString(kTranscriptSpeakerLocationKey)] = location;
-    } else {
-        return false;
-    }
-
-    profiles[speakerId] = profile;
-    root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    m_loadedTranscriptDoc.setObject(root);
-    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
-        return false;
-    }
-    return true;
-}
-
-void TranscriptTab::onSpeakersTableItemChanged(QTableWidgetItem* item)
-{
-    if (m_updating || !item || !activeCutMutable()) {
-        return;
-    }
-    if (!saveSpeakerProfileEdit(item->row(), item->column(), item->text())) {
-        refresh();
-        return;
-    }
-    emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-}
-
 void TranscriptTab::onTranscriptScriptVersionChanged(int index)
 {
     Q_UNUSED(index);
@@ -1778,6 +1812,33 @@ void TranscriptTab::onTranscriptScriptVersionChanged(int index)
         if (m_deps.scheduleSaveState) {
             m_deps.scheduleSaveState();
         }
+    }
+}
+
+void TranscriptTab::onTranscriptScriptVersionContextMenu(const QPoint& pos)
+{
+    if (!m_widgets.transcriptScriptVersionCombo) {
+        return;
+    }
+
+    const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
+    const bool canDeleteSelection =
+        !m_loadedClipFilePath.isEmpty() &&
+        !selectedPath.isEmpty() &&
+        selectedPath != originalTranscriptPathForClip(m_loadedClipFilePath);
+
+    QMenu menu;
+    QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
+    QAction* deleteCurrentTranscription = transcriptMenu->addAction(QStringLiteral("Delete Current Transcription"));
+    deleteCurrentTranscription->setEnabled(canDeleteSelection);
+    if (!canDeleteSelection) {
+        QAction* unavailable = transcriptMenu->addAction(QStringLiteral("Delete unavailable for Original or missing selection"));
+        unavailable->setEnabled(false);
+    }
+
+    QAction* chosen = menu.exec(m_widgets.transcriptScriptVersionCombo->mapToGlobal(pos));
+    if (chosen == deleteCurrentTranscription && canDeleteSelection) {
+        onTranscriptDeleteVersion();
     }
 }
 
@@ -1883,6 +1944,18 @@ void TranscriptTab::onTranscriptDeleteVersion()
     if (selectedPath.isEmpty() || selectedPath == originalTranscriptPathForClip(m_loadedClipFilePath)) {
         return;
     }
+    const QString selectedLabel = m_widgets.transcriptScriptVersionCombo->currentText().trimmed();
+    const QString label = selectedLabel.isEmpty() ? QFileInfo(selectedPath).fileName() : selectedLabel;
+    const QMessageBox::StandardButton confirm = QMessageBox::warning(
+        nullptr,
+        QStringLiteral("Delete Current Transcription"),
+        QStringLiteral("Delete transcription \"%1\"?\n\nThis permanently removes the selected cut file.")
+            .arg(label),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (confirm != QMessageBox::Yes) {
+        return;
+    }
     QFile::remove(selectedPath);
     const QString basePath = defaultEditablePathForClip(m_loadedClipFilePath);
     refreshScriptVersionSelector(m_loadedClipFilePath, basePath);
@@ -1913,6 +1986,9 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     if (isGap || isOutsideCut) return;
 
     QMenu menu;
+    QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
+    QMenu* selectionMenu = transcriptMenu->addMenu(QStringLiteral("Selection"));
+    QMenu* dangerousMenu = transcriptMenu->addMenu(QStringLiteral("Dangerous"));
     QAction* addAbove = nullptr;
     QAction* addBelow = nullptr;
     QAction* expandAction = nullptr;
@@ -1920,17 +1996,18 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     QAction* deleteAction = nullptr;
     const bool rowSkipped = item->data(Qt::UserRole + 7).toBool();
     if (activeCutMutable()) {
-        addAbove = menu.addAction(QStringLiteral("Add Word Above"));
-        addBelow = menu.addAction(QStringLiteral("Add Word Below"));
-        menu.addSeparator();
-        expandAction = menu.addAction(QStringLiteral("Expand"));
-        menu.addSeparator();
-        skipAction = menu.addAction(rowSkipped ? QStringLiteral("Unskip Word")
-                                               : QStringLiteral("Skip Word"));
-        deleteAction = menu.addAction(QStringLiteral("Delete Word"));
+        addAbove = selectionMenu->addAction(QStringLiteral("Add Word Above"));
+        addBelow = selectionMenu->addAction(QStringLiteral("Add Word Below"));
+        expandAction = selectionMenu->addAction(QStringLiteral("Expand Word Timing"));
+        skipAction = selectionMenu->addAction(rowSkipped ? QStringLiteral("Unskip Word")
+                                                         : QStringLiteral("Skip Word"));
+        dangerousMenu->addSeparator();
+        deleteAction = dangerousMenu->addAction(QStringLiteral("Delete Word"));
     } else {
-        QAction* immutableNotice = menu.addAction(QStringLiteral("Original Cut (Immutable)"));
+        QAction* immutableNotice = transcriptMenu->addAction(QStringLiteral("Original Cut (Immutable)"));
         immutableNotice->setEnabled(false);
+        QAction* copyNotice = transcriptMenu->addAction(QStringLiteral("Use + New Cut to edit words"));
+        copyNotice->setEnabled(false);
     }
 
     QAction* chosen = menu.exec(m_widgets.transcriptTable->viewport()->mapToGlobal(pos));

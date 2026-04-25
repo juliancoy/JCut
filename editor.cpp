@@ -87,10 +87,21 @@ void EditorWindow::syncTranscriptTableToPlayhead()
         m_transcriptTable->clearSelection();
         return;
     }
+    const qreal timelineFramePosition = samplesToFramePosition(m_absolutePlaybackSample);
+    const qreal clipStart = static_cast<qreal>(clip->startFrame);
+    const qreal clipEnd = static_cast<qreal>(clip->startFrame + qMax<int64_t>(0, clip->durationFrames - 1));
+    if (timelineFramePosition < clipStart || timelineFramePosition > clipEnd) {
+        m_transcriptTable->clearSelection();
+        return;
+    }
 
-    const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(*clip, samplesToFramePosition(m_absolutePlaybackSample), {});
+    const int64_t sourceSample = sourceSampleForClipAtTimelineSample(
+        *clip,
+        m_absolutePlaybackSample,
+        m_timeline->renderSyncMarkers());
+    const double sourceSeconds = static_cast<double>(sourceSample) / static_cast<double>(kAudioSampleRate);
     if (m_transcriptTab) {
-        m_transcriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceFrame);
+        m_transcriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds);
     }
 }
 
@@ -314,6 +325,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int transcriptPrependMs = root.value(QStringLiteral("transcriptPrependMs")).toInt(150);
     const int transcriptPostpendMs = root.value(QStringLiteral("transcriptPostpendMs")).toInt(70);
     const int speechFilterFadeSamples = root.value(QStringLiteral("speechFilterFadeSamples")).toInt(300);
+    const bool speechFilterRangeCrossfade =
+        root.value(QStringLiteral("speechFilterRangeCrossfade")).toBool(false);
     const bool transcriptUnifiedEditColors =
         root.value(QStringLiteral("transcriptUnifiedEditColors")).toBool(true);
     const bool transcriptShowExcludedLines =
@@ -333,6 +346,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool keyframesAutoScroll = root.value(QStringLiteral("keyframesAutoScroll")).toBool(true);
     const int selectedInspectorTab = root.value(QStringLiteral("selectedInspectorTab")).toInt(0);
     const qreal playbackSpeed = qBound<qreal>(0.1, root.value(QStringLiteral("playbackSpeed")).toDouble(1.0), 3.0);
+    const PlaybackClockSource playbackClockSource = playbackClockSourceFromString(
+        root.value(QStringLiteral("playbackClockSource"))
+            .toString(playbackClockSourceToString(PlaybackClockSource::Auto)));
+    const PlaybackAudioWarpMode playbackAudioWarpMode = playbackAudioWarpModeFromString(
+        root.value(QStringLiteral("playbackAudioWarpMode"))
+            .toString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::Disabled)));
     const qreal timelineZoom = root.value(QStringLiteral("timelineZoom")).toDouble(4.0);
     const int timelineVerticalScroll = root.value(QStringLiteral("timelineVerticalScroll")).toInt(0);
     const int64_t exportStartFrame = root.value(QStringLiteral("exportStartFrame")).toVariant().toLongLong();
@@ -648,10 +667,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_transcriptPrependMs = transcriptPrependMs;
     m_transcriptPostpendMs = transcriptPostpendMs;
     m_speechFilterFadeSamples = qMax(0, speechFilterFadeSamples);
+    m_speechFilterRangeCrossfade = speechFilterRangeCrossfade;
     
     if (m_transcriptPrependMsSpin) { QSignalBlocker block(m_transcriptPrependMsSpin); m_transcriptPrependMsSpin->setValue(m_transcriptPrependMs); }
     if (m_transcriptPostpendMsSpin) { QSignalBlocker block(m_transcriptPostpendMsSpin); m_transcriptPostpendMsSpin->setValue(m_transcriptPostpendMs); }
     if (m_speechFilterFadeSamplesSpin) { QSignalBlocker block(m_speechFilterFadeSamplesSpin); m_speechFilterFadeSamplesSpin->setValue(m_speechFilterFadeSamples); }
+    if (m_speechFilterRangeCrossfadeCheckBox) {
+        QSignalBlocker block(m_speechFilterRangeCrossfadeCheckBox);
+        m_speechFilterRangeCrossfadeCheckBox->setChecked(m_speechFilterRangeCrossfade);
+    }
     if (m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()) {
         QSignalBlocker block(m_inspectorPane->transcriptUnifiedEditModeCheckBox());
         m_inspectorPane->transcriptUnifiedEditModeCheckBox()->setChecked(transcriptUnifiedEditColors);
@@ -716,14 +740,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             }
         }
     }
-    if (m_playbackSpeedCombo) {
-        QSignalBlocker block(m_playbackSpeedCombo);
-        const int speedIndex = m_playbackSpeedCombo->findData(playbackSpeed);
-        if (speedIndex >= 0) {
-            m_playbackSpeedCombo->setCurrentIndex(speedIndex);
-        }
-    }
-    setPlaybackSpeed(playbackSpeed);
+    applyPlaybackRuntimeConfig(
+        PlaybackRuntimeConfig{playbackSpeed, playbackClockSource, playbackAudioWarpMode});
     
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
@@ -775,6 +793,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_audioEngine->setExportRanges(playbackRanges);
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+        m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+        m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         m_audioEngine->seek(currentFrame);
     }
     
@@ -812,15 +833,15 @@ void EditorWindow::advanceFrame()
 {
     if (!m_timeline) return;
 
-    if (m_audioEngine && m_audioEngine->audioClockAvailable() && m_audioEngine->hasPlayableAudio()) {
+    if (shouldUseAudioMasterClock() && m_audioEngine && m_audioEngine->audioClockAvailable() &&
+        m_audioEngine->hasPlayableAudio()) {
         int64_t audioSample = qMax<int64_t>(0, m_audioEngine->currentSample());
         const qreal audioFramePosition = samplesToFramePosition(audioSample);
         const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
 
         if (audioFrame == m_timeline->currentFrame()) {
             ++m_audioClockStallTicks;
-            constexpr int kAudioClockStallThresholdTicks = 1;  // Reduced from 3 to 1
-            if (m_audioClockStallTicks <= kAudioClockStallThresholdTicks) {
+            if (m_audioClockStallTicks <= m_audioClockStallThresholdTicks) {
                 if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
                 return;
             }
@@ -840,9 +861,35 @@ void EditorWindow::advanceFrame()
     }
 
     m_audioClockStallTicks = 0;
-    const int64_t nextFrame = nextPlaybackFrame(m_timeline->currentFrame());
-    if (m_preview) m_preview->preparePlaybackAdvance(nextFrame);
-    setCurrentPlaybackSample(frameToSamples(nextFrame), false, true);
+    const qint64 tickNowMs = nowMs();
+    if (m_lastTimelineAdvanceTickMs <= 0) {
+        m_lastTimelineAdvanceTickMs = tickNowMs;
+    }
+    const qint64 elapsedMs = qMax<qint64>(0, tickNowMs - m_lastTimelineAdvanceTickMs);
+    m_lastTimelineAdvanceTickMs = tickNowMs;
+
+    const qreal speed = normalizedPlaybackSpeed(m_playbackSpeed);
+    const double elapsedSeconds = static_cast<double>(elapsedMs) / 1000.0;
+    m_timelineAdvanceCarrySamples +=
+        elapsedSeconds * static_cast<double>(kAudioSampleRate) * static_cast<double>(speed);
+    int64_t deltaSamples = static_cast<int64_t>(std::floor(m_timelineAdvanceCarrySamples));
+    m_timelineAdvanceCarrySamples -= static_cast<double>(deltaSamples);
+    if (deltaSamples <= 0) {
+        deltaSamples = qMax<int64_t>(
+            1, static_cast<int64_t>(std::llround(speed * static_cast<qreal>(kSamplesPerFrame))));
+        m_timelineAdvanceCarrySamples = 0.0;
+    }
+
+    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+    const int64_t nextSample = nextPlaybackSample(m_absolutePlaybackSample, deltaSamples, ranges);
+    if (m_preview) {
+        const int64_t nextFrame =
+            qBound<int64_t>(0,
+                            static_cast<int64_t>(std::floor(samplesToFramePosition(nextSample))),
+                            m_timeline->totalFrames());
+        m_preview->preparePlaybackAdvance(nextFrame);
+    }
+    setCurrentPlaybackSample(nextSample, false, true);
 }
 
 bool EditorWindow::speechFilterPlaybackEnabled() const
@@ -892,6 +939,74 @@ int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
         if (currentFrame >= range.startFrame && currentFrame < range.endFrame) return currentFrame + 1;
     }
     return ranges.constFirst().startFrame;
+}
+
+int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
+                                         int64_t deltaSamples,
+                                         const QVector<ExportRangeSegment>& ranges) const
+{
+    if (!m_timeline) {
+        return qMax<int64_t>(0, currentSample + qMax<int64_t>(0, deltaSamples));
+    }
+    const int64_t totalSamples = frameToSamples(m_timeline->totalFrames());
+    if (deltaSamples <= 0) {
+        return qBound<int64_t>(0, currentSample, totalSamples);
+    }
+    if (ranges.isEmpty()) {
+        int64_t next = currentSample + deltaSamples;
+        if (next > totalSamples) {
+            next %= qMax<int64_t>(1, totalSamples + 1);
+        }
+        return qBound<int64_t>(0, next, totalSamples);
+    }
+
+    auto rangeStartSample = [](const ExportRangeSegment& range) {
+        return frameToSamples(range.startFrame);
+    };
+    auto rangeEndSampleExclusive = [](const ExportRangeSegment& range) {
+        return frameToSamples(range.endFrame + 1);
+    };
+
+    int64_t sample = qMax<int64_t>(0, currentSample);
+    int64_t remaining = deltaSamples;
+    int guard = 0;
+    while (remaining > 0 && guard++ < 4096) {
+        int activeIndex = -1;
+        int nextIndex = -1;
+        for (int i = 0; i < ranges.size(); ++i) {
+            const int64_t start = rangeStartSample(ranges.at(i));
+            const int64_t endExclusive = rangeEndSampleExclusive(ranges.at(i));
+            if (sample < start) {
+                nextIndex = i;
+                break;
+            }
+            if (sample >= start && sample < endExclusive) {
+                activeIndex = i;
+                break;
+            }
+        }
+
+        if (activeIndex < 0) {
+            if (nextIndex < 0) {
+                nextIndex = 0;
+            }
+            sample = rangeStartSample(ranges.at(nextIndex));
+            continue;
+        }
+
+        const int64_t endExclusive = rangeEndSampleExclusive(ranges.at(activeIndex));
+        const int64_t available = qMax<int64_t>(0, endExclusive - sample);
+        if (remaining < available) {
+            sample += remaining;
+            remaining = 0;
+            break;
+        }
+        remaining -= available;
+        const int nextRangeIndex = (activeIndex + 1) % ranges.size();
+        sample = rangeStartSample(ranges.at(nextRangeIndex));
+    }
+
+    return qBound<int64_t>(0, sample, totalSamples);
 }
 
 int64_t EditorWindow::stepForwardFrame(int64_t currentFrame) const
@@ -975,511 +1090,52 @@ bool EditorWindow::parseSyncActionText(const QString &text, RenderSyncAction *ac
 
 void EditorWindow::refreshSyncInspector()
 {
-    m_syncInspectorClipLabel->setText(QStringLiteral("Sync"));
-    m_updatingSyncInspector = true;
-    const int allSyncMarkerCount = m_timeline ? m_timeline->renderSyncMarkers().size() : 0;
-    if (m_clearAllSyncPointsButton) {
-        m_clearAllSyncPointsButton->setEnabled(allSyncMarkerCount > 0);
+    if (m_syncTab) {
+        m_syncTab->refresh();
     }
-    const QSet<int64_t> selectedFrames =
-        editor::collectSelectedFrameRoles(m_syncTable);
-    m_syncTable->clearContents();
-    m_syncTable->setRowCount(0);
-
-    const TimelineClip* selectedClip = m_timeline ? m_timeline->selectedClip() : nullptr;
-    if (!selectedClip) {
-        m_syncInspectorDetailsLabel->setText(QStringLiteral("Select a clip to inspect its sync markers."));
-        m_updatingSyncInspector = false;
-        return;
-    }
-
-    m_syncInspectorClipLabel->setText(QStringLiteral("Sync\n%1").arg(selectedClip->label));
-
-    QVector<RenderSyncMarker> markers;
-    if (m_timeline) {
-        const QVector<RenderSyncMarker> allMarkers = m_timeline->renderSyncMarkers();
-        markers.reserve(allMarkers.size());
-        for (const RenderSyncMarker& marker : allMarkers) {
-            if (marker.clipId == selectedClip->id) {
-                markers.push_back(marker);
-            }
-        }
-    }
-
-    if (markers.isEmpty()) {
-        m_syncInspectorDetailsLabel->setText(QStringLiteral("No render sync markers for the selected clip."));
-        m_updatingSyncInspector = false;
-        return;
-    }
-
-    m_syncInspectorDetailsLabel->setText(
-        QStringLiteral("%1 sync markers for the selected clip. Edit Frame, Count, or Action directly.")
-            .arg(markers.size()));
-    m_syncTable->setRowCount(markers.size());
-    
-    for (int i = 0; i < markers.size(); ++i) {
-        const RenderSyncMarker &marker = markers[i];
-        const QColor clipColor = clipColorForId(marker.clipId);
-        const QColor rowBackground = QColor(clipColor.red(), clipColor.green(), clipColor.blue(), 72);
-        const QColor rowForeground = QColor(QStringLiteral("#f4f7fb"));
-        const QString clipLabel = clipLabelForId(marker.clipId);
-        
-        auto *clipItem = new QTableWidgetItem(QString());
-        clipItem->setFlags(clipItem->flags() & ~Qt::ItemIsEditable);
-        clipItem->setToolTip(clipLabel);
-        
-        auto *frameItem = new QTableWidgetItem(QString::number(marker.frame));
-        auto *countItem = new QTableWidgetItem(QString::number(marker.count));
-        auto *actionItem = new QTableWidgetItem(
-            marker.action == RenderSyncAction::DuplicateFrame ? QStringLiteral("Duplicate") : QStringLiteral("Skip"));
-
-        for (QTableWidgetItem *item : {clipItem, frameItem, countItem, actionItem}) {
-            item->setData(Qt::UserRole, QVariant::fromValue(static_cast<qint64>(marker.frame)));
-            item->setData(Qt::UserRole + 1, marker.clipId);
-            item->setBackground(rowBackground);
-            item->setForeground(rowForeground);
-        }
-        
-        m_syncTable->setItem(i, 0, clipItem);
-        m_syncTable->setItem(i, 1, frameItem);
-        m_syncTable->setItem(i, 2, countItem);
-        m_syncTable->setItem(i, 3, actionItem);
-    }
-    editor::restoreSelectionByFrameRole(m_syncTable, selectedFrames);
-    m_updatingSyncInspector = false;
 }
 
 void EditorWindow::onSyncTableSelectionChanged()
 {
-    if (m_updatingSyncInspector || !m_syncTable) {
-        return;
-    }
-    const int64_t primaryFrame = editor::primarySelectedFrameRole(m_syncTable);
-    if (primaryFrame < 0) {
-        return;
-    }
-    scheduleDeferredTimelineSeek(&m_syncClickSeekTimer,
-                                 &m_pendingSyncClickTimelineFrame,
-                                 primaryFrame);
+    // Sync table interactions are handled by SyncTab.
 }
 
 void EditorWindow::onSyncTableItemChanged(QTableWidgetItem* item)
 {
-    if (m_updatingSyncInspector || !item || !m_timeline || !m_syncTable) {
-        return;
-    }
-
-    const int row = item->row();
-    if (row < 0 || row >= m_syncTable->rowCount()) {
-        return;
-    }
-
-    auto tableText = [this, row](int column) -> QString {
-        QTableWidgetItem* tableItem = m_syncTable->item(row, column);
-        return tableItem ? tableItem->text().trimmed() : QString();
-    };
-
-    const QString clipId = m_syncTable->item(row, 0)
-                               ? m_syncTable->item(row, 0)->data(Qt::UserRole + 1).toString()
-                               : QString();
-    const int64_t originalFrame = m_syncTable->item(row, 0)
-                                      ? m_syncTable->item(row, 0)->data(Qt::UserRole).toLongLong()
-                                      : -1;
-    if (clipId.isEmpty() || originalFrame < 0) {
-        refreshSyncInspector();
-        return;
-    }
-
-    bool ok = false;
-    RenderSyncMarker edited;
-    edited.clipId = clipId;
-    edited.frame = tableText(1).toLongLong(&ok);
-    if (!ok) { refreshSyncInspector(); return; }
-    edited.count = tableText(2).toInt(&ok);
-    if (!ok) { refreshSyncInspector(); return; }
-    edited.count = qMax(1, edited.count);
-    if (!parseSyncActionText(tableText(3), &edited.action)) {
-        refreshSyncInspector();
-        return;
-    }
-
-    QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
-    bool replaced = false;
-    for (RenderSyncMarker& marker : markers) {
-        if (marker.clipId == clipId && marker.frame == originalFrame) {
-            marker = edited;
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced) {
-        refreshSyncInspector();
-        return;
-    }
-
-    std::sort(markers.begin(), markers.end(), [](const RenderSyncMarker& a, const RenderSyncMarker& b) {
-        if (a.frame == b.frame) {
-            return a.clipId < b.clipId;
-        }
-        return a.frame < b.frame;
-    });
-    m_timeline->setRenderSyncMarkers(markers);
-    refreshSyncInspector();
-    scheduleSaveState();
+    Q_UNUSED(item);
+    // Sync table interactions are handled by SyncTab.
 }
 
 void EditorWindow::onSyncTableItemDoubleClicked(QTableWidgetItem* item)
 {
     Q_UNUSED(item);
-    cancelDeferredTimelineSeek(&m_syncClickSeekTimer, &m_pendingSyncClickTimelineFrame);
+    // Sync table interactions are handled by SyncTab.
 }
 
 void EditorWindow::onSyncTableCustomContextMenu(const QPoint& pos)
 {
-    if (!m_syncTable || !m_timeline) {
-        return;
-    }
-
-    int row = -1;
-    QTableWidgetItem* item = editor::ensureContextRowSelected(m_syncTable, pos, &row);
-    if (!item) {
-        return;
-    }
-
-    const QString clipId = item->data(Qt::UserRole + 1).toString();
-    const int64_t frame = item->data(Qt::UserRole).toLongLong();
-    if (clipId.isEmpty() || frame < 0) {
-        return;
-    }
-
-    QMenu menu;
-    QAction* copyToCurrentPlayheadAction = menu.addAction(QStringLiteral("Copy to Current Playhead"));
-    copyToCurrentPlayheadAction->setEnabled(frame != m_timeline->currentFrame());
-    QAction* deleteAction = menu.addAction(QStringLiteral("Delete"));
-    QAction* chosen = menu.exec(m_syncTable->viewport()->mapToGlobal(pos));
-    if (!chosen) {
-        return;
-    }
-
-    if (chosen == deleteAction) {
-        QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
-        const auto newEnd = std::remove_if(markers.begin(),
-                                           markers.end(),
-                                           [&](const RenderSyncMarker& marker) {
-                                               return marker.clipId == clipId && marker.frame == frame;
-                                           });
-        if (newEnd == markers.end()) {
-            return;
-        }
-        markers.erase(newEnd, markers.end());
-        m_timeline->setRenderSyncMarkers(markers);
-        refreshSyncInspector();
-        scheduleSaveState();
-        return;
-    }
-
-    if (chosen != copyToCurrentPlayheadAction || !copyToCurrentPlayheadAction->isEnabled()) {
-        return;
-    }
-
-    QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
-    RenderSyncMarker sourceMarker;
-    bool foundSource = false;
-    for (const RenderSyncMarker& marker : markers) {
-        if (marker.clipId == clipId && marker.frame == frame) {
-            sourceMarker = marker;
-            foundSource = true;
-            break;
-        }
-    }
-    if (!foundSource) {
-        return;
-    }
-
-    sourceMarker.frame = m_timeline->currentFrame();
-    bool replaced = false;
-    for (RenderSyncMarker& marker : markers) {
-        if (marker.clipId == sourceMarker.clipId && marker.frame == sourceMarker.frame) {
-            marker = sourceMarker;
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced) {
-        markers.push_back(sourceMarker);
-    }
-    std::sort(markers.begin(), markers.end(), [](const RenderSyncMarker& a, const RenderSyncMarker& b) {
-        if (a.frame == b.frame) {
-            return a.clipId < b.clipId;
-        }
-        return a.frame < b.frame;
-    });
-    m_timeline->setRenderSyncMarkers(markers);
-    refreshSyncInspector();
-    scheduleSaveState();
+    Q_UNUSED(pos);
+    // Sync table interactions are handled by SyncTab.
 }
 
 void EditorWindow::refreshClipInspector()
 {
-    const TimelineClip *clip = m_timeline ? m_timeline->selectedClip() : nullptr;
-    const TimelineTrack *track = m_timeline ? m_timeline->selectedTrack() : nullptr;
-    const int selectedTrackIndex = m_timeline ? m_timeline->selectedTrackIndex() : -1;
-
-    auto disableTrackControls = [this]() {
-        if (m_trackNameEdit) {
-            QSignalBlocker blocker(m_trackNameEdit);
-            m_trackNameEdit->setText(QString());
-            m_trackNameEdit->setEnabled(false);
-        }
-        if (m_trackHeightSpin) {
-            QSignalBlocker blocker(m_trackHeightSpin);
-            m_trackHeightSpin->setValue(44);
-            m_trackHeightSpin->setEnabled(false);
-        }
-        if (m_trackVisualModeCombo) {
-            QSignalBlocker blocker(m_trackVisualModeCombo);
-            m_trackVisualModeCombo->setCurrentIndex(0);
-            m_trackVisualModeCombo->setEnabled(false);
-        }
-        if (m_trackAudioEnabledCheckBox) {
-            QSignalBlocker blocker(m_trackAudioEnabledCheckBox);
-            m_trackAudioEnabledCheckBox->setChecked(false);
-            m_trackAudioEnabledCheckBox->setEnabled(false);
-        }
-        if (m_trackCrossfadeSecondsSpin) {
-            m_trackCrossfadeSecondsSpin->setEnabled(false);
-        }
-        if (m_trackCrossfadeButton) {
-            m_trackCrossfadeButton->setEnabled(false);
-        }
-    };
-
-    if (!clip) {
-        m_clipInspectorClipLabel->setText(track ? QStringLiteral("No clip selected") : QStringLiteral("No clip or track selected"));
-        m_clipProxyUsageLabel->setText(QStringLiteral("Proxy In Use: No"));
-        m_clipPlaybackSourceLabel->setText(QStringLiteral("Playback Source: None"));
-        m_clipOriginalInfoLabel->setText(QStringLiteral("Original\nNo clip selected."));
-        m_clipProxyInfoLabel->setText(QStringLiteral("Proxy\nNo proxy configured."));
-        if (m_clipPlaybackRateSpin) {
-            QSignalBlocker block(m_clipPlaybackRateSpin);
-            m_clipPlaybackRateSpin->setValue(1.0);
-            m_clipPlaybackRateSpin->setEnabled(false);
-        }
-    } else {
-        const QString proxyPath = playbackProxyPathForClip(*clip);
-        const QString playbackPath = playbackMediaPathForClip(*clip);
-        
-        MediaProbeResult originalProbe;
-        originalProbe.mediaType = clip->mediaType;
-        originalProbe.sourceKind = clip->sourceKind;
-        originalProbe.hasAudio = clip->hasAudio;
-        originalProbe.hasVideo = clipHasVisuals(*clip);
-        originalProbe.durationFrames = clip->sourceDurationFrames > 0 ? clip->sourceDurationFrames : clip->durationFrames;
-        
-        m_clipInspectorClipLabel->setText(QStringLiteral("%1\n%2")
-            .arg(clip->label,
-                 QStringLiteral("%1 | %2")
-                     .arg(clipMediaTypeLabel(clip->mediaType),
-                          mediaSourceKindLabel(clip->sourceKind))));
-        m_clipProxyUsageLabel->setText(QStringLiteral("Proxy In Use: %1")
-            .arg(playbackPath != clip->filePath ? QStringLiteral("Yes") : QStringLiteral("No")));
-        if (clip->mediaType == ClipMediaType::Title) {
-            m_clipPlaybackSourceLabel->setText(QStringLiteral("Playback Source\nInline title overlay (no source file)"));
-        } else {
-            m_clipPlaybackSourceLabel->setText(QStringLiteral("Playback Source\n%1")
-                .arg(QDir::toNativeSeparators(playbackPath)));
-        }
-        if (m_clipPlaybackRateSpin) {
-            QSignalBlocker block(m_clipPlaybackRateSpin);
-            m_clipPlaybackRateSpin->setValue(clip->playbackRate);
-            m_clipPlaybackRateSpin->setEnabled(clipHasVisuals(*clip));
-            m_clipPlaybackRateSpin->setToolTip(
-                clip->hasAudio
-                    ? QStringLiteral("Visual retime control. Audio playback is not time-stretched.")
-                    : QStringLiteral("Playback speed multiplier for this clip."));
-        }
-        if (clip->mediaType == ClipMediaType::Title) {
-            m_clipOriginalInfoLabel->setText(
-                QStringLiteral("Original\nTitle clips are generated overlays and do not have an associated media file."));
-        } else {
-            m_clipOriginalInfoLabel->setText(QStringLiteral("Original\n%1")
-                .arg(clipFileInfoSummary(clip->filePath, &originalProbe)));
-        }
-        
-        if (clip->mediaType == ClipMediaType::Title) {
-            m_clipProxyInfoLabel->setText(QStringLiteral("Proxy\nNot applicable for title clips."));
-        } else if (proxyPath.isEmpty()) {
-            const QString configuredProxyPath = clip->proxyPath.isEmpty()
-                ? defaultProxyOutputPath(*clip)
-                : clip->proxyPath;
-            m_clipProxyInfoLabel->setText(QStringLiteral("Proxy\nConfigured: No\nPath: %1")
-                .arg(QDir::toNativeSeparators(configuredProxyPath)));
-        } else {
-            m_clipProxyInfoLabel->setText(QStringLiteral("Proxy\n%1")
-                .arg(clipFileInfoSummary(proxyPath)));
-        }
-    }
-
-    if (!track || selectedTrackIndex < 0 || clip) {
-        if (m_trackInspectorLabel) {
-            m_trackInspectorLabel->setText(QStringLiteral("No track selected"));
-        }
-        if (m_trackInspectorDetailsLabel) {
-            m_trackInspectorDetailsLabel->setText(QStringLiteral("Select a track header to edit track-wide properties."));
-        }
-        disableTrackControls();
-        return;
-    }
-
-    int clipCount = 0;
-    int visualCount = 0;
-    int audioCount = 0;
-    bool allAudioEnabled = true;
-    for (const TimelineClip& timelineClip : m_timeline->clips()) {
-        if (timelineClip.trackIndex != selectedTrackIndex) {
-            continue;
-        }
-        ++clipCount;
-        if (clipHasVisuals(timelineClip)) {
-            ++visualCount;
-        }
-        if (timelineClip.hasAudio) {
-            ++audioCount;
-            allAudioEnabled = allAudioEnabled && timelineClip.audioEnabled;
-        }
-    }
-
-    if (m_trackInspectorLabel) {
-        m_trackInspectorLabel->setText(QStringLiteral("Track %1\n%2")
-                                           .arg(selectedTrackIndex + 1)
-                                           .arg(track->name));
-    }
-    if (m_trackInspectorDetailsLabel) {
-        m_trackInspectorDetailsLabel->setText(QStringLiteral("%1 clips | %2 visual | %3 audio")
-                                                  .arg(clipCount)
-                                                  .arg(visualCount)
-                                                  .arg(audioCount));
-    }
-    if (m_trackNameEdit) {
-        QSignalBlocker blocker(m_trackNameEdit);
-        m_trackNameEdit->setText(track->name);
-        m_trackNameEdit->setEnabled(true);
-    }
-    if (m_trackHeightSpin) {
-        QSignalBlocker blocker(m_trackHeightSpin);
-        m_trackHeightSpin->setValue(track->height);
-        m_trackHeightSpin->setEnabled(true);
-    }
-    if (m_trackVisualModeCombo) {
-        QSignalBlocker blocker(m_trackVisualModeCombo);
-        const int modeIndex = m_trackVisualModeCombo->findData(static_cast<int>(track->visualMode));
-        m_trackVisualModeCombo->setCurrentIndex(modeIndex >= 0 ? modeIndex : 0);
-        m_trackVisualModeCombo->setEnabled(visualCount > 0);
-    }
-    if (m_trackAudioEnabledCheckBox) {
-        QSignalBlocker blocker(m_trackAudioEnabledCheckBox);
-        m_trackAudioEnabledCheckBox->setChecked(audioCount > 0 ? allAudioEnabled : false);
-        m_trackAudioEnabledCheckBox->setEnabled(audioCount > 0);
-    }
-    if (m_trackCrossfadeSecondsSpin) {
-        m_trackCrossfadeSecondsSpin->setEnabled(clipCount > 1);
-    }
-    if (m_trackCrossfadeButton) {
-        m_trackCrossfadeButton->setEnabled(clipCount > 1);
+    if (m_propertiesTab) {
+        m_propertiesTab->refresh();
     }
 }
 
 void EditorWindow::refreshTracksTab()
 {
-    QTableWidget *tracksTable = m_inspectorPane ? m_inspectorPane->tracksTable() : nullptr;
-    if (!tracksTable) {
-        return;
+    if (m_tracksTab) {
+        m_tracksTab->refresh();
     }
-
-    m_updatingTracksTab = true;
-    const QVector<TimelineTrack> tracks = m_timeline ? m_timeline->tracks() : QVector<TimelineTrack>{};
-    tracksTable->setRowCount(tracks.size());
-
-    for (int row = 0; row < tracks.size(); ++row) {
-        const TimelineTrack &track = tracks[row];
-        const QString trackName = track.name.trimmed().isEmpty()
-            ? QStringLiteral("Track %1").arg(row + 1)
-            : track.name;
-
-        auto *nameItem = new QTableWidgetItem(trackName);
-        nameItem->setFlags(nameItem->flags() & ~Qt::ItemIsEditable);
-
-        auto *visualItem = new QTableWidgetItem;
-        const bool hasVisual = m_timeline ? m_timeline->trackHasVisualClips(row) : false;
-        const TrackVisualMode visualMode =
-            m_timeline ? m_timeline->trackVisualMode(row) : TrackVisualMode::Enabled;
-        Qt::ItemFlags visualFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
-        if (hasVisual) {
-            visualFlags |= Qt::ItemIsEnabled;
-        }
-        visualItem->setFlags(visualFlags);
-        visualItem->setCheckState(
-            visualMode == TrackVisualMode::Hidden ? Qt::Unchecked
-            : (visualMode == TrackVisualMode::ForceOpaque ? Qt::PartiallyChecked : Qt::Checked));
-        if (!hasVisual) {
-            visualItem->setToolTip(QStringLiteral("No visual clips on this track"));
-        } else if (visualMode == TrackVisualMode::ForceOpaque) {
-            visualItem->setToolTip(QStringLiteral("Force Opaque"));
-        }
-
-        auto *audioItem = new QTableWidgetItem;
-        const bool hasAudio = m_timeline ? m_timeline->trackHasAudioClips(row) : false;
-        const bool audioEnabled = m_timeline ? m_timeline->trackAudioEnabled(row) : false;
-        Qt::ItemFlags audioFlags = Qt::ItemIsUserCheckable | Qt::ItemIsSelectable;
-        if (hasAudio) {
-            audioFlags |= Qt::ItemIsEnabled;
-        }
-        audioItem->setFlags(audioFlags);
-        audioItem->setCheckState(audioEnabled ? Qt::Checked : Qt::Unchecked);
-        if (!hasAudio) {
-            audioItem->setToolTip(QStringLiteral("No audio clips on this track"));
-        }
-
-        tracksTable->setItem(row, 0, nameItem);
-        tracksTable->setItem(row, 1, visualItem);
-        tracksTable->setItem(row, 2, audioItem);
-    }
-
-    tracksTable->resizeColumnsToContents();
-    m_updatingTracksTab = false;
 }
 
 void EditorWindow::onTrackTableItemChanged(QTableWidgetItem* item)
 {
-    if (m_updatingTracksTab || !item || !m_timeline || !m_inspectorPane) {
-        return;
-    }
-
-    const int row = item->row();
-    if (row < 0 || !m_inspectorPane->tracksTable() || row >= m_inspectorPane->tracksTable()->rowCount()) {
-        return;
-    }
-
-    const bool checked = item->checkState() == Qt::Checked;
-    bool changed = false;
-
-    if (item->column() == 1) {
-        const TrackVisualMode mode =
-            item->checkState() == Qt::Unchecked ? TrackVisualMode::Hidden
-            : (item->checkState() == Qt::PartiallyChecked ? TrackVisualMode::ForceOpaque
-                                                          : TrackVisualMode::Enabled);
-        changed = m_timeline->updateTrackVisualMode(row, mode);
-    } else if (item->column() == 2) {
-        changed = m_timeline->updateTrackAudioEnabled(row, checked);
-    }
-
-    if (changed) {
-        m_inspectorPane->refresh();
-        scheduleSaveState();
-        pushHistorySnapshot();
-    } else {
-        refreshTracksTab();
-    }
+    Q_UNUSED(item);
+    // Tracks table interactions are handled by TracksTab.
 }
 
 void EditorWindow::refreshOutputInspector()
@@ -1908,8 +1564,6 @@ QStringList EditorWindow::availableHardwareDeviceTypes() const
 
 void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAudio, bool duringPlayback)
 {
-    static constexpr qint64 kPlaybackUiSyncMinIntervalMs = 100;
-    static constexpr qint64 kPlaybackStateSaveMinIntervalMs = 1000;
     QElapsedTimer seekUpdateTimer;
     seekUpdateTimer.start();
     const qint64 tickNowMs = nowMs();
@@ -1944,8 +1598,8 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     
     updateTransportLabels();
     if (duringPlayback) {
-        if ((tickNowMs - m_lastPlaybackUiSyncMs) >= kPlaybackUiSyncMinIntervalMs) {
-            syncTranscriptTableToPlayhead();
+        syncTranscriptTableToPlayhead();
+        if ((tickNowMs - m_lastPlaybackUiSyncMs) >= m_playbackUiSyncMinIntervalMs) {
             syncKeyframeTableToPlayhead();
             syncGradingTableToPlayhead();
             m_titlesTab->syncTableToPlayhead();
@@ -1953,12 +1607,13 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
         }
     } else {
         m_inspectorPane->refresh();
+        syncTranscriptTableToPlayhead();
         syncKeyframeTableToPlayhead();
         syncGradingTableToPlayhead();
         m_titlesTab->syncTableToPlayhead();
         m_lastPlaybackUiSyncMs = tickNowMs;
     }
-    if (!duringPlayback || (tickNowMs - m_lastPlaybackStateSaveMs) >= kPlaybackStateSaveMinIntervalMs) {
+    if (!duringPlayback || (tickNowMs - m_lastPlaybackStateSaveMs) >= m_playbackStateSaveMinIntervalMs) {
         scheduleSaveState();
         m_lastPlaybackStateSaveMs = tickNowMs;
     }
@@ -1969,8 +1624,7 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     while (elapsedMs > maxDuration &&
            !m_maxSetCurrentPlaybackSampleDurationMs.compare_exchange_weak(maxDuration, elapsedMs)) {
     }
-    constexpr qint64 kSlowSeekUpdateThresholdMs = 20;
-    if (elapsedMs >= kSlowSeekUpdateThresholdMs) {
+    if (elapsedMs >= m_slowSeekWarnThresholdMs) {
         m_setCurrentPlaybackSampleSlowCount.fetch_add(1);
         if (debugPlaybackWarnEnabled()) {
             qWarning().noquote()
@@ -1995,39 +1649,141 @@ void EditorWindow::setCurrentFrame(int64_t frame, bool syncAudio)
     setCurrentPlaybackSample(frameToSamples(frame), syncAudio);
 }
 
-void EditorWindow::setPlaybackSpeed(qreal speed)
+EditorWindow::PlaybackRuntimeConfig EditorWindow::playbackRuntimeConfig() const
 {
-    const qreal clampedSpeed = qBound<qreal>(0.1, speed, 3.0);
-    if (qAbs(m_playbackSpeed - clampedSpeed) < 0.0001) {
+    PlaybackRuntimeConfig config;
+    config.speed = m_playbackSpeed;
+    config.clockSource = m_playbackClockSource;
+    config.audioWarpMode = m_playbackAudioWarpMode;
+    return config;
+}
+
+void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& requestedConfig)
+{
+    const qreal normalizedSpeed = normalizedPlaybackSpeed(requestedConfig.speed);
+    const PlaybackAudioWarpMode normalizedWarpMode =
+        normalizedPlaybackAudioWarpMode(normalizedSpeed, requestedConfig.audioWarpMode);
+    const PlaybackClockSource normalizedClockSource = requestedConfig.clockSource;
+
+    const bool speedChanged = qAbs(m_playbackSpeed - normalizedSpeed) >= 0.0001;
+    const bool clockChanged = m_playbackClockSource != normalizedClockSource;
+    const bool warpChanged = m_playbackAudioWarpMode != normalizedWarpMode;
+    if (!speedChanged && !clockChanged && !warpChanged) {
         return;
     }
 
-    m_playbackSpeed = clampedSpeed;
-    updatePlaybackTimerInterval();
+    m_playbackSpeed = normalizedSpeed;
+    m_playbackClockSource = normalizedClockSource;
+    m_playbackAudioWarpMode = normalizedWarpMode;
 
     if (m_playbackSpeedCombo) {
-        const int speedIndex = m_playbackSpeedCombo->findData(clampedSpeed);
+        const int speedIndex = m_playbackSpeedCombo->findData(normalizedSpeed);
         if (speedIndex >= 0 && speedIndex != m_playbackSpeedCombo->currentIndex()) {
             QSignalBlocker blocker(m_playbackSpeedCombo);
             m_playbackSpeedCombo->setCurrentIndex(speedIndex);
         }
     }
+    if (m_playbackClockSourceCombo) {
+        const int index =
+            m_playbackClockSourceCombo->findData(playbackClockSourceToString(normalizedClockSource));
+        if (index >= 0 && m_playbackClockSourceCombo->currentIndex() != index) {
+            QSignalBlocker blocker(m_playbackClockSourceCombo);
+            m_playbackClockSourceCombo->setCurrentIndex(index);
+        }
+    }
+    if (m_playbackAudioWarpModeCombo) {
+        const int index =
+            m_playbackAudioWarpModeCombo->findData(playbackAudioWarpModeToString(normalizedWarpMode));
+        if (index >= 0 && m_playbackAudioWarpModeCombo->currentIndex() != index) {
+            QSignalBlocker blocker(m_playbackAudioWarpModeCombo);
+            m_playbackAudioWarpModeCombo->setCurrentIndex(index);
+        }
+    }
 
+    if (m_audioEngine) {
+        m_audioEngine->setPlaybackWarpMode(normalizedWarpMode);
+        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+    }
+    updatePlaybackTimerInterval();
+    reconcileActivePlaybackAudioState();
     updateTransportLabels();
     if (!m_loadingState) {
         scheduleSaveState();
     }
 }
 
+void EditorWindow::setPlaybackSpeed(qreal speed)
+{
+    PlaybackRuntimeConfig config = playbackRuntimeConfig();
+    config.speed = speed;
+    applyPlaybackRuntimeConfig(config);
+}
+
+void EditorWindow::setPlaybackClockSource(PlaybackClockSource source)
+{
+    PlaybackRuntimeConfig config = playbackRuntimeConfig();
+    config.clockSource = source;
+    applyPlaybackRuntimeConfig(config);
+}
+
+void EditorWindow::setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode)
+{
+    PlaybackRuntimeConfig config = playbackRuntimeConfig();
+    config.audioWarpMode = mode;
+    applyPlaybackRuntimeConfig(config);
+}
+
+bool EditorWindow::shouldUseAudioMasterClock() const
+{
+    return ::shouldUseAudioMasterClock(m_playbackClockSource,
+                                       m_playbackAudioWarpMode,
+                                       m_playbackSpeed,
+                                       m_audioEngine && m_audioEngine->hasPlayableAudio());
+}
+
+qreal EditorWindow::effectiveAudioWarpRate() const
+{
+    return effectivePlaybackAudioWarpRate(m_playbackSpeed, m_playbackAudioWarpMode);
+}
+
+void EditorWindow::reconcileActivePlaybackAudioState()
+{
+    if (!playbackActive() || !m_audioEngine || !m_timeline) {
+        return;
+    }
+    const PlaybackAudioWarpMode runtimeWarpMode =
+        normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
+    const bool canRunAudioAtRequestedSpeed =
+        qAbs(m_playbackSpeed - 1.0) < 0.0001 ||
+        runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
+    const bool shouldRunAudio =
+        m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed;
+    const bool audioRunning = m_audioEngine->audioClockAvailable();
+    if (shouldRunAudio) {
+        m_audioEngine->setPlaybackWarpMode(runtimeWarpMode);
+        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        if (!audioRunning) {
+            m_audioEngine->start(m_timeline->currentFrame());
+        }
+    } else if (audioRunning) {
+        m_audioEngine->stop();
+    }
+}
+
 void EditorWindow::updatePlaybackTimerInterval()
 {
     const qreal speed = qBound<qreal>(0.1, m_playbackSpeed, 3.0);
+    if (!m_timeline) {
+        const int intervalMs = qMax(1, qRound(1000.0 / (kTimelineFps * speed)));
+        m_playbackTimer.setInterval(intervalMs);
+        return;
+    }
 
     // Determine effective FPS for playback timer
     qreal effectiveFps = kTimelineFps;
 
     // If no audio master, use the video clip's FPS
-    if (!m_audioEngine || !m_audioEngine->hasPlayableAudio()) {
+    if (!shouldUseAudioMasterClock()) {
         for (const TimelineClip& clip : m_timeline->clips()) {
             const int64_t currentFrame = m_timeline->currentFrame();
             // Find clip that contains current frame
@@ -2047,21 +1803,20 @@ void EditorWindow::updatePlaybackTimerInterval()
 
 void EditorWindow::setPlaybackActive(bool playing)
 {
-    static constexpr int kPlaybackStartLookaheadFrames = 5;
-    static constexpr int kPlaybackStartLookaheadTimeoutMs = 1200;
-
     if (playing == playbackActive()) {
         updateTransportLabels();
         return;
     }
 
     if (playing) {
+        m_timelineAdvanceCarrySamples = 0.0;
+        m_lastTimelineAdvanceTickMs = nowMs();
         if (m_preview &&
-            !m_preview->warmPlaybackLookahead(kPlaybackStartLookaheadFrames,
-                                              kPlaybackStartLookaheadTimeoutMs)) {
+            !m_preview->warmPlaybackLookahead(m_playbackStartLookaheadFrames,
+                                              m_playbackStartLookaheadTimeoutMs)) {
             qWarning().noquote()
                 << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for %1 buffered future frames timed out")
-                       .arg(kPlaybackStartLookaheadFrames);
+                       .arg(m_playbackStartLookaheadFrames);
             updateTransportLabels();
             return;
         }
@@ -2070,8 +1825,17 @@ void EditorWindow::setPlaybackActive(bool playing)
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(
+                normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode));
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         }
-        if (m_audioEngine && m_audioEngine->hasPlayableAudio()) {
+        const PlaybackAudioWarpMode runtimeWarpMode =
+            normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
+        const bool canRunAudioAtRequestedSpeed =
+            qAbs(m_playbackSpeed - 1.0) < 0.0001 ||
+            runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
+        if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
             m_audioEngine->start(m_timeline->currentFrame());
         }
         if (m_preview) {
@@ -2082,6 +1846,8 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_fastPlaybackActive.store(true);
         m_preview->setPlaybackState(true);
     } else {
+        m_timelineAdvanceCarrySamples = 0.0;
+        m_lastTimelineAdvanceTickMs = 0;
         if (m_audioEngine) {
             m_audioEngine->stop();
         }

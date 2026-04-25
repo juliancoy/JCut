@@ -98,9 +98,10 @@ VideoDecoderThreadingPolicy applyVideoDecoderThreadingPolicy(AVCodecContext* cod
     }
 
     if (softwareH26xCodec) {
-#if LIBAVCODEC_VERSION_MAJOR >= 61
+        // Stability-first policy for software H.264/H.265 decode:
+        // serialize decode operations and default to single-thread decode.
+        // This avoids intermittent crashes seen in multithreaded decode paths.
         policy.serializeH26xSoftwareDecode = true;
-#endif
         switch (h26xThreadingMode) {
         case H26xSoftwareThreadingMode::SingleThread:
             applySingleThreadPolicy();
@@ -117,17 +118,16 @@ VideoDecoderThreadingPolicy applyVideoDecoderThreadingPolicy(AVCodecContext* cod
             break;
         case H26xSoftwareThreadingMode::Auto:
         default:
-#if LIBAVCODEC_VERSION_MAJOR >= 61
             applySingleThreadPolicy();
-#else
-            applyFrameAndSliceThreadPolicy();
-#endif
             break;
         }
         return policy;
     }
 
-    applyFrameAndSliceThreadPolicy();
+    // Stability-first default for all software video decode paths.
+    // FFmpeg frame/slice threading has shown intermittent crashes across codecs
+    // in this environment, so keep software decode single-threaded.
+    applySingleThreadPolicy();
     return policy;
 }
 

@@ -28,7 +28,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     auto *splitter = new QSplitter(Qt::Horizontal, central);
     splitter->setObjectName(QStringLiteral("layout.main_splitter"));
-    splitter->setChildrenCollapsible(false);
+    splitter->setChildrenCollapsible(true);
     splitter->setHandleWidth(6);
     splitter->setStyleSheet(QStringLiteral(
         "QSplitter::handle { background: #1e2a36; }"
@@ -37,6 +37,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     qDebug() << "[STARTUP] Building explorer pane...";
     m_explorerPane = new ExplorerPane(this);
+    m_explorerPane->setObjectName(QStringLiteral("column.explorer"));
     splitter->addWidget(m_explorerPane);
 
     connect(m_explorerPane, &ExplorerPane::fileActivated, this, [this](const QString& filePath) {
@@ -59,11 +60,16 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     qDebug() << "[STARTUP] Building editor pane...";
     QElapsedTimer editorPaneTimer;
     editorPaneTimer.start();
-    splitter->addWidget(buildEditorPane());
+    QWidget* editorPane = buildEditorPane();
+    if (editorPane) {
+        editorPane->setObjectName(QStringLiteral("column.editor"));
+    }
+    splitter->addWidget(editorPane);
     m_explorerPane->setPreviewWindow(m_preview);
     qDebug() << "[STARTUP] Editor pane built in" << editorPaneTimer.elapsed() << "ms";
 
     m_inspectorPane = new InspectorPane(this);
+    m_inspectorPane->setObjectName(QStringLiteral("column.inspector"));
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorTabs && m_preview) {
@@ -115,6 +121,9 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setStretchFactor(2, 0);
+    splitter->setCollapsible(0, true);
+    splitter->setCollapsible(1, true);
+    splitter->setCollapsible(2, true);
     splitter->setSizes({320, 900, 280});
 
     setCentralWidget(central);
@@ -242,7 +251,7 @@ void EditorWindow::adjustGlobalFontSize(int deltaPoints)
 
 void EditorWindow::setupHeartbeat()
 {
-    m_mainThreadHeartbeatTimer.setInterval(100);
+    m_mainThreadHeartbeatTimer.setInterval(m_mainThreadHeartbeatIntervalMs);
     connect(&m_mainThreadHeartbeatTimer, &QTimer::timeout, this, [this]() {
         m_lastMainThreadHeartbeatMs.store(nowMs());
     });
@@ -256,7 +265,7 @@ void EditorWindow::setupHeartbeat()
 void EditorWindow::setupStateSaveTimer()
 {
     m_stateSaveTimer.setSingleShot(true);
-    m_stateSaveTimer.setInterval(250);
+    m_stateSaveTimer.setInterval(m_stateSaveDebounceIntervalMs);
     connect(&m_stateSaveTimer, &QTimer::timeout, this, [this]() { saveStateNow(); });
 }
 
@@ -313,8 +322,15 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             };
         },
         [this]() { return profilingSnapshot(); },
-        [this]() { if (m_preview) m_preview->resetProfilingStats(); },
+        [this]() {
+            if (m_preview) m_preview->resetProfilingStats();
+            resetTranscriptSpeakerTrackingProfiling();
+        },
         [this](int64_t frame) { setCurrentFrame(frame, false); },
+        [this]() { return throttleConfigSnapshot(); },
+        [this](const QJsonObject& patch) { return applyThrottleConfigPatch(patch); },
+        [this]() { return playbackConfigSnapshot(); },
+        [this](const QJsonObject& patch) { return applyPlaybackConfigPatch(patch); },
         nullptr, // renderResultCallback (empty/default)
         this);
     m_controlServer->start(controlPort);
@@ -325,6 +341,16 @@ void EditorWindow::setupAudioEngine()
 {
     m_audioEngine = std::make_unique<AudioEngine>();
     m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+    m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+    m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+    m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+    // Pre-warm audio backend and decode workers off the startup event loop so
+    // first playback doesn't pay full initialization/decode startup latency.
+    QTimer::singleShot(0, this, [this]() {
+        if (m_audioEngine) {
+            m_audioEngine->initialize();
+        }
+    });
 }
 
 void EditorWindow::setupStartupLoad()

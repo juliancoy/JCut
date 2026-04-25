@@ -1,8 +1,10 @@
 #include "editor.h"
 #include "history_tab.h"
 #include "playback_debug.h"
+#include "transform_skip_aware_timing.h"
 
 #include <QColorDialog>
+#include <QMessageBox>
 
 using namespace editor;
 
@@ -110,10 +112,7 @@ void EditorWindow::createTranscriptTab()
             m_inspectorPane->transcriptScriptVersionCombo(),
             m_inspectorPane->transcriptNewVersionButton(),
             m_inspectorPane->transcriptDeleteVersionButton(),
-            m_inspectorPane->transcriptShowExcludedLinesCheckBox(),
-            m_inspectorPane->speakersInspectorClipLabel(),
-            m_inspectorPane->speakersInspectorDetailsLabel(),
-            m_inspectorPane->speakersTable()},
+            m_inspectorPane->transcriptShowExcludedLinesCheckBox()},
         TranscriptTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
@@ -126,9 +125,13 @@ void EditorWindow::createTranscriptTab()
             [this]() { return effectivePlaybackRanges(); },
             [this](int64_t frame) { setCurrentFrame(frame); }});
     m_transcriptTab->wire();
+    m_transcriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
 
     connect(m_transcriptTab.get(), &TranscriptTab::transcriptDocumentChanged, this, [this]() {
         m_transcriptEngine.invalidateCache();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        setTransformSkipAwareTimelineRanges(
+            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
         if (m_preview) {
             if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
                 m_preview->invalidateTranscriptOverlayCache(clip->filePath);
@@ -136,22 +139,81 @@ void EditorWindow::createTranscriptTab()
                 m_preview->invalidateTranscriptOverlayCache();
             }
         }
-        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         }
         m_inspectorPane->refresh();
     });
 
     connect(m_transcriptTab.get(), &TranscriptTab::speechFilterParametersChanged, this, [this]() {
+        m_transcriptPrependMs = m_transcriptTab->transcriptPrependMs();
+        m_transcriptPostpendMs = m_transcriptTab->transcriptPostpendMs();
+        m_speechFilterFadeSamples = m_transcriptTab->speechFilterFadeSamples();
         m_transcriptEngine.invalidateCache();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        setTransformSkipAwareTimelineRanges(
+            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        }
+        m_inspectorPane->refresh();
+    });
+}
+
+void EditorWindow::createSpeakersTab()
+{
+    m_speakersTab = std::make_unique<SpeakersTab>(
+        SpeakersTab::Widgets{
+            m_inspectorPane->speakersInspectorClipLabel(),
+            m_inspectorPane->speakersInspectorDetailsLabel(),
+            m_inspectorPane->speakersTable(),
+            m_inspectorPane->speakerSetReference1Button(),
+            m_inspectorPane->speakerSetReference2Button(),
+            m_inspectorPane->speakerPickReference1Button(),
+            m_inspectorPane->speakerPickReference2Button(),
+            m_inspectorPane->speakerPreviousSegmentButton(),
+            m_inspectorPane->speakerNextSegmentButton(),
+            m_inspectorPane->speakerClearReferencesButton(),
+            m_inspectorPane->speakerRunAutoTrackButton(),
+            m_inspectorPane->speakerTrackingStatusLabel()},
+        SpeakersTab::Dependencies{
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); },
+            [this]() { m_inspectorPane->refresh(); },
+            [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
+            [this](int64_t frame) { setCurrentFrame(frame); }});
+    m_speakersTab->wire();
+
+    connect(m_speakersTab.get(), &SpeakersTab::transcriptDocumentChanged, this, [this]() {
+        m_transcriptEngine.invalidateCache();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        setTransformSkipAwareTimelineRanges(
+            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
+        if (m_preview) {
+            if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
+                m_preview->invalidateTranscriptOverlayCache(clip->filePath);
+            } else {
+                m_preview->invalidateTranscriptOverlayCache();
+            }
+        }
+        if (m_preview) m_preview->setExportRanges(ranges);
+        if (m_audioEngine) {
+            m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         }
         m_inspectorPane->refresh();
     });
@@ -443,12 +505,96 @@ void EditorWindow::createHistoryTab()
     m_historyTab->wire();
 }
 
+void EditorWindow::createSyncTab()
+{
+    m_syncTab = std::make_unique<SyncTab>(
+        SyncTab::Widgets{
+            m_syncInspectorClipLabel,
+            m_syncInspectorDetailsLabel,
+            m_syncTable,
+            m_clearAllSyncPointsButton},
+        SyncTab::Dependencies{
+            [this]() -> const TimelineClip* { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() -> QVector<RenderSyncMarker> { return m_timeline ? m_timeline->renderSyncMarkers() : QVector<RenderSyncMarker>{}; },
+            [this](const QVector<RenderSyncMarker>& markers) { if (m_timeline) m_timeline->setRenderSyncMarkers(markers); },
+            [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
+            [this](int64_t frame) { setCurrentFrame(frame); },
+            [this](const QString& clipId) { return clipLabelForId(clipId); },
+            [this](const QString& clipId) { return clipColorForId(clipId); },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); },
+            [this](int markerCount) -> bool {
+                const int response = QMessageBox::question(
+                    this,
+                    QStringLiteral("Clear All Sync Points"),
+                    QStringLiteral("Remove all %1 sync points from the timeline?").arg(markerCount),
+                    QMessageBox::Yes | QMessageBox::No,
+                    QMessageBox::No);
+                return response == QMessageBox::Yes;
+            },
+            [this]() {
+                QMessageBox::information(this,
+                                         QStringLiteral("Clear Sync Points"),
+                                         QStringLiteral("There are no sync points to clear."));
+            }});
+    m_syncTab->wire();
+}
+
+void EditorWindow::createTracksTab()
+{
+    m_tracksTab = std::make_unique<TracksTab>(
+        TracksTab::Widgets{m_inspectorPane ? m_inspectorPane->tracksTable() : nullptr},
+        TracksTab::Dependencies{
+            [this]() -> QVector<TimelineTrack> { return m_timeline ? m_timeline->tracks() : QVector<TimelineTrack>{}; },
+            [this](int trackIndex) -> bool { return m_timeline ? m_timeline->trackHasVisualClips(trackIndex) : false; },
+            [this](int trackIndex) -> TrackVisualMode { return m_timeline ? m_timeline->trackVisualMode(trackIndex) : TrackVisualMode::Enabled; },
+            [this](int trackIndex) -> bool { return m_timeline ? m_timeline->trackHasAudioClips(trackIndex) : false; },
+            [this](int trackIndex) -> bool { return m_timeline ? m_timeline->trackAudioEnabled(trackIndex) : false; },
+            [this](int trackIndex, TrackVisualMode mode) -> bool { return m_timeline ? m_timeline->updateTrackVisualMode(trackIndex, mode) : false; },
+            [this](int trackIndex, bool enabled) -> bool { return m_timeline ? m_timeline->updateTrackAudioEnabled(trackIndex, enabled) : false; },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refresh(); },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); }});
+    m_tracksTab->wire();
+}
+
+void EditorWindow::createPropertiesTab()
+{
+    m_propertiesTab = std::make_unique<PropertiesTab>(
+        PropertiesTab::Widgets{
+            m_clipInspectorClipLabel,
+            m_clipProxyUsageLabel,
+            m_clipPlaybackSourceLabel,
+            m_clipOriginalInfoLabel,
+            m_clipProxyInfoLabel,
+            m_clipPlaybackRateSpin,
+            m_trackInspectorLabel,
+            m_trackInspectorDetailsLabel,
+            m_trackNameEdit,
+            m_trackHeightSpin,
+            m_trackVisualModeCombo,
+            m_trackAudioEnabledCheckBox,
+            m_trackCrossfadeSecondsSpin,
+            m_trackCrossfadeButton},
+        PropertiesTab::Dependencies{
+            [this]() -> const TimelineClip* { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this]() -> const TimelineTrack* { return m_timeline ? m_timeline->selectedTrack() : nullptr; },
+            [this]() -> int { return m_timeline ? m_timeline->selectedTrackIndex() : -1; },
+            [this]() -> QVector<TimelineClip> { return m_timeline ? m_timeline->clips() : QVector<TimelineClip>{}; },
+            [this](const TimelineClip& clip) { return playbackProxyPathForClip(clip); },
+            [this](const TimelineClip& clip) { return playbackMediaPathForClip(clip); },
+            [this](const TimelineClip& clip, const MediaProbeResult* knownProbe) { return clipFileInfoSummary(clip.filePath, knownProbe); },
+            [this](const QString& path) { return clipFileInfoSummary(path); },
+            [this](const TimelineClip& clip) { return defaultProxyOutputPath(clip); }});
+}
+
 void EditorWindow::setupTabs()
 {
     createOutputTab();
     createProfileTab();
     createProjectsTab();
     createTranscriptTab();
+    createSpeakersTab();
     createGradingTab();
     createOpacityTab();
     createEffectsTab();
@@ -457,6 +603,9 @@ void EditorWindow::setupTabs()
     createVideoKeyframeTab();
     createClipsTab();
     createHistoryTab();
+    createSyncTab();
+    createTracksTab();
+    createPropertiesTab();
 
     // Ensure correction draw mode is disabled when Corrections tab is not selected
     if (m_inspectorPane && m_inspectorPane->tabs()) {
@@ -487,18 +636,17 @@ void EditorWindow::setupInspectorRefreshRouting()
         m_effectsTab->refresh();
         if (m_correctionsTab) m_correctionsTab->refresh();
         m_titlesTab->refresh();
-        refreshSyncInspector();
+        if (m_syncTab) m_syncTab->refresh();
         m_transcriptTab->refresh();
-        refreshClipInspector();
+        if (m_speakersTab) m_speakersTab->refresh();
+        if (m_propertiesTab) m_propertiesTab->refresh();
         m_videoKeyframeTab->refresh();
         m_outputTab->refresh();
         m_profileTab->refresh();
         m_projectsTab->refresh();
         if (m_clipsTab) m_clipsTab->refresh();
         if (m_historyTab) m_historyTab->refresh();
-        if (m_inspectorPane && m_inspectorPane->tracksTable()) {
-            refreshTracksTab();
-        }
+        if (m_tracksTab) m_tracksTab->refresh();
 
         const qint64 elapsedMs = refreshTimer.elapsed();
         m_lastInspectorRefreshDurationMs.store(elapsedMs);

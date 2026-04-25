@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QImage>
+#include <QJsonObject>
 #include <QPointF>
 #include <QStringList>
 #include <QString>
@@ -190,6 +191,18 @@ enum class RenderSyncAction {
     SkipFrame,
 };
 
+enum class PlaybackClockSource {
+    Auto,
+    Audio,
+    Timeline,
+};
+
+enum class PlaybackAudioWarpMode {
+    Disabled,
+    Varispeed,
+    TimeStretch,
+};
+
 struct RenderSyncMarker {
     QString clipId;
     int64_t frame = 0;
@@ -212,6 +225,7 @@ struct MediaProbeResult {
 struct TranscriptWord {
     int64_t startFrame = 0;
     int64_t endFrame = 0;
+    QString speaker;
     QString text;
     bool skipped = false;
 };
@@ -265,6 +279,19 @@ QString trackVisualModeLabel(TrackVisualMode mode);
 QString renderSyncActionToString(RenderSyncAction action);
 RenderSyncAction renderSyncActionFromString(const QString& value);
 QString renderSyncActionLabel(RenderSyncAction action);
+QString playbackClockSourceToString(PlaybackClockSource source);
+PlaybackClockSource playbackClockSourceFromString(const QString& value);
+QString playbackClockSourceLabel(PlaybackClockSource source);
+QString playbackAudioWarpModeToString(PlaybackAudioWarpMode mode);
+PlaybackAudioWarpMode playbackAudioWarpModeFromString(const QString& value);
+QString playbackAudioWarpModeLabel(PlaybackAudioWarpMode mode);
+qreal normalizedPlaybackSpeed(qreal speed);
+PlaybackAudioWarpMode normalizedPlaybackAudioWarpMode(qreal playbackSpeed, PlaybackAudioWarpMode mode);
+qreal effectivePlaybackAudioWarpRate(qreal playbackSpeed, PlaybackAudioWarpMode mode);
+bool shouldUseAudioMasterClock(PlaybackClockSource source,
+                               PlaybackAudioWarpMode mode,
+                               qreal playbackSpeed,
+                               bool hasPlayableAudio);
 
 bool clipHasVisuals(const TimelineClip& clip);
 bool clipIsAudioOnly(const TimelineClip& clip);
@@ -340,6 +367,9 @@ int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
 int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
                                             int64_t timelineSample,
                                             const QVector<RenderSyncMarker>& markers);
+int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
+                                               int64_t timelineSample,
+                                               const QVector<RenderSyncMarker>& markers);
 
 MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds = 4.0);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
@@ -360,8 +390,23 @@ QString imageSequenceDisplayLabel(const QString& path);
 QString transcriptPathForClipFile(const QString& filePath);
 QString transcriptEditablePathForClipFile(const QString& filePath);
 QString transcriptWorkingPathForClipFile(const QString& filePath);
+QStringList transcriptCutPathsForClipFile(const QString& filePath);
+QString activeTranscriptPathForClipFile(const QString& filePath);
+void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath);
+void clearActiveTranscriptPathForClipFile(const QString& filePath);
+void clearAllActiveTranscriptPaths();
 bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* editablePathOut = nullptr);
 QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath);
+QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
+                                                const QVector<TranscriptSection>& sections,
+                                                int64_t sourceFrame,
+                                                bool* okOut = nullptr);
+void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath = QString());
+QJsonObject transcriptSpeakerTrackingConfigSnapshot();
+bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch,
+                                               QString* errorOut = nullptr);
+QJsonObject transcriptSpeakerTrackingProfilingSnapshot();
+void resetTranscriptSpeakerTrackingProfiling();
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines);
 TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section,
                                                int64_t sourceFrame,

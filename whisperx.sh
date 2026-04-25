@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Keep project-relative files next to this script.
+PROJECT_ROOT="$SCRIPT_DIR"
 TOKEN_FILE="$PROJECT_ROOT/hftoken.txt"
 CACHE_DIR="$PROJECT_ROOT/.cache"
 DOCKER_INSTALL_URL="https://docs.docker.com/engine/install/"

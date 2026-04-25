@@ -89,7 +89,7 @@ QVector<ExportRangeSegment> subtractRanges(const QVector<ExportRangeSegment>& ba
 
 QString TranscriptEngine::transcriptPathForClip(const TimelineClip &clip) const
     {
-        return transcriptWorkingPathForClipFile(clip.filePath);
+        return activeTranscriptPathForClipFile(clip.filePath);
     }
 
 QString TranscriptEngine::secondsToTranscriptTime(double seconds) const
@@ -246,10 +246,16 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
         QVector<ExportRangeSegment> resolvedBaseRanges = baseRanges;
         if (resolvedBaseRanges.isEmpty())
         {
-            int64_t endFrame = 0;
+            int64_t endFrame = -1;
             for (const TimelineClip &clip : clips)
             {
-                endFrame = qMax(endFrame, clip.startFrame + clip.durationFrames);
+                if (clip.durationFrames <= 0) {
+                    continue;
+                }
+                endFrame = qMax(endFrame, clip.startFrame + clip.durationFrames - 1);
+            }
+            if (endFrame < 0) {
+                return {};
             }
             resolvedBaseRanges.push_back(ExportRangeSegment{0, endFrame});
         }
@@ -277,6 +283,11 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
             {
                 continue;
             }
+
+            filteredClipCoverage.push_back(ExportRangeSegment{
+                clip.startFrame,
+                clip.startFrame + clip.durationFrames - 1,
+            });
 
             // Build source word ranges from transcript
             QVector<ExportRangeSegment> sourceWordRanges;
@@ -320,11 +331,6 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
             {
                 continue;
             }
-
-            filteredClipCoverage.push_back(ExportRangeSegment{
-                clip.startFrame,
-                clip.startFrame + clip.durationFrames - 1,
-            });
 
             // Sort and merge overlapping word ranges at source level
             const QVector<ExportRangeSegment> mergedSourceWordRanges = mergeRanges(sourceWordRanges);

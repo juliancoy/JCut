@@ -73,6 +73,10 @@ public:
                         std::function<QJsonObject()> profilingCallback,
                         std::function<void()> resetProfilingCallback,
                         std::function<void(int64_t)> setPlayheadCallback,
+                        std::function<QJsonObject()> getThrottlesCallback,
+                        std::function<QJsonObject(const QJsonObject&)> setThrottlesCallback,
+                        std::function<QJsonObject()> getPlaybackConfigCallback,
+                        std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
                         std::function<QJsonObject()> renderResultCallback);
     ~ControlServerWorker() override;
 
@@ -126,7 +130,7 @@ private:
 
     void onReadyRead(QTcpSocket* socket);
     QJsonObject fastSnapshot() const;
-    static bool uiThreadResponsive(const QJsonObject& snapshot);
+    bool uiThreadResponsive(const QJsonObject& snapshot) const;
     void writeResponse(QTcpSocket* socket, int statusCode, const QByteArray& body, const QByteArray& contentType);
     void writeJson(QTcpSocket* socket, int statusCode, const QJsonObject& object);
     void writeError(QTcpSocket* socket, int statusCode, const QString& error);
@@ -144,6 +148,8 @@ private:
     bool handleDecodeRoutes(QTcpSocket* socket, const Request& request);
     bool handleHistoryRoutes(QTcpSocket* socket, const Request& request);
     bool handleProfileRoutes(QTcpSocket* socket, const Request& request);
+    bool handleThrottleRoutes(QTcpSocket* socket, const Request& request);
+    bool handlePlaybackRoutes(QTcpSocket* socket, const Request& request);
     bool handleDebugRoutes(QTcpSocket* socket, const Request& request);
     bool handleRenderRoutes(QTcpSocket* socket, const Request& request);
     bool handleHardwareRoutes(QTcpSocket* socket, const Request& request);
@@ -158,6 +164,10 @@ private:
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
+    std::function<QJsonObject()> m_getThrottlesCallback;
+    std::function<QJsonObject(const QJsonObject&)> m_setThrottlesCallback;
+    std::function<QJsonObject()> m_getPlaybackConfigCallback;
+    std::function<QJsonObject(const QJsonObject&)> m_setPlaybackConfigCallback;
     std::function<QJsonObject()> m_renderResultCallback;
     std::unique_ptr<QTcpServer> m_server;
     std::unique_ptr<QTimer> m_refreshTimer;
@@ -206,6 +216,28 @@ private:
     qint64 m_screenshotRateLimitedCount = 0;
     qint64 m_lastUiRefreshTimeoutMs = 0;
     bool m_cacheRefreshPausedForPlayback = false;
+    int m_uiInvokeTimeoutMs = 500;
+    int m_uiBackgroundInvokeTimeoutMs = 200;
+    qint64 m_uiHeartbeatStaleMs = 1000;
+    qint64 m_profileCacheFreshMs = 250;
+    qint64 m_backgroundRefreshTickMs = 50;
+    qint64 m_profileRefreshIntervalMs = 100;
+    qint64 m_profileDemandWindowMs = 15000;
+    qint64 m_snapshotDemandWindowMs = 15000;
+    qint64 m_stateRefreshIntervalMs = 100;
+    qint64 m_projectRefreshIntervalMs = 750;
+    qint64 m_historyRefreshIntervalMs = 400;
+    qint64 m_uiTreeRefreshIntervalMs = 250;
+    qint64 m_idleStateRefreshIntervalMs = 5000;
+    qint64 m_idleProjectRefreshIntervalMs = 8000;
+    qint64 m_idleHistoryRefreshIntervalMs = 8000;
+    qint64 m_idleUiTreeRefreshIntervalMs = 12000;
+    qint64 m_screenshotMinIntervalMs = 250;
+    qint64 m_uiRefreshCooldownAfterTimeoutMs = 750;
+    qint64 m_frameTraceSampleCap = 300;
+    qint64 m_freezeEventCap = 64;
+    qint64 m_stallDetectHeartbeatMs = 300;
+    int m_stallConsecutiveThreshold = 3;
     QJsonArray m_frameTraceSamples;
     QJsonArray m_freezeEvents;
     bool m_stallActive = false;

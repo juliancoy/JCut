@@ -58,6 +58,30 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
+    // Shift+Click provides a generic normalized point pick callback for
+    // speaker anchoring workflows without interfering with default drag behavior.
+    if ((event->modifiers() & Qt::ShiftModifier) && speakerPointRequested) {
+        QString hitClipId;
+        if (!m_selectedClipId.isEmpty()) {
+            const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
+            if (selectedInfo.bounds.contains(event->position())) {
+                hitClipId = m_selectedClipId;
+            }
+        }
+        if (hitClipId.isEmpty()) {
+            hitClipId = clipIdAtPosition(event->position());
+        }
+        if (!hitClipId.isEmpty()) {
+            const PreviewOverlayInfo info = m_overlayInfo.value(hitClipId);
+            if (info.bounds.isValid() && info.bounds.width() > 1.0 && info.bounds.height() > 1.0) {
+                const QPointF normalized = mapScreenPointToNormalizedClip(info, event->position());
+                speakerPointRequested(hitClipId, normalized.x(), normalized.y());
+                event->accept();
+                return;
+            }
+        }
+    }
+
     const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
     const bool selectedClipIsTitle = clipIdIsTitle(m_selectedClipId);
     const bool allowSelectedClipInteraction =
@@ -275,8 +299,8 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
     const QRect baseRect = previewCanvasBaseRect();
     const QRect oldRect = scaledCanvasRect(baseRect);
     const qreal factor = event->angleDelta().y() > 0 ? 1.1 : (1.0 / 1.1);
-    // Extended zoom range: 0.1x to 5.0x (allows further zoom out)
-    const qreal nextZoom = qBound<qreal>(0.1, m_previewZoom * factor, 5.0);
+    // Extended zoom range: 0.1x to 20.0x
+    const qreal nextZoom = qBound<qreal>(0.1, m_previewZoom * factor, 20.0);
     const QPointF anchor = QPointF((event->position().x() - oldRect.left()) / qMax(1.0, static_cast<qreal>(oldRect.width())),
                                    (event->position().y() - oldRect.top()) / qMax(1.0, static_cast<qreal>(oldRect.height())));
     m_previewZoom = nextZoom;

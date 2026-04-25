@@ -174,3 +174,12 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
                       sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames))) - 1);
     return qMax<int64_t>(0, qMin<int64_t>(sourceSample, maxSourceSample));
 }
+
+int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
+                                               int64_t timelineSample,
+                                               const QVector<RenderSyncMarker>& markers) {
+    const int64_t sourceSample = sourceSampleForClipAtTimelineSample(clip, timelineSample, markers);
+    const qreal sourceSeconds =
+        static_cast<qreal>(sourceSample) / static_cast<qreal>(kAudioSampleRate);
+    return qMax<int64_t>(0, static_cast<int64_t>(std::floor(sourceSeconds * static_cast<qreal>(kTimelineFps))));
+}

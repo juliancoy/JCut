@@ -2,6 +2,9 @@
 #include "preview_debug.h"
 #include "debug_controls.h"
 
+#include <QSet>
+#include <limits>
+
 using namespace editor;
 
 QJsonObject EditorWindow::profilingSnapshot() const
@@ -38,6 +41,159 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("active"), m_renderInProgress},
         {QStringLiteral("live"), m_liveRenderProfile},
         {QStringLiteral("last"), m_lastRenderProfile}};
+    snapshot[QStringLiteral("speaker_tracking")] = transcriptSpeakerTrackingProfilingSnapshot();
 
     return snapshot;
+}
+
+QJsonObject EditorWindow::throttleConfigSnapshot() const
+{
+    const QJsonObject speakerTrackingConfig = transcriptSpeakerTrackingConfigSnapshot();
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("playback_ui_sync_min_interval_ms"), m_playbackUiSyncMinIntervalMs},
+        {QStringLiteral("playback_state_save_min_interval_ms"), m_playbackStateSaveMinIntervalMs},
+        {QStringLiteral("slow_seek_warn_threshold_ms"), m_slowSeekWarnThresholdMs},
+        {QStringLiteral("playback_start_lookahead_frames"), m_playbackStartLookaheadFrames},
+        {QStringLiteral("playback_start_lookahead_timeout_ms"), m_playbackStartLookaheadTimeoutMs},
+        {QStringLiteral("main_thread_heartbeat_interval_ms"), m_mainThreadHeartbeatIntervalMs},
+        {QStringLiteral("state_save_debounce_interval_ms"), m_stateSaveDebounceIntervalMs},
+        {QStringLiteral("transcript_manual_selection_hold_ms"), m_transcriptManualSelectionHoldMs},
+        {QStringLiteral("audio_clock_stall_threshold_ticks"), m_audioClockStallThresholdTicks},
+        {QStringLiteral("speaker_tracking_max_speed_permille_per_frame"),
+         speakerTrackingConfig.value(QStringLiteral("max_speed_permille_per_frame")).toInt(40)},
+        {QStringLiteral("speaker_tracking_smoothing_permille"),
+         speakerTrackingConfig.value(QStringLiteral("smoothing_permille")).toInt(800)}
+    };
+}
+
+QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
+{
+    auto parsePositiveInt = [](const QJsonObject& obj, const QString& key, int* target, QString* error) -> bool {
+        if (!obj.contains(key)) return true;
+        bool ok = false;
+        const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+        if (!ok || value <= 0 || value > std::numeric_limits<int>::max()) {
+            if (error) *error = QStringLiteral("%1 must be a positive integer").arg(key);
+            return false;
+        }
+        *target = static_cast<int>(value);
+        return true;
+    };
+    auto parsePositiveMs = [](const QJsonObject& obj, const QString& key, qint64* target, QString* error) -> bool {
+        if (!obj.contains(key)) return true;
+        bool ok = false;
+        const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+        if (!ok || value <= 0) {
+            if (error) *error = QStringLiteral("%1 must be a positive integer").arg(key);
+            return false;
+        }
+        *target = value;
+        return true;
+    };
+
+    QString error;
+    if (!parsePositiveMs(patch, QStringLiteral("playback_ui_sync_min_interval_ms"), &m_playbackUiSyncMinIntervalMs, &error) ||
+        !parsePositiveMs(patch, QStringLiteral("playback_state_save_min_interval_ms"), &m_playbackStateSaveMinIntervalMs, &error) ||
+        !parsePositiveMs(patch, QStringLiteral("slow_seek_warn_threshold_ms"), &m_slowSeekWarnThresholdMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("playback_start_lookahead_frames"), &m_playbackStartLookaheadFrames, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("playback_start_lookahead_timeout_ms"), &m_playbackStartLookaheadTimeoutMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("main_thread_heartbeat_interval_ms"), &m_mainThreadHeartbeatIntervalMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("state_save_debounce_interval_ms"), &m_stateSaveDebounceIntervalMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("transcript_manual_selection_hold_ms"), &m_transcriptManualSelectionHoldMs, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("audio_clock_stall_threshold_ticks"), &m_audioClockStallThresholdTicks, &error)) {
+        return QJsonObject{
+            {QStringLiteral("ok"), false},
+            {QStringLiteral("error"), error}
+        };
+    }
+    QJsonObject speakerTrackingPatch;
+    if (patch.contains(QStringLiteral("speaker_tracking_max_speed_permille_per_frame"))) {
+        speakerTrackingPatch[QStringLiteral("max_speed_permille_per_frame")] =
+            patch.value(QStringLiteral("speaker_tracking_max_speed_permille_per_frame"));
+    }
+    if (patch.contains(QStringLiteral("speaker_tracking_smoothing_permille"))) {
+        speakerTrackingPatch[QStringLiteral("smoothing_permille")] =
+            patch.value(QStringLiteral("speaker_tracking_smoothing_permille"));
+    }
+    if (!speakerTrackingPatch.isEmpty() &&
+        !applyTranscriptSpeakerTrackingConfigPatch(speakerTrackingPatch, &error)) {
+        return QJsonObject{
+            {QStringLiteral("ok"), false},
+            {QStringLiteral("error"), error}
+        };
+    }
+
+    m_mainThreadHeartbeatTimer.setInterval(m_mainThreadHeartbeatIntervalMs);
+    m_stateSaveTimer.setInterval(m_stateSaveDebounceIntervalMs);
+    if (m_transcriptTab) {
+        m_transcriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
+    }
+    return throttleConfigSnapshot();
+}
+
+QJsonObject EditorWindow::playbackConfigSnapshot() const
+{
+    const PlaybackRuntimeConfig config = playbackRuntimeConfig();
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("playback_speed"), config.speed},
+        {QStringLiteral("clock_source"), playbackClockSourceToString(config.clockSource)},
+        {QStringLiteral("audio_warp_mode"), playbackAudioWarpModeToString(config.audioWarpMode)}
+    };
+}
+
+QJsonObject EditorWindow::applyPlaybackConfigPatch(const QJsonObject& patch)
+{
+    QString error;
+
+    if (patch.contains(QStringLiteral("playback_speed"))) {
+        bool ok = false;
+        const qreal speed = patch.value(QStringLiteral("playback_speed")).toVariant().toDouble(&ok);
+        if (!ok || speed <= 0.0) {
+            error = QStringLiteral("playback_speed must be a positive number");
+            return QJsonObject{
+                {QStringLiteral("ok"), false},
+                {QStringLiteral("error"), error}
+            };
+        }
+        setPlaybackSpeed(speed);
+    }
+
+    if (patch.contains(QStringLiteral("clock_source"))) {
+        const QString raw = patch.value(QStringLiteral("clock_source")).toString().trimmed().toLower();
+        static const QSet<QString> validValues = {
+            QStringLiteral("auto"),
+            QStringLiteral("audio"),
+            QStringLiteral("timeline")
+        };
+        if (!validValues.contains(raw)) {
+            error = QStringLiteral("clock_source must be one of: auto, audio, timeline");
+            return QJsonObject{
+                {QStringLiteral("ok"), false},
+                {QStringLiteral("error"), error}
+            };
+        }
+        setPlaybackClockSource(playbackClockSourceFromString(raw));
+    }
+
+    if (patch.contains(QStringLiteral("audio_warp_mode"))) {
+        const QString raw = patch.value(QStringLiteral("audio_warp_mode")).toString().trimmed().toLower();
+        static const QSet<QString> validValues = {
+            QStringLiteral("disabled"),
+            QStringLiteral("varispeed"),
+            QStringLiteral("time_stretch"),
+            QStringLiteral("time-stretch")
+        };
+        if (!validValues.contains(raw)) {
+            error = QStringLiteral("audio_warp_mode must be one of: disabled, varispeed, time_stretch");
+            return QJsonObject{
+                {QStringLiteral("ok"), false},
+                {QStringLiteral("error"), error}
+            };
+        }
+        setPlaybackAudioWarpMode(playbackAudioWarpModeFromString(raw));
+    }
+
+    return playbackConfigSnapshot();
 }

@@ -21,6 +21,10 @@ public:
                            std::function<QJsonObject()> profilingCallback,
                            std::function<void()> resetProfilingCallback,
                            std::function<void(int64_t)> setPlayheadCallback,
+                           std::function<QJsonObject()> getThrottlesCallback,
+                           std::function<QJsonObject(const QJsonObject&)> setThrottlesCallback,
+                           std::function<QJsonObject()> getPlaybackConfigCallback,
+                           std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
                            std::function<QJsonObject()> renderResultCallback,
                            QObject* parent = nullptr);
     ~ControlServer() override;
@@ -39,6 +43,10 @@ private:
     std::function<QJsonObject()> m_profilingCallback;
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
+    std::function<QJsonObject()> m_getThrottlesCallback;
+    std::function<QJsonObject(const QJsonObject&)> m_setThrottlesCallback;
+    std::function<QJsonObject()> m_getPlaybackConfigCallback;
+    std::function<QJsonObject(const QJsonObject&)> m_setPlaybackConfigCallback;
     std::function<QJsonObject()> m_renderResultCallback;
     QObject* m_worker = nullptr;
     std::unique_ptr<QThread> m_thread;

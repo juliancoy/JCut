@@ -22,6 +22,10 @@
 #include "video_keyframe_tab.h"
 #include "clips_tab.h"
 #include "history_tab.h"
+#include "sync_tab.h"
+#include "tracks_tab.h"
+#include "properties_tab.h"
+#include "speakers_tab.h"
 
 #include <QCheckBox>
 #include <QCloseEvent>
@@ -67,6 +71,12 @@ protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
 
 private:
+    struct PlaybackRuntimeConfig {
+        qreal speed = 1.0;
+        PlaybackClockSource clockSource = PlaybackClockSource::Auto;
+        PlaybackAudioWarpMode audioWarpMode = PlaybackAudioWarpMode::Disabled;
+    };
+
     QWidget *buildEditorPane();
 
     void loadState();
@@ -87,6 +97,10 @@ private:
     void updateTransportLabels();
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
+    QJsonObject throttleConfigSnapshot() const;
+    QJsonObject applyThrottleConfigPatch(const QJsonObject& patch);
+    QJsonObject playbackConfigSnapshot() const;
+    QJsonObject applyPlaybackConfigPatch(const QJsonObject& patch);
 
     void syncTranscriptTableToPlayhead();
     void syncKeyframeTableToPlayhead();
@@ -149,6 +163,9 @@ private:
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
+    int64_t nextPlaybackSample(int64_t currentSample,
+                               int64_t deltaSamples,
+                               const QVector<ExportRangeSegment>& ranges) const;
     int64_t stepForwardFrame(int64_t currentFrame) const;
     int64_t stepBackwardFrame(int64_t currentFrame) const;
     QString clipLabelForId(const QString &clipId) const;
@@ -174,6 +191,13 @@ private:
     void setCurrentPlaybackSample(int64_t samplePosition, bool syncAudio = true, bool duringPlayback = false);
     void setCurrentFrame(int64_t frame, bool syncAudio = true);
     void setPlaybackSpeed(qreal speed);
+    void setPlaybackClockSource(PlaybackClockSource source);
+    void setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode);
+    PlaybackRuntimeConfig playbackRuntimeConfig() const;
+    void applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& requestedConfig);
+    bool shouldUseAudioMasterClock() const;
+    qreal effectiveAudioWarpRate() const;
+    void reconcileActivePlaybackAudioState();
     void updatePlaybackTimerInterval();
     void setPlaybackActive(bool playing);
     void togglePlayback();
@@ -219,6 +243,10 @@ private:
     void createVideoKeyframeTab();
     void createClipsTab();
     void createHistoryTab();
+    void createSyncTab();
+    void createTracksTab();
+    void createPropertiesTab();
+    void createSpeakersTab();
 
     QLabel *m_projectSectionLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
@@ -361,9 +389,15 @@ private:
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QCheckBox *m_speechFilterEnabledCheckBox = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
+    QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
+    QComboBox *m_playbackClockSourceCombo = nullptr;
+    QComboBox *m_playbackAudioWarpModeCombo = nullptr;
     int m_transcriptPrependMs = 150;
     int m_transcriptPostpendMs = 70;
     int m_speechFilterFadeSamples = 300;
+    bool m_speechFilterRangeCrossfade = false;
+    PlaybackClockSource m_playbackClockSource = PlaybackClockSource::Auto;
+    PlaybackAudioWarpMode m_playbackAudioWarpMode = PlaybackAudioWarpMode::Disabled;
     mutable TranscriptEngine m_transcriptEngine;
 
     QDoubleSpinBox *m_transcriptOverlayXSpin = nullptr;
@@ -402,6 +436,10 @@ private:
     std::unique_ptr<ProjectsTab> m_projectsTab;
     std::unique_ptr<ClipsTab> m_clipsTab;
     std::unique_ptr<HistoryTab> m_historyTab;
+    std::unique_ptr<SyncTab> m_syncTab;
+    std::unique_ptr<TracksTab> m_tracksTab;
+    std::unique_ptr<PropertiesTab> m_propertiesTab;
+    std::unique_ptr<SpeakersTab> m_speakersTab;
 
     ExplorerPane *m_explorerPane = nullptr;
     InspectorPane *m_inspectorPane = nullptr;
@@ -430,6 +468,8 @@ private:
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
+    double m_timelineAdvanceCarrySamples = 0.0;
+    int64_t m_lastTimelineAdvanceTickMs = 0;
     QTimer m_transcriptClickSeekTimer;
     int64_t m_pendingTranscriptClickTimelineFrame = -1;
     QTimer m_keyframeClickSeekTimer;
@@ -464,7 +504,16 @@ private:
     std::atomic<qint64> m_lastInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_maxInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_inspectorRefreshSlowCount{0};
+    qint64 m_playbackUiSyncMinIntervalMs = 100;
+    qint64 m_playbackStateSaveMinIntervalMs = 1000;
+    qint64 m_slowSeekWarnThresholdMs = 20;
+    int m_playbackStartLookaheadFrames = 5;
+    int m_playbackStartLookaheadTimeoutMs = 1200;
+    int m_mainThreadHeartbeatIntervalMs = 100;
+    int m_stateSaveDebounceIntervalMs = 250;
+    int m_transcriptManualSelectionHoldMs = 1200;
     int m_audioClockStallTicks = 0;
+    int m_audioClockStallThresholdTicks = 1;
 };
 
 } // namespace editor

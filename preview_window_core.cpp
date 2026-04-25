@@ -288,8 +288,8 @@ void PreviewWindow::setBackgroundColor(const QColor& color) {
 }
 
 void PreviewWindow::setPreviewZoom(qreal zoom) {
-    // Clamp to valid range: 0.1x to 5.0x
-    m_previewZoom = qBound<qreal>(0.1, zoom, 5.0);
+    // Clamp to valid range: 0.1x to 20.0x
+    m_previewZoom = qBound<qreal>(0.1, zoom, 20.0);
     scheduleRepaint();
 }
 

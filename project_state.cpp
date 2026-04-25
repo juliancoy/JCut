@@ -499,6 +499,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;
+    root[QStringLiteral("speechFilterRangeCrossfade")] = m_speechFilterRangeCrossfade;
     root[QStringLiteral("transcriptUnifiedEditColors")] =
         m_inspectorPane && m_inspectorPane->transcriptUnifiedEditModeCheckBox()
             ? m_inspectorPane->transcriptUnifiedEditModeCheckBox()->isChecked()
@@ -540,7 +541,12 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("correctionsEnabled")] = m_correctionsEnabled;
     root[QStringLiteral("selectedInspectorTab")] =
         m_inspectorTabs ? m_inspectorTabs->currentIndex() : 0;
-    root[QStringLiteral("playbackSpeed")] = m_playbackSpeed;
+    const PlaybackRuntimeConfig playbackConfig = playbackRuntimeConfig();
+    root[QStringLiteral("playbackSpeed")] = playbackConfig.speed;
+    root[QStringLiteral("playbackClockSource")] =
+        playbackClockSourceToString(playbackConfig.clockSource);
+    root[QStringLiteral("playbackAudioWarpMode")] =
+        playbackAudioWarpModeToString(playbackConfig.audioWarpMode);
     root[QStringLiteral("timelineZoom")] =
         m_timeline ? m_timeline->timelineZoom() : 4.0;
     root[QStringLiteral("timelineVerticalScroll")] =

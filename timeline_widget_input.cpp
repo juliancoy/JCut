@@ -996,6 +996,7 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* propertiesAction = nullptr;
     QAction* refreshMetadataAction = nullptr;
     QAction* transcribeAction = nullptr;
+    QAction* deleteTranscriptAction = nullptr;
     QAction* useProxyAction = nullptr;
     QAction* createProxyAction = nullptr;
     QAction* continueProxyAction = nullptr;
@@ -1069,7 +1070,18 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             clipHasVisuals(m_clips[clipIndex]) &&
             m_clips[clipIndex].mediaType != ClipMediaType::Title &&
             !m_clips[clipIndex].locked);
-        transcribeAction = menu.addAction(QStringLiteral("Transcribe"));
+        QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
+        transcribeAction = transcriptMenu->addAction(QStringLiteral("Transcribe"));
+        deleteTranscriptAction = transcriptMenu->addAction(QStringLiteral("Delete Transcript..."));
+        bool transcriptExists = false;
+        const QStringList transcriptPaths = transcriptCutPathsForClipFile(m_clips[clipIndex].filePath);
+        for (const QString& path : transcriptPaths) {
+            if (QFileInfo::exists(path)) {
+                transcriptExists = true;
+                break;
+            }
+        }
+        deleteTranscriptAction->setEnabled(transcriptExists);
         TimelineClip proxyDetectionClip = m_clips[clipIndex];
         proxyDetectionClip.useProxy = true;
         const QString detectedProxyPath = !m_clips[clipIndex].proxyPath.isEmpty()
@@ -1087,15 +1099,11 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                                         : QStringLiteral("Recreate Proxy..."));
         createProxyAction->setEnabled(canProxy);
         const QFileInfo proxyInfo(detectedProxyPath);
-        const bool proxyFramesPresent =
-            proxyInfo.isDir() &&
-            !QDir(detectedProxyPath)
-                 .entryList({QStringLiteral("frame_*.jpg"), QStringLiteral("frame_*.png")},
-                            QDir::Files,
-                            QDir::Name)
-                 .isEmpty();
         continueProxyAction = proxyMenu->addAction(QStringLiteral("Continue Proxy Gen"));
-        continueProxyAction->setEnabled(canProxy && proxyFramesPresent);
+        // Avoid synchronous directory scans when opening the context menu.
+        // Large proxy/image-sequence directories can contain tens of thousands
+        // of files and entryList() blocks the UI while enumerating all names.
+        continueProxyAction->setEnabled(canProxy && proxyInfo.isDir());
         if (!detectedProxyPath.isEmpty()) {
             deleteProxyAction = proxyMenu->addAction(QStringLiteral("Delete Proxy"));
             deleteProxyAction->setEnabled(canProxy);
@@ -1379,6 +1387,22 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         if (transcribeRequested) {
             const TimelineClip& clip = m_clips[clipIndex];
             transcribeRequested(clip.filePath, clip.label);
+        }
+        return;
+    }
+
+    if (selected == deleteTranscriptAction) {
+        if (deleteTranscriptRequested && clipIndex >= 0) {
+            const TimelineClip& clip = m_clips[clipIndex];
+            const auto confirmation = QMessageBox::warning(
+                this,
+                QStringLiteral("Delete Transcript"),
+                QStringLiteral("This will delete the transcript and all Cuts for this clip.\n\nContinue?"),
+                QMessageBox::Yes | QMessageBox::Cancel,
+                QMessageBox::Cancel);
+            if (confirmation == QMessageBox::Yes) {
+                deleteTranscriptRequested(clip.filePath);
+            }
         }
         return;
     }

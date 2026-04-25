@@ -32,12 +32,14 @@ bool PreviewWindow::clipShowsTranscriptOverlay(const TimelineClip& clip) const {
 void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath) {
     if (clipFilePath.isEmpty()) {
         m_transcriptSectionsCache.clear();
+        invalidateTranscriptSpeakerProfileCache();
         for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
             editor::destroyGlTextureEntry(&it.value());
         }
         m_transcriptTextureCache.clear();
     } else {
         m_transcriptSectionsCache.remove(clipFilePath);
+        invalidateTranscriptSpeakerProfileCache(activeTranscriptPathForClipFile(clipFilePath));
         // Textures are content/style keyed; clear all to avoid keeping stale overlay textures.
         for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
             editor::destroyGlTextureEntry(&it.value());
@@ -51,7 +53,7 @@ const QVector<TranscriptSection>& PreviewWindow::transcriptSectionsForClip(const
     const QString key = clip.filePath;
     auto it = m_transcriptSectionsCache.find(key);
     if (it == m_transcriptSectionsCache.end()) {
-        it = m_transcriptSectionsCache.insert(key, loadTranscriptSections(transcriptWorkingPathForClipFile(clip.filePath)));
+        it = m_transcriptSectionsCache.insert(key, loadTranscriptSections(activeTranscriptPathForClipFile(clip.filePath)));
     }
     return it.value();
 }
@@ -60,7 +62,8 @@ TranscriptOverlayLayout PreviewWindow::transcriptOverlayLayoutForClip(const Time
     if (!clipShowsTranscriptOverlay(clip)) return {};
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     if (sections.isEmpty()) return {};
-    const int64_t sourceFrame = sourceFrameForSample(clip, m_currentSample);
+    const int64_t sourceFrame =
+        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
     for (const TranscriptSection& section : sections) {
         if (sourceFrame < section.startFrame) return {};
         if (sourceFrame <= section.endFrame) {
@@ -76,10 +79,29 @@ TranscriptOverlayLayout PreviewWindow::transcriptOverlayLayoutForClip(const Time
 
 QRectF PreviewWindow::transcriptOverlayRectForTarget(const TimelineClip& clip, const QRect& targetRect) const {
     const QPointF previewScale = previewCanvasScale(targetRect);
+    qreal translationX = clip.transcriptOverlay.translationX;
+    qreal translationY = clip.transcriptOverlay.translationY;
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    if (!transcriptPath.isEmpty()) {
+        const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
+        if (!sections.isEmpty()) {
+            const int64_t sourceFrame =
+                transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+            bool speakerLocationResolved = false;
+            const QPointF speakerLocation = transcriptSpeakerLocationForSourceFrame(
+                transcriptPath, sections, sourceFrame, &speakerLocationResolved);
+            if (speakerLocationResolved) {
+                const qreal centerX = speakerLocation.x() * static_cast<qreal>(targetRect.width());
+                const qreal centerY = speakerLocation.y() * static_cast<qreal>(targetRect.height());
+                translationX = centerX - (targetRect.width() / 2.0);
+                translationY = centerY - (targetRect.height() / 2.0);
+            }
+        }
+    }
     const QSizeF size(qMax<qreal>(40.0, clip.transcriptOverlay.boxWidth * previewScale.x()),
                       qMax<qreal>(20.0, clip.transcriptOverlay.boxHeight * previewScale.y()));
-    const QPointF center(targetRect.center().x() + (clip.transcriptOverlay.translationX * previewScale.x()),
-                         targetRect.center().y() + (clip.transcriptOverlay.translationY * previewScale.y()));
+    const QPointF center(targetRect.center().x() + (translationX * previewScale.x()),
+                         targetRect.center().y() + (translationY * previewScale.y()));
     return QRectF(center.x() - (size.width() / 2.0),
                   center.y() - (size.height() / 2.0),
                   size.width(),

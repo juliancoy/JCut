@@ -1,21 +1,17 @@
 # JCut
 
-JCut is a Qt6/C++ non-linear editor for turning long-form panel video into vertical short-form output (TikTok/Shorts/Reels).
+JCut is a Qt6/C++20 non-linear editor for turning long-form panel video into vertical short-form output (TikTok/Shorts/Reels), with timeline editing, GPU preview compositing, transcript tooling, and offline render/export.
 
-It includes:
-- Multi-track timeline editing
-- OpenGL preview and compositing
-- FFmpeg-backed decode and export pipeline
-- RtAudio-backed playback/mixing
-- Keyframe-driven transform, grading, title, and transcript tools
-- Local control server for automation hooks
+## Docs
 
-## Repository Status
-
-This repository is actively developed. For implementation details, see:
-- `PROFESSIONAL_ARCHITECTURE.md`
-- `DEBUG.md`
-- `ENDPOINT_TESTING_SUMMARY.md`
+- [Architecture](ARCHITECTURE.md)
+- [Features](FEATURES.md)
+- [Tabs](TABS.md)
+- [Transcript Logic](TRANSCRIPT_LOGIC.md)
+- Mermaid sources:
+  - [System Architecture](docs/diagrams/system-architecture.mmd)
+  - [Inspector Tabs](docs/diagrams/inspector-tabs.mmd)
+  - [Playback Data Flow](docs/diagrams/playback-data-flow.mmd)
 
 ## Prerequisites
 
@@ -90,9 +86,3 @@ ctest --test-dir build --output-on-failure
 - `rtaudio/`: audio backend submodule
 - `ffmpeg/`: FFmpeg source submodule
 - `tests/`, `Testing/`: test sources and test artifacts
-
-## Notes
-
-- Build expects FFmpeg pkg-config metadata in `ffmpeg-install/lib/pkgconfig`.
-- `build.sh` handles FFmpeg bootstrap automatically.
-- The CMake target name is `editor`.

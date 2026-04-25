@@ -14,6 +14,10 @@ ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> profilingCallback,
                              std::function<void()> resetProfilingCallback,
                              std::function<void(int64_t)> setPlayheadCallback,
+                             std::function<QJsonObject()> getThrottlesCallback,
+                             std::function<QJsonObject(const QJsonObject&)> setThrottlesCallback,
+                             std::function<QJsonObject()> getPlaybackConfigCallback,
+                             std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
                              std::function<QJsonObject()> renderResultCallback,
                              QObject* parent)
     : QObject(parent)
@@ -25,6 +29,10 @@ ControlServer::ControlServer(QWidget* window,
     , m_profilingCallback(std::move(profilingCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback))
     , m_setPlayheadCallback(std::move(setPlayheadCallback))
+    , m_getThrottlesCallback(std::move(getThrottlesCallback))
+    , m_setThrottlesCallback(std::move(setThrottlesCallback))
+    , m_getPlaybackConfigCallback(std::move(getPlaybackConfigCallback))
+    , m_setPlaybackConfigCallback(std::move(setPlaybackConfigCallback))
     , m_renderResultCallback(std::move(renderResultCallback)) {}
 
 ControlServer::~ControlServer() {
@@ -56,6 +64,10 @@ bool ControlServer::start(quint16 port) {
                                                            m_profilingCallback,
                                                            m_resetProfilingCallback,
                                                            m_setPlayheadCallback,
+                                                           m_getThrottlesCallback,
+                                                           m_setThrottlesCallback,
+                                                           m_getPlaybackConfigCallback,
+                                                           m_setPlaybackConfigCallback,
                                                            m_renderResultCallback);
     m_worker = worker;
     worker->moveToThread(m_thread.get());

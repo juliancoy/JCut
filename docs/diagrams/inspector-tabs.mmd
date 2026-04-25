@@ -1,0 +1,46 @@
+flowchart LR
+    IP[InspectorPane]
+
+    subgraph Creative[Creative]
+        G[Grade]
+        O[Opacity]
+        E[Effects]
+        C[Corrections]
+        T[Titles]
+        K[Keyframes]
+        S[Sync]
+    end
+
+    subgraph Transcript[Transcript]
+        TR[Transcript]
+        SP[Speakers]
+    end
+
+    subgraph Project[Project + System]
+        P[Properties]
+        CL[Clips]
+        H[History]
+        TK[Tracks]
+        PR[Preview]
+        OUT[Output]
+        SYS[System]
+        PJ[Projects]
+    end
+
+    IP --> G
+    IP --> O
+    IP --> E
+    IP --> C
+    IP --> T
+    IP --> K
+    IP --> S
+    IP --> TR
+    IP --> SP
+    IP --> P
+    IP --> CL
+    IP --> H
+    IP --> TK
+    IP --> PR
+    IP --> OUT
+    IP --> SYS
+    IP --> PJ

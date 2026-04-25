@@ -53,9 +53,6 @@ public:
         QPushButton* transcriptNewVersionButton = nullptr;
         QPushButton* transcriptDeleteVersionButton = nullptr;
         QCheckBox* transcriptShowExcludedLinesCheckBox = nullptr;
-        QLabel* speakersInspectorClipLabel = nullptr;
-        QLabel* speakersInspectorDetailsLabel = nullptr;
-        QTableWidget* speakersTable = nullptr;
     };
 
     struct Dependencies
@@ -76,7 +73,7 @@ public:
     void wire();
     void refresh();
     void applyOverlayFromInspector(bool pushHistory = false);
-    void syncTableToPlayhead(int64_t absolutePlaybackSample, int64_t sourceFrame);
+    void syncTableToPlayhead(int64_t absolutePlaybackSample, double sourceSeconds);
     void applyTableEdit(QTableWidgetItem* item);
     void deleteSelectedRows();
     void setSelectedRowsSkipped(bool skipped);
@@ -84,6 +81,8 @@ public:
     int transcriptPostpendMs() const { return m_transcriptPostpendMs; }
     int speechFilterFadeSamples() const { return m_speechFilterFadeSamples; }
     bool speechFilterEnabled() const { return m_speechFilterEnabled; }
+    void setManualSelectionHoldMs(int valueMs);
+    int manualSelectionHoldMs() const { return m_manualSelectionHoldMs; }
 
 signals:
     void transcriptDocumentChanged();
@@ -102,10 +101,10 @@ private slots:
     void onSpeechFilterEnabledToggled(bool enabled);
     void onSpeechFilterFadeSamplesChanged(int value);
     void onTranscriptScriptVersionChanged(int index);
+    void onTranscriptScriptVersionContextMenu(const QPoint& pos);
     void onTranscriptCutLabelEdited();
     void onTranscriptCreateVersion();
     void onTranscriptDeleteVersion();
-    void onSpeakersTableItemChanged(QTableWidgetItem* item);
 
 private:
     struct TranscriptRow
@@ -133,6 +132,12 @@ private:
         int wordIndex = -1;
         int originalSegmentIndex = -1;
         int originalWordIndex = -1;
+    };
+    struct FollowRange
+    {
+        double startSeconds = 0.0;
+        double endSeconds = 0.0;
+        int row = -1;
     };
 
     void updateOverlayWidgetsFromClip(const TimelineClip& clip);
@@ -162,10 +167,9 @@ private:
     bool activeCutMutable() const;
     bool showOutsideCutLinesEnabled() const;
     QString originalWordKey(const TranscriptRow& row) const;
-    void refreshSpeakersTable(const QVector<TranscriptRow>& rows);
-    bool saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText);
     void persistRenderOrderFromTable();
     void computeRenderFrames(QVector<TranscriptRow>* rows) const;
+    void rebuildFollowRanges(const QVector<TranscriptRow>& rows);
     void scheduleSeekToTranscriptRow(int row);
     bool hasActiveManualSelection() const;
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -183,7 +187,11 @@ private:
     bool m_speechFilterEnabled = false;
     QTimer m_deferredSeekTimer;
     int64_t m_pendingSeekTimelineFrame = -1;
+    int m_manualSelectionHoldMs = 1200;
     QElapsedTimer m_manualSelectionTimer;
+    int64_t m_lastSyncAbsolutePlaybackSample = -1;
+    double m_lastSyncSourceSeconds = -1.0;
+    QVector<FollowRange> m_followRanges;
     bool m_suppressSelectionSideEffects = false;
     QString m_persistedSelectedClipId;
     int m_persistedSelectedSegmentIndex = -1;

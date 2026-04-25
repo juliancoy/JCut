@@ -94,6 +94,7 @@ public:
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested;
     std::function<void(const QString&)> createKeyframeRequested;
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
+    std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
 
 protected:
     void paintEvent(QPaintEvent* event) override;

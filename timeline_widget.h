@@ -119,6 +119,7 @@ public:
     std::function<void()> gradingRequested;
     std::function<void()> renderSyncMarkersChanged;
     std::function<void(const QString&, const QString&)> transcribeRequested;
+    std::function<void(const QString&)> deleteTranscriptRequested;
     std::function<void(const QString&)> createProxyRequested;
     std::function<void(const QString&)> continueProxyRequested;
     std::function<void(const QString&)> deleteProxyRequested;

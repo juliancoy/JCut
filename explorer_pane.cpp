@@ -211,7 +211,7 @@ void ThumbnailWorker::generateThumbnail(const QString &filePath, const QString &
 ExplorerPane::ExplorerPane(QWidget *parent)
     : QWidget(parent)
 {
-    setMinimumWidth(160);
+    setMinimumWidth(120);
 
     // Background thumbnail thread
     m_thumbnailThread = new QThread(this);

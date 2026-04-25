@@ -39,32 +39,36 @@
 #include <QWidget>
 #include <QtConcurrent/QtConcurrentRun>
 
-namespace control_server {
+#include <limits>
 
+namespace control_server {
 namespace {
 
-constexpr int kUiInvokeTimeoutMs = 500;
-constexpr int kUiBackgroundInvokeTimeoutMs = 200;
-constexpr qint64 kUiHeartbeatStaleMs = 1000;
-constexpr qint64 kProfileCacheFreshMs = 250;
-constexpr qint64 kBackgroundRefreshTickMs = 50;
-constexpr qint64 kProfileRefreshIntervalMs = 100;
-constexpr qint64 kProfileDemandWindowMs = 15000;
-constexpr qint64 kSnapshotDemandWindowMs = 15000;
-constexpr qint64 kStateRefreshIntervalMs = 100;
-constexpr qint64 kProjectRefreshIntervalMs = 750;
-constexpr qint64 kHistoryRefreshIntervalMs = 400;
-constexpr qint64 kUiTreeRefreshIntervalMs = 250;
-constexpr qint64 kIdleStateRefreshIntervalMs = 5000;
-constexpr qint64 kIdleProjectRefreshIntervalMs = 8000;
-constexpr qint64 kIdleHistoryRefreshIntervalMs = 8000;
-constexpr qint64 kIdleUiTreeRefreshIntervalMs = 12000;
-constexpr qint64 kScreenshotMinIntervalMs = 250;
-constexpr qint64 kUiRefreshCooldownAfterTimeoutMs = 750;
-constexpr qint64 kFrameTraceSampleCap = 300;
-constexpr qint64 kFreezeEventCap = 64;
-constexpr qint64 kStallDetectHeartbeatMs = 300;
-constexpr int kStallConsecutiveThreshold = 3;
+void mergePlaybackConfigIntoState(const QJsonObject& playbackConfig, QJsonObject* state) {
+    if (!state) {
+        return;
+    }
+    if (!playbackConfig.value(QStringLiteral("ok")).toBool(true)) {
+        return;
+    }
+
+    if (playbackConfig.contains(QStringLiteral("playback_speed"))) {
+        (*state)[QStringLiteral("playbackSpeed")] =
+            playbackConfig.value(QStringLiteral("playback_speed")).toDouble(
+                state->value(QStringLiteral("playbackSpeed")).toDouble(1.0));
+    }
+    if (playbackConfig.contains(QStringLiteral("clock_source"))) {
+        (*state)[QStringLiteral("playbackClockSource")] =
+            playbackConfig.value(QStringLiteral("clock_source")).toString(
+                state->value(QStringLiteral("playbackClockSource")).toString(QStringLiteral("auto")));
+    }
+    if (playbackConfig.contains(QStringLiteral("audio_warp_mode"))) {
+        (*state)[QStringLiteral("playbackAudioWarpMode")] =
+            playbackConfig.value(QStringLiteral("audio_warp_mode")).toString(
+                state->value(QStringLiteral("playbackAudioWarpMode"))
+                    .toString(QStringLiteral("disabled")));
+    }
+}
 
 } // namespace
 
@@ -76,6 +80,10 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
                                          std::function<QJsonObject()> profilingCallback,
                                          std::function<void()> resetProfilingCallback,
                                          std::function<void(int64_t)> setPlayheadCallback,
+                                         std::function<QJsonObject()> getThrottlesCallback,
+                                         std::function<QJsonObject(const QJsonObject&)> setThrottlesCallback,
+                                         std::function<QJsonObject()> getPlaybackConfigCallback,
+                                         std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
                                          std::function<QJsonObject()> renderResultCallback)
     : m_window(window)
     , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
@@ -85,6 +93,10 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
     , m_profilingCallback(std::move(profilingCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback))
     , m_setPlayheadCallback(std::move(setPlayheadCallback))
+    , m_getThrottlesCallback(std::move(getThrottlesCallback))
+    , m_setThrottlesCallback(std::move(setThrottlesCallback))
+    , m_getPlaybackConfigCallback(std::move(getPlaybackConfigCallback))
+    , m_setPlaybackConfigCallback(std::move(setPlaybackConfigCallback))
     , m_renderResultCallback(std::move(renderResultCallback)) {}
 
 ControlServerWorker::~ControlServerWorker() = default;
@@ -100,7 +112,7 @@ bool ControlServerWorker::startListening(quint16 port) {
     fprintf(stderr, "ControlServer listening on http://127.0.0.1:%u\n", static_cast<unsigned>(m_listenPort));
     fflush(stderr);
     m_refreshTimer = std::make_unique<QTimer>();
-    m_refreshTimer->setInterval(static_cast<int>(kBackgroundRefreshTickMs));
+    m_refreshTimer->setInterval(static_cast<int>(m_backgroundRefreshTickMs));
     connect(m_refreshTimer.get(), &QTimer::timeout, this, &ControlServerWorker::refreshBackgroundCaches);
     m_refreshTimer->start();
     m_decodeRatesWatcher = std::make_unique<QFutureWatcher<QJsonObject>>();
@@ -163,31 +175,31 @@ void ControlServerWorker::refreshBackgroundCaches() {
     m_cacheRefreshPausedForPlayback = false;
 
     if (m_lastUiRefreshTimeoutMs > 0 &&
-        (now - m_lastUiRefreshTimeoutMs) < kUiRefreshCooldownAfterTimeoutMs) {
+        (now - m_lastUiRefreshTimeoutMs) < m_uiRefreshCooldownAfterTimeoutMs) {
         return;
     }
 
-    const bool profileInDemand = (now - m_lastProfileDemandMs) <= kProfileDemandWindowMs;
+    const bool profileInDemand = (now - m_lastProfileDemandMs) <= m_profileDemandWindowMs;
     const bool stateInDemand =
-        m_lastStateSnapshot.isEmpty() || (now - m_lastStateDemandMs) <= kSnapshotDemandWindowMs;
+        m_lastStateSnapshot.isEmpty() || (now - m_lastStateDemandMs) <= m_snapshotDemandWindowMs;
     const bool projectInDemand =
-        m_lastProjectSnapshot.isEmpty() || (now - m_lastProjectDemandMs) <= kSnapshotDemandWindowMs;
+        m_lastProjectSnapshot.isEmpty() || (now - m_lastProjectDemandMs) <= m_snapshotDemandWindowMs;
     const bool historyInDemand =
-        m_lastHistorySnapshot.isEmpty() || (now - m_lastHistoryDemandMs) <= kSnapshotDemandWindowMs;
+        m_lastHistorySnapshot.isEmpty() || (now - m_lastHistoryDemandMs) <= m_snapshotDemandWindowMs;
     const bool uiTreeInDemand =
-        m_lastUiTreeSnapshot.isEmpty() || (now - m_lastUiTreeDemandMs) <= kSnapshotDemandWindowMs;
-    const qint64 profileIntervalMs = uiResponsive ? kProfileRefreshIntervalMs : 1000;
+        m_lastUiTreeSnapshot.isEmpty() || (now - m_lastUiTreeDemandMs) <= m_snapshotDemandWindowMs;
+    const qint64 profileIntervalMs = uiResponsive ? m_profileRefreshIntervalMs : 1000;
     const qint64 stateIntervalMs = uiResponsive
-        ? (stateInDemand ? kStateRefreshIntervalMs : kIdleStateRefreshIntervalMs)
+        ? (stateInDemand ? m_stateRefreshIntervalMs : m_idleStateRefreshIntervalMs)
         : 1000;
     const qint64 projectIntervalMs = uiResponsive
-        ? (projectInDemand ? kProjectRefreshIntervalMs : kIdleProjectRefreshIntervalMs)
+        ? (projectInDemand ? m_projectRefreshIntervalMs : m_idleProjectRefreshIntervalMs)
         : 2000;
     const qint64 historyIntervalMs = uiResponsive
-        ? (historyInDemand ? kHistoryRefreshIntervalMs : kIdleHistoryRefreshIntervalMs)
+        ? (historyInDemand ? m_historyRefreshIntervalMs : m_idleHistoryRefreshIntervalMs)
         : 1500;
     const qint64 uiTreeIntervalMs = uiResponsive
-        ? (uiTreeInDemand ? kUiTreeRefreshIntervalMs : kIdleUiTreeRefreshIntervalMs)
+        ? (uiTreeInDemand ? m_uiTreeRefreshIntervalMs : m_idleUiTreeRefreshIntervalMs)
         : 2000;
 
     for (int step = 0; step < 5; ++step) {
@@ -195,7 +207,7 @@ void ControlServerWorker::refreshBackgroundCaches() {
         if (index == 0 && profileInDemand && (now - m_lastProfileRefreshAttemptMs) >= profileIntervalMs) {
             m_lastProfileRefreshAttemptMs = now;
             QString error;
-            if (refreshProfileCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+            if (refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &error)) {
                 m_lastProfileRefreshError.clear();
             } else {
                 m_lastProfileRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
@@ -209,7 +221,7 @@ void ControlServerWorker::refreshBackgroundCaches() {
         if (index == 1 && stateInDemand && (now - m_lastStateRefreshAttemptMs) >= stateIntervalMs) {
             m_lastStateRefreshAttemptMs = now;
             QString error;
-            if (refreshStateCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+            if (refreshStateCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &error)) {
                 m_lastStateRefreshError.clear();
             } else {
                 m_lastStateRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
@@ -223,7 +235,7 @@ void ControlServerWorker::refreshBackgroundCaches() {
         if (index == 2 && projectInDemand && (now - m_lastProjectRefreshAttemptMs) >= projectIntervalMs) {
             m_lastProjectRefreshAttemptMs = now;
             QString error;
-            if (refreshProjectCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+            if (refreshProjectCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &error)) {
                 m_lastProjectRefreshError.clear();
             } else {
                 m_lastProjectRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
@@ -237,7 +249,7 @@ void ControlServerWorker::refreshBackgroundCaches() {
         if (index == 3 && historyInDemand && (now - m_lastHistoryRefreshAttemptMs) >= historyIntervalMs) {
             m_lastHistoryRefreshAttemptMs = now;
             QString error;
-            if (refreshHistoryCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+            if (refreshHistoryCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &error)) {
                 m_lastHistoryRefreshError.clear();
             } else {
                 m_lastHistoryRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
@@ -251,7 +263,7 @@ void ControlServerWorker::refreshBackgroundCaches() {
         if (index == 4 && uiTreeInDemand && (now - m_lastUiTreeRefreshAttemptMs) >= uiTreeIntervalMs) {
             m_lastUiTreeRefreshAttemptMs = now;
             QString error;
-            if (refreshUiTreeCacheFromUi(kUiBackgroundInvokeTimeoutMs, &error)) {
+            if (refreshUiTreeCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &error)) {
                 m_lastUiTreeRefreshError.clear();
             } else {
                 m_lastUiTreeRefreshError = uiResponsive ? error : QStringLiteral("ui thread is unresponsive");
@@ -361,7 +373,7 @@ bool ControlServerWorker::startDecodeRatesJob(QString* errorOut) {
 
     if (m_lastStateSnapshot.isEmpty()) {
         QString error;
-        if (!refreshStateCacheFromUi(kUiInvokeTimeoutMs, &error)) {
+        if (!refreshStateCacheFromUi(m_uiInvokeTimeoutMs, &error)) {
             if (errorOut) {
                 *errorOut = error.isEmpty() ? QStringLiteral("state snapshot unavailable") : error;
             }
@@ -398,7 +410,7 @@ bool ControlServerWorker::startDecodeSeeksJob(QString* errorOut) {
 
     if (m_lastStateSnapshot.isEmpty()) {
         QString error;
-        if (!refreshStateCacheFromUi(kUiInvokeTimeoutMs, &error)) {
+        if (!refreshStateCacheFromUi(m_uiInvokeTimeoutMs, &error)) {
             if (errorOut) {
                 *errorOut = error.isEmpty() ? QStringLiteral("state snapshot unavailable") : error;
             }
@@ -422,7 +434,7 @@ bool ControlServerWorker::startDecodeSeeksJob(QString* errorOut) {
 void ControlServerWorker::appendFreezeEvent(QJsonObject event) {
     event[QStringLiteral("event_index")] = static_cast<qint64>(m_freezeEvents.size());
     m_freezeEvents.append(std::move(event));
-    while (m_freezeEvents.size() > kFreezeEventCap) {
+    while (m_freezeEvents.size() > m_freezeEventCap) {
         m_freezeEvents.removeAt(0);
     }
 }
@@ -432,7 +444,7 @@ void ControlServerWorker::recordFrameTraceSample(const QJsonObject& snapshot, qi
         snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1);
     const qint64 playheadAdvanceAgeMs =
         snapshot.value(QStringLiteral("last_playhead_advance_age_ms")).toInteger(-1);
-    const bool uiResponsive = heartbeatAgeMs >= 0 && heartbeatAgeMs <= kUiHeartbeatStaleMs;
+    const bool uiResponsive = heartbeatAgeMs >= 0 && heartbeatAgeMs <= m_uiHeartbeatStaleMs;
     const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
 
     QJsonObject sample{
@@ -452,13 +464,13 @@ void ControlServerWorker::recordFrameTraceSample(const QJsonObject& snapshot, qi
         {QStringLiteral("decode_seeks_running"), m_decodeSeeksJob.running}
     };
     m_frameTraceSamples.append(sample);
-    while (m_frameTraceSamples.size() > kFrameTraceSampleCap) {
+    while (m_frameTraceSamples.size() > m_frameTraceSampleCap) {
         m_frameTraceSamples.removeAt(0);
     }
 
-    if (heartbeatAgeMs >= kStallDetectHeartbeatMs) {
+    if (heartbeatAgeMs >= m_stallDetectHeartbeatMs) {
         ++m_stallConsecutiveOverThreshold;
-        if (!m_stallActive && m_stallConsecutiveOverThreshold >= kStallConsecutiveThreshold) {
+        if (!m_stallActive && m_stallConsecutiveOverThreshold >= m_stallConsecutiveThreshold) {
             m_stallActive = true;
             m_stallStartedMs = nowMs;
             appendFreezeEvent(QJsonObject{
@@ -496,7 +508,7 @@ QJsonObject ControlServerWorker::frameTraceSnapshot(const QUrlQuery& query) cons
     if (limit <= 0) {
         limit = 120;
     }
-    limit = qMin(limit, static_cast<int>(kFrameTraceSampleCap));
+    limit = qMin(limit, static_cast<int>(m_frameTraceSampleCap));
     const int start = qMax(0, m_frameTraceSamples.size() - limit);
 
     QJsonArray samples;
@@ -513,8 +525,8 @@ QJsonObject ControlServerWorker::frameTraceSnapshot(const QUrlQuery& query) cons
         {QStringLiteral("stall_active"), m_stallActive},
         {QStringLiteral("stall_started_ms"), m_stallStartedMs},
         {QStringLiteral("stall_consecutive_over_threshold"), m_stallConsecutiveOverThreshold},
-        {QStringLiteral("stall_threshold_ms"), kStallDetectHeartbeatMs},
-        {QStringLiteral("stall_threshold_consecutive"), kStallConsecutiveThreshold},
+        {QStringLiteral("stall_threshold_ms"), m_stallDetectHeartbeatMs},
+        {QStringLiteral("stall_threshold_consecutive"), m_stallConsecutiveThreshold},
         {QStringLiteral("decode_jobs"), QJsonObject{
             {QStringLiteral("rates"), decodeJobMeta(m_decodeRatesJob, QStringLiteral("decode/rates"))},
             {QStringLiteral("seeks"), decodeJobMeta(m_decodeSeeksJob, QStringLiteral("decode/seeks"))}
@@ -692,8 +704,8 @@ QJsonObject ControlServerWorker::fastSnapshot() const {
     return m_fastSnapshotCallback ? m_fastSnapshotCallback() : QJsonObject{};
 }
 
-bool ControlServerWorker::uiThreadResponsive(const QJsonObject& snapshot) {
-    return snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <= kUiHeartbeatStaleMs;
+bool ControlServerWorker::uiThreadResponsive(const QJsonObject& snapshot) const {
+    return snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <= m_uiHeartbeatStaleMs;
 }
 
 void ControlServerWorker::writeResponse(QTcpSocket* socket, int statusCode, const QByteArray& body, const QByteArray& contentType) {
@@ -746,6 +758,7 @@ bool ControlServerWorker::handleUiBoundRouteGuard(QTcpSocket* socket, const Requ
     const QString path = request.url.path();
     const bool uiBoundRoute =
         (request.method == QStringLiteral("POST") && path == QStringLiteral("/playhead")) ||
+        (request.method == QStringLiteral("POST") && path == QStringLiteral("/playback")) ||
         (request.method == QStringLiteral("GET") &&
          (path == QStringLiteral("/windows") ||
           path == QStringLiteral("/screenshot") || path == QStringLiteral("/menu"))) ||
@@ -775,6 +788,8 @@ void ControlServerWorker::handleRequest(QTcpSocket* socket, const Request& reque
     if (handleDecodeRoutes(socket, request)) return;
     if (handleHistoryRoutes(socket, request)) return;
     if (handleProfileRoutes(socket, request)) return;
+    if (handleThrottleRoutes(socket, request)) return;
+    if (handlePlaybackRoutes(socket, request)) return;
     if (handleDebugRoutes(socket, request)) return;
     if (handleRenderRoutes(socket, request)) return;
     if (handleHardwareRoutes(socket, request)) return;
@@ -830,10 +845,14 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /project</strong> - Project information</div>
         <div class="endpoint"><strong>GET /history</strong> - History snapshot</div>
         <div class="endpoint"><strong>GET /ui</strong> - UI hierarchy</div>
+        <div class="endpoint"><strong>GET /throttles</strong> - Current throttle configuration</div>
+        <div class="endpoint"><strong>GET /playback</strong> - Current playback policy configuration</div>
 
         <h2>Controls:</h2>
         <div class="endpoint"><strong>POST /playhead</strong> - Set playhead position</div>
         <div class="endpoint"><strong>POST /profile/reset</strong> - Reset profiling stats</div>
+        <div class="endpoint"><strong>POST /throttles</strong> - Patch throttle configuration</div>
+        <div class="endpoint"><strong>POST /playback</strong> - Patch playback policy configuration</div>
 
         <p>For the full interactive dashboard, ensure <code>control_server_webpage.html</code> exists in the working directory.</p>
     </div>
@@ -907,7 +926,7 @@ bool ControlServerWorker::handlePlayhead(QTcpSocket* socket, const Request& requ
             return true;
         }
         bool success = false;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &success, [this, frame]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &success, [this, frame]() {
                 if (m_setPlayheadCallback) {
                     m_setPlayheadCallback(frame);
                     return true;
@@ -936,10 +955,21 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             writeError(socket, 503, error);
             return true;
         }
+
+        QJsonObject state = m_lastStateSnapshot;
+        QJsonObject playbackConfig;
+        if (invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &playbackConfig, [this]() {
+                return m_getPlaybackConfigCallback ? m_getPlaybackConfigCallback() : QJsonObject{};
+            })) {
+            mergePlaybackConfigIntoState(playbackConfig, &state);
+            m_lastStateSnapshot = state;
+            m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        }
+
         ++m_stateSnapshotServedCachedCount;
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
-            {QStringLiteral("state"), m_lastStateSnapshot}
+            {QStringLiteral("state"), state}
         });
         return true;
     }
@@ -1006,7 +1036,7 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
             : -1;
 
         bool success = false;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &success, [this, filePath, startFrame]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &success, [this, filePath, startFrame]() {
                 const auto editor = qobject_cast<EditorWindow*>(m_window);
                 if (!editor) {
                     return false;
@@ -1265,14 +1295,14 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
         ++m_profileServedCachedCount;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         const qint64 ageMs = m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1;
-        const bool live = ageMs >= 0 && ageMs <= kProfileCacheFreshMs;
+        const bool live = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
         const QJsonObject snapshot = fastSnapshot();
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), live},
             {QStringLiteral("ui_thread_responsive"),
              snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
-                 kUiHeartbeatStaleMs},
+                 m_uiHeartbeatStaleMs},
             {QStringLiteral("ui_error"), m_lastProfileRefreshError},
             {QStringLiteral("profile"), m_lastProfileSnapshot},
             {QStringLiteral("served_cached"), true},
@@ -1302,7 +1332,7 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             {QStringLiteral("ok"), true},
             {QStringLiteral("ui_thread_responsive"),
              snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
-                 kUiHeartbeatStaleMs},
+                 m_uiHeartbeatStaleMs},
             {QStringLiteral("fast_snapshot"), snapshot},
             {QStringLiteral("profile_cache"), profileCacheMeta()},
             {QStringLiteral("state_cache"), stateCacheMeta()},
@@ -1311,11 +1341,11 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             {QStringLiteral("ui_tree_cache"), uiTreeCacheMeta()},
             {QStringLiteral("rate_limit"), QJsonObject{
                 {QStringLiteral("screenshot_count"), m_screenshotRateLimitedCount},
-                {QStringLiteral("screenshot_min_interval_ms"), kScreenshotMinIntervalMs}
+                {QStringLiteral("screenshot_min_interval_ms"), m_screenshotMinIntervalMs}
             }},
             {QStringLiteral("freeze_monitor"), QJsonObject{
-                {QStringLiteral("stall_threshold_ms"), kStallDetectHeartbeatMs},
-                {QStringLiteral("stall_threshold_consecutive"), kStallConsecutiveThreshold},
+                {QStringLiteral("stall_threshold_ms"), m_stallDetectHeartbeatMs},
+                {QStringLiteral("stall_threshold_consecutive"), m_stallConsecutiveThreshold},
                 {QStringLiteral("stall_active"), m_stallActive},
                 {QStringLiteral("stall_started_ms"), m_stallStartedMs},
                 {QStringLiteral("stall_consecutive_over_threshold"), m_stallConsecutiveOverThreshold},
@@ -1324,7 +1354,7 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
                 {QStringLiteral("cache_refresh_paused_for_playback"), m_cacheRefreshPausedForPlayback},
                 {QStringLiteral("last_ui_refresh_timeout_ms"), m_lastUiRefreshTimeoutMs},
                 {QStringLiteral("ui_refresh_cooldown_remaining_ms"),
-                 qMax<qint64>(0, kUiRefreshCooldownAfterTimeoutMs -
+                 qMax<qint64>(0, m_uiRefreshCooldownAfterTimeoutMs -
                                  (QDateTime::currentMSecsSinceEpoch() - m_lastUiRefreshTimeoutMs))}
             }},
             {QStringLiteral("decode_jobs"), QJsonObject{
@@ -1344,7 +1374,7 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
 
     if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/profile/reset")) {
         bool reset = false;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &reset, [this]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &reset, [this]() {
                 if (m_resetProfilingCallback) {
                     m_resetProfilingCallback();
                     return true;
@@ -1361,6 +1391,225 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), reset},
             {QStringLiteral("message"), reset ? QStringLiteral("profiling stats reset") : QStringLiteral("no reset callback configured")}
+        });
+        return true;
+    }
+
+    return false;
+}
+
+bool ControlServerWorker::handleThrottleRoutes(QTcpSocket* socket, const Request& request) {
+    const auto buildThrottleResponse = [this](const QJsonObject& editorThrottles) {
+        return QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("editor"), editorThrottles},
+            {QStringLiteral("control_server"), QJsonObject{
+                {QStringLiteral("ui_invoke_timeout_ms"), m_uiInvokeTimeoutMs},
+                {QStringLiteral("ui_background_invoke_timeout_ms"), m_uiBackgroundInvokeTimeoutMs},
+                {QStringLiteral("ui_heartbeat_stale_ms"), m_uiHeartbeatStaleMs},
+                {QStringLiteral("profile_cache_fresh_ms"), m_profileCacheFreshMs},
+                {QStringLiteral("background_refresh_tick_ms"), m_backgroundRefreshTickMs},
+                {QStringLiteral("profile_refresh_interval_ms"), m_profileRefreshIntervalMs},
+                {QStringLiteral("profile_demand_window_ms"), m_profileDemandWindowMs},
+                {QStringLiteral("snapshot_demand_window_ms"), m_snapshotDemandWindowMs},
+                {QStringLiteral("state_refresh_interval_ms"), m_stateRefreshIntervalMs},
+                {QStringLiteral("project_refresh_interval_ms"), m_projectRefreshIntervalMs},
+                {QStringLiteral("history_refresh_interval_ms"), m_historyRefreshIntervalMs},
+                {QStringLiteral("ui_tree_refresh_interval_ms"), m_uiTreeRefreshIntervalMs},
+                {QStringLiteral("idle_state_refresh_interval_ms"), m_idleStateRefreshIntervalMs},
+                {QStringLiteral("idle_project_refresh_interval_ms"), m_idleProjectRefreshIntervalMs},
+                {QStringLiteral("idle_history_refresh_interval_ms"), m_idleHistoryRefreshIntervalMs},
+                {QStringLiteral("idle_ui_tree_refresh_interval_ms"), m_idleUiTreeRefreshIntervalMs},
+                {QStringLiteral("screenshot_min_interval_ms"), m_screenshotMinIntervalMs},
+                {QStringLiteral("ui_refresh_cooldown_after_timeout_ms"), m_uiRefreshCooldownAfterTimeoutMs},
+                {QStringLiteral("frame_trace_sample_cap"), m_frameTraceSampleCap},
+                {QStringLiteral("freeze_event_cap"), m_freezeEventCap},
+                {QStringLiteral("stall_detect_heartbeat_ms"), m_stallDetectHeartbeatMs},
+                {QStringLiteral("stall_consecutive_threshold"), m_stallConsecutiveThreshold}
+            }}
+        };
+    };
+
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/throttles")) {
+        QJsonObject editorThrottles;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &editorThrottles, [this]() {
+                return m_getThrottlesCallback ? m_getThrottlesCallback() : QJsonObject{};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for throttle snapshot"));
+            return true;
+        }
+        if (editorThrottles.isEmpty()) {
+            editorThrottles = QJsonObject{{QStringLiteral("ok"), false},
+                                          {QStringLiteral("error"), QStringLiteral("throttle snapshot callback not configured")}};
+        }
+        writeJson(socket, 200, buildThrottleResponse(editorThrottles));
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/throttles")) {
+        QString error;
+        const QJsonObject body = parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+
+        auto applyPositiveInt = [&error](const QJsonObject& obj, const QString& key, qint64* target) -> bool {
+            if (!obj.contains(key)) return true;
+            bool ok = false;
+            const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+            if (!ok || value <= 0) {
+                error = QStringLiteral("%1 must be a positive integer").arg(key);
+                return false;
+            }
+            *target = value;
+            return true;
+        };
+        auto applyPositiveIntToInt = [&error](const QJsonObject& obj, const QString& key, int* target) -> bool {
+            if (!obj.contains(key)) return true;
+            bool ok = false;
+            const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+            if (!ok || value <= 0 || value > std::numeric_limits<int>::max()) {
+                error = QStringLiteral("%1 must be a positive integer").arg(key);
+                return false;
+            }
+            *target = static_cast<int>(value);
+            return true;
+        };
+
+        auto applyNonNegativeIntToInt = [&error](const QJsonObject& obj, const QString& key, int* target) -> bool {
+            if (!obj.contains(key)) return true;
+            bool ok = false;
+            const qint64 value = obj.value(key).toVariant().toLongLong(&ok);
+            if (!ok || value < 0 || value > std::numeric_limits<int>::max()) {
+                error = QStringLiteral("%1 must be a non-negative integer").arg(key);
+                return false;
+            }
+            *target = static_cast<int>(value);
+            return true;
+        };
+
+        QJsonObject editorResult;
+        if (body.contains(QStringLiteral("editor"))) {
+            const QJsonObject editorPatch = body.value(QStringLiteral("editor")).toObject();
+            if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &editorResult, [this, editorPatch]() {
+                    return m_setThrottlesCallback ? m_setThrottlesCallback(editorPatch)
+                                                  : QJsonObject{{QStringLiteral("ok"), false},
+                                                                {QStringLiteral("error"), QStringLiteral("throttle patch callback not configured")}};
+                })) {
+                writeError(socket, 503, QStringLiteral("timed out waiting for throttle update"));
+                return true;
+            }
+            if (!editorResult.value(QStringLiteral("ok")).toBool()) {
+                writeError(socket, 400, editorResult.value(QStringLiteral("error")).toString(
+                    QStringLiteral("failed to update editor throttles")));
+                return true;
+            }
+        }
+
+        if (body.contains(QStringLiteral("control_server"))) {
+            const QJsonObject patch = body.value(QStringLiteral("control_server")).toObject();
+            if (!applyPositiveIntToInt(patch, QStringLiteral("ui_invoke_timeout_ms"), &m_uiInvokeTimeoutMs) ||
+                !applyPositiveIntToInt(patch, QStringLiteral("ui_background_invoke_timeout_ms"), &m_uiBackgroundInvokeTimeoutMs) ||
+                !applyPositiveInt(patch, QStringLiteral("ui_heartbeat_stale_ms"), &m_uiHeartbeatStaleMs) ||
+                !applyPositiveInt(patch, QStringLiteral("profile_cache_fresh_ms"), &m_profileCacheFreshMs) ||
+                !applyPositiveInt(patch, QStringLiteral("background_refresh_tick_ms"), &m_backgroundRefreshTickMs) ||
+                !applyPositiveInt(patch, QStringLiteral("profile_refresh_interval_ms"), &m_profileRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("profile_demand_window_ms"), &m_profileDemandWindowMs) ||
+                !applyPositiveInt(patch, QStringLiteral("snapshot_demand_window_ms"), &m_snapshotDemandWindowMs) ||
+                !applyPositiveInt(patch, QStringLiteral("state_refresh_interval_ms"), &m_stateRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("project_refresh_interval_ms"), &m_projectRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("history_refresh_interval_ms"), &m_historyRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("ui_tree_refresh_interval_ms"), &m_uiTreeRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("idle_state_refresh_interval_ms"), &m_idleStateRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("idle_project_refresh_interval_ms"), &m_idleProjectRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("idle_history_refresh_interval_ms"), &m_idleHistoryRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("idle_ui_tree_refresh_interval_ms"), &m_idleUiTreeRefreshIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("screenshot_min_interval_ms"), &m_screenshotMinIntervalMs) ||
+                !applyPositiveInt(patch, QStringLiteral("ui_refresh_cooldown_after_timeout_ms"), &m_uiRefreshCooldownAfterTimeoutMs) ||
+                !applyPositiveInt(patch, QStringLiteral("frame_trace_sample_cap"), &m_frameTraceSampleCap) ||
+                !applyPositiveInt(patch, QStringLiteral("freeze_event_cap"), &m_freezeEventCap) ||
+                !applyPositiveInt(patch, QStringLiteral("stall_detect_heartbeat_ms"), &m_stallDetectHeartbeatMs) ||
+                !applyNonNegativeIntToInt(patch, QStringLiteral("stall_consecutive_threshold"), &m_stallConsecutiveThreshold)) {
+                writeError(socket, 400, error);
+                return true;
+            }
+            if (m_refreshTimer) {
+                m_refreshTimer->setInterval(static_cast<int>(m_backgroundRefreshTickMs));
+            }
+        }
+
+        QJsonObject editorThrottles;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &editorThrottles, [this]() {
+                return m_getThrottlesCallback ? m_getThrottlesCallback() : QJsonObject{};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for updated throttle snapshot"));
+            return true;
+        }
+        if (editorThrottles.isEmpty()) {
+            editorThrottles = QJsonObject{{QStringLiteral("ok"), false},
+                                          {QStringLiteral("error"), QStringLiteral("throttle snapshot callback not configured")}};
+        }
+        writeJson(socket, 200, buildThrottleResponse(editorThrottles));
+        return true;
+    }
+
+    return false;
+}
+
+bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback")) {
+        QJsonObject playbackConfig;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &playbackConfig, [this]() {
+                return m_getPlaybackConfigCallback ? m_getPlaybackConfigCallback()
+                                                   : QJsonObject{};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for playback config snapshot"));
+            return true;
+        }
+        if (playbackConfig.isEmpty()) {
+            playbackConfig = QJsonObject{{QStringLiteral("ok"), false},
+                                         {QStringLiteral("error"), QStringLiteral("playback config callback not configured")}};
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), playbackConfig.value(QStringLiteral("ok")).toBool(true)},
+            {QStringLiteral("editor"), playbackConfig}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/playback")) {
+        QString error;
+        const QJsonObject body = parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+
+        QJsonObject result;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &result, [this, body]() {
+                return m_setPlaybackConfigCallback
+                    ? m_setPlaybackConfigCallback(body)
+                    : QJsonObject{{QStringLiteral("ok"), false},
+                                  {QStringLiteral("error"), QStringLiteral("playback config callback not configured")}};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for playback config update"));
+            return true;
+        }
+        if (!result.value(QStringLiteral("ok")).toBool()) {
+            writeError(socket, 400, result.value(QStringLiteral("error")).toString(
+                QStringLiteral("failed to update playback config")));
+            return true;
+        }
+
+        if (!m_lastStateSnapshot.isEmpty()) {
+            mergePlaybackConfigIntoState(result, &m_lastStateSnapshot);
+            m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+        }
+
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("editor"), result}
         });
         return true;
     }
@@ -1595,7 +1844,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/windows")) {
         QJsonArray windows;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &windows, []() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &windows, []() {
                 return topLevelWindowsSnapshot();
             })) {
             writeError(socket, 503, QStringLiteral("timed out waiting for window sizes"));
@@ -1611,14 +1860,14 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/screenshot")) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (m_lastScreenshotRequestMs > 0 && (now - m_lastScreenshotRequestMs) < kScreenshotMinIntervalMs) {
+        if (m_lastScreenshotRequestMs > 0 && (now - m_lastScreenshotRequestMs) < m_screenshotMinIntervalMs) {
             ++m_screenshotRateLimitedCount;
             writeError(socket, 429, QStringLiteral("screenshot requests are rate-limited"));
             return true;
         }
         m_lastScreenshotRequestMs = now;
         QByteArray pngBytes;
-        if (!invokeOnUiThread(m_window, 500, &pngBytes, [this]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &pngBytes, [this]() {
                 QByteArray bytes;
                 QBuffer buffer(&bytes);
                 buffer.open(QIODevice::WriteOnly);
@@ -1652,7 +1901,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
         const Qt::MouseButton button = parseMouseButton(buttonName);
 
         QJsonObject result;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &result, [this, x, y, button, buttonName]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &result, [this, x, y, button, buttonName]() {
                 const bool clicked = sendSyntheticClick(m_window, QPoint(x, y), button);
                 return QJsonObject{
                     {QStringLiteral("ok"), clicked},
@@ -1670,7 +1919,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/menu")) {
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &response, []() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, []() {
                 return menuSnapshot(activePopupMenu());
             })) {
             writeError(socket, 503, QStringLiteral("timed out waiting for menu"));
@@ -1694,7 +1943,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
         }
 
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &response, [text]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [text]() {
                 QMenu* menu = activePopupMenu();
                 if (!menu) {
                     return QJsonObject{
@@ -1749,7 +1998,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
         }
 
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, kUiInvokeTimeoutMs, &response, [this, id]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this, id]() {
                 QWidget* widget = findWidgetByObjectName(m_window, id);
                 if (!widget) {
                     return QJsonObject{

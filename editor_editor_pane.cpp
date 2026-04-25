@@ -1,7 +1,9 @@
 #include "editor.h"
 #include "titles.h"
 
+#include <QFile>
 #include <QFileInfo>
+#include <QMessageBox>
 #include <QStyle>
 #include <QToolButton>
 
@@ -93,6 +95,9 @@ void EditorWindow::connectTimelineSignals()
             m_audioEngine->setExportRanges(effectivePlaybackRanges());
             m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         }
         refreshClipInspector();
         m_inspectorPane->refresh();
@@ -151,6 +156,49 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->transcribeRequested = [this](const QString &filePath, const QString &label) {
         openTranscriptionWindow(filePath, label);
     };
+    m_timeline->deleteTranscriptRequested = [this](const QString& filePath) {
+        if (filePath.isEmpty()) {
+            return;
+        }
+        const QStringList transcriptPaths = transcriptCutPathsForClipFile(filePath);
+        int deletedCount = 0;
+        int failedCount = 0;
+        for (const QString& path : transcriptPaths) {
+            if (!QFileInfo::exists(path)) {
+                continue;
+            }
+            if (QFile::remove(path)) {
+                ++deletedCount;
+            } else {
+                ++failedCount;
+            }
+        }
+        clearActiveTranscriptPathForClipFile(filePath);
+        m_transcriptEngine.invalidateCache();
+        if (m_preview) {
+            m_preview->invalidateTranscriptOverlayCache(filePath);
+        }
+        if (m_transcriptTab) {
+            m_transcriptTab->refresh();
+        }
+        if (m_outputTab) {
+            m_outputTab->refresh();
+        }
+        if (m_inspectorPane) {
+            m_inspectorPane->refresh();
+        }
+        scheduleSaveState();
+        pushHistorySnapshot();
+
+        if (failedCount > 0) {
+            QMessageBox::warning(
+                this,
+                QStringLiteral("Delete Transcript"),
+                QStringLiteral("Some transcript files could not be deleted.\nDeleted: %1\nFailed: %2")
+                    .arg(deletedCount)
+                    .arg(failedCount));
+        }
+    };
     m_timeline->syncRequested = [this](const QSet<QString>& selectedClipIds) {
         requestAutoSyncForSelection(selectedClipIds);
     };
@@ -205,6 +253,11 @@ void EditorWindow::connectPreviewSignals()
     m_preview->correctionPointRequested = [this](const QString& clipId, qreal xNorm, qreal yNorm) {
         if (m_correctionsTab) {
             m_correctionsTab->handlePreviewPoint(clipId, xNorm, yNorm);
+        }
+    };
+    m_preview->speakerPointRequested = [this](const QString& clipId, qreal xNorm, qreal yNorm) {
+        if (m_speakersTab) {
+            m_speakersTab->handlePreviewPoint(clipId, xNorm, yNorm);
         }
     };
     m_preview->createKeyframeRequested = [this](const QString &clipId) {
@@ -600,9 +653,13 @@ void EditorWindow::updateTransportLabels()
                                .arg(frameToTimecode(m_timeline ? m_timeline->currentFrame() : 0))
                                .arg(activeAudio.isEmpty() ? QStringLiteral("idle") : activeAudio)
                                .arg(m_preview && m_preview->bypassGrading() ? QStringLiteral("bypassed") : QStringLiteral("on")));
-    m_playButton->setText(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
+    m_playButton->setText(QString());
+    m_playButton->setToolTip(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
     m_playButton->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
-    m_audioMuteButton->setText(m_preview && m_preview->audioMuted() ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
+    const bool muted = m_preview && m_preview->audioMuted();
+    m_audioMuteButton->setText(QString());
+    m_audioMuteButton->setToolTip(muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
+    m_audioMuteButton->setIcon(style()->standardIcon(muted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
     m_audioNowPlayingLabel->setText(activeAudio.isEmpty() ? QStringLiteral("Audio idle") : QStringLiteral("Audio  %1").arg(activeAudio));
 }
 

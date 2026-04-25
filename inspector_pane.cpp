@@ -25,15 +25,124 @@
 #include <QPushButton>
 #include <QSize>
 #include <QStyle>
+#include <QStylePainter>
+#include <QStyleOptionTab>
+#include <QMouseEvent>
 #include <QVBoxLayout>
 
 namespace {
+class HorizontalTextTabBar final : public QTabBar {
+public:
+    using QTabBar::QTabBar;
+
+    QSize tabSizeHint(int index) const override {
+        const QSize base = QTabBar::tabSizeHint(index);
+        const int tabWidth = qMax(120, m_columnWidth);
+        const int tabHeight = qBound(24, base.height() + 2, 36);
+        return QSize(tabWidth, tabHeight);
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override {
+        Q_UNUSED(event);
+        QStylePainter painter(this);
+        QStyleOptionTab option;
+        for (int i = 0; i < count(); ++i) {
+            initStyleOption(&option, i);
+            painter.drawControl(QStyle::CE_TabBarTabShape, option);
+            QStyleOptionTab labelOption(option);
+            labelOption.shape = QTabBar::RoundedNorth;
+            painter.drawControl(QStyle::CE_TabBarTabLabel, labelOption);
+        }
+    }
+
+    void mousePressEvent(QMouseEvent* event) override {
+        if (event && event->button() == Qt::LeftButton && isNearResizeEdge(event->position().toPoint())) {
+            m_resizing = true;
+            m_resizeStartGlobalX = static_cast<int>(event->globalPosition().x());
+            m_resizeStartWidth = width();
+            event->accept();
+            return;
+        }
+        QTabBar::mousePressEvent(event);
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override {
+        if (!event) {
+            return;
+        }
+        if (m_resizing) {
+            const int currentGlobalX = static_cast<int>(event->globalPosition().x());
+            const int delta = m_resizeStartGlobalX - currentGlobalX;
+            const int newWidth = qBound(120, m_resizeStartWidth + delta, 420);
+            if (newWidth != m_columnWidth) {
+                m_columnWidth = newWidth;
+                updateGeometry();
+                if (parentWidget()) {
+                    parentWidget()->updateGeometry();
+                    parentWidget()->update();
+                }
+            }
+            event->accept();
+            return;
+        }
+
+        const bool nearEdge = isNearResizeEdge(event->position().toPoint());
+        setCursor(nearEdge ? Qt::SizeHorCursor : Qt::ArrowCursor);
+        QTabBar::mouseMoveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override {
+        if (m_resizing && event && event->button() == Qt::LeftButton) {
+            m_resizing = false;
+            setCursor(Qt::ArrowCursor);
+            event->accept();
+            return;
+        }
+        QTabBar::mouseReleaseEvent(event);
+    }
+
+    void leaveEvent(QEvent* event) override {
+        if (!m_resizing) {
+            unsetCursor();
+        }
+        QTabBar::leaveEvent(event);
+    }
+
+private:
+    bool isNearResizeEdge(const QPoint& pos) const {
+        return pos.x() >= 0 && pos.x() <= 8;
+    }
+
+    int m_columnWidth = 180;
+    bool m_resizing = false;
+    int m_resizeStartGlobalX = 0;
+    int m_resizeStartWidth = 0;
+};
+
+class InspectorTabWidget final : public QTabWidget {
+public:
+    explicit InspectorTabWidget(QWidget* parent = nullptr)
+        : QTabWidget(parent)
+    {
+        setTabBar(new HorizontalTextTabBar(this));
+    }
+};
+
 QLabel *createTabHeading(const QString &text, QWidget *parent = nullptr) {
     auto *label = new QLabel(text, parent);
     label->setStyleSheet(QStringLiteral(
         "QLabel { font-size: 13px; font-weight: 700; color: #8fa0b5; "
         "padding: 2px 0 6px 0; }"));
     return label;
+}
+
+QVBoxLayout *createTabLayout(QWidget *page)
+{
+    auto *layout = new QVBoxLayout(page);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(6);
+    return layout;
 }
 } // namespace
 
@@ -61,14 +170,14 @@ InspectorPane::InspectorPane(QWidget *parent)
 QWidget *InspectorPane::buildPane()
 {
     auto *pane = new QFrame;
-    pane->setMinimumWidth(200);
+    pane->setMinimumWidth(120);
     pane->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
     auto *layout = new QVBoxLayout(pane);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
 
-    m_inspectorTabs = new QTabWidget(pane);
+    m_inspectorTabs = new InspectorTabWidget(pane);
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
     m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
     m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
@@ -103,74 +212,92 @@ void InspectorPane::configureInspectorTabs()
     m_inspectorTabs->setDocumentMode(true);
     bar->setExpanding(false);
     bar->setUsesScrollButtons(true);
-    bar->setIconSize(QSize(18, 18));
+    bar->setIconSize(QSize(16, 16));
     bar->setDrawBase(false);
 
     struct TabSpec {
         int index;
+        const char* label;
         QStyle::StandardPixmap icon;
         const char* tooltip;
     };
 
     const TabSpec specs[] = {
-        {0, QStyle::SP_DriveDVDIcon, "Grade: clip color and grading keyframes"},
-        {1, QStyle::SP_BrowserStop, "Opacity: clip opacity keyframes and fades"},
-        {2, QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
-        {3, QStyle::SP_DriveFDIcon, "Corrections: draw polygon erase masks for visual artifacts"},
-        {4, QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
-        {5, QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
-        {6, QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
-        {7, QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
-        {8, QStyle::SP_MediaVolume, "Speakers: speaker identity and on-screen location for the active cut"},
-        {9, QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {10, QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
-        {11, QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {12, QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {13, QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {14, QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {0, "Grade", QStyle::SP_DriveDVDIcon, "Grade: clip color and grading keyframes"},
+        {1, "Opacity", QStyle::SP_BrowserStop, "Opacity: clip opacity keyframes and fades"},
+        {2, "Effects", QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
+        {3, "Corrections", QStyle::SP_DriveFDIcon, "Corrections: draw polygon erase masks for visual artifacts"},
+        {4, "Titles", QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
+        {5, "Sync", QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
+        {6, "Keyframes", QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
+        {7, "Transcript", QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
+        {8, "Speakers", QStyle::SP_MediaVolume, "Speakers: speaker identity and on-screen location for the active cut"},
+        {9, "Properties", QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
+        {10, "Clips", QStyle::SP_FileDialogListView, "Clips: timeline clip list and clip actions"},
+        {11, "History", QStyle::SP_BrowserReload, "History: saved timeline snapshots"},
+        {12, "Tracks", QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
+        {13, "Preview", QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
+        {14, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {15, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {16, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {
         m_inspectorTabs->setTabIcon(spec.index, style()->standardIcon(spec.icon));
-        m_inspectorTabs->setTabText(spec.index, QString());
+        m_inspectorTabs->setTabText(spec.index, QString::fromUtf8(spec.label));
         bar->setTabToolTip(spec.index, QString::fromUtf8(spec.tooltip));
     }
+    bar->setElideMode(Qt::ElideNone);
 
     bar->setStyleSheet(QStringLiteral(
         "QTabBar::tab {"
-        " width: 34px;"
-        " height: 34px;"
-        " margin: 2px 0;"
-        " padding: 0px;"
+        " min-width: 120px;"
+        " min-height: 24px;"
+        " margin: 0;"
+        " padding: 0 10px;"
+        " text-align: left;"
+        " color: #c9d1d9;"
         " }"
         "QTabBar::tab:selected {"
-        " background: palette(base);"
-        " border: 1px solid palette(mid);"
-        " border-right: 0px;"
-        " border-top-left-radius: 6px;"
-        " border-bottom-left-radius: 6px;"
+        " background: #1f2a36;"
+        " border: 1px solid #44556a;"
+        " border-radius: 6px;"
+        " color: #f0f6fc;"
+        " }"
+        "QTabBar::tab:hover {"
+        " background: #233142;"
+        " border: 1px solid #4a5c71;"
+        " color: #f0f6fc;"
         " }"
         "QTabBar::tab:!selected {"
-        " background: palette(button);"
-        " border: 1px solid palette(midlight);"
-        " border-right: 0px;"
-        " border-top-left-radius: 6px;"
-        " border-bottom-left-radius: 6px;"
-        " opacity: 0.8;"
+        " background: #121922;"
+        " border: 1px solid #2e3b4a;"
+        " border-radius: 6px;"
         " }"));
 }
 
 QWidget *InspectorPane::buildGradingTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Grade"), page));
 
     m_gradingPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
     m_gradingPathLabel->setWordWrap(true);
     layout->addWidget(m_gradingPathLabel);
 
-    auto *form = new QFormLayout;
+    auto *editModeLayout = new QHBoxLayout;
+    editModeLayout->addWidget(new QLabel(QStringLiteral("Edit As"), page));
+    m_gradingEditModeCombo = new QComboBox(page);
+    m_gradingEditModeCombo->addItem(QStringLiteral("Levels"));
+    m_gradingEditModeCombo->addItem(QStringLiteral("Curves"));
+    m_gradingEditModeCombo->setToolTip(
+        QStringLiteral("Switch between brightness/contrast levels and curve-based grading."));
+    editModeLayout->addWidget(m_gradingEditModeCombo);
+    editModeLayout->addStretch();
+    layout->addLayout(editModeLayout);
+
+    auto *commonForm = new QFormLayout;
     m_brightnessSpin = new QDoubleSpinBox(page);
     m_contrastSpin = new QDoubleSpinBox(page);
     m_saturationSpin = new QDoubleSpinBox(page);
@@ -182,12 +309,22 @@ QWidget *InspectorPane::buildGradingTab()
         spin->setDecimals(3);
         spin->setSingleStep(0.05);
     }
-    form->addRow(QStringLiteral("Brightness"), m_brightnessSpin);
-    form->addRow(QStringLiteral("Contrast"), m_contrastSpin);
-    form->addRow(QStringLiteral("Saturation"), m_saturationSpin);
+    commonForm->addRow(QStringLiteral("Saturation"), m_saturationSpin);
+    layout->addLayout(commonForm);
+
+    m_gradingLevelsPanel = new QWidget(page);
+    auto *levelsLayout = new QFormLayout(m_gradingLevelsPanel);
+    levelsLayout->setContentsMargins(0, 0, 0, 0);
+    levelsLayout->addRow(QStringLiteral("Brightness"), m_brightnessSpin);
+    levelsLayout->addRow(QStringLiteral("Contrast"), m_contrastSpin);
 
     // Shadows/Midtones/Highlights (Lift/Gamma/Gain)
-    auto *shadowsGroup = new QGroupBox(QStringLiteral("Shadows (Lift)"), page);
+    m_gradingCurvesPanel = new QWidget(page);
+    auto *curvesLayout = new QVBoxLayout(m_gradingCurvesPanel);
+    curvesLayout->setContentsMargins(0, 0, 0, 0);
+    curvesLayout->setSpacing(6);
+
+    auto *shadowsGroup = new QGroupBox(QStringLiteral("Shadows (Lift)"), m_gradingCurvesPanel);
     auto *shadowsLayout = new QHBoxLayout(shadowsGroup);
     m_shadowsRSpin = new QDoubleSpinBox(page);
     m_shadowsGSpin = new QDoubleSpinBox(page);
@@ -205,7 +342,7 @@ QWidget *InspectorPane::buildGradingTab()
     shadowsLayout->addWidget(m_shadowsGSpin);
     shadowsLayout->addWidget(m_shadowsBSpin);
 
-    auto *midtonesGroup = new QGroupBox(QStringLiteral("Midtones (Gamma)"), page);
+    auto *midtonesGroup = new QGroupBox(QStringLiteral("Midtones (Gamma)"), m_gradingCurvesPanel);
     auto *midtonesLayout = new QHBoxLayout(midtonesGroup);
     m_midtonesRSpin = new QDoubleSpinBox(page);
     m_midtonesGSpin = new QDoubleSpinBox(page);
@@ -223,7 +360,7 @@ QWidget *InspectorPane::buildGradingTab()
     midtonesLayout->addWidget(m_midtonesGSpin);
     midtonesLayout->addWidget(m_midtonesBSpin);
 
-    auto *highlightsGroup = new QGroupBox(QStringLiteral("Highlights (Gain)"), page);
+    auto *highlightsGroup = new QGroupBox(QStringLiteral("Highlights (Gain)"), m_gradingCurvesPanel);
     auto *highlightsLayout = new QHBoxLayout(highlightsGroup);
     m_highlightsRSpin = new QDoubleSpinBox(page);
     m_highlightsGSpin = new QDoubleSpinBox(page);
@@ -242,18 +379,38 @@ QWidget *InspectorPane::buildGradingTab()
     highlightsLayout->addWidget(m_highlightsBSpin);
 
     auto *curveChannelLayout = new QHBoxLayout;
-    curveChannelLayout->addWidget(new QLabel(QStringLiteral("Curve Channel:"), page));
-    m_gradingCurveChannelCombo = new QComboBox(page);
+    curveChannelLayout->addWidget(new QLabel(QStringLiteral("Curve Channel:"), m_gradingCurvesPanel));
+    m_gradingCurveChannelCombo = new QComboBox(m_gradingCurvesPanel);
     m_gradingCurveChannelCombo->addItem(QStringLiteral("Red"));
     m_gradingCurveChannelCombo->addItem(QStringLiteral("Green"));
     m_gradingCurveChannelCombo->addItem(QStringLiteral("Blue"));
     curveChannelLayout->addWidget(m_gradingCurveChannelCombo);
     curveChannelLayout->addStretch();
 
-    m_gradingHistogramWidget = new GradingHistogramWidget(page);
+    m_gradingHistogramWidget = new GradingHistogramWidget(m_gradingCurvesPanel);
     m_gradingHistogramWidget->setToolTip(QStringLiteral(
         "Current-frame RGB histogram.\n"
         "Select a channel and drag curve points to adjust Shadows/Midtones/Highlights."));
+
+    curvesLayout->addWidget(shadowsGroup);
+    curvesLayout->addWidget(midtonesGroup);
+    curvesLayout->addWidget(highlightsGroup);
+    curvesLayout->addLayout(curveChannelLayout);
+    curvesLayout->addWidget(m_gradingHistogramWidget);
+
+    layout->addWidget(m_gradingLevelsPanel);
+    layout->addWidget(m_gradingCurvesPanel);
+    m_gradingCurvesPanel->setVisible(false);
+
+    connect(m_gradingEditModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, [this](int index) {
+        const bool curvesMode = (index == 1);
+        if (m_gradingLevelsPanel) {
+            m_gradingLevelsPanel->setVisible(!curvesMode);
+        }
+        if (m_gradingCurvesPanel) {
+            m_gradingCurvesPanel->setVisible(curvesMode);
+        }
+    });
 
     m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
     m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
@@ -288,12 +445,6 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingKeyframeTable->horizontalHeader()->setStretchLastSection(true);
     m_gradingKeyframeTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
 
-    layout->addLayout(form);
-    layout->addWidget(shadowsGroup);
-    layout->addWidget(midtonesGroup);
-    layout->addWidget(highlightsGroup);
-    layout->addLayout(curveChannelLayout);
-    layout->addWidget(m_gradingHistogramWidget);
     layout->addWidget(m_gradingAutoScrollCheckBox);
     layout->addWidget(m_gradingFollowCurrentCheckBox);
     layout->addWidget(m_gradingPreviewCheckBox);
@@ -305,7 +456,7 @@ QWidget *InspectorPane::buildGradingTab()
 QWidget *InspectorPane::buildOpacityTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Opacity"), page));
 
     m_opacityPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
@@ -367,9 +518,7 @@ QWidget *InspectorPane::buildOpacityTab()
 QWidget *InspectorPane::buildEffectsTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Effects"), page));
 
     m_effectsPathLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
@@ -425,9 +574,7 @@ QWidget *InspectorPane::buildEffectsTab()
 QWidget *InspectorPane::buildCorrectionsTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Corrections"), page));
 
     m_correctionsClipLabel = new QLabel(QStringLiteral("No clip selected"), page);
@@ -514,9 +661,7 @@ QWidget *InspectorPane::buildCorrectionsTab()
 QWidget *InspectorPane::buildTitlesTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Titles"), page));
 
     m_titlesInspectorClipLabel = new QLabel(QStringLiteral("No clip selected"));
@@ -710,7 +855,7 @@ QWidget *InspectorPane::buildTitlesTab()
 QWidget *InspectorPane::buildSyncTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Sync"), page));
 
     m_syncInspectorClipLabel = new QLabel(QStringLiteral("Sync"), page);
@@ -737,7 +882,7 @@ QWidget *InspectorPane::buildSyncTab()
 QWidget *InspectorPane::buildKeyframesTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Keyframes"), page));
 
     m_keyframesInspectorClipLabel = new QLabel(QStringLiteral("No visual clip selected"), page);
@@ -829,9 +974,8 @@ QWidget *InspectorPane::buildKeyframesTab()
 QWidget *InspectorPane::buildTranscriptTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Transcript"), page));
-    layout->setContentsMargins(0, 0, 0, 0);
 
     auto *splitter = new QSplitter(Qt::Vertical, page);
     splitter->setChildrenCollapsible(false);
@@ -915,8 +1059,10 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
     m_transcriptMaxCharsSpin = new QSpinBox(settingsContainer);
-    m_transcriptAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), settingsContainer);
     m_transcriptFollowCurrentWordCheckBox = new QCheckBox(QStringLiteral("Follow Current Word"), settingsContainer);
+    m_transcriptFollowCurrentWordCheckBox->setToolTip(
+        QStringLiteral("Highlight and auto-scroll transcript rows during playback."));
+    m_transcriptAutoScrollCheckBox = nullptr;
     m_transcriptOverlayXSpin = new QDoubleSpinBox(settingsContainer);
     m_transcriptOverlayYSpin = new QDoubleSpinBox(settingsContainer);
     m_transcriptOverlayWidthSpin = new QSpinBox(settingsContainer);
@@ -944,7 +1090,6 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
     form->addRow(QStringLiteral("Max Lines"), m_transcriptMaxLinesSpin);
     form->addRow(QStringLiteral("Max Chars"), m_transcriptMaxCharsSpin);
-    form->addRow(QStringLiteral("Auto Scroll"), m_transcriptAutoScrollCheckBox);
     form->addRow(QStringLiteral("Follow Word"), m_transcriptFollowCurrentWordCheckBox);
     form->addRow(QStringLiteral("X"), m_transcriptOverlayXSpin);
     form->addRow(QStringLiteral("Y"), m_transcriptOverlayYSpin);
@@ -968,6 +1113,26 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptPrependMsSpin = new QSpinBox(settingsContainer);
     m_transcriptPostpendMsSpin = new QSpinBox(settingsContainer);
     m_speechFilterFadeSamplesSpin = new QSpinBox(settingsContainer);
+    m_speechFilterRangeCrossfadeCheckBox =
+        new QCheckBox(QStringLiteral("Boundary Crossfade"), settingsContainer);
+    m_playbackClockSourceCombo = new QComboBox(settingsContainer);
+    m_playbackAudioWarpModeCombo = new QComboBox(settingsContainer);
+    m_playbackClockSourceCombo->setToolTip(
+        QStringLiteral("Choose whether preview time is driven by audio or by the timeline clock."));
+    m_playbackAudioWarpModeCombo->setToolTip(
+        QStringLiteral("Audio behavior when preview speed is not 1x."));
+    m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Auto),
+                                        playbackClockSourceToString(PlaybackClockSource::Auto));
+    m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Audio),
+                                        playbackClockSourceToString(PlaybackClockSource::Audio));
+    m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Timeline),
+                                        playbackClockSourceToString(PlaybackClockSource::Timeline));
+    m_playbackAudioWarpModeCombo->addItem(playbackAudioWarpModeLabel(PlaybackAudioWarpMode::Disabled),
+                                          playbackAudioWarpModeToString(PlaybackAudioWarpMode::Disabled));
+    m_playbackAudioWarpModeCombo->addItem(playbackAudioWarpModeLabel(PlaybackAudioWarpMode::Varispeed),
+                                          playbackAudioWarpModeToString(PlaybackAudioWarpMode::Varispeed));
+    m_playbackAudioWarpModeCombo->addItem(playbackAudioWarpModeLabel(PlaybackAudioWarpMode::TimeStretch),
+                                          playbackAudioWarpModeToString(PlaybackAudioWarpMode::TimeStretch));
 
     m_transcriptPrependMsSpin->setRange(0, 10000);
     m_transcriptPrependMsSpin->setValue(150);
@@ -982,12 +1147,20 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_speechFilterFadeSamplesSpin->setRange(0, 5000);
     m_speechFilterFadeSamplesSpin->setValue(300);
     m_speechFilterFadeSamplesSpin->setSuffix(QStringLiteral(" samples"));
-    m_speechFilterFadeSamplesSpin->setToolTip(QStringLiteral("Crossfade duration at speech boundaries (0 = no fade)"));
+    m_speechFilterFadeSamplesSpin->setToolTip(
+        QStringLiteral("Fade/crossfade window at speech range boundaries (0 = no transition)."));
+    m_speechFilterRangeCrossfadeCheckBox->setChecked(false);
+    m_speechFilterRangeCrossfadeCheckBox->setToolTip(
+        QStringLiteral("Blend adjacent speech ranges instead of fading to silence. "
+                       "Does not change audio duration."));
 
     speechForm->addRow(QStringLiteral("Speech Filter"), m_speechFilterEnabledCheckBox);
     speechForm->addRow(QStringLiteral("Prepend Time"), m_transcriptPrependMsSpin);
     speechForm->addRow(QStringLiteral("Postpend Time"), m_transcriptPostpendMsSpin);
     speechForm->addRow(QStringLiteral("Fade Length"), m_speechFilterFadeSamplesSpin);
+    speechForm->addRow(QStringLiteral("Transition"), m_speechFilterRangeCrossfadeCheckBox);
+    speechForm->addRow(QStringLiteral("Clock Source"), m_playbackClockSourceCombo);
+    speechForm->addRow(QStringLiteral("Audio Warp"), m_playbackAudioWarpModeCombo);
 
     // --- Assemble settings layout ---
     settingsLayout->addWidget(m_transcriptInspectorClipLabel);
@@ -1008,12 +1181,10 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     // --- Transcript table ---
     m_transcriptTable = new QTableWidget(splitter);
-    m_transcriptTable->setColumnCount(7);
+    m_transcriptTable->setColumnCount(5);
     m_transcriptTable->setHorizontalHeaderLabels(
         {QStringLiteral("Source Start"),
          QStringLiteral("Source End"),
-         QStringLiteral("Render Start"),
-         QStringLiteral("Render End"),
          QStringLiteral("Speaker"),
          QStringLiteral("Text"),
          QStringLiteral("Edits")});
@@ -1026,10 +1197,8 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_transcriptTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
     m_transcriptTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
-    m_transcriptTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
 
     splitter->addWidget(settingsScroll);
     splitter->addWidget(m_transcriptTable);
@@ -1045,9 +1214,8 @@ QWidget *InspectorPane::buildTranscriptTab()
 QWidget *InspectorPane::buildSpeakersTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Speakers"), page));
-    layout->setContentsMargins(8, 8, 8, 8);
 
     m_speakersInspectorClipLabel = new QLabel(QStringLiteral("No transcript cut selected"), page);
     m_speakersInspectorDetailsLabel = new QLabel(
@@ -1056,9 +1224,16 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersInspectorDetailsLabel->setWordWrap(true);
 
     m_speakersTable = new QTableWidget(page);
-    m_speakersTable->setColumnCount(4);
+    m_speakersTable->setColumnCount(8);
     m_speakersTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Speaker ID"), QStringLiteral("Name"), QStringLiteral("X"), QStringLiteral("Y")});
+        {QStringLiteral("Avatar"),
+         QStringLiteral("Speaker ID"),
+         QStringLiteral("Name"),
+         QStringLiteral("X"),
+         QStringLiteral("Y"),
+         QStringLiteral("Tracking"),
+         QStringLiteral("Ref 1"),
+         QStringLiteral("Ref 2")});
     m_speakersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakersTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_speakersTable->setEditTriggers(QAbstractItemView::DoubleClicked |
@@ -1066,12 +1241,46 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersTable->verticalHeader()->setVisible(false);
     m_speakersTable->horizontalHeader()->setStretchLastSection(false);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_speakersTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
+
+    auto *trackingButtonsRow = new QHBoxLayout;
+    m_speakerSetReference1Button = new QPushButton(QStringLiteral("Set Ref 1 @ Playhead"), page);
+    m_speakerSetReference2Button = new QPushButton(QStringLiteral("Set Ref 2 @ Playhead"), page);
+    m_speakerPickReference1Button = new QPushButton(QStringLiteral("Pick Ref 1 (Shift+Click)"), page);
+    m_speakerPickReference2Button = new QPushButton(QStringLiteral("Pick Ref 2 (Shift+Click)"), page);
+    m_speakerClearReferencesButton = new QPushButton(QStringLiteral("Clear Refs"), page);
+    m_speakerRunAutoTrackButton = new QPushButton(QStringLiteral("Auto-Track (TODO)"), page);
+    trackingButtonsRow->addWidget(m_speakerSetReference1Button);
+    trackingButtonsRow->addWidget(m_speakerSetReference2Button);
+    trackingButtonsRow->addWidget(m_speakerPickReference1Button);
+    trackingButtonsRow->addWidget(m_speakerPickReference2Button);
+    trackingButtonsRow->addWidget(m_speakerClearReferencesButton);
+    trackingButtonsRow->addWidget(m_speakerRunAutoTrackButton);
+
+    auto *findButtonsRow = new QHBoxLayout;
+    m_speakerPreviousSegmentButton = new QPushButton(QStringLiteral("Prev Segment"), page);
+    m_speakerNextSegmentButton = new QPushButton(QStringLiteral("Next Segment"), page);
+    findButtonsRow->addWidget(m_speakerPreviousSegmentButton);
+    findButtonsRow->addWidget(m_speakerNextSegmentButton);
+    findButtonsRow->addStretch(1);
+
+    m_speakerTrackingStatusLabel = new QLabel(
+        QStringLiteral("Tracking scaffold: store Ref 1/Ref 2 and run auto-track in a future implementation."),
+        page);
+    m_speakerTrackingStatusLabel->setWordWrap(true);
+    m_speakerTrackingStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
     layout->addWidget(m_speakersInspectorClipLabel);
     layout->addWidget(m_speakersInspectorDetailsLabel);
+    layout->addLayout(findButtonsRow);
+    layout->addLayout(trackingButtonsRow);
+    layout->addWidget(m_speakerTrackingStatusLabel);
     layout->addWidget(m_speakersTable, 1);
     return page;
 }
@@ -1079,9 +1288,8 @@ QWidget *InspectorPane::buildSpeakersTab()
 QWidget *InspectorPane::buildClipsTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Clips"), page));
 
     m_clipsTable = new QTableWidget(page);
     m_clipsTable->setColumnCount(6);
@@ -1114,9 +1322,8 @@ QWidget *InspectorPane::buildClipsTab()
 QWidget *InspectorPane::buildHistoryTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("History"), page));
 
     m_historyTable = new QTableWidget(page);
     m_historyTable->setColumnCount(2);
@@ -1139,9 +1346,8 @@ QWidget *InspectorPane::buildHistoryTab()
 QWidget *InspectorPane::buildTracksTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(6);
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Tracks"), page));
 
     m_tracksTable = new QTableWidget(page);
     m_tracksTable->setColumnCount(3);
@@ -1168,7 +1374,7 @@ QWidget *InspectorPane::buildTracksTab()
 QWidget *InspectorPane::buildOutputTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Output"), page));
 
     m_outputRangeSummaryLabel = new QLabel(QStringLiteral("Timeline export range: 00:00:00:00 -> 00:00:10:00"), page);
@@ -1333,7 +1539,7 @@ QWidget *InspectorPane::buildOutputTab()
 QWidget *InspectorPane::buildPreviewTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Preview"), page));
 
     auto *summary = new QLabel(QStringLiteral("Preview controls affect only the editor preview."), page);
@@ -1352,12 +1558,12 @@ QWidget *InspectorPane::buildPreviewTab()
     auto *zoomLayout = new QHBoxLayout();
     m_previewZoomSpin = new QDoubleSpinBox(page);
     m_previewZoomSpin->setDecimals(2);
-    m_previewZoomSpin->setRange(0.1, 5.0);
+    m_previewZoomSpin->setRange(0.1, 20.0);
     m_previewZoomSpin->setSingleStep(0.1);
     m_previewZoomSpin->setValue(1.0);
     m_previewZoomSpin->setSuffix(QStringLiteral("x"));
     m_previewZoomSpin->setToolTip(
-        QStringLiteral("Preview zoom level (0.1x to 5.0x). Use mouse wheel over preview for smooth zoom."));
+        QStringLiteral("Preview zoom level (0.1x to 20.0x). Use mouse wheel over preview for smooth zoom."));
     
     m_previewZoomResetButton = new QPushButton(QStringLiteral("Reset"), page);
     m_previewZoomResetButton->setToolTip(QStringLiteral("Reset zoom to 1.0x and center the view"));
@@ -1424,7 +1630,7 @@ QWidget *InspectorPane::buildPreviewTab()
 QWidget *InspectorPane::buildClipTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Properties"), page));
     auto *form = new QFormLayout;
 
@@ -1506,7 +1712,7 @@ QWidget *InspectorPane::buildClipTab()
 QWidget *InspectorPane::buildProfileTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("System"), page));
 
     auto *decodeForm = new QFormLayout;
@@ -1553,7 +1759,7 @@ QWidget *InspectorPane::buildProfileTab()
 QWidget *InspectorPane::buildProjectsTab()
 {
     auto *page = new QWidget;
-    auto *layout = new QVBoxLayout(page);
+    auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Projects"), page));
 
     m_projectSectionLabel = new QLabel(QStringLiteral("PROJECTS"), page);

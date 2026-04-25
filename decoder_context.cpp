@@ -401,7 +401,12 @@ bool DecoderContext::initCodec() {
         m_codecCtx->get_format = get_alpha_compatible_format;
     }
 
-    ret = avcodec_open2(m_codecCtx, decoder, nullptr);
+    AVDictionary* codecOptions = nullptr;
+    if (!hardwareEnabled) {
+        av_dict_set(&codecOptions, "threads", "1", 0);
+    }
+    ret = avcodec_open2(m_codecCtx, decoder, &codecOptions);
+    av_dict_free(&codecOptions);
     if (ret < 0) {
         qWarning() << "Failed to open codec:" << avErrToString(ret);
         return false;
@@ -661,7 +666,8 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
         h26xDecodeLock.lock();
     }
 
-    if (forceSeek && !seekToKeyframe(targetFrame)) {
+    const bool initialFrameZeroRequest = m_lastDecodedFrame < 0 && targetFrame <= 0;
+    if (forceSeek && !initialFrameZeroRequest && !seekToKeyframe(targetFrame)) {
         decodeTrace(QStringLiteral("DecoderContext::seekAndDecode.seek-failed"),
                     QStringLiteral("file=%1 target=%2")
                         .arg(shortPath(m_path))

@@ -1,6 +1,7 @@
 #include "editor.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QColorDialog>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
@@ -26,13 +27,6 @@ void EditorWindow::bindInspectorWidgets()
     m_clipOriginalInfoLabel = m_inspectorPane->clipOriginalInfoLabel();
     m_clipProxyInfoLabel = m_inspectorPane->clipProxyInfoLabel();
     m_clipPlaybackRateSpin = m_inspectorPane->clipPlaybackRateSpin();
-    {
-        QTableWidget *tracksTable = m_inspectorPane->tracksTable();
-        if (tracksTable) {
-            connect(tracksTable, &QTableWidget::itemChanged,
-                    this, &EditorWindow::onTrackTableItemChanged);
-        }
-    }
     m_trackInspectorLabel = m_inspectorPane->trackInspectorLabel();
     m_trackInspectorDetailsLabel = m_inspectorPane->trackInspectorDetailsLabel();
     m_trackNameEdit = m_inspectorPane->trackNameEdit();
@@ -67,45 +61,7 @@ void EditorWindow::bindInspectorWidgets()
     m_syncInspectorDetailsLabel = m_inspectorPane->syncInspectorDetailsLabel();
     m_clearAllSyncPointsButton = m_inspectorPane->clearAllSyncPointsButton();
 
-    if (m_syncTable) {
-        connect(m_syncTable, &QTableWidget::itemSelectionChanged,
-                this, &EditorWindow::onSyncTableSelectionChanged);
-        connect(m_syncTable, &QTableWidget::itemChanged,
-                this, &EditorWindow::onSyncTableItemChanged);
-        connect(m_syncTable, &QTableWidget::itemDoubleClicked,
-                this, &EditorWindow::onSyncTableItemDoubleClicked);
-        m_syncTable->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(m_syncTable, &QWidget::customContextMenuRequested,
-                this, &EditorWindow::onSyncTableCustomContextMenu);
-    }
-    if (m_clearAllSyncPointsButton) {
-        connect(m_clearAllSyncPointsButton, &QPushButton::clicked, this, [this]() {
-            if (!m_timeline) {
-                return;
-            }
-            const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
-            if (markers.isEmpty()) {
-                QMessageBox::information(this,
-                                         QStringLiteral("Clear Sync Points"),
-                                         QStringLiteral("There are no sync points to clear."));
-                return;
-            }
-            const int response = QMessageBox::question(
-                this,
-                QStringLiteral("Clear All Sync Points"),
-                QStringLiteral("Remove all %1 sync points from the timeline?")
-                    .arg(markers.size()),
-                QMessageBox::Yes | QMessageBox::No,
-                QMessageBox::No);
-            if (response != QMessageBox::Yes) {
-                return;
-            }
-            m_timeline->setRenderSyncMarkers({});
-            refreshSyncInspector();
-            scheduleSaveState();
-            pushHistorySnapshot();
-        });
-    }
+    // Sync/Tracks tab signal wiring now lives in SyncTab/TracksTab controllers.
 
     m_gradingPathLabel = m_inspectorPane->gradingPathLabel();
     m_brightnessSpin = m_inspectorPane->brightnessSpin();
@@ -188,6 +144,9 @@ void EditorWindow::bindInspectorWidgets()
     m_transcriptPostpendMsSpin = m_inspectorPane->transcriptPostpendMsSpin();
     m_speechFilterEnabledCheckBox = m_inspectorPane->speechFilterEnabledCheckBox();
     m_speechFilterFadeSamplesSpin = m_inspectorPane->speechFilterFadeSamplesSpin();
+    m_speechFilterRangeCrossfadeCheckBox = m_inspectorPane->speechFilterRangeCrossfadeCheckBox();
+    m_playbackClockSourceCombo = m_inspectorPane->playbackClockSourceCombo();
+    m_playbackAudioWarpModeCombo = m_inspectorPane->playbackAudioWarpModeCombo();
 }
 
 void EditorWindow::setupSpeechFilterControls()
@@ -200,6 +159,9 @@ void EditorWindow::setupSpeechFilterControls()
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         }
         m_inspectorPane->refresh();
         scheduleSaveState();
@@ -223,6 +185,31 @@ void EditorWindow::setupSpeechFilterControls()
                 m_speechFilterFadeSamples = qMax(0, value);
                 refreshSpeechFilterRouting(true);
             });
+    connect(m_speechFilterRangeCrossfadeCheckBox, &QCheckBox::toggled, this,
+            [this, refreshSpeechFilterRouting](bool checked) {
+                m_speechFilterRangeCrossfade = checked;
+                refreshSpeechFilterRouting(true);
+            });
+    if (m_playbackClockSourceCombo) {
+        connect(m_playbackClockSourceCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+            if (index < 0) {
+                return;
+            }
+            const PlaybackClockSource source = playbackClockSourceFromString(
+                m_playbackClockSourceCombo->itemData(index).toString());
+            setPlaybackClockSource(source);
+        });
+    }
+    if (m_playbackAudioWarpModeCombo) {
+        connect(m_playbackAudioWarpModeCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
+            if (index < 0) {
+                return;
+            }
+            const PlaybackAudioWarpMode mode = playbackAudioWarpModeFromString(
+                m_playbackAudioWarpModeCombo->itemData(index).toString());
+            setPlaybackAudioWarpMode(mode);
+        });
+    }
 
     connect(m_clipPlaybackRateSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double value) {
         if (!m_timeline || !m_clipPlaybackRateSpin) {

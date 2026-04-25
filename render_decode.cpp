@@ -191,15 +191,14 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
     }
     const QString cacheKey = clip.filePath;
     if (!transcriptCache.contains(cacheKey)) {
-        transcriptCache.insert(cacheKey, loadTranscriptSections(transcriptWorkingPathForClipFile(clip.filePath)));
+        transcriptCache.insert(cacheKey, loadTranscriptSections(activeTranscriptPathForClipFile(clip.filePath)));
     }
     const QVector<TranscriptSection>& sections = transcriptCache.value(cacheKey);
     if (sections.isEmpty()) {
         return {};
     }
-    const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(clip,
-                                                                     static_cast<qreal>(timelineFrame),
-                                                                     markers);
+    const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+        clip, frameToSamples(timelineFrame), markers);
     for (const TranscriptSection& section : sections) {
         if (sourceFrame < section.startFrame) {
             return {};
@@ -243,9 +242,27 @@ void renderTranscriptOverlays(QImage* canvas,
             continue;
         }
 
-        const QRectF bounds((request.outputSize.width() / 2.0) + clip.transcriptOverlay.translationX -
+        qreal translationX = clip.transcriptOverlay.translationX;
+        qreal translationY = clip.transcriptOverlay.translationY;
+        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const auto sectionsIt = transcriptCache.constFind(clip.filePath);
+        if (!transcriptPath.isEmpty() && sectionsIt != transcriptCache.constEnd() && !sectionsIt.value().isEmpty()) {
+            const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+                clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
+            bool speakerLocationResolved = false;
+            const QPointF speakerLocation = transcriptSpeakerLocationForSourceFrame(
+                transcriptPath, sectionsIt.value(), sourceFrame, &speakerLocationResolved);
+            if (speakerLocationResolved) {
+                const qreal centerX = speakerLocation.x() * static_cast<qreal>(request.outputSize.width());
+                const qreal centerY = speakerLocation.y() * static_cast<qreal>(request.outputSize.height());
+                translationX = centerX - (request.outputSize.width() / 2.0);
+                translationY = centerY - (request.outputSize.height() / 2.0);
+            }
+        }
+
+        const QRectF bounds((request.outputSize.width() / 2.0) + translationX -
                                 (clip.transcriptOverlay.boxWidth / 2.0),
-                            (request.outputSize.height() / 2.0) + clip.transcriptOverlay.translationY -
+                            (request.outputSize.height() / 2.0) + translationY -
                                 (clip.transcriptOverlay.boxHeight / 2.0),
                             clip.transcriptOverlay.boxWidth,
                             clip.transcriptOverlay.boxHeight);

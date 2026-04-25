@@ -85,6 +85,15 @@ public:
     QLabel *speakersInspectorClipLabel() const { return m_speakersInspectorClipLabel; }
     QLabel *speakersInspectorDetailsLabel() const { return m_speakersInspectorDetailsLabel; }
     QTableWidget *speakersTable() const { return m_speakersTable; }
+    QPushButton *speakerSetReference1Button() const { return m_speakerSetReference1Button; }
+    QPushButton *speakerSetReference2Button() const { return m_speakerSetReference2Button; }
+    QPushButton *speakerPickReference1Button() const { return m_speakerPickReference1Button; }
+    QPushButton *speakerPickReference2Button() const { return m_speakerPickReference2Button; }
+    QPushButton *speakerPreviousSegmentButton() const { return m_speakerPreviousSegmentButton; }
+    QPushButton *speakerNextSegmentButton() const { return m_speakerNextSegmentButton; }
+    QPushButton *speakerClearReferencesButton() const { return m_speakerClearReferencesButton; }
+    QPushButton *speakerRunAutoTrackButton() const { return m_speakerRunAutoTrackButton; }
+    QLabel *speakerTrackingStatusLabel() const { return m_speakerTrackingStatusLabel; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -96,6 +105,7 @@ public:
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
     QDoubleSpinBox *gradingFadeDurationSpin() const { return m_gradingFadeDurationSpin; }
     QComboBox *gradingCurveChannelCombo() const { return m_gradingCurveChannelCombo; }
+    QComboBox *gradingEditModeCombo() const { return m_gradingEditModeCombo; }
     GradingHistogramWidget *gradingHistogramWidget() const { return m_gradingHistogramWidget; }
     
     QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
@@ -231,6 +241,9 @@ public:
     QSpinBox *transcriptPrependMsSpin() const { return m_transcriptPrependMsSpin; }
     QSpinBox *transcriptPostpendMsSpin() const { return m_transcriptPostpendMsSpin; }
     QSpinBox *speechFilterFadeSamplesSpin() const { return m_speechFilterFadeSamplesSpin; }
+    QCheckBox *speechFilterRangeCrossfadeCheckBox() const { return m_speechFilterRangeCrossfadeCheckBox; }
+    QComboBox *playbackClockSourceCombo() const { return m_playbackClockSourceCombo; }
+    QComboBox *playbackAudioWarpModeCombo() const { return m_playbackAudioWarpModeCombo; }
 
     void refresh();
 
@@ -292,6 +305,9 @@ private:
     QPushButton *m_opacityFadeInButton = nullptr;
     QPushButton *m_opacityFadeOutButton = nullptr;
     QDoubleSpinBox *m_gradingFadeDurationSpin = nullptr;
+    QComboBox *m_gradingEditModeCombo = nullptr;
+    QWidget *m_gradingLevelsPanel = nullptr;
+    QWidget *m_gradingCurvesPanel = nullptr;
     QComboBox *m_gradingCurveChannelCombo = nullptr;
     GradingHistogramWidget *m_gradingHistogramWidget = nullptr;
     QDoubleSpinBox *m_opacityFadeDurationSpin = nullptr;
@@ -432,6 +448,15 @@ private:
     QLabel *m_speakersInspectorClipLabel = nullptr;
     QLabel *m_speakersInspectorDetailsLabel = nullptr;
     QTableWidget *m_speakersTable = nullptr;
+    QPushButton *m_speakerSetReference1Button = nullptr;
+    QPushButton *m_speakerSetReference2Button = nullptr;
+    QPushButton *m_speakerPickReference1Button = nullptr;
+    QPushButton *m_speakerPickReference2Button = nullptr;
+    QPushButton *m_speakerPreviousSegmentButton = nullptr;
+    QPushButton *m_speakerNextSegmentButton = nullptr;
+    QPushButton *m_speakerClearReferencesButton = nullptr;
+    QPushButton *m_speakerRunAutoTrackButton = nullptr;
+    QLabel *m_speakerTrackingStatusLabel = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;
@@ -463,4 +488,7 @@ private:
     QSpinBox *m_transcriptPrependMsSpin = nullptr;
     QSpinBox *m_transcriptPostpendMsSpin = nullptr;
     QSpinBox *m_speechFilterFadeSamplesSpin = nullptr;
+    QCheckBox *m_speechFilterRangeCrossfadeCheckBox = nullptr;
+    QComboBox *m_playbackClockSourceCombo = nullptr;
+    QComboBox *m_playbackAudioWarpModeCombo = nullptr;
 };

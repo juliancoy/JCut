@@ -1,0 +1,55 @@
+flowchart TB
+    subgraph UI[UI Layer]
+        EX[ExplorerPane]
+        EP[EditorPane]\n(Timeline + Transport + Preview)
+        IP[InspectorPane]\n(Tab Controllers)
+    end
+
+    subgraph APP[Application Orchestration]
+        EW[EditorWindow]
+        PS[Project + State + History]
+        CS[ControlServer]
+    end
+
+    subgraph MEDIA[Media Pipeline]
+        AD[AsyncDecoder]
+        TC[TimelineCache]
+        PFP[PlaybackFramePipeline]
+        MB[MemoryBudget]
+    end
+
+    subgraph RENDER[Preview + Render]
+        PV[PreviewWindow + Overlays]
+        RG[render_gpu]
+        RC[render_cpu_fallback]
+        RX[render_export]
+    end
+
+    subgraph AUDIO[Audio]
+        AE[AudioEngine]\n(RtAudio)
+        RA[render_audio]
+    end
+
+    EX --> EW
+    EP --> EW
+    IP --> EW
+
+    EW --> PS
+    EW --> CS
+    EW --> AD
+    EW --> TC
+    EW --> PFP
+    EW --> PV
+    EW --> AE
+
+    AD --> TC
+    TC --> PV
+    MB --> TC
+    PFP --> PV
+    PFP --> AE
+
+    EW --> RG
+    EW --> RC
+    RG --> RX
+    RC --> RX
+    RA --> RX
