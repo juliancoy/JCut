@@ -14,6 +14,7 @@ ASAN="OFF"
 FFMPEG_PROFILE="safe"
 BUILD_TARGET="editor"
 RUN_EDITOR="no"
+CMAKE_GENERATOR="Ninja"
 
 ensure_ffmpeg_installed() {
     local codec_pc="${FFMPEG_PKGCONFIG_DIR}/libavcodec.pc"
@@ -120,12 +121,18 @@ for arg in "$@"; do
         --with-tests)
             BUILD_TARGET="all"
             ;;
+        --ninja)
+            CMAKE_GENERATOR="Ninja"
+            ;;
+        --make)
+            CMAKE_GENERATOR="Unix Makefiles"
+            ;;
         --run)
             RUN_EDITOR="yes"
             ;;
         *)
             echo "Unknown argument: $arg" >&2
-            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia] [--with-tests] [--run]" >&2
+            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia] [--with-tests] [--ninja|--make] [--run]" >&2
             exit 1
             ;;
     esac
@@ -147,18 +154,26 @@ ensure_ffmpeg_installed
 
 export PKG_CONFIG_PATH="${FFMPEG_PKGCONFIG_DIR}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 
-if [[ "${ASAN}" == "ON" ]]; then
-    BUILD_DIR="${SCRIPT_DIR}/build-asan"
+if [[ "${CMAKE_GENERATOR}" == "Ninja" ]]; then
+    BUILD_DIR_BASE="${SCRIPT_DIR}/build"
 else
-    BUILD_DIR="${SCRIPT_DIR}/build"
+    BUILD_DIR_BASE="${SCRIPT_DIR}/build-cmake"
+fi
+
+if [[ "${ASAN}" == "ON" ]]; then
+    BUILD_DIR="${BUILD_DIR_BASE}-asan"
+else
+    BUILD_DIR="${BUILD_DIR_BASE}"
 fi
 
 if [[ "${ASAN}" == "ON" ]]; then
     cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
+        -G "${CMAKE_GENERATOR}" \
         -DEDITOR_ASAN=ON \
         -DCMAKE_BUILD_TYPE=Debug
 else
     cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
+        -G "${CMAKE_GENERATOR}" \
         -DEDITOR_ASAN=OFF
 fi
 if [[ "${BUILD_TARGET}" == "all" ]]; then

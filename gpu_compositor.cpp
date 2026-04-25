@@ -10,6 +10,25 @@
 
 namespace editor {
 
+namespace {
+
+const char* frameOpResultToString(QRhi::FrameOpResult result) {
+    switch (result) {
+    case QRhi::FrameOpSuccess:
+        return "success";
+    case QRhi::FrameOpError:
+        return "error";
+    case QRhi::FrameOpSwapChainOutOfDate:
+        return "swap_chain_out_of_date";
+    case QRhi::FrameOpDeviceLost:
+        return "device_lost";
+    default:
+        return "unknown";
+    }
+}
+
+} // namespace
+
 // ============================================================================
 // Shader Sources
 // ============================================================================
@@ -204,9 +223,12 @@ void GPUCompositor::renderToSwapChain(QRhiSwapChain* swapChain, const QColor& cl
     
     QRhiCommandBuffer* cb = swapChain->currentFrameCommandBuffer();
     QRhiRenderTarget* rt = swapChain->currentFrameRenderTarget();
-    
-    // Begin render pass
-    QRhiRenderPassDescriptor* rpDesc = rt->renderPassDescriptor();
+    if (!cb || !rt) {
+        const QString message = QStringLiteral("GPUCompositor: swap chain has no current frame command buffer/render target");
+        qWarning() << message;
+        emit renderError(message);
+        return;
+    }
     
     cb->beginPass(rt, clearColor, { 1.0f, 0 });
     
@@ -218,6 +240,8 @@ void GPUCompositor::renderToSwapChain(QRhiSwapChain* swapChain, const QColor& cl
     // Note: Full implementation requires valid shaders
     // This is a placeholder showing the structure
     
+    const QSize viewportSize = m_outputSize.isValid() ? m_outputSize : rt->pixelSize();
+
     // Render each layer
     for (const auto& layer : m_layers) {
         if (!layer.texture) continue;
@@ -226,8 +250,8 @@ void GPUCompositor::renderToSwapChain(QRhiSwapChain* swapChain, const QColor& cl
         // Set up shader resource bindings
         // Draw quad
         
-        cb->setViewport({ 0, 0, static_cast<float>(m_outputSize.width()), 
-                        static_cast<float>(m_outputSize.height()) });
+        cb->setViewport({ 0, 0, static_cast<float>(viewportSize.width()),
+                          static_cast<float>(viewportSize.height()) });
         
         // Would draw here with actual shaders
     }
@@ -239,16 +263,62 @@ void GPUCompositor::renderToSwapChain(QRhiSwapChain* swapChain, const QColor& cl
 }
 
 void GPUCompositor::renderToTexture(QRhiTextureRenderTarget* target, const QColor& clearColor) {
-    if (!m_initialized || !target) return;
-    
+    if (!m_initialized || !target || !m_rhi) return;
+
+    if (!target->renderPassDescriptor()) {
+        const QString message = QStringLiteral("GPUCompositor: renderToTexture target has no render pass descriptor");
+        qWarning() << message;
+        emit renderError(message);
+        return;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+
     QRhiCommandBuffer* cb = nullptr;
-    // Get command buffer from RHI
+    const QRhi::FrameOpResult beginResult = m_rhi->beginOffscreenFrame(&cb);
+    if (beginResult != QRhi::FrameOpSuccess) {
+        const QString message = QStringLiteral("GPUCompositor: beginOffscreenFrame failed (%1)")
+                                    .arg(QString::fromLatin1(frameOpResultToString(beginResult)));
+        qWarning() << message;
+        emit renderError(message);
+        return;
+    }
+
+    if (!cb) {
+        const QString message = QStringLiteral("GPUCompositor: beginOffscreenFrame returned null command buffer");
+        qWarning() << message;
+        emit renderError(message);
+        m_rhi->endOffscreenFrame();
+        return;
+    }
     
     cb->beginPass(target, clearColor, { 1.0f, 0 });
     
-    // Same rendering as swap chain, but to texture
+    const QSize viewportSize = m_outputSize.isValid() ? m_outputSize : target->pixelSize();
+    for (const auto& layer : m_layers) {
+        if (!layer.texture) continue;
+
+        // Update uniforms
+        // Set up shader resource bindings
+        // Draw quad
+        cb->setViewport({ 0, 0, static_cast<float>(viewportSize.width()),
+                          static_cast<float>(viewportSize.height()) });
+    }
     
     cb->endPass();
+
+    const QRhi::FrameOpResult endResult = m_rhi->endOffscreenFrame();
+    if (endResult != QRhi::FrameOpSuccess) {
+        const QString message = QStringLiteral("GPUCompositor: endOffscreenFrame failed (%1)")
+                                    .arg(QString::fromLatin1(frameOpResultToString(endResult)));
+        qWarning() << message;
+        emit renderError(message);
+        return;
+    }
+
+    m_frameCount++;
+    m_totalRenderTimeUs += timer.nsecsElapsed() / 1000;
 }
 
 double GPUCompositor::averageRenderTimeMs() const {
