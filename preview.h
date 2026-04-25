@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QTransform>
 #include <QImage>
+#include <QColor>
 #include <deque>
 #include <memory>
 #include <functional>
@@ -23,6 +24,8 @@
 #include "playback_frame_pipeline.h"
 
 using namespace editor;
+
+class QKeyEvent;
 
 class PreviewWindow final : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
@@ -53,6 +56,7 @@ public:
     void setSelectedCorrectionPolygon(int polygonIndex) { m_selectedCorrectionPolygon = polygonIndex; update(); }
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
+    void setShowSpeakerTrackPoints(bool show);
     void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setTitleOverlayInteractionOnly(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
@@ -95,6 +99,7 @@ public:
     std::function<void(const QString&)> createKeyframeRequested;
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
+    std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -105,6 +110,8 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
+    void keyReleaseEvent(QKeyEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
 
@@ -136,7 +143,19 @@ private:
     QRect scaledCanvasRect(const QRect& baseRect) const;
     QPointF previewCanvasScale(const QRect& targetRect) const;
     bool clipShowsTranscriptOverlay(const TimelineClip& clip) const;
+    struct SpeakerTrackPoint {
+        int64_t frame = 0;
+        qreal x = 0.5;
+        qreal y = 0.5;
+        QString speakerId;
+    };
+    struct SpeakerTrackPointCacheEntry {
+        qint64 mtimeMs = -1;
+        QVector<SpeakerTrackPoint> points;
+    };
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
+    const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
+    void drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
     TranscriptOverlayLayout transcriptOverlayLayoutForClip(const TimelineClip& clip) const;
     QRectF transcriptOverlayRectForTarget(const TimelineClip& clip, const QRect& targetRect) const;
     QSizeF transcriptOverlaySizeForSelectedClip() const;
@@ -195,6 +214,7 @@ private:
                               const QList<TimelineClip>& activeAudioClips);
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
+    void drawSpeakerPickOverlay(QPainter* painter) const;
     QRect fitRect(const QSize& source, const QRect& bounds) const;
     QPointF mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info, const QPointF& normalizedPoint) const;
     QPointF mapScreenPointToNormalizedClip(const PreviewOverlayInfo& info, const QPointF& screenPoint) const;
@@ -244,10 +264,12 @@ private:
     QString m_selectedClipId;
     QSize m_outputSize = QSize(1080, 1920);
     bool m_hideOutsideOutputWindow = false;
+    bool m_showSpeakerTrackPoints = false;
     qreal m_previewZoom = 1.0;
     QPointF m_previewPanOffset;
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;
     mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;
+    mutable QHash<QString, SpeakerTrackPointCacheEntry> m_speakerTrackPointsCache;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
     QHash<QString, editor::GlTextureCacheEntry> m_transcriptTextureCache;
     QHash<QString, FrameHandle> m_lastPresentedFrames;
@@ -269,4 +291,9 @@ private:
     bool m_showCorrectionOverlays = false;
     int m_selectedCorrectionPolygon = -1;
     QVector<QPointF> m_correctionDraftPoints;
+    bool m_speakerPickDragActive = false;
+    QString m_speakerPickClipId;
+    QPointF m_speakerPickStartPos;
+    QPointF m_speakerPickCurrentPos;
+    QString m_speakerPickHintClipId;
 };

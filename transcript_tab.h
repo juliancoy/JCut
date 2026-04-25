@@ -37,6 +37,8 @@ public:
         QCheckBox* transcriptFollowCurrentWordCheckBox = nullptr;
         QDoubleSpinBox* transcriptOverlayXSpin = nullptr;
         QDoubleSpinBox* transcriptOverlayYSpin = nullptr;
+        QPushButton* transcriptCenterHorizontalButton = nullptr;
+        QPushButton* transcriptCenterVerticalButton = nullptr;
         QSpinBox* transcriptOverlayWidthSpin = nullptr;
         QSpinBox* transcriptOverlayHeightSpin = nullptr;
         QFontComboBox* transcriptFontFamilyCombo = nullptr;
@@ -73,7 +75,9 @@ public:
     void wire();
     void refresh();
     void applyOverlayFromInspector(bool pushHistory = false);
-    void syncTableToPlayhead(int64_t absolutePlaybackSample, double sourceSeconds);
+    void syncTableToPlayhead(int64_t absolutePlaybackSample,
+                             double sourceSeconds,
+                             int64_t sourceFrame = -1);
     void applyTableEdit(QTableWidgetItem* item);
     void deleteSelectedRows();
     void setSelectedRowsSkipped(bool skipped);
@@ -96,6 +100,8 @@ private slots:
     void onTranscriptSelectionChanged();
     void onFollowCurrentWordToggled(bool checked);
     void onOverlaySettingChanged();
+    void onCenterHorizontalClicked();
+    void onCenterVerticalClicked();
     void onPrependMsChanged(int value);
     void onPostpendMsChanged(int value);
     void onSpeechFilterEnabledToggled(bool enabled);
@@ -135,8 +141,8 @@ private:
     };
     struct FollowRange
     {
-        double startSeconds = 0.0;
-        double endSeconds = 0.0;
+        int64_t startFrame = 0;
+        int64_t endFrame = 0;
         int row = -1;
     };
 
@@ -145,6 +151,7 @@ private:
     QVector<TranscriptRow> parseTranscriptRows(const QJsonArray& segments, int prependMs, int postpendMs);
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
+    void insertGapRows(QVector<TranscriptRow>* rows) const;
     void insertWordAtRow(int row, bool above);
     void expandSelectedRow(int row);
     void applyTranscriptRowState(QTableWidgetItem* startItem,
@@ -190,7 +197,7 @@ private:
     int m_manualSelectionHoldMs = 1200;
     QElapsedTimer m_manualSelectionTimer;
     int64_t m_lastSyncAbsolutePlaybackSample = -1;
-    double m_lastSyncSourceSeconds = -1.0;
+    int64_t m_lastSyncSourceFrame = -1;
     QVector<FollowRange> m_followRanges;
     bool m_suppressSelectionSideEffects = false;
     QString m_persistedSelectedClipId;

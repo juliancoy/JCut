@@ -199,25 +199,7 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
     }
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
         clip, frameToSamples(timelineFrame), markers);
-    for (const TranscriptSection& section : sections) {
-        if (sourceFrame < section.startFrame) {
-            return {};
-        }
-        if (sourceFrame <= section.endFrame) {
-            const qreal estimatedLineHeight = qMax<qreal>(12.0, clip.transcriptOverlay.fontPointSize * 1.35);
-            const qreal usableHeight = qMax<qreal>(estimatedLineHeight, clip.transcriptOverlay.boxHeight - 28.0);
-            const int fittedLines = qMax(1, static_cast<int>(std::floor(usableHeight / estimatedLineHeight)));
-            const qreal estimatedCharWidth = qMax<qreal>(6.0, clip.transcriptOverlay.fontPointSize * 0.62);
-            const qreal usableWidth = qMax<qreal>(estimatedCharWidth, clip.transcriptOverlay.boxWidth - 36.0);
-            const int fittedChars = qMax(1, static_cast<int>(std::floor(usableWidth / estimatedCharWidth)));
-            return layoutTranscriptSection(section,
-                                           sourceFrame,
-                                           qMax(1, qMin(clip.transcriptOverlay.maxCharsPerLine, fittedChars)),
-                                           qMax(1, qMin(clip.transcriptOverlay.maxLines, fittedLines)),
-                                           clip.transcriptOverlay.autoScroll);
-        }
-    }
-    return {};
+    return transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
 }
 
 void renderTranscriptOverlays(QImage* canvas,
@@ -242,30 +224,15 @@ void renderTranscriptOverlays(QImage* canvas,
             continue;
         }
 
-        qreal translationX = clip.transcriptOverlay.translationX;
-        qreal translationY = clip.transcriptOverlay.translationY;
         const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
         const auto sectionsIt = transcriptCache.constFind(clip.filePath);
-        if (!transcriptPath.isEmpty() && sectionsIt != transcriptCache.constEnd() && !sectionsIt.value().isEmpty()) {
-            const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
-                clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
-            bool speakerLocationResolved = false;
-            const QPointF speakerLocation = transcriptSpeakerLocationForSourceFrame(
-                transcriptPath, sectionsIt.value(), sourceFrame, &speakerLocationResolved);
-            if (speakerLocationResolved) {
-                const qreal centerX = speakerLocation.x() * static_cast<qreal>(request.outputSize.width());
-                const qreal centerY = speakerLocation.y() * static_cast<qreal>(request.outputSize.height());
-                translationX = centerX - (request.outputSize.width() / 2.0);
-                translationY = centerY - (request.outputSize.height() / 2.0);
-            }
-        }
-
-        const QRectF bounds((request.outputSize.width() / 2.0) + translationX -
-                                (clip.transcriptOverlay.boxWidth / 2.0),
-                            (request.outputSize.height() / 2.0) + translationY -
-                                (clip.transcriptOverlay.boxHeight / 2.0),
-                            clip.transcriptOverlay.boxWidth,
-                            clip.transcriptOverlay.boxHeight);
+        const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+            clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
+        const QVector<TranscriptSection> emptySections;
+        const QVector<TranscriptSection>& sections =
+            sectionsIt != transcriptCache.constEnd() ? sectionsIt.value() : emptySections;
+        const QRectF bounds = transcriptOverlayRectInOutputSpace(
+            clip, request.outputSize, transcriptPath, sections, sourceFrame);
         if (clip.transcriptOverlay.showBackground) {
             painter.setPen(Qt::NoPen);
             painter.setBrush(QColor(0, 0, 0, 120));

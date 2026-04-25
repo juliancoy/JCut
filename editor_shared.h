@@ -4,6 +4,8 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QPointF>
+#include <QRectF>
+#include <QSize>
 #include <QStringList>
 #include <QString>
 #include <QVector>
@@ -97,6 +99,7 @@ struct TimelineClip {
         bool enabled = false;
         bool showBackground = true;
         bool autoScroll = false;
+        bool useManualPlacement = false;
         qreal translationX = 0.0;
         qreal translationY = 640.0;
         qreal boxWidth = 900.0;
@@ -407,6 +410,21 @@ bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch,
                                                QString* errorOut = nullptr);
 QJsonObject transcriptSpeakerTrackingProfilingSnapshot();
 void resetTranscriptSpeakerTrackingProfiling();
+QPointF transcriptOverlayTranslationForOutput(const TimelineClip& clip,
+                                              const QSize& outputSize,
+                                              const QString& transcriptPath,
+                                              const QVector<TranscriptSection>& sections,
+                                              int64_t sourceFrame);
+QRectF transcriptOverlayRectInOutputSpace(const TimelineClip& clip,
+                                          const QSize& outputSize,
+                                          const QString& transcriptPath,
+                                          const QVector<TranscriptSection>& sections,
+                                          int64_t sourceFrame);
+int transcriptOverlayEffectiveLinesForBox(const TimelineClip& clip);
+int transcriptOverlayEffectiveCharsForBox(const TimelineClip& clip);
+TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(const TimelineClip& clip,
+                                                            const QVector<TranscriptSection>& sections,
+                                                            int64_t sourceFrame);
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines);
 TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section,
                                                int64_t sourceFrame,

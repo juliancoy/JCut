@@ -63,7 +63,15 @@ QJsonObject EditorWindow::throttleConfigSnapshot() const
         {QStringLiteral("speaker_tracking_max_speed_permille_per_frame"),
          speakerTrackingConfig.value(QStringLiteral("max_speed_permille_per_frame")).toInt(40)},
         {QStringLiteral("speaker_tracking_smoothing_permille"),
-         speakerTrackingConfig.value(QStringLiteral("smoothing_permille")).toInt(800)}
+         speakerTrackingConfig.value(QStringLiteral("smoothing_permille")).toInt(800)},
+        {QStringLiteral("speaker_tracking_kalman_enabled"),
+         speakerTrackingConfig.value(QStringLiteral("kalman_enabled")).toBool(false)},
+        {QStringLiteral("speaker_tracking_kalman_process_noise_permille"),
+         speakerTrackingConfig.value(QStringLiteral("kalman_process_noise_permille")).toInt(120)},
+        {QStringLiteral("speaker_tracking_kalman_measurement_noise_permille"),
+         speakerTrackingConfig.value(QStringLiteral("kalman_measurement_noise_permille")).toInt(350)},
+        {QStringLiteral("speaker_tracking_auto_track_step_frames"),
+         speakerTrackingConfig.value(QStringLiteral("auto_track_step_frames")).toInt(6)}
     };
 }
 
@@ -115,6 +123,22 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
     if (patch.contains(QStringLiteral("speaker_tracking_smoothing_permille"))) {
         speakerTrackingPatch[QStringLiteral("smoothing_permille")] =
             patch.value(QStringLiteral("speaker_tracking_smoothing_permille"));
+    }
+    if (patch.contains(QStringLiteral("speaker_tracking_kalman_enabled"))) {
+        speakerTrackingPatch[QStringLiteral("kalman_enabled")] =
+            patch.value(QStringLiteral("speaker_tracking_kalman_enabled"));
+    }
+    if (patch.contains(QStringLiteral("speaker_tracking_kalman_process_noise_permille"))) {
+        speakerTrackingPatch[QStringLiteral("kalman_process_noise_permille")] =
+            patch.value(QStringLiteral("speaker_tracking_kalman_process_noise_permille"));
+    }
+    if (patch.contains(QStringLiteral("speaker_tracking_kalman_measurement_noise_permille"))) {
+        speakerTrackingPatch[QStringLiteral("kalman_measurement_noise_permille")] =
+            patch.value(QStringLiteral("speaker_tracking_kalman_measurement_noise_permille"));
+    }
+    if (patch.contains(QStringLiteral("speaker_tracking_auto_track_step_frames"))) {
+        speakerTrackingPatch[QStringLiteral("auto_track_step_frames")] =
+            patch.value(QStringLiteral("speaker_tracking_auto_track_step_frames"));
     }
     if (!speakerTrackingPatch.isEmpty() &&
         !applyTranscriptSpeakerTrackingConfigPatch(speakerTrackingPatch, &error)) {

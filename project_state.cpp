@@ -475,6 +475,8 @@ QJsonObject EditorWindow::buildStateJson() const
         m_renderUseProxiesCheckBox ? m_renderUseProxiesCheckBox->isChecked() : false;
     root[QStringLiteral("previewHideOutsideOutput")] =
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
+    root[QStringLiteral("previewShowSpeakerTrackPoints")] =
+        m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
     root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();

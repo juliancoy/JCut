@@ -2,11 +2,16 @@
 #include "titles.h"
 
 #include <QContextMenuEvent>
+#include <QApplication>
+#include <QCursor>
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QMenu>
 #include <QOpenGLWidget>
 #include <QTimer>
 #include <QWheelEvent>
+
+#include <cmath>
 
 void PreviewWindow::showEvent(QShowEvent* event) {
     QOpenGLWidget::showEvent(event);
@@ -58,9 +63,8 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
         return;
     }
 
-    // Shift+Click provides a generic normalized point pick callback for
-    // speaker anchoring workflows without interfering with default drag behavior.
-    if ((event->modifiers() & Qt::ShiftModifier) && speakerPointRequested) {
+    // Shift+Click / Shift+Drag supports speaker anchoring workflows.
+    if ((event->modifiers() & Qt::ShiftModifier) && (speakerPointRequested || speakerBoxRequested)) {
         QString hitClipId;
         if (!m_selectedClipId.isEmpty()) {
             const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
@@ -74,8 +78,17 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
         if (!hitClipId.isEmpty()) {
             const PreviewOverlayInfo info = m_overlayInfo.value(hitClipId);
             if (info.bounds.isValid() && info.bounds.width() > 1.0 && info.bounds.height() > 1.0) {
-                const QPointF normalized = mapScreenPointToNormalizedClip(info, event->position());
-                speakerPointRequested(hitClipId, normalized.x(), normalized.y());
+                m_speakerPickDragActive = true;
+                m_speakerPickClipId = hitClipId;
+                m_speakerPickStartPos = event->position();
+                m_speakerPickCurrentPos = event->position();
+                if (m_selectedClipId != hitClipId) {
+                    m_selectedClipId = hitClipId;
+                    if (selectionRequested) {
+                        selectionRequested(hitClipId);
+                    }
+                }
+                scheduleRepaint();
                 event->accept();
                 return;
             }
@@ -141,6 +154,13 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
         }
         setCursor(Qt::CrossCursor);
         QWidget::mouseMoveEvent(event);
+        return;
+    }
+
+    if (m_speakerPickDragActive && (event->buttons() & Qt::LeftButton)) {
+        m_speakerPickCurrentPos = event->position();
+        scheduleRepaint();
+        event->accept();
         return;
     }
 
@@ -245,6 +265,36 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void PreviewWindow::mouseReleaseEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && m_speakerPickDragActive) {
+        const QString clipId = m_speakerPickClipId;
+        const PreviewOverlayInfo info = m_overlayInfo.value(clipId);
+        const QPointF endPos = event->position();
+        m_speakerPickCurrentPos = endPos;
+        if (info.bounds.isValid() && info.bounds.width() > 1.0 && info.bounds.height() > 1.0) {
+            const QPointF startNorm = mapScreenPointToNormalizedClip(info, m_speakerPickStartPos);
+            const QPointF endNorm = mapScreenPointToNormalizedClip(info, endPos);
+            const qreal dx = endNorm.x() - startNorm.x();
+            const qreal dy = endNorm.y() - startNorm.y();
+            const qreal dragDistance = std::sqrt((dx * dx) + (dy * dy));
+            if (speakerBoxRequested) {
+                const qreal side = qBound<qreal>(
+                    0.02,
+                    dragDistance >= 0.01 ? qMax(std::abs(dx), std::abs(dy)) : 0.06,
+                    1.0);
+                const qreal cx = qBound<qreal>(0.0, (startNorm.x() + endNorm.x()) * 0.5, 1.0);
+                const qreal cy = qBound<qreal>(0.0, (startNorm.y() + endNorm.y()) * 0.5, 1.0);
+                speakerBoxRequested(clipId, cx, cy, side);
+            }
+        }
+        m_speakerPickDragActive = false;
+        m_speakerPickClipId.clear();
+        m_speakerPickStartPos = QPointF();
+        m_speakerPickCurrentPos = QPointF();
+        scheduleRepaint();
+        event->accept();
+        return;
+    }
+
     if (m_correctionDrawMode && event->button() == Qt::LeftButton) {
         m_dragMode = PreviewDragMode::None;
         m_dragOriginBounds = QRectF();
@@ -289,6 +339,23 @@ void PreviewWindow::mouseReleaseEvent(QMouseEvent* event) {
         return;
     }
     QWidget::mouseReleaseEvent(event);
+}
+
+void PreviewWindow::keyPressEvent(QKeyEvent* event) {
+    if ((event->key() == Qt::Key_Shift || (event->modifiers() & Qt::ShiftModifier)) &&
+        (speakerPointRequested || speakerBoxRequested)) {
+        updatePreviewCursor(mapFromGlobal(QCursor::pos()));
+        scheduleRepaint();
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void PreviewWindow::keyReleaseEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Shift) {
+        updatePreviewCursor(mapFromGlobal(QCursor::pos()));
+        scheduleRepaint();
+    }
+    QWidget::keyReleaseEvent(event);
 }
 
 void PreviewWindow::wheelEvent(QWheelEvent* event) {
@@ -378,7 +445,27 @@ TimelineClip::TransformKeyframe PreviewWindow::evaluateTransformForSelectedClip(
 }
 
 void PreviewWindow::updatePreviewCursor(const QPointF& position) {
+    m_speakerPickCurrentPos = position;
+
     if (m_correctionDrawMode) {
+        if (!m_speakerPickHintClipId.isEmpty()) {
+            m_speakerPickHintClipId.clear();
+            scheduleRepaint();
+        }
+        setCursor(Qt::CrossCursor);
+        return;
+    }
+
+    const bool speakerPickModifierActive =
+        (QApplication::keyboardModifiers() & Qt::ShiftModifier) &&
+        (speakerPointRequested || speakerBoxRequested);
+    const QString speakerPickHintClipId =
+        speakerPickModifierActive ? clipIdAtPosition(position) : QString();
+    if (m_speakerPickHintClipId != speakerPickHintClipId) {
+        m_speakerPickHintClipId = speakerPickHintClipId;
+        scheduleRepaint();
+    }
+    if (!speakerPickHintClipId.isEmpty()) {
         setCursor(Qt::CrossCursor);
         return;
     }

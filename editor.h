@@ -311,6 +311,7 @@ private:
     QDoubleSpinBox *m_trackCrossfadeSecondsSpin = nullptr;
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
+    QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;

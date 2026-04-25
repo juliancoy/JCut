@@ -7,6 +7,7 @@ set(EDITOR_TEST_TARGETS
     test_transcript_logic
     test_transcript_tab_follow
     test_playback_policy
+    test_transform_skip_aware_timing
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)

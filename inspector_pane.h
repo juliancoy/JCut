@@ -69,6 +69,8 @@ public:
     QCheckBox *transcriptAutoScrollCheckBox() const { return m_transcriptAutoScrollCheckBox; }
     QDoubleSpinBox *transcriptOverlayXSpin() const { return m_transcriptOverlayXSpin; }
     QDoubleSpinBox *transcriptOverlayYSpin() const { return m_transcriptOverlayYSpin; }
+    QPushButton *transcriptCenterHorizontalButton() const { return m_transcriptCenterHorizontalButton; }
+    QPushButton *transcriptCenterVerticalButton() const { return m_transcriptCenterVerticalButton; }
     QSpinBox *transcriptOverlayWidthSpin() const { return m_transcriptOverlayWidthSpin; }
     QSpinBox *transcriptOverlayHeightSpin() const { return m_transcriptOverlayHeightSpin; }
     QFontComboBox *transcriptFontFamilyCombo() const { return m_transcriptFontFamilyCombo; }
@@ -85,14 +87,20 @@ public:
     QLabel *speakersInspectorClipLabel() const { return m_speakersInspectorClipLabel; }
     QLabel *speakersInspectorDetailsLabel() const { return m_speakersInspectorDetailsLabel; }
     QTableWidget *speakersTable() const { return m_speakersTable; }
+    QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
+    QLabel *selectedSpeakerRef1ImageLabel() const { return m_selectedSpeakerRef1ImageLabel; }
+    QLabel *selectedSpeakerRef2ImageLabel() const { return m_selectedSpeakerRef2ImageLabel; }
+    QPushButton *selectedSpeakerPreviousSentenceButton() const { return m_selectedSpeakerPreviousSentenceButton; }
+    QPushButton *selectedSpeakerNextSentenceButton() const { return m_selectedSpeakerNextSentenceButton; }
+    QPushButton *selectedSpeakerRandomSentenceButton() const { return m_selectedSpeakerRandomSentenceButton; }
+    QLabel *speakerCurrentSentenceLabel() const { return m_speakerCurrentSentenceLabel; }
     QPushButton *speakerSetReference1Button() const { return m_speakerSetReference1Button; }
     QPushButton *speakerSetReference2Button() const { return m_speakerSetReference2Button; }
     QPushButton *speakerPickReference1Button() const { return m_speakerPickReference1Button; }
     QPushButton *speakerPickReference2Button() const { return m_speakerPickReference2Button; }
-    QPushButton *speakerPreviousSegmentButton() const { return m_speakerPreviousSegmentButton; }
-    QPushButton *speakerNextSegmentButton() const { return m_speakerNextSegmentButton; }
     QPushButton *speakerClearReferencesButton() const { return m_speakerClearReferencesButton; }
     QPushButton *speakerRunAutoTrackButton() const { return m_speakerRunAutoTrackButton; }
+    QPushButton *speakerGuideButton() const { return m_speakerGuideButton; }
     QLabel *speakerTrackingStatusLabel() const { return m_speakerTrackingStatusLabel; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
@@ -191,6 +199,7 @@ public:
     QDoubleSpinBox *trackCrossfadeSecondsSpin() const { return m_trackCrossfadeSecondsSpin; }
     QPushButton *trackCrossfadeButton() const { return m_trackCrossfadeButton; }
     QCheckBox *previewHideOutsideOutputCheckBox() const { return m_previewHideOutsideOutputCheckBox; }
+    QCheckBox *previewShowSpeakerTrackPointsCheckBox() const { return m_previewShowSpeakerTrackPointsCheckBox; }
     QDoubleSpinBox *previewZoomSpin() const { return m_previewZoomSpin; }
     QPushButton *previewZoomResetButton() const { return m_previewZoomResetButton; }
     QCheckBox *previewPlaybackCacheFallbackCheckBox() const { return m_previewPlaybackCacheFallbackCheckBox; }
@@ -406,6 +415,7 @@ private:
     QDoubleSpinBox *m_trackCrossfadeSecondsSpin = nullptr;
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
+    QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;
@@ -432,6 +442,8 @@ private:
     QCheckBox *m_transcriptAutoScrollCheckBox = nullptr;
     QDoubleSpinBox *m_transcriptOverlayXSpin = nullptr;
     QDoubleSpinBox *m_transcriptOverlayYSpin = nullptr;
+    QPushButton *m_transcriptCenterHorizontalButton = nullptr;
+    QPushButton *m_transcriptCenterVerticalButton = nullptr;
     QSpinBox *m_transcriptOverlayWidthSpin = nullptr;
     QSpinBox *m_transcriptOverlayHeightSpin = nullptr;
     QFontComboBox *m_transcriptFontFamilyCombo = nullptr;
@@ -448,14 +460,20 @@ private:
     QLabel *m_speakersInspectorClipLabel = nullptr;
     QLabel *m_speakersInspectorDetailsLabel = nullptr;
     QTableWidget *m_speakersTable = nullptr;
+    QLabel *m_selectedSpeakerIdLabel = nullptr;
+    QLabel *m_selectedSpeakerRef1ImageLabel = nullptr;
+    QLabel *m_selectedSpeakerRef2ImageLabel = nullptr;
+    QPushButton *m_selectedSpeakerPreviousSentenceButton = nullptr;
+    QPushButton *m_selectedSpeakerNextSentenceButton = nullptr;
+    QPushButton *m_selectedSpeakerRandomSentenceButton = nullptr;
+    QLabel *m_speakerCurrentSentenceLabel = nullptr;
     QPushButton *m_speakerSetReference1Button = nullptr;
     QPushButton *m_speakerSetReference2Button = nullptr;
     QPushButton *m_speakerPickReference1Button = nullptr;
     QPushButton *m_speakerPickReference2Button = nullptr;
-    QPushButton *m_speakerPreviousSegmentButton = nullptr;
-    QPushButton *m_speakerNextSegmentButton = nullptr;
     QPushButton *m_speakerClearReferencesButton = nullptr;
     QPushButton *m_speakerRunAutoTrackButton = nullptr;
+    QPushButton *m_speakerGuideButton = nullptr;
     QLabel *m_speakerTrackingStatusLabel = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;

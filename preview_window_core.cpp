@@ -293,6 +293,14 @@ void PreviewWindow::setPreviewZoom(qreal zoom) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setShowSpeakerTrackPoints(bool show) {
+    if (m_showSpeakerTrackPoints == show) {
+        return;
+    }
+    m_showSpeakerTrackPoints = show;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setTranscriptOverlayInteractionEnabled(bool enabled) {
     if (m_transcriptOverlayInteractionEnabled == enabled) {
         return;

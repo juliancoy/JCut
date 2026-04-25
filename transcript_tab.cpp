@@ -7,6 +7,7 @@
 #include <QAbstractItemView>
 #include <QAbstractItemModel>
 #include <QColor>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -223,6 +224,14 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptOverlayYSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
+    if (m_widgets.transcriptCenterHorizontalButton) {
+        connect(m_widgets.transcriptCenterHorizontalButton, &QPushButton::clicked,
+                this, &TranscriptTab::onCenterHorizontalClicked);
+    }
+    if (m_widgets.transcriptCenterVerticalButton) {
+        connect(m_widgets.transcriptCenterVerticalButton, &QPushButton::clicked,
+                this, &TranscriptTab::onCenterVerticalClicked);
+    }
     if (m_widgets.transcriptOverlayWidthSpin) {
         connect(m_widgets.transcriptOverlayWidthSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
@@ -365,6 +374,8 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
     if (!selectedClip) return;
 
     const bool updated = m_deps.updateClipById(selectedClip->id, [this](TimelineClip& clip) {
+        const qreal previousX = clip.transcriptOverlay.translationX;
+        const qreal previousY = clip.transcriptOverlay.translationY;
         clip.transcriptOverlay.enabled = m_widgets.transcriptOverlayEnabledCheckBox &&
                                          m_widgets.transcriptOverlayEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showBackground = m_widgets.transcriptBackgroundVisibleCheckBox &&
@@ -385,6 +396,13 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
         clip.transcriptOverlay.translationY = m_widgets.transcriptOverlayYSpin
             ? m_widgets.transcriptOverlayYSpin->value()
             : 640.0;
+        const bool translationChanged =
+            (std::abs(clip.transcriptOverlay.translationX - previousX) > 0.0001) ||
+            (std::abs(clip.transcriptOverlay.translationY - previousY) > 0.0001);
+        if (translationChanged) {
+            // Any direct position edit (including Center H/V) switches to explicit manual placement.
+            clip.transcriptOverlay.useManualPlacement = true;
+        }
         clip.transcriptOverlay.boxWidth = m_widgets.transcriptOverlayWidthSpin
             ? m_widgets.transcriptOverlayWidthSpin->value()
             : 900.0;
@@ -411,11 +429,24 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
     if (pushHistory && m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }
 
-void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double sourceSeconds)
+void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
+                                        double sourceSeconds,
+                                        int64_t sourceFrame)
 {
     if (!m_widgets.transcriptTable || m_updating) return;
-    const double previousSourceSeconds = m_lastSyncSourceSeconds;
-    m_lastSyncSourceSeconds = sourceSeconds;
+    if (sourceFrame < 0) {
+        static bool warnedMissingSourceFrame = false;
+        if (!warnedMissingSourceFrame) {
+            warnedMissingSourceFrame = true;
+            qWarning().noquote()
+                << QStringLiteral("[TRANSCRIPT TIMING WARN] syncTableToPlayhead called without sourceFrame; falling back to sourceSeconds-derived frame.");
+        }
+    }
+    const int64_t previousSourceFrame = m_lastSyncSourceFrame;
+    const int64_t currentSourceFrame = sourceFrame >= 0
+        ? sourceFrame
+        : qMax<int64_t>(0, static_cast<int64_t>(std::floor(sourceSeconds * kTimelineFps)));
+    m_lastSyncSourceFrame = currentSourceFrame;
     if (!m_widgets.transcriptFollowCurrentWordCheckBox ||
         !m_widgets.transcriptFollowCurrentWordCheckBox->isChecked()) {
         m_lastSyncAbsolutePlaybackSample = absolutePlaybackSample;
@@ -451,11 +482,11 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double s
     int previousEligibleRow = -1;
     int nextEligibleRow = -1;
     int nearestEligibleRow = -1;
-    double nearestDistance = std::numeric_limits<double>::max();
+    int64_t nearestDistance = std::numeric_limits<int64_t>::max();
 
     const auto upperIt = std::upper_bound(
-        m_followRanges.cbegin(), m_followRanges.cend(), sourceSeconds,
-        [](double value, const FollowRange& range) { return value < range.startSeconds; });
+        m_followRanges.cbegin(), m_followRanges.cend(), currentSourceFrame,
+        [](int64_t value, const FollowRange& range) { return value < range.startFrame; });
     const int upperIndex = static_cast<int>(std::distance(m_followRanges.cbegin(), upperIt));
 
     int previousIndex = upperIndex - 1;
@@ -468,10 +499,10 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double s
 
     for (int i = previousIndex; i >= 0; --i) {
         const FollowRange& range = m_followRanges.at(i);
-        if (range.endSeconds <= sourceSeconds) {
+        if (range.endFrame < currentSourceFrame) {
             break;
         }
-        if (sourceSeconds >= range.startSeconds && sourceSeconds < range.endSeconds) {
+        if (currentSourceFrame >= range.startFrame && currentSourceFrame <= range.endFrame) {
             matchingRow = range.row;
             break;
         }
@@ -479,10 +510,10 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double s
     if (matchingRow < 0) {
         for (int i = upperIndex; i < m_followRanges.size(); ++i) {
             const FollowRange& range = m_followRanges.at(i);
-            if (range.startSeconds > sourceSeconds) {
+            if (range.startFrame > currentSourceFrame) {
                 break;
             }
-            if (sourceSeconds >= range.startSeconds && sourceSeconds < range.endSeconds) {
+            if (currentSourceFrame >= range.startFrame && currentSourceFrame <= range.endFrame) {
                 matchingRow = range.row;
                 break;
             }
@@ -491,13 +522,13 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double s
 
     if (previousIndex >= 0) {
         const FollowRange& range = m_followRanges.at(previousIndex);
-        const double distance = qMax(0.0, sourceSeconds - range.endSeconds);
+        const int64_t distance = qMax<int64_t>(0, currentSourceFrame - range.endFrame);
         nearestDistance = distance;
         nearestEligibleRow = range.row;
     }
     if (upperIndex < m_followRanges.size()) {
         const FollowRange& range = m_followRanges.at(upperIndex);
-        const double distance = qMax(0.0, range.startSeconds - sourceSeconds);
+        const int64_t distance = qMax<int64_t>(0, range.startFrame - currentSourceFrame);
         if (distance < nearestDistance) {
             nearestDistance = distance;
             nearestEligibleRow = range.row;
@@ -505,32 +536,30 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample, double s
     }
 
     if (matchingRow < 0) {
-        const double sourceDelta = std::isfinite(previousSourceSeconds)
-            ? qAbs(sourceSeconds - previousSourceSeconds)
-            : 0.0;
-        const double maxGapSeconds =
-            qMax(1.0 / static_cast<double>(kTimelineFps), (sourceDelta * 1.5) + 0.005);
-        const bool forwardMotion = std::isfinite(previousSourceSeconds) &&
-                                   sourceSeconds > previousSourceSeconds;
-        const bool backwardMotion = std::isfinite(previousSourceSeconds) &&
-                                    sourceSeconds < previousSourceSeconds;
+        const int64_t sourceDeltaFrames =
+            previousSourceFrame >= 0 ? qAbs(currentSourceFrame - previousSourceFrame) : 0;
+        const int64_t maxGapFrames = qMax<int64_t>(1, static_cast<int64_t>(std::ceil(sourceDeltaFrames * 1.5)) + 1);
+        const bool forwardMotion = previousSourceFrame >= 0 &&
+                                   currentSourceFrame > previousSourceFrame;
+        const bool backwardMotion = previousSourceFrame >= 0 &&
+                                    currentSourceFrame < previousSourceFrame;
         if (forwardMotion && nextEligibleRow >= 0) {
             QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(nextEligibleRow, 0);
             if (nextItem) {
-                const double nextStartTime = nextItem->data(Qt::UserRole).toDouble();
-                if ((nextStartTime - sourceSeconds) <= maxGapSeconds) {
+                const int64_t nextStartFrame = nextItem->data(Qt::UserRole + 2).toLongLong();
+                if ((nextStartFrame - currentSourceFrame) <= maxGapFrames) {
                     matchingRow = nextEligibleRow;
                 }
             }
         } else if (backwardMotion && previousEligibleRow >= 0) {
             QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(previousEligibleRow, 0);
             if (prevItem) {
-                const double prevEndTime = prevItem->data(Qt::UserRole + 1).toDouble();
-                if ((sourceSeconds - prevEndTime) <= maxGapSeconds) {
+                const int64_t prevEndFrame = prevItem->data(Qt::UserRole + 3).toLongLong();
+                if ((currentSourceFrame - prevEndFrame) <= maxGapFrames) {
                     matchingRow = previousEligibleRow;
                 }
             }
-        } else if (nearestEligibleRow >= 0 && nearestDistance <= maxGapSeconds) {
+        } else if (nearestEligibleRow >= 0 && nearestDistance <= maxGapFrames) {
             matchingRow = nearestEligibleRow;
         }
     }
@@ -900,6 +929,36 @@ void TranscriptTab::onOverlaySettingChanged()
     applyOverlayFromInspector(true);
 }
 
+void TranscriptTab::onCenterHorizontalClicked()
+{
+    if (m_updating || !m_widgets.transcriptOverlayXSpin) {
+        return;
+    }
+    if (std::abs(m_widgets.transcriptOverlayXSpin->value()) < 0.0001) {
+        return;
+    }
+    {
+        QSignalBlocker block(m_widgets.transcriptOverlayXSpin);
+        m_widgets.transcriptOverlayXSpin->setValue(0.0);
+    }
+    applyOverlayFromInspector(true);
+}
+
+void TranscriptTab::onCenterVerticalClicked()
+{
+    if (m_updating || !m_widgets.transcriptOverlayYSpin) {
+        return;
+    }
+    if (std::abs(m_widgets.transcriptOverlayYSpin->value()) < 0.0001) {
+        return;
+    }
+    {
+        QSignalBlocker block(m_widgets.transcriptOverlayYSpin);
+        m_widgets.transcriptOverlayYSpin->setValue(0.0);
+    }
+    applyOverlayFromInspector(true);
+}
+
 void TranscriptTab::onPrependMsChanged(int value)
 {
     m_transcriptPrependMs = qMax(0, value);
@@ -1112,6 +1171,8 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
     }
 
     QVector<TranscriptRow> allRows = parseTranscriptRows(segments, m_transcriptPrependMs, m_transcriptPostpendMs);
+    adjustOverlappingRows(allRows);
+    insertGapRows(&allRows);
     computeRenderFrames(&allRows);
     if (showOutsideCutLinesEnabled() && transcriptPath != originalPath && QFileInfo::exists(originalPath)) {
         QFile originalFile(originalPath);
@@ -1258,6 +1319,47 @@ void TranscriptTab::adjustOverlappingRows(QVector<TranscriptRow>& rows)
     }
 }
 
+void TranscriptTab::insertGapRows(QVector<TranscriptRow>* rows) const
+{
+    if (!rows || rows->isEmpty()) {
+        return;
+    }
+
+    QVector<TranscriptRow> expanded;
+    expanded.reserve(rows->size() * 2);
+    expanded.push_back(rows->first());
+    for (int i = 1; i < rows->size(); ++i) {
+        const TranscriptRow& previous = expanded.constLast();
+        const TranscriptRow& current = rows->at(i);
+        if (!previous.isOutsideActiveCut &&
+            !current.isOutsideActiveCut &&
+            current.startFrame > previous.endFrame + 1) {
+            const int64_t gapStart = previous.endFrame + 1;
+            const int64_t gapEnd = current.startFrame - 1;
+            const int64_t gapFrames = qMax<int64_t>(0, gapEnd - gapStart + 1);
+            if (gapFrames >= 2) {
+                TranscriptRow gap;
+                gap.startFrame = gapStart;
+                gap.endFrame = gapEnd;
+                gap.renderStartFrame = -1;
+                gap.renderEndFrame = -1;
+                gap.speaker = QStringLiteral("—");
+                gap.text = QStringLiteral("[Gap %1 ms]")
+                               .arg(static_cast<int>(std::llround(
+                                   (static_cast<double>(gapFrames) / static_cast<double>(kTimelineFps)) * 1000.0)));
+                gap.isGap = true;
+                gap.segmentIndex = -1;
+                gap.wordIndex = -1;
+                gap.originalSegmentIndex = -1;
+                gap.originalWordIndex = -1;
+                expanded.push_back(gap);
+            }
+        }
+        expanded.push_back(current);
+    }
+    *rows = std::move(expanded);
+}
+
 void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
 {
     if (!m_widgets.transcriptTable) return;
@@ -1336,19 +1438,17 @@ void TranscriptTab::rebuildFollowRanges(const QVector<TranscriptRow>& rows)
         if (entry.isGap || entry.isSkipped || entry.isOutsideActiveCut) {
             continue;
         }
-        const double startSeconds = static_cast<double>(entry.startFrame) / kTimelineFps;
-        const double endSeconds = static_cast<double>(entry.endFrame + 1) / kTimelineFps;
-        if (endSeconds <= startSeconds) {
+        if (entry.endFrame < entry.startFrame) {
             continue;
         }
-        m_followRanges.push_back(FollowRange{startSeconds, endSeconds, row});
+        m_followRanges.push_back(FollowRange{entry.startFrame, entry.endFrame, row});
     }
     std::sort(m_followRanges.begin(), m_followRanges.end(), [](const FollowRange& a, const FollowRange& b) {
-        if (a.startSeconds != b.startSeconds) {
-            return a.startSeconds < b.startSeconds;
+        if (a.startFrame != b.startFrame) {
+            return a.startFrame < b.startFrame;
         }
-        if (a.endSeconds != b.endSeconds) {
-            return a.endSeconds < b.endSeconds;
+        if (a.endFrame != b.endFrame) {
+            return a.endFrame < b.endFrame;
         }
         return a.row < b.row;
     });
@@ -1478,7 +1578,7 @@ QVector<TranscriptTab::TranscriptRow> TranscriptTab::filteredRowsForSpeaker(cons
     QVector<TranscriptRow> filtered;
     filtered.reserve(rows.size());
     for (const TranscriptRow& row : rows) {
-        if (row.speaker == filterValue) {
+        if (row.isGap || row.speaker == filterValue) {
             filtered.push_back(row);
         }
     }

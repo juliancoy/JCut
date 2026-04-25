@@ -153,6 +153,7 @@ QJsonObject clipToJson(const TimelineClip &clip)
         transcriptOverlayObj[QStringLiteral("enabled")] = clip.transcriptOverlay.enabled;
         transcriptOverlayObj[QStringLiteral("showBackground")] = clip.transcriptOverlay.showBackground;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
+        transcriptOverlayObj[QStringLiteral("useManualPlacement")] = clip.transcriptOverlay.useManualPlacement;
         transcriptOverlayObj[QStringLiteral("translationX")] = clip.transcriptOverlay.translationX;
         transcriptOverlayObj[QStringLiteral("translationY")] = clip.transcriptOverlay.translationY;
         transcriptOverlayObj[QStringLiteral("boxWidth")] = clip.transcriptOverlay.boxWidth;
@@ -386,6 +387,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.enabled = transcriptOverlayObj.value(QStringLiteral("enabled")).toBool(false);
         clip.transcriptOverlay.showBackground = transcriptOverlayObj.value(QStringLiteral("showBackground")).toBool(true);
         clip.transcriptOverlay.autoScroll = transcriptOverlayObj.value(QStringLiteral("autoScroll")).toBool(false);
+        clip.transcriptOverlay.useManualPlacement =
+            transcriptOverlayObj.value(QStringLiteral("useManualPlacement")).toBool(false);
         clip.transcriptOverlay.translationX = transcriptOverlayObj.value(QStringLiteral("translationX")).toDouble(0.0);
         clip.transcriptOverlay.translationY = transcriptOverlayObj.value(QStringLiteral("translationY")).toDouble(640.0);
         clip.transcriptOverlay.boxWidth = transcriptOverlayObj.value(QStringLiteral("boxWidth")).toDouble(900.0);

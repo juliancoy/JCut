@@ -96,6 +96,91 @@ std::atomic<int>& speakerTrackingSmoothingPermille() {
     return value;
 }
 
+std::atomic<int>& speakerTrackingKalmanEnabled() {
+    static std::atomic<int> value{0};
+    return value;
+}
+
+std::atomic<int>& speakerTrackingKalmanProcessNoisePermille() {
+    static std::atomic<int> value{120};
+    return value;
+}
+
+std::atomic<int>& speakerTrackingKalmanMeasurementNoisePermille() {
+    static std::atomic<int> value{350};
+    return value;
+}
+
+std::atomic<int>& speakerTrackingAutoTrackStepFrames() {
+    static std::atomic<int> value{6};
+    return value;
+}
+
+QVector<SpeakerTrackingKeyframe> applyKalmanSmoothingToKeyframes(
+    const QVector<SpeakerTrackingKeyframe>& keyframes) {
+    if (keyframes.size() <= 2 || speakerTrackingKalmanEnabled().load() == 0) {
+        return keyframes;
+    }
+
+    struct AxisState {
+        qreal pos = 0.0;
+        qreal vel = 0.0;
+        qreal p00 = 1.0;
+        qreal p01 = 0.0;
+        qreal p10 = 0.0;
+        qreal p11 = 1.0;
+    };
+
+    auto updateAxis = [](AxisState& s, qreal measurement, qreal dt, qreal qProcess, qreal rMeasure) {
+        // Predict
+        s.pos += s.vel * dt;
+        const qreal p00Pred = s.p00 + dt * (s.p10 + s.p01 + (dt * s.p11)) + (qProcess * qProcess * dt);
+        const qreal p01Pred = s.p01 + (dt * s.p11);
+        const qreal p10Pred = s.p10 + (dt * s.p11);
+        const qreal p11Pred = s.p11 + (qProcess * qProcess);
+
+        // Update
+        const qreal innovation = measurement - s.pos;
+        const qreal sInnovation = qMax<qreal>(1e-9, p00Pred + (rMeasure * rMeasure));
+        const qreal k0 = p00Pred / sInnovation;
+        const qreal k1 = p10Pred / sInnovation;
+        s.pos += k0 * innovation;
+        s.vel += k1 * innovation;
+        s.p00 = (1.0 - k0) * p00Pred;
+        s.p01 = (1.0 - k0) * p01Pred;
+        s.p10 = p10Pred - (k1 * p00Pred);
+        s.p11 = p11Pred - (k1 * p01Pred);
+    };
+
+    const qreal qProcess = qBound<qreal>(
+        0.001, static_cast<qreal>(speakerTrackingKalmanProcessNoisePermille().load()) / 1000.0, 10.0);
+    const qreal rMeasure = qBound<qreal>(
+        0.001, static_cast<qreal>(speakerTrackingKalmanMeasurementNoisePermille().load()) / 1000.0, 10.0);
+
+    QVector<SpeakerTrackingKeyframe> smoothed = keyframes;
+    AxisState xAxis;
+    AxisState yAxis;
+    xAxis.pos = smoothed.constFirst().x;
+    yAxis.pos = smoothed.constFirst().y;
+
+    for (int i = 0; i < smoothed.size(); ++i) {
+        const qreal dt = (i == 0)
+            ? 1.0
+            : qMax<qreal>(1.0, static_cast<qreal>(smoothed.at(i).frame - smoothed.at(i - 1).frame));
+        updateAxis(xAxis, smoothed.at(i).x, dt, qProcess, rMeasure);
+        updateAxis(yAxis, smoothed.at(i).y, dt, qProcess, rMeasure);
+        smoothed[i].x = qBound<qreal>(0.0, xAxis.pos, 1.0);
+        smoothed[i].y = qBound<qreal>(0.0, yAxis.pos, 1.0);
+    }
+
+    // Preserve exact anchors.
+    smoothed[0].x = keyframes.constFirst().x;
+    smoothed[0].y = keyframes.constFirst().y;
+    smoothed[smoothed.size() - 1].x = keyframes.constLast().x;
+    smoothed[smoothed.size() - 1].y = keyframes.constLast().y;
+    return smoothed;
+}
+
 QVector<SpeakerTrackingKeyframe> sanitizeTrackingKeyframes(const QVector<SpeakerTrackingKeyframe>& keyframes) {
     if (keyframes.size() <= 2) {
         return keyframes;
@@ -118,7 +203,7 @@ QVector<SpeakerTrackingKeyframe> sanitizeTrackingKeyframes(const QVector<Speaker
         }
     }
     sanitized.push_back(keyframes.constLast());
-    return sanitized;
+    return applyKalmanSmoothingToKeyframes(sanitized);
 }
 
 QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transcriptPath) {
@@ -148,12 +233,22 @@ QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transc
         runtime.defaultX = qBound<qreal>(0.0, locationObj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
         runtime.defaultY = qBound<qreal>(0.0, locationObj.value(QStringLiteral("y")).toDouble(0.85), 1.0);
 
-        const QJsonObject trackingObj = profileObj.value(QStringLiteral("tracking")).toObject();
+        QJsonObject trackingObj = profileObj.value(QStringLiteral("framing")).toObject();
+        if (trackingObj.isEmpty()) {
+            trackingObj = profileObj.value(QStringLiteral("tracking")).toObject();
+        }
         const QString trackingMode =
             trackingObj.value(QStringLiteral("mode")).toString(QStringLiteral("Manual")).trimmed();
-        runtime.trackingEnabled =
-            !trackingObj.isEmpty() &&
-            trackingMode.compare(QStringLiteral("manual"), Qt::CaseInsensitive) != 0;
+        const bool modeCanTrack =
+            trackingMode.compare(QStringLiteral("manual"), Qt::CaseInsensitive) != 0 &&
+            trackingMode.compare(QStringLiteral("referencepoints"), Qt::CaseInsensitive) != 0;
+        const bool hasEnabledFlag = trackingObj.contains(QStringLiteral("enabled"));
+        const bool explicitEnabled = trackingObj.value(QStringLiteral("enabled")).toBool(false);
+        const bool legacyEnabled =
+            !hasEnabledFlag &&
+            modeCanTrack &&
+            !trackingObj.value(QStringLiteral("keyframes")).toArray().isEmpty();
+        runtime.trackingEnabled = modeCanTrack && (explicitEnabled || legacyEnabled);
         const QJsonArray keyframes = trackingObj.value(QStringLiteral("keyframes")).toArray();
         runtime.keyframes.reserve(keyframes.size());
         for (const QJsonValue& keyframeValue : keyframes) {
@@ -492,7 +587,13 @@ void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath) {
 QJsonObject transcriptSpeakerTrackingConfigSnapshot() {
     return QJsonObject{
         {QStringLiteral("max_speed_permille_per_frame"), speakerTrackingMaxSpeedPermillePerFrame().load()},
-        {QStringLiteral("smoothing_permille"), speakerTrackingSmoothingPermille().load()}
+        {QStringLiteral("smoothing_permille"), speakerTrackingSmoothingPermille().load()},
+        {QStringLiteral("kalman_enabled"), speakerTrackingKalmanEnabled().load() != 0},
+        {QStringLiteral("kalman_process_noise_permille"), speakerTrackingKalmanProcessNoisePermille().load()},
+        {QStringLiteral("kalman_measurement_noise_permille"),
+         speakerTrackingKalmanMeasurementNoisePermille().load()},
+        {QStringLiteral("auto_track_step_frames"),
+         speakerTrackingAutoTrackStepFrames().load()}
     };
 }
 
@@ -512,10 +613,30 @@ bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch, QString
         target->store(value);
         return true;
     };
+    auto parseBool = [&](const QString& key, std::atomic<int>* target) -> bool {
+        if (!patch.contains(key)) {
+            return true;
+        }
+        if (!patch.value(key).isBool()) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("%1 must be a boolean").arg(key);
+            }
+            return false;
+        }
+        target->store(patch.value(key).toBool(false) ? 1 : 0);
+        return true;
+    };
     if (!parseBoundedInt(QStringLiteral("max_speed_permille_per_frame"), 1, 1000,
                          &speakerTrackingMaxSpeedPermillePerFrame()) ||
         !parseBoundedInt(QStringLiteral("smoothing_permille"), 0, 1000,
-                         &speakerTrackingSmoothingPermille())) {
+                         &speakerTrackingSmoothingPermille()) ||
+        !parseBool(QStringLiteral("kalman_enabled"), &speakerTrackingKalmanEnabled()) ||
+        !parseBoundedInt(QStringLiteral("kalman_process_noise_permille"), 1, 10000,
+                         &speakerTrackingKalmanProcessNoisePermille()) ||
+        !parseBoundedInt(QStringLiteral("kalman_measurement_noise_permille"), 1, 10000,
+                         &speakerTrackingKalmanMeasurementNoisePermille()) ||
+        !parseBoundedInt(QStringLiteral("auto_track_step_frames"), 1, 120,
+                         &speakerTrackingAutoTrackStepFrames())) {
         return false;
     }
     return true;
@@ -543,6 +664,89 @@ void resetTranscriptSpeakerTrackingProfiling() {
     speakerTrackingCacheHitCount().store(0);
     speakerTrackingCacheMissCount().store(0);
     speakerTrackingLookupNsTotal().store(0);
+}
+
+QPointF transcriptOverlayTranslationForOutput(const TimelineClip& clip,
+                                              const QSize& outputSize,
+                                              const QString& transcriptPath,
+                                              const QVector<TranscriptSection>& sections,
+                                              int64_t sourceFrame) {
+    qreal translationX = clip.transcriptOverlay.translationX;
+    qreal translationY = clip.transcriptOverlay.translationY;
+    if (clip.transcriptOverlay.useManualPlacement) {
+        return QPointF(translationX, translationY);
+    }
+    if (transcriptPath.isEmpty() || sections.isEmpty()) {
+        return QPointF(translationX, translationY);
+    }
+    bool speakerLocationResolved = false;
+    const QPointF speakerLocation = transcriptSpeakerLocationForSourceFrame(
+        transcriptPath, sections, sourceFrame, &speakerLocationResolved);
+    if (!speakerLocationResolved) {
+        return QPointF(translationX, translationY);
+    }
+    const QSize safeOutputSize = outputSize.isValid() ? outputSize : QSize(1080, 1920);
+    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width()));
+    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.height()));
+    const qreal centerX = speakerLocation.x() * outputWidth;
+    const qreal centerY = speakerLocation.y() * outputHeight;
+    return QPointF(centerX - (outputWidth / 2.0), centerY - (outputHeight / 2.0));
+}
+
+QRectF transcriptOverlayRectInOutputSpace(const TimelineClip& clip,
+                                          const QSize& outputSize,
+                                          const QString& transcriptPath,
+                                          const QVector<TranscriptSection>& sections,
+                                          int64_t sourceFrame) {
+    const QSize safeOutputSize = outputSize.isValid() ? outputSize : QSize(1080, 1920);
+    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width()));
+    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.height()));
+    const QPointF translation = transcriptOverlayTranslationForOutput(
+        clip, safeOutputSize, transcriptPath, sections, sourceFrame);
+    return QRectF((outputWidth / 2.0) + translation.x() - (clip.transcriptOverlay.boxWidth / 2.0),
+                  (outputHeight / 2.0) + translation.y() - (clip.transcriptOverlay.boxHeight / 2.0),
+                  clip.transcriptOverlay.boxWidth,
+                  clip.transcriptOverlay.boxHeight);
+}
+
+int transcriptOverlayEffectiveLinesForBox(const TimelineClip& clip) {
+    const qreal estimatedLineHeight = qMax<qreal>(12.0, clip.transcriptOverlay.fontPointSize * 1.35);
+    const qreal usableHeight =
+        qMax<qreal>(estimatedLineHeight, clip.transcriptOverlay.boxHeight - 28.0);
+    const int fittedLines =
+        qMax(1, static_cast<int>(std::floor(usableHeight / estimatedLineHeight)));
+    return qMax(1, qMin(clip.transcriptOverlay.maxLines, fittedLines));
+}
+
+int transcriptOverlayEffectiveCharsForBox(const TimelineClip& clip) {
+    const qreal estimatedCharWidth = qMax<qreal>(6.0, clip.transcriptOverlay.fontPointSize * 0.62);
+    const qreal usableWidth =
+        qMax<qreal>(estimatedCharWidth, clip.transcriptOverlay.boxWidth - 36.0);
+    const int fittedChars =
+        qMax(1, static_cast<int>(std::floor(usableWidth / estimatedCharWidth)));
+    return qMax(1, qMin(clip.transcriptOverlay.maxCharsPerLine, fittedChars));
+}
+
+TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(
+    const TimelineClip& clip,
+    const QVector<TranscriptSection>& sections,
+    int64_t sourceFrame) {
+    if (sections.isEmpty()) {
+        return {};
+    }
+    for (const TranscriptSection& section : sections) {
+        if (sourceFrame < section.startFrame) {
+            return {};
+        }
+        if (sourceFrame <= section.endFrame) {
+            return layoutTranscriptSection(section,
+                                           sourceFrame,
+                                           transcriptOverlayEffectiveCharsForBox(clip),
+                                           transcriptOverlayEffectiveLinesForBox(clip),
+                                           clip.transcriptOverlay.autoScroll);
+        }
+    }
+    return {};
 }
 
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines) {

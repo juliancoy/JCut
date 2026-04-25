@@ -260,6 +260,14 @@ void EditorWindow::connectPreviewSignals()
             m_speakersTab->handlePreviewPoint(clipId, xNorm, yNorm);
         }
     };
+    m_preview->speakerBoxRequested = [this](const QString& clipId,
+                                            qreal xNorm,
+                                            qreal yNorm,
+                                            qreal boxSizeNorm) {
+        if (m_speakersTab) {
+            m_speakersTab->handlePreviewBox(clipId, xNorm, yNorm, boxSizeNorm);
+        }
+    };
     m_preview->createKeyframeRequested = [this](const QString &clipId) {
         if (!m_timeline) return;
 
@@ -550,6 +558,7 @@ void EditorWindow::connectPreviewSignals()
             if (transcriptOverlaySelected && clipSupportsTranscriptOverlay(clip)) {
                 clip.transcriptOverlay.translationX = translationX;
                 clip.transcriptOverlay.translationY = translationY;
+                clip.transcriptOverlay.useManualPlacement = true;
                 return;
             }
             if (clip.mediaType == ClipMediaType::Title) {

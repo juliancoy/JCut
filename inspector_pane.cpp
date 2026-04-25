@@ -1065,6 +1065,8 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptAutoScrollCheckBox = nullptr;
     m_transcriptOverlayXSpin = new QDoubleSpinBox(settingsContainer);
     m_transcriptOverlayYSpin = new QDoubleSpinBox(settingsContainer);
+    m_transcriptCenterHorizontalButton = new QPushButton(QStringLiteral("Center H"), settingsContainer);
+    m_transcriptCenterVerticalButton = new QPushButton(QStringLiteral("Center V"), settingsContainer);
     m_transcriptOverlayWidthSpin = new QSpinBox(settingsContainer);
     m_transcriptOverlayHeightSpin = new QSpinBox(settingsContainer);
     m_transcriptFontFamilyCombo = new QFontComboBox(settingsContainer);
@@ -1093,6 +1095,14 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Follow Word"), m_transcriptFollowCurrentWordCheckBox);
     form->addRow(QStringLiteral("X"), m_transcriptOverlayXSpin);
     form->addRow(QStringLiteral("Y"), m_transcriptOverlayYSpin);
+    auto *centerButtonsLayout = new QHBoxLayout;
+    centerButtonsLayout->setContentsMargins(0, 0, 0, 0);
+    centerButtonsLayout->setSpacing(4);
+    centerButtonsLayout->addWidget(m_transcriptCenterHorizontalButton);
+    centerButtonsLayout->addWidget(m_transcriptCenterVerticalButton);
+    auto *centerButtonsContainer = new QWidget(settingsContainer);
+    centerButtonsContainer->setLayout(centerButtonsLayout);
+    form->addRow(QStringLiteral("Center"), centerButtonsContainer);
     form->addRow(QStringLiteral("Width"), m_transcriptOverlayWidthSpin);
     form->addRow(QStringLiteral("Height"), m_transcriptOverlayHeightSpin);
     form->addRow(QStringLiteral("Font"), m_transcriptFontFamilyCombo);
@@ -1231,9 +1241,9 @@ QWidget *InspectorPane::buildSpeakersTab()
          QStringLiteral("Name"),
          QStringLiteral("X"),
          QStringLiteral("Y"),
-         QStringLiteral("Tracking"),
-         QStringLiteral("Ref 1"),
-         QStringLiteral("Ref 2")});
+         QStringLiteral("Framing"),
+         QStringLiteral("Ref1 Avatar"),
+         QStringLiteral("Ref2 Avatar")});
     m_speakersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakersTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_speakersTable->setEditTriggers(QAbstractItemView::DoubleClicked |
@@ -1246,40 +1256,69 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    m_speakersTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
-    m_speakersTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    m_speakersTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
 
-    auto *trackingButtonsRow = new QHBoxLayout;
-    m_speakerSetReference1Button = new QPushButton(QStringLiteral("Set Ref 1 @ Playhead"), page);
-    m_speakerSetReference2Button = new QPushButton(QStringLiteral("Set Ref 2 @ Playhead"), page);
-    m_speakerPickReference1Button = new QPushButton(QStringLiteral("Pick Ref 1 (Shift+Click)"), page);
-    m_speakerPickReference2Button = new QPushButton(QStringLiteral("Pick Ref 2 (Shift+Click)"), page);
-    m_speakerClearReferencesButton = new QPushButton(QStringLiteral("Clear Refs"), page);
-    m_speakerRunAutoTrackButton = new QPushButton(QStringLiteral("Auto-Track (TODO)"), page);
-    trackingButtonsRow->addWidget(m_speakerSetReference1Button);
-    trackingButtonsRow->addWidget(m_speakerSetReference2Button);
-    trackingButtonsRow->addWidget(m_speakerPickReference1Button);
-    trackingButtonsRow->addWidget(m_speakerPickReference2Button);
-    trackingButtonsRow->addWidget(m_speakerClearReferencesButton);
-    trackingButtonsRow->addWidget(m_speakerRunAutoTrackButton);
+    auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);
+    selectedSpeakerTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
+    m_selectedSpeakerIdLabel = new QLabel(QStringLiteral("No speaker selected"), page);
+    m_selectedSpeakerRef1ImageLabel = new QLabel(page);
+    m_selectedSpeakerRef2ImageLabel = new QLabel(page);
+    for (QLabel* imageLabel : {m_selectedSpeakerRef1ImageLabel, m_selectedSpeakerRef2ImageLabel}) {
+        imageLabel->setMinimumSize(120, 120);
+        imageLabel->setMaximumHeight(160);
+        imageLabel->setAlignment(Qt::AlignCenter);
+        imageLabel->setStyleSheet(QStringLiteral(
+            "QLabel { border: 1px solid #314459; border-radius: 8px; background: #142234; color: #8fa3b8; }"));
+        imageLabel->setText(QStringLiteral("Unset"));
+    }
+    auto *selectedImagesRow = new QHBoxLayout;
+    selectedImagesRow->setSpacing(8);
+    auto *selectedRef1Col = new QVBoxLayout;
+    auto *selectedRef2Col = new QVBoxLayout;
+    selectedRef1Col->addWidget(new QLabel(QStringLiteral("Ref1"), page));
+    selectedRef1Col->addWidget(m_selectedSpeakerRef1ImageLabel);
+    selectedRef2Col->addWidget(new QLabel(QStringLiteral("Ref2"), page));
+    selectedRef2Col->addWidget(m_selectedSpeakerRef2ImageLabel);
+    selectedImagesRow->addLayout(selectedRef1Col, 1);
+    selectedImagesRow->addLayout(selectedRef2Col, 1);
+    auto *selectedActionsRow = new QHBoxLayout;
+    m_selectedSpeakerPreviousSentenceButton = new QPushButton(QStringLiteral("Previous Sentence"), page);
+    m_selectedSpeakerNextSentenceButton = new QPushButton(QStringLiteral("Next Sentence"), page);
+    m_selectedSpeakerRandomSentenceButton = new QPushButton(QStringLiteral("Random Sentence"), page);
+    for (QPushButton* button :
+         {m_selectedSpeakerPreviousSentenceButton,
+          m_selectedSpeakerNextSentenceButton,
+          m_selectedSpeakerRandomSentenceButton}) {
+        button->setMinimumHeight(30);
+        button->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+    }
+    selectedActionsRow->addWidget(m_selectedSpeakerPreviousSentenceButton);
+    selectedActionsRow->addWidget(m_selectedSpeakerNextSentenceButton);
+    selectedActionsRow->addWidget(m_selectedSpeakerRandomSentenceButton);
 
-    auto *findButtonsRow = new QHBoxLayout;
-    m_speakerPreviousSegmentButton = new QPushButton(QStringLiteral("Prev Segment"), page);
-    m_speakerNextSegmentButton = new QPushButton(QStringLiteral("Next Segment"), page);
-    findButtonsRow->addWidget(m_speakerPreviousSegmentButton);
-    findButtonsRow->addWidget(m_speakerNextSegmentButton);
-    findButtonsRow->addStretch(1);
+    auto *currentSentenceTitle = new QLabel(QStringLiteral("Current Speaker Sentence"), page);
+    currentSentenceTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
+    m_speakerCurrentSentenceLabel = new QLabel(QStringLiteral("Select a speaker to view sentence context."), page);
+    m_speakerCurrentSentenceLabel->setWordWrap(true);
+    m_speakerCurrentSentenceLabel->setMinimumHeight(48);
+    m_speakerCurrentSentenceLabel->setStyleSheet(QStringLiteral(
+        "QLabel { border: 1px solid #314459; border-radius: 8px; background: #142234; color: #d8e6f5; padding: 8px; }"));
 
     m_speakerTrackingStatusLabel = new QLabel(
-        QStringLiteral("Tracking scaffold: store Ref 1/Ref 2 and run auto-track in a future implementation."),
+        QStringLiteral("Framing scaffold: store Ref 1/Ref 2 and run auto-frame to drive camera placement."),
         page);
     m_speakerTrackingStatusLabel->setWordWrap(true);
     m_speakerTrackingStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
     layout->addWidget(m_speakersInspectorClipLabel);
     layout->addWidget(m_speakersInspectorDetailsLabel);
-    layout->addLayout(findButtonsRow);
-    layout->addLayout(trackingButtonsRow);
+    layout->addWidget(selectedSpeakerTitle);
+    layout->addWidget(m_selectedSpeakerIdLabel);
+    layout->addLayout(selectedImagesRow);
+    layout->addLayout(selectedActionsRow);
+    layout->addWidget(currentSentenceTitle);
+    layout->addWidget(m_speakerCurrentSentenceLabel);
     layout->addWidget(m_speakerTrackingStatusLabel);
     layout->addWidget(m_speakersTable, 1);
     return page;
@@ -1551,6 +1590,12 @@ QWidget *InspectorPane::buildPreviewTab()
     m_previewHideOutsideOutputCheckBox->setToolTip(
         QStringLiteral("Clip the preview to the current output frame so off-frame content is hidden."));
 
+    m_previewShowSpeakerTrackPointsCheckBox =
+        new QCheckBox(QStringLiteral("Show Speaker Track Points"), page);
+    m_previewShowSpeakerTrackPointsCheckBox->setChecked(false);
+    m_previewShowSpeakerTrackPointsCheckBox->setToolTip(
+        QStringLiteral("Draw all speaker framing keyframe points on top of active clips."));
+
     // Zoom control section
     auto *zoomSectionLabel = new QLabel(QStringLiteral("Zoom"), page);
     zoomSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
@@ -1614,6 +1659,7 @@ QWidget *InspectorPane::buildPreviewTab()
 
     layout->addWidget(summary);
     layout->addWidget(m_previewHideOutsideOutputCheckBox);
+    layout->addWidget(m_previewShowSpeakerTrackPointsCheckBox);
     layout->addSpacing(12);
     layout->addWidget(zoomSectionLabel);
     layout->addLayout(zoomLayout);

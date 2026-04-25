@@ -100,8 +100,12 @@ void EditorWindow::syncTranscriptTableToPlayhead()
         m_absolutePlaybackSample,
         m_timeline->renderSyncMarkers());
     const double sourceSeconds = static_cast<double>(sourceSample) / static_cast<double>(kAudioSampleRate);
+    const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+        *clip,
+        m_absolutePlaybackSample,
+        m_timeline->renderSyncMarkers());
     if (m_transcriptTab) {
-        m_transcriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds);
+        m_transcriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
     }
 }
 
@@ -274,6 +278,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
+    const bool previewShowSpeakerTrackPoints =
+        root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const int autosaveIntervalMinutes = qBound(
         1,
         root.value(QStringLiteral("autosaveIntervalMinutes"))
@@ -588,6 +594,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_previewHideOutsideOutputCheckBox);
         m_previewHideOutsideOutputCheckBox->setChecked(previewHideOutsideOutput);
     }
+    if (m_previewShowSpeakerTrackPointsCheckBox) {
+        QSignalBlocker block(m_previewShowSpeakerTrackPointsCheckBox);
+        m_previewShowSpeakerTrackPointsCheckBox->setChecked(previewShowSpeakerTrackPoints);
+    }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
         m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
@@ -746,6 +756,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
+        m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setBypassGrading(!gradingPreview);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);

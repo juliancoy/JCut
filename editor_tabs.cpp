@@ -102,6 +102,8 @@ void EditorWindow::createTranscriptTab()
             m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
             m_transcriptAutoScrollCheckBox, m_transcriptFollowCurrentWordCheckBox,
             m_transcriptOverlayXSpin, m_transcriptOverlayYSpin,
+            m_inspectorPane->transcriptCenterHorizontalButton(),
+            m_inspectorPane->transcriptCenterVerticalButton(),
             m_transcriptOverlayWidthSpin, m_transcriptOverlayHeightSpin,
             m_transcriptFontFamilyCombo, m_transcriptFontSizeSpin,
             m_transcriptBoldCheckBox, m_transcriptItalicCheckBox,
@@ -177,14 +179,20 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakersInspectorClipLabel(),
             m_inspectorPane->speakersInspectorDetailsLabel(),
             m_inspectorPane->speakersTable(),
+            m_inspectorPane->selectedSpeakerIdLabel(),
+            m_inspectorPane->selectedSpeakerRef1ImageLabel(),
+            m_inspectorPane->selectedSpeakerRef2ImageLabel(),
+            m_inspectorPane->selectedSpeakerPreviousSentenceButton(),
+            m_inspectorPane->selectedSpeakerNextSentenceButton(),
+            m_inspectorPane->selectedSpeakerRandomSentenceButton(),
+            m_inspectorPane->speakerCurrentSentenceLabel(),
             m_inspectorPane->speakerSetReference1Button(),
             m_inspectorPane->speakerSetReference2Button(),
             m_inspectorPane->speakerPickReference1Button(),
             m_inspectorPane->speakerPickReference2Button(),
-            m_inspectorPane->speakerPreviousSegmentButton(),
-            m_inspectorPane->speakerNextSegmentButton(),
             m_inspectorPane->speakerClearReferencesButton(),
             m_inspectorPane->speakerRunAutoTrackButton(),
+            m_inspectorPane->speakerGuideButton(),
             m_inspectorPane->speakerTrackingStatusLabel()},
         SpeakersTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
@@ -192,7 +200,10 @@ void EditorWindow::createSpeakersTab()
             [this]() { pushHistorySnapshot(); },
             [this]() { m_inspectorPane->refresh(); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
-            [this](int64_t frame) { setCurrentFrame(frame); }});
+            [this](int64_t frame) { setCurrentFrame(frame); },
+            [this]() -> QVector<RenderSyncMarker> {
+                return m_timeline ? m_timeline->renderSyncMarkers() : QVector<RenderSyncMarker>{};
+            }});
     m_speakersTab->wire();
 
     connect(m_speakersTab.get(), &SpeakersTab::transcriptDocumentChanged, this, [this]() {

@@ -2,26 +2,22 @@
 #include "gl_frame_texture_shared.h"
 
 #include <cmath>
+#include <QFile>
+#include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QPainter>
 #include <QTextDocument>
+
+#include <algorithm>
+#include <cstdlib>
+#include <limits>
 
 namespace {
 bool clipSupportsTranscript(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
-}
-
-int effectiveTranscriptLinesForBox(const TimelineClip& clip) {
-    const qreal estimatedLineHeight = qMax<qreal>(12.0, clip.transcriptOverlay.fontPointSize * 1.35);
-    const qreal usableHeight = qMax<qreal>(estimatedLineHeight, clip.transcriptOverlay.boxHeight - 28.0);
-    const int fittedLines = qMax(1, static_cast<int>(std::floor(usableHeight / estimatedLineHeight)));
-    return qMax(1, qMin(clip.transcriptOverlay.maxLines, fittedLines));
-}
-
-int effectiveTranscriptCharsForBox(const TimelineClip& clip) {
-    const qreal estimatedCharWidth = qMax<qreal>(6.0, clip.transcriptOverlay.fontPointSize * 0.62);
-    const qreal usableWidth = qMax<qreal>(estimatedCharWidth, clip.transcriptOverlay.boxWidth - 36.0);
-    const int fittedChars = qMax(1, static_cast<int>(std::floor(usableWidth / estimatedCharWidth)));
-    return qMax(1, qMin(clip.transcriptOverlay.maxCharsPerLine, fittedChars));
 }
 }
 
@@ -32,6 +28,7 @@ bool PreviewWindow::clipShowsTranscriptOverlay(const TimelineClip& clip) const {
 void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath) {
     if (clipFilePath.isEmpty()) {
         m_transcriptSectionsCache.clear();
+        m_speakerTrackPointsCache.clear();
         invalidateTranscriptSpeakerProfileCache();
         for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
             editor::destroyGlTextureEntry(&it.value());
@@ -39,6 +36,7 @@ void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath
         m_transcriptTextureCache.clear();
     } else {
         m_transcriptSectionsCache.remove(clipFilePath);
+        m_speakerTrackPointsCache.remove(activeTranscriptPathForClipFile(clipFilePath));
         invalidateTranscriptSpeakerProfileCache(activeTranscriptPathForClipFile(clipFilePath));
         // Textures are content/style keyed; clear all to avoid keeping stale overlay textures.
         for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
@@ -58,50 +56,166 @@ const QVector<TranscriptSection>& PreviewWindow::transcriptSectionsForClip(const
     return it.value();
 }
 
+const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPointsForClip(const TimelineClip& clip) const {
+    static const QVector<SpeakerTrackPoint> kEmpty;
+    if (!clipSupportsTranscript(clip) || clip.filePath.isEmpty()) {
+        return kEmpty;
+    }
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    if (transcriptPath.isEmpty()) {
+        return kEmpty;
+    }
+
+    const QFileInfo info(transcriptPath);
+    if (!info.exists() || !info.isFile()) {
+        return kEmpty;
+    }
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    auto it = m_speakerTrackPointsCache.find(transcriptPath);
+    if (it != m_speakerTrackPointsCache.end() && it->mtimeMs == mtimeMs) {
+        return it->points;
+    }
+
+    SpeakerTrackPointCacheEntry entry;
+    entry.mtimeMs = mtimeMs;
+    QFile file(transcriptPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        it = m_speakerTrackPointsCache.insert(transcriptPath, entry);
+        return it->points;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        it = m_speakerTrackPointsCache.insert(transcriptPath, entry);
+        return it->points;
+    }
+
+    const QJsonObject profiles = doc.object().value(QStringLiteral("speaker_profiles")).toObject();
+    for (auto profileIt = profiles.constBegin(); profileIt != profiles.constEnd(); ++profileIt) {
+        const QString speakerId = profileIt.key().trimmed();
+        if (speakerId.isEmpty()) {
+            continue;
+        }
+        const QJsonObject profile = profileIt.value().toObject();
+        QJsonObject tracking = profile.value(QStringLiteral("framing")).toObject();
+        if (tracking.isEmpty()) {
+            tracking = profile.value(QStringLiteral("tracking")).toObject();
+        }
+        const QJsonArray keyframes = tracking.value(QStringLiteral("keyframes")).toArray();
+        for (const QJsonValue& value : keyframes) {
+            const QJsonObject obj = value.toObject();
+            if (obj.isEmpty()) {
+                continue;
+            }
+            const int64_t frame = obj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            const qreal rawX = obj.value(QStringLiteral("x")).toDouble(-1.0);
+            const qreal rawY = obj.value(QStringLiteral("y")).toDouble(-1.0);
+            if (frame < 0 || rawX < 0.0 || rawX > 1.0 || rawY < 0.0 || rawY > 1.0) {
+                continue;
+            }
+            SpeakerTrackPoint p;
+            p.frame = frame;
+            p.x = rawX;
+            p.y = rawY;
+            p.speakerId = speakerId;
+            entry.points.push_back(p);
+        }
+    }
+
+    std::sort(entry.points.begin(), entry.points.end(), [](const SpeakerTrackPoint& a, const SpeakerTrackPoint& b) {
+        if (a.frame != b.frame) {
+            return a.frame < b.frame;
+        }
+        return a.speakerId < b.speakerId;
+    });
+    it = m_speakerTrackPointsCache.insert(transcriptPath, entry);
+    return it->points;
+}
+
+void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips) {
+    if (!painter || activeClips.isEmpty()) {
+        return;
+    }
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+
+    for (const TimelineClip& clip : activeClips) {
+        if (!clipSupportsTranscript(clip)) {
+            continue;
+        }
+        const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
+        if (!info.bounds.isValid()) {
+            continue;
+        }
+        const QVector<SpeakerTrackPoint>& points = speakerTrackPointsForClip(clip);
+        if (points.isEmpty()) {
+            continue;
+        }
+        const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
+        const int64_t sourceEnd = sourceStart + qMax<int64_t>(0, clip.durationFrames - 1);
+        const int64_t currentSourceFrame =
+            transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+        int64_t nearestDistance = std::numeric_limits<int64_t>::max();
+        QPointF nearestPoint;
+        QColor nearestColor;
+        bool nearestValid = false;
+
+        for (const SpeakerTrackPoint& p : points) {
+            if (p.frame < sourceStart || p.frame > sourceEnd) {
+                continue;
+            }
+            const uint hueHash = qHash(p.speakerId);
+            const QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 180, 245, 190);
+            const QPointF screenPoint = mapNormalizedClipPointToScreen(info, QPointF(p.x, p.y));
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(color);
+            painter->drawEllipse(screenPoint, 2.7, 2.7);
+
+            const int64_t distance = std::llabs(p.frame - currentSourceFrame);
+            if (distance < nearestDistance) {
+                nearestDistance = distance;
+                nearestPoint = screenPoint;
+                nearestColor = color;
+                nearestValid = true;
+            }
+        }
+
+        if (nearestValid) {
+            painter->setPen(QPen(QColor(255, 255, 255, 235), 1.2));
+            painter->setBrush(nearestColor);
+            painter->drawEllipse(nearestPoint, 4.4, 4.4);
+        }
+    }
+
+    painter->restore();
+}
+
 TranscriptOverlayLayout PreviewWindow::transcriptOverlayLayoutForClip(const TimelineClip& clip) const {
     if (!clipShowsTranscriptOverlay(clip)) return {};
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     if (sections.isEmpty()) return {};
     const int64_t sourceFrame =
         transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
-    for (const TranscriptSection& section : sections) {
-        if (sourceFrame < section.startFrame) return {};
-        if (sourceFrame <= section.endFrame) {
-            return layoutTranscriptSection(section,
-                                           sourceFrame,
-                                           effectiveTranscriptCharsForBox(clip),
-                                           effectiveTranscriptLinesForBox(clip),
-                                           clip.transcriptOverlay.autoScroll);
-        }
-    }
-    return {};
+    return transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
 }
 
 QRectF PreviewWindow::transcriptOverlayRectForTarget(const TimelineClip& clip, const QRect& targetRect) const {
     const QPointF previewScale = previewCanvasScale(targetRect);
-    qreal translationX = clip.transcriptOverlay.translationX;
-    qreal translationY = clip.transcriptOverlay.translationY;
+    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(outputSize.width()));
+    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(outputSize.height()));
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-    if (!transcriptPath.isEmpty()) {
-        const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
-        if (!sections.isEmpty()) {
-            const int64_t sourceFrame =
-                transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
-            bool speakerLocationResolved = false;
-            const QPointF speakerLocation = transcriptSpeakerLocationForSourceFrame(
-                transcriptPath, sections, sourceFrame, &speakerLocationResolved);
-            if (speakerLocationResolved) {
-                const qreal centerX = speakerLocation.x() * static_cast<qreal>(targetRect.width());
-                const qreal centerY = speakerLocation.y() * static_cast<qreal>(targetRect.height());
-                translationX = centerX - (targetRect.width() / 2.0);
-                translationY = centerY - (targetRect.height() / 2.0);
-            }
-        }
-    }
-    const QSizeF size(qMax<qreal>(40.0, clip.transcriptOverlay.boxWidth * previewScale.x()),
-                      qMax<qreal>(20.0, clip.transcriptOverlay.boxHeight * previewScale.y()));
-    const QPointF center(targetRect.center().x() + (translationX * previewScale.x()),
-                         targetRect.center().y() + (translationY * previewScale.y()));
+    const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
+    const int64_t sourceFrame =
+        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+    const QRectF outputRect = transcriptOverlayRectInOutputSpace(
+        clip, outputSize, transcriptPath, sections, sourceFrame);
+    const QSizeF size(qMax<qreal>(40.0, outputRect.width() * previewScale.x()),
+                      qMax<qreal>(20.0, outputRect.height() * previewScale.y()));
+    const QPointF outputTranslation(outputRect.center().x() - (outputWidth / 2.0),
+                                    outputRect.center().y() - (outputHeight / 2.0));
+    const QPointF center(targetRect.center().x() + (outputTranslation.x() * previewScale.x()),
+                         targetRect.center().y() + (outputTranslation.y() * previewScale.y()));
     return QRectF(center.x() - (size.width() / 2.0),
                   center.y() - (size.height() / 2.0),
                   size.width(),
