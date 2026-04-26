@@ -61,26 +61,16 @@ if(_ffmpeg_libdir_match EQUAL -1)
         "Expected ${_expected_ffmpeg_libdir}, got: ${FFMPEG_LIBRARY_DIRS}")
 endif()
 
-set(GLM_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d/glm")
-set(TINYGLTF_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d/tinygltf")
-set(UFBX_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d/ufbx")
-set(GLFW_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d/glfw/include")
 set(MOTIVE3D_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d")
-
-if(NOT EXISTS "${GLM_INCLUDE_DIR}/glm/glm.hpp")
-    message(FATAL_ERROR "Missing glm headers at ${GLM_INCLUDE_DIR}")
-endif()
-
-if(NOT EXISTS "${TINYGLTF_INCLUDE_DIR}/tiny_gltf.h")
-    message(FATAL_ERROR "Missing tinygltf headers at ${TINYGLTF_INCLUDE_DIR}")
-endif()
-
-if(NOT EXISTS "${UFBX_INCLUDE_DIR}/ufbx.h")
-    message(FATAL_ERROR "Missing ufbx headers at ${UFBX_INCLUDE_DIR}")
-endif()
-
-if(NOT EXISTS "${GLFW_INCLUDE_DIR}/GLFW/glfw3.h")
-    message(FATAL_ERROR "Missing GLFW headers at ${GLFW_INCLUDE_DIR}")
+set(EDITOR_OPTIONAL_INCLUDE_DIRS "")
+if(EXISTS "${MOTIVE3D_INCLUDE_DIR}")
+    list(APPEND EDITOR_OPTIONAL_INCLUDE_DIRS
+        "${MOTIVE3D_INCLUDE_DIR}/glm"
+        "${MOTIVE3D_INCLUDE_DIR}/tinygltf"
+        "${MOTIVE3D_INCLUDE_DIR}/ufbx"
+        "${MOTIVE3D_INCLUDE_DIR}/glfw/include"
+        "${MOTIVE3D_INCLUDE_DIR}"
+    )
 endif()
 
 add_subdirectory(rtaudio EXCLUDE_FROM_ALL)
@@ -149,11 +139,7 @@ target_include_directories(editor_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_BINARY_DIR}/generated
-        ${GLM_INCLUDE_DIR}
-        ${TINYGLTF_INCLUDE_DIR}
-        ${UFBX_INCLUDE_DIR}
-        ${GLFW_INCLUDE_DIR}
-        ${MOTIVE3D_INCLUDE_DIR}
+        ${EDITOR_OPTIONAL_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/rtaudio
 )
 
@@ -222,11 +208,7 @@ target_include_directories(editor_test_support
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_BINARY_DIR}/generated
-        ${GLM_INCLUDE_DIR}
-        ${TINYGLTF_INCLUDE_DIR}
-        ${UFBX_INCLUDE_DIR}
-        ${GLFW_INCLUDE_DIR}
-        ${MOTIVE3D_INCLUDE_DIR}
+        ${EDITOR_OPTIONAL_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/rtaudio
 )
 

@@ -35,14 +35,6 @@ public:
     QLabel *statusBadge() const { return m_statusBadge; }
     QLabel *previewInfo() const { return m_previewInfo; }
     QToolButton *razorButton() const { return m_razorButton; }
-    QLabel *aiStatusLabel() const { return m_aiStatusLabel; }
-    QComboBox *aiModelCombo() const { return m_aiModelCombo; }
-    QPushButton *aiTranscribeButton() const { return m_aiTranscribeButton; }
-    QPushButton *aiFindSpeakerNamesButton() const { return m_aiFindSpeakerNamesButton; }
-    QPushButton *aiFindOrganizationsButton() const { return m_aiFindOrganizationsButton; }
-    QPushButton *aiCleanAssignmentsButton() const { return m_aiCleanAssignmentsButton; }
-    QPushButton *aiLoginButton() const { return m_aiLoginButton; }
-    QPushButton *aiLogoutButton() const { return m_aiLogoutButton; }
 
 signals:
     void playClicked();
@@ -54,13 +46,6 @@ signals:
     void playbackSpeedChanged(double speed);
     void previewModeChanged(const QString& mode);
     void audioToolsClicked();
-    void aiModelChanged(const QString& model);
-    void aiTranscribeClicked();
-    void aiFindSpeakerNamesClicked();
-    void aiFindOrganizationsClicked();
-    void aiCleanAssignmentsClicked();
-    void aiLoginClicked();
-    void aiLogoutClicked();
     void audioMuteClicked();
     void audioVolumeChanged(int value);
 
@@ -85,13 +70,4 @@ private:
     QLabel *m_audioNowPlayingLabel = nullptr;
     QLabel *m_statusBadge = nullptr;
     QLabel *m_previewInfo = nullptr;
-    QWidget *m_aiPanel = nullptr;
-    QLabel *m_aiStatusLabel = nullptr;
-    QComboBox *m_aiModelCombo = nullptr;
-    QPushButton *m_aiTranscribeButton = nullptr;
-    QPushButton *m_aiFindSpeakerNamesButton = nullptr;
-    QPushButton *m_aiFindOrganizationsButton = nullptr;
-    QPushButton *m_aiCleanAssignmentsButton = nullptr;
-    QPushButton *m_aiLoginButton = nullptr;
-    QPushButton *m_aiLogoutButton = nullptr;
 };

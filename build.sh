@@ -19,6 +19,7 @@ FFMPEG_PROFILE="safe"
 BUILD_TARGET="editor"
 RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
+FFMPEG_REBUILT="0"
 
 ensure_submodule_checkout() {
     local submodule_path="$1"
@@ -82,6 +83,7 @@ ensure_ffmpeg_installed() {
     local installed_profile=""
     local installed_version=""
     local installed_nvcodec_version=""
+    local installed_prefix=""
     local current_version=""
     current_version="$(git -C "${FFMPEG_SRC_DIR}" rev-parse HEAD)"
     if [[ -f "${FFMPEG_PROFILE_FILE}" ]]; then
@@ -93,6 +95,9 @@ ensure_ffmpeg_installed() {
     if [[ -f "${NVCODEC_VERSION_FILE}" ]]; then
         installed_nvcodec_version="$(<"${NVCODEC_VERSION_FILE}")"
     fi
+    if [[ -f "${codec_pc}" ]]; then
+        installed_prefix="$(sed -n 's/^prefix=//p' "${codec_pc}" | head -n1)"
+    fi
 
     local current_nvcodec_version=""
     if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
@@ -100,7 +105,7 @@ ensure_ffmpeg_installed() {
         current_nvcodec_version="$(git -C "${NVCODEC_SRC_DIR}" rev-parse HEAD)"
     fi
 
-    if [[ -f "${codec_pc}" && -f "${format_pc}" && -f "${util_pc}" && -f "${swr_pc}" && -f "${sws_pc}" && "${installed_profile}" == "${FFMPEG_PROFILE}" && "${installed_version}" == "${current_version}" ]]; then
+    if [[ -f "${codec_pc}" && -f "${format_pc}" && -f "${util_pc}" && -f "${swr_pc}" && -f "${sws_pc}" && "${installed_profile}" == "${FFMPEG_PROFILE}" && "${installed_version}" == "${current_version}" && "${installed_prefix}" == "${FFMPEG_INSTALL_DIR}" ]]; then
         if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
             if [[ ! -f "${NVCODEC_PKGCONFIG_FILE}" || "${installed_nvcodec_version}" != "${current_nvcodec_version}" ]]; then
                 echo "FFmpeg NVIDIA toolchain mismatch detected; rebuilding against local nv-codec-headers."
@@ -112,8 +117,11 @@ ensure_ffmpeg_installed() {
         fi
     fi
 
+    FFMPEG_REBUILT="1"
     if [[ "${FFMPEG_PROFILE}" == "nvidia" && -n "${installed_nvcodec_version}" && "${installed_nvcodec_version}" != "${current_nvcodec_version}" ]]; then
         echo "NVIDIA headers revision mismatch: installed='${installed_nvcodec_version}', requested='${current_nvcodec_version}'"
+    elif [[ -n "${installed_prefix}" && "${installed_prefix}" != "${FFMPEG_INSTALL_DIR}" ]]; then
+        echo "FFmpeg install prefix mismatch: installed='${installed_prefix}', requested='${FFMPEG_INSTALL_DIR}'"
     elif [[ "${installed_profile}" != "${FFMPEG_PROFILE}" && -n "${installed_profile}" ]]; then
         echo "FFmpeg profile mismatch: installed='${installed_profile}', requested='${FFMPEG_PROFILE}'"
     elif [[ "${installed_version}" != "${current_version}" && -n "${installed_version}" ]]; then
@@ -131,6 +139,14 @@ ensure_ffmpeg_installed() {
     fi
 
     mkdir -p "${FFMPEG_BUILD_DIR}" "${FFMPEG_INSTALL_DIR}"
+    if [[ -f "${FFMPEG_BUILD_DIR}/Makefile" ]]; then
+        local expected_include="include ${FFMPEG_SRC_DIR}/Makefile"
+        if ! rg -Fq "${expected_include}" "${FFMPEG_BUILD_DIR}/Makefile"; then
+            echo "FFmpeg build directory references a different source tree; cleaning ${FFMPEG_BUILD_DIR}..."
+            rm -rf "${FFMPEG_BUILD_DIR}"
+            mkdir -p "${FFMPEG_BUILD_DIR}"
+        fi
+    fi
 
     pushd "${FFMPEG_BUILD_DIR}" >/dev/null
     local -a ffmpeg_configure=(
@@ -243,6 +259,34 @@ if [[ "${ASAN}" == "ON" ]]; then
     BUILD_DIR="${BUILD_DIR_BASE}-asan"
 else
     BUILD_DIR="${BUILD_DIR_BASE}"
+fi
+
+reset_stale_cmake_cache() {
+    local build_dir="$1"
+    local cache_file="${build_dir}/CMakeCache.txt"
+    if [[ ! -f "${cache_file}" ]]; then
+        return 0
+    fi
+
+    local cached_source_dir=""
+    local cached_build_dir=""
+    local cached_generator=""
+    cached_source_dir="$(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "${cache_file}" | tail -n1)"
+    cached_build_dir="$(sed -n 's/^CMAKE_CACHEFILE_DIR:INTERNAL=//p' "${cache_file}" | tail -n1)"
+    cached_generator="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "${cache_file}" | tail -n1)"
+
+    if [[ "${cached_source_dir}" != "${SCRIPT_DIR}" ]] || \
+       [[ "${cached_build_dir}" != "${build_dir}" ]] || \
+       [[ "${cached_generator}" != "${CMAKE_GENERATOR}" ]]; then
+        echo "Detected stale CMake cache in ${build_dir}; recreating build directory..."
+        rm -rf "${build_dir}"
+    fi
+}
+
+reset_stale_cmake_cache "${BUILD_DIR}"
+if [[ "${FFMPEG_REBUILT}" == "1" ]]; then
+    echo "FFmpeg was rebuilt; recreating ${BUILD_DIR} to clear stale pkg-config cache..."
+    rm -rf "${BUILD_DIR}"
 fi
 
 if [[ "${ASAN}" == "ON" ]]; then

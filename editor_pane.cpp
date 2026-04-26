@@ -83,85 +83,10 @@ EditorPane::EditorPane(QWidget *parent)
     m_previewInfo->setWordWrap(true);
     overlayLayout->addWidget(m_previewInfo, 0, Qt::AlignLeft | Qt::AlignBottom);
 
-    auto *controlsOverlay = new QWidget;
-    controlsOverlay->setStyleSheet(QStringLiteral("background: transparent;"));
-    auto *controlsOverlayLayout = new QVBoxLayout(controlsOverlay);
-    controlsOverlayLayout->setContentsMargins(18, 14, 18, 14);
-    controlsOverlayLayout->setSpacing(8);
-    controlsOverlayLayout->addStretch(1);
-    auto *aiPanelRow = new QHBoxLayout;
-    aiPanelRow->setContentsMargins(0, 0, 0, 0);
-    aiPanelRow->addStretch(1);
-    m_aiPanel = new QFrame(controlsOverlay);
-    m_aiPanel->setObjectName(QStringLiteral("preview.ai_panel"));
-    m_aiPanel->setMinimumWidth(300);
-    m_aiPanel->setStyleSheet(QStringLiteral(
-        "QFrame#preview.ai_panel {"
-        " background: rgba(9, 14, 22, 230);"
-        " border: 1px solid #33475f;"
-        " border-radius: 10px;"
-        "}"
-        "QFrame#preview.ai_panel QLabel { color: #dce8f5; }"
-        "QFrame#preview.ai_panel QComboBox { min-height: 24px; }"
-        "QFrame#preview.ai_panel QPushButton {"
-        " background: #162333;"
-        " border: 1px solid #2f4f70;"
-        " border-radius: 6px;"
-        " padding: 4px 8px;"
-        "}"
-        "QFrame#preview.ai_panel QPushButton:hover { background: #1f3045; }"));
-    auto *aiPanelLayout = new QVBoxLayout(m_aiPanel);
-    aiPanelLayout->setContentsMargins(10, 9, 10, 10);
-    aiPanelLayout->setSpacing(6);
-    auto *aiTitle = new QLabel(QStringLiteral("AI Assist"), m_aiPanel);
-    QFont aiTitleFont = aiTitle->font();
-    aiTitleFont.setBold(true);
-    aiTitle->setFont(aiTitleFont);
-    aiPanelLayout->addWidget(aiTitle);
-    m_aiStatusLabel = new QLabel(QStringLiteral("AI disabled: sign in to your gateway"), m_aiPanel);
-    m_aiStatusLabel->setWordWrap(true);
-    m_aiStatusLabel->setStyleSheet(QStringLiteral("color: #9fb3c8;"));
-    aiPanelLayout->addWidget(m_aiStatusLabel);
-    auto *modelRow = new QHBoxLayout;
-    modelRow->setContentsMargins(0, 0, 0, 0);
-    modelRow->setSpacing(6);
-    modelRow->addWidget(new QLabel(QStringLiteral("Model"), m_aiPanel));
-    m_aiModelCombo = new QComboBox(m_aiPanel);
-    m_aiModelCombo->setObjectName(QStringLiteral("ai.model_combo"));
-    modelRow->addWidget(m_aiModelCombo, 1);
-    aiPanelLayout->addLayout(modelRow);
-    auto *aiActions1 = new QHBoxLayout;
-    aiActions1->setContentsMargins(0, 0, 0, 0);
-    aiActions1->setSpacing(6);
-    m_aiTranscribeButton = new QPushButton(QStringLiteral("Transcribe (AI)"), m_aiPanel);
-    m_aiFindSpeakerNamesButton = new QPushButton(QStringLiteral("Find Names (AI)"), m_aiPanel);
-    aiActions1->addWidget(m_aiTranscribeButton);
-    aiActions1->addWidget(m_aiFindSpeakerNamesButton);
-    aiPanelLayout->addLayout(aiActions1);
-    auto *aiActions2 = new QHBoxLayout;
-    aiActions2->setContentsMargins(0, 0, 0, 0);
-    aiActions2->setSpacing(6);
-    m_aiFindOrganizationsButton = new QPushButton(QStringLiteral("Find Organizations"), m_aiPanel);
-    m_aiCleanAssignmentsButton = new QPushButton(QStringLiteral("Clean Assignments"), m_aiPanel);
-    aiActions2->addWidget(m_aiFindOrganizationsButton);
-    aiActions2->addWidget(m_aiCleanAssignmentsButton);
-    aiPanelLayout->addLayout(aiActions2);
-    auto *aiAuthActions = new QHBoxLayout;
-    aiAuthActions->setContentsMargins(0, 0, 0, 0);
-    aiAuthActions->setSpacing(6);
-    m_aiLoginButton = new QPushButton(QStringLiteral("AI Login"), m_aiPanel);
-    m_aiLogoutButton = new QPushButton(QStringLiteral("Logout"), m_aiPanel);
-    aiAuthActions->addWidget(m_aiLoginButton);
-    aiAuthActions->addWidget(m_aiLogoutButton);
-    aiPanelLayout->addLayout(aiAuthActions);
-    aiPanelRow->addWidget(m_aiPanel, 0, Qt::AlignRight | Qt::AlignBottom);
-    controlsOverlayLayout->addLayout(aiPanelRow);
-
     auto *stack = new QStackedLayout;
     stack->setStackingMode(QStackedLayout::StackAll);
     stack->addWidget(m_preview);
     stack->addWidget(overlay);
-    stack->addWidget(controlsOverlay);
     previewLayout->addLayout(stack);
 
     verticalSplitter->addWidget(previewFrame);
@@ -345,13 +270,6 @@ void EditorPane::setupTransportControls()
     connect(m_audioMuteButton, &QToolButton::clicked, this, &EditorPane::audioMuteClicked);
     connect(m_audioVolumeSlider, &QSlider::valueChanged, this, &EditorPane::audioVolumeChanged);
 
-    connect(m_aiModelCombo, &QComboBox::currentTextChanged, this, &EditorPane::aiModelChanged);
-    connect(m_aiTranscribeButton, &QPushButton::clicked, this, &EditorPane::aiTranscribeClicked);
-    connect(m_aiFindSpeakerNamesButton, &QPushButton::clicked, this, &EditorPane::aiFindSpeakerNamesClicked);
-    connect(m_aiFindOrganizationsButton, &QPushButton::clicked, this, &EditorPane::aiFindOrganizationsClicked);
-    connect(m_aiCleanAssignmentsButton, &QPushButton::clicked, this, &EditorPane::aiCleanAssignmentsClicked);
-    connect(m_aiLoginButton, &QPushButton::clicked, this, &EditorPane::aiLoginClicked);
-    connect(m_aiLogoutButton, &QPushButton::clicked, this, &EditorPane::aiLogoutClicked);
 }
 
 // Accessor to get the TimelineWidget from the container

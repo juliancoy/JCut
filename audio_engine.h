@@ -323,6 +323,25 @@ public:
             m_playing = false;
         }
         if (m_rtaudio && m_rtaudio->isStreamRunning()) {
+            // Fade to zero from the last rendered sample to avoid click/pop on stop.
+            const int16_t lastL = static_cast<int16_t>(m_lastOutputLeft.load(std::memory_order_acquire));
+            const int16_t lastR = static_cast<int16_t>(m_lastOutputRight.load(std::memory_order_acquire));
+            m_ringBuffer.clear();
+            QVector<int16_t> fadeSamples;
+            fadeSamples.resize(kShutdownFadeFrames * m_channelCount);
+            for (int frame = 0; frame < kShutdownFadeFrames; ++frame) {
+                const qreal gain = 1.0 - (static_cast<qreal>(frame + 1) / static_cast<qreal>(kShutdownFadeFrames));
+                fadeSamples[frame * m_channelCount] =
+                    static_cast<int16_t>(qRound(static_cast<qreal>(lastL) * gain));
+                fadeSamples[frame * m_channelCount + 1] =
+                    static_cast<int16_t>(qRound(static_cast<qreal>(lastR) * gain));
+            }
+            m_ringBuffer.write(fadeSamples.constData(), static_cast<size_t>(fadeSamples.size()));
+            const int64_t currentEnd = m_ringBufferEndSample.load(std::memory_order_acquire);
+            m_ringBufferEndSample.store(currentEnd + kShutdownFadeFrames, std::memory_order_release);
+            const int fadeMs = qMax(1, static_cast<int>(std::ceil(
+                (1000.0 * static_cast<double>(kShutdownFadeFrames)) / static_cast<double>(m_sampleRate))));
+            std::this_thread::sleep_for(std::chrono::milliseconds(fadeMs + 2));
             m_rtaudio->stopStream();
         }
         m_ringBuffer.clear();
@@ -464,6 +483,11 @@ private:
         if (read < samplesNeeded) {
             std::memset(out + read, 0, (samplesNeeded - read) * sizeof(int16_t));
             engine->m_underrunCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (samplesNeeded >= static_cast<size_t>(engine->m_channelCount)) {
+            const size_t lastIndex = samplesNeeded - static_cast<size_t>(engine->m_channelCount);
+            engine->m_lastOutputLeft.store(out[lastIndex], std::memory_order_release);
+            engine->m_lastOutputRight.store(out[lastIndex + 1], std::memory_order_release);
         }
         return 0;
     }
@@ -1135,6 +1159,8 @@ private:
     int64_t m_timelineSampleCursor = 0;
     std::atomic<int64_t> m_audioClockSample{0};
     std::atomic<int> m_underrunCount{0};
+    std::atomic<int> m_lastOutputLeft{0};
+    std::atomic<int> m_lastOutputRight{0};
     std::atomic<qreal> m_playbackRate{1.0};
     std::atomic<int> m_playbackWarpMode{static_cast<int>(PlaybackAudioWarpMode::Disabled)};
 
@@ -1146,6 +1172,7 @@ private:
         static_cast<int64_t>(m_sampleRate) * m_initialDecodeSeconds;
     static constexpr int m_mixLowWaterSamples = 2048 * 2; // samples (frames * channels)
     static constexpr int m_defaultFadeSamples = 250;
+    static constexpr int kShutdownFadeFrames = 1024;
     static constexpr qint64 kAudioInitBackoffMs = 10000;
     static constexpr qint64 kAudioInitWarningThrottleMs = 10000;
     std::atomic<int> m_speechFilterFadeSamples{m_defaultFadeSamples};

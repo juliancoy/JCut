@@ -56,29 +56,15 @@ void PreviewWindow::paintEvent(QPaintEvent* event) {
 }
 
 QRect PreviewWindow::previewCanvasBaseRect() const {
-    const QRect available = rect().adjusted(36, 36, -36, -36);
-    if (!available.isValid()) return available;
-    QSize fitted = (m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920));
-    fitted.scale(available.size(), Qt::KeepAspectRatio);
-    const QPoint topLeft(available.center().x() - fitted.width() / 2,
-                         available.center().y() - fitted.height() / 2);
-    return QRect(topLeft, fitted);
+    return previewCanvasBaseRectForWidget(rect(), m_outputSize, 36);
 }
 
 QRect PreviewWindow::scaledCanvasRect(const QRect& baseRect) const {
-    const QSize scaledSize(qMax(1, qRound(baseRect.width() * m_previewZoom)),
-                           qMax(1, qRound(baseRect.height() * m_previewZoom)));
-    const QPoint center = baseRect.center();
-    return QRect(qRound(center.x() - scaledSize.width() / 2.0 + m_previewPanOffset.x()),
-                 qRound(center.y() - scaledSize.height() / 2.0 + m_previewPanOffset.y()),
-                 scaledSize.width(),
-                 scaledSize.height());
+    return scaledPreviewCanvasRect(baseRect, m_previewZoom, m_previewPanOffset);
 }
 
 QPointF PreviewWindow::previewCanvasScale(const QRect& targetRect) const {
-    const QSize output = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
-    return QPointF(targetRect.width() / qMax<qreal>(1.0, output.width()),
-                   targetRect.height() / qMax<qreal>(1.0, output.height()));
+    return previewCanvasScaleForTargetRect(targetRect, m_outputSize);
 }
 
 QPointF PreviewWindow::mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info,
@@ -1047,16 +1033,9 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
 
 void PreviewWindow::drawAudioBadge(QPainter* painter, const QRect& targetRect,
                     const QList<TimelineClip>& activeAudioClips) {
-    painter->save();
-    const QRect badgeRect(targetRect.left() + 16, targetRect.bottom() - 46, 240, 30);
-    painter->setPen(Qt::NoPen);
-    painter->setBrush(QColor(7, 11, 17, 176));
-    painter->drawRoundedRect(badgeRect, 10, 10);
-    painter->setPen(QColor(QStringLiteral("#dff8ff")));
-    painter->drawText(badgeRect.adjusted(12, 0, -12, 0),
-                      Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("Audio  %1").arg(activeAudioClips.constFirst().label));
-    painter->restore();
+    Q_UNUSED(painter)
+    Q_UNUSED(targetRect)
+    Q_UNUSED(activeAudioClips)
 }
 
 void PreviewWindow::drawSpeakerPickOverlay(QPainter* painter) const {

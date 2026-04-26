@@ -10,12 +10,20 @@
 
 namespace {
 constexpr int kMaxTranscriptTextureCacheEntries = 128;
+
+void setFontPixelSizeRobust(QFont* font, qreal pixelSize, const QPaintDevice* device) {
+    if (!font) {
+        return;
+    }
+    const qreal dpiY = (device && device->logicalDpiY() > 0) ? device->logicalDpiY() : 96.0;
+    font->setPointSizeF((pixelSize * 72.0) / dpiY);
+}
 }
 
 QString PreviewWindow::transcriptOverlayTextureKey(const TimelineClip& clip,
                                                    const QRectF& bounds,
                                                    const QRectF& textBounds,
-                                                   int fontPixelSize,
+                                                   qreal fontPixelSize,
                                                    const QString& shadowHtml,
                                                    const QString& textHtml) const {
     const QString keyMaterial =
@@ -25,7 +33,7 @@ QString PreviewWindow::transcriptOverlayTextureKey(const TimelineClip& clip,
         QString::number(qRound(textBounds.width())) + QLatin1Char('|') +
         QString::number(qRound(textBounds.height())) + QLatin1Char('|') +
         clip.transcriptOverlay.fontFamily + QLatin1Char('|') +
-        QString::number(fontPixelSize) + QLatin1Char('|') +
+        QString::number(fontPixelSize, 'f', 3) + QLatin1Char('|') +
         (clip.transcriptOverlay.bold ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
         (clip.transcriptOverlay.italic ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
         (clip.transcriptOverlay.showBackground ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
@@ -37,7 +45,7 @@ QString PreviewWindow::transcriptOverlayTextureKey(const TimelineClip& clip,
 QImage PreviewWindow::renderTranscriptOverlayImage(const TimelineClip& clip,
                                                    const QRectF& bounds,
                                                    const QRectF& textBounds,
-                                                   int fontPixelSize,
+                                                   qreal fontPixelSize,
                                                    const QString& shadowHtml,
                                                    const QString& textHtml) const {
     const int imageWidth = qMax(1, qRound(bounds.width()));
@@ -56,7 +64,10 @@ QImage PreviewWindow::renderTranscriptOverlayImage(const TimelineClip& clip,
     }
 
     QFont font(clip.transcriptOverlay.fontFamily);
-    font.setPixelSize(qMax(8, fontPixelSize));
+    if (fontPixelSize <= 0.0) {
+        return image;
+    }
+    setFontPixelSizeRobust(&font, fontPixelSize, painter.device());
     font.setBold(clip.transcriptOverlay.bold);
     font.setItalic(clip.transcriptOverlay.italic);
 
@@ -150,10 +161,29 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
         return;
     }
 
+    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
+    const int64_t sourceFrame =
+        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+    const QRectF outputRect = transcriptOverlayRectInOutputSpace(
+        clip, outputSize, transcriptPath, sections, sourceFrame);
+    if (outputRect.width() <= 0.0 || outputRect.height() <= 0.0) {
+        return;
+    }
     const QRectF bounds = transcriptOverlayRectForTarget(clip, targetRect);
-    const QRectF textBounds = bounds.adjusted(18.0, 14.0, -18.0, -14.0);
-    const int fontPixelSize =
-        qMax(8, qRound(clip.transcriptOverlay.fontPointSize * previewCanvasScale(targetRect).y()));
+    if (bounds.width() <= 0.0 || bounds.height() <= 0.0) {
+        return;
+    }
+    const QRectF localBounds(0.0, 0.0, outputRect.width(), outputRect.height());
+    const QRectF localTextBounds = localBounds.adjusted(18.0, 14.0, -18.0, -14.0);
+    if (localTextBounds.width() <= 0.0 || localTextBounds.height() <= 0.0) {
+        return;
+    }
+    const qreal fontPixelSize = clip.transcriptOverlay.fontPointSize;
+    if (fontPixelSize <= 0.0) {
+        return;
+    }
     const QColor highlightFillColor(QStringLiteral("#fff2a8"));
     const QColor highlightTextColor(QStringLiteral("#181818"));
     const QString shadowHtml =
@@ -164,12 +194,11 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
         return;
     }
 
-    const QRectF localTextBounds(18.0, 14.0, qMax<qreal>(1.0, textBounds.width()), qMax<qreal>(1.0, textBounds.height()));
     const QString textureKey =
         transcriptOverlayTextureKey(clip, bounds, localTextBounds, fontPixelSize, shadowHtml, textHtml);
     const QImage image = renderTranscriptOverlayImage(
         clip,
-        QRectF(0.0, 0.0, qMax<qreal>(1.0, bounds.width()), qMax<qreal>(1.0, bounds.height())),
+        localBounds,
         localTextBounds,
         fontPixelSize,
         shadowHtml,

@@ -239,6 +239,14 @@ public:
     QPushButton *newProjectButton() const { return m_newProjectButton; }
     QPushButton *saveProjectAsButton() const { return m_saveProjectAsButton; }
     QPushButton *renameProjectButton() const { return m_renameProjectButton; }
+    QLabel *aiStatusLabel() const { return m_aiStatusLabel; }
+    QComboBox *aiModelCombo() const { return m_aiModelCombo; }
+    QPushButton *aiTranscribeButton() const { return m_aiTranscribeButton; }
+    QPushButton *aiFindSpeakerNamesButton() const { return m_aiFindSpeakerNamesButton; }
+    QPushButton *aiFindOrganizationsButton() const { return m_aiFindOrganizationsButton; }
+    QPushButton *aiCleanAssignmentsButton() const { return m_aiCleanAssignmentsButton; }
+    QPushButton *aiLoginButton() const { return m_aiLoginButton; }
+    QPushButton *aiLogoutButton() const { return m_aiLogoutButton; }
 
     QSpinBox *outputWidthSpin() const { return m_outputWidthSpin; }
     QSpinBox *outputHeightSpin() const { return m_outputHeightSpin; }
@@ -300,6 +308,7 @@ private:
     QWidget *buildPreviewTab();
     QWidget *buildProfileTab();
     QWidget *buildProjectsTab();
+    QWidget *buildAiTab();
     void configureInspectorTabs();
 
 private:
@@ -459,6 +468,14 @@ private:
     QPushButton *m_newProjectButton = nullptr;
     QPushButton *m_saveProjectAsButton = nullptr;
     QPushButton *m_renameProjectButton = nullptr;
+    QLabel *m_aiStatusLabel = nullptr;
+    QComboBox *m_aiModelCombo = nullptr;
+    QPushButton *m_aiTranscribeButton = nullptr;
+    QPushButton *m_aiFindSpeakerNamesButton = nullptr;
+    QPushButton *m_aiFindOrganizationsButton = nullptr;
+    QPushButton *m_aiCleanAssignmentsButton = nullptr;
+    QPushButton *m_aiLoginButton = nullptr;
+    QPushButton *m_aiLogoutButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
     QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;

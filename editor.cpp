@@ -95,6 +95,14 @@ EditorWindow::~EditorWindow()
 
 void EditorWindow::closeEvent(QCloseEvent *event)
 {
+    m_playbackTimer.stop();
+    m_fastPlaybackActive.store(false);
+    if (m_preview) {
+        m_preview->setPlaybackState(false);
+    }
+    if (m_audioEngine) {
+        m_audioEngine->stop();
+    }
     saveStateNow();
     QMainWindow::closeEvent(event);
 }
@@ -289,11 +297,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_loadingState = true;
 
     // Default to the projects root from editor.config, then fall back to saved state, then current dir
-    QString rootPath = root.value(QStringLiteral("explorerRoot")).toString(rootDirPath());
+    QString rootPath = root.value(QStringLiteral("mediaRoot")).toString(rootDirPath());
+    if (rootPath.isEmpty()) {
+        rootPath = root.value(QStringLiteral("explorerRoot")).toString(rootDirPath());
+    }
     if (rootPath.isEmpty() || !QDir(rootPath).exists()) {
         rootPath = QDir::currentPath();
     }
-    QString galleryFolderPath = root.value(QStringLiteral("explorerGalleryPath")).toString();
+    QString galleryFolderPath = root.value(QStringLiteral("mediaGalleryPath")).toString();
+    if (galleryFolderPath.isEmpty()) {
+        galleryFolderPath = root.value(QStringLiteral("explorerGalleryPath")).toString();
+    }
     const int outputWidth = qMax(16, root.value(QStringLiteral("outputWidth")).toInt(1080));
     const int outputHeight = qMax(16, root.value(QStringLiteral("outputHeight")).toInt(1920));
     const QString outputFormat = root.value(QStringLiteral("outputFormat")).toString(QStringLiteral("mp4"));
@@ -425,7 +439,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     
     QStringList expandedExplorerPaths;
-    for (const QJsonValue &value : root.value(QStringLiteral("explorerExpandedFolders")).toArray())
+    QJsonArray expandedFoldersJson = root.value(QStringLiteral("mediaExpandedFolders")).toArray();
+    if (expandedFoldersJson.isEmpty()) {
+        expandedFoldersJson = root.value(QStringLiteral("explorerExpandedFolders")).toArray();
+    }
+    for (const QJsonValue &value : expandedFoldersJson)
     {
         const QString path = value.toString();
         if (!path.isEmpty()) expandedExplorerPaths.push_back(path);
@@ -918,18 +936,18 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_loadingState = false;
     refreshAiIntegrationState();
     
-    // Use the projects root from editor.config if available, otherwise use the saved explorer root
+    // Use the projects root from editor.config if available, otherwise use the saved media root
     const QString projectsRoot = rootDirPath();
-    const QString explorerRoot = (!projectsRoot.isEmpty() && QDir(projectsRoot).exists()) 
+    const QString mediaRoot = (!projectsRoot.isEmpty() && QDir(projectsRoot).exists()) 
         ? projectsRoot 
         : resolvedRootPath;
     
-    QTimer::singleShot(0, this, [this, explorerRoot]() {
+    QTimer::singleShot(0, this, [this, mediaRoot]() {
         if (m_explorerPane) {
-            m_explorerPane->setInitialRootPath(explorerRoot);
+            m_explorerPane->setInitialRootPath(mediaRoot);
         }
-        // Ensure projects root is set to match explorer root
-        setRootDirPath(explorerRoot);
+        // Ensure projects root is set to match media root.
+        setRootDirPath(mediaRoot);
         loadProjectsFromFolders();
         refreshProjectsList();
         m_inspectorPane->refresh();

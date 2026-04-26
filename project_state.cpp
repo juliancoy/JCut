@@ -443,10 +443,15 @@ void EditorWindow::renameProject(const QString &projectId)
 QJsonObject EditorWindow::buildStateJson() const
 {
     QJsonObject root;
-    root[QStringLiteral("explorerRoot")] =
+    const QString mediaRoot =
         m_explorerPane ? m_explorerPane->currentRootPath() : QString();
-    root[QStringLiteral("explorerGalleryPath")] =
+    const QString mediaGalleryPath =
         m_explorerPane ? m_explorerPane->galleryPath() : QString();
+    root[QStringLiteral("mediaRoot")] = mediaRoot;
+    root[QStringLiteral("mediaGalleryPath")] = mediaGalleryPath;
+    // Backward compatibility for older state readers.
+    root[QStringLiteral("explorerRoot")] = mediaRoot;
+    root[QStringLiteral("explorerGalleryPath")] = mediaGalleryPath;
     root[QStringLiteral("currentFrame")] =
         static_cast<qint64>(m_timeline ? m_timeline->currentFrame() : 0);
     root[QStringLiteral("playing")] = m_playbackTimer.isActive();
@@ -472,6 +477,8 @@ QJsonObject EditorWindow::buildStateJson() const
             expandedFolders.push_back(path);
         }
     }
+    root[QStringLiteral("mediaExpandedFolders")] = expandedFolders;
+    // Backward compatibility for older state readers.
     root[QStringLiteral("explorerExpandedFolders")] = expandedFolders;
 
     root[QStringLiteral("outputWidth")] =

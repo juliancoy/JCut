@@ -4,6 +4,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QPointF>
+#include <QRect>
 #include <QRectF>
 #include <QSize>
 #include <QStringList>
@@ -333,6 +334,14 @@ bool clipHasAlpha(const TimelineClip& clip);
 
 int64_t frameToSamples(int64_t frame);
 qreal samplesToFramePosition(int64_t samples);
+QRect previewCanvasBaseRectForWidget(const QRect& widgetRect,
+                                     const QSize& outputSize,
+                                     int marginPx = 36);
+QRect scaledPreviewCanvasRect(const QRect& baseRect,
+                              qreal previewZoom,
+                              const QPointF& previewPanOffset = QPointF());
+QPointF previewCanvasScaleForTargetRect(const QRect& targetRect,
+                                        const QSize& outputSize);
 qreal resolvedSourceFps(const TimelineClip& clip);
 int64_t sourceFramesToSamples(const TimelineClip& clip, qreal sourceFrames);
 int64_t clipTimelineStartSamples(const TimelineClip& clip);

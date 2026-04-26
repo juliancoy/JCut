@@ -448,7 +448,7 @@ QWidget *ExplorerPane::buildUi()
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
 
-    m_folderPickerButton = new QPushButton(QStringLiteral("Set Explorer Root…"), pane);
+    m_folderPickerButton = new QPushButton(QStringLiteral("Set Media Root…"), pane);
     m_refreshExplorerButton = new QToolButton(pane);
     m_refreshExplorerButton->setText(QStringLiteral("Refresh"));
 
@@ -671,7 +671,7 @@ void ExplorerPane::setExplorerRootPath(const QString &path, bool emitSignals)
     if (m_rootPathLabel)
     {
         const QString nativeRootPath = QDir::toNativeSeparators(m_currentRootPath);
-        m_rootPathLabel->setText(QStringLiteral("Explorer Root: %1").arg(nativeRootPath));
+        m_rootPathLabel->setText(QStringLiteral("Media Root: %1").arg(nativeRootPath));
     }
 
     if (!m_galleryFolderPath.isEmpty())

@@ -457,3 +457,50 @@ QWidget *InspectorPane::buildProjectsTab()
 
     return page;
 }
+
+QWidget *InspectorPane::buildAiTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("AI Assist"), page));
+
+    auto *summary = new QLabel(
+        QStringLiteral("Run AI transcript and speaker workflows from a dedicated tab."), page);
+    summary->setWordWrap(true);
+
+    m_aiStatusLabel = new QLabel(QStringLiteral("AI disabled: sign in to your gateway"), page);
+    m_aiStatusLabel->setWordWrap(true);
+    m_aiStatusLabel->setStyleSheet(QStringLiteral("color: #9fb3c8;"));
+
+    auto *modelForm = new QFormLayout;
+    m_aiModelCombo = new QComboBox(page);
+    m_aiModelCombo->setObjectName(QStringLiteral("ai.model_combo"));
+    modelForm->addRow(QStringLiteral("Model"), m_aiModelCombo);
+
+    auto *actionsRow1 = new QHBoxLayout;
+    m_aiTranscribeButton = new QPushButton(QStringLiteral("Transcribe (AI)"), page);
+    m_aiFindSpeakerNamesButton = new QPushButton(QStringLiteral("Find Names (AI)"), page);
+    actionsRow1->addWidget(m_aiTranscribeButton);
+    actionsRow1->addWidget(m_aiFindSpeakerNamesButton);
+
+    auto *actionsRow2 = new QHBoxLayout;
+    m_aiFindOrganizationsButton = new QPushButton(QStringLiteral("Find Organizations"), page);
+    m_aiCleanAssignmentsButton = new QPushButton(QStringLiteral("Clean Assignments"), page);
+    actionsRow2->addWidget(m_aiFindOrganizationsButton);
+    actionsRow2->addWidget(m_aiCleanAssignmentsButton);
+
+    auto *authRow = new QHBoxLayout;
+    m_aiLoginButton = new QPushButton(QStringLiteral("AI Login"), page);
+    m_aiLogoutButton = new QPushButton(QStringLiteral("Logout"), page);
+    authRow->addWidget(m_aiLoginButton);
+    authRow->addWidget(m_aiLogoutButton);
+
+    layout->addWidget(summary);
+    layout->addWidget(m_aiStatusLabel);
+    layout->addLayout(modelForm);
+    layout->addLayout(actionsRow1);
+    layout->addLayout(actionsRow2);
+    layout->addLayout(authRow);
+    layout->addStretch(1);
+    return page;
+}

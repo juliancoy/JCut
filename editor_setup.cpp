@@ -46,7 +46,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     });
     connect(m_explorerPane, &ExplorerPane::transcriptionRequested, this, &EditorWindow::openTranscriptionWindow);
     connect(m_explorerPane, &ExplorerPane::folderRootChanged, this, [this](const QString& path) {
-        // Update the projects root directory when explorer root changes
+        // Update the projects root directory when media root changes
         setRootDirPath(path);
         // Reload projects from the new root
         loadProjectsFromFolders();

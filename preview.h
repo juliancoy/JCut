@@ -195,13 +195,13 @@ private:
     QString transcriptOverlayTextureKey(const TimelineClip& clip,
                                         const QRectF& bounds,
                                         const QRectF& textBounds,
-                                        int fontPixelSize,
+                                        qreal fontPixelSize,
                                         const QString& shadowHtml,
                                         const QString& textHtml) const;
     QImage renderTranscriptOverlayImage(const TimelineClip& clip,
                                         const QRectF& bounds,
                                         const QRectF& textBounds,
-                                        int fontPixelSize,
+                                        qreal fontPixelSize,
                                         const QString& shadowHtml,
                                         const QString& textHtml) const;
     GLuint textureForTranscriptOverlay(const QString& key, const QImage& image);

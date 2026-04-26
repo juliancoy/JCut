@@ -192,6 +192,7 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildHistoryTab(), QStringLiteral("History"));
     m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
     m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
+    m_inspectorTabs->addTab(buildAiTab(), QStringLiteral("AI Assist"));
     m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
     m_inspectorTabs->addTab(buildProfileTab(), QStringLiteral("System"));
     m_inspectorTabs->addTab(buildProjectsTab(), QStringLiteral("Projects"));
@@ -237,9 +238,10 @@ void InspectorPane::configureInspectorTabs()
         {11, "History", QStyle::SP_BrowserReload, "History: saved timeline snapshots"},
         {12, "Tracks", QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
         {13, "Preview", QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {14, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {15, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {16, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {14, "AI Assist", QStyle::SP_FileDialogDetailedView, "AI Assist: model, auth, and AI workflow actions"},
+        {15, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {16, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {17, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
     };
 
     for (const TabSpec& spec : specs) {

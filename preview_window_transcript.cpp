@@ -9,7 +9,6 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPainter>
-#include <QTextDocument>
 
 #include <algorithm>
 #include <cstdlib>
@@ -408,8 +407,8 @@ QRectF PreviewWindow::transcriptOverlayRectForTarget(const TimelineClip& clip, c
         transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
     const QRectF outputRect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, transcriptPath, sections, sourceFrame);
-    const QSizeF size(qMax<qreal>(40.0, outputRect.width() * previewScale.x()),
-                      qMax<qreal>(20.0, outputRect.height() * previewScale.y()));
+    const QSizeF size(outputRect.width() * previewScale.x(),
+                      outputRect.height() * previewScale.y());
     const QPointF outputTranslation(outputRect.center().x() - (outputWidth / 2.0),
                                     outputRect.center().y() - (outputHeight / 2.0));
     const QPointF center(targetRect.center().x() + (outputTranslation.x() * previewScale.x()),
@@ -424,15 +423,29 @@ QSizeF PreviewWindow::transcriptOverlaySizeForSelectedClip() const {
     const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
     const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
     const QPointF previewScale = previewCanvasScale(compositeRect);
-    return QSizeF(info.bounds.width() / qMax<qreal>(0.0001, previewScale.x()),
-                  info.bounds.height() / qMax<qreal>(0.0001, previewScale.y()));
+    if (previewScale.x() == 0.0 || previewScale.y() == 0.0) {
+        return {};
+    }
+    return QSizeF(info.bounds.width() / previewScale.x(),
+                  info.bounds.height() / previewScale.y());
 }
 
 void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip& clip, const QRect& targetRect) {
     const TranscriptOverlayLayout overlayLayout = transcriptOverlayLayoutForClip(clip);
     if (overlayLayout.lines.isEmpty()) return;
+    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
+    const int64_t sourceFrame =
+        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+    const QRectF outputRect = transcriptOverlayRectInOutputSpace(
+        clip, outputSize, transcriptPath, sections, sourceFrame);
+    if (outputRect.width() <= 0.0 || outputRect.height() <= 0.0) return;
     const QRectF bounds = transcriptOverlayRectForTarget(clip, targetRect);
-    const QRectF textBounds = bounds.adjusted(18.0, 14.0, -18.0, -14.0);
+    if (bounds.width() <= 0.0 || bounds.height() <= 0.0) return;
+    const QRectF localBounds(0.0, 0.0, outputRect.width(), outputRect.height());
+    const QRectF localTextBounds = localBounds.adjusted(18.0, 14.0, -18.0, -14.0);
+    if (localTextBounds.width() <= 0.0 || localTextBounds.height() <= 0.0) return;
     const QColor highlightFillColor(QStringLiteral("#fff2a8"));
     const QColor highlightTextColor(QStringLiteral("#181818"));
     const QString shadowHtml = transcriptOverlayHtml(overlayLayout, QColor(0, 0, 0, 200), QColor(0, 0, 0, 200), QColor(0, 0, 0, 0));
@@ -440,47 +453,14 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
     if (textHtml.isEmpty()) return;
 
     painter->save();
-    if (clip.transcriptOverlay.showBackground) {
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(0, 0, 0, 120));
-        painter->drawRoundedRect(bounds, 14.0, 14.0);
-    }
-    QFont font(clip.transcriptOverlay.fontFamily);
-    font.setPixelSize(qMax(8, qRound(clip.transcriptOverlay.fontPointSize * previewCanvasScale(targetRect).y())));
-    font.setBold(clip.transcriptOverlay.bold);
-    font.setItalic(clip.transcriptOverlay.italic);
-    QTextDocument shadowDoc;
-    shadowDoc.setDefaultFont(font);
-    shadowDoc.setDocumentMargin(0.0);
-    shadowDoc.setTextWidth(textBounds.width());
-    shadowDoc.setHtml(shadowHtml);
-    QTextDocument textDoc;
-    textDoc.setDefaultFont(font);
-    textDoc.setDocumentMargin(0.0);
-    textDoc.setTextWidth(textBounds.width());
-    textDoc.setHtml(textHtml);
-    const qreal widthScale = textDoc.size().width() > textBounds.width()
-        ? textBounds.width() / textDoc.size().width()
-        : 1.0;
-    const qreal heightScale = textDoc.size().height() > textBounds.height()
-        ? textBounds.height() / textDoc.size().height()
-        : 1.0;
-    const qreal docScale = qMin(widthScale, heightScale);
-    const qreal scaledDocHeight = textDoc.size().height() * docScale;
-    const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - scaledDocHeight) / 2.0);
-    painter->translate(textBounds.left() + 3.0, textY + 3.0);
-    if (docScale < 0.999) {
-        painter->scale(docScale, docScale);
-    }
-    shadowDoc.drawContents(painter);
-    if (docScale < 0.999) {
-        painter->scale(1.0 / docScale, 1.0 / docScale);
-    }
-    painter->translate(-3.0, -3.0);
-    if (docScale < 0.999) {
-        painter->scale(docScale, docScale);
-    }
-    textDoc.drawContents(painter);
+    const QImage image = renderTranscriptOverlayImage(
+        clip,
+        localBounds,
+        localTextBounds,
+        clip.transcriptOverlay.fontPointSize,
+        shadowHtml,
+        textHtml);
+    painter->drawImage(bounds, image);
     painter->restore();
 
     if (m_transcriptOverlayInteractionEnabled) {

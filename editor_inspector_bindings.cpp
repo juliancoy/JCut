@@ -149,6 +149,39 @@ void EditorWindow::bindInspectorWidgets()
     m_speechFilterRangeCrossfadeCheckBox = m_inspectorPane->speechFilterRangeCrossfadeCheckBox();
     m_playbackClockSourceCombo = m_inspectorPane->playbackClockSourceCombo();
     m_playbackAudioWarpModeCombo = m_inspectorPane->playbackAudioWarpModeCombo();
+    m_aiStatusLabel = m_inspectorPane->aiStatusLabel();
+    m_aiModelCombo = m_inspectorPane->aiModelCombo();
+    m_aiTranscribeButton = m_inspectorPane->aiTranscribeButton();
+    m_aiFindSpeakerNamesButton = m_inspectorPane->aiFindSpeakerNamesButton();
+    m_aiFindOrganizationsButton = m_inspectorPane->aiFindOrganizationsButton();
+    m_aiCleanAssignmentsButton = m_inspectorPane->aiCleanAssignmentsButton();
+    m_aiLoginButton = m_inspectorPane->aiLoginButton();
+    m_aiLogoutButton = m_inspectorPane->aiLogoutButton();
+
+    if (m_aiModelCombo) {
+        connect(m_aiModelCombo, &QComboBox::currentTextChanged, this, [this](const QString& model) {
+            m_aiSelectedModel = model.trimmed();
+            scheduleSaveState();
+        });
+    }
+    if (m_aiTranscribeButton) {
+        connect(m_aiTranscribeButton, &QPushButton::clicked, this, [this]() { runAiTranscribeForSelection(); });
+    }
+    if (m_aiFindSpeakerNamesButton) {
+        connect(m_aiFindSpeakerNamesButton, &QPushButton::clicked, this, [this]() { runAiFindSpeakerNames(); });
+    }
+    if (m_aiFindOrganizationsButton) {
+        connect(m_aiFindOrganizationsButton, &QPushButton::clicked, this, [this]() { runAiFindOrganizations(); });
+    }
+    if (m_aiCleanAssignmentsButton) {
+        connect(m_aiCleanAssignmentsButton, &QPushButton::clicked, this, [this]() { runAiCleanAssignments(); });
+    }
+    if (m_aiLoginButton) {
+        connect(m_aiLoginButton, &QPushButton::clicked, this, [this]() { configureAiGatewayLogin(); });
+    }
+    if (m_aiLogoutButton) {
+        connect(m_aiLogoutButton, &QPushButton::clicked, this, [this]() { clearAiGatewayLogin(); });
+    }
 }
 
 void EditorWindow::setupSpeechFilterControls()
