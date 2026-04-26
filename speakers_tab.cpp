@@ -121,6 +121,27 @@ void SpeakersTab::wire()
         connect(m_widgets.speakerGuideButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerGuideClicked);
     }
+    if (m_widgets.speakerAiFindNamesButton) {
+        m_widgets.speakerAiFindNamesButton->setToolTip(
+            QStringLiteral("Infer likely speaker display names from transcript context."));
+        connect(m_widgets.speakerAiFindNamesButton, &QPushButton::clicked, this, [this]() {
+            runAiFindSpeakerNames();
+        });
+    }
+    if (m_widgets.speakerAiFindOrganizationsButton) {
+        m_widgets.speakerAiFindOrganizationsButton->setToolTip(
+            QStringLiteral("Infer likely organizations/entities mentioned by each speaker."));
+        connect(m_widgets.speakerAiFindOrganizationsButton, &QPushButton::clicked, this, [this]() {
+            runAiFindOrganizations();
+        });
+    }
+    if (m_widgets.speakerAiCleanAssignmentsButton) {
+        m_widgets.speakerAiCleanAssignmentsButton->setToolTip(
+            QStringLiteral("Remove one-off/spurious speaker word assignments with safe reassignment."));
+        connect(m_widgets.speakerAiCleanAssignmentsButton, &QPushButton::clicked, this, [this]() {
+            runAiCleanSpuriousAssignments();
+        });
+    }
     if (m_widgets.speakerFramingTargetXSpin) {
         connect(m_widgets.speakerFramingTargetXSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
                 this, &SpeakersTab::onSpeakerFramingTargetChanged);
@@ -900,6 +921,15 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
     if (m_widgets.speakerGuideButton) {
         m_widgets.speakerGuideButton->setEnabled(true);
+    }
+    if (m_widgets.speakerAiFindNamesButton) {
+        m_widgets.speakerAiFindNamesButton->setEnabled(canEdit);
+    }
+    if (m_widgets.speakerAiFindOrganizationsButton) {
+        m_widgets.speakerAiFindOrganizationsButton->setEnabled(canEdit);
+    }
+    if (m_widgets.speakerAiCleanAssignmentsButton) {
+        m_widgets.speakerAiCleanAssignmentsButton->setEnabled(canEdit);
     }
     if (m_widgets.selectedSpeakerPreviousSentenceButton) {
         m_widgets.selectedSpeakerPreviousSentenceButton->setEnabled(!speakerId.isEmpty());

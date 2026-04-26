@@ -1332,6 +1332,21 @@ QWidget *InspectorPane::buildSpeakersTab()
     boxstreamActionRow->addWidget(m_speakerRunAutoTrackButton);
     boxstreamActionRow->addWidget(m_speakerBoxstreamSettingsButton);
 
+    auto *speakerAiRow = new QHBoxLayout;
+    speakerAiRow->setContentsMargins(0, 0, 0, 0);
+    speakerAiRow->setSpacing(6);
+    m_speakerAiFindNamesButton = new QPushButton(QStringLiteral("Find Names (AI)"), page);
+    m_speakerAiFindOrganizationsButton = new QPushButton(QStringLiteral("Find Organizations"), page);
+    m_speakerAiCleanAssignmentsButton = new QPushButton(QStringLiteral("Clean Assignments"), page);
+    for (QPushButton* button :
+         {m_speakerAiFindNamesButton, m_speakerAiFindOrganizationsButton, m_speakerAiCleanAssignmentsButton}) {
+        button->setMinimumHeight(30);
+        button->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+    }
+    speakerAiRow->addWidget(m_speakerAiFindNamesButton);
+    speakerAiRow->addWidget(m_speakerAiFindOrganizationsButton);
+    speakerAiRow->addWidget(m_speakerAiCleanAssignmentsButton);
+
     auto *stateTitle = new QLabel(QStringLiteral("State"), page);
     stateTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto makeStateChip = [page](const QString& text) {
@@ -1442,6 +1457,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     layout->addLayout(selectedImagesRow);
     layout->addLayout(selectedActionsRow);
     layout->addLayout(boxstreamActionRow);
+    layout->addLayout(speakerAiRow);
     layout->addWidget(stateTitle);
     layout->addLayout(stateChipsRow);
     layout->addWidget(targetTitle);

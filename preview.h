@@ -30,6 +30,23 @@ class QKeyEvent;
 class PreviewWindow final : public QOpenGLWidget, protected QOpenGLFunctions {
     Q_OBJECT
 public:
+    enum class ViewMode {
+        Video = 0,
+        Audio = 1,
+    };
+
+    struct AudioDynamicsSettings {
+        bool normalizeEnabled = false;
+        qreal normalizeTargetDb = -1.0;
+        bool peakReductionEnabled = false;
+        qreal peakThresholdDb = -6.0;
+        bool limiterEnabled = false;
+        qreal limiterThresholdDb = -1.0;
+        bool compressorEnabled = false;
+        qreal compressorThresholdDb = -18.0;
+        qreal compressorRatio = 3.0;
+    };
+
     explicit PreviewWindow(QWidget* parent = nullptr);
     ~PreviewWindow() override;
 
@@ -58,6 +75,10 @@ public:
     void setPreviewZoom(qreal zoom);
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
+    void setViewMode(ViewMode mode);
+    ViewMode viewMode() const { return m_viewMode; }
+    void setAudioDynamicsSettings(const AudioDynamicsSettings& settings);
+    AudioDynamicsSettings audioDynamicsSettings() const { return m_audioDynamics; }
     void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setTitleOverlayInteractionOnly(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
@@ -224,6 +245,9 @@ private:
                               const QList<TimelineClip>& activeAudioClips);
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
+    QVector<qreal> audioWaveformBinsForClip(const TimelineClip& clip, int binCount) const;
+    QVector<qreal> audioWaveformBinsForPath(const QString& mediaPath, int binCount) const;
+    QVector<qreal> applyAudioDynamicsToWaveform(const QVector<qreal>& bins) const;
     void drawSpeakerPickOverlay(QPainter* painter) const;
     QRect fitRect(const QSize& source, const QRect& bounds) const;
     QPointF mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info, const QPointF& normalizedPoint) const;
@@ -251,6 +275,8 @@ private:
     qreal m_audioVolume = 0.8;
     bool m_bypassGrading = false;
     bool m_correctionsEnabled = true;
+    ViewMode m_viewMode = ViewMode::Video;
+    AudioDynamicsSettings m_audioDynamics;
     int64_t m_currentFrame = 0;
     int64_t m_currentSample = 0;
     qreal m_currentFramePosition = 0.0;
@@ -276,6 +302,7 @@ private:
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
+    mutable QHash<QString, QVector<qreal>> m_audioWaveformCache;
     qreal m_previewZoom = 1.0;
     QPointF m_previewPanOffset;
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;

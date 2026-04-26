@@ -562,6 +562,28 @@ QJsonObject EditorWindow::buildStateJson() const
         playbackClockSourceToString(playbackConfig.clockSource);
     root[QStringLiteral("playbackAudioWarpMode")] =
         playbackAudioWarpModeToString(playbackConfig.audioWarpMode);
+    root[QStringLiteral("previewViewMode")] = m_previewViewMode;
+    root[QStringLiteral("aiSelectedModel")] = m_aiSelectedModel;
+    root[QStringLiteral("aiProxyBaseUrl")] = m_aiProxyBaseUrl;
+    root[QStringLiteral("feature_ai_panel")] = m_featureAiPanel;
+    root[QStringLiteral("feature_ai_speaker_cleanup")] = m_featureAiSpeakerCleanup;
+    root[QStringLiteral("feature_audio_preview_mode")] = m_featureAudioPreviewMode;
+    root[QStringLiteral("feature_audio_dynamics_tools")] = m_featureAudioDynamicsTools;
+    root[QStringLiteral("aiUsageBudgetCap")] = m_aiUsageBudgetCap;
+    root[QStringLiteral("aiUsageRequests")] = m_aiUsageRequests;
+    root[QStringLiteral("aiUsageFailures")] = m_aiUsageFailures;
+    root[QStringLiteral("aiRateLimitPerMinute")] = m_aiRateLimitPerMinute;
+    root[QStringLiteral("aiRequestTimeoutMs")] = m_aiRequestTimeoutMs;
+    root[QStringLiteral("aiRequestRetries")] = m_aiRequestRetries;
+    root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
+    root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
+    root[QStringLiteral("audioPeakReductionEnabled")] = m_previewAudioDynamics.peakReductionEnabled;
+    root[QStringLiteral("audioPeakThresholdDb")] = m_previewAudioDynamics.peakThresholdDb;
+    root[QStringLiteral("audioLimiterEnabled")] = m_previewAudioDynamics.limiterEnabled;
+    root[QStringLiteral("audioLimiterThresholdDb")] = m_previewAudioDynamics.limiterThresholdDb;
+    root[QStringLiteral("audioCompressorEnabled")] = m_previewAudioDynamics.compressorEnabled;
+    root[QStringLiteral("audioCompressorThresholdDb")] = m_previewAudioDynamics.compressorThresholdDb;
+    root[QStringLiteral("audioCompressorRatio")] = m_previewAudioDynamics.compressorRatio;
     root[QStringLiteral("timelineZoom")] =
         m_timeline ? m_timeline->timelineZoom() : 4.0;
     root[QStringLiteral("timelineVerticalScroll")] =

@@ -29,11 +29,21 @@ void EditorWindow::bindEditorPaneWidgets(EditorPane *pane)
         m_timecodeLabel->installEventFilter(this);
     }
     m_playbackSpeedCombo = pane->playbackSpeedCombo();
+    m_previewModeCombo = pane->previewModeCombo();
+    m_audioToolsButton = pane->audioToolsButton();
     m_audioMuteButton = pane->audioMuteButton();
     m_audioVolumeSlider = pane->audioVolumeSlider();
     m_audioNowPlayingLabel = pane->audioNowPlayingLabel();
     m_statusBadge = pane->statusBadge();
     m_previewInfo = pane->previewInfo();
+    m_aiStatusLabel = pane->aiStatusLabel();
+    m_aiModelCombo = pane->aiModelCombo();
+    m_aiTranscribeButton = pane->aiTranscribeButton();
+    m_aiFindSpeakerNamesButton = pane->aiFindSpeakerNamesButton();
+    m_aiFindOrganizationsButton = pane->aiFindOrganizationsButton();
+    m_aiCleanAssignmentsButton = pane->aiCleanAssignmentsButton();
+    m_aiLoginButton = pane->aiLoginButton();
+    m_aiLogoutButton = pane->aiLogoutButton();
 }
 
 void EditorWindow::connectTransportControls(EditorPane *pane)
@@ -58,6 +68,12 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
     connect(pane, &EditorPane::playbackSpeedChanged, this, [this](double speed) {
         setPlaybackSpeed(speed);
     });
+    connect(pane, &EditorPane::previewModeChanged, this, [this](const QString& mode) {
+        applyPreviewViewMode(mode);
+    });
+    connect(pane, &EditorPane::audioToolsClicked, this, [this]() {
+        openAudioToolsDialog();
+    });
     connect(pane, &EditorPane::audioMuteClicked, this, [this]() {
         const bool nextMuted = !m_preview->audioMuted();
         m_preview->setAudioMuted(nextMuted);
@@ -75,6 +91,17 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
             m_timeline->setToolMode(checked ? TimelineWidget::ToolMode::Razor
                                             : TimelineWidget::ToolMode::Select);
     });
+
+    connect(pane, &EditorPane::aiModelChanged, this, [this](const QString& model) {
+        m_aiSelectedModel = model.trimmed();
+        scheduleSaveState();
+    });
+    connect(pane, &EditorPane::aiTranscribeClicked, this, [this]() { runAiTranscribeForSelection(); });
+    connect(pane, &EditorPane::aiFindSpeakerNamesClicked, this, [this]() { runAiFindSpeakerNames(); });
+    connect(pane, &EditorPane::aiFindOrganizationsClicked, this, [this]() { runAiFindOrganizations(); });
+    connect(pane, &EditorPane::aiCleanAssignmentsClicked, this, [this]() { runAiCleanAssignments(); });
+    connect(pane, &EditorPane::aiLoginClicked, this, [this]() { configureAiGatewayLogin(); });
+    connect(pane, &EditorPane::aiLogoutClicked, this, [this]() { clearAiGatewayLogin(); });
 }
 
 void EditorWindow::connectTimelineSignals()

@@ -233,7 +233,9 @@ void PreviewWindow::paintGL() {
     painter.setRenderHint(QPainter::Antialiasing, true);
     bool drewAnyFrame = false;
     bool waitingForFrame = false;
-    renderCompositedPreviewGL(compositeRect, activeClips, drewAnyFrame, waitingForFrame);
+    if (m_viewMode == ViewMode::Video) {
+        renderCompositedPreviewGL(compositeRect, activeClips, drewAnyFrame, waitingForFrame);
+    }
     drawCompositedPreviewOverlay(&painter, safeRect, compositeRect, activeClips, drewAnyFrame, waitingForFrame);
     drawPreviewChrome(&painter, safeRect, activeClips.size());
 

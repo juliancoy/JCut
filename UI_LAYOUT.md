@@ -51,3 +51,23 @@ This prevents the tab rail from growing so wide it crowds the inspector content.
 
 - These constraints are intentionally simple and global.
 - If future UX requires more flexibility, update this file and keep limits explicit.
+
+## AI + Audio Controls Placement
+
+- AI panel remains in preview bottom-right, but only as a compact block:
+  - Status line
+  - Model selector
+  - Two rows of actions
+- Audio controls in transport remain compact:
+  - `Preview: Video|Audio` combo
+  - `FX` button
+
+### Feature-flag behavior
+
+When disabled by project flags, controls remain visible but disabled with explicit tooltip reason:
+- `feature_ai_panel`
+- `feature_ai_speaker_cleanup`
+- `feature_audio_preview_mode`
+- `feature_audio_dynamics_tools`
+
+This keeps spatial consistency while making gating obvious.

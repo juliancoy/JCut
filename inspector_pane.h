@@ -105,6 +105,9 @@ public:
     QPushButton *speakerDisableTrackingButton() const { return m_speakerDisableTrackingButton; }
     QPushButton *speakerDeletePointstreamButton() const { return m_speakerDeletePointstreamButton; }
     QPushButton *speakerGuideButton() const { return m_speakerGuideButton; }
+    QPushButton *speakerAiFindNamesButton() const { return m_speakerAiFindNamesButton; }
+    QPushButton *speakerAiFindOrganizationsButton() const { return m_speakerAiFindOrganizationsButton; }
+    QPushButton *speakerAiCleanAssignmentsButton() const { return m_speakerAiCleanAssignmentsButton; }
     QLabel *speakerTrackingStatusLabel() const { return m_speakerTrackingStatusLabel; }
     QDoubleSpinBox *speakerFramingTargetXSpin() const { return m_speakerFramingTargetXSpin; }
     QDoubleSpinBox *speakerFramingTargetYSpin() const { return m_speakerFramingTargetYSpin; }
@@ -499,6 +502,9 @@ private:
     QPushButton *m_speakerDisableTrackingButton = nullptr;
     QPushButton *m_speakerDeletePointstreamButton = nullptr;
     QPushButton *m_speakerGuideButton = nullptr;
+    QPushButton *m_speakerAiFindNamesButton = nullptr;
+    QPushButton *m_speakerAiFindOrganizationsButton = nullptr;
+    QPushButton *m_speakerAiCleanAssignmentsButton = nullptr;
     QLabel *m_speakerTrackingStatusLabel = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetXSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;

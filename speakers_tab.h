@@ -42,6 +42,9 @@ public:
         QPushButton* speakerDisableTrackingButton = nullptr;
         QPushButton* speakerDeletePointstreamButton = nullptr;
         QPushButton* speakerGuideButton = nullptr;
+        QPushButton* speakerAiFindNamesButton = nullptr;
+        QPushButton* speakerAiFindOrganizationsButton = nullptr;
+        QPushButton* speakerAiCleanAssignmentsButton = nullptr;
         QLabel* speakerTrackingStatusLabel = nullptr;
         QDoubleSpinBox* speakerFramingTargetXSpin = nullptr;
         QDoubleSpinBox* speakerFramingTargetYSpin = nullptr;
@@ -70,6 +73,9 @@ public:
     void refresh();
     bool handlePreviewPoint(const QString& clipId, qreal xNorm, qreal yNorm);
     bool handlePreviewBox(const QString& clipId, qreal xNorm, qreal yNorm, qreal boxSizeNorm);
+    bool runAiFindSpeakerNames();
+    bool runAiFindOrganizations();
+    bool runAiCleanSpuriousAssignments();
 
 signals:
     void transcriptDocumentChanged();

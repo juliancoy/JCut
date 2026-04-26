@@ -181,6 +181,7 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
                   QStringLiteral("clips=%1 cache=%2").arg(clips.size()).arg(m_cache != nullptr));
     m_clips = clips;
     m_transcriptSectionsCache.clear();
+    m_audioWaveformCache.clear();
     QSet<QString> visualClipIds;
     for (const auto& clip : clips) {
         if (clipVisualPlaybackEnabled(clip, m_tracks)) visualClipIds.insert(clip.id);
@@ -306,6 +307,19 @@ void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
         return;
     }
     m_showSpeakerTrackBoxes = show;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setViewMode(ViewMode mode) {
+    if (m_viewMode == mode) {
+        return;
+    }
+    m_viewMode = mode;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setAudioDynamicsSettings(const AudioDynamicsSettings& settings) {
+    m_audioDynamics = settings;
     scheduleRepaint();
 }
 

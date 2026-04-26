@@ -51,6 +51,8 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
+#include <QTcpServer>
+#include <QVector>
 
 #include <atomic>
 #include <memory>
@@ -187,6 +189,23 @@ private:
     RenderRequest buildRenderRequestFromOutputControls() const;
     void renderTimelineFromOutputRequest(const RenderRequest &request);
     void exportVideoForSpeakersOnSelectedClip(const QStringList& speakerIds);
+    void openAudioToolsDialog();
+    void applyPreviewViewMode(const QString& modeText);
+    void refreshAiIntegrationState();
+    void configureAiGatewayLogin();
+    void clearAiGatewayLogin();
+    QString aiSecureStoreServiceName() const;
+    bool readAiTokenFromSecureStore(QString* tokenOut) const;
+    bool writeAiTokenToSecureStore(const QString& token, QString* errorOut = nullptr) const;
+    bool clearAiTokenFromSecureStore(QString* errorOut = nullptr) const;
+    void startAiBrowserLogin(const QString& gatewayBaseUrl);
+    bool exchangeAiAuthCode(const QString& code, const QString& state, QString* errorOut = nullptr);
+    void runAiTranscribeForSelection();
+    void runAiFindSpeakerNames();
+    void runAiFindOrganizations();
+    void runAiCleanAssignments();
+    QJsonObject buildAiProjectContext() const;
+    QJsonObject runAiAction(const QString& action, const QJsonObject& payload, bool* okOut = nullptr, QString* errorOut = nullptr);
     void refreshProfileInspector();
     void runDecodeBenchmarkFromProfile();
     bool profileBenchmarkClip(TimelineClip *out) const;
@@ -264,6 +283,16 @@ private:
     QSlider *m_seekSlider = nullptr;
     QLabel *m_timecodeLabel = nullptr;
     QComboBox *m_playbackSpeedCombo = nullptr;
+    QComboBox *m_previewModeCombo = nullptr;
+    QToolButton *m_audioToolsButton = nullptr;
+    QLabel *m_aiStatusLabel = nullptr;
+    QComboBox *m_aiModelCombo = nullptr;
+    QPushButton *m_aiTranscribeButton = nullptr;
+    QPushButton *m_aiFindSpeakerNamesButton = nullptr;
+    QPushButton *m_aiFindOrganizationsButton = nullptr;
+    QPushButton *m_aiCleanAssignmentsButton = nullptr;
+    QPushButton *m_aiLoginButton = nullptr;
+    QPushButton *m_aiLogoutButton = nullptr;
 
     QToolButton *m_audioMuteButton = nullptr;
     QSlider *m_audioVolumeSlider = nullptr;
@@ -494,6 +523,33 @@ private:
     QJsonObject m_liveRenderProfile;
     QJsonObject m_lastRenderProfile;
     bool m_correctionsEnabled = true;
+    PreviewWindow::AudioDynamicsSettings m_previewAudioDynamics;
+    QString m_previewViewMode = QStringLiteral("video");
+    bool m_aiIntegrationEnabled = false;
+    QString m_aiIntegrationStatus;
+    QString m_aiServiceUrl;
+    QString m_aiProxyBaseUrl;
+    QString m_aiAuthToken;
+    QString m_aiUserId;
+    std::unique_ptr<QTcpServer> m_aiAuthCallbackServer;
+    quint16 m_aiAuthCallbackPort = 0;
+    QString m_aiAuthState;
+    QString m_aiAuthCodeVerifier;
+    QString m_aiAuthRedirectUri;
+    QString m_aiSelectedModel = QStringLiteral("deepseek-chat");
+    QString m_aiContractVersion = QStringLiteral("unknown");
+    bool m_featureAiPanel = true;
+    bool m_featureAiSpeakerCleanup = true;
+    bool m_featureAudioPreviewMode = true;
+    bool m_featureAudioDynamicsTools = true;
+    int m_aiUsageBudgetCap = 200;
+    int m_aiUsageRequests = 0;
+    int m_aiUsageFailures = 0;
+    int m_aiRateLimitPerMinute = 12;
+    int m_aiRequestTimeoutMs = 15000;
+    int m_aiRequestRetries = 1;
+    QStringList m_aiFallbackModels;
+    QVector<qint64> m_aiRecentRequestEpochMs;
 
     bool m_updatingTranscriptInspector = false;
     bool m_updatingSyncInspector = false;
