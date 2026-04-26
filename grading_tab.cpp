@@ -1,5 +1,6 @@
 #include "grading_tab.h"
 #include "clip_serialization.h"
+#include "decoder_context.h"
 #include "editor_shared.h"
 #include "grading_histogram_widget.h"
 #include "keyframe_table_shared.h"
@@ -10,16 +11,177 @@
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QApplication>
+#include <QCoreApplication>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QColor>
 #include <QImage>
+#include <QFormLayout>
+#include <QSpinBox>
 #include <cmath>
+
+namespace {
+
+struct GradeProbeSample {
+    int64_t localFrame = 0;
+    double lumaMean = 0.0;
+    double saturationMean = 0.0;
+    double contrastSpread = 0.0;
+};
+
+struct OpposeGradeEvent {
+    int64_t localFrame = 0;
+    double brightnessDelta = 0.0;
+    double contrastMul = 1.0;
+    double saturationMul = 1.0;
+};
+
+bool probeFrameGradeStats(const QImage& image, GradeProbeSample* outSample)
+{
+    if (!outSample || image.isNull()) {
+        return false;
+    }
+    const QImage rgba = image.convertToFormat(QImage::Format_RGBA8888);
+    if (rgba.isNull() || rgba.width() <= 0 || rgba.height() <= 0) {
+        return false;
+    }
+
+    const int width = rgba.width();
+    const int height = rgba.height();
+    const int pixelCount = width * height;
+    const int step =
+        qMax(1, static_cast<int>(std::sqrt(static_cast<double>(qMax(1, pixelCount / 32000)))));
+
+    double sumLuma = 0.0;
+    double sumSat = 0.0;
+    double sumLumaSq = 0.0;
+    int samples = 0;
+    for (int y = 0; y < height; y += step) {
+        const uchar* row = rgba.constScanLine(y);
+        for (int x = 0; x < width; x += step) {
+            const int idx = x * 4;
+            const double r = static_cast<double>(row[idx]) / 255.0;
+            const double g = static_cast<double>(row[idx + 1]) / 255.0;
+            const double b = static_cast<double>(row[idx + 2]) / 255.0;
+            const double luma = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+            const double maxv = qMax(r, qMax(g, b));
+            const double minv = qMin(r, qMin(g, b));
+            const double sat = maxv - minv;
+            sumLuma += luma;
+            sumLumaSq += luma * luma;
+            sumSat += sat;
+            ++samples;
+        }
+    }
+    if (samples <= 0) {
+        return false;
+    }
+
+    const double invCount = 1.0 / static_cast<double>(samples);
+    outSample->lumaMean = sumLuma * invCount;
+    outSample->saturationMean = sumSat * invCount;
+    const double varLuma = qMax(0.0, (sumLumaSq * invCount) - (outSample->lumaMean * outSample->lumaMean));
+    outSample->contrastSpread = std::sqrt(varLuma);
+    return true;
+}
+
+QVector<OpposeGradeEvent> detectOpposeGradeEvents(const QVector<GradeProbeSample>& samples,
+                                                  int minFrameGap,
+                                                  int maxEvents,
+                                                  double jumpLumaThreshold,
+                                                  double jumpSaturationThreshold,
+                                                  double jumpContrastThreshold,
+                                                  double brightnessStrength)
+{
+    QVector<OpposeGradeEvent> events;
+    if (samples.size() < 2) {
+        return events;
+    }
+
+    const int gap = qMax(1, minFrameGap);
+    int64_t lastEventFrame = -1000000;
+
+    double targetLuma = samples.constFirst().lumaMean;
+    double targetSat = samples.constFirst().saturationMean;
+    double targetSpread = samples.constFirst().contrastSpread;
+
+    for (int i = 1; i < samples.size(); ++i) {
+        const GradeProbeSample& previous = samples.at(i - 1);
+        const GradeProbeSample& current = samples.at(i);
+
+        const double jumpLuma = std::abs(current.lumaMean - previous.lumaMean);
+        const double jumpSat = std::abs(current.saturationMean - previous.saturationMean);
+        const double jumpSpread = std::abs(current.contrastSpread - previous.contrastSpread);
+        const bool majorJump = (jumpLuma >= jumpLumaThreshold) ||
+                               (jumpSat >= jumpSaturationThreshold) ||
+                               (jumpSpread >= jumpContrastThreshold);
+        if (!majorJump) {
+            targetLuma = (targetLuma * 0.96) + (current.lumaMean * 0.04);
+            targetSat = (targetSat * 0.96) + (current.saturationMean * 0.04);
+            targetSpread = (targetSpread * 0.96) + (current.contrastSpread * 0.04);
+            continue;
+        }
+
+        if (current.localFrame - lastEventFrame < gap) {
+            continue;
+        }
+
+        OpposeGradeEvent event;
+        event.localFrame = current.localFrame;
+        event.brightnessDelta =
+            qBound(-2.0, -(current.lumaMean - targetLuma) * brightnessStrength, 2.0);
+        event.saturationMul = qBound(0.45, targetSat / qMax(0.03, current.saturationMean), 2.2);
+        event.contrastMul = qBound(0.50, targetSpread / qMax(0.02, current.contrastSpread), 2.0);
+
+        const bool hasMeaningfulAdjustment = std::abs(event.brightnessDelta) >= 0.04 ||
+                                             std::abs(event.contrastMul - 1.0) >= 0.06 ||
+                                             std::abs(event.saturationMul - 1.0) >= 0.06;
+        if (!hasMeaningfulAdjustment) {
+            continue;
+        }
+
+        events.push_back(event);
+        lastEventFrame = current.localFrame;
+        if (events.size() >= maxEvents) {
+            break;
+        }
+    }
+    return events;
+}
+
+bool comboHasAlphaItem(const QComboBox* combo)
+{
+    return combo && combo->findText(QStringLiteral("Alpha")) >= 0;
+}
+
+bool comboAlphaSelected(const QComboBox* combo)
+{
+    if (!combo) {
+        return false;
+    }
+    const int idx = combo->currentIndex();
+    return idx >= 0 && combo->itemText(idx).compare(QStringLiteral("Alpha"), Qt::CaseInsensitive) == 0;
+}
+
+void setToneSpinGroupVisible(QDoubleSpinBox* r, QDoubleSpinBox* g, QDoubleSpinBox* b, int channelIndex)
+{
+    if (r) r->setVisible(channelIndex == 0);
+    if (g) g->setVisible(channelIndex == 1);
+    if (b) b->setVisible(channelIndex == 2);
+}
+
+} // namespace
 
 GradingTab::GradingTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : KeyframeTabBase(deps, parent)
     , m_widgets(widgets)
     , m_gradingDeps(deps)
 {
+    m_curvePointsR = defaultGradingCurvePoints();
+    m_curvePointsG = defaultGradingCurvePoints();
+    m_curvePointsB = defaultGradingCurvePoints();
+    m_curvePointsLuma = defaultGradingCurvePoints();
     m_deferredSeekTimer.setSingleShot(true);
     connect(&m_deferredSeekTimer, &QTimer::timeout, this, [this]() {
         if (m_pendingSeekTimelineFrame < 0 || !m_deps.seekToTimelineFrame) {
@@ -79,12 +241,24 @@ void GradingTab::wire()
         connect(m_widgets.gradingKeyAtPlayheadButton, &QPushButton::clicked,
                 this, &GradingTab::onKeyAtPlayheadClicked);
     }
+    if (m_widgets.gradingAutoOpposeButton) {
+        connect(m_widgets.gradingAutoOpposeButton, &QPushButton::clicked,
+                this, &GradingTab::onAutoOpposeGradeChangesClicked);
+    }
     if (m_widgets.gradingCurveChannelCombo) {
         connect(m_widgets.gradingCurveChannelCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, &GradingTab::onCurveChannelChanged);
     }
+    if (m_widgets.gradingCurveThreePointLockCheckBox) {
+        connect(m_widgets.gradingCurveThreePointLockCheckBox, &QCheckBox::toggled,
+                this, &GradingTab::onCurveThreePointLockToggled);
+    }
+    if (m_widgets.gradingCurveSmoothingCheckBox) {
+        connect(m_widgets.gradingCurveSmoothingCheckBox, &QCheckBox::toggled,
+                this, &GradingTab::onCurveSmoothingToggled);
+    }
     if (m_widgets.gradingHistogramWidget) {
-        connect(m_widgets.gradingHistogramWidget, &GradingHistogramWidget::curveAdjusted,
+        connect(m_widgets.gradingHistogramWidget, &GradingHistogramWidget::curvePointsAdjusted,
                 this, &GradingTab::onCurveAdjusted);
     }
     if (m_widgets.gradingKeyframeTable) {
@@ -128,6 +302,8 @@ void GradingTab::refresh()
     QSignalBlocker highlightsRBlock(m_widgets.highlightsRSpin);
     QSignalBlocker highlightsGBlock(m_widgets.highlightsGSpin);
     QSignalBlocker highlightsBBlock(m_widgets.highlightsBSpin);
+    QSignalBlocker curveLockBlock(m_widgets.gradingCurveThreePointLockCheckBox);
+    QSignalBlocker curveSmoothingBlock(m_widgets.gradingCurveSmoothingCheckBox);
     QSignalBlocker tableBlocker(m_widgets.gradingKeyframeTable);
 
     m_widgets.gradingKeyframeTable->clearContents();
@@ -149,6 +325,18 @@ void GradingTab::refresh()
         if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(0.0);
         if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(0.0);
         if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(0.0);
+        m_curvePointsR = defaultGradingCurvePoints();
+        m_curvePointsG = defaultGradingCurvePoints();
+        m_curvePointsB = defaultGradingCurvePoints();
+        m_curvePointsLuma = defaultGradingCurvePoints();
+        m_curveThreePointLock = false;
+        m_curveSmoothingEnabled = true;
+        if (m_widgets.gradingCurveThreePointLockCheckBox) {
+            m_widgets.gradingCurveThreePointLockCheckBox->setChecked(m_curveThreePointLock);
+        }
+        if (m_widgets.gradingCurveSmoothingCheckBox) {
+            m_widgets.gradingCurveSmoothingCheckBox->setChecked(m_curveSmoothingEnabled);
+        }
         m_selectedKeyframeFrame = -1;
         m_selectedKeyframeFrames.clear();
         updateHistogramAndCurve(true);
@@ -194,6 +382,12 @@ void GradingTab::refresh()
         displayed.highlightsR = keyframe.highlightsR;
         displayed.highlightsG = keyframe.highlightsG;
         displayed.highlightsB = keyframe.highlightsB;
+        displayed.curvePointsR = keyframe.curvePointsR;
+        displayed.curvePointsG = keyframe.curvePointsG;
+        displayed.curvePointsB = keyframe.curvePointsB;
+        displayed.curvePointsLuma = keyframe.curvePointsLuma;
+        displayed.curveThreePointLock = keyframe.curveThreePointLock;
+        displayed.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
         displayed.linearInterpolation = keyframe.linearInterpolation;
     }
     updateSpinBoxesFromKeyframe(displayed);
@@ -235,6 +429,12 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
         keyframe.highlightsR = m_widgets.highlightsRSpin ? m_widgets.highlightsRSpin->value() : 0.0;
         keyframe.highlightsG = m_widgets.highlightsGSpin ? m_widgets.highlightsGSpin->value() : 0.0;
         keyframe.highlightsB = m_widgets.highlightsBSpin ? m_widgets.highlightsBSpin->value() : 0.0;
+        keyframe.curvePointsR = sanitizeGradingCurvePoints(m_curvePointsR);
+        keyframe.curvePointsG = sanitizeGradingCurvePoints(m_curvePointsG);
+        keyframe.curvePointsB = sanitizeGradingCurvePoints(m_curvePointsB);
+        keyframe.curvePointsLuma = sanitizeGradingCurvePoints(m_curvePointsLuma);
+        keyframe.curveThreePointLock = m_curveThreePointLock;
+        keyframe.curveSmoothingEnabled = m_curveSmoothingEnabled;
         keyframe.linearInterpolation = true;
 
         bool replaced = false;
@@ -342,6 +542,12 @@ void GradingTab::syncTableToPlayhead()
                 displayed.highlightsR = keyframe.highlightsR;
                 displayed.highlightsG = keyframe.highlightsG;
                 displayed.highlightsB = keyframe.highlightsB;
+                displayed.curvePointsR = keyframe.curvePointsR;
+                displayed.curvePointsG = keyframe.curvePointsG;
+                displayed.curvePointsB = keyframe.curvePointsB;
+                displayed.curvePointsLuma = keyframe.curvePointsLuma;
+                displayed.curveThreePointLock = keyframe.curveThreePointLock;
+                displayed.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
                 displayed.linearInterpolation = keyframe.linearInterpolation;
                 break;
             }
@@ -371,6 +577,213 @@ void GradingTab::onFollowCurrentToggled(bool checked)
 void GradingTab::onKeyAtPlayheadClicked()
 {
     upsertKeyframeAtPlayhead();
+}
+
+bool GradingTab::configureAutoOpposeSettings(AutoOpposeSettings* settings)
+{
+    if (!settings) {
+        return false;
+    }
+
+    QDialog dialog;
+    dialog.setWindowTitle(QStringLiteral("Auto Oppose Grade Changes"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout();
+    layout->addLayout(form);
+
+    auto* sampleTargetSpin = new QSpinBox(&dialog);
+    sampleTargetSpin->setRange(30, 2000);
+    sampleTargetSpin->setValue(settings->sampleTarget);
+    sampleTargetSpin->setSuffix(QStringLiteral(" samples"));
+
+    auto* minEventGapSpin = new QSpinBox(&dialog);
+    minEventGapSpin->setRange(1, 300);
+    minEventGapSpin->setValue(settings->minEventGapFrames);
+    minEventGapSpin->setSuffix(QStringLiteral(" frames"));
+
+    auto* maxEventsSpin = new QSpinBox(&dialog);
+    maxEventsSpin->setRange(1, 200);
+    maxEventsSpin->setValue(settings->maxEvents);
+
+    auto* lumaJumpSpin = new QDoubleSpinBox(&dialog);
+    lumaJumpSpin->setRange(0.01, 0.5);
+    lumaJumpSpin->setDecimals(3);
+    lumaJumpSpin->setSingleStep(0.01);
+    lumaJumpSpin->setValue(settings->jumpLumaThreshold);
+
+    auto* satJumpSpin = new QDoubleSpinBox(&dialog);
+    satJumpSpin->setRange(0.01, 0.5);
+    satJumpSpin->setDecimals(3);
+    satJumpSpin->setSingleStep(0.01);
+    satJumpSpin->setValue(settings->jumpSaturationThreshold);
+
+    auto* contrastJumpSpin = new QDoubleSpinBox(&dialog);
+    contrastJumpSpin->setRange(0.01, 0.5);
+    contrastJumpSpin->setDecimals(3);
+    contrastJumpSpin->setSingleStep(0.01);
+    contrastJumpSpin->setValue(settings->jumpContrastThreshold);
+
+    auto* brightnessStrengthSpin = new QDoubleSpinBox(&dialog);
+    brightnessStrengthSpin->setRange(0.5, 6.0);
+    brightnessStrengthSpin->setDecimals(2);
+    brightnessStrengthSpin->setSingleStep(0.1);
+    brightnessStrengthSpin->setValue(settings->brightnessStrength);
+
+    form->addRow(QStringLiteral("Analysis Density"), sampleTargetSpin);
+    form->addRow(QStringLiteral("Min Event Gap"), minEventGapSpin);
+    form->addRow(QStringLiteral("Max Events"), maxEventsSpin);
+    form->addRow(QStringLiteral("Luma Jump Threshold"), lumaJumpSpin);
+    form->addRow(QStringLiteral("Saturation Jump Threshold"), satJumpSpin);
+    form->addRow(QStringLiteral("Contrast Jump Threshold"), contrastJumpSpin);
+    form->addRow(QStringLiteral("Brightness Oppose Strength"), brightnessStrengthSpin);
+
+    auto* buttons =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+
+    settings->sampleTarget = sampleTargetSpin->value();
+    settings->minEventGapFrames = minEventGapSpin->value();
+    settings->maxEvents = maxEventsSpin->value();
+    settings->jumpLumaThreshold = lumaJumpSpin->value();
+    settings->jumpSaturationThreshold = satJumpSpin->value();
+    settings->jumpContrastThreshold = contrastJumpSpin->value();
+    settings->brightnessStrength = brightnessStrengthSpin->value();
+    return true;
+}
+
+void GradingTab::onAutoOpposeGradeChangesClicked()
+{
+    if (m_updating) {
+        return;
+    }
+    const TimelineClip* selectedClip = m_deps.getSelectedClip();
+    if (!selectedClip || !m_deps.clipHasVisuals(*selectedClip)) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Auto Oppose Grade Changes"),
+                                 QStringLiteral("Select a visual clip first."));
+        return;
+    }
+    if (selectedClip->mediaType == ClipMediaType::Title) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Auto Oppose Grade Changes"),
+                                 QStringLiteral("This tool works on decoded media clips, not generated titles."));
+        return;
+    }
+
+    AutoOpposeSettings settings = m_autoOpposeSettings;
+    if (!configureAutoOpposeSettings(&settings)) {
+        return;
+    }
+    m_autoOpposeSettings = settings;
+
+    const int64_t duration = qMax<int64_t>(1, selectedClip->durationFrames);
+    const int targetSamples = qMax(30, settings.sampleTarget);
+    const int sampleStep = qMax<int>(1, static_cast<int>(duration / targetSamples));
+    const int minEventGap = qMax(1, settings.minEventGapFrames);
+    const int maxEvents = qMax(1, settings.maxEvents);
+
+    editor::DecoderContext decoder(m_deps.getClipFilePath(*selectedClip));
+    if (!decoder.initialize()) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Auto Oppose Grade Changes"),
+                             QStringLiteral("Could not initialize decoder for this clip."));
+        return;
+    }
+
+    QVector<GradeProbeSample> samples;
+    samples.reserve(targetSamples + 4);
+    for (int64_t localFrame = 0; localFrame < duration; localFrame += sampleStep) {
+        const int64_t timelineFrame = selectedClip->startFrame + localFrame;
+        const int64_t sourceFrame =
+            sourceFrameForClipAtTimelinePosition(*selectedClip, static_cast<qreal>(timelineFrame), {});
+        const editor::FrameHandle frame = decoder.decodeFrame(sourceFrame);
+        if (frame.isNull() || !frame.hasCpuImage()) {
+            continue;
+        }
+        GradeProbeSample sample;
+        sample.localFrame = localFrame;
+        if (!probeFrameGradeStats(frame.cpuImage(), &sample)) {
+            continue;
+        }
+        samples.push_back(sample);
+        if (QCoreApplication::instance()) {
+            QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 2);
+        }
+    }
+
+    if (samples.size() < 2) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Auto Oppose Grade Changes"),
+                                 QStringLiteral("Not enough decodable frames were available for analysis."));
+        return;
+    }
+
+    const QVector<OpposeGradeEvent> events =
+        detectOpposeGradeEvents(samples,
+                                minEventGap,
+                                maxEvents,
+                                settings.jumpLumaThreshold,
+                                settings.jumpSaturationThreshold,
+                                settings.jumpContrastThreshold,
+                                settings.brightnessStrength);
+    if (events.isEmpty()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Auto Oppose Grade Changes"),
+                                 QStringLiteral("No major grade-change events were detected."));
+        return;
+    }
+
+    const bool updated = m_deps.updateClipById(selectedClip->id, [events](TimelineClip& clip) {
+        auto upsertKeyframe = [](QVector<TimelineClip::GradingKeyframe>& keyframes,
+                                 const TimelineClip::GradingKeyframe& incoming) {
+            for (TimelineClip::GradingKeyframe& existing : keyframes) {
+                if (existing.frame == incoming.frame) {
+                    existing = incoming;
+                    return;
+                }
+            }
+            keyframes.push_back(incoming);
+        };
+
+        for (const OpposeGradeEvent& event : events) {
+            const int64_t timelineFrame = clip.startFrame + event.localFrame;
+            TimelineClip::GradingKeyframe key = evaluateClipGradingAtFrame(clip, timelineFrame);
+            key.frame = qBound<int64_t>(0, event.localFrame, qMax<int64_t>(0, clip.durationFrames - 1));
+            key.brightness = qBound<qreal>(-10.0, key.brightness + event.brightnessDelta, 10.0);
+            key.contrast = qBound<qreal>(0.05, key.contrast * event.contrastMul, 10.0);
+            key.saturation = qBound<qreal>(0.0, key.saturation * event.saturationMul, 10.0);
+            upsertKeyframe(clip.gradingKeyframes, key);
+        }
+        normalizeClipGradingKeyframes(clip);
+    });
+
+    if (!updated) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Auto Oppose Grade Changes"),
+                             QStringLiteral("Failed to apply generated grading keyframes."));
+        return;
+    }
+
+    m_selectedKeyframeFrame = events.constFirst().localFrame;
+    m_selectedKeyframeFrames = {m_selectedKeyframeFrame};
+    if (m_deps.setPreviewTimelineClips) {
+        m_deps.setPreviewTimelineClips();
+    }
+    refresh();
+    m_deps.scheduleSaveState();
+    m_deps.pushHistorySnapshot();
+
+    QMessageBox::information(
+        nullptr,
+        QStringLiteral("Auto Oppose Grade Changes"),
+        QStringLiteral("Detected %1 major grade-change events and generated opposing keyframes.")
+            .arg(events.size()));
 }
 
 void GradingTab::onTableSelectionChanged()
@@ -421,6 +834,12 @@ void GradingTab::onTableSelectionChanged()
                 displayed.highlightsR = keyframe.highlightsR;
                 displayed.highlightsG = keyframe.highlightsG;
                 displayed.highlightsB = keyframe.highlightsB;
+                displayed.curvePointsR = keyframe.curvePointsR;
+                displayed.curvePointsG = keyframe.curvePointsG;
+                displayed.curvePointsB = keyframe.curvePointsB;
+                displayed.curvePointsLuma = keyframe.curvePointsLuma;
+                displayed.curveThreePointLock = keyframe.curveThreePointLock;
+                displayed.curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
                 displayed.linearInterpolation = keyframe.linearInterpolation;
                 break;
             }
@@ -477,6 +896,12 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
     edited.highlightsR = 0.0;
     edited.highlightsG = 0.0;
     edited.highlightsB = 0.0;
+    edited.curvePointsR = defaultGradingCurvePoints();
+    edited.curvePointsG = defaultGradingCurvePoints();
+    edited.curvePointsB = defaultGradingCurvePoints();
+    edited.curvePointsLuma = defaultGradingCurvePoints();
+    edited.curveThreePointLock = false;
+    edited.curveSmoothingEnabled = true;
 
     edited.frame = qBound<int64_t>(0, edited.frame, qMax<int64_t>(0, selectedClip->durationFrames - 1));
     const int64_t originalFrame = changedItem->data(Qt::UserRole).toLongLong();
@@ -502,6 +927,12 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
             edited.highlightsR = originalKeyframe.highlightsR;
             edited.highlightsG = originalKeyframe.highlightsG;
             edited.highlightsB = originalKeyframe.highlightsB;
+            edited.curvePointsR = originalKeyframe.curvePointsR;
+            edited.curvePointsG = originalKeyframe.curvePointsG;
+            edited.curvePointsB = originalKeyframe.curvePointsB;
+            edited.curvePointsLuma = originalKeyframe.curvePointsLuma;
+            edited.curveThreePointLock = originalKeyframe.curveThreePointLock;
+            edited.curveSmoothingEnabled = originalKeyframe.curveSmoothingEnabled;
         }
 
         bool replaced = false;
@@ -653,6 +1084,12 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
     result.shadowsR = 0.0; result.shadowsG = 0.0; result.shadowsB = 0.0;
     result.midtonesR = 0.0; result.midtonesG = 0.0; result.midtonesB = 0.0;
     result.highlightsR = 0.0; result.highlightsG = 0.0; result.highlightsB = 0.0;
+    result.curvePointsR = defaultGradingCurvePoints();
+    result.curvePointsG = defaultGradingCurvePoints();
+    result.curvePointsB = defaultGradingCurvePoints();
+    result.curvePointsLuma = defaultGradingCurvePoints();
+    result.curveThreePointLock = false;
+    result.curveSmoothingEnabled = true;
     result.linearInterpolation = true;
 
     if (clip.gradingKeyframes.isEmpty()) {
@@ -677,6 +1114,12 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.shadowsR = kf.shadowsR; result.shadowsG = kf.shadowsG; result.shadowsB = kf.shadowsB;
         result.midtonesR = kf.midtonesR; result.midtonesG = kf.midtonesG; result.midtonesB = kf.midtonesB;
         result.highlightsR = kf.highlightsR; result.highlightsG = kf.highlightsG; result.highlightsB = kf.highlightsB;
+        result.curvePointsR = kf.curvePointsR;
+        result.curvePointsG = kf.curvePointsG;
+        result.curvePointsB = kf.curvePointsB;
+        result.curvePointsLuma = kf.curvePointsLuma;
+        result.curveThreePointLock = kf.curveThreePointLock;
+        result.curveSmoothingEnabled = kf.curveSmoothingEnabled;
         result.linearInterpolation = kf.linearInterpolation;
         return result;
     }
@@ -691,6 +1134,12 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
         result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
         result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
+        result.curvePointsR = before.curvePointsR;
+        result.curvePointsG = before.curvePointsG;
+        result.curvePointsB = before.curvePointsB;
+        result.curvePointsLuma = before.curvePointsLuma;
+        result.curveThreePointLock = before.curveThreePointLock;
+        result.curveSmoothingEnabled = before.curveSmoothingEnabled;
         result.linearInterpolation = before.linearInterpolation;
         return result;
     }
@@ -707,6 +1156,12 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
         result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
         result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
+        result.curvePointsR = before.curvePointsR;
+        result.curvePointsG = before.curvePointsG;
+        result.curvePointsB = before.curvePointsB;
+        result.curvePointsLuma = before.curvePointsLuma;
+        result.curveThreePointLock = before.curveThreePointLock;
+        result.curveSmoothingEnabled = before.curveSmoothingEnabled;
         result.linearInterpolation = before.linearInterpolation;
         return result;
     }
@@ -720,6 +1175,12 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
         result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
         result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
         result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
+        result.curvePointsR = before.curvePointsR;
+        result.curvePointsG = before.curvePointsG;
+        result.curvePointsB = before.curvePointsB;
+        result.curvePointsLuma = before.curvePointsLuma;
+        result.curveThreePointLock = before.curveThreePointLock;
+        result.curveSmoothingEnabled = before.curveSmoothingEnabled;
         return result;
     }
 
@@ -736,6 +1197,13 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
     result.highlightsR = before.highlightsR + (after.highlightsR - before.highlightsR) * t;
     result.highlightsG = before.highlightsG + (after.highlightsG - before.highlightsG) * t;
     result.highlightsB = before.highlightsB + (after.highlightsB - before.highlightsB) * t;
+    // Keep curve data keyframe-agnostic for now (hold previous curve between keys).
+    result.curvePointsR = before.curvePointsR;
+    result.curvePointsG = before.curvePointsG;
+    result.curvePointsB = before.curvePointsB;
+    result.curvePointsLuma = before.curvePointsLuma;
+    result.curveThreePointLock = before.curveThreePointLock;
+    result.curveSmoothingEnabled = before.curveSmoothingEnabled;
     result.linearInterpolation = after.linearInterpolation;
 
     return result;
@@ -769,6 +1237,20 @@ void GradingTab::updateSpinBoxesFromKeyframe(const GradingKeyframeDisplay& keyfr
     if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(keyframe.highlightsR);
     if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(keyframe.highlightsG);
     if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(keyframe.highlightsB);
+    m_curvePointsR = sanitizeGradingCurvePoints(keyframe.curvePointsR);
+    m_curvePointsG = sanitizeGradingCurvePoints(keyframe.curvePointsG);
+    m_curvePointsB = sanitizeGradingCurvePoints(keyframe.curvePointsB);
+    m_curvePointsLuma = sanitizeGradingCurvePoints(keyframe.curvePointsLuma);
+    m_curveThreePointLock = keyframe.curveThreePointLock;
+    m_curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
+    if (m_widgets.gradingCurveThreePointLockCheckBox) {
+        QSignalBlocker lockBlock(m_widgets.gradingCurveThreePointLockCheckBox);
+        m_widgets.gradingCurveThreePointLockCheckBox->setChecked(m_curveThreePointLock);
+    }
+    if (m_widgets.gradingCurveSmoothingCheckBox) {
+        QSignalBlocker smoothBlock(m_widgets.gradingCurveSmoothingCheckBox);
+        m_widgets.gradingCurveSmoothingCheckBox->setChecked(m_curveSmoothingEnabled);
+    }
 }
 
 void GradingTab::populateTable(const TimelineClip& clip)
@@ -926,6 +1408,12 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
                     midpoint.highlightsR = earlier->highlightsR + ((later->highlightsR - earlier->highlightsR) * t);
                     midpoint.highlightsG = earlier->highlightsG + ((later->highlightsG - earlier->highlightsG) * t);
                     midpoint.highlightsB = earlier->highlightsB + ((later->highlightsB - earlier->highlightsB) * t);
+                    midpoint.curvePointsR = earlier->curvePointsR;
+                    midpoint.curvePointsG = earlier->curvePointsG;
+                    midpoint.curvePointsB = earlier->curvePointsB;
+                    midpoint.curvePointsLuma = earlier->curvePointsLuma;
+                    midpoint.curveThreePointLock = earlier->curveThreePointLock;
+                    midpoint.curveSmoothingEnabled = earlier->curveSmoothingEnabled;
                     midpoint.linearInterpolation = later->linearInterpolation;
                     const bool updated = m_deps.updateClipById(selectedClip->id, [midpoint](TimelineClip& clip) {
                         for (TimelineClip::GradingKeyframe& existing : clip.gradingKeyframes) {
@@ -979,6 +1467,12 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
                     midpoint.highlightsR = earlier->highlightsR + ((later->highlightsR - earlier->highlightsR) * t);
                     midpoint.highlightsG = earlier->highlightsG + ((later->highlightsG - earlier->highlightsG) * t);
                     midpoint.highlightsB = earlier->highlightsB + ((later->highlightsB - earlier->highlightsB) * t);
+                    midpoint.curvePointsR = earlier->curvePointsR;
+                    midpoint.curvePointsG = earlier->curvePointsG;
+                    midpoint.curvePointsB = earlier->curvePointsB;
+                    midpoint.curvePointsLuma = earlier->curvePointsLuma;
+                    midpoint.curveThreePointLock = earlier->curveThreePointLock;
+                    midpoint.curveSmoothingEnabled = earlier->curveSmoothingEnabled;
                     midpoint.linearInterpolation = later->linearInterpolation;
                     const bool updated = m_deps.updateClipById(selectedClip->id, [midpoint](TimelineClip& clip) {
                         for (TimelineClip::GradingKeyframe& existing : clip.gradingKeyframes) {
@@ -1010,31 +1504,51 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
 
 void GradingTab::onCurveChannelChanged(int index)
 {
+    Q_UNUSED(index);
     if (m_updating || !m_widgets.gradingHistogramWidget) {
         return;
     }
-
-    GradingHistogramWidget::Channel channel = GradingHistogramWidget::Channel::Red;
-    if (index == 1) {
-        channel = GradingHistogramWidget::Channel::Green;
-    } else if (index == 2) {
-        channel = GradingHistogramWidget::Channel::Blue;
-    }
-    m_widgets.gradingHistogramWidget->setSelectedChannel(channel);
-    double shadows = 0.0;
-    double midtones = 0.0;
-    double highlights = 0.0;
-    currentChannelToneValues(&shadows, &midtones, &highlights);
-    m_widgets.gradingHistogramWidget->setCurveValues(shadows, midtones, highlights);
+    updateCurveFromInspectorValues();
 }
 
-void GradingTab::onCurveAdjusted(double shadows, double midtones, double highlights, bool finalized)
+void GradingTab::onCurveAdjusted(const QVector<QPointF>& points, bool finalized)
 {
     if (m_updating) {
         return;
     }
-    applyToneValuesToCurrentChannel(shadows, midtones, highlights);
+    if (comboAlphaSelected(m_widgets.gradingCurveChannelCombo)) {
+        return;
+    }
+    applyCurvePointsToCurrentChannel(points);
     applyGradeFromInspector(finalized);
+}
+
+void GradingTab::onCurveThreePointLockToggled(bool checked)
+{
+    if (m_updating) {
+        return;
+    }
+    m_curveThreePointLock = checked;
+    if (m_widgets.gradingHistogramWidget) {
+        m_widgets.gradingHistogramWidget->setThreePointLockEnabled(checked);
+        applyCurvePointsToCurrentChannel(m_widgets.gradingHistogramWidget->curvePoints());
+    }
+    applyGradeFromInspector(true);
+}
+
+void GradingTab::onCurveSmoothingToggled(bool checked)
+{
+    if (m_updating) {
+        return;
+    }
+    m_curveSmoothingEnabled = checked;
+    if (m_widgets.gradingHistogramWidget) {
+        m_widgets.gradingHistogramWidget->setCurveSmoothingEnabled(checked);
+        if (m_curveThreePointLock) {
+            applyCurvePointsToCurrentChannel(m_widgets.gradingHistogramWidget->curvePoints());
+        }
+    }
+    applyGradeFromInspector(true);
 }
 
 void GradingTab::updateHistogramAndCurve(bool forceHistogramRefresh)
@@ -1053,6 +1567,17 @@ void GradingTab::updateHistogramAndCurve(bool forceHistogramRefresh)
     if (!m_gradingDeps.getCurrentFrameImage) {
         if (forceHistogramRefresh) {
             m_widgets.gradingHistogramWidget->clearHistogram();
+            if (m_widgets.gradingCurveChannelCombo) {
+                const int alphaIndex = m_widgets.gradingCurveChannelCombo->findText(QStringLiteral("Alpha"));
+                if (alphaIndex >= 0) {
+                    const bool wasSelected =
+                        (m_widgets.gradingCurveChannelCombo->currentIndex() == alphaIndex);
+                    m_widgets.gradingCurveChannelCombo->removeItem(alphaIndex);
+                    if (wasSelected) {
+                        m_widgets.gradingCurveChannelCombo->setCurrentIndex(3);
+                    }
+                }
+            }
         }
         return;
     }
@@ -1062,6 +1587,17 @@ void GradingTab::updateHistogramAndCurve(bool forceHistogramRefresh)
         if (forceHistogramRefresh) {
             m_lastHistogramImageKey = 0;
             m_widgets.gradingHistogramWidget->clearHistogram();
+            if (m_widgets.gradingCurveChannelCombo) {
+                const int alphaIndex = m_widgets.gradingCurveChannelCombo->findText(QStringLiteral("Alpha"));
+                if (alphaIndex >= 0) {
+                    const bool wasSelected =
+                        (m_widgets.gradingCurveChannelCombo->currentIndex() == alphaIndex);
+                    m_widgets.gradingCurveChannelCombo->removeItem(alphaIndex);
+                    if (wasSelected) {
+                        m_widgets.gradingCurveChannelCombo->setCurrentIndex(3);
+                    }
+                }
+            }
         }
         return;
     }
@@ -1072,6 +1608,19 @@ void GradingTab::updateHistogramAndCurve(bool forceHistogramRefresh)
     }
     m_lastHistogramImageKey = imageKey;
     m_widgets.gradingHistogramWidget->setHistogramFromImage(frameImage);
+    if (m_widgets.gradingCurveChannelCombo) {
+        const bool wantAlpha = m_widgets.gradingHistogramWidget->hasAlphaHistogram();
+        const int alphaIndex = m_widgets.gradingCurveChannelCombo->findText(QStringLiteral("Alpha"));
+        if (wantAlpha && alphaIndex < 0) {
+            m_widgets.gradingCurveChannelCombo->addItem(QStringLiteral("Alpha"));
+        } else if (!wantAlpha && alphaIndex >= 0) {
+            const bool wasSelected = (m_widgets.gradingCurveChannelCombo->currentIndex() == alphaIndex);
+            m_widgets.gradingCurveChannelCombo->removeItem(alphaIndex);
+            if (wasSelected) {
+                m_widgets.gradingCurveChannelCombo->setCurrentIndex(3);
+            }
+        }
+    }
 }
 
 void GradingTab::updateCurveFromInspectorValues()
@@ -1080,77 +1629,85 @@ void GradingTab::updateCurveFromInspectorValues()
         return;
     }
 
+    int selectedChannelIndex = 0;
     if (m_widgets.gradingCurveChannelCombo) {
-        const int channelIndex = qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2);
+        const int maxChannel = comboHasAlphaItem(m_widgets.gradingCurveChannelCombo) ? 4 : 3;
+        const int channelIndex = qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), maxChannel);
+        selectedChannelIndex = channelIndex;
         GradingHistogramWidget::Channel channel = GradingHistogramWidget::Channel::Red;
         if (channelIndex == 1) {
             channel = GradingHistogramWidget::Channel::Green;
         } else if (channelIndex == 2) {
             channel = GradingHistogramWidget::Channel::Blue;
+        } else if (channelIndex == 3) {
+            channel = GradingHistogramWidget::Channel::Brightness;
+        } else if (channelIndex == 4) {
+            channel = GradingHistogramWidget::Channel::Alpha;
         }
         m_widgets.gradingHistogramWidget->setSelectedChannel(channel);
     }
 
-    double shadows = 0.0;
-    double midtones = 0.0;
-    double highlights = 0.0;
-    currentChannelToneValues(&shadows, &midtones, &highlights);
-    m_widgets.gradingHistogramWidget->setCurveValues(shadows, midtones, highlights);
+    // Show only tone controls for the selected RGB channel.
+    setToneSpinGroupVisible(m_widgets.shadowsRSpin,
+                            m_widgets.shadowsGSpin,
+                            m_widgets.shadowsBSpin,
+                            selectedChannelIndex);
+    setToneSpinGroupVisible(m_widgets.midtonesRSpin,
+                            m_widgets.midtonesGSpin,
+                            m_widgets.midtonesBSpin,
+                            selectedChannelIndex);
+    setToneSpinGroupVisible(m_widgets.highlightsRSpin,
+                            m_widgets.highlightsGSpin,
+                            m_widgets.highlightsBSpin,
+                            selectedChannelIndex);
+
+    m_widgets.gradingHistogramWidget->setCurveSmoothingEnabled(m_curveSmoothingEnabled);
+    m_widgets.gradingHistogramWidget->setThreePointLockEnabled(m_curveThreePointLock);
+    if (comboAlphaSelected(m_widgets.gradingCurveChannelCombo)) {
+        m_widgets.gradingHistogramWidget->setEnabled(false);
+        m_widgets.gradingHistogramWidget->setCurvePoints(defaultGradingCurvePoints());
+    } else {
+        m_widgets.gradingHistogramWidget->setEnabled(true);
+        m_widgets.gradingHistogramWidget->setCurvePoints(currentChannelCurvePoints());
+    }
 }
 
-void GradingTab::currentChannelToneValues(double* shadows, double* midtones, double* highlights) const
+QVector<QPointF> GradingTab::currentChannelCurvePoints() const
 {
     const int channelIndex = m_widgets.gradingCurveChannelCombo
-                                 ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2)
+                                 ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 3)
                                  : 0;
     if (channelIndex == 1) {
-        if (shadows && m_widgets.shadowsGSpin) *shadows = m_widgets.shadowsGSpin->value();
-        if (midtones && m_widgets.midtonesGSpin) *midtones = m_widgets.midtonesGSpin->value();
-        if (highlights && m_widgets.highlightsGSpin) *highlights = m_widgets.highlightsGSpin->value();
+        return sanitizeGradingCurvePoints(m_curvePointsG);
+    }
+    if (channelIndex == 2) {
+        return sanitizeGradingCurvePoints(m_curvePointsB);
+    }
+    if (channelIndex == 3) {
+        return sanitizeGradingCurvePoints(m_curvePointsLuma);
+    }
+    return sanitizeGradingCurvePoints(m_curvePointsR);
+}
+
+void GradingTab::applyCurvePointsToCurrentChannel(const QVector<QPointF>& points)
+{
+    const QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
+    const int channelIndex = m_widgets.gradingCurveChannelCombo
+                                 ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 3)
+                                 : 0;
+    if (channelIndex == 1) {
+        m_curvePointsG = sanitized;
         return;
     }
     if (channelIndex == 2) {
-        if (shadows && m_widgets.shadowsBSpin) *shadows = m_widgets.shadowsBSpin->value();
-        if (midtones && m_widgets.midtonesBSpin) *midtones = m_widgets.midtonesBSpin->value();
-        if (highlights && m_widgets.highlightsBSpin) *highlights = m_widgets.highlightsBSpin->value();
+        m_curvePointsB = sanitized;
         return;
     }
-
-    if (shadows && m_widgets.shadowsRSpin) *shadows = m_widgets.shadowsRSpin->value();
-    if (midtones && m_widgets.midtonesRSpin) *midtones = m_widgets.midtonesRSpin->value();
-    if (highlights && m_widgets.highlightsRSpin) *highlights = m_widgets.highlightsRSpin->value();
-}
-
-void GradingTab::applyToneValuesToCurrentChannel(double shadows, double midtones, double highlights)
-{
-    const int channelIndex = m_widgets.gradingCurveChannelCombo
-                                 ? qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 2)
-                                 : 0;
-    if (channelIndex == 1) {
-        QSignalBlocker shadowsBlock(m_widgets.shadowsGSpin);
-        QSignalBlocker midtonesBlock(m_widgets.midtonesGSpin);
-        QSignalBlocker highlightsBlock(m_widgets.highlightsGSpin);
-        if (m_widgets.shadowsGSpin) m_widgets.shadowsGSpin->setValue(shadows);
-        if (m_widgets.midtonesGSpin) m_widgets.midtonesGSpin->setValue(midtones);
-        if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(highlights);
+    if (channelIndex == 3) {
+        m_curvePointsLuma = sanitized;
         return;
     }
-    if (channelIndex == 2) {
-        QSignalBlocker shadowsBlock(m_widgets.shadowsBSpin);
-        QSignalBlocker midtonesBlock(m_widgets.midtonesBSpin);
-        QSignalBlocker highlightsBlock(m_widgets.highlightsBSpin);
-        if (m_widgets.shadowsBSpin) m_widgets.shadowsBSpin->setValue(shadows);
-        if (m_widgets.midtonesBSpin) m_widgets.midtonesBSpin->setValue(midtones);
-        if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(highlights);
-        return;
-    }
-
-    QSignalBlocker shadowsBlock(m_widgets.shadowsRSpin);
-    QSignalBlocker midtonesBlock(m_widgets.midtonesRSpin);
-    QSignalBlocker highlightsBlock(m_widgets.highlightsRSpin);
-    if (m_widgets.shadowsRSpin) m_widgets.shadowsRSpin->setValue(shadows);
-    if (m_widgets.midtonesRSpin) m_widgets.midtonesRSpin->setValue(midtones);
-    if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(highlights);
+    m_curvePointsR = sanitized;
 }
 
 void GradingTab::onBrightnessChanged(double value)

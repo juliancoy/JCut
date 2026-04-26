@@ -5,6 +5,7 @@
 #include <QTableWidget>
 #include <QHash>
 #include <QPoint>
+#include <QStringList>
 #include <functional>
 
 #include "editor_shared.h"
@@ -36,6 +37,10 @@ public:
         QPushButton* speakerPickReference2Button = nullptr;
         QPushButton* speakerClearReferencesButton = nullptr;
         QPushButton* speakerRunAutoTrackButton = nullptr;
+        QPushButton* speakerBoxstreamSettingsButton = nullptr;
+        QPushButton* speakerEnableTrackingButton = nullptr;
+        QPushButton* speakerDisableTrackingButton = nullptr;
+        QPushButton* speakerDeletePointstreamButton = nullptr;
         QPushButton* speakerGuideButton = nullptr;
         QLabel* speakerTrackingStatusLabel = nullptr;
         QDoubleSpinBox* speakerFramingTargetXSpin = nullptr;
@@ -44,12 +49,18 @@ public:
         QCheckBox* speakerFramingZoomEnabledCheckBox = nullptr;
         QCheckBox* speakerApplyFramingToClipCheckBox = nullptr;
         QLabel* speakerClipFramingStatusLabel = nullptr;
+        QLabel* speakerRefsChipLabel = nullptr;
+        QLabel* speakerPointstreamChipLabel = nullptr;
+        QPushButton* speakerTrackingChipButton = nullptr;
+        QPushButton* speakerStabilizeChipButton = nullptr;
     };
 
     struct Dependencies : public TableTabBase::Dependencies {
         std::function<QVector<RenderSyncMarker>()> getRenderSyncMarkers;
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
         std::function<QSize()> getOutputSize;
+        std::function<void()> refreshPreview;
+        std::function<void(const QStringList&)> exportSpeakersVideo;
     };
 
     explicit SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -77,6 +88,12 @@ private slots:
     void onSpeakerRandomSentenceClicked();
     void onSpeakerClearReferencesClicked();
     void onSpeakerRunAutoTrackClicked();
+    void onSpeakerBoxStreamSettingsClicked();
+    void onSpeakerEnableTrackingClicked();
+    void onSpeakerDisableTrackingClicked();
+    void onSpeakerDeletePointstreamClicked();
+    void onSpeakerTrackingChipClicked();
+    void onSpeakerStabilizeChipClicked();
     void onSpeakerGuideClicked();
     void onSpeakerFramingTargetChanged();
     void onSpeakerFramingZoomEnabledChanged(bool checked);

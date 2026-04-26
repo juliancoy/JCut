@@ -958,20 +958,46 @@ int TimelineWidget::exportSegmentIndexAtFrame(int64_t frame) const {
     return -1;
 }
 
+QRect TimelineWidget::exportHandleHitRect(int segmentIndex, bool startHandle) const {
+    const QRect visual = exportHandleRect(segmentIndex, startHandle);
+    if (visual.isEmpty()) {
+        return QRect();
+    }
+    // Keep the visual handle slim, but make pointer hit-testing forgiving.
+    return visual.adjusted(-6, -5, 6, 5);
+}
+
 int TimelineWidget::exportHandleAtPos(const QPoint& pos, bool* startHandleOut) const {
+    struct Candidate {
+        int segmentIndex = -1;
+        bool startHandle = false;
+        int distance = std::numeric_limits<int>::max();
+    };
+
+    Candidate best;
     for (int i = 0; i < m_exportRanges.size(); ++i) {
-        if (exportHandleRect(i, true).contains(pos)) {
-            if (startHandleOut) {
-                *startHandleOut = true;
+        for (const bool startHandle : {true, false}) {
+            const QRect hitRect = exportHandleHitRect(i, startHandle);
+            if (!hitRect.contains(pos)) {
+                continue;
             }
-            return i;
-        }
-        if (exportHandleRect(i, false).contains(pos)) {
-            if (startHandleOut) {
-                *startHandleOut = false;
+
+            const int64_t frame = startHandle ? m_exportRanges[i].startFrame : m_exportRanges[i].endFrame;
+            const int handleX = xFromFrame(frame);
+            const int distance = std::abs(pos.x() - handleX);
+            if (distance < best.distance) {
+                best.segmentIndex = i;
+                best.startHandle = startHandle;
+                best.distance = distance;
             }
-            return i;
         }
+    }
+
+    if (best.segmentIndex >= 0) {
+        if (startHandleOut) {
+            *startHandleOut = best.startHandle;
+        }
+        return best.segmentIndex;
     }
     return -1;
 }

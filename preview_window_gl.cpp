@@ -14,6 +14,7 @@
 #include <QOpenGLContext>
 #include <QOpenGLShaderProgram>
 #include <QOpenGLWidget>
+#include <QByteArray>
 #include <QPainter>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -44,6 +45,51 @@ const char* overlayFragmentShaderSource() {
             gl_FragColor = texture2D(u_texture, v_texCoord);
         }
     )";
+}
+
+void uploadCurveLutTexture(GLuint* textureId, const TimelineClip::GradingKeyframe& grade) {
+    if (!textureId) {
+        return;
+    }
+    const QVector<quint8> lutR = gradingCurveLut8(
+        grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutG = gradingCurveLut8(
+        grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutB = gradingCurveLut8(
+        grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutL = gradingCurveLut8(
+        grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    if (lutR.isEmpty() || lutG.isEmpty() || lutB.isEmpty() || lutL.isEmpty()) {
+        return;
+    }
+    QByteArray rgbaData;
+    rgbaData.resize(TimelineClip::kGradingCurveLutSize * 4);
+    for (int i = 0; i < TimelineClip::kGradingCurveLutSize; ++i) {
+        rgbaData[i * 4 + 0] = static_cast<char>(lutR[i]);
+        rgbaData[i * 4 + 1] = static_cast<char>(lutG[i]);
+        rgbaData[i * 4 + 2] = static_cast<char>(lutB[i]);
+        rgbaData[i * 4 + 3] = static_cast<char>(lutL[i]);
+    }
+
+    if (*textureId == 0) {
+        glGenTextures(1, textureId);
+    }
+    glBindTexture(GL_TEXTURE_2D, *textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 GL_RGBA,
+                 TimelineClip::kGradingCurveLutSize,
+                 1,
+                 0,
+                 GL_RGBA,
+                 GL_UNSIGNED_BYTE,
+                 rgbaData.constData());
+    glBindTexture(GL_TEXTURE_2D, 0);
 }
 }
 
@@ -128,6 +174,10 @@ void PreviewWindow::releaseGlResources() {
     m_transcriptTextureCache.clear();
     if (m_polygonBuffer.isCreated()) m_polygonBuffer.destroy();
     if (m_quadBuffer.isCreated()) m_quadBuffer.destroy();
+    if (m_curveLutTextureId != 0) {
+        glDeleteTextures(1, &m_curveLutTextureId);
+        m_curveLutTextureId = 0;
+    }
     m_overlayShaderProgram.reset();
     m_correctionMaskShaderProgram.reset();
     m_shaderProgram.reset();
@@ -221,7 +271,8 @@ PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect&
     const editor::GlTextureCacheEntry entry = m_textureCache.value(cacheKey);
 
     const QRect fitted = fitRect(frame.size(), targetRect);
-    const TimelineClip::TransformKeyframe transform = evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition);
+    const TimelineClip::TransformKeyframe transform =
+        evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition, m_outputSize);
     const QPointF previewScale = previewCanvasScale(targetRect);
     const QPointF center(fitted.center().x() + (transform.translationX * previewScale.x()),
                          fitted.center().y() + (transform.translationY * previewScale.y()));
@@ -335,12 +386,17 @@ PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect&
     m_shaderProgram->setUniformValue("u_texel_size", QVector2D(texelSizeX, texelSizeY));
     m_shaderProgram->setUniformValue("u_texture", 0);
     m_shaderProgram->setUniformValue("u_texture_uv", 1);
+    m_shaderProgram->setUniformValue("u_curve_lut", 2);
+    m_shaderProgram->setUniformValue("u_curve_enabled", 1.0f);
     m_shaderProgram->setUniformValue("u_texture_mode", entry.usesYuvTextures ? 1.0f : 0.0f);
+    uploadCurveLutTexture(&m_curveLutTextureId, grade);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, textureId);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, entry.usesYuvTextures ? entry.auxTextureId : 0);
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, m_curveLutTextureId);
     m_quadBuffer.bind();
     const int positionLoc = m_shaderProgram->attributeLocation("a_position");
     const int texCoordLoc = m_shaderProgram->attributeLocation("a_texCoord");
@@ -352,6 +408,8 @@ PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect&
     m_shaderProgram->disableAttributeArray(positionLoc);
     m_shaderProgram->disableAttributeArray(texCoordLoc);
     glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);

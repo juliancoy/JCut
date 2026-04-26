@@ -37,6 +37,7 @@ void EditorWindow::bindInspectorWidgets()
     m_trackCrossfadeButton = m_inspectorPane->trackCrossfadeButton();
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
+    m_speakerShowBoxStreamBoxesCheckBox = m_inspectorPane->speakerShowBoxStreamBoxesCheckBox();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -355,6 +356,15 @@ void EditorWindow::setupPreviewControls()
         connect(m_previewShowSpeakerTrackPointsCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
             if (m_preview) {
                 m_preview->setShowSpeakerTrackPoints(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
+    if (m_speakerShowBoxStreamBoxesCheckBox) {
+        connect(m_speakerShowBoxStreamBoxesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setShowSpeakerTrackBoxes(checked);
             }
             scheduleSaveState();
             pushHistorySnapshot();

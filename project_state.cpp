@@ -452,6 +452,17 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("playing")] = m_playbackTimer.isActive();
     root[QStringLiteral("selectedClipId")] =
         m_timeline ? m_timeline->selectedClipId() : QString();
+    root[QStringLiteral("selectedTrackIndex")] =
+        m_timeline ? m_timeline->selectedTrackIndex() : -1;
+    QJsonArray selectedClipIds;
+    if (m_timeline)
+    {
+        for (const QString& id : m_timeline->selectedClipIds())
+        {
+            selectedClipIds.push_back(id);
+        }
+    }
+    root[QStringLiteral("selectedClipIds")] = selectedClipIds;
 
     QJsonArray expandedFolders;
     if (m_explorerPane)
@@ -477,6 +488,8 @@ QJsonObject EditorWindow::buildStateJson() const
         m_previewHideOutsideOutputCheckBox ? m_previewHideOutsideOutputCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
+    root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
+        m_speakerShowBoxStreamBoxesCheckBox ? m_speakerShowBoxStreamBoxesCheckBox->isChecked() : false;
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
     root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();
@@ -572,14 +585,23 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("exportRanges")] = exportRanges;
 
     QJsonArray timeline;
+    QJsonObject selectedClipObj;
+    const QString selectedClipId =
+        m_timeline ? m_timeline->selectedClipId() : QString();
     if (m_timeline)
     {
         for (const TimelineClip &clip : m_timeline->clips())
         {
-            timeline.push_back(clipToJson(clip));
+            const QJsonObject clipObj = clipToJson(clip);
+            timeline.push_back(clipObj);
+            if (!selectedClipId.isEmpty() && clip.id == selectedClipId)
+            {
+                selectedClipObj = clipObj;
+            }
         }
     }
     root[QStringLiteral("timeline")] = timeline;
+    root[QStringLiteral("selectedClip")] = selectedClipObj;
 
     QJsonArray renderSyncMarkers;
     if (m_timeline)

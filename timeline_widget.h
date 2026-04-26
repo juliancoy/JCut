@@ -228,6 +228,7 @@ private:
     QRect timelineContentRect() const;
     QRect exportRangeRect() const;
     QRect exportHandleRect(int segmentIndex, bool startHandle) const;
+    QRect exportHandleHitRect(int segmentIndex, bool startHandle) const;
     QRect exportSegmentRect(const ExportRangeSegment& segment) const;
     QRect trackLabelRect(int trackIndex) const;
     QRect trackNameRect(int trackIndex) const;
@@ -296,6 +297,7 @@ private:
     QHash<QString, QVector<RenderSyncMarker>> m_renderSyncMarkersByClip;
     ExportRangeDragMode m_exportRangeDragMode = ExportRangeDragMode::None;
     int m_exportRangeDragSegmentIndex = -1;
+    bool m_exportRangeMouseGrabbed = false;
     ToolMode m_toolMode = ToolMode::Select;
     int64_t m_razorHoverFrame = -1;
 };

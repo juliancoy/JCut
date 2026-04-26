@@ -3,14 +3,26 @@
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QContextMenuEvent>
+#include <QDoubleSpinBox>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
+#include <QPlainTextEdit>
 #include <QSlider>
+#include <QSpinBox>
+#include <QTableWidget>
 
 namespace control_server {
 
-QJsonObject widgetSnapshot(QWidget* widget) {
+namespace {
+
+QJsonObject widgetSnapshotRecursive(QWidget* widget,
+                                    const QString& path,
+                                    int absX,
+                                    int absY,
+                                    int indexInParent) {
     if (!widget) {
         return {};
     }
@@ -22,8 +34,12 @@ QJsonObject widgetSnapshot(QWidget* widget) {
         {QStringLiteral("enabled"), widget->isEnabled()},
         {QStringLiteral("x"), widget->x()},
         {QStringLiteral("y"), widget->y()},
+        {QStringLiteral("abs_x"), absX},
+        {QStringLiteral("abs_y"), absY},
         {QStringLiteral("width"), widget->width()},
-        {QStringLiteral("height"), widget->height()}
+        {QStringLiteral("height"), widget->height()},
+        {QStringLiteral("path"), path},
+        {QStringLiteral("index"), indexInParent}
     };
 
     if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
@@ -35,17 +51,81 @@ QJsonObject widgetSnapshot(QWidget* widget) {
         object[QStringLiteral("value")] = slider->value();
         object[QStringLiteral("minimum")] = slider->minimum();
         object[QStringLiteral("maximum")] = slider->maximum();
+    } else if (auto* spinBox = qobject_cast<QSpinBox*>(widget)) {
+        object[QStringLiteral("clickable")] = false;
+        object[QStringLiteral("value")] = spinBox->value();
+        object[QStringLiteral("minimum")] = spinBox->minimum();
+        object[QStringLiteral("maximum")] = spinBox->maximum();
+    } else if (auto* doubleSpinBox = qobject_cast<QDoubleSpinBox*>(widget)) {
+        object[QStringLiteral("clickable")] = false;
+        object[QStringLiteral("value")] = doubleSpinBox->value();
+        object[QStringLiteral("minimum")] = doubleSpinBox->minimum();
+        object[QStringLiteral("maximum")] = doubleSpinBox->maximum();
+    } else if (auto* comboBox = qobject_cast<QComboBox*>(widget)) {
+        object[QStringLiteral("clickable")] = false;
+        object[QStringLiteral("currentIndex")] = comboBox->currentIndex();
+        object[QStringLiteral("currentText")] = comboBox->currentText();
+        object[QStringLiteral("count")] = comboBox->count();
+    } else if (auto* lineEdit = qobject_cast<QLineEdit*>(widget)) {
+        object[QStringLiteral("clickable")] = false;
+        object[QStringLiteral("text")] = lineEdit->text();
+    } else if (auto* plainTextEdit = qobject_cast<QPlainTextEdit*>(widget)) {
+        object[QStringLiteral("clickable")] = false;
+        object[QStringLiteral("text")] = plainTextEdit->toPlainText();
+    } else if (auto* tableWidget = qobject_cast<QTableWidget*>(widget)) {
+        object[QStringLiteral("clickable")] = false;
+        object[QStringLiteral("rows")] = tableWidget->rowCount();
+        object[QStringLiteral("columns")] = tableWidget->columnCount();
+        object[QStringLiteral("currentRow")] = tableWidget->currentRow();
+        object[QStringLiteral("currentColumn")] = tableWidget->currentColumn();
+        QJsonArray headers;
+        for (int column = 0; column < tableWidget->columnCount(); ++column) {
+            const QTableWidgetItem* headerItem = tableWidget->horizontalHeaderItem(column);
+            headers.push_back(headerItem ? headerItem->text() : QString());
+        }
+        object[QStringLiteral("headers")] = headers;
+        QJsonArray selectedRows;
+        if (tableWidget->selectionModel()) {
+            const QModelIndexList rows = tableWidget->selectionModel()->selectedRows();
+            for (const QModelIndex& rowIndex : rows) {
+                if (rowIndex.isValid()) {
+                    selectedRows.push_back(rowIndex.row());
+                }
+            }
+        }
+        object[QStringLiteral("selectedRows")] = selectedRows;
     } else {
         object[QStringLiteral("clickable")] = false;
     }
 
     QJsonArray children;
     const auto childWidgets = widget->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
-    for (QWidget* child : childWidgets) {
-        children.append(widgetSnapshot(child));
+    for (int childIndex = 0; childIndex < childWidgets.size(); ++childIndex) {
+        QWidget* child = childWidgets.at(childIndex);
+        if (!child) {
+            continue;
+        }
+        const QString childPath = path.isEmpty()
+            ? QString::number(childIndex)
+            : QStringLiteral("%1.%2").arg(path).arg(childIndex);
+        children.append(widgetSnapshotRecursive(child,
+                                               childPath,
+                                               absX + child->x(),
+                                               absY + child->y(),
+                                               childIndex));
     }
     object[QStringLiteral("children")] = children;
     return object;
+}
+
+} // namespace
+
+QJsonObject widgetSnapshot(QWidget* widget) {
+    return widgetSnapshotRecursive(widget,
+                                   QStringLiteral("0"),
+                                   widget ? widget->x() : 0,
+                                   widget ? widget->y() : 0,
+                                   0);
 }
 
 QJsonObject topLevelWindowSnapshot(QWidget* widget) {
@@ -93,6 +173,43 @@ QWidget* findWidgetByObjectName(QWidget* root, const QString& objectName) {
     }
     const auto matches = root->findChildren<QWidget*>(objectName, Qt::FindChildrenRecursively);
     return matches.isEmpty() ? nullptr : matches.constFirst();
+}
+
+QWidget* findWidgetByHierarchyPath(QWidget* root, const QString& path) {
+    if (!root) {
+        return nullptr;
+    }
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty()) {
+        return nullptr;
+    }
+
+    QStringList segments = trimmed.split('.', Qt::SkipEmptyParts);
+    if (segments.isEmpty()) {
+        return nullptr;
+    }
+    if (segments.constFirst() == QStringLiteral("0")) {
+        segments.removeFirst();
+    }
+
+    QWidget* current = root;
+    for (const QString& segment : segments) {
+        bool ok = false;
+        const int childIndex = segment.toInt(&ok);
+        if (!ok || childIndex < 0) {
+            return nullptr;
+        }
+        const auto children =
+            current->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly);
+        if (childIndex >= children.size()) {
+            return nullptr;
+        }
+        current = children.at(childIndex);
+        if (!current) {
+            return nullptr;
+        }
+    }
+    return current;
 }
 
 Qt::MouseButton parseMouseButton(const QString& value) {

@@ -41,6 +41,24 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         }
     }
 
+    struct ScopedRenderDecodeSafety {
+        editor::DecodePreference previousDecodePreference = editor::debugDecodePreference();
+        editor::H26xSoftwareThreadingMode previousThreadingMode =
+            editor::debugH26xSoftwareThreadingMode();
+        bool previousDeterministic = editor::debugDeterministicPipelineEnabled();
+        ScopedRenderDecodeSafety() {
+            editor::setDebugDecodePreference(editor::DecodePreference::Software);
+            editor::setDebugH26xSoftwareThreadingMode(
+                editor::H26xSoftwareThreadingMode::SingleThread);
+            editor::setDebugDeterministicPipelineEnabled(true);
+        }
+        ~ScopedRenderDecodeSafety() {
+            editor::setDebugDecodePreference(previousDecodePreference);
+            editor::setDebugH26xSoftwareThreadingMode(previousThreadingMode);
+            editor::setDebugDeterministicPipelineEnabled(previousDeterministic);
+        }
+    } scopedDecodeSafety;
+
     QVector<ExportRangeSegment> exportRanges = request.exportRanges;
     if (exportRanges.isEmpty()) {
         const int64_t exportStart = qMax<int64_t>(0, request.exportStartFrame);

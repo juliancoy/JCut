@@ -301,6 +301,14 @@ void PreviewWindow::setShowSpeakerTrackPoints(bool show) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
+    if (m_showSpeakerTrackBoxes == show) {
+        return;
+    }
+    m_showSpeakerTrackBoxes = show;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setTranscriptOverlayInteractionEnabled(bool enabled) {
     if (m_transcriptOverlayInteractionEnabled == enabled) {
         return;

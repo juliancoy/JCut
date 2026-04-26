@@ -185,9 +185,16 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
                     qMax<qreal>(0.0001, previewScale.y());
 
                 if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
+                    const QSize safeOutputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+                    const qreal halfOutputWidth =
+                        qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width()) * 0.5);
+                    const qreal halfOutputHeight =
+                        qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.height()) * 0.5);
+                    const qreal deltaXNorm = deltaX / halfOutputWidth;
+                    const qreal deltaYNorm = deltaY / halfOutputHeight;
                     moveRequested(m_selectedClipId,
-                                  m_dragOriginTranscriptTranslation.x() + deltaX,
-                                  m_dragOriginTranscriptTranslation.y() + deltaY,
+                                  qBound<qreal>(-1.0, m_dragOriginTranscriptTranslation.x() + deltaXNorm, 1.0),
+                                  qBound<qreal>(-1.0, m_dragOriginTranscriptTranslation.y() + deltaYNorm, 1.0),
                                   false);
                     event->accept();
                     return;
@@ -438,7 +445,7 @@ TimelineClip::TransformKeyframe PreviewWindow::evaluateTransformForSelectedClip(
                 kf.translationY = title.y;
                 return kf;
             }
-            return evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition);
+            return evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition, m_outputSize);
         }
     }
     return TimelineClip::TransformKeyframe();

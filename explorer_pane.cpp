@@ -448,7 +448,7 @@ QWidget *ExplorerPane::buildUi()
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
 
-    m_folderPickerButton = new QPushButton(QStringLiteral("Root…"), pane);
+    m_folderPickerButton = new QPushButton(QStringLiteral("Set Explorer Root…"), pane);
     m_refreshExplorerButton = new QToolButton(pane);
     m_refreshExplorerButton->setText(QStringLiteral("Refresh"));
 
@@ -564,6 +564,7 @@ QWidget *ExplorerPane::buildGalleryPage()
     m_galleryBackButton->setText(QStringLiteral("Back"));
     m_galleryTitleLabel = new QLabel(page);
     m_galleryTitleLabel->setWordWrap(true);
+    m_galleryTitleLabel->setText(QStringLiteral("Current Folder: —"));
 
     topRow->addWidget(m_galleryBackButton);
     topRow->addWidget(m_galleryTitleLabel, 1);
@@ -586,6 +587,10 @@ QWidget *ExplorerPane::buildGalleryPage()
     {
         m_explorerStack->setCurrentIndex(0);
         m_galleryFolderPath.clear();
+        if (m_galleryTitleLabel)
+        {
+            m_galleryTitleLabel->setText(QStringLiteral("Current Folder: —"));
+        }
         hideExplorerHoverPreview();
         emit galleryPathChanged(QString());
         emit stateChanged();
@@ -665,7 +670,8 @@ void ExplorerPane::setExplorerRootPath(const QString &path, bool emitSignals)
 
     if (m_rootPathLabel)
     {
-        m_rootPathLabel->setText(m_currentRootPath);
+        const QString nativeRootPath = QDir::toNativeSeparators(m_currentRootPath);
+        m_rootPathLabel->setText(QStringLiteral("Explorer Root: %1").arg(nativeRootPath));
     }
 
     if (!m_galleryFolderPath.isEmpty())
@@ -722,7 +728,8 @@ void ExplorerPane::populateExplorerGallery(const QString &folderPath)
 
     if (m_galleryTitleLabel)
     {
-        m_galleryTitleLabel->setText(QDir::toNativeSeparators(folderPath));
+        const QString nativeFolderPath = QDir::toNativeSeparators(folderPath);
+        m_galleryTitleLabel->setText(QStringLiteral("Current Folder: %1").arg(nativeFolderPath));
     }
 }
 

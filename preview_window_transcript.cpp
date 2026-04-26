@@ -19,6 +19,36 @@ namespace {
 bool clipSupportsTranscript(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
 }
+
+QString activeSpeakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame) {
+    for (const TranscriptSection& section : sections) {
+        if (sourceFrame < section.startFrame) {
+            return QString();
+        }
+        if (sourceFrame > section.endFrame) {
+            continue;
+        }
+        int bestIndex = -1;
+        for (int i = 0; i < section.words.size(); ++i) {
+            const TranscriptWord& word = section.words.at(i);
+            if (sourceFrame >= word.startFrame && sourceFrame <= word.endFrame) {
+                bestIndex = i;
+                break;
+            }
+            if (sourceFrame > word.endFrame) {
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0 && !section.words.isEmpty()) {
+            bestIndex = 0;
+        }
+        if (bestIndex >= 0 && bestIndex < section.words.size()) {
+            return section.words.at(bestIndex).speaker.trimmed();
+        }
+        return QString();
+    }
+    return QString();
+}
 }
 
 bool PreviewWindow::clipShowsTranscriptOverlay(const TimelineClip& clip) const {
@@ -117,6 +147,32 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
             p.frame = frame;
             p.x = rawX;
             p.y = rawY;
+            const qreal boxSize = obj.value(QStringLiteral("box_size")).toDouble(-1.0);
+            if (boxSize > 0.0) {
+                p.boxSizeNorm = qBound<qreal>(0.01, boxSize, 1.0);
+            }
+            const qreal boxLeft = obj.value(QStringLiteral("box_left")).toDouble(-1.0);
+            const qreal boxTop = obj.value(QStringLiteral("box_top")).toDouble(-1.0);
+            const qreal boxRight = obj.value(QStringLiteral("box_right")).toDouble(-1.0);
+            const qreal boxBottom = obj.value(QStringLiteral("box_bottom")).toDouble(-1.0);
+            if (boxLeft >= 0.0 && boxTop >= 0.0 && boxRight > boxLeft && boxBottom > boxTop &&
+                boxRight <= 1.0 && boxBottom <= 1.0) {
+                p.hasBox = true;
+                p.boxLeft = boxLeft;
+                p.boxTop = boxTop;
+                p.boxRight = boxRight;
+                p.boxBottom = boxBottom;
+            } else {
+                if (p.boxSizeNorm > 0.0) {
+                    const qreal side = p.boxSizeNorm;
+                    const qreal half = side * 0.5;
+                    p.hasBox = true;
+                    p.boxLeft = qBound<qreal>(0.0, rawX - half, 1.0);
+                    p.boxTop = qBound<qreal>(0.0, rawY - half, 1.0);
+                    p.boxRight = qBound<qreal>(0.0, rawX + half, 1.0);
+                    p.boxBottom = qBound<qreal>(0.0, rawY + half, 1.0);
+                }
+            }
             p.speakerId = speakerId;
             entry.points.push_back(p);
         }
@@ -155,10 +211,13 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         const int64_t sourceEnd = sourceStart + qMax<int64_t>(0, clip.durationFrames - 1);
         const int64_t currentSourceFrame =
             transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+        const QString activeSpeakerId = activeSpeakerAtSourceFrame(
+            transcriptSectionsForClip(clip), currentSourceFrame);
         int64_t nearestDistance = std::numeric_limits<int64_t>::max();
         QPointF nearestPoint;
         QColor nearestColor;
         bool nearestValid = false;
+        SpeakerTrackPoint nearestTrackPoint;
 
         for (const SpeakerTrackPoint& p : points) {
             if (p.frame < sourceStart || p.frame > sourceEnd) {
@@ -167,23 +226,82 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
             const uint hueHash = qHash(p.speakerId);
             const QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 180, 245, 190);
             const QPointF screenPoint = mapNormalizedClipPointToScreen(info, QPointF(p.x, p.y));
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(color);
-            painter->drawEllipse(screenPoint, 2.7, 2.7);
+            if (m_showSpeakerTrackPoints) {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(color);
+                painter->drawEllipse(screenPoint, 2.7, 2.7);
+            }
 
             const int64_t distance = std::llabs(p.frame - currentSourceFrame);
+            if (!activeSpeakerId.isEmpty() && p.speakerId != activeSpeakerId) {
+                continue;
+            }
             if (distance < nearestDistance) {
                 nearestDistance = distance;
                 nearestPoint = screenPoint;
                 nearestColor = color;
                 nearestValid = true;
+                nearestTrackPoint = p;
             }
         }
 
-        if (nearestValid) {
+        if (!nearestValid && !activeSpeakerId.isEmpty()) {
+            // Fallback: if active-speaker keyed points are missing, use nearest available speaker point.
+            for (const SpeakerTrackPoint& p : points) {
+                if (p.frame < sourceStart || p.frame > sourceEnd) {
+                    continue;
+                }
+                const uint hueHash = qHash(p.speakerId);
+                const QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 180, 245, 190);
+                const QPointF screenPoint = mapNormalizedClipPointToScreen(info, QPointF(p.x, p.y));
+                const int64_t distance = std::llabs(p.frame - currentSourceFrame);
+                if (distance < nearestDistance) {
+                    nearestDistance = distance;
+                    nearestPoint = screenPoint;
+                    nearestColor = color;
+                    nearestValid = true;
+                    nearestTrackPoint = p;
+                }
+            }
+        }
+
+        if (nearestValid && m_showSpeakerTrackPoints) {
             painter->setPen(QPen(QColor(255, 255, 255, 235), 1.2));
             painter->setBrush(nearestColor);
             painter->drawEllipse(nearestPoint, 4.4, 4.4);
+        }
+        if (nearestValid && m_showSpeakerTrackBoxes && nearestTrackPoint.hasBox) {
+            qreal leftNorm = nearestTrackPoint.boxLeft;
+            qreal topNorm = nearestTrackPoint.boxTop;
+            qreal rightNorm = nearestTrackPoint.boxRight;
+            qreal bottomNorm = nearestTrackPoint.boxBottom;
+            if (nearestTrackPoint.boxSizeNorm > 0.0 &&
+                info.clipPixelSize.width() > 1.0 &&
+                info.clipPixelSize.height() > 1.0) {
+                const qreal minSidePx = qMin(info.clipPixelSize.width(), info.clipPixelSize.height());
+                const qreal sidePx = nearestTrackPoint.boxSizeNorm * minSidePx;
+                const qreal halfXNorm = 0.5 * (sidePx / info.clipPixelSize.width());
+                const qreal halfYNorm = 0.5 * (sidePx / info.clipPixelSize.height());
+                leftNorm = qBound<qreal>(0.0, nearestTrackPoint.x - halfXNorm, 1.0);
+                topNorm = qBound<qreal>(0.0, nearestTrackPoint.y - halfYNorm, 1.0);
+                rightNorm = qBound<qreal>(0.0, nearestTrackPoint.x + halfXNorm, 1.0);
+                bottomNorm = qBound<qreal>(0.0, nearestTrackPoint.y + halfYNorm, 1.0);
+            }
+            const QPointF p1 = mapNormalizedClipPointToScreen(info, QPointF(leftNorm, topNorm));
+            const QPointF p2 = mapNormalizedClipPointToScreen(info, QPointF(rightNorm, topNorm));
+            const QPointF p3 = mapNormalizedClipPointToScreen(info, QPointF(rightNorm, bottomNorm));
+            const QPointF p4 = mapNormalizedClipPointToScreen(info, QPointF(leftNorm, bottomNorm));
+            QPainterPath boxPath;
+            boxPath.moveTo(p1);
+            boxPath.lineTo(p2);
+            boxPath.lineTo(p3);
+            boxPath.lineTo(p4);
+            boxPath.closeSubpath();
+            const QColor boxStroke(nearestColor.red(), nearestColor.green(), nearestColor.blue(), 235);
+            const QColor boxFill(nearestColor.red(), nearestColor.green(), nearestColor.blue(), 42);
+            painter->setPen(QPen(boxStroke, 2.0));
+            painter->setBrush(boxFill);
+            painter->drawPath(boxPath);
         }
     }
 
@@ -262,7 +380,7 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
     painter->setPen(QColor(255, 238, 153, 245));
     painter->drawText(badgeRect.adjusted(8.0, 0.0, -8.0, 0.0),
                       Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("Ideal Face Box  X:%1 Y:%2 S:%3")
+                      QStringLiteral("FaceBox  X:%1 Y:%2 S:%3")
                           .arg(QString::number(targetXNorm, 'f', 2))
                           .arg(QString::number(targetYNorm, 'f', 2))
                           .arg(QString::number(targetBoxNorm, 'f', 2)));

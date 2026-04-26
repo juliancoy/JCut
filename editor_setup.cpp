@@ -28,7 +28,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     auto *splitter = new QSplitter(Qt::Horizontal, central);
     splitter->setObjectName(QStringLiteral("layout.main_splitter"));
-    splitter->setChildrenCollapsible(true);
+    splitter->setChildrenCollapsible(false);
     splitter->setHandleWidth(6);
     splitter->setStyleSheet(QStringLiteral(
         "QSplitter::handle { background: #1e2a36; }"
@@ -38,6 +38,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     qDebug() << "[STARTUP] Building explorer pane...";
     m_explorerPane = new ExplorerPane(this);
     m_explorerPane->setObjectName(QStringLiteral("column.explorer"));
+    m_explorerPane->setMinimumWidth(220);
     splitter->addWidget(m_explorerPane);
 
     connect(m_explorerPane, &ExplorerPane::fileActivated, this, [this](const QString& filePath) {
@@ -63,6 +64,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     QWidget* editorPane = buildEditorPane();
     if (editorPane) {
         editorPane->setObjectName(QStringLiteral("column.editor"));
+        editorPane->setMinimumWidth(520);
     }
     splitter->addWidget(editorPane);
     m_explorerPane->setPreviewWindow(m_preview);
@@ -70,6 +72,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     m_inspectorPane = new InspectorPane(this);
     m_inspectorPane->setObjectName(QStringLiteral("column.inspector"));
+    m_inspectorPane->setMinimumWidth(240);
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorTabs && m_preview) {
@@ -121,9 +124,9 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->setStretchFactor(0, 0);
     splitter->setStretchFactor(1, 1);
     splitter->setStretchFactor(2, 0);
-    splitter->setCollapsible(0, true);
-    splitter->setCollapsible(1, true);
-    splitter->setCollapsible(2, true);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, false);
+    splitter->setCollapsible(2, false);
     splitter->setSizes({320, 900, 280});
 
     setCentralWidget(central);

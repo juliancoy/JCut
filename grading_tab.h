@@ -10,6 +10,8 @@
 #include <QPushButton>
 #include <QTimer>
 #include <QComboBox>
+#include <QPointF>
+#include <QVector>
 #include <functional>
 
 #include "editor_shared.h"
@@ -42,7 +44,10 @@ public:
         QCheckBox* gradingAutoScrollCheckBox = nullptr;
         QCheckBox* gradingFollowCurrentCheckBox = nullptr;
         QPushButton* gradingKeyAtPlayheadButton = nullptr;
+        QPushButton* gradingAutoOpposeButton = nullptr;
         QComboBox* gradingCurveChannelCombo = nullptr;
+        QCheckBox* gradingCurveThreePointLockCheckBox = nullptr;
+        QCheckBox* gradingCurveSmoothingCheckBox = nullptr;
         GradingHistogramWidget* gradingHistogramWidget = nullptr;
     };
 
@@ -87,12 +92,15 @@ private slots:
     void onAutoScrollToggled(bool checked);
     void onFollowCurrentToggled(bool checked);
     void onKeyAtPlayheadClicked();
+    void onAutoOpposeGradeChangesClicked();
     void onTableSelectionChanged();
     void onTableItemChanged(QTableWidgetItem* item);
     void onTableItemClicked(QTableWidgetItem* item);
     void onTableCustomContextMenu(const QPoint& pos);
     void onCurveChannelChanged(int index);
-    void onCurveAdjusted(double shadows, double midtones, double highlights, bool finalized);
+    void onCurveThreePointLockToggled(bool checked);
+    void onCurveSmoothingToggled(bool checked);
+    void onCurveAdjusted(const QVector<QPointF>& points, bool finalized);
     void removeSelectedKeyframesFromCurrentTable() override { removeSelectedKeyframes(); }
 
 private:
@@ -106,7 +114,24 @@ private:
         double shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
         double midtonesR = 0.0, midtonesG = 0.0, midtonesB = 0.0;
         double highlightsR = 0.0, highlightsG = 0.0, highlightsB = 0.0;
+        QVector<QPointF> curvePointsR;
+        QVector<QPointF> curvePointsG;
+        QVector<QPointF> curvePointsB;
+        QVector<QPointF> curvePointsLuma;
+        bool curveThreePointLock = false;
+        bool curveSmoothingEnabled = true;
         bool linearInterpolation = true;
+    };
+
+    struct AutoOpposeSettings
+    {
+        int sampleTarget = 140;
+        int minEventGapFrames = 10;
+        int maxEvents = 24;
+        double jumpLumaThreshold = 0.07;
+        double jumpSaturationThreshold = 0.08;
+        double jumpContrastThreshold = 0.05;
+        double brightnessStrength = 2.4;
     };
 
     QString videoInterpolationLabel(bool linearInterpolation) const;
@@ -121,12 +146,20 @@ private:
     void populateTable(const TimelineClip& clip);
     void updateHistogramAndCurve(bool forceHistogramRefresh = false);
     void updateCurveFromInspectorValues();
-    void currentChannelToneValues(double* shadows, double* midtones, double* highlights) const;
-    void applyToneValuesToCurrentChannel(double shadows, double midtones, double highlights);
+    QVector<QPointF> currentChannelCurvePoints() const;
+    void applyCurvePointsToCurrentChannel(const QVector<QPointF>& points);
+    bool configureAutoOpposeSettings(AutoOpposeSettings* settings);
 
     Widgets m_widgets;
     Dependencies m_gradingDeps;
     QTimer m_deferredSeekTimer;
     int64_t m_pendingSeekTimelineFrame = -1;
     int64_t m_lastHistogramImageKey = 0;
+    QVector<QPointF> m_curvePointsR;
+    QVector<QPointF> m_curvePointsG;
+    QVector<QPointF> m_curvePointsB;
+    QVector<QPointF> m_curvePointsLuma;
+    bool m_curveThreePointLock = false;
+    bool m_curveSmoothingEnabled = true;
+    AutoOpposeSettings m_autoOpposeSettings;
 };

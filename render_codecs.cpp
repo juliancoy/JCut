@@ -30,7 +30,19 @@ const AVCodec* codecForRequest(const QString& outputFormat, QString* codecLabel)
     if (const AVCodec* codec = avcodec_find_encoder_by_name("libx264")) {
         return codec;
     }
-    return avcodec_find_encoder(AV_CODEC_ID_H264);
+    if (const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_H264)) {
+        if (codecLabel) *codecLabel = QStringLiteral("h264");
+        return codec;
+    }
+    if (const AVCodec* codec = avcodec_find_encoder_by_name("libopenh264")) {
+        if (codecLabel) *codecLabel = QStringLiteral("libopenh264");
+        return codec;
+    }
+    if (const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_MPEG4)) {
+        if (codecLabel) *codecLabel = QStringLiteral("mpeg4");
+        return codec;
+    }
+    return nullptr;
 }
 
 QVector<VideoEncoderChoice> videoEncoderChoicesForRequest(const QString& outputFormat) {
@@ -43,6 +55,8 @@ QVector<VideoEncoderChoice> videoEncoderChoicesForRequest(const QString& outputF
         choices.push_back({QStringLiteral("h264_vaapi"), AV_PIX_FMT_NV12});
 #endif
         choices.push_back({QStringLiteral("libx264"), AV_PIX_FMT_YUV420P});
+        choices.push_back({QStringLiteral("libopenh264"), AV_PIX_FMT_YUV420P});
+        choices.push_back({QStringLiteral("mpeg4"), AV_PIX_FMT_YUV420P});
     } else if (format == QStringLiteral("mov")) {
         choices.push_back({QStringLiteral("prores_ks"), AV_PIX_FMT_YUV422P10LE});
     } else if (format == QStringLiteral("webm")) {
@@ -99,7 +113,10 @@ void configureCodecOptions(AVCodecContext* codecCtx, const QString& outputFormat
         av_opt_set(codecCtx->priv_data, "qp", "20", 0);
         return;
     }
-    if (format == QStringLiteral("mp4")) {
+    const bool h264Family =
+        loweredCodec.contains(QStringLiteral("264")) ||
+        loweredCodec.contains(QStringLiteral("openh264"));
+    if (format == QStringLiteral("mp4") && h264Family) {
         av_opt_set(codecCtx->priv_data, "preset", "veryfast", 0);
         av_opt_set(codecCtx->priv_data, "crf", "18", 0);
     } else if (format == QStringLiteral("mov")) {

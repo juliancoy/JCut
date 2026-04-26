@@ -38,6 +38,8 @@ enum class TrackVisualMode {
 };
 
 struct TimelineClip {
+    static constexpr int kGradingCurveLutSize = 256;
+
     struct TransformKeyframe {
         int64_t frame = 0;
         qreal translationX = 0.0;
@@ -60,6 +62,14 @@ struct TimelineClip {
         qreal shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
         qreal midtonesR = 0.0, midtonesG = 0.0, midtonesB = 0.0;
         qreal highlightsR = 0.0, highlightsG = 0.0, highlightsB = 0.0;
+        // Per-channel tone curve control points in normalized space [0,1]x[0,1].
+        // Endpoints are always enforced to (0,0) and (1,1).
+        QVector<QPointF> curvePointsR;
+        QVector<QPointF> curvePointsG;
+        QVector<QPointF> curvePointsB;
+        QVector<QPointF> curvePointsLuma;
+        bool curveThreePointLock = false;
+        bool curveSmoothingEnabled = true;
         bool linearInterpolation = true;
     };
 
@@ -101,7 +111,7 @@ struct TimelineClip {
         bool autoScroll = false;
         bool useManualPlacement = false;
         qreal translationX = 0.0;
-        qreal translationY = 640.0;
+        qreal translationY = 0.0;
         qreal boxWidth = 900.0;
         qreal boxHeight = 220.0;
         int maxLines = 2;
@@ -165,9 +175,13 @@ struct TimelineClip {
     qreal baseScaleX = 1.0;
     qreal baseScaleY = 1.0;
     bool speakerFramingEnabled = false;
+    QString speakerFramingSpeakerId;
     qreal speakerFramingTargetXNorm = 0.5;
     qreal speakerFramingTargetYNorm = 0.35;
     qreal speakerFramingTargetBoxNorm = -1.0;
+    qreal speakerFramingBakedTargetXNorm = 0.5;
+    qreal speakerFramingBakedTargetYNorm = 0.35;
+    qreal speakerFramingBakedTargetBoxNorm = -1.0;
     qreal speakerFramingMinConfidence = 0.08;
     bool transformSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;
@@ -335,13 +349,20 @@ void normalizeClipTitleKeyframes(TimelineClip& clip);
 TimelineClip::TransformKeyframe evaluateClipKeyframeOffsetAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
-TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
-TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
+                                                                  int64_t timelineFrame,
+                                                                  const QSize& outputSize = QSize());
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
+                                                                     qreal timelineFramePosition,
+                                                                     const QSize& outputSize = QSize());
 TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::TransformKeyframe& base,
                                                       const TimelineClip::TransformKeyframe& overlay);
-TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame);
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,
+                                                                   int64_t timelineFrame,
+                                                                   const QSize& outputSize = QSize());
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
-                                                                      qreal timelineFramePosition);
+                                                                      qreal timelineFramePosition,
+                                                                      const QSize& outputSize = QSize());
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame);
 TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
 qreal evaluateClipOpacityAtFrame(const TimelineClip& clip, int64_t timelineFrame);
@@ -390,6 +411,14 @@ int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
 MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds = 4.0);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);
 QImage applyClipGrade(const QImage& source, const TimelineClip::GradingKeyframe& grade);
+QVector<QPointF> defaultGradingCurvePoints();
+QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points);
+qreal sampleGradingCurveAt(const QVector<QPointF>& points,
+                           qreal xNorm,
+                           bool smoothingEnabled = true);
+QVector<quint8> gradingCurveLut8(const QVector<QPointF>& points,
+                                 int samples = TimelineClip::kGradingCurveLutSize,
+                                 bool smoothingEnabled = true);
 QImage applyEffectiveClipVisualEffectsToImage(const QImage& source, const EffectiveVisualEffects& effects);
 QImage applyMaskFeather(const QImage& source, qreal featherRadius, qreal featherGamma = 1.0);
 qreal effectiveFpsForClip(const TimelineClip& clip);
@@ -417,6 +446,12 @@ QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
                                                 const QVector<TranscriptSection>& sections,
                                                 int64_t sourceFrame,
                                                 bool* okOut = nullptr);
+bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                             const QString& speakerId,
+                                                             int64_t sourceFrame,
+                                                             qreal minConfidence,
+                                                             QPointF* locationOut,
+                                                             qreal* boxSizeOut);
 void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath = QString());
 QJsonObject transcriptSpeakerTrackingConfigSnapshot();
 bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch,

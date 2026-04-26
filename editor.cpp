@@ -3,6 +3,7 @@
 #include "clip_serialization.h"
 #include "transform_skip_aware_timing.h"
 #include "debug_controls.h"
+#include "speaker_export_harness.h"
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -28,12 +29,15 @@
 #include <QSaveFile>
 #include <QShortcut>
 #include <QSignalBlocker>
+#include <QSet>
 #include <QStandardPaths>
 #include <QStyle>
 #include <QTextCursor>
 #include <QTextStream>
 #include <QTemporaryFile>
 #include <QVBoxLayout>
+
+#include <cmath>
 
 using namespace editor;
 
@@ -280,6 +284,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
+    const bool previewShowSpeakerTrackBoxes =
+        root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
     const int autosaveIntervalMinutes = qBound(
         1,
         root.value(QStringLiteral("autosaveIntervalMinutes"))
@@ -598,6 +604,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_previewShowSpeakerTrackPointsCheckBox);
         m_previewShowSpeakerTrackPointsCheckBox->setChecked(previewShowSpeakerTrackPoints);
     }
+    if (m_speakerShowBoxStreamBoxesCheckBox) {
+        QSignalBlocker block(m_speakerShowBoxStreamBoxesCheckBox);
+        m_speakerShowBoxStreamBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
+    }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
         m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
@@ -757,6 +767,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
+        m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setBypassGrading(!gradingPreview);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
@@ -840,249 +851,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     });
 }
 
-void EditorWindow::advanceFrame()
-{
-    if (!m_timeline) return;
-
-    if (shouldUseAudioMasterClock() && m_audioEngine && m_audioEngine->audioClockAvailable() &&
-        m_audioEngine->hasPlayableAudio()) {
-        int64_t audioSample = qMax<int64_t>(0, m_audioEngine->currentSample());
-        const qreal audioFramePosition = samplesToFramePosition(audioSample);
-        const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
-
-        if (audioFrame == m_timeline->currentFrame()) {
-            ++m_audioClockStallTicks;
-            if (m_audioClockStallTicks <= m_audioClockStallThresholdTicks) {
-                if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
-                return;
-            }
-            if (debugPlaybackWarnEnabled()) {
-                qWarning().noquote()
-                    << QStringLiteral("[PLAYBACK WARN] audio clock stalled for %1 ticks at frame %2; falling back to timeline timer")
-                           .arg(m_audioClockStallTicks)
-                           .arg(audioFrame);
-            }
-        } else {
-            m_audioClockStallTicks = 0;
-            if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
-            if (m_preview) m_preview->preparePlaybackAdvanceSample(audioSample);
-            setCurrentPlaybackSample(audioSample, false, true);
-            return;
-        }
-    }
-
-    m_audioClockStallTicks = 0;
-    const qint64 tickNowMs = nowMs();
-    if (m_lastTimelineAdvanceTickMs <= 0) {
-        m_lastTimelineAdvanceTickMs = tickNowMs;
-    }
-    const qint64 elapsedMs = qMax<qint64>(0, tickNowMs - m_lastTimelineAdvanceTickMs);
-    m_lastTimelineAdvanceTickMs = tickNowMs;
-
-    const qreal speed = normalizedPlaybackSpeed(m_playbackSpeed);
-    const double elapsedSeconds = static_cast<double>(elapsedMs) / 1000.0;
-    m_timelineAdvanceCarrySamples +=
-        elapsedSeconds * static_cast<double>(kAudioSampleRate) * static_cast<double>(speed);
-    int64_t deltaSamples = static_cast<int64_t>(std::floor(m_timelineAdvanceCarrySamples));
-    m_timelineAdvanceCarrySamples -= static_cast<double>(deltaSamples);
-    if (deltaSamples <= 0) {
-        deltaSamples = qMax<int64_t>(
-            1, static_cast<int64_t>(std::llround(speed * static_cast<qreal>(kSamplesPerFrame))));
-        m_timelineAdvanceCarrySamples = 0.0;
-    }
-
-    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    const int64_t nextSample = nextPlaybackSample(m_absolutePlaybackSample, deltaSamples, ranges);
-    if (m_preview) {
-        const int64_t nextFrame =
-            qBound<int64_t>(0,
-                            static_cast<int64_t>(std::floor(samplesToFramePosition(nextSample))),
-                            m_timeline->totalFrames());
-        m_preview->preparePlaybackAdvance(nextFrame);
-    }
-    setCurrentPlaybackSample(nextSample, false, true);
-}
-
-bool EditorWindow::speechFilterPlaybackEnabled() const
-{
-    return m_speechFilterEnabledCheckBox && m_speechFilterEnabledCheckBox->isChecked();
-}
-
-int64_t EditorWindow::filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const
-{
-    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) return qMax<int64_t>(0, absoluteSample);
-
-    int64_t filteredSample = 0;
-    for (const ExportRangeSegment &range : ranges) {
-        const int64_t rangeStartSample = frameToSamples(range.startFrame);
-        const int64_t rangeEndSampleExclusive = frameToSamples(range.endFrame + 1);
-        if (absoluteSample <= rangeStartSample) return filteredSample;
-        if (absoluteSample < rangeEndSampleExclusive) return filteredSample + (absoluteSample - rangeStartSample);
-        filteredSample += (rangeEndSampleExclusive - rangeStartSample);
-    }
-    return filteredSample;
-}
-
-QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
-{
-    if (!m_timeline) return {};
-    QVector<ExportRangeSegment> ranges = m_timeline->exportRanges();
-    if (!speechFilterPlaybackEnabled()) return ranges;
-    return m_transcriptEngine.transcriptWordExportRanges(ranges,
-                                                         m_timeline->clips(),
-                                                         m_timeline->renderSyncMarkers(),
-                                                         m_transcriptPrependMs,
-                                                         m_transcriptPostpendMs);
-}
-int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
-{
-    if (!m_timeline) return 0;
-
-    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        const int64_t nextFrame = currentFrame + 1;
-        return nextFrame > m_timeline->totalFrames() ? 0 : nextFrame;
-    }
-
-    for (const ExportRangeSegment &range : ranges) {
-        if (currentFrame < range.startFrame) return range.startFrame;
-        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) return currentFrame + 1;
-    }
-    return ranges.constFirst().startFrame;
-}
-
-int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
-                                         int64_t deltaSamples,
-                                         const QVector<ExportRangeSegment>& ranges) const
-{
-    if (!m_timeline) {
-        return qMax<int64_t>(0, currentSample + qMax<int64_t>(0, deltaSamples));
-    }
-    const int64_t totalSamples = frameToSamples(m_timeline->totalFrames());
-    if (deltaSamples <= 0) {
-        return qBound<int64_t>(0, currentSample, totalSamples);
-    }
-    if (ranges.isEmpty()) {
-        int64_t next = currentSample + deltaSamples;
-        if (next > totalSamples) {
-            next %= qMax<int64_t>(1, totalSamples + 1);
-        }
-        return qBound<int64_t>(0, next, totalSamples);
-    }
-
-    auto rangeStartSample = [](const ExportRangeSegment& range) {
-        return frameToSamples(range.startFrame);
-    };
-    auto rangeEndSampleExclusive = [](const ExportRangeSegment& range) {
-        return frameToSamples(range.endFrame + 1);
-    };
-
-    int64_t sample = qMax<int64_t>(0, currentSample);
-    int64_t remaining = deltaSamples;
-    int guard = 0;
-    while (remaining > 0 && guard++ < 4096) {
-        int activeIndex = -1;
-        int nextIndex = -1;
-        for (int i = 0; i < ranges.size(); ++i) {
-            const int64_t start = rangeStartSample(ranges.at(i));
-            const int64_t endExclusive = rangeEndSampleExclusive(ranges.at(i));
-            if (sample < start) {
-                nextIndex = i;
-                break;
-            }
-            if (sample >= start && sample < endExclusive) {
-                activeIndex = i;
-                break;
-            }
-        }
-
-        if (activeIndex < 0) {
-            if (nextIndex < 0) {
-                nextIndex = 0;
-            }
-            sample = rangeStartSample(ranges.at(nextIndex));
-            continue;
-        }
-
-        const int64_t endExclusive = rangeEndSampleExclusive(ranges.at(activeIndex));
-        const int64_t available = qMax<int64_t>(0, endExclusive - sample);
-        if (remaining < available) {
-            sample += remaining;
-            remaining = 0;
-            break;
-        }
-        remaining -= available;
-        const int nextRangeIndex = (activeIndex + 1) % ranges.size();
-        sample = rangeStartSample(ranges.at(nextRangeIndex));
-    }
-
-    return qBound<int64_t>(0, sample, totalSamples);
-}
-
-int64_t EditorWindow::stepForwardFrame(int64_t currentFrame) const
-{
-    if (!m_timeline) return 0;
-    const int64_t totalFrames = m_timeline->totalFrames();
-    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        return qMin<int64_t>(totalFrames, currentFrame + 1);
-    }
-
-    for (const ExportRangeSegment& range : ranges) {
-        if (currentFrame < range.startFrame) {
-            return range.startFrame;
-        }
-        if (currentFrame >= range.startFrame && currentFrame < range.endFrame) {
-            return currentFrame + 1;
-        }
-    }
-    return totalFrames;
-}
-
-int64_t EditorWindow::stepBackwardFrame(int64_t currentFrame) const
-{
-    if (!m_timeline) return 0;
-    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        return qMax<int64_t>(0, currentFrame - 1);
-    }
-
-    for (int i = ranges.size() - 1; i >= 0; --i) {
-        const ExportRangeSegment& range = ranges.at(i);
-        if (currentFrame > range.endFrame) {
-            return range.endFrame;
-        }
-        if (currentFrame > range.startFrame && currentFrame <= range.endFrame) {
-            return currentFrame - 1;
-        }
-        if (currentFrame == range.startFrame) {
-            if (i > 0) {
-                return ranges.at(i - 1).endFrame;
-            }
-            return 0;
-        }
-    }
-    return 0;
-}
-
-QString EditorWindow::clipLabelForId(const QString &clipId) const
-{
-    if (!m_timeline) return clipId;
-    for (const TimelineClip &clip : m_timeline->clips()) {
-        if (clip.id == clipId) return clip.label;
-    }
-    return clipId;
-}
-
-QColor EditorWindow::clipColorForId(const QString &clipId) const
-{
-    if (!m_timeline) return QColor(QStringLiteral("#24303c"));
-    for (const TimelineClip &clip : m_timeline->clips()) {
-        if (clip.id == clipId) return clip.color;
-    }
-    return QColor(QStringLiteral("#24303c"));
-}
 
 
 bool EditorWindow::parseSyncActionText(const QString &text, RenderSyncAction *actionOut) const
@@ -1170,6 +938,32 @@ void EditorWindow::renderFromOutputInspector()
     }
 }
 
+RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
+{
+    RenderRequest request;
+    request.outputFormat = m_outputFormatCombo
+        ? m_outputFormatCombo->currentData().toString()
+        : QStringLiteral("mp4");
+    if (request.outputFormat.isEmpty()) {
+        request.outputFormat = QStringLiteral("mp4");
+    }
+
+    request.outputSize = QSize(
+        m_outputWidthSpin ? m_outputWidthSpin->value() : 1080,
+        m_outputHeightSpin ? m_outputHeightSpin->value() : 1920);
+    request.useProxyMedia = m_renderUseProxiesCheckBox &&
+                            m_renderUseProxiesCheckBox->isChecked();
+    request.createVideoFromImageSequence = m_createImageSequenceCheckBox &&
+                                           m_createImageSequenceCheckBox->isChecked();
+    if (request.createVideoFromImageSequence && m_imageSequenceFormatCombo) {
+        request.imageSequenceFormat = m_imageSequenceFormatCombo->currentData().toString();
+        if (request.imageSequenceFormat.isEmpty()) {
+            request.imageSequenceFormat = QStringLiteral("jpeg");
+        }
+    }
+    return request;
+}
+
 void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
 {
     RenderRequest effectiveRequest = request;
@@ -1196,10 +990,13 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
         totalFramesToRender = qMax<int64_t>(1, effectiveRequest.exportEndFrame - effectiveRequest.exportStartFrame + 1);
     }
 
+    const bool verticalRenderOutput =
+        effectiveRequest.outputSize.height() > effectiveRequest.outputSize.width();
+
     QDialog progressDialog(this);
     progressDialog.setWindowTitle(QStringLiteral("Render Export"));
     progressDialog.setWindowModality(Qt::ApplicationModal);
-    progressDialog.setMinimumWidth(560);
+    progressDialog.setMinimumWidth(verticalRenderOutput ? 920 : 560);
     progressDialog.setStyleSheet(QStringLiteral(
         "QDialog { background: #f6f3ee; }"
         "QLabel { color: #1f2430; font-size: 13px; }"
@@ -1210,32 +1007,53 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
     progressLayout->setContentsMargins(16, 16, 16, 16);
     progressLayout->setSpacing(10);
 
-    auto *renderStatusLabel = new QLabel(QStringLiteral("Preparing render..."), &progressDialog);
-    renderStatusLabel->setWordWrap(true);
-    renderStatusLabel->setAlignment(Qt::AlignCenter);
-    progressLayout->addWidget(renderStatusLabel);
-
-    auto *showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), &progressDialog);
-    showRenderPreviewCheckBox->setChecked(true);
-    progressLayout->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
-
     auto *renderPreviewLabel = new QLabel(&progressDialog);
     renderPreviewLabel->setAlignment(Qt::AlignCenter);
     renderPreviewLabel->setMinimumSize(360, 202);
     renderPreviewLabel->setStyleSheet(QStringLiteral(
         "QLabel { background: #11151c; color: #d9e1ea; border: 1px solid #c9c2b8; border-radius: 6px; }"));
     renderPreviewLabel->setText(QStringLiteral("Waiting for first rendered frame..."));
-    progressLayout->addWidget(renderPreviewLabel);
+
+    auto *renderStatusLabel = new QLabel(QStringLiteral("Preparing render..."), &progressDialog);
+    renderStatusLabel->setWordWrap(true);
+    renderStatusLabel->setAlignment(Qt::AlignCenter);
+
+    auto *showRenderPreviewCheckBox = new QCheckBox(QStringLiteral("Show Visual Preview"), &progressDialog);
+    showRenderPreviewCheckBox->setChecked(true);
 
     auto *renderSourcesLabel = new QLabel(QStringLiteral("Sources In Use (Current Frame)"), &progressDialog);
     renderSourcesLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    progressLayout->addWidget(renderSourcesLabel);
 
     auto *renderSourcesList = new QPlainTextEdit(&progressDialog);
     renderSourcesList->setReadOnly(true);
     renderSourcesList->setMinimumHeight(140);
     renderSourcesList->setPlainText(QStringLiteral("Waiting for first rendered frame..."));
-    progressLayout->addWidget(renderSourcesList);
+
+    if (verticalRenderOutput) {
+        auto *contentRow = new QHBoxLayout;
+        contentRow->setSpacing(12);
+
+        auto *leftColumn = new QVBoxLayout;
+        leftColumn->setSpacing(10);
+        leftColumn->addWidget(renderStatusLabel);
+        leftColumn->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
+        leftColumn->addWidget(renderSourcesLabel);
+        leftColumn->addWidget(renderSourcesList, 1);
+
+        auto *rightColumn = new QVBoxLayout;
+        rightColumn->setSpacing(10);
+        rightColumn->addWidget(renderPreviewLabel, 1);
+
+        contentRow->addLayout(leftColumn, 3);
+        contentRow->addLayout(rightColumn, 2);
+        progressLayout->addLayout(contentRow);
+    } else {
+        progressLayout->addWidget(renderStatusLabel);
+        progressLayout->addWidget(showRenderPreviewCheckBox, 0, Qt::AlignLeft);
+        progressLayout->addWidget(renderPreviewLabel);
+        progressLayout->addWidget(renderSourcesLabel);
+        progressLayout->addWidget(renderSourcesList);
+    }
 
     auto *renderProgressBar = new QProgressBar(&progressDialog);
     renderProgressBar->setRange(0, static_cast<int>(qMin<int64_t>(totalFramesToRender, std::numeric_limits<int>::max())));
@@ -1527,369 +1345,161 @@ void EditorWindow::renderTimelineFromOutputRequest(const RenderRequest &request)
                          message);
 }
 
-void EditorWindow::refreshProfileInspector()
+void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speakerIds)
 {
-    if (m_profileTab) {
-        m_profileTab->refresh();
+    if (!m_timeline || speakerIds.isEmpty()) {
+        return;
     }
-}
-
-void EditorWindow::runDecodeBenchmarkFromProfile()
-{
-    if (m_profileTab) {
-        m_profileTab->runDecodeBenchmark();
-    }
-}
-
-bool EditorWindow::profileBenchmarkClip(TimelineClip *out) const
-{
-    if (!out) return false;
-    if (!m_timeline) return false;
-    const TimelineClip *selected = m_timeline->selectedClip();
-    if (selected && clipHasVisuals(*selected)) {
-        *out = *selected;
-        return true;
-    }
-    const QVector<TimelineClip> clips = m_timeline->clips();
-    for (const TimelineClip &clip : clips) {
-        if (clipHasVisuals(clip)) {
-            *out = clip;
-            return true;
-        }
-    }
-    return false;
-}
-
-QStringList EditorWindow::availableHardwareDeviceTypes() const
-{
-    QStringList types;
-    for (AVHWDeviceType type = av_hwdevice_iterate_types(AV_HWDEVICE_TYPE_NONE);
-         type != AV_HWDEVICE_TYPE_NONE;
-         type = av_hwdevice_iterate_types(type)) {
-        if (const char *name = av_hwdevice_get_type_name(type)) {
-            types.push_back(QString::fromLatin1(name));
-        }
-    }
-    return types;
-}
-
-void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAudio, bool duringPlayback)
-{
-    QElapsedTimer seekUpdateTimer;
-    seekUpdateTimer.start();
-    const qint64 tickNowMs = nowMs();
-    const int64_t boundedSample = qBound<int64_t>(0, samplePosition, frameToSamples(m_timeline->totalFrames()));
-    const qreal framePosition = samplesToFramePosition(boundedSample);
-    const int64_t bounded = qBound<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)), m_timeline->totalFrames());
-    
-    playbackTrace(QStringLiteral("EditorWindow::setCurrentFrame"),
-                  QStringLiteral("requestedSample=%1 boundedSample=%2 frame=%3")
-                      .arg(samplePosition).arg(boundedSample).arg(framePosition, 0, 'f', 3));
-    
-    if (!m_timeline || bounded != m_timeline->currentFrame()) {
-        m_lastPlayheadAdvanceMs.store(tickNowMs);
-    }
-    
-    m_absolutePlaybackSample = boundedSample;
-    m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(boundedSample);
-    m_fastCurrentFrame.store(bounded);
-    
-    if (syncAudio && m_audioEngine && m_audioEngine->audioClockAvailable()) {
-        m_audioEngine->seek(bounded);
-    }
-    
-    m_timeline->setCurrentFrame(bounded);
-    m_preview->setCurrentPlaybackSample(boundedSample);
-    
-    m_ignoreSeekSignal = true;
-    m_seekSlider->setValue(static_cast<int>(qMin<int64_t>(bounded, INT_MAX)));
-    m_ignoreSeekSignal = false;
-    
-    m_timecodeLabel->setText(frameToTimecode(bounded));
-    
-    updateTransportLabels();
-    if (duringPlayback) {
-        syncTranscriptTableToPlayhead();
-        if ((tickNowMs - m_lastPlaybackUiSyncMs) >= m_playbackUiSyncMinIntervalMs) {
-            syncKeyframeTableToPlayhead();
-            syncGradingTableToPlayhead();
-            m_titlesTab->syncTableToPlayhead();
-            m_lastPlaybackUiSyncMs = tickNowMs;
-        }
-    } else {
-        m_inspectorPane->refresh();
-        syncTranscriptTableToPlayhead();
-        syncKeyframeTableToPlayhead();
-        syncGradingTableToPlayhead();
-        m_titlesTab->syncTableToPlayhead();
-        m_lastPlaybackUiSyncMs = tickNowMs;
-    }
-    if (!duringPlayback || (tickNowMs - m_lastPlaybackStateSaveMs) >= m_playbackStateSaveMinIntervalMs) {
-        scheduleSaveState();
-        m_lastPlaybackStateSaveMs = tickNowMs;
-    }
-
-    const qint64 elapsedMs = seekUpdateTimer.elapsed();
-    m_lastSetCurrentPlaybackSampleDurationMs.store(elapsedMs);
-    qint64 maxDuration = m_maxSetCurrentPlaybackSampleDurationMs.load();
-    while (elapsedMs > maxDuration &&
-           !m_maxSetCurrentPlaybackSampleDurationMs.compare_exchange_weak(maxDuration, elapsedMs)) {
-    }
-    if (elapsedMs >= m_slowSeekWarnThresholdMs) {
-        m_setCurrentPlaybackSampleSlowCount.fetch_add(1);
-        if (debugPlaybackWarnEnabled()) {
-            qWarning().noquote()
-                << QStringLiteral("[PLAYBACK WARN] slow setCurrentPlaybackSample: %1 ms | frame=%2 duringPlayback=%3 syncAudio=%4")
-                       .arg(elapsedMs)
-                       .arg(bounded)
-                       .arg(duringPlayback)
-                       .arg(syncAudio);
-        }
-    } else if (debugPlaybackVerboseEnabled()) {
-        playbackTrace(QStringLiteral("EditorWindow::setCurrentPlaybackSample.complete"),
-                      QStringLiteral("elapsed_ms=%1 frame=%2 duringPlayback=%3 syncAudio=%4")
-                          .arg(elapsedMs)
-                          .arg(bounded)
-                          .arg(duringPlayback)
-                          .arg(syncAudio));
-    }
-}
-
-void EditorWindow::setCurrentFrame(int64_t frame, bool syncAudio)
-{
-    setCurrentPlaybackSample(frameToSamples(frame), syncAudio);
-}
-
-EditorWindow::PlaybackRuntimeConfig EditorWindow::playbackRuntimeConfig() const
-{
-    PlaybackRuntimeConfig config;
-    config.speed = m_playbackSpeed;
-    config.clockSource = m_playbackClockSource;
-    config.audioWarpMode = m_playbackAudioWarpMode;
-    return config;
-}
-
-void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& requestedConfig)
-{
-    const qreal normalizedSpeed = normalizedPlaybackSpeed(requestedConfig.speed);
-    const PlaybackAudioWarpMode normalizedWarpMode =
-        normalizedPlaybackAudioWarpMode(normalizedSpeed, requestedConfig.audioWarpMode);
-    const PlaybackClockSource normalizedClockSource = requestedConfig.clockSource;
-
-    const bool speedChanged = qAbs(m_playbackSpeed - normalizedSpeed) >= 0.0001;
-    const bool clockChanged = m_playbackClockSource != normalizedClockSource;
-    const bool warpChanged = m_playbackAudioWarpMode != normalizedWarpMode;
-    if (!speedChanged && !clockChanged && !warpChanged) {
+    const TimelineClip* clip = m_timeline->selectedClip();
+    if (!clip || clip->durationFrames <= 0) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Export Video"),
+                                 QStringLiteral("Select a clip first."));
         return;
     }
 
-    m_playbackSpeed = normalizedSpeed;
-    m_playbackClockSource = normalizedClockSource;
-    m_playbackAudioWarpMode = normalizedWarpMode;
-
-    if (m_playbackSpeedCombo) {
-        const int speedIndex = m_playbackSpeedCombo->findData(normalizedSpeed);
-        if (speedIndex >= 0 && speedIndex != m_playbackSpeedCombo->currentIndex()) {
-            QSignalBlocker blocker(m_playbackSpeedCombo);
-            m_playbackSpeedCombo->setCurrentIndex(speedIndex);
-        }
-    }
-    if (m_playbackClockSourceCombo) {
-        const int index =
-            m_playbackClockSourceCombo->findData(playbackClockSourceToString(normalizedClockSource));
-        if (index >= 0 && m_playbackClockSourceCombo->currentIndex() != index) {
-            QSignalBlocker blocker(m_playbackClockSourceCombo);
-            m_playbackClockSourceCombo->setCurrentIndex(index);
-        }
-    }
-    if (m_playbackAudioWarpModeCombo) {
-        const int index =
-            m_playbackAudioWarpModeCombo->findData(playbackAudioWarpModeToString(normalizedWarpMode));
-        if (index >= 0 && m_playbackAudioWarpModeCombo->currentIndex() != index) {
-            QSignalBlocker blocker(m_playbackAudioWarpModeCombo);
-            m_playbackAudioWarpModeCombo->setCurrentIndex(index);
-        }
-    }
-
-    if (m_audioEngine) {
-        m_audioEngine->setPlaybackWarpMode(normalizedWarpMode);
-        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-    }
-    updatePlaybackTimerInterval();
-    reconcileActivePlaybackAudioState();
-    updateTransportLabels();
-    if (!m_loadingState) {
-        scheduleSaveState();
-    }
-}
-
-void EditorWindow::setPlaybackSpeed(qreal speed)
-{
-    PlaybackRuntimeConfig config = playbackRuntimeConfig();
-    config.speed = speed;
-    applyPlaybackRuntimeConfig(config);
-}
-
-void EditorWindow::setPlaybackClockSource(PlaybackClockSource source)
-{
-    PlaybackRuntimeConfig config = playbackRuntimeConfig();
-    config.clockSource = source;
-    applyPlaybackRuntimeConfig(config);
-}
-
-void EditorWindow::setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode)
-{
-    PlaybackRuntimeConfig config = playbackRuntimeConfig();
-    config.audioWarpMode = mode;
-    applyPlaybackRuntimeConfig(config);
-}
-
-bool EditorWindow::shouldUseAudioMasterClock() const
-{
-    return ::shouldUseAudioMasterClock(m_playbackClockSource,
-                                       m_playbackAudioWarpMode,
-                                       m_playbackSpeed,
-                                       m_audioEngine && m_audioEngine->hasPlayableAudio());
-}
-
-qreal EditorWindow::effectiveAudioWarpRate() const
-{
-    return effectivePlaybackAudioWarpRate(m_playbackSpeed, m_playbackAudioWarpMode);
-}
-
-void EditorWindow::reconcileActivePlaybackAudioState()
-{
-    if (!playbackActive() || !m_audioEngine || !m_timeline) {
-        return;
-    }
-    const PlaybackAudioWarpMode runtimeWarpMode =
-        normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
-    const bool canRunAudioAtRequestedSpeed =
-        qAbs(m_playbackSpeed - 1.0) < 0.0001 ||
-        runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
-    const bool shouldRunAudio =
-        m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed;
-    const bool audioRunning = m_audioEngine->audioClockAvailable();
-    if (shouldRunAudio) {
-        m_audioEngine->setPlaybackWarpMode(runtimeWarpMode);
-        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-        if (!audioRunning) {
-            m_audioEngine->start(m_timeline->currentFrame());
-        }
-    } else if (audioRunning) {
-        m_audioEngine->stop();
-    }
-}
-
-void EditorWindow::updatePlaybackTimerInterval()
-{
-    const qreal speed = qBound<qreal>(0.1, m_playbackSpeed, 3.0);
-    if (!m_timeline) {
-        const int intervalMs = qMax(1, qRound(1000.0 / (kTimelineFps * speed)));
-        m_playbackTimer.setInterval(intervalMs);
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
+    QFile transcriptFile(transcriptPath);
+    if (!transcriptFile.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Export Video"),
+                             QStringLiteral("Transcript not found for the selected clip."));
         return;
     }
 
-    // Determine effective FPS for playback timer
-    qreal effectiveFps = kTimelineFps;
-
-    // If no audio master, use the video clip's FPS
-    if (!shouldUseAudioMasterClock()) {
-        for (const TimelineClip& clip : m_timeline->clips()) {
-            const int64_t currentFrame = m_timeline->currentFrame();
-            // Find clip that contains current frame
-            if (currentFrame >= clip.startFrame && currentFrame < clip.startFrame + clip.durationFrames) {
-                const qreal clipFps = effectiveFpsForClip(clip);
-                if (clipFps > 0) {
-                    effectiveFps = clipFps;
-                    break;
-                }
-            }
-        }
-    }
-
-    const int intervalMs = qMax(1, qRound(1000.0 / (effectiveFps * speed)));
-    m_playbackTimer.setInterval(intervalMs);
-}
-
-void EditorWindow::setPlaybackActive(bool playing)
-{
-    if (playing == playbackActive()) {
-        updateTransportLabels();
+    QJsonParseError parseError;
+    const QJsonDocument transcriptDoc =
+        QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+        QMessageBox::warning(this,
+                             QStringLiteral("Export Video"),
+                             QStringLiteral("Transcript JSON is invalid for the selected clip."));
         return;
     }
 
-    if (playing) {
-        m_timelineAdvanceCarrySamples = 0.0;
-        m_lastTimelineAdvanceTickMs = nowMs();
-        if (m_preview &&
-            !m_preview->warmPlaybackLookahead(m_playbackStartLookaheadFrames,
-                                              m_playbackStartLookaheadTimeoutMs)) {
-            qWarning().noquote()
-                << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for %1 buffered future frames timed out")
-                       .arg(m_playbackStartLookaheadFrames);
-            updateTransportLabels();
+    auto appendMergedRange = [](QVector<ExportRangeSegment>& ranges, int64_t startFrame, int64_t endFrame) {
+        if (endFrame < startFrame) {
             return;
         }
+        if (ranges.isEmpty() || startFrame > ranges.constLast().endFrame + 1) {
+            ranges.push_back(ExportRangeSegment{startFrame, endFrame});
+            return;
+        }
+        ranges.last().endFrame = qMax(ranges.last().endFrame, endFrame);
+    };
 
-        const auto ranges = effectivePlaybackRanges();
-        if (m_audioEngine) {
-            m_audioEngine->setExportRanges(ranges);
-            m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
-            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
-            m_audioEngine->setPlaybackWarpMode(
-                normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode));
-            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+    QSet<QString> selectedSpeakerSet;
+    selectedSpeakerSet.reserve(speakerIds.size());
+    for (const QString& speakerId : speakerIds) {
+        const QString trimmed = speakerId.trimmed();
+        if (!trimmed.isEmpty()) {
+            selectedSpeakerSet.insert(trimmed);
         }
-        const PlaybackAudioWarpMode runtimeWarpMode =
-            normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
-        const bool canRunAudioAtRequestedSpeed =
-            qAbs(m_playbackSpeed - 1.0) < 0.0001 ||
-            runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
-        if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
-            m_audioEngine->start(m_timeline->currentFrame());
-        }
-        if (m_preview) {
-            m_preview->setExportRanges(ranges);
-        }
-        advanceFrame();
-        m_playbackTimer.start();
-        m_fastPlaybackActive.store(true);
-        m_preview->setPlaybackState(true);
-    } else {
-        m_timelineAdvanceCarrySamples = 0.0;
-        m_lastTimelineAdvanceTickMs = 0;
-        if (m_audioEngine) {
-            m_audioEngine->stop();
-        }
-        m_playbackTimer.stop();
-        m_fastPlaybackActive.store(false);
-        m_preview->setPlaybackState(false);
     }
-    updateTransportLabels();
-    m_inspectorPane->refresh();
+    if (selectedSpeakerSet.isEmpty()) {
+        return;
+    }
+
+    QVector<ExportRangeSegment> sourceWordRanges;
+    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segmentValue : segments) {
+        const QJsonObject segmentObj = segmentValue.toObject();
+        const QString segmentSpeaker =
+            segmentObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            const QString wordText = wordObj.value(QStringLiteral("word")).toString().trimmed();
+            if (wordText.isEmpty()) {
+                continue;
+            }
+            QString wordSpeaker = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
+            if (wordSpeaker.isEmpty()) {
+                wordSpeaker = segmentSpeaker;
+            }
+            if (!selectedSpeakerSet.contains(wordSpeaker)) {
+                continue;
+            }
+            const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
+            if (startSeconds < 0.0 || endSeconds < startSeconds) {
+                continue;
+            }
+            const int64_t startFrame =
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+            const int64_t endFrame =
+                qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)) - 1);
+            appendMergedRange(sourceWordRanges, startFrame, endFrame);
+        }
+    }
+    if (sourceWordRanges.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Export Video"),
+                                 QStringLiteral("No spoken words found for the selected speakers in this clip."));
+        return;
+    }
+
+    const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+    QVector<ExportRangeSegment> timelineRanges;
+    timelineRanges.reserve(sourceWordRanges.size());
+    int sourceRangeIndex = 0;
+    const int64_t clipStartFrame = clip->startFrame;
+    const int64_t clipEndFrame = clip->startFrame + clip->durationFrames - 1;
+    for (int64_t timelineFrame = clipStartFrame; timelineFrame <= clipEndFrame; ++timelineFrame) {
+        const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
+            *clip, frameToSamples(timelineFrame), markers);
+        while (sourceRangeIndex < sourceWordRanges.size() &&
+               sourceWordRanges.at(sourceRangeIndex).endFrame < transcriptFrame) {
+            ++sourceRangeIndex;
+        }
+        if (sourceRangeIndex >= sourceWordRanges.size()) {
+            break;
+        }
+        const ExportRangeSegment& sourceRange = sourceWordRanges.at(sourceRangeIndex);
+        if (transcriptFrame < sourceRange.startFrame || transcriptFrame > sourceRange.endFrame) {
+            continue;
+        }
+        appendMergedRange(timelineRanges, timelineFrame, timelineFrame);
+    }
+    if (timelineRanges.isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Video"),
+            QStringLiteral("Could not map selected speaker words to timeline frames."));
+        return;
+    }
+
+    setPlaybackActive(false);
+
+    RenderRequest request = buildRenderRequestFromOutputControls();
+    const QString suggestedBase = QStringLiteral("speaker_export_%1")
+        .arg(selectedSpeakerSet.size() == 1 ? *selectedSpeakerSet.constBegin()
+                                            : QStringLiteral("multi"));
+    const QString selectedPath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Export Video"),
+        QDir::current().filePath(QStringLiteral("%1.%2").arg(suggestedBase, request.outputFormat)),
+        QStringLiteral("Video Files (*.%1);;All Files (*)").arg(request.outputFormat));
+    if (selectedPath.isEmpty()) {
+        return;
+    }
+
+    request.outputPath = selectedPath;
+    m_lastRenderOutputPath = selectedPath;
     scheduleSaveState();
+
+    request.clips = m_timeline->clips();
+    request.tracks = m_timeline->tracks();
+    request.renderSyncMarkers = markers;
+    request.exportRanges = timelineRanges;
+    request.exportStartFrame = timelineRanges.constFirst().startFrame;
+    request.exportEndFrame = timelineRanges.constLast().endFrame;
+    renderTimelineFromOutputRequest(request);
 }
 
-void EditorWindow::togglePlayback()
-{
-    setPlaybackActive(!playbackActive());
-}
-
-void EditorWindow::onRestartDecodersRequested()
-{
-    qDebug() << "Restart All Decoders requested";
-    // TODO: Implement actual decoder restart
-    // For now, just log and refresh the preview
-    if (m_preview) {
-        m_preview->update();
-    }
-}
-
-bool EditorWindow::playbackActive() const
-{
-    return m_fastPlaybackActive.load();
-}
 
 namespace {
 
@@ -1907,6 +1517,20 @@ bool zeroCopyPreferredEnvironmentDetected() {
 
 int main(int argc, char **argv)
 {
+    bool runHeadlessSpeakerHarness = false;
+    for (int i = 1; i < argc; ++i) {
+        if (qstrcmp(argv[i], "--speaker-export-harness") == 0) {
+            runHeadlessSpeakerHarness = true;
+            break;
+        }
+    }
+    if (runHeadlessSpeakerHarness &&
+        qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") &&
+        qEnvironmentVariableIsEmpty("DISPLAY") &&
+        qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+    }
+
     QApplication app(argc, argv);
     QApplication::setApplicationName(QStringLiteral("PanelTalkEditor"));
     qRegisterMetaType<editor::FrameHandle>();
@@ -1948,12 +1572,59 @@ int main(int argc, char **argv)
     QCommandLineOption noRestOption(
         QStringList{QStringLiteral("no-rest")},
         QStringLiteral("Disable the local REST/control server."));
+    QCommandLineOption speakerHarnessOption(
+        QStringList{QStringLiteral("speaker-export-harness")},
+        QStringLiteral("Run speaker export harness without showing the main window."));
+    QCommandLineOption stateOption(
+        QStringList{QStringLiteral("state")},
+        QStringLiteral("Path to state JSON for harness mode."),
+        QStringLiteral("path"));
+    QCommandLineOption outputOption(
+        QStringList{QStringLiteral("output")},
+        QStringLiteral("Output path for harness mode."),
+        QStringLiteral("path"));
+    QCommandLineOption speakerOption(
+        QStringList{QStringLiteral("speaker-id")},
+        QStringLiteral("Speaker id(s) for harness mode. Repeat or use comma-separated values."),
+        QStringLiteral("id"));
+    QCommandLineOption clipOption(
+        QStringList{QStringLiteral("clip-id")},
+        QStringLiteral("Clip id override for harness mode."),
+        QStringLiteral("id"));
+    QCommandLineOption formatOption(
+        QStringList{QStringLiteral("format")},
+        QStringLiteral("Output format override for harness mode."),
+        QStringLiteral("format"));
+    QCommandLineOption widthOption(
+        QStringList{QStringLiteral("width")},
+        QStringLiteral("Output width override for harness mode."),
+        QStringLiteral("pixels"));
+    QCommandLineOption heightOption(
+        QStringList{QStringLiteral("height")},
+        QStringLiteral("Output height override for harness mode."),
+        QStringLiteral("pixels"));
+    QCommandLineOption useProxyOption(
+        QStringList{QStringLiteral("use-proxy")},
+        QStringLiteral("Force proxy rendering in harness mode."));
+    QCommandLineOption noProxyOption(
+        QStringList{QStringLiteral("no-proxy")},
+        QStringLiteral("Disable proxy rendering in harness mode."));
     parser.addOption(debugPlaybackOption);
     parser.addOption(debugCacheOption);
     parser.addOption(debugDecodeOption);
     parser.addOption(debugAllOption);
     parser.addOption(controlPortOption);
     parser.addOption(noRestOption);
+    parser.addOption(speakerHarnessOption);
+    parser.addOption(stateOption);
+    parser.addOption(outputOption);
+    parser.addOption(speakerOption);
+    parser.addOption(clipOption);
+    parser.addOption(formatOption);
+    parser.addOption(widthOption);
+    parser.addOption(heightOption);
+    parser.addOption(useProxyOption);
+    parser.addOption(noProxyOption);
     parser.process(app);
 
     if (parser.isSet(debugAllOption)) {
@@ -1990,6 +1661,29 @@ int main(int argc, char **argv)
 
     if (parser.isSet(noRestOption)) {
         controlPort = 0;
+    }
+
+    if (parser.isSet(speakerHarnessOption)) {
+        SpeakerExportHarnessConfig config;
+        config.statePath = parser.value(stateOption);
+        config.outputPath = parser.value(outputOption);
+        config.outputFormat = parser.value(formatOption);
+        config.clipId = parser.value(clipOption);
+        config.speakerIds = parser.values(speakerOption);
+        if (parser.isSet(widthOption) || parser.isSet(heightOption)) {
+            bool widthOk = false;
+            bool heightOk = false;
+            const int parsedWidth = parser.value(widthOption).toInt(&widthOk);
+            const int parsedHeight = parser.value(heightOption).toInt(&heightOk);
+            config.outputSize = QSize(widthOk ? parsedWidth : 1080,
+                                      heightOk ? parsedHeight : 1920);
+            config.outputSizeOverride = true;
+        }
+        if (parser.isSet(useProxyOption) || parser.isSet(noProxyOption)) {
+            config.useProxyOverride = true;
+            config.useProxyMedia = parser.isSet(useProxyOption) && !parser.isSet(noProxyOption);
+        }
+        return runSpeakerExportHarness(config);
     }
 
     EditorWindow window(controlPort);

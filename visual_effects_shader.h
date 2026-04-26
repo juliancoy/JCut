@@ -22,8 +22,10 @@ inline const char* visualEffectsFragmentShaderSource() {
     return R"(
         uniform sampler2D u_texture;
         uniform sampler2D u_texture_uv;
+        uniform sampler2D u_curve_lut;
         uniform float u_texture_mode;
         uniform float u_unpremultiply_input;
+        uniform float u_curve_enabled;
         uniform float u_brightness;
         uniform float u_contrast;
         uniform float u_saturation;
@@ -99,6 +101,16 @@ inline const char* visualEffectsFragmentShaderSource() {
 
             float highlightWeight = smoothHighlights(luminance);
             rgb += u_highlights * highlightWeight;
+
+            if (u_curve_enabled > 0.5) {
+                float rr = texture2D(u_curve_lut, vec2(clamp(rgb.r, 0.0, 1.0), 0.5)).r;
+                float gg = texture2D(u_curve_lut, vec2(clamp(rgb.g, 0.0, 1.0), 0.5)).g;
+                float bb = texture2D(u_curve_lut, vec2(clamp(rgb.b, 0.0, 1.0), 0.5)).b;
+                rr = texture2D(u_curve_lut, vec2(clamp(rr, 0.0, 1.0), 0.5)).a;
+                gg = texture2D(u_curve_lut, vec2(clamp(gg, 0.0, 1.0), 0.5)).a;
+                bb = texture2D(u_curve_lut, vec2(clamp(bb, 0.0, 1.0), 0.5)).a;
+                rgb = vec3(rr, gg, bb);
+            }
 
             rgb = ((rgb - 0.5) * u_contrast) + 0.5 + vec3(u_brightness);
             rgb = mix(vec3(luminance), rgb, u_saturation);

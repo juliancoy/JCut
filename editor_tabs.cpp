@@ -192,6 +192,10 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerPickReference2Button(),
             m_inspectorPane->speakerClearReferencesButton(),
             m_inspectorPane->speakerRunAutoTrackButton(),
+            m_inspectorPane->speakerBoxstreamSettingsButton(),
+            m_inspectorPane->speakerEnableTrackingButton(),
+            m_inspectorPane->speakerDisableTrackingButton(),
+            m_inspectorPane->speakerDeletePointstreamButton(),
             m_inspectorPane->speakerGuideButton(),
             m_inspectorPane->speakerTrackingStatusLabel(),
             m_inspectorPane->speakerFramingTargetXSpin(),
@@ -199,7 +203,11 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerFramingTargetBoxSpin(),
             m_inspectorPane->speakerFramingZoomEnabledCheckBox(),
             m_inspectorPane->speakerApplyFramingToClipCheckBox(),
-            m_inspectorPane->speakerClipFramingStatusLabel()},
+            m_inspectorPane->speakerClipFramingStatusLabel(),
+            m_inspectorPane->speakerRefsChipLabel(),
+            m_inspectorPane->speakerPointstreamChipLabel(),
+            m_inspectorPane->speakerTrackingChipButton(),
+            m_inspectorPane->speakerStabilizeChipButton()},
         SpeakersTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { scheduleSaveState(); },
@@ -215,6 +223,16 @@ void EditorWindow::createSpeakersTab()
             },
             [this]() -> QSize {
                 return m_preview ? m_preview->outputSize() : QSize(1080, 1920);
+            },
+            [this]() {
+                if (!m_preview || !m_timeline) {
+                    return;
+                }
+                m_preview->setTimelineClips(m_timeline->clips());
+                m_preview->update();
+            },
+            [this](const QStringList& speakerIds) {
+                exportVideoForSpeakersOnSelectedClip(speakerIds);
             }});
     m_speakersTab->wire();
 
@@ -255,7 +273,10 @@ void EditorWindow::createGradingTab()
             m_gradingKeyframeTable,
             m_gradingAutoScrollCheckBox, m_gradingFollowCurrentCheckBox,
             m_gradingKeyAtPlayheadButton,
+            m_inspectorPane->gradingAutoOpposeButton(),
             m_inspectorPane->gradingCurveChannelCombo(),
+            m_inspectorPane->gradingCurveThreePointLockCheckBox(),
+            m_inspectorPane->gradingCurveSmoothingCheckBox(),
             m_inspectorPane->gradingHistogramWidget()},
         GradingTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },

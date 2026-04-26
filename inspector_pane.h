@@ -100,14 +100,23 @@ public:
     QPushButton *speakerPickReference2Button() const { return m_speakerPickReference2Button; }
     QPushButton *speakerClearReferencesButton() const { return m_speakerClearReferencesButton; }
     QPushButton *speakerRunAutoTrackButton() const { return m_speakerRunAutoTrackButton; }
+    QPushButton *speakerBoxstreamSettingsButton() const { return m_speakerBoxstreamSettingsButton; }
+    QPushButton *speakerEnableTrackingButton() const { return m_speakerEnableTrackingButton; }
+    QPushButton *speakerDisableTrackingButton() const { return m_speakerDisableTrackingButton; }
+    QPushButton *speakerDeletePointstreamButton() const { return m_speakerDeletePointstreamButton; }
     QPushButton *speakerGuideButton() const { return m_speakerGuideButton; }
     QLabel *speakerTrackingStatusLabel() const { return m_speakerTrackingStatusLabel; }
     QDoubleSpinBox *speakerFramingTargetXSpin() const { return m_speakerFramingTargetXSpin; }
     QDoubleSpinBox *speakerFramingTargetYSpin() const { return m_speakerFramingTargetYSpin; }
     QDoubleSpinBox *speakerFramingTargetBoxSpin() const { return m_speakerFramingTargetBoxSpin; }
     QCheckBox *speakerFramingZoomEnabledCheckBox() const { return m_speakerFramingZoomEnabledCheckBox; }
+    QCheckBox *speakerShowBoxStreamBoxesCheckBox() const { return m_speakerShowBoxStreamBoxesCheckBox; }
     QCheckBox *speakerApplyFramingToClipCheckBox() const { return m_speakerApplyFramingToClipCheckBox; }
     QLabel *speakerClipFramingStatusLabel() const { return m_speakerClipFramingStatusLabel; }
+    QLabel *speakerRefsChipLabel() const { return m_speakerRefsChipLabel; }
+    QLabel *speakerPointstreamChipLabel() const { return m_speakerPointstreamChipLabel; }
+    QPushButton *speakerTrackingChipButton() const { return m_speakerTrackingChipButton; }
+    QPushButton *speakerStabilizeChipButton() const { return m_speakerStabilizeChipButton; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -117,10 +126,13 @@ public:
     QPushButton *gradingKeyAtPlayheadButton() const { return m_gradingKeyAtPlayheadButton; }
     QPushButton *gradingFadeInButton() const { return m_gradingFadeInButton; }
     QPushButton *gradingFadeOutButton() const { return m_gradingFadeOutButton; }
+    QPushButton *gradingAutoOpposeButton() const { return m_gradingAutoOpposeButton; }
     QDoubleSpinBox *gradingFadeDurationSpin() const { return m_gradingFadeDurationSpin; }
     QComboBox *gradingCurveChannelCombo() const { return m_gradingCurveChannelCombo; }
     QComboBox *gradingEditModeCombo() const { return m_gradingEditModeCombo; }
     GradingHistogramWidget *gradingHistogramWidget() const { return m_gradingHistogramWidget; }
+    QCheckBox *gradingCurveThreePointLockCheckBox() const { return m_gradingCurveThreePointLockCheckBox; }
+    QCheckBox *gradingCurveSmoothingCheckBox() const { return m_gradingCurveSmoothingCheckBox; }
     
     QLabel *effectsPathLabel() const { return m_effectsPathLabel; }
     QDoubleSpinBox *maskFeatherSpin() const { return m_maskFeatherSpin; }
@@ -316,6 +328,7 @@ private:
     QPushButton *m_gradingKeyAtPlayheadButton = nullptr;
     QPushButton *m_gradingFadeInButton = nullptr;
     QPushButton *m_gradingFadeOutButton = nullptr;
+    QPushButton *m_gradingAutoOpposeButton = nullptr;
     QPushButton *m_opacityKeyAtPlayheadButton = nullptr;
     QPushButton *m_opacityFadeInButton = nullptr;
     QPushButton *m_opacityFadeOutButton = nullptr;
@@ -325,6 +338,8 @@ private:
     QWidget *m_gradingCurvesPanel = nullptr;
     QComboBox *m_gradingCurveChannelCombo = nullptr;
     GradingHistogramWidget *m_gradingHistogramWidget = nullptr;
+    QCheckBox *m_gradingCurveThreePointLockCheckBox = nullptr;
+    QCheckBox *m_gradingCurveSmoothingCheckBox = nullptr;
     QDoubleSpinBox *m_opacityFadeDurationSpin = nullptr;
 
     QLabel *m_effectsPathLabel = nullptr;
@@ -479,14 +494,23 @@ private:
     QPushButton *m_speakerPickReference2Button = nullptr;
     QPushButton *m_speakerClearReferencesButton = nullptr;
     QPushButton *m_speakerRunAutoTrackButton = nullptr;
+    QPushButton *m_speakerBoxstreamSettingsButton = nullptr;
+    QPushButton *m_speakerEnableTrackingButton = nullptr;
+    QPushButton *m_speakerDisableTrackingButton = nullptr;
+    QPushButton *m_speakerDeletePointstreamButton = nullptr;
     QPushButton *m_speakerGuideButton = nullptr;
     QLabel *m_speakerTrackingStatusLabel = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetXSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetBoxSpin = nullptr;
     QCheckBox *m_speakerFramingZoomEnabledCheckBox = nullptr;
+    QCheckBox *m_speakerShowBoxStreamBoxesCheckBox = nullptr;
     QCheckBox *m_speakerApplyFramingToClipCheckBox = nullptr;
     QLabel *m_speakerClipFramingStatusLabel = nullptr;
+    QLabel *m_speakerRefsChipLabel = nullptr;
+    QLabel *m_speakerPointstreamChipLabel = nullptr;
+    QPushButton *m_speakerTrackingChipButton = nullptr;
+    QPushButton *m_speakerStabilizeChipButton = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;

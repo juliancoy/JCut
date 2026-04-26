@@ -57,6 +57,7 @@ public:
     void setBackgroundColor(const QColor& color);
     void setPreviewZoom(qreal zoom);
     void setShowSpeakerTrackPoints(bool show);
+    void setShowSpeakerTrackBoxes(bool show);
     void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setTitleOverlayInteractionOnly(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
@@ -147,6 +148,12 @@ private:
         int64_t frame = 0;
         qreal x = 0.5;
         qreal y = 0.5;
+        qreal boxSizeNorm = -1.0;
+        bool hasBox = false;
+        qreal boxLeft = 0.0;
+        qreal boxTop = 0.0;
+        qreal boxRight = 0.0;
+        qreal boxBottom = 0.0;
         QString speakerId;
     };
     struct SpeakerTrackPointCacheEntry {
@@ -268,12 +275,14 @@ private:
     QSize m_outputSize = QSize(1080, 1920);
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
+    bool m_showSpeakerTrackBoxes = false;
     qreal m_previewZoom = 1.0;
     QPointF m_previewPanOffset;
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;
     mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;
     mutable QHash<QString, SpeakerTrackPointCacheEntry> m_speakerTrackPointsCache;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
+    GLuint m_curveLutTextureId = 0;
     QHash<QString, editor::GlTextureCacheEntry> m_transcriptTextureCache;
     QHash<QString, FrameHandle> m_lastPresentedFrames;
     mutable QJsonObject m_lastFrameSelectionStats;

@@ -137,6 +137,7 @@ private:
     void handleRequest(QTcpSocket* socket, const Request& request);
 
     bool handleRoot(QTcpSocket* socket, const Request& request);
+    bool handleParadigms(QTcpSocket* socket, const Request& request);
     bool handleHealth(QTcpSocket* socket, const Request& request);
     bool handleVersion(QTcpSocket* socket, const Request& request);
     bool handleUiBoundRouteGuard(QTcpSocket* socket, const Request& request);

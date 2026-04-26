@@ -3,7 +3,56 @@
 #include "polygon_triangulation.h"
 #include "titles.h"
 
+#include <QByteArray>
+
 namespace render_detail {
+
+namespace {
+void uploadCurveLutTexture(GLuint* textureId, const TimelineClip::GradingKeyframe& grade) {
+    if (!textureId) {
+        return;
+    }
+    const QVector<quint8> lutR = gradingCurveLut8(
+        grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutG = gradingCurveLut8(
+        grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutB = gradingCurveLut8(
+        grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutL = gradingCurveLut8(
+        grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    if (lutR.isEmpty() || lutG.isEmpty() || lutB.isEmpty() || lutL.isEmpty()) {
+        return;
+    }
+
+    QByteArray rgbaData;
+    rgbaData.resize(TimelineClip::kGradingCurveLutSize * 4);
+    for (int i = 0; i < TimelineClip::kGradingCurveLutSize; ++i) {
+        rgbaData[i * 4 + 0] = static_cast<char>(lutR[i]);
+        rgbaData[i * 4 + 1] = static_cast<char>(lutG[i]);
+        rgbaData[i * 4 + 2] = static_cast<char>(lutB[i]);
+        rgbaData[i * 4 + 3] = static_cast<char>(lutL[i]);
+    }
+    if (*textureId == 0) {
+        glGenTextures(1, textureId);
+    }
+    glBindTexture(GL_TEXTURE_2D, *textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D,
+                 0,
+                 GL_RGBA,
+                 TimelineClip::kGradingCurveLutSize,
+                 1,
+                 0,
+                 GL_RGBA,
+                 GL_UNSIGNED_BYTE,
+                 rgbaData.constData());
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+}
 
 QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
                                         const QVector<TimelineTrack>& tracks) {
@@ -311,7 +360,8 @@ public:
                 // Render title texture with transformations
                 const QRect fitted = fitRect(m_outputSize, m_outputSize); // Title fills output
                 const TimelineClip::TransformKeyframe transform =
-                    evaluateClipRenderTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+                    evaluateClipRenderTransformAtPosition(
+                        clip, static_cast<qreal>(timelineFrame), m_outputSize);
                 const QPointF center(fitted.center().x() + transform.translationX,
                                      fitted.center().y() + transform.translationY);
 
@@ -343,13 +393,23 @@ public:
                 m_shaderProgram->setUniformValue("u_texel_size", QVector2D(0.0f, 0.0f));
                 m_shaderProgram->setUniformValue("u_texture", 0);
                 m_shaderProgram->setUniformValue("u_texture_uv", 1);
+                m_shaderProgram->setUniformValue("u_curve_lut", 2);
+                m_shaderProgram->setUniformValue("u_curve_enabled", 1.0f);
                 m_shaderProgram->setUniformValue("u_texture_mode", 0.0f); // RGB texture mode
                 m_shaderProgram->setUniformValue("u_unpremultiply_input", 0.0f);
+                TimelineClip::GradingKeyframe identityGrade;
+                identityGrade.curvePointsR = defaultGradingCurvePoints();
+                identityGrade.curvePointsG = defaultGradingCurvePoints();
+                identityGrade.curvePointsB = defaultGradingCurvePoints();
+                identityGrade.curvePointsLuma = defaultGradingCurvePoints();
+                uploadCurveLutTexture(&m_curveLutTextureId, identityGrade);
 
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, titleTextureEntry.textureId);
                 glActiveTexture(GL_TEXTURE1);
                 glBindTexture(GL_TEXTURE_2D, 0);
+                glActiveTexture(GL_TEXTURE2);
+                glBindTexture(GL_TEXTURE_2D, m_curveLutTextureId);
                 
                 m_quadBuffer.bind();
                 const int positionLoc = m_shaderProgram->attributeLocation("a_position");
@@ -363,6 +423,8 @@ public:
                 m_shaderProgram->disableAttributeArray(texCoordLoc);
                 m_quadBuffer.release();
                 glActiveTexture(GL_TEXTURE1);
+                glBindTexture(GL_TEXTURE_2D, 0);
+                glActiveTexture(GL_TEXTURE2);
                 glBindTexture(GL_TEXTURE_2D, 0);
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, 0);
@@ -419,7 +481,8 @@ public:
 
             const QRect fitted = fitRect(frame.size(), m_outputSize);
             const TimelineClip::TransformKeyframe transform =
-                evaluateClipRenderTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+                evaluateClipRenderTransformAtPosition(
+                    clip, static_cast<qreal>(timelineFrame), m_outputSize);
             const QPointF center(fitted.center().x() + transform.translationX,
                                  fitted.center().y() + transform.translationY);
 
@@ -503,8 +566,11 @@ public:
             m_shaderProgram->setUniformValue("u_texel_size", QVector2D(texelSizeX, texelSizeY));
             m_shaderProgram->setUniformValue("u_texture", 0);
             m_shaderProgram->setUniformValue("u_texture_uv", 1);
+            m_shaderProgram->setUniformValue("u_curve_lut", 2);
+            m_shaderProgram->setUniformValue("u_curve_enabled", 1.0f);
             m_shaderProgram->setUniformValue("u_texture_mode", textureEntry->usesYuvTextures ? 1.0f : 0.0f);
             m_shaderProgram->setUniformValue("u_unpremultiply_input", 1.0f);
+            uploadCurveLutTexture(&m_curveLutTextureId, grade);
 
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, textureEntry->textureId);
@@ -514,6 +580,8 @@ public:
             } else {
                 glBindTexture(GL_TEXTURE_2D, 0);
             }
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, m_curveLutTextureId);
             m_quadBuffer.bind();
             const int positionLoc = m_shaderProgram->attributeLocation("a_position");
             const int texCoordLoc = m_shaderProgram->attributeLocation("a_texCoord");
@@ -526,6 +594,8 @@ public:
             m_shaderProgram->disableAttributeArray(texCoordLoc);
             m_quadBuffer.release();
             glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_2D, 0);
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, 0);
@@ -668,6 +738,10 @@ private:
             m_fbo.reset();
             m_nv12YFbo.reset();
             m_nv12UvFbo.reset();
+            if (m_curveLutTextureId != 0) {
+                glDeleteTextures(1, &m_curveLutTextureId);
+                m_curveLutTextureId = 0;
+            }
             if (m_quadBuffer.isCreated()) {
                 m_quadBuffer.destroy();
             }
@@ -735,6 +809,7 @@ private:
     std::unique_ptr<QOpenGLShaderProgram> m_nv12UvShaderProgram;
     QOpenGLBuffer m_quadBuffer;
     QOpenGLBuffer m_polygonBuffer;
+    GLuint m_curveLutTextureId = 0;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
     QHash<QString, editor::GlTextureCacheEntry> m_reusableTextureCache;
 };
@@ -857,7 +932,8 @@ QImage renderTimelineFrame(const RenderRequest& request,
         
         const QRect fitted = fitRect(graded.size(), request.outputSize);
         const TimelineClip::TransformKeyframe transform =
-            evaluateClipRenderTransformAtPosition(clip, static_cast<qreal>(timelineFrame));
+            evaluateClipRenderTransformAtPosition(
+                clip, static_cast<qreal>(timelineFrame), request.outputSize);
 
         QElapsedTimer compositeTimer;
         compositeTimer.start();

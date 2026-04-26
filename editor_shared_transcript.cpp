@@ -37,6 +37,8 @@ struct SpeakerTrackingKeyframe {
     int64_t frame = 0;
     qreal x = 0.5;
     qreal y = 0.85;
+    qreal boxSize = -1.0;
+    qreal confidence = 1.0;
 };
 
 struct SpeakerProfileRuntime {
@@ -234,21 +236,9 @@ QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transc
         runtime.defaultY = qBound<qreal>(0.0, locationObj.value(QStringLiteral("y")).toDouble(0.85), 1.0);
 
         QJsonObject trackingObj = profileObj.value(QStringLiteral("framing")).toObject();
-        if (trackingObj.isEmpty()) {
-            trackingObj = profileObj.value(QStringLiteral("tracking")).toObject();
-        }
-        const QString trackingMode =
-            trackingObj.value(QStringLiteral("mode")).toString(QStringLiteral("Manual")).trimmed();
-        const bool modeCanTrack =
-            trackingMode.compare(QStringLiteral("manual"), Qt::CaseInsensitive) != 0 &&
-            trackingMode.compare(QStringLiteral("referencepoints"), Qt::CaseInsensitive) != 0;
-        const bool hasEnabledFlag = trackingObj.contains(QStringLiteral("enabled"));
+        const bool hasPointstream = !trackingObj.value(QStringLiteral("keyframes")).toArray().isEmpty();
         const bool explicitEnabled = trackingObj.value(QStringLiteral("enabled")).toBool(false);
-        const bool legacyEnabled =
-            !hasEnabledFlag &&
-            modeCanTrack &&
-            !trackingObj.value(QStringLiteral("keyframes")).toArray().isEmpty();
-        runtime.trackingEnabled = modeCanTrack && (explicitEnabled || legacyEnabled);
+        runtime.trackingEnabled = hasPointstream && explicitEnabled;
         const QJsonArray keyframes = trackingObj.value(QStringLiteral("keyframes")).toArray();
         runtime.keyframes.reserve(keyframes.size());
         for (const QJsonValue& keyframeValue : keyframes) {
@@ -260,6 +250,10 @@ QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transc
             keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
             keyframe.x = qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("x")).toDouble(runtime.defaultX), 1.0);
             keyframe.y = qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("y")).toDouble(runtime.defaultY), 1.0);
+            keyframe.boxSize = qBound<qreal>(
+                -1.0, keyframeObj.value(QStringLiteral("box_size")).toDouble(-1.0), 1.0);
+            keyframe.confidence = qBound<qreal>(
+                0.0, keyframeObj.value(QStringLiteral("confidence")).toDouble(1.0), 1.0);
             runtime.keyframes.push_back(keyframe);
         }
         std::sort(runtime.keyframes.begin(),
@@ -336,6 +330,61 @@ QPointF evaluateSpeakerLocation(const SpeakerProfileRuntime& runtime, int64_t so
         return QPointF(x, y);
     }
     return QPointF(runtime.defaultX, runtime.defaultY);
+}
+
+bool evaluateSpeakerTrackingSample(const SpeakerProfileRuntime& runtime,
+                                   int64_t sourceFrame,
+                                   qreal minConfidence,
+                                   QPointF* locationOut,
+                                   qreal* boxSizeOut) {
+    if (!runtime.trackingEnabled || runtime.keyframes.isEmpty()) {
+        return false;
+    }
+    const qreal confidenceFloor = qBound<qreal>(0.0, minConfidence, 1.0);
+    auto assign = [&](const SpeakerTrackingKeyframe& kf) -> bool {
+        if (kf.confidence < confidenceFloor) {
+            return false;
+        }
+        if (locationOut) {
+            *locationOut = QPointF(kf.x, kf.y);
+        }
+        if (boxSizeOut) {
+            *boxSizeOut = kf.boxSize;
+        }
+        return true;
+    };
+    if (runtime.keyframes.size() == 1 || sourceFrame <= runtime.keyframes.constFirst().frame) {
+        return assign(runtime.keyframes.constFirst());
+    }
+    if (sourceFrame >= runtime.keyframes.constLast().frame) {
+        return assign(runtime.keyframes.constLast());
+    }
+    for (int i = 1; i < runtime.keyframes.size(); ++i) {
+        const SpeakerTrackingKeyframe& prev = runtime.keyframes.at(i - 1);
+        const SpeakerTrackingKeyframe& next = runtime.keyframes.at(i);
+        if (sourceFrame > next.frame) {
+            continue;
+        }
+        if (prev.confidence < confidenceFloor || next.confidence < confidenceFloor) {
+            return false;
+        }
+        const int64_t span = qMax<int64_t>(1, next.frame - prev.frame);
+        const qreal t = qBound<qreal>(
+            0.0, static_cast<qreal>(sourceFrame - prev.frame) / static_cast<qreal>(span), 1.0);
+        if (locationOut) {
+            *locationOut = QPointF(prev.x + ((next.x - prev.x) * t),
+                                   prev.y + ((next.y - prev.y) * t));
+        }
+        if (boxSizeOut) {
+            const qreal prevBox = prev.boxSize;
+            const qreal nextBox = next.boxSize;
+            *boxSizeOut = (prevBox > 0.0 && nextBox > 0.0)
+                ? (prevBox + ((nextBox - prevBox) * t))
+                : (nextBox > 0.0 ? nextBox : prevBox);
+        }
+        return true;
+    }
+    return false;
 }
 }
 
@@ -575,6 +624,50 @@ QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
     return location;
 }
 
+bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                             const QString& speakerId,
+                                                             int64_t sourceFrame,
+                                                             qreal minConfidence,
+                                                             QPointF* locationOut,
+                                                             qreal* boxSizeOut) {
+    if (locationOut) {
+        *locationOut = QPointF();
+    }
+    if (boxSizeOut) {
+        *boxSizeOut = -1.0;
+    }
+    const QString normalizedSpeakerId = speakerId.trimmed();
+    if (clipFilePath.isEmpty() || normalizedSpeakerId.isEmpty() || sourceFrame < 0) {
+        return false;
+    }
+    const QString transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+    if (transcriptPath.isEmpty()) {
+        return false;
+    }
+    const QFileInfo info(transcriptPath);
+    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    SpeakerProfileRuntime runtime;
+    bool found = false;
+    {
+        QMutexLocker locker(&speakerProfileCacheMutex());
+        SpeakerProfileCacheEntry& entry = speakerProfileCacheByPath()[transcriptPath];
+        if (entry.mtimeMs != mtimeMs) {
+            entry.mtimeMs = mtimeMs;
+            entry.profilesBySpeaker = parseSpeakerProfiles(transcriptPath);
+        }
+        auto profileIt = entry.profilesBySpeaker.constFind(normalizedSpeakerId);
+        if (profileIt != entry.profilesBySpeaker.constEnd()) {
+            runtime = profileIt.value();
+            found = true;
+        }
+    }
+    if (!found) {
+        return false;
+    }
+    return evaluateSpeakerTrackingSample(
+        runtime, sourceFrame, minConfidence, locationOut, boxSizeOut);
+}
+
 void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath) {
     QMutexLocker locker(&speakerProfileCacheMutex());
     if (transcriptPath.isEmpty()) {
@@ -673,21 +766,32 @@ QPointF transcriptOverlayTranslationForOutput(const TimelineClip& clip,
                                               int64_t sourceFrame) {
     qreal translationX = clip.transcriptOverlay.translationX;
     qreal translationY = clip.transcriptOverlay.translationY;
+    const QSize safeOutputSize = outputSize.isValid() ? outputSize : QSize(1080, 1920);
+    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width()));
+    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.height()));
+
+    auto translationPixelsFromStored = [outputWidth, outputHeight](qreal storedX, qreal storedY) {
+        // Unity-scale coordinates are normalized offsets around center.
+        // Keep legacy pixel values working when older projects contain |value| > 1.
+        const bool looksLegacyPixels = std::abs(storedX) > 1.0 || std::abs(storedY) > 1.0;
+        if (looksLegacyPixels) {
+            return QPointF(storedX, storedY);
+        }
+        return QPointF(storedX * (outputWidth * 0.5), storedY * (outputHeight * 0.5));
+    };
+
     if (clip.transcriptOverlay.useManualPlacement) {
-        return QPointF(translationX, translationY);
+        return translationPixelsFromStored(translationX, translationY);
     }
     if (transcriptPath.isEmpty() || sections.isEmpty()) {
-        return QPointF(translationX, translationY);
+        return translationPixelsFromStored(translationX, translationY);
     }
     bool speakerLocationResolved = false;
     const QPointF speakerLocation = transcriptSpeakerLocationForSourceFrame(
         transcriptPath, sections, sourceFrame, &speakerLocationResolved);
     if (!speakerLocationResolved) {
-        return QPointF(translationX, translationY);
+        return translationPixelsFromStored(translationX, translationY);
     }
-    const QSize safeOutputSize = outputSize.isValid() ? outputSize : QSize(1080, 1920);
-    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width()));
-    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.height()));
     const qreal centerX = speakerLocation.x() * outputWidth;
     const qreal centerY = speakerLocation.y() * outputHeight;
     return QPointF(centerX - (outputWidth / 2.0), centerY - (outputHeight / 2.0));

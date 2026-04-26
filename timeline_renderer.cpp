@@ -103,6 +103,8 @@ void TimelineRenderer::paint(QPainter* painter) {
         }
         const bool audioOnly = clipIsAudioOnly(clip);
         const bool hovered = clip.id == m_widget->m_hoveredClipId;
+        const bool selected = m_widget->isClipSelected(clip.id);
+        const bool primarySelected = selected && (clip.id == m_widget->selectedClipId());
         const bool showSourceGhost = clip.mediaType != ClipMediaType::Image;
         const bool visualsEnabled = !clipHasVisuals(clip) || clip.videoEnabled;
         const bool audioEnabled = !clip.hasAudio || clip.audioEnabled;
@@ -132,6 +134,11 @@ void TimelineRenderer::paint(QPainter* painter) {
         painter->setPen(QColor(255, 255, 255, 32));
         painter->setBrush(clipFill);
         painter->drawRoundedRect(visibleClipRect, 7, 7);
+        if (hovered && !selected) {
+            painter->setPen(QPen(QColor(QStringLiteral("#7ad7ff")), 2));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(visibleClipRect.adjusted(1, 1, -1, -1), 7, 7);
+        }
 
         if (audioOnly) {
             painter->save();
@@ -162,22 +169,36 @@ void TimelineRenderer::paint(QPainter* painter) {
         }
 
         painter->setPen(QColor(QStringLiteral("#f4f7fb")));
-        if (m_widget->isClipSelected(clip.id)) {
-            painter->setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2));
+        if (selected) {
+            const QColor outerBorder = primarySelected
+                ? QColor(QStringLiteral("#ffd23f"))
+                : QColor(QStringLiteral("#ffe89a"));
+            const QColor innerBorder = primarySelected
+                ? QColor(QStringLiteral("#fff8d9"))
+                : QColor(QStringLiteral("#fff1c9"));
+            painter->setPen(QPen(outerBorder, primarySelected ? 4 : 3));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawRoundedRect(visibleClipRect.adjusted(-1, -1, 1, 1), 8, 8);
+            painter->setPen(QPen(innerBorder, 2));
+            painter->drawRoundedRect(visibleClipRect.adjusted(1, 1, -1, -1), 7, 7);
             if (audioOnly) {
-                painter->setBrush(Qt::NoBrush);
-                painter->drawRoundedRect(visibleClipRect.adjusted(1, 1, -1, -1), 7, 7);
+                painter->setPen(QPen(innerBorder, 2));
+                painter->drawRoundedRect(visibleClipRect.adjusted(2, 2, -2, -2), 6, 6);
             } else {
                 painter->setBrush(clip.color.lighter(108));
                 painter->drawRoundedRect(visibleClipRect, 7, 7);
             }
             painter->setPen(Qt::NoPen);
-            painter->setBrush(QColor(QStringLiteral("#fff4c2")));
+            painter->setBrush(outerBorder);
             const int handleInset = qMax(5, clipRect.height() / 10);
             const QRect leftHandle(clipRect.left() + 2, clipRect.top() + handleInset, 4, clipRect.height() - (handleInset * 2));
             const QRect rightHandle(clipRect.right() - 5, clipRect.top() + handleInset, 4, clipRect.height() - (handleInset * 2));
             painter->drawRoundedRect(leftHandle, 2, 2);
             painter->drawRoundedRect(rightHandle, 2, 2);
+            if (primarySelected) {
+                const QRect anchorRect(visibleClipRect.left() + 6, visibleClipRect.top() + 4, 10, 4);
+                painter->drawRoundedRect(anchorRect, 2, 2);
+            }
             painter->setPen(QColor(QStringLiteral("#f4f7fb")));
         }
 

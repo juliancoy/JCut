@@ -69,9 +69,13 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("baseScaleX")] = clip.baseScaleX;
         obj[QStringLiteral("baseScaleY")] = clip.baseScaleY;
         obj[QStringLiteral("speakerFramingEnabled")] = clip.speakerFramingEnabled;
+        obj[QStringLiteral("speakerFramingSpeakerId")] = clip.speakerFramingSpeakerId;
         obj[QStringLiteral("speakerFramingTargetXNorm")] = clip.speakerFramingTargetXNorm;
         obj[QStringLiteral("speakerFramingTargetYNorm")] = clip.speakerFramingTargetYNorm;
         obj[QStringLiteral("speakerFramingTargetBoxNorm")] = clip.speakerFramingTargetBoxNorm;
+        obj[QStringLiteral("speakerFramingBakedTargetXNorm")] = clip.speakerFramingBakedTargetXNorm;
+        obj[QStringLiteral("speakerFramingBakedTargetYNorm")] = clip.speakerFramingBakedTargetYNorm;
+        obj[QStringLiteral("speakerFramingBakedTargetBoxNorm")] = clip.speakerFramingBakedTargetBoxNorm;
         obj[QStringLiteral("speakerFramingMinConfidence")] = clip.speakerFramingMinConfidence;
         obj[QStringLiteral("transformSkipAwareTiming")] = clip.transformSkipAwareTiming;
         QJsonArray keyframes;
@@ -119,6 +123,22 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframeObj[QStringLiteral("highlightsR")] = keyframe.highlightsR;
             keyframeObj[QStringLiteral("highlightsG")] = keyframe.highlightsG;
             keyframeObj[QStringLiteral("highlightsB")] = keyframe.highlightsB;
+            auto pointsToJson = [](const QVector<QPointF>& points) {
+                QJsonArray array;
+                for (const QPointF& point : points) {
+                    QJsonObject pointObj;
+                    pointObj[QStringLiteral("x")] = point.x();
+                    pointObj[QStringLiteral("y")] = point.y();
+                    array.push_back(pointObj);
+                }
+                return array;
+            };
+            keyframeObj[QStringLiteral("curvePointsR")] = pointsToJson(keyframe.curvePointsR);
+            keyframeObj[QStringLiteral("curvePointsG")] = pointsToJson(keyframe.curvePointsG);
+            keyframeObj[QStringLiteral("curvePointsB")] = pointsToJson(keyframe.curvePointsB);
+            keyframeObj[QStringLiteral("curvePointsLuma")] = pointsToJson(keyframe.curvePointsLuma);
+            keyframeObj[QStringLiteral("curveThreePointLock")] = keyframe.curveThreePointLock;
+            keyframeObj[QStringLiteral("curveSmoothingEnabled")] = keyframe.curveSmoothingEnabled;
             keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
             gradingKeyframes.push_back(keyframeObj);
         }
@@ -322,9 +342,17 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.baseScaleX = obj.value(QStringLiteral("baseScaleX")).toDouble(1.0);
         clip.baseScaleY = obj.value(QStringLiteral("baseScaleY")).toDouble(1.0);
         clip.speakerFramingEnabled = obj.value(QStringLiteral("speakerFramingEnabled")).toBool(false);
+        clip.speakerFramingSpeakerId =
+            obj.value(QStringLiteral("speakerFramingSpeakerId")).toString().trimmed();
         clip.speakerFramingTargetXNorm = obj.value(QStringLiteral("speakerFramingTargetXNorm")).toDouble(0.5);
         clip.speakerFramingTargetYNorm = obj.value(QStringLiteral("speakerFramingTargetYNorm")).toDouble(0.35);
         clip.speakerFramingTargetBoxNorm = obj.value(QStringLiteral("speakerFramingTargetBoxNorm")).toDouble(-1.0);
+        clip.speakerFramingBakedTargetXNorm = obj.value(QStringLiteral("speakerFramingBakedTargetXNorm"))
+            .toDouble(clip.speakerFramingTargetXNorm);
+        clip.speakerFramingBakedTargetYNorm = obj.value(QStringLiteral("speakerFramingBakedTargetYNorm"))
+            .toDouble(clip.speakerFramingTargetYNorm);
+        clip.speakerFramingBakedTargetBoxNorm = obj.value(QStringLiteral("speakerFramingBakedTargetBoxNorm"))
+            .toDouble(clip.speakerFramingTargetBoxNorm);
         clip.speakerFramingMinConfidence = obj.value(QStringLiteral("speakerFramingMinConfidence")).toDouble(0.08);
         clip.transformSkipAwareTiming = obj.value(QStringLiteral("transformSkipAwareTiming")).toBool(false);
         const QJsonArray keyframes = obj.value(QStringLiteral("transformKeyframes")).toArray();
@@ -394,6 +422,28 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.highlightsR = keyframeObj.value(QStringLiteral("highlightsR")).toDouble(0.0);
             keyframe.highlightsG = keyframeObj.value(QStringLiteral("highlightsG")).toDouble(0.0);
             keyframe.highlightsB = keyframeObj.value(QStringLiteral("highlightsB")).toDouble(0.0);
+            auto pointsFromJson = [](const QJsonValue& value) {
+                QVector<QPointF> points;
+                const QJsonArray pointsArray = value.toArray();
+                points.reserve(pointsArray.size());
+                for (const QJsonValue& pointValue : pointsArray) {
+                    if (!pointValue.isObject()) {
+                        continue;
+                    }
+                    const QJsonObject pointObj = pointValue.toObject();
+                    points.push_back(QPointF(pointObj.value(QStringLiteral("x")).toDouble(0.0),
+                                             pointObj.value(QStringLiteral("y")).toDouble(0.0)));
+                }
+                return points;
+            };
+            keyframe.curvePointsR = pointsFromJson(keyframeObj.value(QStringLiteral("curvePointsR")));
+            keyframe.curvePointsG = pointsFromJson(keyframeObj.value(QStringLiteral("curvePointsG")));
+            keyframe.curvePointsB = pointsFromJson(keyframeObj.value(QStringLiteral("curvePointsB")));
+            keyframe.curvePointsLuma = pointsFromJson(keyframeObj.value(QStringLiteral("curvePointsLuma")));
+            keyframe.curveThreePointLock =
+                keyframeObj.value(QStringLiteral("curveThreePointLock")).toBool(false);
+            keyframe.curveSmoothingEnabled =
+                keyframeObj.value(QStringLiteral("curveSmoothingEnabled")).toBool(true);
             if (keyframeObj.contains(QStringLiteral("linearInterpolation"))) {
                 keyframe.linearInterpolation =
                     keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
@@ -433,7 +483,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.useManualPlacement =
             transcriptOverlayObj.value(QStringLiteral("useManualPlacement")).toBool(false);
         clip.transcriptOverlay.translationX = transcriptOverlayObj.value(QStringLiteral("translationX")).toDouble(0.0);
-        clip.transcriptOverlay.translationY = transcriptOverlayObj.value(QStringLiteral("translationY")).toDouble(640.0);
+        clip.transcriptOverlay.translationY = transcriptOverlayObj.value(QStringLiteral("translationY")).toDouble(0.0);
         clip.transcriptOverlay.boxWidth = transcriptOverlayObj.value(QStringLiteral("boxWidth")).toDouble(900.0);
         clip.transcriptOverlay.boxHeight = transcriptOverlayObj.value(QStringLiteral("boxHeight")).toDouble(220.0);
         clip.transcriptOverlay.maxLines = qMax(1, transcriptOverlayObj.value(QStringLiteral("maxLines")).toInt(2));

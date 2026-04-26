@@ -550,13 +550,29 @@ FrameHandle DecoderContext::decodeFrame(int64_t frameNumber) {
         return FrameHandle::createCpuFrame(m_stillImage, 0, m_path);
     }
 
+    if (m_info.durationFrames > 0) {
+        frameNumber = qBound<int64_t>(0, frameNumber, m_info.durationFrames - 1);
+    } else {
+        frameNumber = qMax<int64_t>(0, frameNumber);
+    }
+
     decodeTrace(QStringLiteral("DecoderContext::decodeFrame.begin"),
                 QStringLiteral("file=%1 target=%2 last=%3")
                     .arg(shortPath(m_path))
                     .arg(frameNumber)
                     .arg(m_lastDecodedFrame));
 
-    FrameHandle result = seekAndDecode(frameNumber);
+    const QVector<FrameHandle> frames = decodeThroughFrame(frameNumber);
+    FrameHandle result;
+    for (const FrameHandle& frame : frames) {
+        if (!frame.isNull() && frame.frameNumber() >= frameNumber) {
+            result = frame;
+            break;
+        }
+    }
+    if (result.isNull() && !frames.isEmpty()) {
+        result = frames.constLast();
+    }
 
     decodeTrace(QStringLiteral("DecoderContext::decodeFrame.end"),
                 QStringLiteral("file=%1 target=%2 null=%3 decoded=%4")
@@ -596,14 +612,16 @@ QVector<FrameHandle> DecoderContext::decodeThroughFrame(int64_t targetFrame) {
         return {FrameHandle::createCpuFrame(m_stillImage, 0, m_path)};
     }
 
-    if (m_eof) {
-        m_eof = false;
+    if (m_info.durationFrames > 0) {
+        targetFrame = qBound<int64_t>(0, targetFrame, m_info.durationFrames - 1);
+    } else {
+        targetFrame = qMax<int64_t>(0, targetFrame);
     }
 
     updateAccessTime();
 
     const int64_t frameDelta = targetFrame - m_lastDecodedFrame;
-    const bool forceSeek = m_lastDecodedFrame < 0 || frameDelta < 0 || frameDelta > kMaxSequentialDecodeGap;
+    const bool forceSeek = m_eof || m_lastDecodedFrame < 0 || frameDelta < 0 || frameDelta > kMaxSequentialDecodeGap;
     if (forceSeek) {
         decodeTrace(QStringLiteral("DecoderContext::decodeFrame.seek"),
                     QStringLiteral("file=%1 target=%2 delta=%3")
@@ -615,41 +633,6 @@ QVector<FrameHandle> DecoderContext::decodeThroughFrame(int64_t targetFrame) {
     return decodeForwardUntil(targetFrame, forceSeek);
 }
 
-FrameHandle DecoderContext::seekAndDecode(int64_t frameNumber) {
-    if (m_isImageSequence) {
-        return decodeFrame(frameNumber);
-    }
-
-    if (m_isStillImage) {
-        updateAccessTime();
-        return FrameHandle::createCpuFrame(m_stillImage, 0, m_path);
-    }
-
-    const qint64 startedAt = decodeTraceMs();
-    decodeTrace(QStringLiteral("DecoderContext::seekAndDecode.begin"),
-                QStringLiteral("file=%1 target=%2")
-                    .arg(shortPath(m_path))
-                    .arg(frameNumber));
-
-    const QVector<FrameHandle> frames = decodeForwardUntil(frameNumber, true);
-    FrameHandle result;
-    for (const FrameHandle& frame : frames) {
-        if (!frame.isNull() && frame.frameNumber() >= frameNumber) {
-            result = frame;
-            break;
-        }
-    }
-
-    decodeTrace(QStringLiteral("DecoderContext::seekAndDecode.end"),
-                QStringLiteral("file=%1 target=%2 null=%3 waitMs=%4 decoded=%5")
-                    .arg(shortPath(m_path))
-                    .arg(frameNumber)
-                    .arg(result.isNull())
-                    .arg(decodeTraceMs() - startedAt)
-                    .arg(result.frameNumber()));
-    return result;
-}
-
 QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, bool forceSeek) {
     QVector<FrameHandle> decodedFrames;
 
@@ -658,12 +641,16 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
         return decodedFrames;
     }
 
-    // FFmpeg 61 software H.264/H.265 decode can crash when multiple contexts
-    // drive avcodec_send_packet/receive_frame concurrently across threads.
-    // Serialize this path for stability.
-    std::unique_lock<std::mutex> h26xDecodeLock(g_h26xSoftwareDecodeMutex, std::defer_lock);
-    if (m_serializeSoftwareDecode) {
-        h26xDecodeLock.lock();
+    // Stability-first decode gate:
+    // serialize avcodec_send_packet/receive_frame across contexts.
+    // This avoids intermittent libavcodec null-call crashes seen during
+    // concurrent software decode in playback/render/export.
+    std::unique_lock<std::mutex> h26xDecodeLock(g_h26xSoftwareDecodeMutex);
+    if (!m_formatCtx || !m_codecCtx || m_videoStreamIndex < 0 ||
+        m_videoStreamIndex >= static_cast<int>(m_formatCtx->nb_streams) ||
+        !m_codecCtx->codec || !m_codecCtx->internal) {
+        qWarning() << "Decoder state invalid; skipping decode for" << m_path;
+        return decodedFrames;
     }
 
     const bool initialFrameZeroRequest = m_lastDecodedFrame < 0 && targetFrame <= 0;
@@ -688,6 +675,12 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
     }
 
     AVStream* stream = m_formatCtx->streams[m_videoStreamIndex];
+    if (!stream) {
+        qWarning() << "Video stream missing during decode for" << m_path;
+        av_frame_free(&frame);
+        av_packet_free(&packet);
+        return decodedFrames;
+    }
 
     auto receiveAvailableFrames = [&, this](bool& reachedTarget) {
         while (true) {
@@ -724,8 +717,17 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
             continue;
         }
 
+        if (!packet->buf && (!packet->data || packet->size <= 0)) {
+            av_packet_unref(packet);
+            continue;
+        }
+
         const int sendRet = avcodec_send_packet(m_codecCtx, packet);
         av_packet_unref(packet);
+        if (sendRet == AVERROR_EOF) {
+            m_eof = true;
+            break;
+        }
         if (sendRet < 0) {
             continue;
         }
@@ -734,8 +736,10 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
     }
 
     if (!reachedTarget) {
-        avcodec_send_packet(m_codecCtx, nullptr);
-        receiveAvailableFrames(reachedTarget);
+        const int flushRet = avcodec_send_packet(m_codecCtx, nullptr);
+        if (flushRet >= 0 || flushRet == AVERROR_EOF) {
+            receiveAvailableFrames(reachedTarget);
+        }
         m_eof = true;
     }
 
@@ -747,8 +751,17 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
 bool DecoderContext::seekToKeyframe(int64_t targetFrame) {
     AVStream* stream = m_formatCtx->streams[m_videoStreamIndex];
 
+    if (m_info.durationFrames > 0) {
+        targetFrame = qBound<int64_t>(0, targetFrame, m_info.durationFrames - 1);
+    } else {
+        targetFrame = qMax<int64_t>(0, targetFrame);
+    }
+
     const double targetSeconds = targetFrame / qMax(1.0, m_info.fps);
-    const int64_t targetUsec = qMax<int64_t>(0, qRound64(targetSeconds * AV_TIME_BASE));
+    int64_t targetUsec = qMax<int64_t>(0, qRound64(targetSeconds * AV_TIME_BASE));
+    if (m_formatCtx && m_formatCtx->duration > 0) {
+        targetUsec = qMin<int64_t>(targetUsec, m_formatCtx->duration - 1);
+    }
     const int64_t targetTs = av_rescale_q(targetUsec, AVRational{1, AV_TIME_BASE}, stream->time_base);
 
     const int ret = avformat_seek_file(m_formatCtx,

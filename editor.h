@@ -44,6 +44,7 @@
 #include <QListWidget>
 #include <QMainWindow>
 #include <QPushButton>
+#include <QStringList>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -183,7 +184,9 @@ private:
     void refreshOutputInspector();
     void applyOutputRangeFromInspector();
     void renderFromOutputInspector();
+    RenderRequest buildRenderRequestFromOutputControls() const;
     void renderTimelineFromOutputRequest(const RenderRequest &request);
+    void exportVideoForSpeakersOnSelectedClip(const QStringList& speakerIds);
     void refreshProfileInspector();
     void runDecodeBenchmarkFromProfile();
     bool profileBenchmarkClip(TimelineClip *out) const;
@@ -312,6 +315,7 @@ private:
     QPushButton *m_trackCrossfadeButton = nullptr;
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
+    QCheckBox *m_speakerShowBoxStreamBoxesCheckBox = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;

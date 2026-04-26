@@ -185,7 +185,7 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
             }
         }
     }
-    if (m_showSpeakerTrackPoints) {
+    if (m_showSpeakerTrackPoints || m_showSpeakerTrackBoxes) {
         drawSpeakerTrackPointsOverlay(painter, activeClips);
     }
     drawSpeakerFramingTargetOverlay(painter, activeClips, compositeRect);
@@ -707,7 +707,7 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
         
         const QRect fitted = fitRect(img.size(), targetRect);
         const TimelineClip::TransformKeyframe transform =
-            evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition);
+            evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition, m_outputSize);
         const QPointF previewScale = previewCanvasScale(targetRect);
         painter->translate(fitted.center().x() + (transform.translationX * previewScale.x()),
                            fitted.center().y() + (transform.translationY * previewScale.y()));

@@ -59,7 +59,6 @@ private:
     void cacheSequenceFrameImage(int64_t frameNumber, const QImage& image);
     void trimSequenceFrameCache();
 
-    FrameHandle seekAndDecode(int64_t frameNumber);
     QVector<FrameHandle> decodeForwardUntil(int64_t targetFrame, bool forceSeek);
     bool seekToKeyframe(int64_t targetFrame);
     FrameHandle convertToFrame(AVFrame* avFrame, int64_t frameNumber);

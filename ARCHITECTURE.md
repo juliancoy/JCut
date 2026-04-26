@@ -1,4 +1,4 @@
-# JCut Architecture
+it # JCut Architecture
 
 ## Overview
 
@@ -98,6 +98,58 @@ Defined in `CMakeLists.txt`:
 - RtAudio via bundled `rtaudio/`
 - Optional AddressSanitizer (`EDITOR_ASAN`)
 - Optional tests (`EDITOR_BUILD_TESTS`)
+
+## Organizational Paradigms
+
+- Vertical slice extraction:
+  - Refactors split code by feature behavior (for example playback, routing, transcript document handling, speaker autotrack) rather than arbitrary line chunks.
+- Separation of concerns:
+  - UI interactions, orchestration, runtime/engine behavior, and storage/cache internals are isolated into different translation units.
+- Facade + satellites:
+  - Original files remain primary entry points while specialized implementations live in companion files.
+- Single responsibility per translation unit:
+  - Each extracted `.cpp` is scoped to one coherent responsibility.
+- Shared internal helpers:
+  - Reusable private helpers/constants can be centralized in internal headers to avoid duplication (for example `speakers_tab_internal.h`).
+- Incremental strangler-style refactor:
+  - Changes are applied in small, behavior-preserving extractions with build validation after each step.
+- Constraint-driven modularization:
+  - The line-cap constraint (`1500`) is used as a forcing function to improve modular boundaries.
+- Behavior-preserving refactor discipline:
+  - Extraction and reorganization first; no intentional feature changes during structural passes.
+
+### File Positioning By Paradigm
+
+This matrix assigns each refactored file to its position within the paradigms above.
+
+Color key:
+- `🟦` Facade/core owner
+- `🟩` Satellite/extracted feature owner
+- `🟪` Shared helper module/hub
+- `🟧` Orchestration/lifecycle responsibility
+- `🟥` Runtime engine responsibility
+- `🟫` Storage/data-structure responsibility
+- `🟨` UI/interaction responsibility
+
+| File | Vertical Slice | Separation Of Concerns | Facade + Satellites | Single Responsibility | Shared Internal Helpers | Incremental Strangler | Constraint-Driven Modularization | Behavior-Preserving Refactor |
+|---|---|---|---|---|---|---|---|---|
+| `control_server_worker.cpp` | 🟦 Control-server core slice | 🟧 Worker lifecycle/cache/decode state | 🟦 Facade | 🟦 Worker state/lifecycle | 🟩 Uses shared worker types | 🟦 Retained while routes extracted | 🟩 Below cap | 🟩 Yes |
+| `control_server_worker_routes.cpp` | 🟩 HTTP routing slice | 🟨 Route handlers + responses | 🟩 Satellite | 🟩 Endpoint routing | 🟩 Reuses worker internals | 🟩 Extracted from worker core | 🟩 Below cap | 🟩 Yes |
+| `editor.cpp` | 🟦 Editor orchestration slice | 🟧 App startup/top-level wiring | 🟦 Facade | 🟦 App orchestration entrypoint | 🟩 Uses shared editor APIs | 🟦 Retained while playback extracted | 🟩 Below cap | 🟩 Yes |
+| `editor_playback.cpp` | 🟩 Playback runtime slice | 🟥 Clocking/transport/runtime playback | 🟩 Satellite | 🟩 Playback behavior | 🟩 Reuses playback helpers | 🟩 Extracted from editor core | 🟩 Below cap | 🟩 Yes |
+| `inspector_pane.cpp` | 🟦 Inspector composition slice | 🟧 Pane shell/tab assembly | 🟦 Facade | 🟦 Inspector container/wiring | 🟩 Uses tab contracts | 🟦 Retained while secondary tabs extracted | 🟩 Below cap | 🟩 Yes |
+| `inspector_pane_secondary_tabs.cpp` | 🟩 Secondary inspector tab slice | 🟨 Output/Preview/Properties/System/Projects builders | 🟩 Satellite | 🟩 Secondary tab construction | 🟩 Reuses tab layout helpers | 🟩 Extracted from pane core | 🟩 Below cap | 🟩 Yes |
+| `timeline_widget_input.cpp` | 🟦 Timeline input core slice | 🟨 Input/drag/mouse/wheel | 🟦 Facade | 🟦 Direct interaction path | 🟩 Uses timeline shared APIs | 🟦 Retained while menu extracted | 🟩 Below cap | 🟩 Yes |
+| `timeline_widget_context_menu.cpp` | 🟩 Timeline context-menu slice | 🟨 Menu actions/commands | 🟩 Satellite | 🟩 Context-command surface | 🟩 Reuses widget state/mutators | 🟩 Extracted from input core | 🟩 Below cap | 🟩 Yes |
+| `timeline_cache.cpp` | 🟦 Cache orchestration slice | 🟧 Prefetch/decode scheduling/playhead state | 🟦 Facade | 🟦 Cache control flow | 🟩 Uses storage classes via API | 🟦 Retained while storage extracted | 🟩 Below cap | 🟩 Yes |
+| `timeline_cache_storage.cpp` | 🟩 Cache storage slice | 🟫 `PlaybackBuffer` + `ClipCache` storage ops | 🟩 Satellite | 🟫 Storage/eviction primitives | 🟩 Reused by orchestrator | 🟩 Extracted from cache monolith | 🟩 Below cap | 🟩 Yes |
+| `transcript_tab.cpp` | 🟦 Transcript interaction slice | 🟨 Table/edit/context interactions | 🟦 Facade | 🟦 Interaction flow | 🟩 Uses document helpers via API | 🟦 Retained while document extracted | 🟩 Below cap | 🟩 Yes |
+| `transcript_tab_document.cpp` | 🟩 Transcript document slice | 🟫 Load/parse/persist/version/render-order | 🟩 Satellite | 🟫 Document lifecycle + version mgmt | 🟩 Reuses transcript constants/helpers | 🟩 Extracted from transcript monolith | 🟩 Below cap | 🟩 Yes |
+| `speakers_tab.cpp` | 🟦 Speakers core slice | 🟧 Wiring/refresh/summary/table model | 🟦 Facade | 🟦 Core orchestration | 🟪 Uses `speakers_tab_internal.h` | 🟦 Retained while feature files extracted | 🟩 Below cap | 🟩 Yes |
+| `speakers_tab_interactions.cpp` | 🟩 Speakers interaction slice | 🟨 Selection/reference/context/panel actions | 🟩 Satellite | 🟨 Interaction-heavy behavior | 🟪 Uses internal helper hub | 🟩 Extracted from speakers monolith | 🟩 Below cap | 🟩 Yes |
+| `speakers_tab_autotrack_engines.cpp` | 🟩 Speakers autotrack-engine slice | 🟥 Native/docker engine execution | 🟩 Satellite | 🟥 Engine execution layer | 🟪 Uses internal tracking utilities | 🟩 Extracted from speakers monolith | 🟩 Below cap | 🟩 Yes |
+| `speakers_tab_autotrack_actions.cpp` | 🟩 Speakers autotrack-action slice | 🟧 Workflow orchestration + preview framing writes | 🟩 Satellite | 🟧 High-level action orchestration | 🟪 Uses internal helper hub | 🟩 Extracted from speakers monolith | 🟩 Below cap | 🟩 Yes |
+| `speakers_tab_internal.h` | 🟪 Shared helper slice | 🟪 Cross-file constants/private helper algorithms | 🟪 Shared helper module | 🟪 Internal helper utilities only | 🟪 Primary helper hub | 🟩 Introduced during split | 🟩 Prevents duplication/regrowth | 🟩 Yes |
 
 ## Notes
 

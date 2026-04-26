@@ -3,6 +3,8 @@
 #include <QWidget>
 
 #include <array>
+#include <QPointF>
+#include <QVector>
 
 class QImage;
 
@@ -15,6 +17,8 @@ public:
         Red = 0,
         Green = 1,
         Blue = 2,
+        Brightness = 3,
+        Alpha = 4,
     };
 
     explicit GradingHistogramWidget(QWidget* parent = nullptr);
@@ -23,10 +27,16 @@ public:
     void setHistogramFromImage(const QImage& image);
     void setSelectedChannel(Channel channel);
     Channel selectedChannel() const { return m_selectedChannel; }
-    void setCurveValues(double shadows, double midtones, double highlights);
+    void setCurvePoints(const QVector<QPointF>& points);
+    QVector<QPointF> curvePoints() const;
+    void setThreePointLockEnabled(bool enabled);
+    bool threePointLockEnabled() const { return m_threePointLockEnabled; }
+    void setCurveSmoothingEnabled(bool enabled);
+    bool curveSmoothingEnabled() const { return m_curveSmoothingEnabled; }
+    bool hasAlphaHistogram() const { return m_hasAlphaHistogram; }
 
 signals:
-    void curveAdjusted(double shadows, double midtones, double highlights, bool finalized);
+    void curvePointsAdjusted(const QVector<QPointF>& points, bool finalized);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -37,25 +47,28 @@ protected:
 
 private:
     QRectF chartRect() const;
-    QPointF handlePoint(int index) const;
-    int nearestHandleIndex(const QPointF& pos) const;
-    double yToNormalizedValue(qreal y) const;
-    qreal normalizedValueToY(double value) const;
-    double parameterToNormalizedValue(int index, double parameter) const;
-    double normalizedValueToParameter(int index, double normalizedValue) const;
-    void updateParameterFromDrag(int handleIndex, const QPointF& pos, bool finalized);
+    QPointF pointToWidget(const QPointF& point) const;
+    QPointF widgetToPoint(const QPointF& pos) const;
+    int nearestPointIndex(const QPointF& pos) const;
+    int segmentIndexAtX(qreal xNorm) const;
+    void sortAndClampPoints();
+    QVector<QPointF> lockToThreePointCurve(const QVector<QPointF>& points) const;
+    const std::array<float, 256>& selectedHistogram() const;
+    void emitCurveChanged(bool finalized);
 
     std::array<float, 256> m_histogramR{};
     std::array<float, 256> m_histogramG{};
     std::array<float, 256> m_histogramB{};
+    std::array<float, 256> m_histogramA{};
+    std::array<float, 256> m_histogramLuma{};
     bool m_hasHistogram = false;
+    bool m_hasAlphaHistogram = false;
 
     Channel m_selectedChannel = Channel::Red;
-    double m_shadows = 0.0;
-    double m_midtones = 0.0;
-    double m_highlights = 0.0;
+    QVector<QPointF> m_points;
+    bool m_threePointLockEnabled = false;
+    bool m_curveSmoothingEnabled = true;
 
-    int m_activeHandle = -1;
+    int m_activePoint = -1;
     bool m_dragging = false;
 };
-

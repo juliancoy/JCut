@@ -1,11 +1,53 @@
 #include "editor_shared.h"
 #include "transform_skip_aware_timing.h"
 
+#include <QHash>
+#include <QFileInfo>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QSet>
 #include <QtGlobal>
 
 #include <algorithm>
 #include <cmath>
+
+namespace {
+QRect fitRectForSourceInOutput(const QSize& source, const QSize& output) {
+    const QSize safeOutput = output.isValid() ? output : QSize(1080, 1920);
+    if (!source.isValid()) {
+        return QRect(QPoint(0, 0), safeOutput);
+    }
+    QSize fitted = source;
+    fitted.scale(safeOutput, Qt::KeepAspectRatio);
+    const int x = (safeOutput.width() - fitted.width()) / 2;
+    const int y = (safeOutput.height() - fitted.height()) / 2;
+    return QRect(x, y, fitted.width(), fitted.height());
+}
+
+QSize sourceSizeForClipCached(const TimelineClip& clip, const QSize& outputSize) {
+    static QMutex mutex;
+    static QHash<QString, QSize> cacheByPath;
+    const QString mediaPath = interactivePreviewMediaPathForClip(clip);
+    const QString path = QFileInfo::exists(mediaPath) ? mediaPath : clip.filePath;
+    if (path.trimmed().isEmpty()) {
+        return outputSize;
+    }
+    {
+        QMutexLocker locker(&mutex);
+        const auto it = cacheByPath.constFind(path);
+        if (it != cacheByPath.constEnd() && it.value().isValid()) {
+            return it.value();
+        }
+    }
+    const MediaProbeResult probe = probeMediaFile(path, 4.0);
+    const QSize resolved = probe.frameSize.isValid() ? probe.frameSize : outputSize;
+    {
+        QMutexLocker locker(&mutex);
+        cacheByPath[path] = resolved;
+    }
+    return resolved;
+}
+} // namespace
 
 
 qreal sanitizeScaleValue(qreal value) {
@@ -73,6 +115,10 @@ void normalizeClipTransformKeyframes(TimelineClip& clip) {
     clip.speakerFramingTargetXNorm = qBound<qreal>(0.0, clip.speakerFramingTargetXNorm, 1.0);
     clip.speakerFramingTargetYNorm = qBound<qreal>(0.0, clip.speakerFramingTargetYNorm, 1.0);
     clip.speakerFramingTargetBoxNorm = qBound<qreal>(-1.0, clip.speakerFramingTargetBoxNorm, 1.0);
+    clip.speakerFramingBakedTargetXNorm = qBound<qreal>(0.0, clip.speakerFramingBakedTargetXNorm, 1.0);
+    clip.speakerFramingBakedTargetYNorm = qBound<qreal>(0.0, clip.speakerFramingBakedTargetYNorm, 1.0);
+    clip.speakerFramingBakedTargetBoxNorm = qBound<qreal>(-1.0, clip.speakerFramingBakedTargetBoxNorm, 1.0);
+    clip.speakerFramingSpeakerId = clip.speakerFramingSpeakerId.trimmed();
     clip.speakerFramingMinConfidence = qBound<qreal>(0.0, clip.speakerFramingMinConfidence, 1.0);
 }
 
@@ -87,6 +133,10 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
     const int64_t maxFrame = qMax<int64_t>(0, clip.durationFrames - 1);
     for (TimelineClip::GradingKeyframe keyframe : clip.gradingKeyframes) {
         keyframe.frame = qBound<int64_t>(0, keyframe.frame, maxFrame);
+        keyframe.curvePointsR = sanitizeGradingCurvePoints(keyframe.curvePointsR);
+        keyframe.curvePointsG = sanitizeGradingCurvePoints(keyframe.curvePointsG);
+        keyframe.curvePointsB = sanitizeGradingCurvePoints(keyframe.curvePointsB);
+        keyframe.curvePointsLuma = sanitizeGradingCurvePoints(keyframe.curvePointsLuma);
         if (!normalized.isEmpty() && normalized.constLast().frame == keyframe.frame) {
             normalized.last() = keyframe;
         } else {
@@ -101,6 +151,11 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
             keyframe.brightness = clip.brightness;
             keyframe.contrast = clip.contrast;
             keyframe.saturation = clip.saturation;
+            keyframe.curvePointsR = defaultGradingCurvePoints();
+            keyframe.curvePointsG = defaultGradingCurvePoints();
+            keyframe.curvePointsB = defaultGradingCurvePoints();
+            keyframe.curvePointsLuma = defaultGradingCurvePoints();
+            keyframe.curveSmoothingEnabled = true;
             normalized.push_back(keyframe);
         } else if (normalized.constFirst().frame > 0) {
             // FIX: Create a keyframe at frame 0 with clip's base values
@@ -110,6 +165,11 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
             baseKeyframe.brightness = clip.brightness;
             baseKeyframe.contrast = clip.contrast;
             baseKeyframe.saturation = clip.saturation;
+            baseKeyframe.curvePointsR = defaultGradingCurvePoints();
+            baseKeyframe.curvePointsG = defaultGradingCurvePoints();
+            baseKeyframe.curvePointsB = defaultGradingCurvePoints();
+            baseKeyframe.curvePointsLuma = defaultGradingCurvePoints();
+            baseKeyframe.curveSmoothingEnabled = true;
             // Use default values for shadows/midtones/highlights (0.0)
             // This allows proper interpolation from frame 0 to first keyframe
             normalized.push_front(baseKeyframe);
@@ -145,7 +205,9 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
                    nearlyEqual(a.midtonesB, b.midtonesB) &&
                    nearlyEqual(a.highlightsR, b.highlightsR) &&
                    nearlyEqual(a.highlightsG, b.highlightsG) &&
-                   nearlyEqual(a.highlightsB, b.highlightsB);
+                   nearlyEqual(a.highlightsB, b.highlightsB) &&
+                   a.curveThreePointLock == b.curveThreePointLock &&
+                   a.curveSmoothingEnabled == b.curveSmoothingEnabled;
         };
 
         auto blended = [](const TimelineClip::GradingKeyframe& previous,
@@ -365,17 +427,65 @@ TimelineClip::TransformKeyframe evaluateClipTransformAtPosition(const TimelineCl
     return state;
 }
 
-TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip, int64_t timelineFrame) {
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
+                                                                  int64_t timelineFrame,
+                                                                  const QSize& outputSize) {
     TimelineClip::TransformKeyframe state;
     state.rotation = 0.0;
     state.scaleX = 1.0;
     state.scaleY = 1.0;
-    if (!clip.speakerFramingEnabled || clip.speakerFramingKeyframes.isEmpty()) {
+    if (!clip.speakerFramingEnabled) {
         return state;
     }
 
     const int64_t localFrame = qBound<int64_t>(
         0, timelineFrame - clip.startFrame, qMax<int64_t>(0, clip.durationFrames - 1));
+    if (clip.speakerFramingKeyframes.isEmpty()) {
+        const QString speakerId = clip.speakerFramingSpeakerId.trimmed();
+        if (speakerId.isEmpty()) {
+            return state;
+        }
+        const int64_t sourceFrame = qMax<int64_t>(0, clip.sourceInFrame + localFrame);
+        QPointF location;
+        qreal boxSize = -1.0;
+        if (!transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+                clip.filePath, speakerId, sourceFrame, clip.speakerFramingMinConfidence, &location, &boxSize) ||
+            boxSize <= 0.0) {
+            return state;
+        }
+        const QSize safeOutput = outputSize.isValid() ? outputSize : QSize(1080, 1920);
+        const QSize sourceSize = sourceSizeForClipCached(clip, safeOutput);
+        const QRect fittedRect = fitRectForSourceInOutput(sourceSize, safeOutput);
+        const qreal fittedCenterX = static_cast<qreal>(fittedRect.center().x());
+        const qreal fittedCenterY = static_cast<qreal>(fittedRect.center().y());
+        const qreal fittedWidth = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.width()));
+        const qreal fittedHeight = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.height()));
+        const qreal fittedMinSide = qMax<qreal>(1.0, qMin(fittedWidth, fittedHeight));
+        const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.width()));
+        const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.height()));
+        const qreal outputMinSide = qMax<qreal>(1.0, qMin(outputWidth, outputHeight));
+        const qreal targetXNorm = qBound<qreal>(0.0, clip.speakerFramingTargetXNorm, 1.0);
+        const qreal targetYNorm = qBound<qreal>(0.0, clip.speakerFramingTargetYNorm, 1.0);
+        const qreal targetBoxNorm = qBound<qreal>(-1.0, clip.speakerFramingTargetBoxNorm, 1.0);
+        if (targetBoxNorm <= 0.0) {
+            return state;
+        }
+        const qreal targetXPx = targetXNorm * outputWidth;
+        const qreal targetYPx = targetYNorm * outputHeight;
+        const qreal faceSideOutputPx = qMax<qreal>(1.0, boxSize * fittedMinSide);
+        const qreal targetSideOutputPx = qMax<qreal>(1.0, targetBoxNorm * outputMinSide);
+        const qreal scale = qMax<qreal>(0.35, targetSideOutputPx / faceSideOutputPx);
+        const qreal localX = (qBound<qreal>(0.0, location.x(), 1.0) - 0.5) * fittedWidth;
+        const qreal localY = (qBound<qreal>(0.0, location.y(), 1.0) - 0.5) * fittedHeight;
+        state.frame = localFrame;
+        state.translationX = targetXPx - (fittedCenterX + (scale * localX));
+        state.translationY = targetYPx - (fittedCenterY + (scale * localY));
+        state.rotation = 0.0;
+        state.scaleX = scale;
+        state.scaleY = scale;
+        state.linearInterpolation = true;
+        return state;
+    }
     if (localFrame <= clip.speakerFramingKeyframes.constFirst().frame) {
         return clip.speakerFramingKeyframes.constFirst();
     }
@@ -406,18 +516,23 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
 }
 
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
-                                                                     qreal timelineFramePosition) {
+                                                                     qreal timelineFramePosition,
+                                                                     const QSize& outputSize) {
     TimelineClip::TransformKeyframe state;
     state.rotation = 0.0;
     state.scaleX = 1.0;
     state.scaleY = 1.0;
-    if (!clip.speakerFramingEnabled || clip.speakerFramingKeyframes.isEmpty()) {
+    if (!clip.speakerFramingEnabled) {
         return state;
     }
 
     const qreal maxFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
     const qreal localFrame = qBound<qreal>(
         0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
+    if (clip.speakerFramingKeyframes.isEmpty()) {
+        return evaluateClipSpeakerFramingAtFrame(
+            clip, clip.startFrame + qRound64(localFrame), outputSize);
+    }
     if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
         return clip.speakerFramingKeyframes.constFirst();
     }
@@ -461,17 +576,20 @@ TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::Transf
     return composed;
 }
 
-TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip, int64_t timelineFrame) {
+TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,
+                                                                   int64_t timelineFrame,
+                                                                   const QSize& outputSize) {
     return composeClipTransforms(
         evaluateClipTransformAtFrame(clip, timelineFrame),
-        evaluateClipSpeakerFramingAtFrame(clip, timelineFrame));
+        evaluateClipSpeakerFramingAtFrame(clip, timelineFrame, outputSize));
 }
 
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
-                                                                      qreal timelineFramePosition) {
+                                                                      qreal timelineFramePosition,
+                                                                      const QSize& outputSize) {
     return composeClipTransforms(
         evaluateClipTransformAtPosition(clip, timelineFramePosition),
-        evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition));
+        evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, outputSize));
 }
 
 TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& clip, int64_t timelineFrame) {
@@ -479,6 +597,11 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& cli
     state.brightness = clip.brightness;
     state.contrast = clip.contrast;
     state.saturation = clip.saturation;
+    state.curvePointsR = defaultGradingCurvePoints();
+    state.curvePointsG = defaultGradingCurvePoints();
+    state.curvePointsB = defaultGradingCurvePoints();
+    state.curvePointsLuma = defaultGradingCurvePoints();
+    state.curveSmoothingEnabled = true;
     state.opacity = evaluateClipOpacityAtFrame(clip, timelineFrame);
     if (clip.gradingKeyframes.isEmpty()) {
         return state;
@@ -514,6 +637,12 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& cli
             state.highlightsR = previous.highlightsR + ((current.highlightsR - previous.highlightsR) * t);
             state.highlightsG = previous.highlightsG + ((current.highlightsG - previous.highlightsG) * t);
             state.highlightsB = previous.highlightsB + ((current.highlightsB - previous.highlightsB) * t);
+            state.curvePointsR = previous.curvePointsR;
+            state.curvePointsG = previous.curvePointsG;
+            state.curvePointsB = previous.curvePointsB;
+            state.curvePointsLuma = previous.curvePointsLuma;
+            state.curveThreePointLock = previous.curveThreePointLock;
+            state.curveSmoothingEnabled = previous.curveSmoothingEnabled;
             state.linearInterpolation = current.linearInterpolation;
             state.opacity = evaluateClipOpacityAtFrame(clip, timelineFrame);
             return state;
@@ -535,6 +664,11 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& 
     state.brightness = clip.brightness;
     state.contrast = clip.contrast;
     state.saturation = clip.saturation;
+    state.curvePointsR = defaultGradingCurvePoints();
+    state.curvePointsG = defaultGradingCurvePoints();
+    state.curvePointsB = defaultGradingCurvePoints();
+    state.curvePointsLuma = defaultGradingCurvePoints();
+    state.curveSmoothingEnabled = true;
     state.opacity = evaluateClipOpacityAtPosition(clip, timelineFramePosition);
     if (clip.gradingKeyframes.isEmpty()) {
         return state;
@@ -572,6 +706,12 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& 
             state.highlightsR = previous.highlightsR + ((current.highlightsR - previous.highlightsR) * t);
             state.highlightsG = previous.highlightsG + ((current.highlightsG - previous.highlightsG) * t);
             state.highlightsB = previous.highlightsB + ((current.highlightsB - previous.highlightsB) * t);
+            state.curvePointsR = previous.curvePointsR;
+            state.curvePointsG = previous.curvePointsG;
+            state.curvePointsB = previous.curvePointsB;
+            state.curvePointsLuma = previous.curvePointsLuma;
+            state.curveThreePointLock = previous.curveThreePointLock;
+            state.curveSmoothingEnabled = previous.curveSmoothingEnabled;
             state.linearInterpolation = current.linearInterpolation;
             state.opacity = evaluateClipOpacityAtPosition(clip, timelineFramePosition);
             return state;
