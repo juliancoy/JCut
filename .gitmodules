@@ -9,3 +9,6 @@
 	path = nv-codec-headers
 	url = https://github.com/FFmpeg/nv-codec-headers.git
 	branch = n12.0.16.1
+[submodule "external/CPPMonetize"]
+	path = external/CPPMonetize
+	url = https://github.com/juliancoy/CPPMonetize.git
