@@ -9,10 +9,13 @@
 #include <QDateTime>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QUrl>
 
 namespace {
 
 constexpr auto kDefaultSupabaseGateway = "https://ivwutugdrpugjqglxabw.supabase.co";
+bool isSupabaseProjectBase(const QString& baseUrl);
+bool isAuthTokenFailure(const cppmonetize::ApiError& error);
 
 cppmonetize::MonetizeClient createJCutMonetizeClient(const QString& apiBaseUrl,
                                                       int timeoutMs,
@@ -23,8 +26,15 @@ cppmonetize::MonetizeClient createJCutMonetizeClient(const QString& apiBaseUrl,
     cfg.timeoutMs = timeoutMs;
     cfg.clientId = QStringLiteral("jcut-desktop");
     cfg.requiredContractPrefix = contractPrefix;
-    cfg.telemetryHook = [](const cppmonetize::RequestTelemetryEvent& event) {
+    const bool suppressSupabaseEntitlement404 = isSupabaseProjectBase(apiBaseUrl);
+    cfg.telemetryHook = [suppressSupabaseEntitlement404](const cppmonetize::RequestTelemetryEvent& event) {
         if (event.success) {
+            return;
+        }
+        if (suppressSupabaseEntitlement404 &&
+            event.statusCode == 404 &&
+            event.operation.trimmed() == QStringLiteral("/api/ai/entitlements")) {
+            // Supabase direct mode probes this endpoint, then falls back to functions.
             return;
         }
         qWarning().noquote() << "[CPPMonetize][JCut]"
@@ -43,6 +53,33 @@ QString aiDisplayIdentity(const QString& explicitIdentity, const QString& access
         return trimmed;
     }
     return cppmonetize::parseAccessTokenIdentity(accessToken).displayIdentity();
+}
+
+bool isSupabaseProjectBase(const QString& baseUrl)
+{
+    const QUrl url(baseUrl.trimmed());
+    if (!url.isValid()) {
+        return false;
+    }
+    return url.host().trimmed().toLower().endsWith(QStringLiteral(".supabase.co"));
+}
+
+bool isAuthTokenFailure(const cppmonetize::ApiError& error)
+{
+    if (error.statusCode == 401 || error.statusCode == 403) {
+        return true;
+    }
+    const QString message = error.message.trimmed().toLower();
+    const QString details = error.details.trimmed().toLower();
+    const QString code = error.code.trimmed().toLower();
+    return message.contains(QStringLiteral("invalid jwt")) ||
+           message.contains(QStringLiteral("token")) ||
+           message.contains(QStringLiteral("unauthorized")) ||
+           message.contains(QStringLiteral("expired")) ||
+           details.contains(QStringLiteral("invalid jwt")) ||
+           details.contains(QStringLiteral("token")) ||
+           code == QStringLiteral("invalid_jwt") ||
+           code == QStringLiteral("unauthorized");
 }
 
 }  // namespace
@@ -388,8 +425,19 @@ void EditorWindow::refreshAiIntegrationState()
             createJCutMonetizeClient(normalizedBase, timeoutMs);
         const auto entResult = client.getAiEntitlements(m_aiAuthToken);
         if (!entResult.hasValue()) {
-            status = QStringLiteral("AI disabled: entitlement check failed (%1)")
-                         .arg(entResult.error().message);
+            const cppmonetize::ApiError error = entResult.error();
+            if (isAuthTokenFailure(error)) {
+                QString secureStoreError;
+                if (!clearAiTokenFromSecureStore(&secureStoreError) && !secureStoreError.trimmed().isEmpty()) {
+                    qWarning() << "Failed clearing AI token after auth failure:" << secureStoreError;
+                }
+                m_aiAuthToken.clear();
+                m_aiUserId.clear();
+                status = QStringLiteral("AI disabled: sign in again (session expired)");
+            } else {
+                status = QStringLiteral("AI disabled: entitlement check failed (%1)")
+                             .arg(error.message);
+            }
         } else {
             const cppmonetize::AiEntitlements ent = entResult.value();
             applyEntitlements(ent);
@@ -563,6 +611,20 @@ QJsonObject EditorWindow::runAiAction(const QString& action,
 
             const auto response = client.submitAiTask(m_aiAuthToken, requestObj);
             if (!response.hasValue()) {
+                if (isAuthTokenFailure(response.error())) {
+                    QString secureStoreError;
+                    if (!clearAiTokenFromSecureStore(&secureStoreError) && !secureStoreError.trimmed().isEmpty()) {
+                        qWarning() << "Failed clearing AI token after request auth failure:" << secureStoreError;
+                    }
+                    m_aiAuthToken.clear();
+                    m_aiUserId.clear();
+                    refreshAiIntegrationState();
+                    if (errorOut) {
+                        *errorOut = QStringLiteral("AI login expired. Please sign in again.");
+                    }
+                    scheduleSaveState();
+                    return {};
+                }
                 lastError = QStringLiteral("AI request failed on %1: %2")
                                 .arg(model, response.error().message);
                 continue;
