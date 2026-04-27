@@ -4,6 +4,8 @@
 #include "transform_skip_aware_timing.h"
 #include "debug_controls.h"
 #include "speaker_export_harness.h"
+#include <cppmonetize/MonetizeClient.h>
+#include <cppmonetize/TokenStore.h>
 
 #include <QApplication>
 #include <QCommandLineOption>
@@ -49,12 +51,6 @@
 
 #include <cmath>
 #include <cstring>
-
-#if defined(Q_OS_WIN)
-#define NOMINMAX
-#include <windows.h>
-#include <wincred.h>
-#endif
 
 using namespace editor;
 
@@ -415,6 +411,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int aiRequestTimeoutMs = qMax(1000, root.value(QStringLiteral("aiRequestTimeoutMs")).toInt(15000));
     const int aiRequestRetries = qBound(0, root.value(QStringLiteral("aiRequestRetries")).toInt(1), 3);
     PreviewWindow::AudioDynamicsSettings loadedAudioDynamics;
+    loadedAudioDynamics.amplifyEnabled = root.value(QStringLiteral("audioAmplifyEnabled")).toBool(false);
+    loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
     loadedAudioDynamics.normalizeEnabled = root.value(QStringLiteral("audioNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.normalizeTargetDb = root.value(QStringLiteral("audioNormalizeTargetDb")).toDouble(-1.0);
     loadedAudioDynamics.peakReductionEnabled = root.value(QStringLiteral("audioPeakReductionEnabled")).toBool(false);
@@ -866,11 +864,81 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                                            ? QStringLiteral("Switch preview between video composition and audio waveform view.")
                                            : QStringLiteral("Audio preview mode disabled by feature flag."));
     }
+    if (m_inspectorTabs) {
+        const int index = m_inspectorTabs->currentIndex();
+        if (index >= 0 &&
+            m_inspectorTabs->tabText(index).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
+            applyPreviewViewMode(QStringLiteral("audio"));
+            if (m_previewModeCombo) {
+                QSignalBlocker block(m_previewModeCombo);
+                const int audioIndex =
+                    m_previewModeCombo->findData(QStringLiteral("audio"), Qt::MatchFixedString);
+                if (audioIndex >= 0) {
+                    m_previewModeCombo->setCurrentIndex(audioIndex);
+                }
+            }
+        }
+    }
     if (m_audioToolsButton) {
         m_audioToolsButton->setEnabled(m_featureAudioDynamicsTools);
         m_audioToolsButton->setToolTip(m_featureAudioDynamicsTools
-                                           ? QStringLiteral("Open audio normalization/limiter/compressor controls.")
+                                           ? QStringLiteral("Open the Audio tab.")
                                            : QStringLiteral("Audio dynamics tools disabled by feature flag."));
+    }
+    if (m_audioAmplifyEnabledCheckBox) {
+        QSignalBlocker block(m_audioAmplifyEnabledCheckBox);
+        m_audioAmplifyEnabledCheckBox->setChecked(m_previewAudioDynamics.amplifyEnabled);
+        m_audioAmplifyEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioAmplifyDbSpin) {
+        QSignalBlocker block(m_audioAmplifyDbSpin);
+        m_audioAmplifyDbSpin->setValue(m_previewAudioDynamics.amplifyDb);
+        m_audioAmplifyDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioNormalizeEnabledCheckBox) {
+        QSignalBlocker block(m_audioNormalizeEnabledCheckBox);
+        m_audioNormalizeEnabledCheckBox->setChecked(m_previewAudioDynamics.normalizeEnabled);
+        m_audioNormalizeEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioNormalizeTargetDbSpin) {
+        QSignalBlocker block(m_audioNormalizeTargetDbSpin);
+        m_audioNormalizeTargetDbSpin->setValue(m_previewAudioDynamics.normalizeTargetDb);
+        m_audioNormalizeTargetDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioPeakReductionEnabledCheckBox) {
+        QSignalBlocker block(m_audioPeakReductionEnabledCheckBox);
+        m_audioPeakReductionEnabledCheckBox->setChecked(m_previewAudioDynamics.peakReductionEnabled);
+        m_audioPeakReductionEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioPeakThresholdDbSpin) {
+        QSignalBlocker block(m_audioPeakThresholdDbSpin);
+        m_audioPeakThresholdDbSpin->setValue(m_previewAudioDynamics.peakThresholdDb);
+        m_audioPeakThresholdDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioLimiterEnabledCheckBox) {
+        QSignalBlocker block(m_audioLimiterEnabledCheckBox);
+        m_audioLimiterEnabledCheckBox->setChecked(m_previewAudioDynamics.limiterEnabled);
+        m_audioLimiterEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioLimiterThresholdDbSpin) {
+        QSignalBlocker block(m_audioLimiterThresholdDbSpin);
+        m_audioLimiterThresholdDbSpin->setValue(m_previewAudioDynamics.limiterThresholdDb);
+        m_audioLimiterThresholdDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioCompressorEnabledCheckBox) {
+        QSignalBlocker block(m_audioCompressorEnabledCheckBox);
+        m_audioCompressorEnabledCheckBox->setChecked(m_previewAudioDynamics.compressorEnabled);
+        m_audioCompressorEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioCompressorThresholdDbSpin) {
+        QSignalBlocker block(m_audioCompressorThresholdDbSpin);
+        m_audioCompressorThresholdDbSpin->setValue(m_previewAudioDynamics.compressorThresholdDb);
+        m_audioCompressorThresholdDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioCompressorRatioSpin) {
+        QSignalBlocker block(m_audioCompressorRatioSpin);
+        m_audioCompressorRatioSpin->setValue(m_previewAudioDynamics.compressorRatio);
+        m_audioCompressorRatioSpin->setEnabled(m_featureAudioDynamicsTools);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
     editor::setDebugLeadPrefetchEnabled(previewLeadPrefetchEnabled);
@@ -1188,30 +1256,16 @@ bool EditorWindow::readAiTokenFromSecureStore(QString* tokenOut) const
         return false;
     }
 
-#if defined(Q_OS_LINUX)
-    QProcess probe;
-    probe.start(QStringLiteral("which"), QStringList{QStringLiteral("secret-tool")});
-    probe.waitForFinished(1000);
-    if (probe.exitStatus() != QProcess::NormalExit || probe.exitCode() != 0) {
+    cppmonetize::TokenStoreConfig cfg;
+    cfg.appName = QStringLiteral("jcut");
+    cfg.orgName = QStringLiteral("jcut");
+    cfg.serviceName = aiSecureStoreServiceName();
+    auto store = cppmonetize::createDefaultTokenStore(cfg);
+    const auto tokenResult = store->loadToken();
+    if (!tokenResult.hasValue()) {
         return false;
     }
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(QStringLiteral("secret-tool"),
-                  QStringList{QStringLiteral("lookup"),
-                              QStringLiteral("service"),
-                              aiSecureStoreServiceName(),
-                              QStringLiteral("account"),
-                              QStringLiteral("ai_access_token")});
-    if (!process.waitForFinished(4000)) {
-        process.kill();
-        return false;
-    }
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        return false;
-    }
-    const QString token = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    const QString token = tokenResult.value().trimmed();
     if (token.isEmpty()) {
         return false;
     }
@@ -1219,55 +1273,6 @@ bool EditorWindow::readAiTokenFromSecureStore(QString* tokenOut) const
         *tokenOut = token;
     }
     return true;
-#elif defined(Q_OS_MACOS)
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(QStringLiteral("security"),
-                  QStringList{QStringLiteral("find-generic-password"),
-                              QStringLiteral("-s"),
-                              aiSecureStoreServiceName(),
-                              QStringLiteral("-a"),
-                              QStringLiteral("ai_access_token"),
-                              QStringLiteral("-w")});
-    if (!process.waitForFinished(4000)) {
-        process.kill();
-        return false;
-    }
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        return false;
-    }
-    const QString token = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-    if (token.isEmpty()) {
-        return false;
-    }
-    if (tokenOut) {
-        *tokenOut = token;
-    }
-    return true;
-#elif defined(Q_OS_WIN)
-    const QString target = aiSecureStoreServiceName() + QStringLiteral("/ai_access_token");
-    PCREDENTIALW cred = nullptr;
-    if (!CredReadW(reinterpret_cast<LPCWSTR>(target.utf16()),
-                   CRED_TYPE_GENERIC,
-                   0,
-                   &cred)) {
-        return false;
-    }
-    const QByteArray blob(reinterpret_cast<const char*>(cred->CredentialBlob),
-                          static_cast<int>(cred->CredentialBlobSize));
-    const QString token = QString::fromUtf8(blob).trimmed();
-    CredFree(cred);
-    if (token.isEmpty()) {
-        return false;
-    }
-    if (tokenOut) {
-        *tokenOut = token;
-    }
-    return true;
-#else
-    Q_UNUSED(tokenOut);
-    return false;
-#endif
 }
 
 bool EditorWindow::writeAiTokenToSecureStore(const QString& token, QString* errorOut) const
@@ -1288,108 +1293,19 @@ bool EditorWindow::writeAiTokenToSecureStore(const QString& token, QString* erro
         return false;
     }
 
-#if defined(Q_OS_LINUX)
-    QProcess probe;
-    probe.start(QStringLiteral("which"), QStringList{QStringLiteral("secret-tool")});
-    probe.waitForFinished(1000);
-    if (probe.exitStatus() != QProcess::NormalExit || probe.exitCode() != 0) {
+    cppmonetize::TokenStoreConfig cfg;
+    cfg.appName = QStringLiteral("jcut");
+    cfg.orgName = QStringLiteral("jcut");
+    cfg.serviceName = aiSecureStoreServiceName();
+    auto store = cppmonetize::createDefaultTokenStore(cfg);
+    const auto writeResult = store->storeToken(token.trimmed(), m_aiUserId.trimmed());
+    if (!writeResult.hasValue()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("secret-tool not available.");
-        }
-        return false;
-    }
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(QStringLiteral("secret-tool"),
-                  QStringList{QStringLiteral("store"),
-                              QStringLiteral("--label=JCut AI Access Token"),
-                              QStringLiteral("service"),
-                              aiSecureStoreServiceName(),
-                              QStringLiteral("account"),
-                              QStringLiteral("ai_access_token")});
-    if (!process.waitForStarted(1000)) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to launch secret-tool.");
-        }
-        return false;
-    }
-    process.write(token.toUtf8());
-    process.closeWriteChannel();
-    if (!process.waitForFinished(5000)) {
-        process.kill();
-        if (errorOut) {
-            *errorOut = QStringLiteral("Timed out writing token to secure store.");
-        }
-        return false;
-    }
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("secure store write failed: %1")
-                            .arg(QString::fromUtf8(process.readAllStandardOutput()).trimmed());
+            *errorOut = writeResult.error().message;
         }
         return false;
     }
     return true;
-#elif defined(Q_OS_MACOS)
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(QStringLiteral("security"),
-                  QStringList{QStringLiteral("add-generic-password"),
-                              QStringLiteral("-U"),
-                              QStringLiteral("-s"),
-                              aiSecureStoreServiceName(),
-                              QStringLiteral("-a"),
-                              QStringLiteral("ai_access_token"),
-                              QStringLiteral("-w"),
-                              token});
-    if (!process.waitForFinished(5000)) {
-        process.kill();
-        if (errorOut) {
-            *errorOut = QStringLiteral("Timed out writing token to Keychain.");
-        }
-        return false;
-    }
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Keychain write failed: %1")
-                            .arg(QString::fromUtf8(process.readAllStandardOutput()).trimmed());
-        }
-        return false;
-    }
-    return true;
-#elif defined(Q_OS_WIN)
-    const QByteArray tokenBytes = token.toUtf8();
-    if (tokenBytes.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Token exceeds Windows credential blob size limit.");
-        }
-        return false;
-    }
-    const QString target = aiSecureStoreServiceName() + QStringLiteral("/ai_access_token");
-    CREDENTIALW cred;
-    memset(&cred, 0, sizeof(cred));
-    cred.Type = CRED_TYPE_GENERIC;
-    cred.TargetName = const_cast<LPWSTR>(reinterpret_cast<LPCWSTR>(target.utf16()));
-    cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
-    cred.CredentialBlobSize = static_cast<DWORD>(tokenBytes.size());
-    cred.CredentialBlob =
-        reinterpret_cast<LPBYTE>(const_cast<char*>(tokenBytes.constData()));
-    cred.UserName = const_cast<LPWSTR>(L"jcut-ai");
-    if (!CredWriteW(&cred, 0)) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Windows Credential Manager write failed (%1).")
-                            .arg(QString::number(static_cast<qulonglong>(GetLastError())));
-        }
-        return false;
-    }
-    return true;
-#else
-    if (errorOut) {
-        *errorOut = QStringLiteral("Secure store is not implemented on this platform.");
-    }
-    return false;
-#endif
 }
 
 bool EditorWindow::clearAiTokenFromSecureStore(QString* errorOut) const
@@ -1400,63 +1316,19 @@ bool EditorWindow::clearAiTokenFromSecureStore(QString* errorOut) const
     if (m_aiProxyBaseUrl.trimmed().isEmpty()) {
         return true;
     }
-#if defined(Q_OS_LINUX)
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(QStringLiteral("secret-tool"),
-                  QStringList{QStringLiteral("clear"),
-                              QStringLiteral("service"),
-                              aiSecureStoreServiceName(),
-                              QStringLiteral("account"),
-                              QStringLiteral("ai_access_token")});
-    if (!process.waitForFinished(4000)) {
-        process.kill();
+    cppmonetize::TokenStoreConfig cfg;
+    cfg.appName = QStringLiteral("jcut");
+    cfg.orgName = QStringLiteral("jcut");
+    cfg.serviceName = aiSecureStoreServiceName();
+    auto store = cppmonetize::createDefaultTokenStore(cfg);
+    const auto clearResult = store->clear();
+    if (!clearResult.hasValue()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Timed out clearing secure token.");
-        }
-        return false;
-    }
-    if (process.exitStatus() != QProcess::NormalExit) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to clear secure token.");
+            *errorOut = clearResult.error().message;
         }
         return false;
     }
     return true;
-#elif defined(Q_OS_MACOS)
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(QStringLiteral("security"),
-                  QStringList{QStringLiteral("delete-generic-password"),
-                              QStringLiteral("-s"),
-                              aiSecureStoreServiceName(),
-                              QStringLiteral("-a"),
-                              QStringLiteral("ai_access_token")});
-    if (!process.waitForFinished(4000)) {
-        process.kill();
-        if (errorOut) {
-            *errorOut = QStringLiteral("Timed out clearing Keychain token.");
-        }
-        return false;
-    }
-    return process.exitStatus() == QProcess::NormalExit;
-#elif defined(Q_OS_WIN)
-    const QString target = aiSecureStoreServiceName() + QStringLiteral("/ai_access_token");
-    if (!CredDeleteW(reinterpret_cast<LPCWSTR>(target.utf16()), CRED_TYPE_GENERIC, 0)) {
-        const DWORD err = GetLastError();
-        if (err == ERROR_NOT_FOUND) {
-            return true;
-        }
-        if (errorOut) {
-            *errorOut = QStringLiteral("Windows Credential Manager delete failed (%1).")
-                            .arg(QString::number(static_cast<qulonglong>(err)));
-        }
-        return false;
-    }
-    return true;
-#else
-    return true;
-#endif
 }
 
 void EditorWindow::configureAiGatewayLogin()
@@ -1702,64 +1574,25 @@ bool EditorWindow::exchangeAiAuthCode(const QString& code, const QString& state,
         }
         return false;
     }
-    const QString exchangeUrl = normalizedBase + QStringLiteral("/api/auth/desktop/exchange");
-    QJsonObject payload{
-        {QStringLiteral("code"), code},
-        {QStringLiteral("state"), state},
-        {QStringLiteral("code_verifier"), m_aiAuthCodeVerifier},
-        {QStringLiteral("redirect_uri"), m_aiAuthRedirectUri},
-        {QStringLiteral("client"), QStringLiteral("jcut-desktop")} };
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    const QStringList args{
-        QStringLiteral("-sS"),
-        QStringLiteral("--max-time"),
-        QString::number(qMax(1, m_aiRequestTimeoutMs / 1000)),
-        QStringLiteral("-X"),
-        QStringLiteral("POST"),
-        QStringLiteral("-H"),
-        QStringLiteral("Content-Type: application/json"),
-        QStringLiteral("--data-binary"),
-        QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)),
-        exchangeUrl};
-    process.start(QStringLiteral("curl"), args);
-    if (!process.waitForFinished(m_aiRequestTimeoutMs)) {
-        process.kill();
+    cppmonetize::ClientConfig cfg;
+    cfg.apiBaseUrl = normalizedBase;
+    cfg.timeoutMs = m_aiRequestTimeoutMs;
+    cfg.clientId = QStringLiteral("jcut-desktop");
+    cfg.requiredContractPrefix = QStringLiteral("1.");
+    cppmonetize::MonetizeClient client(cfg);
+    const auto exchangeResult = client.exchangeDesktopCode(
+        code,
+        state,
+        m_aiAuthCodeVerifier,
+        m_aiAuthRedirectUri);
+    if (!exchangeResult.hasValue()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Code exchange timed out.");
+            *errorOut = exchangeResult.error().message;
         }
         return false;
     }
-    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Code exchange failed: %1")
-                            .arg(QString::fromUtf8(process.readAllStandardOutput()).trimmed());
-        }
-        return false;
-    }
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(process.readAllStandardOutput(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Code exchange returned invalid JSON.");
-        }
-        return false;
-    }
-    const QJsonObject obj = doc.object();
-    QString token = obj.value(QStringLiteral("access_token")).toString().trimmed();
-    if (token.isEmpty()) {
-        token = obj.value(QStringLiteral("session")).toObject()
-                    .value(QStringLiteral("access_token")).toString().trimmed();
-    }
-    if (token.isEmpty()) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Code exchange did not return an access token.");
-        }
-        return false;
-    }
-    m_aiAuthToken = token;
-    m_aiUserId = obj.value(QStringLiteral("user")).toObject().value(QStringLiteral("id")).toString().trimmed();
+    m_aiAuthToken = exchangeResult.value().accessToken.trimmed();
+    m_aiUserId = exchangeResult.value().userId.trimmed();
     QString secureStoreError;
     if (!writeAiTokenToSecureStore(m_aiAuthToken, &secureStoreError)) {
         qWarning() << "Secure token storage failed after code exchange:" << secureStoreError;
@@ -1826,83 +1659,48 @@ void EditorWindow::refreshAiIntegrationState()
         while (normalizedBase.endsWith(QLatin1Char('/'))) {
             normalizedBase.chop(1);
         }
-        const QString entitlementsUrl = normalizedBase + QStringLiteral("/api/ai/entitlements");
         serviceUrl = normalizedBase + QStringLiteral("/api/ai/task");
-
-        QProcess process;
-        process.setProcessChannelMode(QProcess::MergedChannels);
-        const QStringList args{
-            QStringLiteral("-sS"),
-            QStringLiteral("--max-time"),
-            QString::number(qMax(1, timeoutMs / 1000)),
-            QStringLiteral("-X"),
-            QStringLiteral("GET"),
-            QStringLiteral("-H"),
-            QStringLiteral("Authorization: Bearer %1").arg(m_aiAuthToken),
-            QStringLiteral("-H"),
-            QStringLiteral("Accept: application/json"),
-            entitlementsUrl};
-        process.start(QStringLiteral("curl"), args);
-        if (!process.waitForFinished(timeoutMs)) {
-            process.kill();
-            status = QStringLiteral("AI disabled: entitlement check timed out");
-        } else if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-            status = QStringLiteral("AI disabled: entitlement check failed");
+        cppmonetize::ClientConfig cfg;
+        cfg.apiBaseUrl = normalizedBase;
+        cfg.timeoutMs = timeoutMs;
+        cfg.clientId = QStringLiteral("jcut-desktop");
+        cfg.requiredContractPrefix = QStringLiteral("1.");
+        cppmonetize::MonetizeClient client(cfg);
+        const auto entResult = client.getAiEntitlements(m_aiAuthToken);
+        if (!entResult.hasValue()) {
+            status = QStringLiteral("AI disabled: entitlement check failed (%1)")
+                         .arg(entResult.error().message);
         } else {
-            QJsonParseError parseError;
-            const QJsonDocument doc =
-                QJsonDocument::fromJson(process.readAllStandardOutput(), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-                status = QStringLiteral("AI disabled: entitlement response invalid");
+            const cppmonetize::AiEntitlements ent = entResult.value();
+            const bool entitled = ent.entitled;
+            m_aiContractVersion = ent.contractVersion.trimmed();
+            const bool contractOk = m_aiContractVersion.startsWith(QStringLiteral("1."));
+            m_aiUserId = ent.userId.trimmed();
+            if (!ent.models.isEmpty()) {
+                modelOptions = ent.models;
+            }
+            fallbackModels = ent.fallbackOrder;
+            if (ent.requestsPerMinute > 0) {
+                rateLimit = qMax(1, ent.requestsPerMinute);
+            }
+            if (ent.projectBudget > 0) {
+                budgetCap = qMax(1, ent.projectBudget);
+            }
+            if (ent.timeoutMs > 0) {
+                timeoutMs = qMax(1000, ent.timeoutMs);
+            }
+            retries = qBound(0, ent.retries, 3);
+
+            enabled = entitled && contractOk;
+            if (!contractOk) {
+                status = QStringLiteral("AI disabled: unsupported contract '%1'").arg(m_aiContractVersion);
+            } else if (!entitled) {
+                status = QStringLiteral("AI disabled: user not entitled");
             } else {
-                const QJsonObject obj = doc.object();
-                const bool entitled = obj.value(QStringLiteral("entitled")).toBool(false);
-                m_aiContractVersion = obj.value(QStringLiteral("contract_version"))
-                                          .toString(obj.value(QStringLiteral("version")).toString()).trimmed();
-                const bool contractOk = m_aiContractVersion.startsWith(QStringLiteral("1."));
-                m_aiUserId = obj.value(QStringLiteral("user")).toObject()
-                                 .value(QStringLiteral("id")).toString().trimmed();
-
-                const QJsonArray modelsArr = obj.value(QStringLiteral("models")).toArray();
-                QStringList loadedModels;
-                for (const QJsonValue& value : modelsArr) {
-                    QString model = value.toString().trimmed();
-                    if (model.isEmpty() && value.isObject()) {
-                        model = value.toObject().value(QStringLiteral("id")).toString().trimmed();
-                    }
-                    if (!model.isEmpty()) {
-                        loadedModels.push_back(model);
-                    }
-                }
-                if (!loadedModels.isEmpty()) {
-                    modelOptions = loadedModels;
-                }
-
-                const QJsonArray fallbackArr = obj.value(QStringLiteral("fallback_order")).toArray();
-                for (const QJsonValue& value : fallbackArr) {
-                    const QString candidate = value.toString().trimmed();
-                    if (!candidate.isEmpty()) {
-                        fallbackModels.push_back(candidate);
-                    }
-                }
-
-                const QJsonObject limits = obj.value(QStringLiteral("limits")).toObject();
-                rateLimit = qMax(1, limits.value(QStringLiteral("requests_per_minute")).toInt(rateLimit));
-                budgetCap = qMax(1, limits.value(QStringLiteral("project_budget")).toInt(budgetCap));
-                timeoutMs = qMax(1000, limits.value(QStringLiteral("timeout_ms")).toInt(timeoutMs));
-                retries = qBound(0, limits.value(QStringLiteral("retries")).toInt(retries), 3);
-
-                enabled = entitled && contractOk;
-                if (!contractOk) {
-                    status = QStringLiteral("AI disabled: unsupported contract '%1'").arg(m_aiContractVersion);
-                } else if (!entitled) {
-                    status = QStringLiteral("AI disabled: user not entitled");
-                } else {
-                    status = QStringLiteral("AI enabled for %1 (%2 req/min, budget %3)")
-                                 .arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
-                                 .arg(QString::number(rateLimit))
-                                 .arg(QString::number(budgetCap));
-                }
+                status = QStringLiteral("AI enabled for %1 (%2 req/min, budget %3)")
+                             .arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
+                             .arg(QString::number(rateLimit))
+                             .arg(QString::number(budgetCap));
             }
         }
     }
@@ -2055,6 +1853,17 @@ QJsonObject EditorWindow::runAiAction(const QString& action,
         modelCandidates.push_back(QStringLiteral("deepseek-chat"));
     }
 
+    QString normalizedBase = m_aiProxyBaseUrl.trimmed();
+    while (normalizedBase.endsWith(QLatin1Char('/'))) {
+        normalizedBase.chop(1);
+    }
+    cppmonetize::ClientConfig cfg;
+    cfg.apiBaseUrl = normalizedBase;
+    cfg.timeoutMs = m_aiRequestTimeoutMs;
+    cfg.clientId = QStringLiteral("jcut-desktop");
+    cfg.requiredContractPrefix = QStringLiteral("1.");
+    cppmonetize::MonetizeClient client(cfg);
+
     QString lastError;
     for (const QString& model : std::as_const(modelCandidates)) {
         for (int attempt = 0; attempt <= m_aiRequestRetries; ++attempt) {
@@ -2064,41 +1873,13 @@ QJsonObject EditorWindow::runAiAction(const QString& action,
             requestObj[QStringLiteral("payload")] = payload;
             requestObj[QStringLiteral("context")] = buildAiProjectContext();
 
-            QProcess process;
-            process.setProcessChannelMode(QProcess::MergedChannels);
-            const QStringList args{
-                QStringLiteral("-sS"),
-                QStringLiteral("--max-time"),
-                QString::number(qMax(1, m_aiRequestTimeoutMs / 1000)),
-                QStringLiteral("-X"),
-                QStringLiteral("POST"),
-                QStringLiteral("-H"),
-                QStringLiteral("Content-Type: application/json"),
-                QStringLiteral("-H"),
-                QStringLiteral("Authorization: Bearer %1").arg(m_aiAuthToken),
-                QStringLiteral("--data-binary"),
-                QString::fromUtf8(QJsonDocument(requestObj).toJson(QJsonDocument::Compact)),
-                m_aiServiceUrl};
-            process.start(QStringLiteral("curl"), args);
-            if (!process.waitForFinished(m_aiRequestTimeoutMs)) {
-                process.kill();
-                lastError = QStringLiteral("AI request timed out on model %1 (attempt %2).")
-                                .arg(model, QString::number(attempt + 1));
-                continue;
-            }
-            const QByteArray responseBytes = process.readAllStandardOutput();
-            if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+            const auto response = client.submitAiTask(m_aiAuthToken, requestObj);
+            if (!response.hasValue()) {
                 lastError = QStringLiteral("AI request failed on %1: %2")
-                                .arg(model, QString::fromUtf8(responseBytes).trimmed());
+                                .arg(model, response.error().message);
                 continue;
             }
-            QJsonParseError parseError;
-            const QJsonDocument doc = QJsonDocument::fromJson(responseBytes, &parseError);
-            if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-                lastError = QStringLiteral("AI response was not valid JSON on model %1.").arg(model);
-                continue;
-            }
-            const QJsonObject obj = doc.object();
+            const QJsonObject obj = response.value();
             const QJsonObject errObj = obj.value(QStringLiteral("error")).toObject();
             if (!errObj.isEmpty()) {
                 const QString code = errObj.value(QStringLiteral("code")).toString().trimmed().toLower();

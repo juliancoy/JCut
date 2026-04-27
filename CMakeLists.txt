@@ -74,6 +74,9 @@ if(EXISTS "${MOTIVE3D_INCLUDE_DIR}")
 endif()
 
 add_subdirectory(rtaudio EXCLUDE_FROM_ALL)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/CPPMonetize/CMakeLists.txt")
+    add_subdirectory(external/CPPMonetize EXCLUDE_FROM_ALL)
+endif()
 
 execute_process(
     COMMAND git rev-parse --short=12 HEAD
@@ -237,6 +240,9 @@ target_compile_definitions(editor_test_support
 
 add_executable(editor ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp)
 target_link_libraries(editor PRIVATE editor_core)
+if(TARGET CPPMonetize::cppmonetize)
+    target_link_libraries(editor PRIVATE CPPMonetize::cppmonetize)
+endif()
 set_target_properties(editor PROPERTIES
     BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
 )
