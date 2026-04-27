@@ -83,6 +83,30 @@ cppmonetize::MonetizeClient createJCutMonetizeClient(const QString& apiBaseUrl,
 
 }  // namespace
 
+void EditorWindow::startupProfileMark(const QString& phase, const QJsonObject& extra)
+{
+    if (m_startupProfileCompleted) {
+        return;
+    }
+    if (!m_startupProfileTimer.isValid()) {
+        m_startupProfileTimer.start();
+        m_startupProfileLastMarkMs = 0;
+    }
+    const qint64 nowMs = m_startupProfileTimer.elapsed();
+    const qint64 deltaMs = qMax<qint64>(0, nowMs - m_startupProfileLastMarkMs);
+    m_startupProfileLastMarkMs = nowMs;
+
+    QJsonObject mark{
+        {QStringLiteral("phase"), phase},
+        {QStringLiteral("t_ms"), nowMs},
+        {QStringLiteral("delta_ms"), deltaMs}
+    };
+    if (!extra.isEmpty()) {
+        mark[QStringLiteral("extra")] = extra;
+    }
+    m_startupProfileEvents.push_back(mark);
+}
+
 // ============================================================================
 // EditorWindow - Main application window
 // ============================================================================
@@ -90,25 +114,47 @@ EditorWindow::EditorWindow(quint16 controlPort)
 {
     QElapsedTimer ctorTimer;
     ctorTimer.start();
+    m_startupProfileTimer.start();
+    m_startupProfileLastMarkMs = 0;
+    startupProfileMark(QStringLiteral("ctor.begin"),
+                       QJsonObject{{QStringLiteral("control_port"), static_cast<int>(controlPort)}});
 
     setupWindowChrome();
+    startupProfileMark(QStringLiteral("setup.window_chrome.done"));
     setupMainLayout(ctorTimer);
+    startupProfileMark(QStringLiteral("setup.main_layout.done"));
     bindInspectorWidgets();
+    startupProfileMark(QStringLiteral("setup.bind_inspector_widgets.done"));
 
     setupPlaybackTimers();
+    startupProfileMark(QStringLiteral("setup.playback_timers.done"));
     setupShortcuts();
+    startupProfileMark(QStringLiteral("setup.shortcuts.done"));
     setupHeartbeat();
+    startupProfileMark(QStringLiteral("setup.heartbeat.done"));
     setupStateSaveTimer();
+    startupProfileMark(QStringLiteral("setup.state_save_timer.done"));
     setupDeferredSeekTimers();
+    startupProfileMark(QStringLiteral("setup.deferred_seek_timers.done"));
     setupControlServer(controlPort, ctorTimer);
+    startupProfileMark(QStringLiteral("setup.control_server.done"));
     setupAudioEngine();
+    startupProfileMark(QStringLiteral("setup.audio_engine.done"));
     setupSpeechFilterControls();
+    startupProfileMark(QStringLiteral("setup.speech_filter_controls.done"));
     setupTrackInspectorControls();
+    startupProfileMark(QStringLiteral("setup.track_inspector_controls.done"));
     setupPreviewControls();
+    startupProfileMark(QStringLiteral("setup.preview_controls.done"));
     setupTabs();
+    startupProfileMark(QStringLiteral("setup.tabs.done"));
     setupInspectorRefreshRouting();
+    startupProfileMark(QStringLiteral("setup.inspector_refresh_routing.done"));
     setupStartupLoad();
+    startupProfileMark(QStringLiteral("setup.startup_load.scheduled"));
     refreshAiIntegrationState();
+    startupProfileMark(QStringLiteral("setup.ai_integration_state.done"));
+    startupProfileMark(QStringLiteral("ctor.sync_complete"));
 }
 
 EditorWindow::~EditorWindow()
@@ -318,6 +364,14 @@ void EditorWindow::restoreToHistoryIndex(int index)
 void EditorWindow::applyStateJson(const QJsonObject &root)
 {
     m_loadingState = true;
+    const bool startupMarking = !m_startupProfileCompleted;
+    auto markStartup = [this, startupMarking](const QString& phase, const QJsonObject& extra = QJsonObject()) {
+        if (!startupMarking) {
+            return;
+        }
+        startupProfileMark(phase, extra);
+    };
+    markStartup(QStringLiteral("apply_state.begin"));
 
     // Default to the projects root from editor.config, then fall back to saved state, then current dir
     QString rootPath = root.value(QStringLiteral("mediaRoot")).toString(rootDirPath());
@@ -437,6 +491,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int aiRateLimitPerMinute = qMax(1, root.value(QStringLiteral("aiRateLimitPerMinute")).toInt(12));
     const int aiRequestTimeoutMs = qMax(1000, root.value(QStringLiteral("aiRequestTimeoutMs")).toInt(15000));
     const int aiRequestRetries = qBound(0, root.value(QStringLiteral("aiRequestRetries")).toInt(1), 3);
+    const int aiEntitlementGraceWindowMinutes = qMax(
+        1, root.value(QStringLiteral("aiEntitlementGraceWindowMinutes")).toInt(240));
+    const qint64 aiEntitlementLastSuccessEpochMs =
+        root.value(QStringLiteral("aiEntitlementLastSuccessEpochMs")).toVariant().toLongLong();
+    const QJsonObject aiCachedEntitlement =
+        root.value(QStringLiteral("aiCachedEntitlement")).toObject();
     PreviewWindow::AudioDynamicsSettings loadedAudioDynamics;
     loadedAudioDynamics.amplifyEnabled = root.value(QStringLiteral("audioAmplifyEnabled")).toBool(false);
     loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
@@ -480,6 +540,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const QString selectedClipId = root.value(QStringLiteral("selectedClipId")).toString();
     QVector<TimelineTrack> loadedTracks;
 
+    markStartup(QStringLiteral("apply_state.timeline_parse.begin"));
     const QJsonArray clips = root.value(QStringLiteral("timeline")).toArray();
     loadedClips.reserve(clips.size());
     for (const QJsonValue &value : clips)
@@ -490,8 +551,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         if (!clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title)
             loadedClips.push_back(clip);
     }
+    markStartup(QStringLiteral("apply_state.timeline_parse.end"),
+                QJsonObject{{QStringLiteral("loaded_clip_count"), loadedClips.size()}});
 
     if (!m_restoringHistory && !loadedClips.isEmpty()) {
+        QElapsedTimer relocateTimer;
+        relocateTimer.start();
+        markStartup(QStringLiteral("apply_state.media_relocate.begin"),
+                    QJsonObject{{QStringLiteral("candidate_clip_count"), loadedClips.size()}});
         const auto clipSourceExists = [](const TimelineClip& clip) {
             if (clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title) {
                 return true;
@@ -619,8 +686,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             }
             QMessageBox::information(this, QStringLiteral("Media Relocation"), summary);
         }
+        markStartup(QStringLiteral("apply_state.media_relocate.end"),
+                    QJsonObject{
+                        {QStringLiteral("elapsed_ms"), relocateTimer.elapsed()},
+                        {QStringLiteral("relocated_count"), relocatedCount},
+                        {QStringLiteral("unresolved_count"), unresolvedCount}
+                    });
     }
 
+    markStartup(QStringLiteral("apply_state.tracks_parse.begin"));
     const QJsonArray tracks = root.value(QStringLiteral("tracks")).toArray();
     loadedTracks.reserve(tracks.size());
     for (int i = 0; i < tracks.size(); ++i)
@@ -638,6 +712,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         track.audioEnabled = obj.value(QStringLiteral("audioEnabled")).toBool(true);
         loadedTracks.push_back(track);
     }
+    markStartup(QStringLiteral("apply_state.tracks_parse.end"),
+                QJsonObject{{QStringLiteral("loaded_track_count"), loadedTracks.size()}});
+    markStartup(QStringLiteral("apply_state.render_sync_parse.begin"));
        const QJsonArray renderSyncMarkers = root.value(QStringLiteral("renderSyncMarkers")).toArray();
     loadedRenderSyncMarkers.reserve(renderSyncMarkers.size());
     for (const QJsonValue &value : renderSyncMarkers)
@@ -651,6 +728,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         marker.count = qMax(1, obj.value(QStringLiteral("count")).toInt(1));
         loadedRenderSyncMarkers.push_back(marker);
     }
+    markStartup(QStringLiteral("apply_state.render_sync_parse.end"),
+                QJsonObject{{QStringLiteral("loaded_render_sync_count"), loadedRenderSyncMarkers.size()}});
 
     const QString resolvedRootPath = QDir(rootPath).absolutePath();
     if (m_explorerPane) {
@@ -687,6 +766,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_aiRateLimitPerMinute = aiRateLimitPerMinute;
     m_aiRequestTimeoutMs = aiRequestTimeoutMs;
     m_aiRequestRetries = aiRequestRetries;
+    m_aiEntitlementGraceWindowMinutes = aiEntitlementGraceWindowMinutes;
+    m_aiEntitlementLastSuccessEpochMs = aiEntitlementLastSuccessEpochMs;
+    m_aiCachedEntitlement = aiCachedEntitlement;
     if (m_renderUseProxiesCheckBox) {
         QSignalBlocker block(m_renderUseProxiesCheckBox);
         m_renderUseProxiesCheckBox->setChecked(renderUseProxies);
@@ -981,6 +1063,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     editor::setDebugH26xSoftwareThreadingMode(debugH26xSoftwareThreadingMode);
     editor::setDebugDeterministicPipelineEnabled(debugDeterministicPipeline);
 
+    markStartup(QStringLiteral("apply_state.timeline_bind.begin"));
+    const auto savedTimelineClipsChanged = m_timeline->clipsChanged;
+    const auto savedTimelineSelectionChanged = m_timeline->selectionChanged;
+    const auto savedTimelineTrackLayoutChanged = m_timeline->trackLayoutChanged;
+    const auto savedTimelineRenderSyncMarkersChanged = m_timeline->renderSyncMarkersChanged;
+    const auto savedTimelineExportRangeChanged = m_timeline->exportRangeChanged;
+    m_timeline->clipsChanged = nullptr;
+    m_timeline->selectionChanged = nullptr;
+    m_timeline->trackLayoutChanged = nullptr;
+    m_timeline->renderSyncMarkersChanged = nullptr;
+    m_timeline->exportRangeChanged = nullptr;
     m_timeline->setTracks(loadedTracks);
     m_timeline->setClips(loadedClips);
     m_timeline->setTimelineZoom(timelineZoom);
@@ -993,11 +1086,25 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_timeline->setRenderSyncMarkers(loadedRenderSyncMarkers);
     m_timeline->setSelectedClipId(selectedClipId);
     syncSliderRange();
+    m_timeline->clipsChanged = savedTimelineClipsChanged;
+    m_timeline->selectionChanged = savedTimelineSelectionChanged;
+    m_timeline->trackLayoutChanged = savedTimelineTrackLayoutChanged;
+    m_timeline->renderSyncMarkersChanged = savedTimelineRenderSyncMarkersChanged;
+    m_timeline->exportRangeChanged = savedTimelineExportRangeChanged;
+    if (m_timeline->trackLayoutChanged) {
+        m_timeline->trackLayoutChanged();
+    }
+    markStartup(QStringLiteral("apply_state.timeline_bind.end"),
+                QJsonObject{
+                    {QStringLiteral("timeline_clip_count"), m_timeline->clips().size()},
+                    {QStringLiteral("timeline_track_count"), m_timeline->tracks().size()}
+                });
 
     const QVector<ExportRangeSegment> playbackRanges = effectivePlaybackRanges();
     setTransformSkipAwareTimelineRanges(
         speechFilterPlaybackEnabled() ? playbackRanges : QVector<ExportRangeSegment>{});
     
+    markStartup(QStringLiteral("apply_state.preview_bind.begin"));
     m_preview->beginBulkUpdate();
     m_preview->setClipCount(m_timeline->clips().size());
     m_preview->setTimelineTracks(m_timeline->tracks());
@@ -1006,8 +1113,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
     m_preview->setSelectedClipId(selectedClipId);
     m_preview->endBulkUpdate();
+    markStartup(QStringLiteral("apply_state.preview_bind.end"));
     
     if (m_audioEngine) {
+        markStartup(QStringLiteral("apply_state.audio_bind.begin"));
         m_audioEngine->setTimelineClips(m_timeline->clips());
         m_audioEngine->setExportRanges(playbackRanges);
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
@@ -1015,10 +1124,20 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
         m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-        m_audioEngine->seek(currentFrame);
+        if (!startupMarking) {
+            m_audioEngine->seek(currentFrame);
+        }
+        markStartup(QStringLiteral("apply_state.audio_bind.end"));
     }
     
-    setCurrentFrame(currentFrame);
+    markStartup(QStringLiteral("apply_state.seek.begin"),
+                QJsonObject{{QStringLiteral("target_frame"), static_cast<qint64>(currentFrame)}});
+    if (!startupMarking) {
+        setCurrentFrame(currentFrame);
+        markStartup(QStringLiteral("apply_state.seek.end"));
+    } else {
+        markStartup(QStringLiteral("apply_state.seek.deferred"));
+    }
 
     m_playbackTimer.stop();
     m_fastPlaybackActive.store(false);
@@ -1030,6 +1149,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
 
     m_loadingState = false;
     refreshAiIntegrationState();
+    markStartup(QStringLiteral("apply_state.end"));
     
     // Use the projects root from editor.config if available, otherwise use the saved media root
     const QString projectsRoot = rootDirPath();
@@ -1037,7 +1157,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         ? projectsRoot 
         : resolvedRootPath;
     
-    QTimer::singleShot(0, this, [this, mediaRoot]() {
+    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking]() {
+        if (startupMarking) {
+            if (m_audioEngine) {
+                m_audioEngine->seek(currentFrame);
+            }
+            setCurrentFrame(currentFrame);
+        }
         if (m_explorerPane) {
             m_explorerPane->setInitialRootPath(mediaRoot);
         }
@@ -1658,6 +1784,12 @@ void EditorWindow::refreshAiIntegrationState()
     int retries = qBound(0, m_aiRequestRetries, 3);
     const QString envBaseUrl = qEnvironmentVariable("JCUT_AI_PROXY_BASE_URL").trimmed();
     const QString envToken = qEnvironmentVariable("JCUT_AI_AUTH_TOKEN").trimmed();
+    bool envGraceOk = false;
+    const int envGraceWindowMinutes =
+        qEnvironmentVariableIntValue("JCUT_AI_ENTITLEMENT_GRACE_MINUTES", &envGraceOk);
+    if (envGraceOk) {
+        m_aiEntitlementGraceWindowMinutes = qMax(1, envGraceWindowMinutes);
+    }
     if (m_aiProxyBaseUrl.trimmed().isEmpty()) {
         m_aiProxyBaseUrl = envBaseUrl;
     }
@@ -1683,14 +1815,7 @@ void EditorWindow::refreshAiIntegrationState()
             normalizedBase.chop(1);
         }
         serviceUrl = normalizedBase + QStringLiteral("/api/ai/task");
-        cppmonetize::MonetizeClient client =
-            createJCutMonetizeClient(normalizedBase, timeoutMs);
-        const auto entResult = client.getAiEntitlements(m_aiAuthToken);
-        if (!entResult.hasValue()) {
-            status = QStringLiteral("AI disabled: entitlement check failed (%1)")
-                         .arg(entResult.error().message);
-        } else {
-            const cppmonetize::AiEntitlements ent = entResult.value();
+        auto applyEntitlements = [&](const cppmonetize::AiEntitlements& ent, bool offlineGrace) {
             const bool entitled = ent.entitled;
             m_aiContractVersion = ent.contractVersion.trimmed();
             const bool contractOk = m_aiContractVersion.startsWith(QStringLiteral("1."));
@@ -1715,12 +1840,61 @@ void EditorWindow::refreshAiIntegrationState()
                 status = QStringLiteral("AI disabled: unsupported contract '%1'").arg(m_aiContractVersion);
             } else if (!entitled) {
                 status = QStringLiteral("AI disabled: user not entitled");
+            } else if (offlineGrace) {
+                status = QStringLiteral("AI enabled (offline grace) for %1 (%2 req/min, budget %3)")
+                             .arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
+                             .arg(QString::number(rateLimit))
+                             .arg(QString::number(budgetCap));
             } else {
                 status = QStringLiteral("AI enabled for %1 (%2 req/min, budget %3)")
                              .arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
                              .arg(QString::number(rateLimit))
                              .arg(QString::number(budgetCap));
             }
+        };
+
+        cppmonetize::MonetizeClient client =
+            createJCutMonetizeClient(normalizedBase, timeoutMs);
+        const auto entResult = client.getAiEntitlements(m_aiAuthToken);
+        if (!entResult.hasValue()) {
+            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+            const qint64 graceWindowMs =
+                static_cast<qint64>(m_aiEntitlementGraceWindowMinutes) * 60 * 1000;
+            cppmonetize::ApiError cachedParseError;
+            const auto cachedEnt = cppmonetize::parseAiEntitlements(m_aiCachedEntitlement, &cachedParseError);
+            const bool withinGraceWindow =
+                m_aiEntitlementLastSuccessEpochMs > 0 &&
+                nowMs >= m_aiEntitlementLastSuccessEpochMs &&
+                (nowMs - m_aiEntitlementLastSuccessEpochMs) <= graceWindowMs;
+            if (cachedEnt.has_value() && withinGraceWindow) {
+                applyEntitlements(*cachedEnt, true);
+            } else {
+                status = QStringLiteral("AI disabled: entitlement check failed (%1)")
+                             .arg(entResult.error().message);
+            }
+        } else {
+            const cppmonetize::AiEntitlements ent = entResult.value();
+            applyEntitlements(ent, false);
+            QJsonArray modelsJson;
+            for (const QString& model : ent.models) {
+                modelsJson.push_back(model);
+            }
+            QJsonArray fallbackJson;
+            for (const QString& model : ent.fallbackOrder) {
+                fallbackJson.push_back(model);
+            }
+            m_aiCachedEntitlement = QJsonObject{
+                {QStringLiteral("entitled"), ent.entitled},
+                {QStringLiteral("contract_version"), ent.contractVersion},
+                {QStringLiteral("user"), QJsonObject{{QStringLiteral("id"), ent.userId}}},
+                {QStringLiteral("models"), modelsJson},
+                {QStringLiteral("fallback_order"), fallbackJson},
+                {QStringLiteral("limits"),
+                 QJsonObject{{QStringLiteral("requests_per_minute"), ent.requestsPerMinute},
+                             {QStringLiteral("project_budget"), ent.projectBudget},
+                             {QStringLiteral("timeout_ms"), ent.timeoutMs},
+                             {QStringLiteral("retries"), ent.retries}}}};
+            m_aiEntitlementLastSuccessEpochMs = QDateTime::currentMSecsSinceEpoch();
         }
     }
     m_aiRateLimitPerMinute = rateLimit;

@@ -20,7 +20,16 @@ using namespace editor;
 
 void EditorWindow::loadState()
 {
+    const bool startupMarking = !m_startupProfileCompleted;
+    auto markStartup = [this, startupMarking](const QString& phase, const QJsonObject& extra = QJsonObject()) {
+        if (!startupMarking) {
+            return;
+        }
+        startupProfileMark(phase, extra);
+    };
+    markStartup(QStringLiteral("load_state.begin"));
     loadProjectsFromFolders();
+    markStartup(QStringLiteral("load_state.projects_loaded"));
     qDebug() << "[PROJECT] Loading project:" << currentProjectIdOrDefault();
     qDebug() << "[PROJECT] State file:" << stateFilePath();
     qDebug() << "[PROJECT] History file:" << historyFilePath();
@@ -30,6 +39,7 @@ void EditorWindow::loadState()
 
     QJsonObject root;
     QFile historyFile(historyFilePath());
+    markStartup(QStringLiteral("load_state.history_read.begin"));
     if (historyFile.open(QIODevice::ReadOnly))
     {
         const QJsonObject historyRoot = QJsonDocument::fromJson(historyFile.readAll()).object();
@@ -41,17 +51,26 @@ void EditorWindow::loadState()
             root = m_historyEntries.at(m_historyIndex).toObject();
         }
     }
+    markStartup(QStringLiteral("load_state.history_read.end"),
+                QJsonObject{
+                    {QStringLiteral("history_entry_count"), m_historyEntries.size()},
+                    {QStringLiteral("history_index"), m_historyIndex}
+                });
 
     if (root.isEmpty())
     {
+        markStartup(QStringLiteral("load_state.state_file_read.begin"));
         QFile file(stateFilePath());
         if (file.open(QIODevice::ReadOnly))
         {
             root = QJsonDocument::fromJson(file.readAll()).object();
         }
+        markStartup(QStringLiteral("load_state.state_file_read.end"));
     }
 
+    markStartup(QStringLiteral("load_state.apply_state.begin"));
     applyStateJson(root);
+    markStartup(QStringLiteral("load_state.apply_state.end"));
     if (m_historyEntries.isEmpty())
     {
         pushHistorySnapshot();
@@ -66,6 +85,7 @@ void EditorWindow::loadState()
     {
         scheduleSaveState();
     }
+    markStartup(QStringLiteral("load_state.end"));
 }
 
 QString EditorWindow::configFilePath() const
@@ -582,6 +602,12 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("aiRateLimitPerMinute")] = m_aiRateLimitPerMinute;
     root[QStringLiteral("aiRequestTimeoutMs")] = m_aiRequestTimeoutMs;
     root[QStringLiteral("aiRequestRetries")] = m_aiRequestRetries;
+    root[QStringLiteral("aiEntitlementGraceWindowMinutes")] = m_aiEntitlementGraceWindowMinutes;
+    root[QStringLiteral("aiEntitlementLastSuccessEpochMs")] =
+        static_cast<qint64>(m_aiEntitlementLastSuccessEpochMs);
+    root[QStringLiteral("aiCachedEntitlement")] = m_aiCachedEntitlement;
+    root[QStringLiteral("audioAmplifyEnabled")] = m_previewAudioDynamics.amplifyEnabled;
+    root[QStringLiteral("audioAmplifyDb")] = m_previewAudioDynamics.amplifyDb;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
     root[QStringLiteral("audioPeakReductionEnabled")] = m_previewAudioDynamics.peakReductionEnabled;

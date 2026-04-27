@@ -100,10 +100,12 @@ private:
     void updateTransportLabels();
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
+    QJsonObject startupProfileSnapshot() const;
     QJsonObject throttleConfigSnapshot() const;
     QJsonObject applyThrottleConfigPatch(const QJsonObject& patch);
     QJsonObject playbackConfigSnapshot() const;
     QJsonObject applyPlaybackConfigPatch(const QJsonObject& patch);
+    void startupProfileMark(const QString& phase, const QJsonObject& extra = QJsonObject());
 
     void syncTranscriptTableToPlayhead();
     void syncKeyframeTableToPlayhead();
@@ -352,6 +354,17 @@ private:
     QSpinBox *m_previewLeadPrefetchCountSpin = nullptr;
     QSpinBox *m_previewPlaybackWindowAheadSpin = nullptr;
     QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
+    QCheckBox *m_audioAmplifyEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
+    QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
+    QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;
+    QCheckBox *m_audioLimiterEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioLimiterThresholdDbSpin = nullptr;
+    QCheckBox *m_audioCompressorEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioCompressorThresholdDbSpin = nullptr;
+    QDoubleSpinBox *m_audioCompressorRatioSpin = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QPushButton *m_profileBenchmarkButton = nullptr;
 
@@ -548,6 +561,9 @@ private:
     int m_aiRateLimitPerMinute = 12;
     int m_aiRequestTimeoutMs = 15000;
     int m_aiRequestRetries = 1;
+    int m_aiEntitlementGraceWindowMinutes = 240;
+    qint64 m_aiEntitlementLastSuccessEpochMs = 0;
+    QJsonObject m_aiCachedEntitlement;
     QStringList m_aiFallbackModels;
     QVector<qint64> m_aiRecentRequestEpochMs;
 
@@ -565,6 +581,11 @@ private:
     std::atomic<qint64> m_lastInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_maxInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_inspectorRefreshSlowCount{0};
+    QElapsedTimer m_startupProfileTimer;
+    qint64 m_startupProfileLastMarkMs = 0;
+    qint64 m_startupProfileCompletedMs = -1;
+    bool m_startupProfileCompleted = false;
+    QJsonArray m_startupProfileEvents;
     qint64 m_playbackUiSyncMinIntervalMs = 100;
     qint64 m_playbackStateSaveMinIntervalMs = 1000;
     qint64 m_slowSeekWarnThresholdMs = 20;
