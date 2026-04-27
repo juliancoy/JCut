@@ -13,6 +13,7 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDebug>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
@@ -55,6 +56,32 @@
 using namespace editor;
 
 #include "playback_debug.h"
+
+namespace {
+
+cppmonetize::MonetizeClient createJCutMonetizeClient(const QString& apiBaseUrl,
+                                                      int timeoutMs,
+                                                      const QString& contractPrefix = QStringLiteral("1."))
+{
+    cppmonetize::ClientConfig cfg;
+    cfg.apiBaseUrl = apiBaseUrl;
+    cfg.timeoutMs = timeoutMs;
+    cfg.clientId = QStringLiteral("jcut-desktop");
+    cfg.requiredContractPrefix = contractPrefix;
+    cfg.telemetryHook = [](const cppmonetize::RequestTelemetryEvent& event) {
+        if (event.success) {
+            return;
+        }
+        qWarning().noquote() << "[CPPMonetize][JCut]"
+                             << event.operation
+                             << "status=" << event.statusCode
+                             << "request_id=" << event.clientRequestId
+                             << "message=" << event.message;
+    };
+    return cppmonetize::MonetizeClient(cfg);
+}
+
+}  // namespace
 
 // ============================================================================
 // EditorWindow - Main application window
@@ -1574,12 +1601,8 @@ bool EditorWindow::exchangeAiAuthCode(const QString& code, const QString& state,
         }
         return false;
     }
-    cppmonetize::ClientConfig cfg;
-    cfg.apiBaseUrl = normalizedBase;
-    cfg.timeoutMs = m_aiRequestTimeoutMs;
-    cfg.clientId = QStringLiteral("jcut-desktop");
-    cfg.requiredContractPrefix = QStringLiteral("1.");
-    cppmonetize::MonetizeClient client(cfg);
+    cppmonetize::MonetizeClient client =
+        createJCutMonetizeClient(normalizedBase, m_aiRequestTimeoutMs);
     const auto exchangeResult = client.exchangeDesktopCode(
         code,
         state,
@@ -1660,12 +1683,8 @@ void EditorWindow::refreshAiIntegrationState()
             normalizedBase.chop(1);
         }
         serviceUrl = normalizedBase + QStringLiteral("/api/ai/task");
-        cppmonetize::ClientConfig cfg;
-        cfg.apiBaseUrl = normalizedBase;
-        cfg.timeoutMs = timeoutMs;
-        cfg.clientId = QStringLiteral("jcut-desktop");
-        cfg.requiredContractPrefix = QStringLiteral("1.");
-        cppmonetize::MonetizeClient client(cfg);
+        cppmonetize::MonetizeClient client =
+            createJCutMonetizeClient(normalizedBase, timeoutMs);
         const auto entResult = client.getAiEntitlements(m_aiAuthToken);
         if (!entResult.hasValue()) {
             status = QStringLiteral("AI disabled: entitlement check failed (%1)")
@@ -1857,12 +1876,8 @@ QJsonObject EditorWindow::runAiAction(const QString& action,
     while (normalizedBase.endsWith(QLatin1Char('/'))) {
         normalizedBase.chop(1);
     }
-    cppmonetize::ClientConfig cfg;
-    cfg.apiBaseUrl = normalizedBase;
-    cfg.timeoutMs = m_aiRequestTimeoutMs;
-    cfg.clientId = QStringLiteral("jcut-desktop");
-    cfg.requiredContractPrefix = QStringLiteral("1.");
-    cppmonetize::MonetizeClient client(cfg);
+    cppmonetize::MonetizeClient client =
+        createJCutMonetizeClient(normalizedBase, m_aiRequestTimeoutMs);
 
     QString lastError;
     for (const QString& model : std::as_const(modelCandidates)) {
