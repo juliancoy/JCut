@@ -333,6 +333,14 @@ void PreviewWindow::setAudioSpeakerHoverModalEnabled(bool enabled) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setAudioWaveformVisible(bool visible) {
+    if (m_audioWaveformVisible == visible) {
+        return;
+    }
+    m_audioWaveformVisible = visible;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setViewMode(ViewMode mode) {
     if (m_viewMode == mode) {
         return;

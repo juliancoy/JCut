@@ -79,7 +79,9 @@ public:
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
     void setAudioSpeakerHoverModalEnabled(bool enabled);
+    void setAudioWaveformVisible(bool visible);
     bool audioSpeakerHoverModalEnabled() const { return m_audioSpeakerHoverModalEnabled; }
+    bool audioWaveformVisible() const { return m_audioWaveformVisible; }
     void setViewMode(ViewMode mode);
     ViewMode viewMode() const { return m_viewMode; }
     void setAudioDynamicsSettings(const AudioDynamicsSettings& settings);
@@ -347,5 +349,6 @@ private:
     QPointF m_speakerPickCurrentPos;
     QString m_speakerPickHintClipId;
     bool m_audioSpeakerHoverModalEnabled = true;
+    bool m_audioWaveformVisible = true;
     QPointF m_lastMousePos = QPointF(-10000.0, -10000.0);
 };

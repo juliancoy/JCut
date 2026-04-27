@@ -366,6 +366,7 @@ private:
     QCheckBox *m_audioAmplifyEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
+    QCheckBox *m_audioShowWaveformCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
@@ -548,6 +549,7 @@ private:
     bool m_correctionsEnabled = true;
     PreviewWindow::AudioDynamicsSettings m_previewAudioDynamics;
     bool m_audioSpeakerHoverModalEnabled = true;
+    bool m_audioWaveformVisible = true;
     QString m_previewViewMode = QStringLiteral("video");
     bool m_aiIntegrationEnabled = false;
     QString m_aiIntegrationStatus;

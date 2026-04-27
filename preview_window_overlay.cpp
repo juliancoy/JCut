@@ -6,19 +6,188 @@
 #include "waveform_service.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLinearGradient>
 #include <QApplication>
 #include <QMetaObject>
 #include <QPainter>
 #include <QTextDocument>
+#include <QFile>
 #include <QFileInfo>
+#include <QDir>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
 
 namespace {
 constexpr int64_t kMaxHeldPresentationFrameDelta = 8;
+
+struct HoverSpeakerProfile {
+    QString speakerId;
+    QString name;
+    QString organization;
+    QString description;
+    QString imagePath;
+};
+
+struct HoverSpeakerProfileCacheEntry {
+    qint64 mtimeMs = -1;
+    QHash<QString, HoverSpeakerProfile> profilesBySpeaker;
+};
+
+QHash<QString, HoverSpeakerProfileCacheEntry>& hoverSpeakerProfileCache() {
+    static QHash<QString, HoverSpeakerProfileCacheEntry> cache;
+    return cache;
+}
+
+QHash<QString, QPixmap>& hoverSpeakerImageCache() {
+    static QHash<QString, QPixmap> cache;
+    return cache;
+}
+
+QString clippedSummaryFromWords(const QStringList& words) {
+    if (words.isEmpty()) {
+        return QStringLiteral("No transcript summary available.");
+    }
+    QStringList clipped;
+    clipped.reserve(qMin(34, words.size()));
+    for (int i = 0; i < words.size() && i < 34; ++i) {
+        QString token = words.at(i).trimmed();
+        token.remove(QRegularExpression(QStringLiteral("^[\\s\\p{Punct}]+|[\\s\\p{Punct}]+$")));
+        if (token.isEmpty()) {
+            continue;
+        }
+        clipped.push_back(token);
+    }
+    if (clipped.isEmpty()) {
+        return QStringLiteral("No transcript summary available.");
+    }
+    QString summary = clipped.join(QLatin1Char(' '));
+    if (words.size() > clipped.size()) {
+        summary += QStringLiteral("...");
+    }
+    return summary;
+}
+
+QHash<QString, QStringList> wordsBySpeakerFromTranscriptRoot(const QJsonObject& root) {
+    QHash<QString, QStringList> wordsBySpeaker;
+    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segObj = segValue.toObject();
+        const QString segmentSpeaker = segObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray words = segObj.value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            QString speakerId = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
+            if (speakerId.isEmpty()) {
+                speakerId = segmentSpeaker;
+            }
+            const QString token = wordObj.value(QStringLiteral("word")).toString().trimmed();
+            if (!speakerId.isEmpty() && !token.isEmpty()) {
+                wordsBySpeaker[speakerId].push_back(token);
+            }
+        }
+    }
+    return wordsBySpeaker;
+}
+
+const HoverSpeakerProfile* hoverSpeakerProfileFor(const QString& transcriptPath, const QString& speakerId) {
+    if (transcriptPath.isEmpty() || speakerId.trimmed().isEmpty()) {
+        return nullptr;
+    }
+    const QFileInfo info(transcriptPath);
+    if (!info.exists() || !info.isFile()) {
+        return nullptr;
+    }
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    HoverSpeakerProfileCacheEntry& entry = hoverSpeakerProfileCache()[transcriptPath];
+    if (entry.mtimeMs != mtimeMs || entry.profilesBySpeaker.isEmpty()) {
+        entry = HoverSpeakerProfileCacheEntry{};
+        entry.mtimeMs = mtimeMs;
+        QFile transcriptFile(transcriptPath);
+        if (transcriptFile.open(QIODevice::ReadOnly)) {
+            QJsonParseError parseError;
+            const QJsonDocument doc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
+            if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
+                const QJsonObject root = doc.object();
+                const QHash<QString, QStringList> wordsBySpeaker =
+                    wordsBySpeakerFromTranscriptRoot(root);
+                const QJsonObject profiles = root.value(QStringLiteral("speaker_profiles")).toObject();
+                QSet<QString> speakerIds;
+                for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
+                    speakerIds.insert(it.key());
+                }
+                for (auto it = profiles.begin(); it != profiles.end(); ++it) {
+                    speakerIds.insert(it.key());
+                }
+                for (const QString& id : speakerIds) {
+                    const QJsonObject profileObj = profiles.value(id).toObject();
+                    HoverSpeakerProfile profile;
+                    profile.speakerId = id;
+                    profile.name = profileObj.value(QStringLiteral("name")).toString(id).trimmed();
+                    profile.organization = profileObj.value(QStringLiteral("organization")).toString().trimmed();
+                    QString description =
+                        profileObj.value(QStringLiteral("brief_description")).toString().trimmed();
+                    if (description.isEmpty()) {
+                        description = profileObj.value(QStringLiteral("description")).toString().trimmed();
+                    }
+                    if (description.isEmpty()) {
+                        description = profileObj.value(QStringLiteral("bio")).toString().trimmed();
+                    }
+                    if (description.isEmpty()) {
+                        description = clippedSummaryFromWords(wordsBySpeaker.value(id));
+                    }
+                    profile.description = description;
+                    QString imagePath =
+                        profileObj.value(QStringLiteral("image_path")).toString().trimmed();
+                    if (imagePath.isEmpty()) {
+                        imagePath = profileObj.value(QStringLiteral("avatar_path")).toString().trimmed();
+                    }
+                    if (imagePath.isEmpty()) {
+                        imagePath = profileObj.value(QStringLiteral("photo_path")).toString().trimmed();
+                    }
+                    if (imagePath.isEmpty()) {
+                        imagePath = profileObj.value(QStringLiteral("image")).toString().trimmed();
+                    }
+                    if (!imagePath.isEmpty() && QDir::isRelativePath(imagePath)) {
+                        imagePath = QFileInfo(info.absolutePath(), imagePath).absoluteFilePath();
+                    }
+                    profile.imagePath = imagePath;
+                    entry.profilesBySpeaker.insert(id, profile);
+                }
+            }
+        }
+    }
+    auto it = entry.profilesBySpeaker.constFind(speakerId);
+    if (it == entry.profilesBySpeaker.constEnd()) {
+        return nullptr;
+    }
+    return &(*it);
+}
+
+QPixmap hoverSpeakerImage(const HoverSpeakerProfile& profile, int edgePx) {
+    const int safeSize = qBound(28, edgePx, 192);
+    if (profile.imagePath.trimmed().isEmpty()) {
+        return QPixmap();
+    }
+    const QString cacheKey = QStringLiteral("%1|%2").arg(profile.imagePath).arg(safeSize);
+    auto& cache = hoverSpeakerImageCache();
+    const auto cached = cache.constFind(cacheKey);
+    if (cached != cache.constEnd()) {
+        return cached.value();
+    }
+    QPixmap pix(profile.imagePath);
+    if (!pix.isNull() && (pix.width() != safeSize || pix.height() != safeSize)) {
+        pix = pix.scaled(safeSize, safeSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    }
+    cache.insert(cacheKey, pix);
+    return pix;
+}
 
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame) {
     for (const TranscriptSection& section : sections) {
@@ -1044,10 +1213,11 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     }
 
     bool hoverInfoValid = false;
-    QString hoverSpeaker;
+    QString hoverSpeakerId;
     int64_t hoverSourceFrame = 0;
     qreal hoverAmplitude = 0.0;
     qreal hoverTimelinePercent = 0.0;
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
 
     painter->setBrush(Qt::NoBrush);
     for (int row = 0; row < rowCount; ++row) {
@@ -1067,13 +1237,13 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
 
         struct DbMark {
             qreal db = 0.0;
-            QString label;
+            QString dbLabel;
         };
         const DbMark dbMarks[] = {
-            {0.0, QStringLiteral("0 dB")},
-            {-6.0, QStringLiteral("-6")},
-            {-12.0, QStringLiteral("-12")},
-            {-18.0, QStringLiteral("-18")}
+            {0.0, QStringLiteral("0 dBFS")},
+            {-6.0, QStringLiteral("-6 dBFS")},
+            {-12.0, QStringLiteral("-12 dBFS")},
+            {-18.0, QStringLiteral("-18 dBFS")}
         };
         QFont rulerFont = painter->font();
         rulerFont.setPointSize(qMax(8, rulerFont.pointSize() - 1));
@@ -1082,17 +1252,22 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
             const qreal amp = std::pow(10.0, mark.db / 20.0);
             const qreal yTopMark = centerY - (amp * rowRect.height() * 0.5);
             const qreal yBottomMark = centerY + (amp * rowRect.height() * 0.5);
-            const int gridAlpha = (mark.db == 0.0) ? 68 : 34;
+            const int gridAlpha = (mark.db == 0.0) ? 52 : 24;
             painter->setPen(QPen(QColor(157, 239, 255, gridAlpha), 1.0));
             painter->drawLine(QPointF(rowRect.left(), yTopMark), QPointF(rowRect.right(), yTopMark));
             painter->drawLine(QPointF(rowRect.left(), yBottomMark), QPointF(rowRect.right(), yBottomMark));
 
-            painter->setPen(QColor(166, 211, 230, 175));
-            const QRectF labelRect(static_cast<qreal>(waveRect.left()) + 3.0,
-                                   yTopMark - 8.0,
-                                   rulerGutterWidth - 8.0,
-                                   16.0);
-            painter->drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter, mark.label);
+            if (row == 0) {
+                painter->setPen(QColor(166, 211, 230, 175));
+                const QString label = QStringLiteral("%1 (%2)")
+                                          .arg(mark.dbLabel)
+                                          .arg(QString::number(amp, 'f', 1));
+                const QRectF labelRect(static_cast<qreal>(waveRect.left()) + 3.0,
+                                       yTopMark - 8.0,
+                                       rulerGutterWidth - 8.0,
+                                       16.0);
+                painter->drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter, label);
+            }
         }
 
         int rowStartBin = row * binsPerRow;
@@ -1199,52 +1374,58 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         const qreal lowFillWeight = 1.0 - lowToStem;
         const qreal stemWeight = lowToStem * (1.0 - stemToTrace);
         const qreal traceWeight = stemToTrace;
-        if (traceWeight > 0.001) {
-            // At very high zoom, blend in a continuous trace to avoid bar/step artifacts.
-            QPainterPath centerPath;
-            centerPath.moveTo(rowRect.left(), centerY);
-            for (int i = 0; i < rowBinCount; ++i) {
-                const qreal x = rowRect.left() +
-                    (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
-                const qreal halfRange = rowRect.height() * 0.5;
-                const qreal centerAmp = (displayMin[i] + displayMax[i]) * 0.5;
-                const qreal y = centerY - (centerAmp * halfRange);
-                centerPath.lineTo(x, y);
+        if (m_audioWaveformVisible) {
+            if (traceWeight > 0.001) {
+                // At very high zoom, blend in a continuous peak-following trace.
+                // Use dominant signed excursion (not midpoint), otherwise amplitude appears undersized.
+                QPainterPath centerPath;
+                centerPath.moveTo(rowRect.left(), centerY);
+                for (int i = 0; i < rowBinCount; ++i) {
+                    const qreal x = rowRect.left() +
+                        (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+                    const qreal halfRange = rowRect.height() * 0.5;
+                    const qreal posAmp = qBound<qreal>(0.0, displayMax[i], 1.0);
+                    const qreal negAmp = qBound<qreal>(-1.0, displayMin[i], 0.0);
+                    const qreal signedPeakAmp =
+                        (qAbs(posAmp) >= qAbs(negAmp)) ? posAmp : negAmp;
+                    const qreal y = centerY - (signedPeakAmp * halfRange);
+                    centerPath.lineTo(x, y);
+                }
+                painter->setPen(QPen(withAlphaScale(QColor(127, 216, 237, 210), traceWeight),
+                                     1.65, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter->setBrush(Qt::NoBrush);
+                painter->drawPath(centerPath);
             }
-            painter->setPen(QPen(withAlphaScale(QColor(127, 216, 237, 210), traceWeight),
-                                 1.35, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            painter->setBrush(Qt::NoBrush);
-            painter->drawPath(centerPath);
-        }
-        if (stemWeight > 0.001) {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(withAlphaScale(QColor(127, 216, 237, 78), stemWeight));
-            painter->drawPath(areaPath);
-            painter->save();
-            painter->setPen(QPen(withAlphaScale(QColor(127, 216, 237, 155), stemWeight),
-                                 0.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-            for (int i = 0; i < rowBinCount; ++i) {
-                const qreal x = rowRect.left() +
-                    (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
-                const qreal halfRange = rowRect.height() * 0.5;
-                const qreal yTop = centerY - (displayMax[i] * halfRange);
-                const qreal yBottom = centerY - (displayMin[i] * halfRange);
-                painter->drawLine(QPointF(x, yTop), QPointF(x, yBottom));
+            if (stemWeight > 0.001) {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(withAlphaScale(QColor(127, 216, 237, 78), stemWeight));
+                painter->drawPath(areaPath);
+                painter->save();
+                painter->setPen(QPen(withAlphaScale(QColor(127, 216, 237, 155), stemWeight),
+                                     0.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                for (int i = 0; i < rowBinCount; ++i) {
+                    const qreal x = rowRect.left() +
+                        (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+                    const qreal halfRange = rowRect.height() * 0.5;
+                    const qreal yTop = centerY - (displayMax[i] * halfRange);
+                    const qreal yBottom = centerY - (displayMin[i] * halfRange);
+                    painter->drawLine(QPointF(x, yTop), QPointF(x, yBottom));
+                }
+                painter->restore();
             }
-            painter->restore();
-        }
-        if (lowFillWeight > 0.001) {
-            painter->setPen(Qt::NoPen);
-            painter->setBrush(withAlphaScale(QColor(127, 216, 237, 102), lowFillWeight));
-            painter->drawPath(areaPath);
-        }
+            if (lowFillWeight > 0.001) {
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(withAlphaScale(QColor(127, 216, 237, 102), lowFillWeight));
+                painter->drawPath(areaPath);
+            }
 
-        const qreal outlineWeight = qBound<qreal>(0.2, 1.0 - (traceWeight * 0.9), 1.0);
-        painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(withAlphaScale(QColor(QStringLiteral("#9defff")), outlineWeight),
-                             1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-        painter->drawPath(topPath);
-        painter->drawPath(bottomPath);
+            const qreal outlineWeight = qBound<qreal>(0.2, 1.0 - (traceWeight * 0.9), 1.0);
+            painter->setBrush(Qt::NoBrush);
+            painter->setPen(QPen(withAlphaScale(QColor(QStringLiteral("#9defff")), outlineWeight),
+                                 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->drawPath(topPath);
+            painter->drawPath(bottomPath);
+        }
 
         if (m_audioSpeakerHoverModalEnabled &&
             m_lastMousePos.x() >= rowRect.left() && m_lastMousePos.x() <= rowRect.right() &&
@@ -1261,7 +1442,7 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
             const int speakerIdx = speakerIndexByBin.value(hoverBin, -1);
             if (speakerIdx >= 0 && speakerIdx < speakerIds.size()) {
                 hoverInfoValid = true;
-                hoverSpeaker = speakerIds.at(speakerIdx);
+                hoverSpeakerId = speakerIds.at(speakerIdx);
                 hoverSourceFrame = visibleSourceStart + static_cast<int64_t>(
                     std::floor(((static_cast<qreal>(hoverBin) + 0.5) / static_cast<qreal>(totalDrawBins)) *
                                static_cast<qreal>(visibleSourceSpan)));
@@ -1275,24 +1456,53 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     }
 
     if (hoverInfoValid) {
-        const QString hoverText = QStringLiteral("Speaker: %1\nFrame: %2\nAmp: %3\nView Pos: %4%")
-                                      .arg(hoverSpeaker)
+        const HoverSpeakerProfile* profile = hoverSpeakerProfileFor(transcriptPath, hoverSpeakerId);
+        const QString hoverName = profile && !profile->name.trimmed().isEmpty()
+            ? profile->name.trimmed() : hoverSpeakerId;
+        const QString hoverOrg = profile ? profile->organization.trimmed() : QString();
+        const QString hoverDesc = profile && !profile->description.trimmed().isEmpty()
+            ? profile->description.trimmed()
+            : QStringLiteral("No speaker description available.");
+        const QPixmap profileImage = profile ? hoverSpeakerImage(*profile, 76) : QPixmap();
+        const QString hoverText = QStringLiteral("Name: %1\nSpeaker ID: %2\nOrganization: %3\nDescription: %4\nFrame: %5\nAmp: %6\nView Pos: %7%")
+                                      .arg(hoverName,
+                                           hoverSpeakerId,
+                                           hoverOrg.isEmpty() ? QStringLiteral("None") : hoverOrg,
+                                           hoverDesc)
                                       .arg(hoverSourceFrame)
                                       .arg(QString::number(hoverAmplitude, 'f', 3))
                                       .arg(QString::number(hoverTimelinePercent, 'f', 1));
         const QFontMetrics fm(painter->font());
-        const QRect textRect = fm.boundingRect(QRect(0, 0, 280, 120),
+        const int imageWidth = profileImage.isNull() ? 0 : 76;
+        const int textWidth = profileImage.isNull() ? 320 : 244;
+        const QRect textRect = fm.boundingRect(QRect(0, 0, textWidth, 220),
                                                Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
                                                hoverText);
-        const QRect modalRect(panel.right() - textRect.width() - 34,
+        const QRect modalRect(panel.right() - (textRect.width() + imageWidth + 30) - 34,
                               panel.top() + 22,
-                              textRect.width() + 16,
-                              textRect.height() + 14);
+                              textRect.width() + imageWidth + 30,
+                              qMax(textRect.height() + 14, profileImage.isNull() ? 0 : (imageWidth + 18)));
         painter->setPen(Qt::NoPen);
         painter->setBrush(QColor(8, 13, 20, 225));
         painter->drawRoundedRect(modalRect, 8, 8);
+        if (!profileImage.isNull()) {
+            const QRect imageRect(modalRect.left() + 8, modalRect.top() + 8, imageWidth, imageWidth);
+            painter->save();
+            QPainterPath imageClip;
+            imageClip.addRoundedRect(imageRect, 6, 6);
+            painter->setClipPath(imageClip);
+            painter->drawPixmap(imageRect, profileImage);
+            painter->restore();
+        } else {
+            painter->setPen(QColor(170, 184, 198, 170));
+            painter->drawText(QRect(modalRect.left() + 8, modalRect.top() + 8, 76, 20),
+                              Qt::AlignLeft | Qt::AlignVCenter,
+                              QStringLiteral("Image: none"));
+        }
         painter->setPen(QColor(QStringLiteral("#dff5ff")));
-        painter->drawText(modalRect.adjusted(8, 7, -8, -7),
+        const int textLeft = modalRect.left() + (profileImage.isNull() ? 8 : (imageWidth + 14));
+        painter->drawText(QRect(textLeft, modalRect.top() + 7,
+                                modalRect.right() - textLeft - 8, modalRect.height() - 14),
                           Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
                           hoverText);
     }
@@ -1300,7 +1510,7 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     painter->setPen(QColor(QStringLiteral("#9fb3c8")));
     painter->drawText(panel.adjusted(20, panel.height() - 36, -20, 6),
                       Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("Waveform source: decoded clip audio (mono envelope), unity-normalized display, wrapped rows with speaker timeline tint | Zoom %1%")
+                      QStringLiteral("Waveform source: decoded clip audio (mono envelope), absolute full-scale display (1.0 = 0 dBFS), wrapped rows with speaker timeline tint | Zoom %1%")
                           .arg(QString::number(zoom * 100.0, 'f', 0)));
     painter->restore();
 }

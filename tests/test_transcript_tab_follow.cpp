@@ -99,6 +99,27 @@ int firstMatchRow(const QTableWidget& table, double sourceSeconds) {
     return -1;
 }
 
+TranscriptTab::Widgets makeTranscriptWidgets(QLineEdit* clipLabel,
+                                             QLabel* detailsLabel,
+                                             QTableWidget* table,
+                                             QCheckBox* follow,
+                                             QSpinBox* prependSpin,
+                                             QSpinBox* postpendSpin,
+                                             QCheckBox* speechEnabled,
+                                             QSpinBox* speechFade)
+{
+    TranscriptTab::Widgets widgets;
+    widgets.transcriptInspectorClipLabel = clipLabel;
+    widgets.transcriptInspectorDetailsLabel = detailsLabel;
+    widgets.transcriptTable = table;
+    widgets.transcriptFollowCurrentWordCheckBox = follow;
+    widgets.transcriptPrependMsSpin = prependSpin;
+    widgets.transcriptPostpendMsSpin = postpendSpin;
+    widgets.speechFilterEnabledCheckBox = speechEnabled;
+    widgets.speechFilterFadeSamplesSpin = speechFade;
+    return widgets;
+}
+
 } // namespace
 
 class TestTranscriptTabFollow : public QObject {
@@ -154,14 +175,7 @@ void TestTranscriptTabFollow::testContinuousAlignmentAcrossFrames() {
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -224,14 +238,7 @@ void TestTranscriptTabFollow::testFollowWorksWhileTableHasFocus() {
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -286,14 +293,7 @@ void TestTranscriptTabFollow::testManualSelectionHoldWhilePausedThenResumeOnPlay
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -351,14 +351,7 @@ void TestTranscriptTabFollow::testFollowSkipsSkippedRowsAndClearsSelection() {
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -434,14 +427,7 @@ void TestTranscriptTabFollow::testFollowUsesSourceTimesNotRenderTimes() {
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -507,14 +493,7 @@ void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastPlayback() {
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -585,14 +564,7 @@ void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastReversePlaybac
     QSpinBox speechFade;
 
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            nullptr, nullptr, nullptr},
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -662,15 +634,12 @@ void TestTranscriptTabFollow::testOutsideCutRowsAreNotAutoSelected() {
     QCheckBox showOutsideCutRows;
     showOutsideCutRows.setChecked(true);
 
+    auto widgets = makeTranscriptWidgets(
+        &clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade);
+    widgets.transcriptShowExcludedLinesCheckBox = &showOutsideCutRows;
+
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, nullptr, nullptr, nullptr, &showOutsideCutRows,
-            nullptr, nullptr, nullptr},
+        widgets,
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},
@@ -735,15 +704,14 @@ void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersi
     QPushButton newVersionButton;
     QPushButton deleteVersionButton;
 
+    auto widgets = makeTranscriptWidgets(
+        &clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade);
+    widgets.transcriptScriptVersionCombo = &scriptVersions;
+    widgets.transcriptNewVersionButton = &newVersionButton;
+    widgets.transcriptDeleteVersionButton = &deleteVersionButton;
+
     TranscriptTab tab(
-        TranscriptTab::Widgets{
-            &clipLabel, &detailsLabel, &table,
-            nullptr, nullptr, nullptr, nullptr, nullptr,
-            &follow,
-            nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
-            &prependSpin, &postpendSpin, &speechEnabled, &speechFade,
-            nullptr, nullptr, &scriptVersions, &newVersionButton, &deleteVersionButton, nullptr,
-            nullptr, nullptr, nullptr},
+        widgets,
         TranscriptTab::Dependencies{
             [&clip]() -> const TimelineClip* { return &clip; },
             {},

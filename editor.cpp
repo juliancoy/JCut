@@ -574,6 +574,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     loadedAudioDynamics.compressorRatio = root.value(QStringLiteral("audioCompressorRatio")).toDouble(3.0);
     const bool audioSpeakerHoverModalEnabled =
         root.value(QStringLiteral("audioSpeakerHoverModalEnabled")).toBool(true);
+    const bool audioWaveformVisible =
+        root.value(QStringLiteral("audioWaveformVisible")).toBool(true);
     
     QVector<ExportRangeSegment> loadedExportRanges;
     const QJsonArray exportRanges = root.value(QStringLiteral("exportRanges")).toArray();
@@ -1096,9 +1098,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_audioAmplifyDbSpin->setEnabled(m_featureAudioDynamicsTools);
     }
     m_audioSpeakerHoverModalEnabled = audioSpeakerHoverModalEnabled;
+    m_audioWaveformVisible = audioWaveformVisible;
     if (m_audioSpeakerHoverModalCheckBox) {
         QSignalBlocker block(m_audioSpeakerHoverModalCheckBox);
         m_audioSpeakerHoverModalCheckBox->setChecked(m_audioSpeakerHoverModalEnabled);
+    }
+    if (m_audioShowWaveformCheckBox) {
+        QSignalBlocker block(m_audioShowWaveformCheckBox);
+        m_audioShowWaveformCheckBox->setChecked(m_audioWaveformVisible);
     }
     if (m_audioNormalizeEnabledCheckBox) {
         QSignalBlocker block(m_audioNormalizeEnabledCheckBox);
@@ -1147,6 +1154,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     if (m_preview) {
         m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);
+        m_preview->setAudioWaveformVisible(m_audioWaveformVisible);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
     editor::setDebugLeadPrefetchEnabled(previewLeadPrefetchEnabled);

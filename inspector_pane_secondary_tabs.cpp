@@ -311,9 +311,13 @@ QWidget *InspectorPane::buildAudioTab()
     m_audioSpeakerHoverModalCheckBox =
         new QCheckBox(QStringLiteral("Show Speaker Hover Modal"), page);
     m_audioSpeakerHoverModalCheckBox->setChecked(true);
+    m_audioShowWaveformCheckBox =
+        new QCheckBox(QStringLiteral("Show Waveform"), page);
+    m_audioShowWaveformCheckBox->setChecked(true);
     form->addRow(QStringLiteral("Amplify"), m_audioAmplifyEnabledCheckBox);
     form->addRow(QStringLiteral("Amplify Gain"), m_audioAmplifyDbSpin);
     form->addRow(QStringLiteral("Hover Info"), m_audioSpeakerHoverModalCheckBox);
+    form->addRow(QStringLiteral("Waveform"), m_audioShowWaveformCheckBox);
 
     m_audioNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
     m_audioNormalizeTargetDbSpin = new QDoubleSpinBox(page);

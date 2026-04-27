@@ -611,6 +611,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("audioAmplifyEnabled")] = m_previewAudioDynamics.amplifyEnabled;
     root[QStringLiteral("audioAmplifyDb")] = m_previewAudioDynamics.amplifyDb;
     root[QStringLiteral("audioSpeakerHoverModalEnabled")] = m_audioSpeakerHoverModalEnabled;
+    root[QStringLiteral("audioWaveformVisible")] = m_audioWaveformVisible;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
     root[QStringLiteral("audioPeakReductionEnabled")] = m_previewAudioDynamics.peakReductionEnabled;
