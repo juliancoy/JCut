@@ -251,6 +251,10 @@ if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_test_support PUBLIC Qt6::GuiPrivate)
 endif()
 
+if(TARGET apinames)
+    add_dependencies(editor_test_support apinames)
+endif()
+
 target_compile_definitions(editor_test_support
     PUBLIC
         QT_DEPRECATED_WARNINGS

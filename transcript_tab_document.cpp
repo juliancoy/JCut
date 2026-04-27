@@ -5,6 +5,7 @@
 
 #include <QAbstractItemView>
 #include <QColor>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -78,6 +79,15 @@ QString transcriptCutStateLabel(bool mutableCut)
 QString transcriptFollowStateLabel(bool enabled)
 {
     return enabled ? QStringLiteral("Follow Playback: On") : QStringLiteral("Follow Playback: Off");
+}
+
+bool shouldSkipTranscriptDeleteConfirmation()
+{
+    if (qEnvironmentVariableIntValue("JCUT_AUTOCONFIRM_TRANSCRIPT_DELETE") == 1) {
+        return true;
+    }
+    const QString appName = QCoreApplication::applicationName().trimmed().toLower();
+    return appName.startsWith(QStringLiteral("test_")) || appName.contains(QStringLiteral("qtest"));
 }
 
 } // namespace
@@ -1106,15 +1116,17 @@ void TranscriptTab::onTranscriptDeleteVersion()
     }
     const QString selectedLabel = m_widgets.transcriptScriptVersionCombo->currentText().trimmed();
     const QString label = selectedLabel.isEmpty() ? QFileInfo(selectedPath).fileName() : selectedLabel;
-    const QMessageBox::StandardButton confirm = QMessageBox::warning(
-        nullptr,
-        QStringLiteral("Delete Current Transcription"),
-        QStringLiteral("Delete transcription \"%1\"?\n\nThis permanently removes the selected cut file.")
-            .arg(label),
-        QMessageBox::Yes | QMessageBox::No,
-        QMessageBox::No);
-    if (confirm != QMessageBox::Yes) {
-        return;
+    if (!shouldSkipTranscriptDeleteConfirmation()) {
+        const QMessageBox::StandardButton confirm = QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Delete Current Transcription"),
+            QStringLiteral("Delete transcription \"%1\"?\n\nThis permanently removes the selected cut file.")
+                .arg(label),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (confirm != QMessageBox::Yes) {
+            return;
+        }
     }
     QFile::remove(selectedPath);
     const QString basePath = defaultEditablePathForClip(m_loadedClipFilePath);

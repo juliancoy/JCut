@@ -236,10 +236,19 @@ QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transc
         runtime.defaultY = qBound<qreal>(0.0, locationObj.value(QStringLiteral("y")).toDouble(0.85), 1.0);
 
         QJsonObject trackingObj = profileObj.value(QStringLiteral("framing")).toObject();
-        const bool hasPointstream = !trackingObj.value(QStringLiteral("keyframes")).toArray().isEmpty();
-        const bool explicitEnabled = trackingObj.value(QStringLiteral("enabled")).toBool(false);
-        runtime.trackingEnabled = hasPointstream && explicitEnabled;
+        if (trackingObj.isEmpty()) {
+            // Backward compatibility with older transcripts.
+            trackingObj = profileObj.value(QStringLiteral("tracking")).toObject();
+        }
         const QJsonArray keyframes = trackingObj.value(QStringLiteral("keyframes")).toArray();
+        const QString trackingMode = trackingObj.value(QStringLiteral("mode")).toString().trimmed().toLower();
+        const bool explicitEnabled = trackingObj.contains(QStringLiteral("enabled"))
+            ? trackingObj.value(QStringLiteral("enabled")).toBool(false)
+            : true;
+        const bool modeDisablesTracking =
+            trackingMode == QStringLiteral("manual") ||
+            trackingMode == QStringLiteral("referencepoints");
+        runtime.trackingEnabled = explicitEnabled && !modeDisablesTracking;
         runtime.keyframes.reserve(keyframes.size());
         for (const QJsonValue& keyframeValue : keyframes) {
             const QJsonObject keyframeObj = keyframeValue.toObject();

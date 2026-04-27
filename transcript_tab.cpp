@@ -457,9 +457,10 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
         return;
     }
 
+    const int64_t previousAbsolutePlaybackSample = m_lastSyncAbsolutePlaybackSample;
     const bool playbackAdvanced =
-        (m_lastSyncAbsolutePlaybackSample >= 0 &&
-         absolutePlaybackSample != m_lastSyncAbsolutePlaybackSample);
+        (previousAbsolutePlaybackSample >= 0 &&
+         absolutePlaybackSample != previousAbsolutePlaybackSample);
     m_lastSyncAbsolutePlaybackSample = absolutePlaybackSample;
 
     // Hold manual selection while paused, but resume follow immediately once
@@ -480,6 +481,27 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
     if (m_followRanges.isEmpty()) {
         m_widgets.transcriptTable->clearSelection();
         return;
+    }
+
+    // If playhead is inside a skipped/outside-cut region, do not auto-select nearby rows.
+    for (int row = 0; row < m_widgets.transcriptTable->rowCount(); ++row) {
+        QTableWidgetItem* item = m_widgets.transcriptTable->item(row, 0);
+        if (!item) {
+            continue;
+        }
+        const bool isSkipped = item->data(Qt::UserRole + 7).toBool();
+        const bool isOutsideCut = item->data(Qt::UserRole + 12).toBool();
+        if (!isSkipped && !isOutsideCut) {
+            continue;
+        }
+        const int64_t startFrame = item->data(Qt::UserRole + 2).toLongLong();
+        const int64_t endFrame = item->data(Qt::UserRole + 3).toLongLong();
+        if (endFrame >= startFrame &&
+            currentSourceFrame >= startFrame &&
+            currentSourceFrame <= endFrame) {
+            m_widgets.transcriptTable->clearSelection();
+            return;
+        }
     }
 
     int matchingRow = -1;
@@ -539,14 +561,46 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
         }
     }
 
+    const int64_t sourceDeltaFrames =
+        previousSourceFrame >= 0 ? qAbs(currentSourceFrame - previousSourceFrame) : 0;
+    const int64_t maxGapFrames = qMax<int64_t>(
+        1, static_cast<int64_t>(std::ceil(sourceDeltaFrames * 1.5)) + 1);
+    const bool forwardMotion =
+        (previousSourceFrame >= 0 && currentSourceFrame > previousSourceFrame) ||
+        (previousSourceFrame >= 0 && currentSourceFrame == previousSourceFrame &&
+         previousAbsolutePlaybackSample >= 0 &&
+         absolutePlaybackSample > previousAbsolutePlaybackSample);
+    const bool backwardMotion =
+        (previousSourceFrame >= 0 && currentSourceFrame < previousSourceFrame) ||
+        (previousSourceFrame >= 0 && currentSourceFrame == previousSourceFrame &&
+         previousAbsolutePlaybackSample >= 0 &&
+         absolutePlaybackSample < previousAbsolutePlaybackSample);
+
+    const bool playbackSampleMoved =
+        previousAbsolutePlaybackSample >= 0 &&
+        absolutePlaybackSample != previousAbsolutePlaybackSample;
+
+    if (matchingRow >= 0 && playbackSampleMoved) {
+        if (forwardMotion && matchingRow == previousEligibleRow && nextEligibleRow >= 0) {
+            QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(nextEligibleRow, 0);
+            if (nextItem) {
+                const int64_t nextStartFrame = nextItem->data(Qt::UserRole + 2).toLongLong();
+                if ((nextStartFrame - currentSourceFrame) <= maxGapFrames) {
+                    matchingRow = nextEligibleRow;
+                }
+            }
+        } else if (backwardMotion && matchingRow == nextEligibleRow && previousEligibleRow >= 0) {
+            QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(previousEligibleRow, 0);
+            if (prevItem) {
+                const int64_t prevEndFrame = prevItem->data(Qt::UserRole + 3).toLongLong();
+                if ((currentSourceFrame - prevEndFrame) <= maxGapFrames) {
+                    matchingRow = previousEligibleRow;
+                }
+            }
+        }
+    }
+
     if (matchingRow < 0) {
-        const int64_t sourceDeltaFrames =
-            previousSourceFrame >= 0 ? qAbs(currentSourceFrame - previousSourceFrame) : 0;
-        const int64_t maxGapFrames = qMax<int64_t>(1, static_cast<int64_t>(std::ceil(sourceDeltaFrames * 1.5)) + 1);
-        const bool forwardMotion = previousSourceFrame >= 0 &&
-                                   currentSourceFrame > previousSourceFrame;
-        const bool backwardMotion = previousSourceFrame >= 0 &&
-                                    currentSourceFrame < previousSourceFrame;
         if (forwardMotion && nextEligibleRow >= 0) {
             QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(nextEligibleRow, 0);
             if (nextItem) {
