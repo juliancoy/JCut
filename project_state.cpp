@@ -585,6 +585,10 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("correctionsEnabled")] = m_correctionsEnabled;
     root[QStringLiteral("selectedInspectorTab")] =
         m_inspectorTabs ? m_inspectorTabs->currentIndex() : 0;
+    root[QStringLiteral("selectedInspectorTabLabel")] =
+        (m_inspectorTabs && m_inspectorTabs->currentIndex() >= 0)
+            ? m_inspectorTabs->tabText(m_inspectorTabs->currentIndex())
+            : QString();
     const PlaybackRuntimeConfig playbackConfig = playbackRuntimeConfig();
     root[QStringLiteral("playbackSpeed")] = playbackConfig.speed;
     root[QStringLiteral("playbackClockSource")] =
@@ -606,6 +610,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("aiRequestRetries")] = m_aiRequestRetries;
     root[QStringLiteral("audioAmplifyEnabled")] = m_previewAudioDynamics.amplifyEnabled;
     root[QStringLiteral("audioAmplifyDb")] = m_previewAudioDynamics.amplifyDb;
+    root[QStringLiteral("audioSpeakerHoverModalEnabled")] = m_audioSpeakerHoverModalEnabled;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
     root[QStringLiteral("audioPeakReductionEnabled")] = m_previewAudioDynamics.peakReductionEnabled;

@@ -56,6 +56,7 @@ void EditorWindow::bindInspectorWidgets()
         m_inspectorPane->preferencesFeatureAudioDynamicsToolsCheckBox();
     m_audioAmplifyEnabledCheckBox = m_inspectorPane->audioAmplifyEnabledCheckBox();
     m_audioAmplifyDbSpin = m_inspectorPane->audioAmplifyDbSpin();
+    m_audioSpeakerHoverModalCheckBox = m_inspectorPane->audioSpeakerHoverModalCheckBox();
     m_audioNormalizeEnabledCheckBox = m_inspectorPane->audioNormalizeEnabledCheckBox();
     m_audioNormalizeTargetDbSpin = m_inspectorPane->audioNormalizeTargetDbSpin();
     m_audioPeakReductionEnabledCheckBox = m_inspectorPane->audioPeakReductionEnabledCheckBox();
@@ -586,6 +587,15 @@ void EditorWindow::setupPreviewControls()
         connect(m_audioAmplifyDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
     }
+    if (m_audioSpeakerHoverModalCheckBox) {
+        connect(m_audioSpeakerHoverModalCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            m_audioSpeakerHoverModalEnabled = checked;
+            if (m_preview) {
+                m_preview->setAudioSpeakerHoverModalEnabled(checked);
+            }
+            scheduleSaveState();
+        });
+    }
     if (m_audioNormalizeEnabledCheckBox) {
         connect(m_audioNormalizeEnabledCheckBox, &QCheckBox::toggled, this,
                 [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
@@ -621,6 +631,9 @@ void EditorWindow::setupPreviewControls()
     if (m_audioCompressorRatioSpin) {
         connect(m_audioCompressorRatioSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_preview) {
+        m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);
     }
 
     connect(m_inspectorPane->backgroundColorButton(), &QPushButton::clicked, this, [this]() {

@@ -195,6 +195,7 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
     playbackTrace(QStringLiteral("PreviewWindow::setTimelineClips"),
                   QStringLiteral("clips=%1 cache=%2").arg(clips.size()).arg(m_cache != nullptr));
     m_clips = clips;
+    m_audioDisplayPeakCache.clear();
     m_transcriptSectionsCache.clear();
     QSet<QString> visualClipIds;
     for (const auto& clip : clips) {
@@ -303,8 +304,8 @@ void PreviewWindow::setBackgroundColor(const QColor& color) {
 }
 
 void PreviewWindow::setPreviewZoom(qreal zoom) {
-    // Clamp to valid range: 0.1x to 20.0x
-    m_previewZoom = qBound<qreal>(0.1, zoom, 20.0);
+    // Keep a wide global bound for REST/UI control; interaction paths clamp per mode.
+    m_previewZoom = qBound<qreal>(0.1, zoom, 100000.0);
     scheduleRepaint();
 }
 
@@ -324,16 +325,28 @@ void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setAudioSpeakerHoverModalEnabled(bool enabled) {
+    if (m_audioSpeakerHoverModalEnabled == enabled) {
+        return;
+    }
+    m_audioSpeakerHoverModalEnabled = enabled;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setViewMode(ViewMode mode) {
     if (m_viewMode == mode) {
         return;
     }
     m_viewMode = mode;
+    if (m_viewMode == ViewMode::Video) {
+        m_previewZoom = qBound<qreal>(0.1, m_previewZoom, 20.0);
+    }
     scheduleRepaint();
 }
 
 void PreviewWindow::setAudioDynamicsSettings(const AudioDynamicsSettings& settings) {
     m_audioDynamics = settings;
+    m_audioDisplayPeakCache.clear();
     scheduleRepaint();
 }
 

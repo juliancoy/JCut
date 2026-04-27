@@ -131,7 +131,7 @@ void EditorWindow::connectTimelineSignals()
         refreshSyncInspector();
         m_transcriptTab->refresh();
         refreshClipInspector();
-        if (selectionChanged && selectedClip && !selectedClip->filePath.isEmpty()) {
+        if (!m_loadingState && selectionChanged && selectedClip && !selectedClip->filePath.isEmpty()) {
             const QString transcriptPath = transcriptWorkingPathForClipFile(selectedClip->filePath);
             if (QFileInfo::exists(transcriptPath) && m_inspectorTabs) {
                 for (int i = 0; i < m_inspectorTabs->count(); ++i) {

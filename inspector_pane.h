@@ -238,6 +238,7 @@ public:
     QCheckBox *preferencesFeatureAudioDynamicsToolsCheckBox() const { return m_preferencesFeatureAudioDynamicsToolsCheckBox; }
     QCheckBox *audioAmplifyEnabledCheckBox() const { return m_audioAmplifyEnabledCheckBox; }
     QDoubleSpinBox *audioAmplifyDbSpin() const { return m_audioAmplifyDbSpin; }
+    QCheckBox *audioSpeakerHoverModalCheckBox() const { return m_audioSpeakerHoverModalCheckBox; }
     QCheckBox *audioNormalizeEnabledCheckBox() const { return m_audioNormalizeEnabledCheckBox; }
     QDoubleSpinBox *audioNormalizeTargetDbSpin() const { return m_audioNormalizeTargetDbSpin; }
     QCheckBox *audioPeakReductionEnabledCheckBox() const { return m_audioPeakReductionEnabledCheckBox; }
@@ -485,6 +486,7 @@ private:
     QCheckBox *m_preferencesFeatureAudioDynamicsToolsCheckBox = nullptr;
     QCheckBox *m_audioAmplifyEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
+    QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;

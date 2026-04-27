@@ -78,6 +78,8 @@ public:
     void setPreviewZoom(qreal zoom);
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
+    void setAudioSpeakerHoverModalEnabled(bool enabled);
+    bool audioSpeakerHoverModalEnabled() const { return m_audioSpeakerHoverModalEnabled; }
     void setViewMode(ViewMode mode);
     ViewMode viewMode() const { return m_viewMode; }
     void setAudioDynamicsSettings(const AudioDynamicsSettings& settings);
@@ -137,6 +139,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
     void keyReleaseEvent(QKeyEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void wheelEvent(QWheelEvent* event) override;
     void contextMenuEvent(QContextMenuEvent* event) override;
 
@@ -248,7 +251,13 @@ private:
                               const QList<TimelineClip>& activeAudioClips);
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
-    QVector<qreal> audioWaveformBinsForClip(const TimelineClip& clip, int binCount) const;
+    bool audioWaveformEnvelopeForClip(const TimelineClip& clip,
+                                      int binCount,
+                                      qreal rangeStartNorm,
+                                      qreal rangeEndNorm,
+                                      QVector<qreal>* minOut,
+                                      QVector<qreal>* maxOut) const;
+    bool audioWaveformDisplayPeakForClip(const TimelineClip& clip, qreal* peakOut) const;
     QString audioDynamicsCacheKey() const;
     void drawSpeakerPickOverlay(QPainter* painter) const;
     QRect fitRect(const QSize& source, const QRect& bounds) const;
@@ -307,6 +316,7 @@ private:
     qreal m_previewZoom = 1.0;
     QPointF m_previewPanOffset;
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;
+    mutable QHash<QString, qreal> m_audioDisplayPeakCache;
     mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;
     mutable QHash<QString, SpeakerTrackPointCacheEntry> m_speakerTrackPointsCache;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
@@ -336,4 +346,6 @@ private:
     QPointF m_speakerPickStartPos;
     QPointF m_speakerPickCurrentPos;
     QString m_speakerPickHintClipId;
+    bool m_audioSpeakerHoverModalEnabled = true;
+    QPointF m_lastMousePos = QPointF(-10000.0, -10000.0);
 };

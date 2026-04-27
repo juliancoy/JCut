@@ -4,6 +4,7 @@
 #include <QContextMenuEvent>
 #include <QApplication>
 #include <QCursor>
+#include <QEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QMenu>
@@ -146,6 +147,8 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
 }
 
 void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
+    m_lastMousePos = event->position();
+
     if (m_correctionDrawMode) {
         m_dragMode = PreviewDragMode::None;
         if (event->buttons() & Qt::LeftButton) {
@@ -268,7 +271,18 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
     }
     
     updatePreviewCursor(event->position());
+    if (m_viewMode == ViewMode::Audio && event->buttons() == Qt::NoButton) {
+        scheduleRepaint();
+    }
     QWidget::mouseMoveEvent(event);
+}
+
+void PreviewWindow::leaveEvent(QEvent* event) {
+    m_lastMousePos = QPointF(-10000.0, -10000.0);
+    if (m_viewMode == ViewMode::Audio) {
+        scheduleRepaint();
+    }
+    QWidget::leaveEvent(event);
 }
 
 void PreviewWindow::mouseReleaseEvent(QMouseEvent* event) {
@@ -389,16 +403,21 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
             }
         }
         const int rowCount = qBound(2, waveRect.height() / 88, 6);
-        const int binsPerRow = qMax(96, waveRect.width() / 3);
+        const int binsPerRow = qMax(256, waveRect.width());
         const int totalDrawBins = qMax(96, rowCount * binsPerRow);
         const qreal minVisibleBySamples = clipSamples > 0
-            ? qBound<qreal>(0.0005,
-                            (500.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
+            ? qBound<qreal>(0.00001,
+                            (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
                             1.0)
             : 0.001;
-        const qreal maxAudioZoom = qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.0005, minVisibleBySamples), 2000.0);
-        const qreal oldZoom = qBound<qreal>(0.1, m_previewZoom, maxAudioZoom);
-        const qreal nextZoom = qBound<qreal>(0.1, oldZoom * factor, maxAudioZoom);
+        const qreal maxAudioZoom =
+            qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
+        const qreal oldZoom = qBound<qreal>(1.0, m_previewZoom, maxAudioZoom);
+        const qreal nextZoom = qBound<qreal>(1.0, oldZoom * factor, maxAudioZoom);
+        if (qAbs(nextZoom - oldZoom) < 0.000001) {
+            event->accept();
+            return;
+        }
         const qreal oldVisible = qBound<qreal>(minVisibleBySamples, 1.0 / oldZoom, 1.0);
         const qreal nextVisible = qBound<qreal>(minVisibleBySamples, 1.0 / nextZoom, 1.0);
         const qreal oldStart = qBound<qreal>(0.0, m_previewPanOffset.x(), qMax<qreal>(0.0, 1.0 - oldVisible));
@@ -447,7 +466,12 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
     const QRect oldRect = scaledCanvasRect(baseRect);
     const qreal factor = event->angleDelta().y() > 0 ? 1.1 : (1.0 / 1.1);
     // Extended zoom range: 0.1x to 20.0x
-    const qreal nextZoom = qBound<qreal>(0.1, m_previewZoom * factor, 20.0);
+    const qreal oldZoom = qBound<qreal>(0.1, m_previewZoom, 20.0);
+    const qreal nextZoom = qBound<qreal>(0.1, oldZoom * factor, 20.0);
+    if (qAbs(nextZoom - oldZoom) < 0.000001) {
+        event->accept();
+        return;
+    }
     const QPointF anchor = QPointF((event->position().x() - oldRect.left()) / qMax(1.0, static_cast<qreal>(oldRect.width())),
                                    (event->position().y() - oldRect.top()) / qMax(1.0, static_cast<qreal>(oldRect.height())));
     m_previewZoom = nextZoom;

@@ -4,6 +4,7 @@
 #include "transform_skip_aware_timing.h"
 #include "debug_controls.h"
 #include "speaker_export_harness.h"
+#include <cppmonetize/AuthIdentity.h>
 #include <cppmonetize/MonetizeClient.h>
 #include <cppmonetize/OAuthDesktopFlow.h>
 #include <cppmonetize/TokenStore.h>
@@ -33,6 +34,7 @@
 #include <QProcess>
 #include <QProgressBar>
 #include <QProgressDialog>
+#include <QPainter>
 #include <QGridLayout>
 #include <QPixmap>
 #include <QRandomGenerator>
@@ -80,6 +82,65 @@ cppmonetize::MonetizeClient createJCutMonetizeClient(const QString& apiBaseUrl,
                              << "message=" << event.message;
     };
     return cppmonetize::MonetizeClient(cfg);
+}
+
+QString aiDisplayIdentity(const QString& explicitIdentity, const QString& accessToken)
+{
+    const QString trimmed = explicitIdentity.trimmed();
+    if (!trimmed.isEmpty()) {
+        return trimmed;
+    }
+    return cppmonetize::parseAccessTokenIdentity(accessToken).displayIdentity();
+}
+
+QString initialsFromIdentity(const QString& identity)
+{
+    const QString token = identity.section(QLatin1Char('@'), 0, 0).trimmed();
+    if (token.isEmpty()) {
+        return QStringLiteral("U");
+    }
+    const QStringList pieces = token.split(QRegularExpression(QStringLiteral("[._\\-\\s]+")),
+                                           Qt::SkipEmptyParts);
+    QString initials;
+    for (const QString& piece : pieces) {
+        if (!piece.isEmpty()) {
+            initials += piece.left(1).toUpper();
+            if (initials.size() >= 2) {
+                break;
+            }
+        }
+    }
+    if (initials.isEmpty()) {
+        initials = token.left(1).toUpper();
+    }
+    return initials.left(2);
+}
+
+QPixmap buildFallbackAvatar(const QString& identity)
+{
+    constexpr int size = 28;
+    QPixmap pix(size, size);
+    pix.fill(Qt::transparent);
+
+    const QByteArray hash = QCryptographicHash::hash(identity.toUtf8(), QCryptographicHash::Md5);
+    QColor color(0x3d, 0x7c, 0xc9);
+    if (hash.size() >= 3) {
+        color = QColor(static_cast<uchar>(hash[0]), static_cast<uchar>(hash[1]), static_cast<uchar>(hash[2]));
+        color = color.lighter(130);
+    }
+
+    QPainter painter(&pix);
+    painter.setRenderHint(QPainter::Antialiasing);
+    painter.setBrush(color);
+    painter.setPen(Qt::NoPen);
+    painter.drawEllipse(0, 0, size, size);
+    painter.setPen(Qt::white);
+    QFont font = painter.font();
+    font.setBold(true);
+    font.setPointSize(10);
+    painter.setFont(font);
+    painter.drawText(QRect(0, 0, size, size), Qt::AlignCenter, initialsFromIdentity(identity));
+    return pix;
 }
 
 }  // namespace
@@ -472,6 +533,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool keyframesFollowCurrent = root.value(QStringLiteral("keyframesFollowCurrent")).toBool(true);
     const bool keyframesAutoScroll = root.value(QStringLiteral("keyframesAutoScroll")).toBool(true);
     const int selectedInspectorTab = root.value(QStringLiteral("selectedInspectorTab")).toInt(0);
+    const QString selectedInspectorTabLabel =
+        root.value(QStringLiteral("selectedInspectorTabLabel")).toString().trimmed();
     const qreal playbackSpeed = qBound<qreal>(0.1, root.value(QStringLiteral("playbackSpeed")).toDouble(1.0), 3.0);
     const PlaybackClockSource playbackClockSource = playbackClockSourceFromString(
         root.value(QStringLiteral("playbackClockSource"))
@@ -509,6 +572,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     loadedAudioDynamics.compressorEnabled = root.value(QStringLiteral("audioCompressorEnabled")).toBool(false);
     loadedAudioDynamics.compressorThresholdDb = root.value(QStringLiteral("audioCompressorThresholdDb")).toDouble(-18.0);
     loadedAudioDynamics.compressorRatio = root.value(QStringLiteral("audioCompressorRatio")).toDouble(3.0);
+    const bool audioSpeakerHoverModalEnabled =
+        root.value(QStringLiteral("audioSpeakerHoverModalEnabled")).toBool(true);
     
     QVector<ExportRangeSegment> loadedExportRanges;
     const QJsonArray exportRanges = root.value(QStringLiteral("exportRanges")).toArray();
@@ -951,8 +1016,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             const int index = m_inspectorTabs->currentIndex();
             return index >= 0 && m_inspectorTabs->tabText(index).compare(name, Qt::CaseInsensitive) == 0;
         };
+        int targetInspectorTab = qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1);
+        if (!selectedInspectorTabLabel.isEmpty()) {
+            for (int i = 0; i < m_inspectorTabs->count(); ++i) {
+                if (m_inspectorTabs->tabText(i).compare(selectedInspectorTabLabel, Qt::CaseInsensitive) == 0) {
+                    targetInspectorTab = i;
+                    break;
+                }
+            }
+        }
         QSignalBlocker block(m_inspectorTabs);
-        m_inspectorTabs->setCurrentIndex(qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1));
+        m_inspectorTabs->setCurrentIndex(targetInspectorTab);
         if (m_preview) {
             const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
             const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
@@ -1021,6 +1095,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_audioAmplifyDbSpin->setValue(m_previewAudioDynamics.amplifyDb);
         m_audioAmplifyDbSpin->setEnabled(m_featureAudioDynamicsTools);
     }
+    m_audioSpeakerHoverModalEnabled = audioSpeakerHoverModalEnabled;
+    if (m_audioSpeakerHoverModalCheckBox) {
+        QSignalBlocker block(m_audioSpeakerHoverModalCheckBox);
+        m_audioSpeakerHoverModalCheckBox->setChecked(m_audioSpeakerHoverModalEnabled);
+    }
     if (m_audioNormalizeEnabledCheckBox) {
         QSignalBlocker block(m_audioNormalizeEnabledCheckBox);
         m_audioNormalizeEnabledCheckBox->setChecked(m_previewAudioDynamics.normalizeEnabled);
@@ -1065,6 +1144,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_audioCompressorRatioSpin);
         m_audioCompressorRatioSpin->setValue(m_previewAudioDynamics.compressorRatio);
         m_audioCompressorRatioSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_preview) {
+        m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
     editor::setDebugLeadPrefetchEnabled(previewLeadPrefetchEnabled);
@@ -1512,24 +1594,36 @@ void EditorWindow::updateProfileAvatarButton()
     }
 
     const bool loggedIn = !m_aiAuthToken.trimmed().isEmpty();
-    QString profileLabel = m_aiUserId.trimmed();
-    if (profileLabel.isEmpty()) {
-        profileLabel = loggedIn ? QStringLiteral("Profile") : QStringLiteral("Guest");
-    }
-    if (profileLabel.size() > 24) {
-        profileLabel = profileLabel.left(21) + QStringLiteral("...");
-    }
+    const QString displayIdentity = aiDisplayIdentity(m_aiUserId, m_aiAuthToken);
 
-    QIcon icon = QIcon::fromTheme(QStringLiteral("user-identity"));
-    if (icon.isNull()) {
-        icon = style()->standardIcon(QStyle::SP_FileIcon);
+    if (!loggedIn) {
+        m_profileAvatarButton->setText(QStringLiteral("Guest ▼"));
+        m_profileAvatarButton->setIcon(QIcon());
+        m_profileAvatarButton->setStyleSheet(QStringLiteral(
+            "QPushButton#tabs\\.profile_avatar_button {"
+            " background: #223041; border: 1px solid #3d5268; border-radius: 7px;"
+            " color: #edf2f7; padding: 4px 10px; font-weight: 600; }"
+            "QPushButton#tabs\\.profile_avatar_button:hover { background: #2b3c50; }"));
+        m_profileAvatarButton->setMinimumWidth(112);
+        m_profileAvatarButton->setMinimumHeight(26);
+        m_profileAvatarButton->setMaximumSize(QWIDGETSIZE_MAX, QWIDGETSIZE_MAX);
+        m_profileAvatarButton->setToolTip(QStringLiteral("Guest - click to sign in"));
+    } else {
+        const QString avatarSeed = displayIdentity.isEmpty() ? QStringLiteral("user@jcut") : displayIdentity;
+        m_profileAvatarButton->setText(QString());
+        m_profileAvatarButton->setIcon(QIcon(buildFallbackAvatar(avatarSeed)));
+        m_profileAvatarButton->setIconSize(QSize(28, 28));
+        m_profileAvatarButton->setFixedSize(34, 34);
+        m_profileAvatarButton->setStyleSheet(QStringLiteral(
+            "QPushButton#tabs\\.profile_avatar_button {"
+            " border: 1px solid #3a4359; border-radius: 17px; padding: 0;"
+            " background: #223041; }"
+            "QPushButton#tabs\\.profile_avatar_button:hover { border-color: #6ea8ff; background: #2b3c50; }"));
+        m_profileAvatarButton->setToolTip(
+            displayIdentity.isEmpty()
+                ? QStringLiteral("Signed in")
+                : QStringLiteral("Signed in as %1").arg(displayIdentity));
     }
-    m_profileAvatarButton->setIcon(icon);
-    m_profileAvatarButton->setText(loggedIn ? (profileLabel + QStringLiteral(" ▼")) : QStringLiteral("Guest ▼"));
-    m_profileAvatarButton->setToolTip(
-        loggedIn
-            ? QStringLiteral("Signed in as %1").arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
-            : QStringLiteral("Guest - click to sign in"));
     m_profileAvatarButton->setVisible(true);
     m_profileAvatarButton->raise();
 }
@@ -1541,9 +1635,12 @@ void EditorWindow::onProfileAvatarButtonClicked()
         return;
     }
 
+    const QString displayIdentity = aiDisplayIdentity(m_aiUserId, m_aiAuthToken);
     QMenu menu(this);
     QAction* profileAction = menu.addAction(
-        QStringLiteral("Signed in as %1").arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId));
+        displayIdentity.isEmpty()
+            ? QStringLiteral("Signed in")
+            : QStringLiteral("Signed in as %1").arg(displayIdentity));
     profileAction->setEnabled(false);
     menu.addSeparator();
     QAction* switchAction = menu.addAction(QStringLiteral("Switch Account"));
@@ -1726,19 +1823,6 @@ void EditorWindow::configureAiGatewayLogin()
         candidates.removeDuplicates();
         return candidates;
     };
-    auto tokenSubFromJwt = [](const QString& token) -> QString {
-        const QStringList parts = token.trimmed().split(QLatin1Char('.'));
-        if (parts.size() < 2) {
-            return {};
-        }
-        const QByteArray payloadBytes =
-            QByteArray::fromBase64(parts.at(1).toUtf8(), QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
-        const QJsonDocument payloadDoc = QJsonDocument::fromJson(payloadBytes);
-        if (!payloadDoc.isObject()) {
-            return {};
-        }
-        return payloadDoc.object().value(QStringLiteral("sub")).toString().trimmed();
-    };
 
     auto applyLoginResult = [&](const QString& normalizedGatewayBase,
                                 const QString& accessToken,
@@ -1766,7 +1850,7 @@ void EditorWindow::configureAiGatewayLogin()
             }
         }
         if (bestUser.isEmpty()) {
-            bestUser = tokenSubFromJwt(m_aiAuthToken);
+            bestUser = cppmonetize::parseAccessTokenIdentity(m_aiAuthToken).userId;
         }
         m_aiUserId = bestUser;
 

@@ -126,12 +126,12 @@ QWidget *InspectorPane::buildPreviewTab()
     auto *zoomLayout = new QHBoxLayout();
     m_previewZoomSpin = new QDoubleSpinBox(page);
     m_previewZoomSpin->setDecimals(2);
-    m_previewZoomSpin->setRange(0.1, 20.0);
+    m_previewZoomSpin->setRange(0.1, 100000.0);
     m_previewZoomSpin->setSingleStep(0.1);
     m_previewZoomSpin->setValue(1.0);
     m_previewZoomSpin->setSuffix(QStringLiteral("x"));
     m_previewZoomSpin->setToolTip(
-        QStringLiteral("Preview zoom level (0.1x to 20.0x). Use mouse wheel over preview for smooth zoom."));
+        QStringLiteral("Preview zoom level. Audio mode supports deep zoom; use mouse wheel over preview for smooth zoom."));
     
     m_previewZoomResetButton = new QPushButton(QStringLiteral("Reset"), page);
     m_previewZoomResetButton->setToolTip(QStringLiteral("Reset zoom to 1.0x and center the view"));
@@ -304,12 +304,16 @@ QWidget *InspectorPane::buildAudioTab()
     auto *form = new QFormLayout;
     m_audioAmplifyEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
     m_audioAmplifyDbSpin = new QDoubleSpinBox(page);
-    m_audioAmplifyDbSpin->setRange(0.0, 36.0);
+    m_audioAmplifyDbSpin->setRange(-36.0, 36.0);
     m_audioAmplifyDbSpin->setSingleStep(0.5);
     m_audioAmplifyDbSpin->setDecimals(1);
     m_audioAmplifyDbSpin->setSuffix(QStringLiteral(" dB"));
+    m_audioSpeakerHoverModalCheckBox =
+        new QCheckBox(QStringLiteral("Show Speaker Hover Modal"), page);
+    m_audioSpeakerHoverModalCheckBox->setChecked(true);
     form->addRow(QStringLiteral("Amplify"), m_audioAmplifyEnabledCheckBox);
     form->addRow(QStringLiteral("Amplify Gain"), m_audioAmplifyDbSpin);
+    form->addRow(QStringLiteral("Hover Info"), m_audioSpeakerHoverModalCheckBox);
 
     m_audioNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
     m_audioNormalizeTargetDbSpin = new QDoubleSpinBox(page);

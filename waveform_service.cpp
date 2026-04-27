@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <vector>
 
 extern "C" {
@@ -25,6 +26,8 @@ namespace {
 
 constexpr int kMinBaseWindowSamples = 64;
 constexpr int kMaxBaseWindowSamples = 8192;
+constexpr int kTargetCoarsestBins = 512;
+constexpr int kMaxWaveformLevels = 32;
 
 inline float dbToAmp(float db) {
     return std::pow(10.0f, db / 20.0f);
@@ -147,11 +150,22 @@ bool WaveformService::queryEnvelope(const QString& mediaPath,
     }
 
     int levelIndex = 0;
+    const double targetSamplesPerColumn = qMax(1.0, samplesPerColumn);
+    double bestLevelScore = std::numeric_limits<double>::infinity();
     for (int i = 0; i < levelsPtr->size(); ++i) {
-        if ((*levelsPtr)[i].windowSamples <= samplesPerColumn * 1.5) {
+        const int windowSamples = (*levelsPtr)[i].windowSamples;
+        if (windowSamples <= 0) {
+            continue;
+        }
+        const double ratio = static_cast<double>(windowSamples) / targetSamplesPerColumn;
+        double score = std::abs(std::log2(ratio));
+        if (ratio > 1.0) {
+            // Slightly prefer finer levels over coarser ones to avoid chunky low-zoom plateaus.
+            score += 0.35;
+        }
+        if (score < bestLevelScore) {
+            bestLevelScore = score;
             levelIndex = i;
-        } else {
-            break;
         }
     }
     const WaveformLevel& level = (*levelsPtr)[levelIndex];
@@ -166,6 +180,7 @@ bool WaveformService::queryEnvelope(const QString& mediaPath,
         const int64_t colEnd = boundedStart + static_cast<int64_t>(
             std::ceil((static_cast<double>(x + 1) * spanSamples) / safeColumns));
         const int64_t boundedColEnd = qBound<int64_t>(colStart + 1, colEnd, boundedEnd);
+        const int windowSamples = qMax(1, level.windowSamples);
         const int startIdx = qBound<int>(
             0, static_cast<int>(colStart / qMax(1, level.windowSamples)),
             level.minValues.size() - 1);
@@ -176,15 +191,34 @@ bool WaveformService::queryEnvelope(const QString& mediaPath,
         float minV = 0.0f;
         float maxV = 0.0f;
         bool initialized = false;
-        for (int i = startIdx; i <= endIdx; ++i) {
-            if (!initialized) {
-                minV = level.minValues[i];
-                maxV = level.maxValues[i];
-                initialized = true;
-            } else {
-                minV = std::min(minV, level.minValues[i]);
-                maxV = std::max(maxV, level.maxValues[i]);
+        const bool preferInterpolatedDetail =
+            level.minValues.size() > 1 &&
+            samplesPerColumn < (static_cast<double>(windowSamples) * 0.75);
+        if (preferInterpolatedDetail) {
+            const double colCenter =
+                static_cast<double>(colStart) +
+                (static_cast<double>(boundedColEnd - colStart) * 0.5);
+            const double idxFloat = colCenter / static_cast<double>(windowSamples);
+            const int i0 = qBound(0, static_cast<int>(std::floor(idxFloat)), level.minValues.size() - 1);
+            const int i1 = qBound(0, i0 + 1, level.minValues.size() - 1);
+            const float t = qBound(0.0f, static_cast<float>(idxFloat - static_cast<double>(i0)), 1.0f);
+            minV = ((1.0f - t) * level.minValues[i0]) + (t * level.minValues[i1]);
+            maxV = ((1.0f - t) * level.maxValues[i0]) + (t * level.maxValues[i1]);
+            initialized = true;
+        } else {
+            for (int i = startIdx; i <= endIdx; ++i) {
+                if (!initialized) {
+                    minV = level.minValues[i];
+                    maxV = level.maxValues[i];
+                    initialized = true;
+                } else {
+                    minV = std::min(minV, level.minValues[i]);
+                    maxV = std::max(maxV, level.maxValues[i]);
+                }
             }
+        }
+        if (minV > maxV) {
+            std::swap(minV, maxV);
         }
         (*minOut)[x] = qBound(-1.0f, minV, 1.0f);
         (*maxOut)[x] = qBound(-1.0f, maxV, 1.0f);
@@ -327,8 +361,9 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         normalizeGain = normalizeTarget / sourcePeak;
     }
 
-    auto processAmp = [&](float amp) -> float {
-        float out = std::abs(amp) * amplifyGain * normalizeGain;
+    auto processSignedSample = [&](float sample) -> float {
+        const float sign = sample < 0.0f ? -1.0f : 1.0f;
+        float out = std::abs(sample) * amplifyGain * normalizeGain;
         if (settings.compressorEnabled && out > compLinear) {
             const float over = out - compLinear;
             out = compLinear + (over / compRatio);
@@ -339,7 +374,7 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         if (settings.limiterEnabled) {
             out = std::min(out, limiterLinear);
         }
-        return std::clamp(out, 0.0f, 1.0f);
+        return std::clamp(sign * out, -1.0f, 1.0f);
     };
 
     QVector<WaveformLevel> processed;
@@ -353,10 +388,13 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         dst.minValues.resize(src.minValues.size());
         dst.maxValues.resize(src.maxValues.size());
         for (int i = 0; i < src.minValues.size(); ++i) {
-            const float envelope = std::max(std::abs(src.minValues[i]), std::abs(src.maxValues[i]));
-            const float amp = processAmp(envelope);
-            dst.minValues[i] = -amp;
-            dst.maxValues[i] = amp;
+            float minP = processSignedSample(src.minValues[i]);
+            float maxP = processSignedSample(src.maxValues[i]);
+            if (minP > maxP) {
+                std::swap(minP, maxP);
+            }
+            dst.minValues[i] = minP;
+            dst.maxValues[i] = maxP;
         }
         processed.push_back(std::move(dst));
     }
@@ -552,7 +590,9 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
     base.maxValues = std::move(maxL0);
     levels.push_back(std::move(base));
 
-    while (levels.constLast().minValues.size() > 2048 && levels.size() < 12) {
+    while (levels.constLast().minValues.size() > kTargetCoarsestBins &&
+           levels.size() < kMaxWaveformLevels &&
+           levels.constLast().windowSamples <= (std::numeric_limits<int>::max() / 2)) {
         const WaveformLevel& prev = levels.constLast();
         WaveformLevel next;
         next.windowSamples = prev.windowSamples * 2;

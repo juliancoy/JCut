@@ -14,6 +14,7 @@
 #include <QTextDocument>
 #include <QFileInfo>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -866,8 +867,18 @@ QString PreviewWindow::audioDynamicsCacheKey() const {
                  .arg(m_audioDynamics.compressorRatio, 0, 'f', 2));
 }
 
-QVector<qreal> PreviewWindow::audioWaveformBinsForClip(const TimelineClip& clip, int binCount) const {
+bool PreviewWindow::audioWaveformEnvelopeForClip(const TimelineClip& clip,
+                                                 int binCount,
+                                                 qreal rangeStartNorm,
+                                                 qreal rangeEndNorm,
+                                                 QVector<qreal>* minOut,
+                                                 QVector<qreal>* maxOut) const {
+    if (!minOut || !maxOut) {
+        return false;
+    }
     const int safeBins = qBound(64, binCount, 8192);
+    minOut->fill(0.0, safeBins);
+    maxOut->fill(0.0, safeBins);
 
     // Waveform must follow playback audio source, not visual proxy media.
     QString mediaPath = playbackAudioPathForClip(clip);
@@ -875,12 +886,22 @@ QVector<qreal> PreviewWindow::audioWaveformBinsForClip(const TimelineClip& clip,
         mediaPath = interactivePreviewMediaPathForClip(clip);
     }
     if (mediaPath.isEmpty()) {
-        return QVector<qreal>(safeBins, 0.0);
+        return false;
     }
 
     const int64_t sourceStartSample = qMax<int64_t>(0, frameToSamples(qMax<int64_t>(0, clip.sourceInFrame)));
     const int64_t sourceDurationSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
-    const int64_t sourceEndSample = sourceStartSample + sourceDurationSamples;
+    const qreal startNorm = qBound<qreal>(0.0, rangeStartNorm, 1.0);
+    const qreal endNorm = qBound<qreal>(startNorm, rangeEndNorm, 1.0);
+    const int64_t visibleStartOffset = static_cast<int64_t>(
+        std::floor(startNorm * static_cast<qreal>(sourceDurationSamples)));
+    const int64_t visibleEndOffset = static_cast<int64_t>(
+        std::ceil(endNorm * static_cast<qreal>(sourceDurationSamples)));
+    const int64_t visibleStartSample = sourceStartSample + qBound<int64_t>(0, visibleStartOffset, sourceDurationSamples);
+    const int64_t visibleEndSample = sourceStartSample + qBound<int64_t>(
+        visibleStartOffset + 1,
+        visibleEndOffset,
+        sourceDurationSamples);
     const QString variantKey = audioDynamicsCacheKey();
     const editor::WaveformService::WaveformProcessSettings processSettings{
         m_audioDynamics.amplifyEnabled,
@@ -898,8 +919,8 @@ QVector<qreal> PreviewWindow::audioWaveformBinsForClip(const TimelineClip& clip,
     QVector<float> minValues;
     QVector<float> maxValues;
     if (!editor::WaveformService::instance().queryEnvelope(mediaPath,
-                                                           sourceStartSample,
-                                                           sourceEndSample,
+                                                           visibleStartSample,
+                                                           visibleEndSample,
                                                            safeBins,
                                                            &minValues,
                                                            &maxValues,
@@ -907,16 +928,21 @@ QVector<qreal> PreviewWindow::audioWaveformBinsForClip(const TimelineClip& clip,
                                                            &processSettings) ||
         minValues.size() != safeBins ||
         maxValues.size() != safeBins) {
-        return QVector<qreal>(safeBins, 0.0);
+        return false;
     }
 
-    QVector<qreal> base(safeBins, 0.0);
     for (int i = 0; i < safeBins; ++i) {
-        const qreal peak = qMax(qAbs(static_cast<qreal>(minValues[i])),
-                                qAbs(static_cast<qreal>(maxValues[i])));
-        base[i] = qBound<qreal>(0.0, peak, 1.0);
+        const qreal minV = qBound<qreal>(-1.0, static_cast<qreal>(minValues[i]), 1.0);
+        const qreal maxV = qBound<qreal>(-1.0, static_cast<qreal>(maxValues[i]), 1.0);
+        if (minV <= maxV) {
+            (*minOut)[i] = minV;
+            (*maxOut)[i] = maxV;
+        } else {
+            (*minOut)[i] = maxV;
+            (*maxOut)[i] = minV;
+        }
     }
-    return base;
+    return true;
 }
 
 void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRect,
@@ -958,16 +984,10 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
                           .arg(m_playing ? QStringLiteral("live") : QStringLiteral("paused")));
 
     const QRect waveRect = panel.adjusted(24, 120, -24, -36);
+    const qreal rulerGutterWidth = qBound<qreal>(32.0, waveRect.width() * 0.12, 56.0);
     const int rowCount = qBound(2, waveRect.height() / 88, 6);
-    const int binsPerRow = qMax(96, waveRect.width() / 3);
+    const int binsPerRow = qMax(256, waveRect.width());
     const int totalDrawBins = qMax(96, rowCount * binsPerRow);
-
-    QVector<qreal> waveform = audioWaveformBinsForClip(clip, totalDrawBins);
-    if (waveform.size() < totalDrawBins) {
-        waveform.resize(totalDrawBins, 0.0);
-    } else if (waveform.size() > totalDrawBins) {
-        waveform.resize(totalDrawBins);
-    }
 
     QStringList speakerIds;
     QHash<QString, int> speakerToIndex;
@@ -975,10 +995,38 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
     const int64_t sourceSpan = qMax<int64_t>(1, clip.durationFrames);
+
+    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const qreal minVisibleBySamples = qBound<qreal>(
+        0.00001,
+        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
+        1.0);
+    const qreal maxAudioZoom =
+        qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
+    const qreal zoom = qBound<qreal>(1.0, m_previewZoom, maxAudioZoom);
+    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
+    const qreal startNorm = qBound<qreal>(0.0, m_previewPanOffset.x(), maxStart);
+    const qreal endNorm = qBound<qreal>(startNorm, startNorm + visibleFraction, 1.0);
+
+    QVector<qreal> waveformMin(totalDrawBins, 0.0);
+    QVector<qreal> waveformMax(totalDrawBins, 0.0);
+    (void)audioWaveformEnvelopeForClip(
+        clip, totalDrawBins, startNorm, endNorm, &waveformMin, &waveformMax);
+
+    // Absolute amplitude scale: +/-1.0 is always full row height (digital full-scale).
+    const qreal unityScale = 1.0;
+
+    const int64_t visibleSourceStart = sourceStart + static_cast<int64_t>(
+        std::floor(startNorm * static_cast<qreal>(sourceSpan)));
+    const int64_t visibleSourceSpan = qMax<int64_t>(
+        1,
+        static_cast<int64_t>(std::ceil(visibleFraction * static_cast<qreal>(sourceSpan))));
     if (!sections.isEmpty()) {
         for (int i = 0; i < totalDrawBins; ++i) {
             const qreal t = (static_cast<qreal>(i) + 0.5) / static_cast<qreal>(totalDrawBins);
-            const int64_t sourceFrame = sourceStart + static_cast<int64_t>(std::floor(t * sourceSpan));
+            const int64_t sourceFrame = visibleSourceStart + static_cast<int64_t>(
+                std::floor(t * static_cast<qreal>(visibleSourceSpan)));
             const QString speakerId = speakerAtSourceFrame(sections, sourceFrame);
             if (speakerId.isEmpty()) {
                 continue;
@@ -995,29 +1043,11 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         fillShortUnknownSpeakerGaps(&speakerIndexByBin, maxGapBins);
     }
 
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
-    const qreal minVisibleBySamples = qBound<qreal>(
-        0.0005,
-        (500.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-        1.0);
-    const qreal maxAudioZoom = qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.0005, minVisibleBySamples), 2000.0);
-    const qreal zoom = qBound<qreal>(0.1, m_previewZoom, maxAudioZoom);
-    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, m_previewPanOffset.x(), maxStart);
-    const auto sourceBinForVisibleIndex = [startNorm, visibleFraction, totalDrawBins](int visibleIndex) -> int {
-        const qreal t = (static_cast<qreal>(visibleIndex) + 0.5) / qMax<qreal>(1.0, totalDrawBins);
-        const qreal sourceT = startNorm + (t * visibleFraction);
-        return qBound(0, static_cast<int>(std::floor(sourceT * totalDrawBins)), totalDrawBins - 1);
-    };
-
-    // Normalize the visible waveform to unity so the strongest visible bin fills the row height.
-    qreal visiblePeak = 0.0;
-    for (int i = 0; i < totalDrawBins; ++i) {
-        const int sourceBin = sourceBinForVisibleIndex(i);
-        visiblePeak = qMax(visiblePeak, qBound<qreal>(0.0, waveform[sourceBin], 1.0));
-    }
-    const qreal unityScale = visiblePeak > 0.000001 ? (1.0 / visiblePeak) : 1.0;
+    bool hoverInfoValid = false;
+    QString hoverSpeaker;
+    int64_t hoverSourceFrame = 0;
+    qreal hoverAmplitude = 0.0;
+    qreal hoverTimelinePercent = 0.0;
 
     painter->setBrush(Qt::NoBrush);
     for (int row = 0; row < rowCount; ++row) {
@@ -1025,14 +1055,45 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
                              (static_cast<qreal>(row) * static_cast<qreal>(waveRect.height()) / rowCount);
         const qreal rowBottom = static_cast<qreal>(waveRect.top()) +
                                 (static_cast<qreal>(row + 1) * static_cast<qreal>(waveRect.height()) / rowCount);
-        const QRectF rowRect(static_cast<qreal>(waveRect.left()), rowTop,
-                             static_cast<qreal>(waveRect.width()), rowBottom - rowTop);
+        const QRectF rowRect(static_cast<qreal>(waveRect.left()) + rulerGutterWidth, rowTop,
+                             qMax<qreal>(1.0, static_cast<qreal>(waveRect.width()) - rulerGutterWidth),
+                             rowBottom - rowTop);
         const qreal centerY = rowRect.center().y();
 
-        painter->setPen(QPen(QColor(255, 255, 255, 24), 1.0));
-        painter->drawLine(QPointF(rowRect.left(), centerY), QPointF(rowRect.right(), centerY));
         painter->setPen(QPen(QColor(255, 255, 255, 14), 1.0));
         painter->drawRect(rowRect.adjusted(0.5, 0.5, -0.5, -0.5));
+        painter->setPen(QPen(QColor(255, 255, 255, 22), 1.0));
+        painter->drawLine(QPointF(rowRect.left(), centerY), QPointF(rowRect.right(), centerY));
+
+        struct DbMark {
+            qreal db = 0.0;
+            QString label;
+        };
+        const DbMark dbMarks[] = {
+            {0.0, QStringLiteral("0 dB")},
+            {-6.0, QStringLiteral("-6")},
+            {-12.0, QStringLiteral("-12")},
+            {-18.0, QStringLiteral("-18")}
+        };
+        QFont rulerFont = painter->font();
+        rulerFont.setPointSize(qMax(8, rulerFont.pointSize() - 1));
+        painter->setFont(rulerFont);
+        for (const DbMark& mark : dbMarks) {
+            const qreal amp = std::pow(10.0, mark.db / 20.0);
+            const qreal yTopMark = centerY - (amp * rowRect.height() * 0.5);
+            const qreal yBottomMark = centerY + (amp * rowRect.height() * 0.5);
+            const int gridAlpha = (mark.db == 0.0) ? 68 : 34;
+            painter->setPen(QPen(QColor(157, 239, 255, gridAlpha), 1.0));
+            painter->drawLine(QPointF(rowRect.left(), yTopMark), QPointF(rowRect.right(), yTopMark));
+            painter->drawLine(QPointF(rowRect.left(), yBottomMark), QPointF(rowRect.right(), yBottomMark));
+
+            painter->setPen(QColor(166, 211, 230, 175));
+            const QRectF labelRect(static_cast<qreal>(waveRect.left()) + 3.0,
+                                   yTopMark - 8.0,
+                                   rulerGutterWidth - 8.0,
+                                   16.0);
+            painter->drawText(labelRect, Qt::AlignRight | Qt::AlignVCenter, mark.label);
+        }
 
         int rowStartBin = row * binsPerRow;
         int rowEndBin = qMin(totalDrawBins, rowStartBin + binsPerRow);
@@ -1041,10 +1102,10 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         }
 
         int runStart = rowStartBin;
-        int runSpeaker = speakerIndexByBin[sourceBinForVisibleIndex(runStart)];
+        int runSpeaker = speakerIndexByBin[qBound(0, runStart, totalDrawBins - 1)];
         for (int i = rowStartBin + 1; i <= rowEndBin; ++i) {
             const int idx = (i < rowEndBin)
-                ? speakerIndexByBin[sourceBinForVisibleIndex(i)]
+                ? speakerIndexByBin[qBound(0, i, totalDrawBins - 1)]
                 : std::numeric_limits<int>::min();
             if (idx == runSpeaker) {
                 continue;
@@ -1055,17 +1116,43 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
                 const qreal x1 = rowRect.left() +
                     (static_cast<qreal>(i - rowStartBin) / qMax<qreal>(1.0, rowEndBin - rowStartBin)) * rowRect.width();
                 painter->fillRect(QRectF(x0, rowRect.top(), qMax<qreal>(1.0, x1 - x0), rowRect.height()),
-                                  speakerColor(speakerIds.at(runSpeaker), 62));
+                                  speakerColor(speakerIds.at(runSpeaker), 30));
             }
             runStart = i;
             runSpeaker = idx;
         }
 
         const int rowBinCount = qMax(2, rowEndBin - rowStartBin);
-        QVector<qreal> rowAmplitudes(rowBinCount, 0.0);
+        QVector<qreal> rowMinValues(rowBinCount, 0.0);
+        QVector<qreal> rowMaxValues(rowBinCount, 0.0);
         for (int i = 0; i < rowBinCount; ++i) {
-            const int sourceBin = sourceBinForVisibleIndex(rowStartBin + i);
-            rowAmplitudes[i] = qBound<qreal>(0.0, waveform[sourceBin] * unityScale, 1.0);
+            const int sourceBin = qBound(0, rowStartBin + i, totalDrawBins - 1);
+            qreal minV = qBound<qreal>(-1.0, waveformMin[sourceBin] * unityScale, 1.0);
+            qreal maxV = qBound<qreal>(-1.0, waveformMax[sourceBin] * unityScale, 1.0);
+            if (minV > maxV) {
+                std::swap(minV, maxV);
+            }
+            rowMinValues[i] = minV;
+            rowMaxValues[i] = maxV;
+        }
+
+        QVector<qreal> displayMin = rowMinValues;
+        QVector<qreal> displayMax = rowMaxValues;
+        if (zoom <= 4.0 && rowBinCount >= 3) {
+            // Low-zoom smoothing reduces staircase artifacts from min/max decimation.
+            for (int i = 1; i < rowBinCount - 1; ++i) {
+                const qreal smoothMin =
+                    (rowMinValues[i - 1] + (rowMinValues[i] * 2.0) + rowMinValues[i + 1]) * 0.25;
+                const qreal smoothMax =
+                    (rowMaxValues[i - 1] + (rowMaxValues[i] * 2.0) + rowMaxValues[i + 1]) * 0.25;
+                if (smoothMin <= smoothMax) {
+                    displayMin[i] = smoothMin;
+                    displayMax[i] = smoothMax;
+                } else {
+                    displayMin[i] = smoothMax;
+                    displayMax[i] = smoothMin;
+                }
+            }
         }
 
         QPainterPath areaPath;
@@ -1078,9 +1165,9 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         for (int i = 0; i < rowBinCount; ++i) {
             const qreal x = rowRect.left() +
                 (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
-            const qreal halfHeight = qMax<qreal>(1.0, rowAmplitudes[i] * rowRect.height() * 0.5);
-            const qreal yTop = centerY - halfHeight;
-            const qreal yBottom = centerY + halfHeight;
+            const qreal halfRange = rowRect.height() * 0.5;
+            const qreal yTop = centerY - (displayMax[i] * halfRange);
+            const qreal yBottom = centerY - (displayMin[i] * halfRange);
             topPath.lineTo(x, yTop);
             bottomPath.lineTo(x, yBottom);
             areaPath.lineTo(x, yTop);
@@ -1088,19 +1175,126 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         for (int i = rowBinCount - 1; i >= 0; --i) {
             const qreal x = rowRect.left() +
                 (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
-            const qreal halfHeight = qMax<qreal>(1.0, rowAmplitudes[i] * rowRect.height() * 0.5);
-            areaPath.lineTo(x, centerY + halfHeight);
+            const qreal halfRange = rowRect.height() * 0.5;
+            const qreal yBottom = centerY - (displayMin[i] * halfRange);
+            areaPath.lineTo(x, yBottom);
         }
         areaPath.closeSubpath();
 
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(88, 196, 221, 72));
-        painter->drawPath(areaPath);
+        auto withAlphaScale = [](QColor c, qreal weight) -> QColor {
+            const int a = qBound(0, static_cast<int>(std::round(c.alphaF() * weight * 255.0)), 255);
+            c.setAlpha(a);
+            return c;
+        };
+        auto smoothStep = [](qreal edge0, qreal edge1, qreal x) -> qreal {
+            if (edge1 <= edge0) {
+                return x >= edge1 ? 1.0 : 0.0;
+            }
+            const qreal t = qBound<qreal>(0.0, (x - edge0) / (edge1 - edge0), 1.0);
+            return t * t * (3.0 - (2.0 * t));
+        };
 
+        const qreal lowToStem = smoothStep(6.0, 10.0, zoom);
+        const qreal stemToTrace = smoothStep(48.0, 88.0, zoom);
+        const qreal lowFillWeight = 1.0 - lowToStem;
+        const qreal stemWeight = lowToStem * (1.0 - stemToTrace);
+        const qreal traceWeight = stemToTrace;
+        if (traceWeight > 0.001) {
+            // At very high zoom, blend in a continuous trace to avoid bar/step artifacts.
+            QPainterPath centerPath;
+            centerPath.moveTo(rowRect.left(), centerY);
+            for (int i = 0; i < rowBinCount; ++i) {
+                const qreal x = rowRect.left() +
+                    (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+                const qreal halfRange = rowRect.height() * 0.5;
+                const qreal centerAmp = (displayMin[i] + displayMax[i]) * 0.5;
+                const qreal y = centerY - (centerAmp * halfRange);
+                centerPath.lineTo(x, y);
+            }
+            painter->setPen(QPen(withAlphaScale(QColor(127, 216, 237, 210), traceWeight),
+                                 1.35, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(centerPath);
+        }
+        if (stemWeight > 0.001) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(withAlphaScale(QColor(127, 216, 237, 78), stemWeight));
+            painter->drawPath(areaPath);
+            painter->save();
+            painter->setPen(QPen(withAlphaScale(QColor(127, 216, 237, 155), stemWeight),
+                                 0.9, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            for (int i = 0; i < rowBinCount; ++i) {
+                const qreal x = rowRect.left() +
+                    (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+                const qreal halfRange = rowRect.height() * 0.5;
+                const qreal yTop = centerY - (displayMax[i] * halfRange);
+                const qreal yBottom = centerY - (displayMin[i] * halfRange);
+                painter->drawLine(QPointF(x, yTop), QPointF(x, yBottom));
+            }
+            painter->restore();
+        }
+        if (lowFillWeight > 0.001) {
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(withAlphaScale(QColor(127, 216, 237, 102), lowFillWeight));
+            painter->drawPath(areaPath);
+        }
+
+        const qreal outlineWeight = qBound<qreal>(0.2, 1.0 - (traceWeight * 0.9), 1.0);
         painter->setBrush(Qt::NoBrush);
-        painter->setPen(QPen(QColor(QStringLiteral("#7fd8ed")), 1.15, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter->setPen(QPen(withAlphaScale(QColor(QStringLiteral("#9defff")), outlineWeight),
+                             1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
         painter->drawPath(topPath);
         painter->drawPath(bottomPath);
+
+        if (m_audioSpeakerHoverModalEnabled &&
+            m_lastMousePos.x() >= rowRect.left() && m_lastMousePos.x() <= rowRect.right() &&
+            m_lastMousePos.y() >= rowRect.top() && m_lastMousePos.y() <= rowRect.bottom()) {
+            const qreal rowXNorm = qBound<qreal>(
+                0.0,
+                (m_lastMousePos.x() - rowRect.left()) / qMax<qreal>(1.0, rowRect.width()),
+                1.0);
+            const int hoverBinInRow = qBound(
+                0,
+                static_cast<int>(std::round(rowXNorm * static_cast<qreal>(rowBinCount - 1))),
+                rowBinCount - 1);
+            const int hoverBin = qBound(0, rowStartBin + hoverBinInRow, totalDrawBins - 1);
+            const int speakerIdx = speakerIndexByBin.value(hoverBin, -1);
+            if (speakerIdx >= 0 && speakerIdx < speakerIds.size()) {
+                hoverInfoValid = true;
+                hoverSpeaker = speakerIds.at(speakerIdx);
+                hoverSourceFrame = visibleSourceStart + static_cast<int64_t>(
+                    std::floor(((static_cast<qreal>(hoverBin) + 0.5) / static_cast<qreal>(totalDrawBins)) *
+                               static_cast<qreal>(visibleSourceSpan)));
+                hoverAmplitude = qMax(qAbs(displayMin[hoverBinInRow]), qAbs(displayMax[hoverBinInRow]));
+                hoverTimelinePercent = qBound<qreal>(
+                    0.0,
+                    ((static_cast<qreal>(hoverBin) + 0.5) / static_cast<qreal>(totalDrawBins)) * 100.0,
+                    100.0);
+            }
+        }
+    }
+
+    if (hoverInfoValid) {
+        const QString hoverText = QStringLiteral("Speaker: %1\nFrame: %2\nAmp: %3\nView Pos: %4%")
+                                      .arg(hoverSpeaker)
+                                      .arg(hoverSourceFrame)
+                                      .arg(QString::number(hoverAmplitude, 'f', 3))
+                                      .arg(QString::number(hoverTimelinePercent, 'f', 1));
+        const QFontMetrics fm(painter->font());
+        const QRect textRect = fm.boundingRect(QRect(0, 0, 280, 120),
+                                               Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                                               hoverText);
+        const QRect modalRect(panel.right() - textRect.width() - 34,
+                              panel.top() + 22,
+                              textRect.width() + 16,
+                              textRect.height() + 14);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(8, 13, 20, 225));
+        painter->drawRoundedRect(modalRect, 8, 8);
+        painter->setPen(QColor(QStringLiteral("#dff5ff")));
+        painter->drawText(modalRect.adjusted(8, 7, -8, -7),
+                          Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                          hoverText);
     }
 
     painter->setPen(QColor(QStringLiteral("#9fb3c8")));
