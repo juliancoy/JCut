@@ -121,9 +121,15 @@ void SpeakersTab::wire()
         connect(m_widgets.speakerGuideButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerGuideClicked);
     }
+    if (m_widgets.speakerPrecropFacesButton) {
+        m_widgets.speakerPrecropFacesButton->setToolTip(
+            QStringLiteral("Scan this clip for potential faces and assign crops to transcript speakers."));
+        connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked,
+                this, &SpeakersTab::onSpeakerPrecropFacesClicked);
+    }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(
-            QStringLiteral("Infer likely speaker display names from transcript context."));
+            QStringLiteral("Mine transcript text with AI and overwrite existing speaker names when stronger candidates are found."));
         connect(m_widgets.speakerAiFindNamesButton, &QPushButton::clicked, this, [this]() {
             runAiFindSpeakerNames();
         });
@@ -423,6 +429,11 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         const QString id = ids.at(row);
         const QJsonObject profile = profiles.value(id).toObject();
         const QString name = profile.value(QString(kTranscriptSpeakerNameKey)).toString(id);
+        const QString organization = profile.value(QStringLiteral("organization")).toString().trimmed();
+        QString description = profile.value(QStringLiteral("brief_description")).toString().trimmed();
+        if (description.isEmpty()) {
+            description = profile.value(QStringLiteral("description")).toString().trimmed();
+        }
         const QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
         const double x = location.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5);
         const double y = location.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85);
@@ -477,6 +488,10 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         auto* nameItem = new QTableWidgetItem(name);
         nameItem->setData(Qt::UserRole, id);
         nameItem->setData(Qt::UserRole + 10, keyframeCount > 0);
+        nameItem->setToolTip(QStringLiteral("Speaker: %1\nOrganization: %2\nSummary: %3")
+                                 .arg(name,
+                                      organization.isEmpty() ? QStringLiteral("None") : organization,
+                                      description.isEmpty() ? QStringLiteral("None") : description));
         auto* xItem = new QTableWidgetItem(QString::number(x, 'f', 3));
         xItem->setData(Qt::UserRole, id);
         auto* yItem = new QTableWidgetItem(QString::number(y, 'f', 3));
@@ -872,6 +887,24 @@ QString SpeakersTab::speakerTrackingSummary(const QJsonObject& profile) const
     return summary;
 }
 
+bool SpeakersTab::ensureAiActionReady(const QString& actionTitle) const
+{
+    if (!m_speakerDeps.ensureAiSession) {
+        return true;
+    }
+    QString error;
+    if (m_speakerDeps.ensureAiSession(&error)) {
+        return true;
+    }
+    QMessageBox::warning(
+        nullptr,
+        actionTitle,
+        error.isEmpty()
+            ? QStringLiteral("AI login required. Sign in from AI Assist.")
+            : error);
+    return false;
+}
+
 void SpeakersTab::updateSpeakerTrackingStatusLabel()
 {
     if (!m_widgets.speakerTrackingStatusLabel) {
@@ -921,6 +954,9 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
     if (m_widgets.speakerGuideButton) {
         m_widgets.speakerGuideButton->setEnabled(true);
+    }
+    if (m_widgets.speakerPrecropFacesButton) {
+        m_widgets.speakerPrecropFacesButton->setEnabled(canEdit);
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setEnabled(canEdit);

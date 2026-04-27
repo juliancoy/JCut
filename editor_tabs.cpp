@@ -199,6 +199,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerDisableTrackingButton(),
             m_inspectorPane->speakerDeletePointstreamButton(),
             m_inspectorPane->speakerGuideButton(),
+            m_inspectorPane->speakerPrecropFacesButton(),
             m_inspectorPane->speakerAiFindNamesButton(),
             m_inspectorPane->speakerAiFindOrganizationsButton(),
             m_inspectorPane->speakerAiCleanAssignmentsButton(),
@@ -235,6 +236,28 @@ void EditorWindow::createSpeakersTab()
                 }
                 m_preview->setTimelineClips(m_timeline->clips());
                 m_preview->update();
+            },
+            [this](QString* errorOut) -> bool {
+                refreshAiIntegrationState();
+                if (!m_featureAiSpeakerCleanup) {
+                    if (errorOut) {
+                        *errorOut = QStringLiteral("AI speaker actions disabled by feature flag.");
+                    }
+                    return false;
+                }
+                if (!m_aiIntegrationEnabled) {
+                    if (errorOut) {
+                        *errorOut = m_aiIntegrationStatus;
+                    }
+                    return false;
+                }
+                if (m_aiAuthToken.trimmed().isEmpty()) {
+                    if (errorOut) {
+                        *errorOut = QStringLiteral("AI login required. Sign in from AI Assist.");
+                    }
+                    return false;
+                }
+                return true;
             },
             [this](const QStringList& speakerIds) {
                 exportVideoForSpeakersOnSelectedClip(speakerIds);

@@ -544,7 +544,7 @@ QWidget *InspectorPane::buildAiTab()
 
     auto *actionsRow1 = new QHBoxLayout;
     m_aiTranscribeButton = new QPushButton(QStringLiteral("Transcribe (AI)"), page);
-    m_aiFindSpeakerNamesButton = new QPushButton(QStringLiteral("Find Names (AI)"), page);
+    m_aiFindSpeakerNamesButton = new QPushButton(QStringLiteral("Mine Transcript (AI)"), page);
     actionsRow1->addWidget(m_aiTranscribeButton);
     actionsRow1->addWidget(m_aiFindSpeakerNamesButton);
 

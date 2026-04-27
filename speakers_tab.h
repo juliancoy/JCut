@@ -42,6 +42,7 @@ public:
         QPushButton* speakerDisableTrackingButton = nullptr;
         QPushButton* speakerDeletePointstreamButton = nullptr;
         QPushButton* speakerGuideButton = nullptr;
+        QPushButton* speakerPrecropFacesButton = nullptr;
         QPushButton* speakerAiFindNamesButton = nullptr;
         QPushButton* speakerAiFindOrganizationsButton = nullptr;
         QPushButton* speakerAiCleanAssignmentsButton = nullptr;
@@ -63,6 +64,7 @@ public:
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
         std::function<QSize()> getOutputSize;
         std::function<void()> refreshPreview;
+        std::function<bool(QString*)> ensureAiSession;
         std::function<void(const QStringList&)> exportSpeakersVideo;
     };
 
@@ -101,6 +103,7 @@ private slots:
     void onSpeakerTrackingChipClicked();
     void onSpeakerStabilizeChipClicked();
     void onSpeakerGuideClicked();
+    void onSpeakerPrecropFacesClicked();
     void onSpeakerFramingTargetChanged();
     void onSpeakerFramingZoomEnabledChanged(bool checked);
     void onSpeakerApplyFramingToClipChanged(bool checked);
@@ -118,6 +121,7 @@ private:
     QString originalTranscriptPathForClip(const QString& clipFilePath) const;
     QString selectedSpeakerId() const;
     QString speakerTrackingSummary(const QJsonObject& profile) const;
+    bool ensureAiActionReady(const QString& actionTitle) const;
     void updateSpeakerTrackingStatusLabel();
     void updateSelectedSpeakerPanel();
     QString currentSpeakerSentenceAtCurrentFrame(const QString& speakerId) const;

@@ -51,7 +51,6 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolButton>
-#include <QTcpServer>
 #include <QVector>
 
 #include <atomic>
@@ -200,9 +199,6 @@ private:
     bool readAiTokenFromSecureStore(QString* tokenOut) const;
     bool writeAiTokenToSecureStore(const QString& token, QString* errorOut = nullptr) const;
     bool clearAiTokenFromSecureStore(QString* errorOut = nullptr) const;
-    void startAiBrowserLogin(const QString& gatewayBaseUrl,
-                             const QString& preferredProvider = QString());
-    bool exchangeAiAuthCode(const QString& code, const QString& state, QString* errorOut = nullptr);
     void runAiTranscribeForSelection();
     void runAiFindSpeakerNames();
     void runAiFindOrganizations();
@@ -557,13 +553,9 @@ private:
     QString m_aiProxyBaseUrl;
     QString m_aiAuthToken;
     QString m_aiUserId;
-    std::unique_ptr<QTcpServer> m_aiAuthCallbackServer;
-    quint16 m_aiAuthCallbackPort = 0;
-    QString m_aiAuthState;
-    QString m_aiAuthCodeVerifier;
-    QString m_aiAuthRedirectUri;
     QString m_aiSelectedModel = QStringLiteral("deepseek-chat");
     QString m_aiContractVersion = QStringLiteral("unknown");
+    bool m_aiOAuthInProgress = false;
     bool m_featureAiPanel = true;
     bool m_featureAiSpeakerCleanup = true;
     bool m_featureAudioPreviewMode = true;

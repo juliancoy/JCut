@@ -298,9 +298,17 @@ void PreviewWindow::mouseReleaseEvent(QMouseEvent* event) {
             const qreal dy = endNorm.y() - startNorm.y();
             const qreal dragDistance = std::sqrt((dx * dx) + (dy * dy));
             if (speakerBoxRequested) {
+                const qreal startScreenX = m_speakerPickStartPos.x();
+                const qreal startScreenY = m_speakerPickStartPos.y();
+                const qreal endScreenX = endPos.x();
+                const qreal endScreenY = endPos.y();
+                const qreal sideScreenPx = qMax(qAbs(endScreenX - startScreenX),
+                                                qAbs(endScreenY - startScreenY));
+                const qreal minScreenSide = qMax<qreal>(
+                    1.0, qMin<qreal>(info.bounds.width(), info.bounds.height()));
                 const qreal side = qBound<qreal>(
                     0.02,
-                    dragDistance >= 0.01 ? qMax(std::abs(dx), std::abs(dy)) : 0.06,
+                    dragDistance >= 0.01 ? (sideScreenPx / minScreenSide) : 0.06,
                     1.0);
                 const qreal cx = qBound<qreal>(0.0, (startNorm.x() + endNorm.x()) * 0.5, 1.0);
                 const qreal cy = qBound<qreal>(0.0, (startNorm.y() + endNorm.y()) * 0.5, 1.0);

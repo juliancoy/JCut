@@ -108,6 +108,7 @@ public:
     QPushButton *speakerDisableTrackingButton() const { return m_speakerDisableTrackingButton; }
     QPushButton *speakerDeletePointstreamButton() const { return m_speakerDeletePointstreamButton; }
     QPushButton *speakerGuideButton() const { return m_speakerGuideButton; }
+    QPushButton *speakerPrecropFacesButton() const { return m_speakerPrecropFacesButton; }
     QPushButton *speakerAiFindNamesButton() const { return m_speakerAiFindNamesButton; }
     QPushButton *speakerAiFindOrganizationsButton() const { return m_speakerAiFindOrganizationsButton; }
     QPushButton *speakerAiCleanAssignmentsButton() const { return m_speakerAiCleanAssignmentsButton; }
@@ -562,6 +563,7 @@ private:
     QPushButton *m_speakerDisableTrackingButton = nullptr;
     QPushButton *m_speakerDeletePointstreamButton = nullptr;
     QPushButton *m_speakerGuideButton = nullptr;
+    QPushButton *m_speakerPrecropFacesButton = nullptr;
     QPushButton *m_speakerAiFindNamesButton = nullptr;
     QPushButton *m_speakerAiFindOrganizationsButton = nullptr;
     QPushButton *m_speakerAiCleanAssignmentsButton = nullptr;

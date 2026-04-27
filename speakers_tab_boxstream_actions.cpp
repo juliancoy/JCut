@@ -1,5 +1,6 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
+#include "speaker_flow_debug.h"
 
 #include "decoder_context.h"
 #include "transcript_engine.h"
@@ -8,6 +9,8 @@
 #include <QCheckBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
+#include <QDateTime>
+#include <QDir>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
@@ -25,12 +28,14 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QStyledItemDelegate>
 #include <QTemporaryDir>
 #include <QTextCursor>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -274,6 +279,103 @@ bool SpeakersTab::runAutoTrackForSpeaker(const QString& speakerId, bool forceMod
         qBound<int>(1, trackingConfig.value(QStringLiteral("auto_track_step_frames")).toInt(6), 120);
     const int stepFrames =
         qBound<int>(1, static_cast<int>(trackSpan / 300), configuredMaxStepFrames);
+
+    auto debugRun = speaker_flow_debug::openLatestOrCreateRun(
+        m_loadedTranscriptPath,
+        selectedClip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : selectedClip->id,
+        QFileInfo(interactivePreviewMediaPathForClip(*selectedClip)).completeBaseName());
+
+    QString requestPath;
+    QString keyframesPath;
+    QString statsPath;
+    QString logPath;
+    QString indexPath;
+    QString overwriteDecisionPath;
+    auto resolveStage6Paths = [&]() {
+        requestPath = QDir(debugRun.runDir).absoluteFilePath(
+            QStringLiteral("%1_boxstream_request.json").arg(debugRun.videoStem));
+        keyframesPath = QDir(debugRun.runDir).absoluteFilePath(
+            QStringLiteral("%1_boxstream_output_keyframes.json").arg(debugRun.videoStem));
+        statsPath = QDir(debugRun.runDir).absoluteFilePath(
+            QStringLiteral("%1_boxstream_stats.json").arg(debugRun.videoStem));
+        logPath = QDir(debugRun.runDir).absoluteFilePath(
+            QStringLiteral("%1_boxstream_log.txt").arg(debugRun.videoStem));
+        indexPath = QDir(debugRun.runDir).absoluteFilePath(
+            QStringLiteral("%1_index.json").arg(debugRun.videoStem));
+        overwriteDecisionPath = QDir(debugRun.runDir).absoluteFilePath(
+            QStringLiteral("%1_overwrite_decision.json").arg(debugRun.videoStem));
+    };
+    resolveStage6Paths();
+    while (true) {
+        QStringList existingFiles;
+        const auto action = speaker_flow_debug::promptOverwrite(
+            nullptr,
+            debugRun.runDir,
+            QStringLiteral("stage_6_boxstream"),
+            QStringList{requestPath, keyframesPath, statsPath, logPath},
+            true,
+            &existingFiles);
+        if (action == speaker_flow_debug::OverwriteAction::Cancel) {
+            if (!existingFiles.isEmpty()) {
+                speaker_flow_debug::recordOverwriteDecision(
+                    overwriteDecisionPath,
+                    debugRun.runDir,
+                    QStringLiteral("stage_6_boxstream"),
+                    existingFiles,
+                    false);
+            }
+            speaker_flow_debug::persistIndex(
+                indexPath,
+                debugRun.runId,
+                debugRun.clipToken,
+                QFileInfo(selectedClip->filePath).fileName(),
+                m_loadedTranscriptPath,
+                QStringLiteral("stage_6_boxstream"),
+                QStringLiteral("skipped"),
+                QStringLiteral("Canceled due to overwrite prompt."),
+                {});
+            return false;
+        }
+        if (action == speaker_flow_debug::OverwriteAction::CreateNewRun) {
+            debugRun = speaker_flow_debug::createNewRunFrom(debugRun);
+            resolveStage6Paths();
+            continue;
+        }
+        if (!existingFiles.isEmpty()) {
+            speaker_flow_debug::recordOverwriteDecision(
+                overwriteDecisionPath,
+                debugRun.runDir,
+                QStringLiteral("stage_6_boxstream"),
+                existingFiles,
+                true);
+            for (const QString& file : existingFiles) {
+                QFile::remove(file);
+            }
+        }
+        break;
+    }
+    {
+        QJsonObject request;
+        request[QStringLiteral("run_id")] = debugRun.runId;
+        request[QStringLiteral("speaker_id")] = speakerId;
+        request[QStringLiteral("requested_mode")] = requestedMode;
+        request[QStringLiteral("force_model_tracking")] = forceModelTracking;
+        request[QStringLiteral("has_ref1")] = hasRef1;
+        request[QStringLiteral("has_ref2")] = hasRef2;
+        request[QStringLiteral("track_start_frame")] = static_cast<qint64>(trackStartFrame);
+        request[QStringLiteral("track_end_frame")] = static_cast<qint64>(trackEndFrame);
+        request[QStringLiteral("step_frames")] = stepFrames;
+        request[QStringLiteral("use_speech_windows")] = useSpeechWindows;
+        request[QStringLiteral("windows_count")] = speakerWindows.size();
+        request[QStringLiteral("source_clip_id")] = selectedClip->id;
+        request[QStringLiteral("source_file")] = selectedClip->filePath;
+        QFile f(requestPath);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(QJsonDocument(request).toJson(QJsonDocument::Indented));
+            f.close();
+        }
+    }
+
     if (requestedMode.compare(QStringLiteral("AutoTrack"), Qt::CaseInsensitive) == 0 && hasRef1 && hasRef2) {
         if (selectedClip) {
             usedNativeModel = runNativeAutoTrackForSpeaker(
@@ -306,6 +408,21 @@ bool SpeakersTab::runAutoTrackForSpeaker(const QString& speakerId, bool forceMod
 
     if (!usedNativeModel && !usedDockerModel) {
         if (modelError.trimmed().startsWith(QStringLiteral("user canceled"), Qt::CaseInsensitive)) {
+            QFile log(logPath);
+            if (log.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                log.write(modelError.toUtf8());
+                log.close();
+            }
+            speaker_flow_debug::persistIndex(
+                indexPath,
+                debugRun.runId,
+                debugRun.clipToken,
+                QFileInfo(selectedClip->filePath).fileName(),
+                m_loadedTranscriptPath,
+                QStringLiteral("stage_6_boxstream"),
+                QStringLiteral("skipped"),
+                QStringLiteral("User canceled model tracking."),
+                {requestPath, logPath});
             return false;
         }
         if (hasRef1 && hasRef2) {
@@ -411,7 +528,61 @@ bool SpeakersTab::runAutoTrackForSpeaker(const QString& speakerId, bool forceMod
     m_loadedTranscriptDoc.setObject(root);
 
     editor::TranscriptEngine engine;
-    return engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+    const bool saved = engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+
+    QFile kfFile(keyframesPath);
+    if (kfFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        kfFile.write(QJsonDocument(keyframes).toJson(QJsonDocument::Indented));
+        kfFile.close();
+    }
+    QJsonObject stats;
+    stats[QStringLiteral("run_id")] = debugRun.runId;
+    stats[QStringLiteral("speaker_id")] = speakerId;
+    stats[QStringLiteral("used_native_model")] = usedNativeModel;
+    stats[QStringLiteral("used_docker_model")] = usedDockerModel;
+    stats[QStringLiteral("fallback_used")] = (!usedNativeModel && !usedDockerModel);
+    stats[QStringLiteral("keyframe_count")] = keyframes.size();
+    stats[QStringLiteral("track_start_frame")] = static_cast<qint64>(trackStartFrame);
+    stats[QStringLiteral("track_end_frame")] = static_cast<qint64>(trackEndFrame);
+    stats[QStringLiteral("step_frames")] = stepFrames;
+    stats[QStringLiteral("mode_written")] = tracking.value(QString(kTranscriptSpeakerTrackingModeKey)).toString();
+    stats[QStringLiteral("auto_state")] = tracking.value(QString(kTranscriptSpeakerTrackingAutoStateKey)).toString();
+    stats[QStringLiteral("transcript_saved")] = saved;
+    if (!modelError.isEmpty()) {
+        stats[QStringLiteral("model_error")] = modelError;
+    }
+    QFile statsFile(statsPath);
+    if (statsFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        statsFile.write(QJsonDocument(stats).toJson(QJsonDocument::Indented));
+        statsFile.close();
+    }
+    QFile log(logPath);
+    if (log.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QStringList logLines;
+        logLines << QStringLiteral("run_id=%1").arg(debugRun.runId)
+                 << QStringLiteral("speaker_id=%1").arg(speakerId)
+                 << QStringLiteral("used_native_model=%1").arg(usedNativeModel ? QStringLiteral("true") : QStringLiteral("false"))
+                 << QStringLiteral("used_docker_model=%1").arg(usedDockerModel ? QStringLiteral("true") : QStringLiteral("false"))
+                 << QStringLiteral("fallback_used=%1").arg((!usedNativeModel && !usedDockerModel) ? QStringLiteral("true") : QStringLiteral("false"))
+                 << QStringLiteral("keyframe_count=%1").arg(keyframes.size())
+                 << QStringLiteral("transcript_saved=%1").arg(saved ? QStringLiteral("true") : QStringLiteral("false"));
+        if (!modelError.isEmpty()) {
+            logLines << QStringLiteral("model_error=%1").arg(modelError);
+        }
+        log.write(logLines.join(QLatin1Char('\n')).toUtf8());
+        log.close();
+    }
+    speaker_flow_debug::persistIndex(
+        indexPath,
+        debugRun.runId,
+        debugRun.clipToken,
+        QFileInfo(selectedClip->filePath).fileName(),
+        m_loadedTranscriptPath,
+        QStringLiteral("stage_6_boxstream"),
+        saved ? QStringLiteral("ok") : QStringLiteral("error"),
+        saved ? QStringLiteral("BoxStream completed.") : QStringLiteral("Failed to save transcript after BoxStream."),
+        {requestPath, keyframesPath, statsPath, logPath});
+    return saved;
 }
 
 void SpeakersTab::onSpeakerRunAutoTrackClicked()

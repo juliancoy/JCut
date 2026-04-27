@@ -74,6 +74,19 @@ if(EXISTS "${MOTIVE3D_INCLUDE_DIR}")
 endif()
 
 add_subdirectory(rtaudio EXCLUDE_FROM_ALL)
+set(JCUT_SUPABASE_URL "https://ivwutugdrpugjqglxabw.supabase.co" CACHE STRING
+    "Default Supabase project URL for desktop auth.")
+set(JCUT_SUPABASE_ANON_KEY
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml2d3V0dWdkcnB1Z2pxZ2x4YWJ3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNTM2NTIsImV4cCI6MjA5MjYyOTY1Mn0.P5Z2lvCK4qNtIN5TsvYRqjVfaLsetoT3b7dUklLeMms"
+    CACHE STRING "Default Supabase anon key for desktop auth.")
+if(NOT DEFINED CPPMONETIZE_DEFAULT_SUPABASE_URL)
+    set(CPPMONETIZE_DEFAULT_SUPABASE_URL "${JCUT_SUPABASE_URL}" CACHE STRING
+        "Built-in Supabase URL fallback for CPPMonetize.")
+endif()
+if(NOT DEFINED CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY)
+    set(CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY "${JCUT_SUPABASE_ANON_KEY}" CACHE STRING
+        "Built-in Supabase anon key fallback for CPPMonetize.")
+endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/CPPMonetize/CMakeLists.txt")
     add_subdirectory(external/CPPMonetize EXCLUDE_FROM_ALL)
 endif()
@@ -131,6 +144,8 @@ endforeach()
 
 set(EDITOR_CORE_SOURCES "${EDITOR_APP_SOURCES}")
 list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor\\.cpp$")
+list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor_main\\.cpp$")
+list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor_ai_integration\\.cpp$")
 
 add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
@@ -241,12 +256,17 @@ target_compile_definitions(editor_test_support
         QT_DEPRECATED_WARNINGS
 )
 
-add_executable(editor ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp)
+add_executable(editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_ai_integration.cpp
+)
 target_link_libraries(editor PRIVATE editor_core)
 if(TARGET CPPMonetize::cppmonetize)
     target_link_libraries(editor PRIVATE CPPMonetize::cppmonetize)
 endif()
 set_target_properties(editor PROPERTIES
+    OUTPUT_NAME "jcut"
     BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
 )
 

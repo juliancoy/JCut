@@ -474,7 +474,7 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         const qreal targetYPx = targetYNorm * outputHeight;
         const qreal faceSideOutputPx = qMax<qreal>(1.0, boxSize * fittedMinSide);
         const qreal targetSideOutputPx = qMax<qreal>(1.0, targetBoxNorm * outputMinSide);
-        const qreal scale = qMax<qreal>(0.35, targetSideOutputPx / faceSideOutputPx);
+        const qreal scale = sanitizeScaleValue(targetSideOutputPx / faceSideOutputPx);
         const qreal localX = (qBound<qreal>(0.0, location.x(), 1.0) - 0.5) * fittedWidth;
         const qreal localY = (qBound<qreal>(0.0, location.y(), 1.0) - 0.5) * fittedHeight;
         state.frame = localFrame;
@@ -576,9 +576,24 @@ TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::Transf
     return composed;
 }
 
+TimelineClip::TransformKeyframe clipBaseTransformOnly(const TimelineClip& clip) {
+    TimelineClip::TransformKeyframe base;
+    base.translationX = clip.baseTranslationX;
+    base.translationY = clip.baseTranslationY;
+    base.rotation = clip.baseRotation;
+    base.scaleX = sanitizeScaleValue(clip.baseScaleX);
+    base.scaleY = sanitizeScaleValue(clip.baseScaleY);
+    return base;
+}
+
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,
                                                                    int64_t timelineFrame,
                                                                    const QSize& outputSize) {
+    if (clip.speakerFramingEnabled) {
+        return composeClipTransforms(
+            clipBaseTransformOnly(clip),
+            evaluateClipSpeakerFramingAtFrame(clip, timelineFrame, outputSize));
+    }
     return composeClipTransforms(
         evaluateClipTransformAtFrame(clip, timelineFrame),
         evaluateClipSpeakerFramingAtFrame(clip, timelineFrame, outputSize));
@@ -587,6 +602,11 @@ TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const Timelin
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtPosition(const TimelineClip& clip,
                                                                       qreal timelineFramePosition,
                                                                       const QSize& outputSize) {
+    if (clip.speakerFramingEnabled) {
+        return composeClipTransforms(
+            clipBaseTransformOnly(clip),
+            evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, outputSize));
+    }
     return composeClipTransforms(
         evaluateClipTransformAtPosition(clip, timelineFramePosition),
         evaluateClipSpeakerFramingAtPosition(clip, timelineFramePosition, outputSize));

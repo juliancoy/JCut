@@ -167,141 +167,6 @@ InspectorPane::InspectorPane(QWidget *parent)
     layout->addWidget(buildPane());
 }
 
-void InspectorPane::setHeaderWidget(QWidget *widget)
-{
-    if (!m_headerLayout || !widget) {
-        return;
-    }
-
-    widget->setParent(this);
-    m_headerLayout->addWidget(widget, 0, Qt::AlignRight | Qt::AlignVCenter);
-}
-
-QWidget *InspectorPane::buildPane()
-{
-    auto *pane = new QFrame;
-    pane->setMinimumWidth(120);
-    pane->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
-
-    auto *layout = new QVBoxLayout(pane);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(8);
-
-    auto *headerRow = new QWidget(pane);
-    headerRow->setObjectName(QStringLiteral("inspector.header_row"));
-    headerRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    headerRow->setMinimumHeight(32);
-    m_headerLayout = new QHBoxLayout(headerRow);
-    m_headerLayout->setContentsMargins(0, 0, 0, 0);
-    m_headerLayout->setSpacing(6);
-    m_headerLayout->addStretch(1);
-    layout->addWidget(headerRow);
-
-    m_inspectorTabs = new InspectorTabWidget(pane);
-    m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
-    m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
-    m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
-    m_inspectorTabs->addTab(buildCorrectionsTab(), QStringLiteral("Corrections"));
-    m_inspectorTabs->addTab(buildTitlesTab(), QStringLiteral("Titles"));
-    m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
-    m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
-    m_inspectorTabs->addTab(buildTranscriptTab(), QStringLiteral("Transcript"));
-    m_inspectorTabs->addTab(buildSpeakersTab(), QStringLiteral("Speakers"));
-    m_inspectorTabs->addTab(buildClipTab(), QStringLiteral("Properties"));
-    m_inspectorTabs->addTab(buildClipsTab(), QStringLiteral("Clips"));
-    m_inspectorTabs->addTab(buildHistoryTab(), QStringLiteral("History"));
-    m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
-    m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
-    m_inspectorTabs->addTab(buildAudioTab(), QStringLiteral("Audio"));
-    m_inspectorTabs->addTab(buildAiTab(), QStringLiteral("AI Assist"));
-    m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
-    m_inspectorTabs->addTab(buildProfileTab(), QStringLiteral("System"));
-    m_inspectorTabs->addTab(buildProjectsTab(), QStringLiteral("Projects"));
-    m_inspectorTabs->addTab(buildPreferencesTab(), QStringLiteral("Preferences"));
-    configureInspectorTabs();
-
-    layout->addWidget(m_inspectorTabs, 1);
-    return pane;
-}
-
-void InspectorPane::configureInspectorTabs()
-{
-    if (!m_inspectorTabs) {
-        return;
-    }
-
-    auto *bar = m_inspectorTabs->tabBar();
-    m_inspectorTabs->setTabPosition(QTabWidget::East);
-    m_inspectorTabs->setDocumentMode(true);
-    bar->setExpanding(false);
-    bar->setUsesScrollButtons(true);
-    bar->setIconSize(QSize(16, 16));
-    bar->setDrawBase(false);
-
-    struct TabSpec {
-        int index;
-        const char* label;
-        QStyle::StandardPixmap icon;
-        const char* tooltip;
-    };
-
-    const TabSpec specs[] = {
-        {0, "Grade", QStyle::SP_DriveDVDIcon, "Grade: clip color and grading keyframes"},
-        {1, "Opacity", QStyle::SP_BrowserStop, "Opacity: clip opacity keyframes and fades"},
-        {2, "Effects", QStyle::SP_DialogResetButton, "Effects: mask feathering and visual effects"},
-        {3, "Corrections", QStyle::SP_DriveFDIcon, "Corrections: draw polygon erase masks for visual artifacts"},
-        {4, "Titles", QStyle::SP_FileDialogListView, "Titles: text overlay keyframes"},
-        {5, "Sync", QStyle::SP_BrowserReload, "Sync: render sync markers for the selected clip"},
-        {6, "Keyframes", QStyle::SP_FileDialogDetailedView, "Keyframes: transform keyframes for the selected clip"},
-        {7, "Transcript", QStyle::SP_FileDialogContentsView, "Transcript: transcript editing and speech filter controls"},
-        {8, "Speakers", QStyle::SP_MediaVolume, "Speakers: speaker identity and on-screen location for the active cut"},
-        {9, "Properties", QStyle::SP_FileDialogInfoView, "Properties: clip and track properties"},
-        {10, "Clips", QStyle::SP_FileDialogListView, "Clips: timeline clip list and clip actions"},
-        {11, "History", QStyle::SP_BrowserReload, "History: saved timeline snapshots"},
-        {12, "Tracks", QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
-        {13, "Preview", QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {14, "Audio", QStyle::SP_MediaVolume, "Audio: preview audio dynamics processing controls"},
-        {15, "AI Assist", QStyle::SP_FileDialogDetailedView, "AI Assist: model, auth, and AI workflow actions"},
-        {16, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {17, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {18, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
-        {19, "Preferences", QStyle::SP_FileDialogContentsView, "Preferences: app-level behavior and feature flags"},
-    };
-
-    for (const TabSpec& spec : specs) {
-        m_inspectorTabs->setTabIcon(spec.index, style()->standardIcon(spec.icon));
-        m_inspectorTabs->setTabText(spec.index, QString::fromUtf8(spec.label));
-        bar->setTabToolTip(spec.index, QString::fromUtf8(spec.tooltip));
-    }
-    bar->setElideMode(Qt::ElideNone);
-
-    bar->setStyleSheet(QStringLiteral(
-        "QTabBar::tab {"
-        " min-width: 120px;"
-        " min-height: 24px;"
-        " margin: 0;"
-        " padding: 0 10px;"
-        " text-align: left;"
-        " color: #c9d1d9;"
-        " }"
-        "QTabBar::tab:selected {"
-        " background: #1f2a36;"
-        " border: 1px solid #44556a;"
-        " border-radius: 6px;"
-        " color: #f0f6fc;"
-        " }"
-        "QTabBar::tab:hover {"
-        " background: #233142;"
-        " border: 1px solid #4a5c71;"
-        " color: #f0f6fc;"
-        " }"
-        "QTabBar::tab:!selected {"
-        " background: #121922;"
-        " border: 1px solid #2e3b4a;"
-        " border-radius: 6px;"
-        " }"));
-}
-
 QWidget *InspectorPane::buildGradingTab()
 {
     auto *page = new QWidget;
@@ -1379,15 +1244,17 @@ QWidget *InspectorPane::buildSpeakersTab()
                        "}"));
     speakerIdentifyButton->setMinimumHeight(30);
     speakerIdentifyButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
-    m_speakerAiFindNamesButton = new QPushButton(QStringLiteral("Find Names (AI)"), page);
+    m_speakerAiFindNamesButton = new QPushButton(QStringLiteral("Mine Transcript (AI)"), page);
+    m_speakerPrecropFacesButton = new QPushButton(QStringLiteral("Pre-crop Faces"), page);
     m_speakerAiFindOrganizationsButton = new QPushButton(QStringLiteral("Find Organizations"), page);
     m_speakerAiCleanAssignmentsButton = new QPushButton(QStringLiteral("Clean Assignments"), page);
     for (QPushButton* button :
-         {m_speakerAiFindNamesButton, m_speakerAiFindOrganizationsButton, m_speakerAiCleanAssignmentsButton}) {
+         {m_speakerPrecropFacesButton, m_speakerAiFindNamesButton, m_speakerAiFindOrganizationsButton, m_speakerAiCleanAssignmentsButton}) {
         button->setMinimumHeight(30);
         button->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     }
     speakerAiRow->addWidget(speakerIdentifyButton);
+    speakerAiRow->addWidget(m_speakerPrecropFacesButton);
     speakerAiRow->addWidget(m_speakerAiFindNamesButton);
     speakerAiRow->addWidget(m_speakerAiFindOrganizationsButton);
     speakerAiRow->addWidget(m_speakerAiCleanAssignmentsButton);
@@ -1516,94 +1383,51 @@ QWidget *InspectorPane::buildSpeakersTab()
     return page;
 }
 
-QWidget *InspectorPane::buildClipsTab()
+
+QWidget *InspectorPane::buildPane()
 {
-    auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
-    layout->addWidget(createTabHeading(QStringLiteral("Clips"), page));
+    auto *pane = new QFrame;
+    pane->setMinimumWidth(120);
+    pane->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
-    m_clipsTable = new QTableWidget(page);
-    m_clipsTable->setColumnCount(6);
-    m_clipsTable->setHorizontalHeaderLabels({
-        QStringLiteral("Name"),
-        QStringLiteral("Track"),
-        QStringLiteral("Type"),
-        QStringLiteral("Start"),
-        QStringLiteral("Duration"),
-        QStringLiteral("File"),
-    });
-    m_clipsTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
-    m_clipsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_clipsTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_clipsTable->setFocusPolicy(Qt::ClickFocus);
-    m_clipsTable->setAlternatingRowColors(true);
-    m_clipsTable->verticalHeader()->setVisible(false);
-    m_clipsTable->horizontalHeader()->setStretchLastSection(true);
-    m_clipsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_clipsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_clipsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    m_clipsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_clipsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_clipsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    auto *layout = new QVBoxLayout(pane);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(8);
 
-    layout->addWidget(m_clipsTable, 1);
-    return page;
+    auto *headerRow = new QWidget(pane);
+    headerRow->setObjectName(QStringLiteral("inspector.header_row"));
+    headerRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    headerRow->setMinimumHeight(32);
+    m_headerLayout = new QHBoxLayout(headerRow);
+    m_headerLayout->setContentsMargins(0, 0, 0, 0);
+    m_headerLayout->setSpacing(6);
+    m_headerLayout->addStretch(1);
+    layout->addWidget(headerRow);
+
+    m_inspectorTabs = new InspectorTabWidget(pane);
+    m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
+    m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
+    m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));
+    m_inspectorTabs->addTab(buildCorrectionsTab(), QStringLiteral("Corrections"));
+    m_inspectorTabs->addTab(buildTitlesTab(), QStringLiteral("Titles"));
+    m_inspectorTabs->addTab(buildSyncTab(), QStringLiteral("Sync"));
+    m_inspectorTabs->addTab(buildKeyframesTab(), QStringLiteral("Keyframes"));
+    m_inspectorTabs->addTab(buildTranscriptTab(), QStringLiteral("Transcript"));
+    m_inspectorTabs->addTab(buildSpeakersTab(), QStringLiteral("Speakers"));
+    m_inspectorTabs->addTab(buildClipTab(), QStringLiteral("Properties"));
+    m_inspectorTabs->addTab(buildClipsTab(), QStringLiteral("Clips"));
+    m_inspectorTabs->addTab(buildHistoryTab(), QStringLiteral("History"));
+    m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
+    m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
+    m_inspectorTabs->addTab(buildAudioTab(), QStringLiteral("Audio"));
+    m_inspectorTabs->addTab(buildAiTab(), QStringLiteral("AI Assist"));
+    m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
+    m_inspectorTabs->addTab(buildProfileTab(), QStringLiteral("System"));
+    m_inspectorTabs->addTab(buildProjectsTab(), QStringLiteral("Projects"));
+    m_inspectorTabs->addTab(buildPreferencesTab(), QStringLiteral("Preferences"));
+    configureInspectorTabs();
+
+    layout->addWidget(m_inspectorTabs, 1);
+    return pane;
 }
 
-QWidget *InspectorPane::buildHistoryTab()
-{
-    auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
-    layout->addWidget(createTabHeading(QStringLiteral("History"), page));
-
-    m_historyTable = new QTableWidget(page);
-    m_historyTable->setColumnCount(2);
-    m_historyTable->setHorizontalHeaderLabels({
-        QStringLiteral("Index"),
-        QStringLiteral("Summary"),
-    });
-    m_historyTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_historyTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_historyTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_historyTable->setFocusPolicy(Qt::ClickFocus);
-    m_historyTable->setAlternatingRowColors(true);
-    m_historyTable->verticalHeader()->setVisible(false);
-    m_historyTable->horizontalHeader()->setStretchLastSection(true);
-
-    layout->addWidget(m_historyTable, 1);
-    return page;
-}
-
-QWidget *InspectorPane::buildTracksTab()
-{
-    auto *page = new QWidget;
-    auto *layout = createTabLayout(page);
-    layout->addWidget(createTabHeading(QStringLiteral("Tracks"), page));
-
-    m_tracksTable = new QTableWidget(page);
-    m_tracksTable->setColumnCount(3);
-    m_tracksTable->setHorizontalHeaderLabels({
-        QStringLiteral("Track"),
-        QStringLiteral("Visual"),
-        QStringLiteral("Audio"),
-    });
-    m_tracksTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    m_tracksTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_tracksTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_tracksTable->setFocusPolicy(Qt::ClickFocus);
-    m_tracksTable->setAlternatingRowColors(true);
-    m_tracksTable->verticalHeader()->setVisible(false);
-    m_tracksTable->horizontalHeader()->setStretchLastSection(true);
-    m_tracksTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
-    m_tracksTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    m_tracksTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-
-    layout->addWidget(m_tracksTable, 1);
-    return page;
-}
-
-
-void InspectorPane::refresh()
-{
-    emit refreshRequested();
-}

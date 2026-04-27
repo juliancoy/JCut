@@ -345,15 +345,12 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
         return;
     }
 
-    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
-    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(outputSize.width()));
-    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(outputSize.height()));
-    const qreal scaleX = static_cast<qreal>(compositeRect.width()) / outputWidth;
-    const qreal scaleY = static_cast<qreal>(compositeRect.height()) / outputHeight;
-    const qreal uniformScale = qMin(scaleX, scaleY);
-
     const qreal centerX = compositeRect.left() + (targetXNorm * compositeRect.width());
     const qreal centerY = compositeRect.top() + (targetYNorm * compositeRect.height());
+    const qreal targetSideScreenPx = qBound<qreal>(
+        2.0,
+        targetBoxNorm * qMax<qreal>(1.0, qMin<qreal>(compositeRect.width(), compositeRect.height())),
+        4096.0);
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
@@ -362,8 +359,6 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
     painter->setPen(QPen(accentColor, 2.0, Qt::DashLine));
     painter->setBrush(QColor(255, 226, 74, 28));
 
-    const qreal targetSideOutputPx = targetBoxNorm * qMin(outputWidth, outputHeight);
-    const qreal targetSideScreenPx = targetSideOutputPx * uniformScale;
     const qreal halfSide = targetSideScreenPx * 0.5;
     const QRectF box(centerX - halfSide, centerY - halfSide, targetSideScreenPx, targetSideScreenPx);
     painter->drawRect(box);

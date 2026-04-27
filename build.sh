@@ -312,5 +312,5 @@ export LD_PRELOAD="/lib/x86_64-linux-gnu/libpthread.so.0"
 if [[ "${RUN_EDITOR}" == "yes" ]]; then
     # Filter out --run from args passed to editor
     shift  # Remove --run from "$@"
-    exec "${BUILD_DIR}/editor" "$@"
+    exec "${BUILD_DIR}/jcut" "$@"
 fi
