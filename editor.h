@@ -561,9 +561,6 @@ private:
     int m_aiRateLimitPerMinute = 12;
     int m_aiRequestTimeoutMs = 15000;
     int m_aiRequestRetries = 1;
-    int m_aiEntitlementGraceWindowMinutes = 240;
-    qint64 m_aiEntitlementLastSuccessEpochMs = 0;
-    QJsonObject m_aiCachedEntitlement;
     QStringList m_aiFallbackModels;
     QVector<qint64> m_aiRecentRequestEpochMs;
 

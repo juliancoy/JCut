@@ -491,12 +491,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int aiRateLimitPerMinute = qMax(1, root.value(QStringLiteral("aiRateLimitPerMinute")).toInt(12));
     const int aiRequestTimeoutMs = qMax(1000, root.value(QStringLiteral("aiRequestTimeoutMs")).toInt(15000));
     const int aiRequestRetries = qBound(0, root.value(QStringLiteral("aiRequestRetries")).toInt(1), 3);
-    const int aiEntitlementGraceWindowMinutes = qMax(
-        1, root.value(QStringLiteral("aiEntitlementGraceWindowMinutes")).toInt(240));
-    const qint64 aiEntitlementLastSuccessEpochMs =
-        root.value(QStringLiteral("aiEntitlementLastSuccessEpochMs")).toVariant().toLongLong();
-    const QJsonObject aiCachedEntitlement =
-        root.value(QStringLiteral("aiCachedEntitlement")).toObject();
     PreviewWindow::AudioDynamicsSettings loadedAudioDynamics;
     loadedAudioDynamics.amplifyEnabled = root.value(QStringLiteral("audioAmplifyEnabled")).toBool(false);
     loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
@@ -766,9 +760,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_aiRateLimitPerMinute = aiRateLimitPerMinute;
     m_aiRequestTimeoutMs = aiRequestTimeoutMs;
     m_aiRequestRetries = aiRequestRetries;
-    m_aiEntitlementGraceWindowMinutes = aiEntitlementGraceWindowMinutes;
-    m_aiEntitlementLastSuccessEpochMs = aiEntitlementLastSuccessEpochMs;
-    m_aiCachedEntitlement = aiCachedEntitlement;
     if (m_renderUseProxiesCheckBox) {
         QSignalBlocker block(m_renderUseProxiesCheckBox);
         m_renderUseProxiesCheckBox->setChecked(renderUseProxies);
@@ -1784,12 +1775,6 @@ void EditorWindow::refreshAiIntegrationState()
     int retries = qBound(0, m_aiRequestRetries, 3);
     const QString envBaseUrl = qEnvironmentVariable("JCUT_AI_PROXY_BASE_URL").trimmed();
     const QString envToken = qEnvironmentVariable("JCUT_AI_AUTH_TOKEN").trimmed();
-    bool envGraceOk = false;
-    const int envGraceWindowMinutes =
-        qEnvironmentVariableIntValue("JCUT_AI_ENTITLEMENT_GRACE_MINUTES", &envGraceOk);
-    if (envGraceOk) {
-        m_aiEntitlementGraceWindowMinutes = qMax(1, envGraceWindowMinutes);
-    }
     if (m_aiProxyBaseUrl.trimmed().isEmpty()) {
         m_aiProxyBaseUrl = envBaseUrl;
     }
@@ -1815,7 +1800,7 @@ void EditorWindow::refreshAiIntegrationState()
             normalizedBase.chop(1);
         }
         serviceUrl = normalizedBase + QStringLiteral("/api/ai/task");
-        auto applyEntitlements = [&](const cppmonetize::AiEntitlements& ent, bool offlineGrace) {
+        auto applyEntitlements = [&](const cppmonetize::AiEntitlements& ent) {
             const bool entitled = ent.entitled;
             m_aiContractVersion = ent.contractVersion.trimmed();
             const bool contractOk = m_aiContractVersion.startsWith(QStringLiteral("1."));
@@ -1840,11 +1825,6 @@ void EditorWindow::refreshAiIntegrationState()
                 status = QStringLiteral("AI disabled: unsupported contract '%1'").arg(m_aiContractVersion);
             } else if (!entitled) {
                 status = QStringLiteral("AI disabled: user not entitled");
-            } else if (offlineGrace) {
-                status = QStringLiteral("AI enabled (offline grace) for %1 (%2 req/min, budget %3)")
-                             .arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
-                             .arg(QString::number(rateLimit))
-                             .arg(QString::number(budgetCap));
             } else {
                 status = QStringLiteral("AI enabled for %1 (%2 req/min, budget %3)")
                              .arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
@@ -1857,44 +1837,11 @@ void EditorWindow::refreshAiIntegrationState()
             createJCutMonetizeClient(normalizedBase, timeoutMs);
         const auto entResult = client.getAiEntitlements(m_aiAuthToken);
         if (!entResult.hasValue()) {
-            const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-            const qint64 graceWindowMs =
-                static_cast<qint64>(m_aiEntitlementGraceWindowMinutes) * 60 * 1000;
-            cppmonetize::ApiError cachedParseError;
-            const auto cachedEnt = cppmonetize::parseAiEntitlements(m_aiCachedEntitlement, &cachedParseError);
-            const bool withinGraceWindow =
-                m_aiEntitlementLastSuccessEpochMs > 0 &&
-                nowMs >= m_aiEntitlementLastSuccessEpochMs &&
-                (nowMs - m_aiEntitlementLastSuccessEpochMs) <= graceWindowMs;
-            if (cachedEnt.has_value() && withinGraceWindow) {
-                applyEntitlements(*cachedEnt, true);
-            } else {
-                status = QStringLiteral("AI disabled: entitlement check failed (%1)")
-                             .arg(entResult.error().message);
-            }
+            status = QStringLiteral("AI disabled: entitlement check failed (%1)")
+                         .arg(entResult.error().message);
         } else {
             const cppmonetize::AiEntitlements ent = entResult.value();
-            applyEntitlements(ent, false);
-            QJsonArray modelsJson;
-            for (const QString& model : ent.models) {
-                modelsJson.push_back(model);
-            }
-            QJsonArray fallbackJson;
-            for (const QString& model : ent.fallbackOrder) {
-                fallbackJson.push_back(model);
-            }
-            m_aiCachedEntitlement = QJsonObject{
-                {QStringLiteral("entitled"), ent.entitled},
-                {QStringLiteral("contract_version"), ent.contractVersion},
-                {QStringLiteral("user"), QJsonObject{{QStringLiteral("id"), ent.userId}}},
-                {QStringLiteral("models"), modelsJson},
-                {QStringLiteral("fallback_order"), fallbackJson},
-                {QStringLiteral("limits"),
-                 QJsonObject{{QStringLiteral("requests_per_minute"), ent.requestsPerMinute},
-                             {QStringLiteral("project_budget"), ent.projectBudget},
-                             {QStringLiteral("timeout_ms"), ent.timeoutMs},
-                             {QStringLiteral("retries"), ent.retries}}}};
-            m_aiEntitlementLastSuccessEpochMs = QDateTime::currentMSecsSinceEpoch();
+            applyEntitlements(ent);
         }
     }
     m_aiRateLimitPerMinute = rateLimit;

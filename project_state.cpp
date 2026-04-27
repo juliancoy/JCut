@@ -602,10 +602,6 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("aiRateLimitPerMinute")] = m_aiRateLimitPerMinute;
     root[QStringLiteral("aiRequestTimeoutMs")] = m_aiRequestTimeoutMs;
     root[QStringLiteral("aiRequestRetries")] = m_aiRequestRetries;
-    root[QStringLiteral("aiEntitlementGraceWindowMinutes")] = m_aiEntitlementGraceWindowMinutes;
-    root[QStringLiteral("aiEntitlementLastSuccessEpochMs")] =
-        static_cast<qint64>(m_aiEntitlementLastSuccessEpochMs);
-    root[QStringLiteral("aiCachedEntitlement")] = m_aiCachedEntitlement;
     root[QStringLiteral("audioAmplifyEnabled")] = m_previewAudioDynamics.amplifyEnabled;
     root[QStringLiteral("audioAmplifyDb")] = m_previewAudioDynamics.amplifyDb;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
