@@ -64,6 +64,14 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
         applyPreviewViewMode(mode);
     });
     connect(pane, &EditorPane::audioToolsClicked, this, [this]() {
+        if (m_inspectorTabs) {
+            for (int i = 0; i < m_inspectorTabs->count(); ++i) {
+                if (m_inspectorTabs->tabText(i).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
+                    m_inspectorTabs->setCurrentIndex(i);
+                    return;
+                }
+            }
+        }
         openAudioToolsDialog();
     });
     connect(pane, &EditorPane::audioMuteClicked, this, [this]() {
@@ -666,11 +674,10 @@ void EditorWindow::updateTransportLabels()
     if (m_preview && m_timeline) {
         m_preview->setSelectedClipId(m_timeline->selectedClipId());
     }
-    m_previewInfo->setText(QStringLiteral("Professional pipeline with libavcodec\nBackend: %1\nSeek: %2\nAudio: %3\nGrading: %4")
-                               .arg(m_preview ? m_preview->backendName() : QStringLiteral("unknown"))
-                               .arg(frameToTimecode(m_timeline ? m_timeline->currentFrame() : 0))
-                               .arg(activeAudio.isEmpty() ? QStringLiteral("idle") : activeAudio)
-                               .arg(m_preview && m_preview->bypassGrading() ? QStringLiteral("bypassed") : QStringLiteral("on")));
+    if (m_previewInfo) {
+        m_previewInfo->clear();
+        m_previewInfo->setVisible(false);
+    }
     m_playButton->setText(QString());
     m_playButton->setToolTip(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
     m_playButton->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));

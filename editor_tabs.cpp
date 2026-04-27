@@ -5,6 +5,7 @@
 
 #include <QColorDialog>
 #include <QMessageBox>
+#include <QSignalBlocker>
 
 using namespace editor;
 
@@ -110,6 +111,7 @@ void EditorWindow::createTranscriptTab()
             m_transcriptPrependMsSpin, m_transcriptPostpendMsSpin,
             m_speechFilterEnabledCheckBox, m_speechFilterFadeSamplesSpin,
             m_inspectorPane->transcriptUnifiedEditModeCheckBox(),
+            m_inspectorPane->transcriptSearchFilterLineEdit(),
             m_inspectorPane->transcriptSpeakerFilterCombo(),
             m_inspectorPane->transcriptScriptVersionCombo(),
             m_inspectorPane->transcriptNewVersionButton(),
@@ -656,11 +658,13 @@ void EditorWindow::setupTabs()
 
     // Ensure correction draw mode is disabled when Corrections tab is not selected
     if (m_inspectorPane && m_inspectorPane->tabs()) {
-        connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this, [this](int index) {
+        connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,
+                [this](int index) {
             if (m_preview) {
                 const QString tabName = m_inspectorPane->tabs()->tabText(index);
                 const bool isCorrectionsTab = tabName.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0;
                 const bool isTitlesTab = tabName.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0;
+                const bool isAudioTab = tabName.compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0;
                 if (!isCorrectionsTab && m_preview->correctionDrawMode()) {
                     m_preview->setCorrectionDrawMode(false);
                     if (m_correctionsTab) {
@@ -668,6 +672,22 @@ void EditorWindow::setupTabs()
                     }
                 }
                 m_preview->setTitleOverlayInteractionOnly(isTitlesTab);
+
+                if (isAudioTab) {
+                    if (m_previewViewMode.compare(QStringLiteral("audio"), Qt::CaseInsensitive) != 0) {
+                        applyPreviewViewMode(QStringLiteral("audio"));
+                    }
+                } else if (m_previewViewMode.compare(QStringLiteral("video"), Qt::CaseInsensitive) != 0) {
+                    applyPreviewViewMode(QStringLiteral("video"));
+                }
+                if (m_previewModeCombo) {
+                    const QSignalBlocker block(m_previewModeCombo);
+                    const int modeIndex =
+                        m_previewModeCombo->findData(m_previewViewMode, Qt::MatchFixedString);
+                    if (modeIndex >= 0) {
+                        m_previewModeCombo->setCurrentIndex(modeIndex);
+                    }
+                }
             }
         });
     }

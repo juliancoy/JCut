@@ -4,8 +4,51 @@
 
 #include <QSet>
 #include <limits>
+#include <algorithm>
 
 using namespace editor;
+
+QJsonObject EditorWindow::startupProfileSnapshot() const
+{
+    const qint64 elapsedMs =
+        m_startupProfileCompleted && m_startupProfileCompletedMs >= 0
+            ? m_startupProfileCompletedMs
+            : (m_startupProfileTimer.isValid() ? m_startupProfileTimer.elapsed() : 0);
+
+    QVector<QPair<qint64, QString>> phaseCosts;
+    phaseCosts.reserve(m_startupProfileEvents.size());
+    for (const QJsonValue& markValue : m_startupProfileEvents) {
+        const QJsonObject mark = markValue.toObject();
+        const qint64 deltaMs = mark.value(QStringLiteral("delta_ms")).toInteger(-1);
+        const QString phase = mark.value(QStringLiteral("phase")).toString();
+        if (deltaMs >= 0 && !phase.isEmpty()) {
+            phaseCosts.push_back(qMakePair(deltaMs, phase));
+        }
+    }
+    std::sort(phaseCosts.begin(), phaseCosts.end(),
+              [](const QPair<qint64, QString>& a, const QPair<qint64, QString>& b) {
+                  if (a.first != b.first) {
+                      return a.first > b.first;
+                  }
+                  return a.second < b.second;
+              });
+    QJsonArray topPhases;
+    const int topCount = qMin(8, phaseCosts.size());
+    for (int i = 0; i < topCount; ++i) {
+        topPhases.push_back(QJsonObject{
+            {QStringLiteral("phase"), phaseCosts.at(i).second},
+            {QStringLiteral("delta_ms"), phaseCosts.at(i).first}
+        });
+    }
+
+    return QJsonObject{
+        {QStringLiteral("completed"), m_startupProfileCompleted},
+        {QStringLiteral("total_ms"), elapsedMs},
+        {QStringLiteral("mark_count"), m_startupProfileEvents.size()},
+        {QStringLiteral("marks"), m_startupProfileEvents},
+        {QStringLiteral("top_phases"), topPhases}
+    };
+}
 
 QJsonObject EditorWindow::profilingSnapshot() const
 {
@@ -37,6 +80,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
         snapshot[QStringLiteral("audio")] = m_audioEngine->profilingSnapshot();
     }
 
+    snapshot[QStringLiteral("startup")] = startupProfileSnapshot();
     snapshot[QStringLiteral("export")] = QJsonObject{
         {QStringLiteral("active"), m_renderInProgress},
         {QStringLiteral("live"), m_liveRenderProfile},

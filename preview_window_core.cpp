@@ -7,11 +7,13 @@
 #include "playback_frame_pipeline.h"
 #include "memory_budget.h"
 #include "media_pipeline_shared.h"
+#include "waveform_service.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QOpenGLWidget>
+#include <QPointer>
 #include <QThread>
 #include <QTimer>
 
@@ -80,6 +82,19 @@ PreviewWindow::PreviewWindow(QWidget* parent)
         }
         m_pendingFrameRequest = false;
         requestFramesForCurrentPosition();
+    });
+
+    QPointer<PreviewWindow> self(this);
+    editor::WaveformService::instance().setReadyCallback([self]() {
+        if (!self) {
+            return;
+        }
+        QMetaObject::invokeMethod(self, [self]() {
+            if (!self || self->viewMode() != PreviewWindow::ViewMode::Audio) {
+                return;
+            }
+            self->scheduleRepaint();
+        }, Qt::QueuedConnection);
     });
 }
 
@@ -181,7 +196,6 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
                   QStringLiteral("clips=%1 cache=%2").arg(clips.size()).arg(m_cache != nullptr));
     m_clips = clips;
     m_transcriptSectionsCache.clear();
-    m_audioWaveformCache.clear();
     QSet<QString> visualClipIds;
     for (const auto& clip : clips) {
         if (clipVisualPlaybackEnabled(clip, m_tracks)) visualClipIds.insert(clip.id);

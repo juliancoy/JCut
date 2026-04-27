@@ -78,21 +78,6 @@ QWidget *InspectorPane::buildOutputTab()
     form->addRow(QStringLiteral("Export End Frame"), m_exportEndSpin);
     form->addRow(QStringLiteral("Output Format"), m_outputFormatCombo);
 
-    m_autosaveIntervalMinutesSpin = new QSpinBox(page);
-    m_autosaveIntervalMinutesSpin->setRange(1, 120);
-    m_autosaveIntervalMinutesSpin->setValue(5);
-    m_autosaveIntervalMinutesSpin->setSuffix(QStringLiteral(" min"));
-    m_autosaveIntervalMinutesSpin->setToolTip(
-        QStringLiteral("How often editor state backups are written."));
-    form->addRow(QStringLiteral("Autosave Interval"), m_autosaveIntervalMinutesSpin);
-
-    m_autosaveMaxBackupsSpin = new QSpinBox(page);
-    m_autosaveMaxBackupsSpin->setRange(1, 200);
-    m_autosaveMaxBackupsSpin->setValue(20);
-    m_autosaveMaxBackupsSpin->setToolTip(
-        QStringLiteral("How many autosave backup files to keep per project."));
-    form->addRow(QStringLiteral("Autosave Backups"), m_autosaveMaxBackupsSpin);
-
     m_backgroundColorButton = new QPushButton(page);
     m_backgroundColorButton->setText(QStringLiteral("Black"));
     m_backgroundColorButton->setToolTip(QStringLiteral("Background color for the rendered output"));
@@ -101,104 +86,14 @@ QWidget *InspectorPane::buildOutputTab()
                         "border: 1px solid #2e3b4a; border-radius: 4px; padding: 4px 8px; }"));
     form->addRow(QStringLiteral("Background"), m_backgroundColorButton);
 
-    m_outputPlaybackCacheFallbackCheckBox =
-        new QCheckBox(QStringLiteral("Allow Cached-Frame Fallback During Playback"), page);
-    m_outputPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
-    m_outputPlaybackCacheFallbackCheckBox->setToolTip(
-        QStringLiteral("Reuse timeline-cache frames when decode misses during playback."));
-
-    m_outputLeadPrefetchEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Lead Prefetch"), page);
-    m_outputLeadPrefetchEnabledCheckBox->setChecked(editor::debugLeadPrefetchEnabled());
-    m_outputLeadPrefetchEnabledCheckBox->setToolTip(
-        QStringLiteral("Prefetch frames ahead of the playhead."));
-
-    auto *decodeForm = new QFormLayout();
-    m_outputLeadPrefetchCountSpin = new QSpinBox(page);
-    m_outputLeadPrefetchCountSpin->setRange(0, 8);
-    m_outputLeadPrefetchCountSpin->setValue(editor::debugLeadPrefetchCount());
-    decodeForm->addRow(QStringLiteral("Lead Prefetch Count"), m_outputLeadPrefetchCountSpin);
-
-    m_outputPlaybackWindowAheadSpin = new QSpinBox(page);
-    m_outputPlaybackWindowAheadSpin->setRange(1, 24);
-    m_outputPlaybackWindowAheadSpin->setValue(editor::debugPlaybackWindowAhead());
-    decodeForm->addRow(QStringLiteral("Playback Window Ahead"), m_outputPlaybackWindowAheadSpin);
-
-    m_outputVisibleQueueReserveSpin = new QSpinBox(page);
-    m_outputVisibleQueueReserveSpin->setRange(0, 64);
-    m_outputVisibleQueueReserveSpin->setValue(editor::debugVisibleQueueReserve());
-    decodeForm->addRow(QStringLiteral("Visible Queue Reserve"), m_outputVisibleQueueReserveSpin);
-
-    m_outputPrefetchMaxQueueDepthSpin = new QSpinBox(page);
-    m_outputPrefetchMaxQueueDepthSpin->setRange(1, 32);
-    m_outputPrefetchMaxQueueDepthSpin->setValue(editor::debugPrefetchMaxQueueDepth());
-    decodeForm->addRow(QStringLiteral("Prefetch Max Queue"), m_outputPrefetchMaxQueueDepthSpin);
-
-    m_outputPrefetchMaxInflightSpin = new QSpinBox(page);
-    m_outputPrefetchMaxInflightSpin->setRange(1, 16);
-    m_outputPrefetchMaxInflightSpin->setValue(editor::debugPrefetchMaxInflight());
-    decodeForm->addRow(QStringLiteral("Prefetch Max Inflight"), m_outputPrefetchMaxInflightSpin);
-
-    m_outputPrefetchMaxPerTickSpin = new QSpinBox(page);
-    m_outputPrefetchMaxPerTickSpin->setRange(1, 16);
-    m_outputPrefetchMaxPerTickSpin->setValue(editor::debugPrefetchMaxPerTick());
-    decodeForm->addRow(QStringLiteral("Prefetch Max Per Tick"), m_outputPrefetchMaxPerTickSpin);
-
-    m_outputPrefetchSkipVisiblePendingThresholdSpin = new QSpinBox(page);
-    m_outputPrefetchSkipVisiblePendingThresholdSpin->setRange(0, 16);
-    m_outputPrefetchSkipVisiblePendingThresholdSpin->setValue(editor::debugPrefetchSkipVisiblePendingThreshold());
-    decodeForm->addRow(QStringLiteral("Skip Visible Pending Threshold"),
-                       m_outputPrefetchSkipVisiblePendingThresholdSpin);
-
-    m_outputDecoderLaneCountSpin = new QSpinBox(page);
-    m_outputDecoderLaneCountSpin->setRange(0, 16);
-    m_outputDecoderLaneCountSpin->setSpecialValueText(QStringLiteral("Auto"));
-    m_outputDecoderLaneCountSpin->setValue(editor::debugDecoderLaneCount());
-    m_outputDecoderLaneCountSpin->setToolTip(
-        QStringLiteral("Decoder worker lane count. 0 uses automatic lane count."));
-    decodeForm->addRow(QStringLiteral("Decoder Lane Count"), m_outputDecoderLaneCountSpin);
-
-    m_outputDecodeModeCombo = new QComboBox(page);
-    m_outputDecodeModeCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Upload"), QStringLiteral("hardware"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Zero-Copy"), QStringLiteral("hardware_zero_copy"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("CPU Software"), QStringLiteral("software"));
-    const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
-    const int decodeModeIndex = m_outputDecodeModeCombo->findData(decodeMode);
-    if (decodeModeIndex >= 0) {
-        m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
-    }
-    decodeForm->addRow(QStringLiteral("Render Pipeline"), m_outputDecodeModeCombo);
-
-    m_outputDeterministicPipelineCheckBox =
-        new QCheckBox(QStringLiteral("Deterministic Pipeline"), page);
-    m_outputDeterministicPipelineCheckBox->setChecked(editor::debugDeterministicPipelineEnabled());
-    m_outputDeterministicPipelineCheckBox->setToolTip(
-        QStringLiteral("Prioritize reproducible decode/render behavior over throughput."));
-
-    m_outputResetPipelineDefaultsButton =
-        new QPushButton(QStringLiteral("Reset Pipeline Defaults"), page);
-    m_outputResetPipelineDefaultsButton->setToolTip(
-        QStringLiteral("Restore decoder/cache defaults chosen for available hardware and software."));
-
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 
     layout->addWidget(m_outputRangeSummaryLabel);
     layout->addLayout(form);
     layout->addWidget(m_renderUseProxiesCheckBox);
     layout->addWidget(m_renderCreateVideoFromSequenceCheckBox);
-    layout->addSpacing(8);
-    layout->addWidget(createTabHeading(QStringLiteral("Decoder + Cache"), page));
-    layout->addWidget(m_outputPlaybackCacheFallbackCheckBox);
-    layout->addWidget(m_outputLeadPrefetchEnabledCheckBox);
-    layout->addLayout(decodeForm);
-    layout->addWidget(m_outputDeterministicPipelineCheckBox);
-    layout->addWidget(m_outputResetPipelineDefaultsButton);
     layout->addWidget(m_renderButton);
     layout->addStretch(1);
-
-    if (m_outputLeadPrefetchCountSpin && m_outputLeadPrefetchEnabledCheckBox) {
-        m_outputLeadPrefetchCountSpin->setEnabled(m_outputLeadPrefetchEnabledCheckBox->isChecked());
-    }
 
     return page;
 }
@@ -249,42 +144,6 @@ QWidget *InspectorPane::buildPreviewTab()
     zoomHelpLabel->setWordWrap(true);
     zoomHelpLabel->setStyleSheet(QStringLiteral("color: #6b7a8f; font-size: 11px;"));
 
-    auto *bufferingSectionLabel = new QLabel(QStringLiteral("Playback Buffering"), page);
-    bufferingSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
-
-    m_previewPlaybackCacheFallbackCheckBox =
-        new QCheckBox(QStringLiteral("Allow Cached-Frame Fallback During Playback"), page);
-    m_previewPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
-    m_previewPlaybackCacheFallbackCheckBox->setToolTip(
-        QStringLiteral("When playback buffers miss, reuse timeline cache frames so still images remain visible."));
-
-    m_previewLeadPrefetchEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Lead Prefetch"), page);
-    m_previewLeadPrefetchEnabledCheckBox->setChecked(editor::debugLeadPrefetchEnabled());
-    m_previewLeadPrefetchEnabledCheckBox->setToolTip(
-        QStringLiteral("Prefetch frames ahead of playhead to reduce visible misses while playing."));
-
-    auto *bufferingForm = new QFormLayout();
-    m_previewLeadPrefetchCountSpin = new QSpinBox(page);
-    m_previewLeadPrefetchCountSpin->setRange(0, 8);
-    m_previewLeadPrefetchCountSpin->setValue(editor::debugLeadPrefetchCount());
-    m_previewLeadPrefetchCountSpin->setToolTip(
-        QStringLiteral("How many lead-prefetch requests to schedule (0-8)."));
-    bufferingForm->addRow(QStringLiteral("Lead Prefetch Count"), m_previewLeadPrefetchCountSpin);
-
-    m_previewPlaybackWindowAheadSpin = new QSpinBox(page);
-    m_previewPlaybackWindowAheadSpin->setRange(1, 24);
-    m_previewPlaybackWindowAheadSpin->setValue(editor::debugPlaybackWindowAhead());
-    m_previewPlaybackWindowAheadSpin->setToolTip(
-        QStringLiteral("Decode window ahead of playhead for playback pipeline clips (1-24)."));
-    bufferingForm->addRow(QStringLiteral("Playback Window Ahead"), m_previewPlaybackWindowAheadSpin);
-
-    m_previewVisibleQueueReserveSpin = new QSpinBox(page);
-    m_previewVisibleQueueReserveSpin->setRange(0, 64);
-    m_previewVisibleQueueReserveSpin->setValue(editor::debugVisibleQueueReserve());
-    m_previewVisibleQueueReserveSpin->setToolTip(
-        QStringLiteral("Reserved visible-request budget before aggressive prefetch throttling (0-64)."));
-    bufferingForm->addRow(QStringLiteral("Visible Queue Reserve"), m_previewVisibleQueueReserveSpin);
-
     layout->addWidget(summary);
     layout->addWidget(m_previewHideOutsideOutputCheckBox);
     layout->addWidget(m_previewShowSpeakerTrackPointsCheckBox);
@@ -292,11 +151,209 @@ QWidget *InspectorPane::buildPreviewTab()
     layout->addWidget(zoomSectionLabel);
     layout->addLayout(zoomLayout);
     layout->addWidget(zoomHelpLabel);
-    layout->addSpacing(12);
-    layout->addWidget(bufferingSectionLabel);
-    layout->addWidget(m_previewPlaybackCacheFallbackCheckBox);
-    layout->addWidget(m_previewLeadPrefetchEnabledCheckBox);
-    layout->addLayout(bufferingForm);
+    layout->addStretch(1);
+    return page;
+}
+
+QWidget *InspectorPane::buildPreferencesTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Preferences"), page));
+
+    auto *summary = new QLabel(
+        QStringLiteral("App-level defaults and feature flags. These settings affect editor behavior globally."), page);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+
+    auto *autosaveHeading = createTabHeading(QStringLiteral("Autosave"), page);
+    layout->addWidget(autosaveHeading);
+    auto *autosaveForm = new QFormLayout();
+    m_autosaveIntervalMinutesSpin = new QSpinBox(page);
+    m_autosaveIntervalMinutesSpin->setRange(1, 120);
+    m_autosaveIntervalMinutesSpin->setValue(5);
+    m_autosaveIntervalMinutesSpin->setSuffix(QStringLiteral(" min"));
+    m_autosaveIntervalMinutesSpin->setToolTip(
+        QStringLiteral("How often editor state backups are written."));
+    autosaveForm->addRow(QStringLiteral("Autosave Interval"), m_autosaveIntervalMinutesSpin);
+    m_autosaveMaxBackupsSpin = new QSpinBox(page);
+    m_autosaveMaxBackupsSpin->setRange(1, 200);
+    m_autosaveMaxBackupsSpin->setValue(20);
+    m_autosaveMaxBackupsSpin->setToolTip(
+        QStringLiteral("How many autosave backup files to keep per project."));
+    autosaveForm->addRow(QStringLiteral("Autosave Backups"), m_autosaveMaxBackupsSpin);
+    layout->addLayout(autosaveForm);
+
+    auto *timelineHeading = createTabHeading(QStringLiteral("Timeline"), page);
+    layout->addWidget(timelineHeading);
+    auto *timelineForm = new QFormLayout();
+    m_timelineAudioEnvelopeGranularitySpin = new QSpinBox(page);
+    m_timelineAudioEnvelopeGranularitySpin->setRange(64, 8192);
+    m_timelineAudioEnvelopeGranularitySpin->setValue(editor::debugTimelineAudioEnvelopeGranularity());
+    m_timelineAudioEnvelopeGranularitySpin->setSuffix(QStringLiteral(" samples"));
+    m_timelineAudioEnvelopeGranularitySpin->setToolTip(
+        QStringLiteral("Sample window size used to build audio envelope peaks for timeline waveform rendering."));
+    timelineForm->addRow(QStringLiteral("Audio Envelope Granularity"), m_timelineAudioEnvelopeGranularitySpin);
+    layout->addLayout(timelineForm);
+
+    auto *decodeHeading = createTabHeading(QStringLiteral("Playback + Decode"), page);
+    layout->addWidget(decodeHeading);
+    m_outputPlaybackCacheFallbackCheckBox =
+        new QCheckBox(QStringLiteral("Allow Cached-Frame Fallback During Playback"), page);
+    m_outputPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
+    m_outputPlaybackCacheFallbackCheckBox->setToolTip(
+        QStringLiteral("Reuse timeline-cache frames when decode misses during playback."));
+    m_outputLeadPrefetchEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Lead Prefetch"), page);
+    m_outputLeadPrefetchEnabledCheckBox->setChecked(editor::debugLeadPrefetchEnabled());
+    m_outputLeadPrefetchEnabledCheckBox->setToolTip(
+        QStringLiteral("Prefetch frames ahead of the playhead."));
+    auto *decodeForm = new QFormLayout();
+    m_outputLeadPrefetchCountSpin = new QSpinBox(page);
+    m_outputLeadPrefetchCountSpin->setRange(0, 8);
+    m_outputLeadPrefetchCountSpin->setValue(editor::debugLeadPrefetchCount());
+    decodeForm->addRow(QStringLiteral("Lead Prefetch Count"), m_outputLeadPrefetchCountSpin);
+    m_outputPlaybackWindowAheadSpin = new QSpinBox(page);
+    m_outputPlaybackWindowAheadSpin->setRange(1, 24);
+    m_outputPlaybackWindowAheadSpin->setValue(editor::debugPlaybackWindowAhead());
+    decodeForm->addRow(QStringLiteral("Playback Window Ahead"), m_outputPlaybackWindowAheadSpin);
+    m_outputVisibleQueueReserveSpin = new QSpinBox(page);
+    m_outputVisibleQueueReserveSpin->setRange(0, 64);
+    m_outputVisibleQueueReserveSpin->setValue(editor::debugVisibleQueueReserve());
+    decodeForm->addRow(QStringLiteral("Visible Queue Reserve"), m_outputVisibleQueueReserveSpin);
+    m_outputPrefetchMaxQueueDepthSpin = new QSpinBox(page);
+    m_outputPrefetchMaxQueueDepthSpin->setRange(1, 32);
+    m_outputPrefetchMaxQueueDepthSpin->setValue(editor::debugPrefetchMaxQueueDepth());
+    decodeForm->addRow(QStringLiteral("Prefetch Max Queue"), m_outputPrefetchMaxQueueDepthSpin);
+    m_outputPrefetchMaxInflightSpin = new QSpinBox(page);
+    m_outputPrefetchMaxInflightSpin->setRange(1, 16);
+    m_outputPrefetchMaxInflightSpin->setValue(editor::debugPrefetchMaxInflight());
+    decodeForm->addRow(QStringLiteral("Prefetch Max Inflight"), m_outputPrefetchMaxInflightSpin);
+    m_outputPrefetchMaxPerTickSpin = new QSpinBox(page);
+    m_outputPrefetchMaxPerTickSpin->setRange(1, 16);
+    m_outputPrefetchMaxPerTickSpin->setValue(editor::debugPrefetchMaxPerTick());
+    decodeForm->addRow(QStringLiteral("Prefetch Max Per Tick"), m_outputPrefetchMaxPerTickSpin);
+    m_outputPrefetchSkipVisiblePendingThresholdSpin = new QSpinBox(page);
+    m_outputPrefetchSkipVisiblePendingThresholdSpin->setRange(0, 16);
+    m_outputPrefetchSkipVisiblePendingThresholdSpin->setValue(editor::debugPrefetchSkipVisiblePendingThreshold());
+    decodeForm->addRow(QStringLiteral("Skip Visible Pending Threshold"),
+                       m_outputPrefetchSkipVisiblePendingThresholdSpin);
+    m_outputDecoderLaneCountSpin = new QSpinBox(page);
+    m_outputDecoderLaneCountSpin->setRange(0, 16);
+    m_outputDecoderLaneCountSpin->setSpecialValueText(QStringLiteral("Auto"));
+    m_outputDecoderLaneCountSpin->setValue(editor::debugDecoderLaneCount());
+    m_outputDecoderLaneCountSpin->setToolTip(
+        QStringLiteral("Decoder worker lane count. 0 uses automatic lane count."));
+    decodeForm->addRow(QStringLiteral("Decoder Lane Count"), m_outputDecoderLaneCountSpin);
+    m_outputDecodeModeCombo = new QComboBox(page);
+    m_outputDecodeModeCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Upload"), QStringLiteral("hardware"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Zero-Copy"), QStringLiteral("hardware_zero_copy"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("CPU Software"), QStringLiteral("software"));
+    const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
+    const int decodeModeIndex = m_outputDecodeModeCombo->findData(decodeMode);
+    if (decodeModeIndex >= 0) {
+        m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
+    }
+    decodeForm->addRow(QStringLiteral("Render Pipeline"), m_outputDecodeModeCombo);
+    m_outputDeterministicPipelineCheckBox =
+        new QCheckBox(QStringLiteral("Deterministic Pipeline"), page);
+    m_outputDeterministicPipelineCheckBox->setChecked(editor::debugDeterministicPipelineEnabled());
+    m_outputDeterministicPipelineCheckBox->setToolTip(
+        QStringLiteral("Prioritize reproducible decode/render behavior over throughput."));
+    m_outputResetPipelineDefaultsButton =
+        new QPushButton(QStringLiteral("Reset Pipeline Defaults"), page);
+    m_outputResetPipelineDefaultsButton->setToolTip(
+        QStringLiteral("Restore decoder/cache defaults chosen for available hardware and software."));
+    layout->addWidget(m_outputPlaybackCacheFallbackCheckBox);
+    layout->addWidget(m_outputLeadPrefetchEnabledCheckBox);
+    layout->addLayout(decodeForm);
+    layout->addWidget(m_outputDeterministicPipelineCheckBox);
+    layout->addWidget(m_outputResetPipelineDefaultsButton);
+    if (m_outputLeadPrefetchCountSpin) {
+        m_outputLeadPrefetchCountSpin->setEnabled(editor::debugLeadPrefetchEnabled());
+    }
+
+    auto *featureHeading = createTabHeading(QStringLiteral("Feature Flags"), page);
+    layout->addWidget(featureHeading);
+    m_preferencesFeatureAiPanelCheckBox = new QCheckBox(QStringLiteral("Enable AI Assist"), page);
+    m_preferencesFeatureAiSpeakerCleanupCheckBox =
+        new QCheckBox(QStringLiteral("Enable AI Speaker Cleanup"), page);
+    m_preferencesFeatureAudioPreviewModeCheckBox =
+        new QCheckBox(QStringLiteral("Enable Audio Preview Mode"), page);
+    m_preferencesFeatureAudioDynamicsToolsCheckBox =
+        new QCheckBox(QStringLiteral("Enable Audio Dynamics Tools"), page);
+    layout->addWidget(m_preferencesFeatureAiPanelCheckBox);
+    layout->addWidget(m_preferencesFeatureAiSpeakerCleanupCheckBox);
+    layout->addWidget(m_preferencesFeatureAudioPreviewModeCheckBox);
+    layout->addWidget(m_preferencesFeatureAudioDynamicsToolsCheckBox);
+    layout->addStretch(1);
+    return page;
+}
+
+QWidget *InspectorPane::buildAudioTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Audio"), page));
+
+    auto *summary = new QLabel(
+        QStringLiteral("Audio dynamics are applied to preview playback and export rendering."), page);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+
+    auto *form = new QFormLayout;
+    m_audioAmplifyEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
+    m_audioAmplifyDbSpin = new QDoubleSpinBox(page);
+    m_audioAmplifyDbSpin->setRange(0.0, 36.0);
+    m_audioAmplifyDbSpin->setSingleStep(0.5);
+    m_audioAmplifyDbSpin->setDecimals(1);
+    m_audioAmplifyDbSpin->setSuffix(QStringLiteral(" dB"));
+    form->addRow(QStringLiteral("Amplify"), m_audioAmplifyEnabledCheckBox);
+    form->addRow(QStringLiteral("Amplify Gain"), m_audioAmplifyDbSpin);
+
+    m_audioNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
+    m_audioNormalizeTargetDbSpin = new QDoubleSpinBox(page);
+    m_audioNormalizeTargetDbSpin->setRange(-24.0, 0.0);
+    m_audioNormalizeTargetDbSpin->setSingleStep(0.5);
+    m_audioNormalizeTargetDbSpin->setDecimals(1);
+    m_audioNormalizeTargetDbSpin->setSuffix(QStringLiteral(" dB"));
+    form->addRow(QStringLiteral("Normalize"), m_audioNormalizeEnabledCheckBox);
+    form->addRow(QStringLiteral("Normalize Target"), m_audioNormalizeTargetDbSpin);
+
+    m_audioPeakReductionEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
+    m_audioPeakThresholdDbSpin = new QDoubleSpinBox(page);
+    m_audioPeakThresholdDbSpin->setRange(-24.0, 0.0);
+    m_audioPeakThresholdDbSpin->setSingleStep(0.5);
+    m_audioPeakThresholdDbSpin->setDecimals(1);
+    m_audioPeakThresholdDbSpin->setSuffix(QStringLiteral(" dB"));
+    form->addRow(QStringLiteral("Peak Reduction"), m_audioPeakReductionEnabledCheckBox);
+    form->addRow(QStringLiteral("Peak Threshold"), m_audioPeakThresholdDbSpin);
+
+    m_audioLimiterEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
+    m_audioLimiterThresholdDbSpin = new QDoubleSpinBox(page);
+    m_audioLimiterThresholdDbSpin->setRange(-12.0, 0.0);
+    m_audioLimiterThresholdDbSpin->setSingleStep(0.1);
+    m_audioLimiterThresholdDbSpin->setDecimals(1);
+    m_audioLimiterThresholdDbSpin->setSuffix(QStringLiteral(" dB"));
+    form->addRow(QStringLiteral("Limiter"), m_audioLimiterEnabledCheckBox);
+    form->addRow(QStringLiteral("Limiter Threshold"), m_audioLimiterThresholdDbSpin);
+
+    m_audioCompressorEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
+    m_audioCompressorThresholdDbSpin = new QDoubleSpinBox(page);
+    m_audioCompressorThresholdDbSpin->setRange(-30.0, -1.0);
+    m_audioCompressorThresholdDbSpin->setSingleStep(0.5);
+    m_audioCompressorThresholdDbSpin->setDecimals(1);
+    m_audioCompressorThresholdDbSpin->setSuffix(QStringLiteral(" dB"));
+    m_audioCompressorRatioSpin = new QDoubleSpinBox(page);
+    m_audioCompressorRatioSpin->setRange(1.0, 20.0);
+    m_audioCompressorRatioSpin->setSingleStep(0.1);
+    m_audioCompressorRatioSpin->setDecimals(1);
+    m_audioCompressorRatioSpin->setSuffix(QStringLiteral(":1"));
+    form->addRow(QStringLiteral("Compressor"), m_audioCompressorEnabledCheckBox);
+    form->addRow(QStringLiteral("Compressor Threshold"), m_audioCompressorThresholdDbSpin);
+    form->addRow(QStringLiteral("Compressor Ratio"), m_audioCompressorRatioSpin);
+
+    layout->addLayout(form);
     layout->addStretch(1);
     return page;
 }

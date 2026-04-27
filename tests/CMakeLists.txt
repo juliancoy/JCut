@@ -9,6 +9,7 @@ set(EDITOR_TEST_TARGETS
     test_playback_policy
     test_transform_skip_aware_timing
     test_preview_geometry
+    test_waveform_service
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)

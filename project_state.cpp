@@ -528,6 +528,8 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("debugPrefetchSkipVisiblePendingThreshold")] =
         editor::debugPrefetchSkipVisiblePendingThreshold();
     root[QStringLiteral("debugDecoderLaneCount")] = editor::debugDecoderLaneCount();
+    root[QStringLiteral("timelineAudioEnvelopeGranularity")] =
+        editor::debugTimelineAudioEnvelopeGranularity();
     root[QStringLiteral("debugDecodeMode")] =
         editor::decodePreferenceToString(editor::debugDecodePreference());
     root[QStringLiteral("debugH26xSoftwareThreadingMode")] =

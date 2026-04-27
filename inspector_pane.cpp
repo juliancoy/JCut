@@ -167,6 +167,16 @@ InspectorPane::InspectorPane(QWidget *parent)
     layout->addWidget(buildPane());
 }
 
+void InspectorPane::setHeaderWidget(QWidget *widget)
+{
+    if (!m_headerLayout || !widget) {
+        return;
+    }
+
+    widget->setParent(this);
+    m_headerLayout->addWidget(widget, 0, Qt::AlignRight | Qt::AlignVCenter);
+}
+
 QWidget *InspectorPane::buildPane()
 {
     auto *pane = new QFrame;
@@ -176,6 +186,16 @@ QWidget *InspectorPane::buildPane()
     auto *layout = new QVBoxLayout(pane);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(8);
+
+    auto *headerRow = new QWidget(pane);
+    headerRow->setObjectName(QStringLiteral("inspector.header_row"));
+    headerRow->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    headerRow->setMinimumHeight(32);
+    m_headerLayout = new QHBoxLayout(headerRow);
+    m_headerLayout->setContentsMargins(0, 0, 0, 0);
+    m_headerLayout->setSpacing(6);
+    m_headerLayout->addStretch(1);
+    layout->addWidget(headerRow);
 
     m_inspectorTabs = new InspectorTabWidget(pane);
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
@@ -192,13 +212,15 @@ QWidget *InspectorPane::buildPane()
     m_inspectorTabs->addTab(buildHistoryTab(), QStringLiteral("History"));
     m_inspectorTabs->addTab(buildTracksTab(), QStringLiteral("Tracks"));
     m_inspectorTabs->addTab(buildPreviewTab(), QStringLiteral("Preview"));
+    m_inspectorTabs->addTab(buildAudioTab(), QStringLiteral("Audio"));
     m_inspectorTabs->addTab(buildAiTab(), QStringLiteral("AI Assist"));
     m_inspectorTabs->addTab(buildOutputTab(), QStringLiteral("Output"));
     m_inspectorTabs->addTab(buildProfileTab(), QStringLiteral("System"));
     m_inspectorTabs->addTab(buildProjectsTab(), QStringLiteral("Projects"));
+    m_inspectorTabs->addTab(buildPreferencesTab(), QStringLiteral("Preferences"));
     configureInspectorTabs();
 
-    layout->addWidget(m_inspectorTabs);
+    layout->addWidget(m_inspectorTabs, 1);
     return pane;
 }
 
@@ -238,10 +260,12 @@ void InspectorPane::configureInspectorTabs()
         {11, "History", QStyle::SP_BrowserReload, "History: saved timeline snapshots"},
         {12, "Tracks", QStyle::SP_FileDialogInfoView, "Tracks: track visibility and enable state controls"},
         {13, "Preview", QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
-        {14, "AI Assist", QStyle::SP_FileDialogDetailedView, "AI Assist: model, auth, and AI workflow actions"},
-        {15, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {16, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {17, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {14, "Audio", QStyle::SP_MediaVolume, "Audio: preview audio dynamics processing controls"},
+        {15, "AI Assist", QStyle::SP_FileDialogDetailedView, "AI Assist: model, auth, and AI workflow actions"},
+        {16, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {17, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {18, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {19, "Preferences", QStyle::SP_FileDialogContentsView, "Preferences: app-level behavior and feature flags"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -1093,6 +1117,10 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_transcriptItalicCheckBox = new QCheckBox(QStringLiteral("Italic"), settingsContainer);
     m_transcriptUnifiedEditModeCheckBox = new QCheckBox(QStringLiteral("Unified Edit Colors"), settingsContainer);
     m_transcriptUnifiedEditModeCheckBox->setChecked(true);
+    m_transcriptSearchFilterLineEdit = new QLineEdit(settingsContainer);
+    m_transcriptSearchFilterLineEdit->setPlaceholderText(QStringLiteral("Search transcript text..."));
+    m_transcriptSearchFilterLineEdit->setToolTip(
+        QStringLiteral("Filter transcript rows by word text. Clicking a matching row clears this filter."));
     m_transcriptSpeakerFilterCombo = new QComboBox(settingsContainer);
     m_transcriptSpeakerFilterCombo->addItem(QStringLiteral("All Speakers"));
     m_transcriptSpeakerFilterCombo->setToolTip(
@@ -1138,6 +1166,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->addRow(QStringLiteral("Bold"), m_transcriptBoldCheckBox);
     form->addRow(QStringLiteral("Italic"), m_transcriptItalicCheckBox);
     form->addRow(QStringLiteral("Edit Colors"), m_transcriptUnifiedEditModeCheckBox);
+    form->addRow(QStringLiteral("Search"), m_transcriptSearchFilterLineEdit);
     form->addRow(QStringLiteral("Speaker"), m_transcriptSpeakerFilterCombo);
     form->addRow(QStringLiteral("Visibility"), m_transcriptShowExcludedLinesCheckBox);
 
@@ -1337,6 +1366,19 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *speakerAiRow = new QHBoxLayout;
     speakerAiRow->setContentsMargins(0, 0, 0, 0);
     speakerAiRow->setSpacing(6);
+    auto *speakerIdentifyButton = new QPushButton(QStringLiteral("Identify Speakers"), page);
+    speakerIdentifyButton->setObjectName(QStringLiteral("speakers.identify_subscription"));
+    speakerIdentifyButton->setEnabled(false);
+    speakerIdentifyButton->setAttribute(Qt::WA_AlwaysShowToolTips, true);
+    speakerIdentifyButton->setToolTip(QStringLiteral("Requires Subscription"));
+    speakerIdentifyButton->setStyleSheet(
+        QStringLiteral("QPushButton:disabled {"
+                       " color: #8a94a1;"
+                       " background: #1b2129;"
+                       " border: 1px solid #353d47;"
+                       "}"));
+    speakerIdentifyButton->setMinimumHeight(30);
+    speakerIdentifyButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     m_speakerAiFindNamesButton = new QPushButton(QStringLiteral("Find Names (AI)"), page);
     m_speakerAiFindOrganizationsButton = new QPushButton(QStringLiteral("Find Organizations"), page);
     m_speakerAiCleanAssignmentsButton = new QPushButton(QStringLiteral("Clean Assignments"), page);
@@ -1345,6 +1387,7 @@ QWidget *InspectorPane::buildSpeakersTab()
         button->setMinimumHeight(30);
         button->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     }
+    speakerAiRow->addWidget(speakerIdentifyButton);
     speakerAiRow->addWidget(m_speakerAiFindNamesButton);
     speakerAiRow->addWidget(m_speakerAiFindOrganizationsButton);
     speakerAiRow->addWidget(m_speakerAiCleanAssignmentsButton);

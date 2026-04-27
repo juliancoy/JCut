@@ -2,10 +2,13 @@
 #include "timeline_layout.h"
 #include "timeline_renderer.h"
 #include "titles.h"
+#include "waveform_service.h"
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDateTime>
 #include <QHash>
+#include <QPointer>
 
 #include <algorithm>
 #include <cmath>
@@ -155,6 +158,18 @@ TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent) {
     setPalette(pal);
     ensureTrackCount(1);
     updateMinimumTimelineHeight();
+
+    QPointer<TimelineWidget> self(this);
+    editor::WaveformService::instance().setReadyCallback([self]() {
+        if (!self) {
+            return;
+        }
+        QMetaObject::invokeMethod(self, [self]() {
+            if (self) {
+                self->update();
+            }
+        }, Qt::QueuedConnection);
+    });
 }
 
 void TimelineWidget::setCurrentFrame(int64_t frame) {
@@ -302,9 +317,21 @@ void TimelineWidget::selectClipWithModifiers(const QString& clipId, Qt::Keyboard
 
 void TimelineWidget::setClips(const QVector<TimelineClip>& clips) {
     m_clips = clips;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    static constexpr qint64 kAudioSourceVerifyReuseWindowMs = 10000;
     for (TimelineClip& clip : m_clips) {
         normalizeClipTiming(clip);
-        refreshClipAudioSource(clip);
+        const QString normalizedPath = QFileInfo(clip.filePath).absoluteFilePath();
+        const bool recentlyVerified =
+            clip.audioSourceLastVerifiedMs > 0 &&
+            nowMs >= clip.audioSourceLastVerifiedMs &&
+            (nowMs - clip.audioSourceLastVerifiedMs) <= kAudioSourceVerifyReuseWindowMs;
+        const bool pathUnchanged =
+            !normalizedPath.isEmpty() &&
+            clip.audioSourceOriginalPath == normalizedPath;
+        if (!(recentlyVerified && pathUnchanged)) {
+            refreshClipAudioSource(clip);
+        }
     }
     normalizeTrackIndices();
     sortClips();

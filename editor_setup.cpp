@@ -79,16 +79,23 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     m_inspectorPane->setMinimumWidth(240);
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
-    if (m_inspectorTabs) {
-        m_profileAvatarButton = new QPushButton(m_inspectorTabs);
+    if (m_inspectorPane) {
+        m_profileAvatarButton = new QPushButton(m_inspectorPane);
         m_profileAvatarButton->setObjectName(QStringLiteral("tabs.profile_avatar_button"));
         m_profileAvatarButton->setCursor(Qt::PointingHandCursor);
+        m_profileAvatarButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        m_profileAvatarButton->setMinimumWidth(112);
         m_profileAvatarButton->setMinimumHeight(26);
+        m_profileAvatarButton->setStyleSheet(QStringLiteral(
+            "QPushButton#tabs\\.profile_avatar_button {"
+            " background: #223041; border: 1px solid #3d5268; border-radius: 7px;"
+            " color: #edf2f7; padding: 4px 10px; font-weight: 600; }"
+            "QPushButton#tabs\\.profile_avatar_button:hover { background: #2b3c50; }"));
         m_profileAvatarButton->setToolTip(QStringLiteral("Guest"));
         connect(m_profileAvatarButton, &QPushButton::clicked, this, [this]() {
             onProfileAvatarButtonClicked();
         });
-        m_inspectorTabs->setCornerWidget(m_profileAvatarButton, Qt::TopRightCorner);
+        m_inspectorPane->setHeaderWidget(m_profileAvatarButton);
         updateProfileAvatarButton();
     }
     if (m_inspectorTabs && m_preview) {

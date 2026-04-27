@@ -276,6 +276,10 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptUnifiedEditModeCheckBox, &QCheckBox::toggled,
                 this, [this](bool) { refresh(); });
     }
+    if (m_widgets.transcriptSearchFilterLineEdit) {
+        connect(m_widgets.transcriptSearchFilterLineEdit, &QLineEdit::textChanged,
+                this, [this](const QString&) { refresh(); });
+    }
     if (m_widgets.transcriptSpeakerFilterCombo) {
         connect(m_widgets.transcriptSpeakerFilterCombo, &QComboBox::currentIndexChanged,
                 this, [this](int) { refresh(); });
@@ -840,6 +844,21 @@ void TranscriptTab::onTranscriptItemClicked(QTableWidgetItem* item)
         m_widgets.transcriptTable->selectionModel()->selectedRows().size() > 1) {
         return;
     }
+
+    if (m_widgets.transcriptSearchFilterLineEdit) {
+        const QString searchText = m_widgets.transcriptSearchFilterLineEdit->text().trimmed();
+        if (!searchText.isEmpty() && m_widgets.transcriptTable) {
+            const QTableWidgetItem* textItem = m_widgets.transcriptTable->item(item->row(), kTranscriptColText);
+            const QString rowText = textItem ? textItem->text() : item->text();
+            if (rowText.contains(searchText, Qt::CaseInsensitive)) {
+                QSignalBlocker blocker(m_widgets.transcriptSearchFilterLineEdit);
+                m_widgets.transcriptSearchFilterLineEdit->clear();
+                refresh();
+                return;
+            }
+        }
+    }
+
     scheduleSeekToTranscriptRow(item->row());
 }
 
@@ -1068,9 +1087,6 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     if (isGap || isOutsideCut) return;
 
     QMenu menu;
-    QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
-    QMenu* selectionMenu = transcriptMenu->addMenu(QStringLiteral("Selection"));
-    QMenu* dangerousMenu = transcriptMenu->addMenu(QStringLiteral("Dangerous"));
     QAction* addAbove = nullptr;
     QAction* addBelow = nullptr;
     QAction* expandAction = nullptr;
@@ -1078,17 +1094,18 @@ void TranscriptTab::onTranscriptCustomContextMenu(const QPoint& pos)
     QAction* deleteAction = nullptr;
     const bool rowSkipped = item->data(Qt::UserRole + 7).toBool();
     if (activeCutMutable()) {
-        addAbove = selectionMenu->addAction(QStringLiteral("Add Word Above"));
-        addBelow = selectionMenu->addAction(QStringLiteral("Add Word Below"));
-        expandAction = selectionMenu->addAction(QStringLiteral("Expand Word Timing"));
-        skipAction = selectionMenu->addAction(rowSkipped ? QStringLiteral("Unskip Word")
-                                                         : QStringLiteral("Skip Word"));
-        dangerousMenu->addSeparator();
-        deleteAction = dangerousMenu->addAction(QStringLiteral("Delete Word"));
+        addAbove = menu.addAction(QStringLiteral("Add Word Above"));
+        addBelow = menu.addAction(QStringLiteral("Add Word Below"));
+        menu.addSeparator();
+        expandAction = menu.addAction(QStringLiteral("Expand Word Timing"));
+        skipAction = menu.addAction(rowSkipped ? QStringLiteral("Unskip Word")
+                                               : QStringLiteral("Skip Word"));
+        menu.addSeparator();
+        deleteAction = menu.addAction(QStringLiteral("Delete Word"));
     } else {
-        QAction* immutableNotice = transcriptMenu->addAction(QStringLiteral("Original Cut (Immutable)"));
+        QAction* immutableNotice = menu.addAction(QStringLiteral("Original Cut (Immutable)"));
         immutableNotice->setEnabled(false);
-        QAction* copyNotice = transcriptMenu->addAction(QStringLiteral("Use + New Cut to edit words"));
+        QAction* copyNotice = menu.addAction(QStringLiteral("Use + New Cut to edit words"));
         copyNotice->setEnabled(false);
     }
 
@@ -1164,7 +1181,16 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
 
     double newWordStart, newWordEnd;
     int targetSegmentIndex, targetWordIndex;
-    const int insertRenderOrder = qMax(0, above ? row : (row + 1));
+    const QVariant renderOrderVariant = currentItem->data(Qt::UserRole + 15);
+    int insertRenderOrder = renderOrderVariant.isValid() ? renderOrderVariant.toInt() : -1;
+    if (insertRenderOrder < 0) {
+        insertRenderOrder = row;
+    }
+    if (!above) {
+        ++insertRenderOrder;
+    }
+    insertRenderOrder = qMax(0, insertRenderOrder);
+    const QString currentSpeaker = currentItem->data(Qt::UserRole + 9).toString().trimmed();
 
     if (above) {
         // Get previous row's end time
@@ -1229,6 +1255,9 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
     // Create the new word object
     QJsonObject newWordObj;
     newWordObj[QStringLiteral("word")] = QStringLiteral("[new]");
+    if (!currentSpeaker.isEmpty()) {
+        newWordObj[QString(kTranscriptWordSpeakerKey)] = currentSpeaker;
+    }
     newWordObj[QStringLiteral("start")] = newWordStart;
     newWordObj[QStringLiteral("end")] = newWordEnd;
     newWordObj[QString(kTranscriptWordRenderOrderKey)] = insertRenderOrder;
@@ -1239,6 +1268,50 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
     // Update the JSON document
     QJsonObject root = m_loadedTranscriptDoc.object();
     QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+
+    // Normalize render_order across all words before insertion so below/above placement
+    // remains stable even when older words did not have explicit render_order values.
+    {
+        const QVector<TranscriptRow> orderedRows = parseTranscriptRows(segments, m_transcriptPrependMs, m_transcriptPostpendMs);
+        QHash<quint64, int> desiredOrderByKey;
+        desiredOrderByKey.reserve(orderedRows.size());
+        int nextOrder = 0;
+        for (const TranscriptRow& orderedRow : orderedRows) {
+            if (orderedRow.segmentIndex < 0 || orderedRow.wordIndex < 0) {
+                continue;
+            }
+            const quint64 key = (static_cast<quint64>(orderedRow.segmentIndex) << 32) |
+                                static_cast<quint32>(orderedRow.wordIndex);
+            if (desiredOrderByKey.contains(key)) {
+                continue;
+            }
+            desiredOrderByKey.insert(key, nextOrder++);
+        }
+
+        int fallbackOrder = nextOrder;
+        for (int segIdx = 0; segIdx < segments.size(); ++segIdx) {
+            QJsonObject segmentObj = segments.at(segIdx).toObject();
+            QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+            bool segmentChanged = false;
+            for (int wordIdx = 0; wordIdx < words.size(); ++wordIdx) {
+                QJsonObject wordObj = words.at(wordIdx).toObject();
+                const quint64 key = (static_cast<quint64>(segIdx) << 32) |
+                                    static_cast<quint32>(wordIdx);
+                const int desiredOrder = desiredOrderByKey.contains(key)
+                    ? desiredOrderByKey.value(key)
+                    : fallbackOrder++;
+                if (wordObj.value(QString(kTranscriptWordRenderOrderKey)).toInt(-1) != desiredOrder) {
+                    wordObj[QString(kTranscriptWordRenderOrderKey)] = desiredOrder;
+                    words.replace(wordIdx, wordObj);
+                    segmentChanged = true;
+                }
+            }
+            if (segmentChanged) {
+                segmentObj[QStringLiteral("words")] = words;
+                segments.replace(segIdx, segmentObj);
+            }
+        }
+    }
 
     for (int segIdx = 0; segIdx < segments.size(); ++segIdx) {
         QJsonObject segmentObj = segments.at(segIdx).toObject();
@@ -1280,6 +1353,7 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         refresh();
         emit transcriptDocumentChanged();
         if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+        if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
     }
 }
 

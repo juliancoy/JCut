@@ -5,6 +5,7 @@
 #include "debug_controls.h"
 #include "speaker_export_harness.h"
 #include <cppmonetize/MonetizeClient.h>
+#include <cppmonetize/OAuthDesktopFlow.h>
 #include <cppmonetize/TokenStore.h>
 
 #include <QApplication>
@@ -427,6 +428,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                16);
     const int debugDecoderLaneCount =
         qBound(0, root.value(QStringLiteral("debugDecoderLaneCount")).toInt(editor::debugDecoderLaneCount()), 16);
+    const int timelineAudioEnvelopeGranularity =
+        qBound(64,
+               root.value(QStringLiteral("timelineAudioEnvelopeGranularity"))
+                   .toInt(editor::debugTimelineAudioEnvelopeGranularity()),
+               8192);
     editor::DecodePreference debugDecodePreference = editor::debugDecodePreference();
     const QString debugDecodeModeText =
         root.value(QStringLiteral("debugDecodeMode"))
@@ -861,6 +867,26 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_outputDeterministicPipelineCheckBox);
         m_outputDeterministicPipelineCheckBox->setChecked(debugDeterministicPipeline);
     }
+    if (m_timelineAudioEnvelopeGranularitySpin) {
+        QSignalBlocker block(m_timelineAudioEnvelopeGranularitySpin);
+        m_timelineAudioEnvelopeGranularitySpin->setValue(timelineAudioEnvelopeGranularity);
+    }
+    if (m_preferencesFeatureAiPanelCheckBox) {
+        QSignalBlocker block(m_preferencesFeatureAiPanelCheckBox);
+        m_preferencesFeatureAiPanelCheckBox->setChecked(m_featureAiPanel);
+    }
+    if (m_preferencesFeatureAiSpeakerCleanupCheckBox) {
+        QSignalBlocker block(m_preferencesFeatureAiSpeakerCleanupCheckBox);
+        m_preferencesFeatureAiSpeakerCleanupCheckBox->setChecked(m_featureAiSpeakerCleanup);
+    }
+    if (m_preferencesFeatureAudioPreviewModeCheckBox) {
+        QSignalBlocker block(m_preferencesFeatureAudioPreviewModeCheckBox);
+        m_preferencesFeatureAudioPreviewModeCheckBox->setChecked(m_featureAudioPreviewMode);
+    }
+    if (m_preferencesFeatureAudioDynamicsToolsCheckBox) {
+        QSignalBlocker block(m_preferencesFeatureAudioDynamicsToolsCheckBox);
+        m_preferencesFeatureAudioDynamicsToolsCheckBox->setChecked(m_featureAudioDynamicsTools);
+    }
     if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(speechFilterEnabled); }
     
     m_transcriptPrependMs = transcriptPrependMs;
@@ -1053,6 +1079,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     editor::setDebugDecodePreference(debugDecodePreference);
     editor::setDebugH26xSoftwareThreadingMode(debugH26xSoftwareThreadingMode);
     editor::setDebugDeterministicPipelineEnabled(debugDeterministicPipeline);
+    editor::setDebugTimelineAudioEnvelopeGranularity(timelineAudioEnvelopeGranularity);
+    if (m_timeline) {
+        m_timeline->update();
+    }
 
     markStartup(QStringLiteral("apply_state.timeline_bind.begin"));
     const auto savedTimelineClipsChanged = m_timeline->clipsChanged;
@@ -1495,11 +1525,13 @@ void EditorWindow::updateProfileAvatarButton()
         icon = style()->standardIcon(QStyle::SP_FileIcon);
     }
     m_profileAvatarButton->setIcon(icon);
-    m_profileAvatarButton->setText(loggedIn ? profileLabel : QStringLiteral("Guest"));
+    m_profileAvatarButton->setText(loggedIn ? (profileLabel + QStringLiteral(" ▼")) : QStringLiteral("Guest ▼"));
     m_profileAvatarButton->setToolTip(
         loggedIn
             ? QStringLiteral("Signed in as %1").arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
             : QStringLiteral("Guest - click to sign in"));
+    m_profileAvatarButton->setVisible(true);
+    m_profileAvatarButton->raise();
 }
 
 void EditorWindow::onProfileAvatarButtonClicked()
@@ -1529,84 +1561,344 @@ void EditorWindow::onProfileAvatarButtonClicked()
 void EditorWindow::configureAiGatewayLogin()
 {
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("AI Login"));
+    dialog.setWindowTitle(QStringLiteral("JCut - AI Login"));
     dialog.setModal(true);
-    auto* layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
-    auto* info = new QLabel(
-        QStringLiteral("Use browser sign-in for production login flow.\n"
-                       "Manual token entry is available as fallback."),
-        &dialog);
-    info->setWordWrap(true);
-    layout->addWidget(info);
+    dialog.setMinimumSize(460, 420);
+    dialog.setStyleSheet(
+        QStringLiteral(
+            "QDialog { background-color: #1c1f26; color: #f4f7ff; }"
+            "QLabel { color: #f4f7ff; }"
+            "QFrame#card { background-color: #222734; border-radius: 14px; border: 1px solid #2c3446; }"
+            "QPushButton#actionButton { background-color: #3d7cc9; color: white; padding: 9px 20px; border-radius: 8px; font-weight: 700; }"
+            "QPushButton#actionButton:hover { background-color: #4b8add; }"
+            "QPushButton#switchButton { background-color: transparent; border: none; color: #8fc6ff; text-decoration: underline; }"
+            "QPushButton#switchButton:hover { color: #b8daff; }"
+            "QPushButton#altButton { background-color: transparent; border: 1px solid #4b5470; color: #a0a8c0; padding: 8px 12px; border-radius: 8px; }"
+            "QPushButton#altButton:hover { border-color: #6b789b; color: #f4f7ff; }"
+            "QLineEdit { background-color: #202635; color: #f4f7ff; border: 1px solid #323a4f; border-radius: 8px; padding: 8px 10px; }"
+            "QLineEdit:focus { background-color: #242b3d; border-color: #5ea1ff; }"));
 
-    auto* form = new QFormLayout;
+    auto* mainLayout = new QVBoxLayout(&dialog);
+    mainLayout->setSpacing(12);
+    mainLayout->setContentsMargins(18, 18, 18, 18);
+
+    auto* titleLabel = new QLabel(QStringLiteral("<h2>Sign In to JCut AI</h2>"), &dialog);
+    titleLabel->setAlignment(Qt::AlignCenter);
+    mainLayout->addWidget(titleLabel);
+
+    auto* card = new QFrame(&dialog);
+    card->setObjectName(QStringLiteral("card"));
+    auto* cardLayout = new QVBoxLayout(card);
+    cardLayout->setSpacing(10);
+    cardLayout->setContentsMargins(16, 16, 16, 16);
+
+    auto* baseUrlLabel = new QLabel(QStringLiteral("Gateway URL"), &dialog);
     auto* baseUrlEdit = new QLineEdit(&dialog);
     baseUrlEdit->setPlaceholderText(QStringLiteral("https://your-gateway.example.com"));
     baseUrlEdit->setText(m_aiProxyBaseUrl);
-    auto* tokenEdit = new QLineEdit(&dialog);
-    tokenEdit->setEchoMode(QLineEdit::Password);
-    tokenEdit->setPlaceholderText(QStringLiteral("Supabase access token (JWT)"));
-    tokenEdit->setText(m_aiAuthToken);
-    form->addRow(QStringLiteral("Gateway URL"), baseUrlEdit);
-    form->addRow(QStringLiteral("Access Token"), tokenEdit);
-    layout->addLayout(form);
+    cardLayout->addWidget(baseUrlLabel);
+    cardLayout->addWidget(baseUrlEdit);
 
-    auto* actions = new QHBoxLayout;
-    actions->addStretch(1);
-    auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"), &dialog);
-    auto* browserBtn = new QPushButton(QStringLiteral("Browser Login"), &dialog);
-    auto* saveBtn = new QPushButton(QStringLiteral("Use Token"), &dialog);
-    actions->addWidget(cancelBtn);
-    actions->addWidget(browserBtn);
-    actions->addWidget(saveBtn);
-    layout->addLayout(actions);
-    connect(cancelBtn, &QPushButton::clicked, &dialog, &QDialog::reject);
-    connect(browserBtn, &QPushButton::clicked, &dialog, [&dialog]() {
-        dialog.done(2);
-    });
-    connect(saveBtn, &QPushButton::clicked, &dialog, [&dialog]() {
-        dialog.done(1);
+    auto* emailLabel = new QLabel(QStringLiteral("Email"), &dialog);
+    auto* emailEdit = new QLineEdit(&dialog);
+    emailEdit->setPlaceholderText(QStringLiteral("you@example.com"));
+    cardLayout->addWidget(emailLabel);
+    cardLayout->addWidget(emailEdit);
+
+    auto* passwordLabel = new QLabel(QStringLiteral("Password"), &dialog);
+    auto* passwordEdit = new QLineEdit(&dialog);
+    passwordEdit->setEchoMode(QLineEdit::Password);
+    passwordEdit->setPlaceholderText(QStringLiteral("Enter password"));
+    cardLayout->addWidget(passwordLabel);
+    cardLayout->addWidget(passwordEdit);
+
+    auto* confirmRow = new QWidget(&dialog);
+    auto* confirmLayout = new QVBoxLayout(confirmRow);
+    confirmLayout->setContentsMargins(0, 0, 0, 0);
+    confirmLayout->setSpacing(6);
+    auto* confirmLabel = new QLabel(QStringLiteral("Confirm Password"), &dialog);
+    auto* confirmEdit = new QLineEdit(&dialog);
+    confirmEdit->setEchoMode(QLineEdit::Password);
+    confirmEdit->setPlaceholderText(QStringLiteral("Confirm password"));
+    confirmLayout->addWidget(confirmLabel);
+    confirmLayout->addWidget(confirmEdit);
+    confirmRow->setVisible(false);
+    cardLayout->addWidget(confirmRow);
+
+    auto* statusLabel = new QLabel(QString(), &dialog);
+    statusLabel->setWordWrap(true);
+    statusLabel->setAlignment(Qt::AlignCenter);
+    statusLabel->setStyleSheet(QStringLiteral("color: #ff6b6b;"));
+    cardLayout->addWidget(statusLabel);
+
+    auto* actionButton = new QPushButton(QStringLiteral("Sign In"), &dialog);
+    actionButton->setObjectName(QStringLiteral("actionButton"));
+    cardLayout->addWidget(actionButton);
+
+    auto* switchButton = new QPushButton(QStringLiteral("Don't have an account? Register"), &dialog);
+    switchButton->setObjectName(QStringLiteral("switchButton"));
+    switchButton->setCursor(Qt::PointingHandCursor);
+    cardLayout->addWidget(switchButton, 0, Qt::AlignCenter);
+
+    auto* oauthLabel =
+        new QLabel(QStringLiteral("<center style='color: #6b789b;'>- or sign in with -</center>"), &dialog);
+    cardLayout->addWidget(oauthLabel);
+
+    auto* oauthRow = new QHBoxLayout();
+    oauthRow->setSpacing(10);
+    auto makeOAuthButton = [&dialog, oauthRow](const QString& objectName,
+                                                const QString& label,
+                                                const QString& color,
+                                                int doneCode) {
+        auto* btn = new QPushButton(label, &dialog);
+        btn->setObjectName(objectName);
+        btn->setCursor(Qt::PointingHandCursor);
+        btn->setStyleSheet(
+            QStringLiteral("QPushButton { background-color: %1; color: white; padding: 8px 14px;"
+                           " border-radius: 8px; border: none; font-weight: 700; }"
+                           "QPushButton:hover { opacity: 0.9; }")
+                .arg(color));
+        QObject::connect(btn, &QPushButton::clicked, &dialog, [&dialog, doneCode]() { dialog.done(doneCode); });
+        oauthRow->addWidget(btn);
+    };
+    makeOAuthButton(QStringLiteral("oauthGoogle"), QStringLiteral("Google"), QStringLiteral("#4285F4"), 100);
+    makeOAuthButton(QStringLiteral("oauthGithub"), QStringLiteral("GitHub"), QStringLiteral("#333333"), 101);
+    cardLayout->addLayout(oauthRow);
+
+    auto* secondaryActions = new QHBoxLayout();
+    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
+    cancelButton->setObjectName(QStringLiteral("altButton"));
+    auto* tokenButton = new QPushButton(QStringLiteral("Use Access Token"), &dialog);
+    tokenButton->setObjectName(QStringLiteral("altButton"));
+    secondaryActions->addWidget(tokenButton);
+    secondaryActions->addStretch(1);
+    secondaryActions->addWidget(cancelButton);
+    cardLayout->addLayout(secondaryActions);
+
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    connect(tokenButton, &QPushButton::clicked, &dialog, [&dialog]() { dialog.done(102); });
+
+    mainLayout->addWidget(card);
+
+    auto setStatus = [statusLabel](const QString& msg, bool error) {
+        statusLabel->setStyleSheet(error ? QStringLiteral("color: #ff6b6b;")
+                                         : QStringLiteral("color: #6bff8a;"));
+        statusLabel->setText(msg);
+    };
+
+    bool registerMode = false;
+    auto setRegisterMode = [&]() {
+        if (registerMode) {
+            titleLabel->setText(QStringLiteral("<h2>Create Account</h2>"));
+            actionButton->setText(QStringLiteral("Register"));
+            switchButton->setText(QStringLiteral("Already have an account? Sign In"));
+            confirmRow->setVisible(true);
+        } else {
+            titleLabel->setText(QStringLiteral("<h2>Sign In to JCut AI</h2>"));
+            actionButton->setText(QStringLiteral("Sign In"));
+            switchButton->setText(QStringLiteral("Don't have an account? Register"));
+            confirmRow->setVisible(false);
+        }
+        statusLabel->clear();
+    };
+
+    auto normalizedBaseUrl = [baseUrlEdit]() -> QString {
+        QString base = baseUrlEdit->text().trimmed();
+        while (base.endsWith(QLatin1Char('/'))) {
+            base.chop(1);
+        }
+        return base;
+    };
+    auto apiBaseCandidates = [&](const QString& normalizedGatewayBase) -> QStringList {
+        QStringList candidates;
+        if (normalizedGatewayBase.isEmpty()) {
+            return candidates;
+        }
+        candidates.push_back(normalizedGatewayBase);
+        if (normalizedGatewayBase.endsWith(QStringLiteral("/api"))) {
+            const QString withoutApi = normalizedGatewayBase.left(normalizedGatewayBase.size() - 4);
+            if (!withoutApi.isEmpty()) {
+                candidates.push_back(withoutApi);
+            }
+        } else {
+            candidates.push_back(normalizedGatewayBase + QStringLiteral("/api"));
+        }
+        candidates.removeDuplicates();
+        return candidates;
+    };
+    auto tokenSubFromJwt = [](const QString& token) -> QString {
+        const QStringList parts = token.trimmed().split(QLatin1Char('.'));
+        if (parts.size() < 2) {
+            return {};
+        }
+        const QByteArray payloadBytes =
+            QByteArray::fromBase64(parts.at(1).toUtf8(), QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+        const QJsonDocument payloadDoc = QJsonDocument::fromJson(payloadBytes);
+        if (!payloadDoc.isObject()) {
+            return {};
+        }
+        return payloadDoc.object().value(QStringLiteral("sub")).toString().trimmed();
+    };
+
+    auto applyLoginResult = [&](const QString& normalizedGatewayBase,
+                                const QString& accessToken,
+                                const QString& userIdHint,
+                                const QString& emailHint) {
+        m_aiProxyBaseUrl = normalizedGatewayBase;
+        m_aiAuthToken = accessToken.trimmed();
+        QString bestUser = userIdHint.trimmed();
+        if (bestUser.isEmpty()) {
+            bestUser = emailHint.trimmed();
+        }
+        if (bestUser.isEmpty()) {
+            for (const QString& base : apiBaseCandidates(normalizedGatewayBase)) {
+                cppmonetize::MonetizeClient client = createJCutMonetizeClient(base, m_aiRequestTimeoutMs, QString());
+                const auto whoResult = client.whoAmI(m_aiAuthToken);
+                if (whoResult.hasValue()) {
+                    bestUser = whoResult.value().userId.trimmed();
+                    if (bestUser.isEmpty()) {
+                        bestUser = whoResult.value().email.trimmed();
+                    }
+                    if (!bestUser.isEmpty()) {
+                        break;
+                    }
+                }
+            }
+        }
+        if (bestUser.isEmpty()) {
+            bestUser = tokenSubFromJwt(m_aiAuthToken);
+        }
+        m_aiUserId = bestUser;
+
+        QString secureStoreError;
+        if (!writeAiTokenToSecureStore(m_aiAuthToken, &secureStoreError)) {
+            QMessageBox::warning(this,
+                                 QStringLiteral("AI Login"),
+                                 QStringLiteral("Token saved for this session only. Secure storage failed: %1")
+                                     .arg(secureStoreError));
+        }
+        refreshAiIntegrationState();
+        scheduleSaveState();
+    };
+
+    connect(switchButton, &QPushButton::clicked, &dialog, [&]() {
+        registerMode = !registerMode;
+        setRegisterMode();
     });
 
+    connect(actionButton, &QPushButton::clicked, &dialog, [&]() {
+        const QString gatewayBase = normalizedBaseUrl();
+        const QString email = emailEdit->text().trimmed();
+        const QString password = passwordEdit->text();
+
+        if (gatewayBase.isEmpty()) {
+            setStatus(QStringLiteral("Gateway URL is required."), true);
+            return;
+        }
+        if (email.isEmpty() || password.isEmpty()) {
+            setStatus(QStringLiteral("Email and password are required."), true);
+            return;
+        }
+        if (registerMode) {
+            if (password != confirmEdit->text()) {
+                setStatus(QStringLiteral("Passwords do not match."), true);
+                return;
+            }
+            if (password.size() < 6) {
+                setStatus(QStringLiteral("Password must be at least 6 characters."), true);
+                return;
+            }
+        }
+
+        setStatus(QStringLiteral("Connecting..."), false);
+        QString errorText;
+        QString token;
+        QString userId;
+        QString emailValue;
+        bool authenticated = false;
+
+        for (const QString& apiBase : apiBaseCandidates(gatewayBase)) {
+            cppmonetize::OAuthDesktopFlow oauthFlow;
+            const auto cfgResult = oauthFlow.fetchOAuthConfig(apiBase, m_aiRequestTimeoutMs);
+            if (cfgResult.hasValue() && cfgResult.value().enabled && !cfgResult.value().supabaseAnonKey.isEmpty()) {
+                const auto authResult =
+                    oauthFlow.signInWithPassword(cfgResult.value(), email, password, registerMode, m_aiRequestTimeoutMs);
+                if (authResult.hasValue()) {
+                    token = authResult.value().token;
+                    emailValue = authResult.value().email;
+                    authenticated = true;
+                    break;
+                }
+                errorText = authResult.error().message;
+                continue;
+            }
+
+            cppmonetize::MonetizeClient client = createJCutMonetizeClient(apiBase, m_aiRequestTimeoutMs, QString());
+            const auto authResult =
+                registerMode ? client.registerUser(email, password) : client.signIn(email, password);
+            if (authResult.hasValue()) {
+                token = authResult.value().accessToken;
+                userId = authResult.value().userId;
+                emailValue = authResult.value().email;
+                authenticated = true;
+                break;
+            }
+            errorText = authResult.error().message;
+        }
+
+        if (!authenticated || token.trimmed().isEmpty()) {
+            setStatus(errorText.isEmpty() ? QStringLiteral("Authentication failed.") : errorText, true);
+            return;
+        }
+
+        applyLoginResult(gatewayBase, token, userId, emailValue);
+        setStatus(QStringLiteral("Signed in."), false);
+        dialog.accept();
+    });
+
+    setRegisterMode();
     const int result = dialog.exec();
     if (result == QDialog::Rejected) {
         return;
     }
-    m_aiProxyBaseUrl = baseUrlEdit->text().trimmed();
-    if (m_aiProxyBaseUrl.isEmpty()) {
-        QMessageBox::warning(this,
-                             QStringLiteral("AI Login"),
-                             QStringLiteral("Gateway URL is required."));
-        return;
-    }
-    if (result == 2) {
-        startAiBrowserLogin(m_aiProxyBaseUrl);
+
+    if (result == 102) {
+        const QString gatewayBase = normalizedBaseUrl();
+        if (gatewayBase.isEmpty()) {
+            QMessageBox::warning(this,
+                                 QStringLiteral("AI Login"),
+                                 QStringLiteral("Gateway URL is required."));
+            return;
+        }
+        bool ok = false;
+        const QString token = QInputDialog::getText(this,
+                                                    QStringLiteral("Use Access Token"),
+                                                    QStringLiteral("Supabase access token (JWT)"),
+                                                    QLineEdit::Password,
+                                                    m_aiAuthToken,
+                                                    &ok)
+                                  .trimmed();
+        if (!ok || token.isEmpty()) {
+            return;
+        }
+        applyLoginResult(gatewayBase, token, QString(), QString());
         return;
     }
 
-    const QString token = tokenEdit->text().trimmed();
-    if (token.isEmpty()) {
-        QMessageBox::warning(this,
-                             QStringLiteral("AI Login"),
-                             QStringLiteral("Access token is required for manual login."));
-        return;
+    if (result == 100 || result == 101) {
+        const QString gatewayBase = normalizedBaseUrl();
+        if (gatewayBase.isEmpty()) {
+            QMessageBox::warning(this,
+                                 QStringLiteral("AI Login"),
+                                 QStringLiteral("Gateway URL is required."));
+            return;
+        }
+        m_aiProxyBaseUrl = gatewayBase;
+        startAiBrowserLogin(gatewayBase, result == 100 ? QStringLiteral("google") : QStringLiteral("github"));
     }
-    m_aiAuthToken = token;
-    QString secureStoreError;
-    if (!writeAiTokenToSecureStore(m_aiAuthToken, &secureStoreError)) {
-        QMessageBox::warning(this,
-                             QStringLiteral("AI Login"),
-                             QStringLiteral("Token saved for this session only. Secure storage failed: %1")
-                                 .arg(secureStoreError));
-    }
-    m_aiUserId.clear();
-    refreshAiIntegrationState();
-    scheduleSaveState();
 }
 
-void EditorWindow::startAiBrowserLogin(const QString& gatewayBaseUrl)
+void EditorWindow::startAiBrowserLogin(const QString& gatewayBaseUrl, const QString& preferredProvider)
 {
     QString normalizedBase = gatewayBaseUrl.trimmed();
     while (normalizedBase.endsWith(QLatin1Char('/'))) {
@@ -1738,6 +2030,9 @@ void EditorWindow::startAiBrowserLogin(const QString& gatewayBaseUrl)
     query.addQueryItem(QStringLiteral("code_challenge"), codeChallenge);
     query.addQueryItem(QStringLiteral("code_challenge_method"), QStringLiteral("S256"));
     query.addQueryItem(QStringLiteral("client"), QStringLiteral("jcut-desktop"));
+    if (!preferredProvider.trimmed().isEmpty()) {
+        query.addQueryItem(QStringLiteral("provider"), preferredProvider.trimmed().toLower());
+    }
     startUrl.setQuery(query);
     if (!QDesktopServices::openUrl(startUrl)) {
         if (m_aiAuthCallbackServer) {

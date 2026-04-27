@@ -200,7 +200,8 @@ private:
     bool readAiTokenFromSecureStore(QString* tokenOut) const;
     bool writeAiTokenToSecureStore(const QString& token, QString* errorOut = nullptr) const;
     bool clearAiTokenFromSecureStore(QString* errorOut = nullptr) const;
-    void startAiBrowserLogin(const QString& gatewayBaseUrl);
+    void startAiBrowserLogin(const QString& gatewayBaseUrl,
+                             const QString& preferredProvider = QString());
     bool exchangeAiAuthCode(const QString& code, const QString& state, QString* errorOut = nullptr);
     void runAiTranscribeForSelection();
     void runAiFindSpeakerNames();
@@ -357,6 +358,11 @@ private:
     QSpinBox *m_previewLeadPrefetchCountSpin = nullptr;
     QSpinBox *m_previewPlaybackWindowAheadSpin = nullptr;
     QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
+    QSpinBox *m_timelineAudioEnvelopeGranularitySpin = nullptr;
+    QCheckBox *m_preferencesFeatureAiPanelCheckBox = nullptr;
+    QCheckBox *m_preferencesFeatureAiSpeakerCleanupCheckBox = nullptr;
+    QCheckBox *m_preferencesFeatureAudioPreviewModeCheckBox = nullptr;
+    QCheckBox *m_preferencesFeatureAudioDynamicsToolsCheckBox = nullptr;
     QCheckBox *m_audioAmplifyEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;

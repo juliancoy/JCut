@@ -327,7 +327,9 @@ QVector<TranscriptTab::TranscriptRow> TranscriptTab::parseTranscriptRows(const Q
 
     rows.reserve(orderedRows.size());
     for (const OrderedRow& ordered : std::as_const(orderedRows)) {
-        rows.push_back(ordered.row);
+        TranscriptRow row = ordered.row;
+        row.renderOrder = ordered.renderOrder;
+        rows.push_back(row);
     }
 
     return rows;
@@ -431,6 +433,7 @@ void TranscriptTab::populateTable(const QVector<TranscriptRow>& rows)
             tableItem->setData(Qt::UserRole + 12, entry.isOutsideActiveCut);
             tableItem->setData(Qt::UserRole + 13, entry.originalSegmentIndex);
             tableItem->setData(Qt::UserRole + 14, entry.originalWordIndex);
+            tableItem->setData(Qt::UserRole + 15, entry.renderOrder);
         }
 
         applyTranscriptRowState(sourceStartItem, sourceEndItem, speakerItem, textItem, editsItem, entry);
@@ -502,6 +505,7 @@ void TranscriptTab::applyTranscriptRowState(QTableWidgetItem* startItem,
     const QColor textColor(222, 236, 255);
     const QColor insertedColor(239, 225, 255);
     const QColor editsColor(232, 238, 247);
+    const QColor editedTextColor(20, 33, 49);
     QTableWidgetItem* rowItems[] = {startItem, endItem, speakerItem, textItem, editsItem};
 
     if (entry.isGap) {
@@ -537,15 +541,21 @@ void TranscriptTab::applyTranscriptRowState(QTableWidgetItem* startItem,
         if (entry.editFlags & TranscriptRow::EditTiming) {
             startItem->setBackground(timingColor);
             endItem->setBackground(timingColor);
+            startItem->setForeground(editedTextColor);
+            endItem->setForeground(editedTextColor);
         }
         if (entry.editFlags & TranscriptRow::EditText) {
             textItem->setBackground(textColor);
+            textItem->setForeground(editedTextColor);
         }
         if (entry.editFlags & TranscriptRow::EditInserted) {
             textItem->setBackground(insertedColor);
+            textItem->setForeground(editedTextColor);
         }
         if (entry.editFlags != TranscriptRow::EditNone) {
             editsItem->setBackground(editsColor);
+            editsItem->setForeground(editedTextColor);
+            speakerItem->setForeground(editedTextColor);
         }
     }
 }
@@ -600,19 +610,38 @@ QString TranscriptTab::activeSpeakerFilter() const
     return m_widgets.transcriptSpeakerFilterCombo->currentData().toString();
 }
 
+QString TranscriptTab::activeTranscriptSearchFilter() const
+{
+    if (!m_widgets.transcriptSearchFilterLineEdit) {
+        return QString();
+    }
+    return m_widgets.transcriptSearchFilterLineEdit->text().trimmed();
+}
+
 QVector<TranscriptTab::TranscriptRow> TranscriptTab::filteredRowsForSpeaker(const QVector<TranscriptRow>& rows) const
 {
-    const QString filterValue = activeSpeakerFilter();
-    if (filterValue.isEmpty() || filterValue == QString(kAllSpeakersFilterValue)) {
+    const QString speakerFilterValue = activeSpeakerFilter();
+    const QString searchFilterValue = activeTranscriptSearchFilter();
+    const bool hasSpeakerFilter =
+        !speakerFilterValue.isEmpty() && speakerFilterValue != QString(kAllSpeakersFilterValue);
+    const bool hasSearchFilter = !searchFilterValue.isEmpty();
+    if (!hasSpeakerFilter && !hasSearchFilter) {
         return rows;
     }
 
     QVector<TranscriptRow> filtered;
     filtered.reserve(rows.size());
     for (const TranscriptRow& row : rows) {
-        if (row.isGap || row.speaker == filterValue) {
-            filtered.push_back(row);
+        if (hasSearchFilter && row.isGap) {
+            continue;
         }
+        if (hasSpeakerFilter && !row.isGap && row.speaker != speakerFilterValue) {
+            continue;
+        }
+        if (hasSearchFilter && !row.text.contains(searchFilterValue, Qt::CaseInsensitive)) {
+            continue;
+        }
+        filtered.push_back(row);
     }
     return filtered;
 }
@@ -960,11 +989,10 @@ void TranscriptTab::onTranscriptScriptVersionContextMenu(const QPoint& pos)
         selectedPath != originalTranscriptPathForClip(m_loadedClipFilePath);
 
     QMenu menu;
-    QMenu* transcriptMenu = menu.addMenu(QStringLiteral("Transcript"));
-    QAction* deleteCurrentTranscription = transcriptMenu->addAction(QStringLiteral("Delete Current Transcription"));
+    QAction* deleteCurrentTranscription = menu.addAction(QStringLiteral("Delete Current Transcription"));
     deleteCurrentTranscription->setEnabled(canDeleteSelection);
     if (!canDeleteSelection) {
-        QAction* unavailable = transcriptMenu->addAction(QStringLiteral("Delete unavailable for Original or missing selection"));
+        QAction* unavailable = menu.addAction(QStringLiteral("Delete unavailable for Original or missing selection"));
         unavailable->setEnabled(false);
     }
 

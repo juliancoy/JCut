@@ -28,6 +28,7 @@
 #include <QTcpSocket>
 #include <QUrlQuery>
 
+#include <algorithm>
 #include <limits>
 
 namespace control_server {
@@ -370,6 +371,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /playhead</strong> - Current playback position</div>
         <div class="endpoint"><strong>GET /state</strong> - Editor state snapshot</div>
         <div class="endpoint"><strong>GET /profile</strong> - Performance profiling data</div>
+        <div class="endpoint"><strong>GET /profile/startup</strong> - Startup timing breakdown</div>
         <div class="endpoint"><strong>GET /decode/rates</strong> - Decode benchmark for current project media</div>
         <div class="endpoint"><strong>GET /decode/seeks</strong> - Seek benchmark for current project media</div>
         <div class="endpoint"><strong>GET /diag/perf</strong> - Performance diagnostics</div>
@@ -922,6 +924,80 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
                  m_uiHeartbeatStaleMs},
             {QStringLiteral("ui_error"), m_lastProfileRefreshError},
             {QStringLiteral("profile"), m_lastProfileSnapshot},
+            {QStringLiteral("served_cached"), true},
+            {QStringLiteral("cache"), profileCacheMeta()}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/profile/startup")) {
+        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+        if (m_lastProfileSnapshot.isEmpty()) {
+            const QString error = m_lastProfileRefreshError.isEmpty()
+                ? QStringLiteral("profile snapshot unavailable; cache warming")
+                : m_lastProfileRefreshError;
+            writeError(socket, 503, error);
+            return true;
+        }
+        ++m_profileServedCachedCount;
+        const QJsonObject startup = m_lastProfileSnapshot.value(QStringLiteral("startup")).toObject();
+        const QUrlQuery query(request.url);
+        const QString flatParam = query.queryItemValue(QStringLiteral("flat")).trimmed().toLower();
+        const bool flat = (flatParam == QStringLiteral("1") ||
+                           flatParam == QStringLiteral("true") ||
+                           flatParam == QStringLiteral("yes"));
+        if (flat) {
+            struct FlatRow {
+                QString phase;
+                qint64 deltaMs = 0;
+                qint64 cumulativeMs = 0;
+            };
+            QVector<FlatRow> rows;
+            const QJsonArray marks = startup.value(QStringLiteral("marks")).toArray();
+            rows.reserve(marks.size());
+            for (const QJsonValue& markValue : marks) {
+                const QJsonObject mark = markValue.toObject();
+                FlatRow row;
+                row.phase = mark.value(QStringLiteral("phase")).toString();
+                row.deltaMs = mark.value(QStringLiteral("delta_ms")).toInteger(0);
+                row.cumulativeMs = mark.value(QStringLiteral("t_ms")).toInteger(0);
+                if (!row.phase.isEmpty()) {
+                    rows.push_back(row);
+                }
+            }
+            std::stable_sort(rows.begin(), rows.end(),
+                             [](const FlatRow& a, const FlatRow& b) {
+                                 if (a.deltaMs != b.deltaMs) {
+                                     return a.deltaMs > b.deltaMs;
+                                 }
+                                 return a.cumulativeMs < b.cumulativeMs;
+                             });
+            QJsonArray ranked;
+            int rank = 1;
+            for (const FlatRow& row : rows) {
+                ranked.push_back(QJsonObject{
+                    {QStringLiteral("rank"), rank++},
+                    {QStringLiteral("phase"), row.phase},
+                    {QStringLiteral("delta_ms"), row.deltaMs},
+                    {QStringLiteral("cumulative_ms"), row.cumulativeMs}
+                });
+            }
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("flat"), true},
+                {QStringLiteral("total_ms"), startup.value(QStringLiteral("total_ms")).toInteger(0)},
+                {QStringLiteral("completed"), startup.value(QStringLiteral("completed")).toBool(false)},
+                {QStringLiteral("mark_count"), startup.value(QStringLiteral("mark_count")).toInteger(0)},
+                {QStringLiteral("ranked_phases"), ranked},
+                {QStringLiteral("served_cached"), true},
+                {QStringLiteral("cache"), profileCacheMeta()}
+            });
+            return true;
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("startup"), startup},
             {QStringLiteral("served_cached"), true},
             {QStringLiteral("cache"), profileCacheMeta()}
         });

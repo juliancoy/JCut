@@ -3,29 +3,96 @@
 #include "debug_controls.h"
 #include "titles.h"
 #include "decoder_image_io.h"
-#include "ffmpeg_compat.h"
+#include "waveform_service.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLinearGradient>
 #include <QApplication>
+#include <QMetaObject>
 #include <QPainter>
 #include <QTextDocument>
 #include <QFileInfo>
 
 #include <cmath>
-#include <vector>
-
-extern "C" {
-#include <libavformat/avformat.h>
-#include <libavcodec/avcodec.h>
-#include <libavutil/samplefmt.h>
-#include <libavutil/channel_layout.h>
-#include <libswresample/swresample.h>
-}
 
 namespace {
 constexpr int64_t kMaxHeldPresentationFrameDelta = 8;
+
+QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame) {
+    for (const TranscriptSection& section : sections) {
+        if (sourceFrame < section.startFrame) {
+            return QString();
+        }
+        if (sourceFrame > section.endFrame) {
+            continue;
+        }
+        int bestIndex = -1;
+        for (int i = 0; i < section.words.size(); ++i) {
+            const TranscriptWord& word = section.words.at(i);
+            if (sourceFrame >= word.startFrame && sourceFrame <= word.endFrame) {
+                bestIndex = i;
+                break;
+            }
+            if (sourceFrame > word.endFrame) {
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0 && !section.words.isEmpty()) {
+            bestIndex = 0;
+        }
+        if (bestIndex >= 0 && bestIndex < section.words.size()) {
+            return section.words.at(bestIndex).speaker.trimmed();
+        }
+        return QString();
+    }
+    return QString();
+}
+
+QColor speakerColor(const QString& speakerId, int alpha) {
+    const uint hueHash = qHash(speakerId);
+    QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 170, 185);
+    color.setAlpha(qBound(0, alpha, 255));
+    return color;
+}
+
+void fillShortUnknownSpeakerGaps(QVector<int>* speakerIndexByBin, int maxGapBins) {
+    if (!speakerIndexByBin || speakerIndexByBin->isEmpty() || maxGapBins <= 0) {
+        return;
+    }
+    QVector<int>& bins = *speakerIndexByBin;
+    const int count = bins.size();
+    int i = 0;
+    while (i < count) {
+        if (bins[i] >= 0) {
+            ++i;
+            continue;
+        }
+        const int start = i;
+        while (i < count && bins[i] < 0) {
+            ++i;
+        }
+        const int end = i - 1;
+        const int len = end - start + 1;
+        if (len > maxGapBins) {
+            continue;
+        }
+        const int left = (start > 0) ? bins[start - 1] : -1;
+        const int right = (i < count) ? bins[i] : -1;
+        if (left < 0 && right < 0) {
+            continue;
+        }
+        int fill = left;
+        if (fill < 0) {
+            fill = right;
+        } else if (right >= 0 && right != left) {
+            fill = (len <= 2) ? right : left;
+        }
+        for (int j = start; j <= end; ++j) {
+            bins[j] = fill;
+        }
+    }
+}
 }
 
 void PreviewWindow::paintEvent(QPaintEvent* event) {
@@ -140,7 +207,7 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
     for (const TimelineClip& clip : m_clips) {
         const bool includeForAudioView =
             clipAudioPlaybackEnabled(clip) &&
-            clip.id == m_selectedClipId;
+            (clip.id == m_selectedClipId || isSampleWithinClip(clip, m_currentSample));
         const bool includeAsFallback =
             clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample);
         if (includeForAudioView || includeAsFallback) {
@@ -343,7 +410,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         for (const TimelineClip& clip : m_clips) {
             const bool includeForAudioView =
                 clipAudioPlaybackEnabled(clip) &&
-                clip.id == m_selectedClipId;
+                (clip.id == m_selectedClipId || isSampleWithinClip(clip, m_currentSample));
             const bool includeAsFallback =
                 clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample);
             if (includeForAudioView || includeAsFallback) {
@@ -783,199 +850,82 @@ void PreviewWindow::drawFramePlaceholder(QPainter* painter, const QRect& targetR
     painter->restore();
 }
 
-QVector<qreal> PreviewWindow::applyAudioDynamicsToWaveform(const QVector<qreal>& bins) const {
-    if (bins.isEmpty()) {
-        return {};
-    }
-    QVector<qreal> out = bins;
-    auto dbToAmp = [](qreal db) -> qreal {
-        return std::pow(10.0, db / 20.0);
-    };
-    const qreal normTarget = qBound<qreal>(-24.0, m_audioDynamics.normalizeTargetDb, 0.0);
-    const qreal peakThreshold = qBound<qreal>(-24.0, m_audioDynamics.peakThresholdDb, 0.0);
-    const qreal limiterThreshold = qBound<qreal>(-12.0, m_audioDynamics.limiterThresholdDb, 0.0);
-    const qreal compThreshold = qBound<qreal>(-30.0, m_audioDynamics.compressorThresholdDb, -1.0);
-    const qreal compRatio = qBound<qreal>(1.0, m_audioDynamics.compressorRatio, 20.0);
-    qreal maxAmp = 0.0;
-    for (qreal v : out) {
-        maxAmp = qMax(maxAmp, qAbs(v));
-    }
-    qreal normalizeGain = 1.0;
-    if (m_audioDynamics.normalizeEnabled && maxAmp > 0.000001) {
-        normalizeGain = dbToAmp(normTarget) / maxAmp;
-    }
-    const qreal peakLinear = dbToAmp(peakThreshold);
-    const qreal limiterLinear = dbToAmp(limiterThreshold);
-    const qreal compLinear = dbToAmp(compThreshold);
-    for (qreal& v : out) {
-        qreal amp = qAbs(v) * normalizeGain;
-        if (m_audioDynamics.compressorEnabled && amp > compLinear) {
-            const qreal over = amp - compLinear;
-            amp = compLinear + (over / compRatio);
-        }
-        if (m_audioDynamics.peakReductionEnabled && amp > peakLinear) {
-            amp = peakLinear + (amp - peakLinear) * 0.35;
-        }
-        if (m_audioDynamics.limiterEnabled) {
-            amp = qMin(amp, limiterLinear);
-        }
-        v = qBound<qreal>(0.0, amp, 1.0);
-    }
-    return out;
-}
-
-QVector<qreal> PreviewWindow::audioWaveformBinsForPath(const QString& mediaPath, int binCount) const {
-    const int safeBins = qBound(64, binCount, 2048);
-    if (mediaPath.isEmpty()) {
-        return QVector<qreal>(safeBins, 0.0);
-    }
-    const QFileInfo info(mediaPath);
-    if (!info.exists() || !info.isFile()) {
-        return QVector<qreal>(safeBins, 0.0);
-    }
-    const QString cacheKey = QStringLiteral("%1|%2|%3")
-                                 .arg(info.absoluteFilePath())
-                                 .arg(info.lastModified().toMSecsSinceEpoch())
-                                 .arg(safeBins);
-    const auto cached = m_audioWaveformCache.constFind(cacheKey);
-    if (cached != m_audioWaveformCache.constEnd()) {
-        return *cached;
-    }
-
-    QVector<qreal> bins(safeBins, 0.0);
-    AVFormatContext* formatCtx = nullptr;
-    if (avformat_open_input(&formatCtx, mediaPath.toUtf8().constData(), nullptr, nullptr) < 0 || !formatCtx) {
-        return bins;
-    }
-    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-    const int streamIndex = av_find_best_stream(formatCtx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-    if (streamIndex < 0 || streamIndex >= static_cast<int>(formatCtx->nb_streams)) {
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-    AVStream* stream = formatCtx->streams[streamIndex];
-    const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
-    if (!codec) {
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-    AVCodecContext* codecCtx = avcodec_alloc_context3(codec);
-    if (!codecCtx) {
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-    if (avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
-        avcodec_open2(codecCtx, codec, nullptr) < 0) {
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-
-    const AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_MONO;
-    SwrContext* swr = nullptr;
-    if (swr_alloc_set_opts2(&swr,
-                            &outLayout,
-                            AV_SAMPLE_FMT_FLT,
-                            codecCtx->sample_rate,
-                            &codecCtx->ch_layout,
-                            codecCtx->sample_fmt,
-                            codecCtx->sample_rate,
-                            0,
-                            nullptr) < 0 ||
-        !swr ||
-        swr_init(swr) < 0) {
-        if (swr) {
-            swr_free(&swr);
-        }
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-
-    const int64_t durationUs = (stream->duration > 0)
-                                   ? av_rescale_q(stream->duration, stream->time_base, AVRational{1, 1000000})
-                                   : av_rescale_q(formatCtx->duration, AVRational{1, AV_TIME_BASE}, AVRational{1, 1000000});
-    const qreal totalSeconds = qMax<qreal>(0.001, static_cast<qreal>(durationUs) / 1000000.0);
-    const qreal binWidthSec = totalSeconds / static_cast<qreal>(safeBins);
-
-    AVPacket* packet = av_packet_alloc();
-    AVFrame* frame = av_frame_alloc();
-    if (!packet || !frame) {
-        if (packet) av_packet_free(&packet);
-        if (frame) av_frame_free(&frame);
-        swr_free(&swr);
-        avcodec_free_context(&codecCtx);
-        avformat_close_input(&formatCtx);
-        return bins;
-    }
-
-    while (av_read_frame(formatCtx, packet) >= 0) {
-        if (packet->stream_index != streamIndex) {
-            av_packet_unref(packet);
-            continue;
-        }
-        if (avcodec_send_packet(codecCtx, packet) < 0) {
-            av_packet_unref(packet);
-            continue;
-        }
-        av_packet_unref(packet);
-        while (avcodec_receive_frame(codecCtx, frame) == 0) {
-            const int outSamples = swr_get_out_samples(swr, frame->nb_samples);
-            if (outSamples <= 0) {
-                av_frame_unref(frame);
-                continue;
-            }
-            std::vector<float> mono(static_cast<size_t>(outSamples), 0.0f);
-            uint8_t* outData[1] = {reinterpret_cast<uint8_t*>(mono.data())};
-            const int converted = swr_convert(swr, outData, outSamples,
-                                              const_cast<const uint8_t**>(frame->extended_data),
-                                              frame->nb_samples);
-            if (converted <= 0) {
-                av_frame_unref(frame);
-                continue;
-            }
-            const qreal ptsSec = frame->best_effort_timestamp == AV_NOPTS_VALUE
-                                     ? 0.0
-                                     : static_cast<qreal>(av_q2d(stream->time_base) * frame->best_effort_timestamp);
-            for (int i = 0; i < converted; ++i) {
-                const qreal tSec = ptsSec + static_cast<qreal>(i) / qMax(1, codecCtx->sample_rate);
-                const int bin = qBound(0, static_cast<int>(std::floor(tSec / qMax<qreal>(0.000001, binWidthSec))), safeBins - 1);
-                bins[bin] = qMax(bins[bin], qAbs(static_cast<qreal>(mono[static_cast<size_t>(i)])));
-            }
-            av_frame_unref(frame);
-        }
-    }
-
-    avcodec_send_packet(codecCtx, nullptr);
-    while (avcodec_receive_frame(codecCtx, frame) == 0) {
-        av_frame_unref(frame);
-    }
-    av_frame_free(&frame);
-    av_packet_free(&packet);
-    swr_free(&swr);
-    avcodec_free_context(&codecCtx);
-    avformat_close_input(&formatCtx);
-
-    for (qreal& v : bins) {
-        v = qBound<qreal>(0.0, v, 1.0);
-    }
-    m_audioWaveformCache.insert(cacheKey, bins);
-    if (m_audioWaveformCache.size() > 48) {
-        m_audioWaveformCache.erase(m_audioWaveformCache.begin());
-    }
-    return bins;
+QString PreviewWindow::audioDynamicsCacheKey() const {
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10")
+        .arg(m_audioDynamics.amplifyEnabled ? 1 : 0)
+        .arg(m_audioDynamics.amplifyDb, 0, 'f', 2)
+        .arg(m_audioDynamics.normalizeEnabled ? 1 : 0)
+        .arg(m_audioDynamics.normalizeTargetDb, 0, 'f', 2)
+        .arg(m_audioDynamics.peakReductionEnabled ? 1 : 0)
+        .arg(m_audioDynamics.peakThresholdDb, 0, 'f', 2)
+        .arg(m_audioDynamics.limiterEnabled ? 1 : 0)
+        .arg(m_audioDynamics.limiterThresholdDb, 0, 'f', 2)
+        .arg(m_audioDynamics.compressorEnabled ? 1 : 0)
+        .arg(QStringLiteral("%1|%2")
+                 .arg(m_audioDynamics.compressorThresholdDb, 0, 'f', 2)
+                 .arg(m_audioDynamics.compressorRatio, 0, 'f', 2));
 }
 
 QVector<qreal> PreviewWindow::audioWaveformBinsForClip(const TimelineClip& clip, int binCount) const {
-    const QString mediaPath = interactivePreviewMediaPathForClip(clip);
-    return applyAudioDynamicsToWaveform(audioWaveformBinsForPath(mediaPath, binCount));
+    const int safeBins = qBound(64, binCount, 8192);
+
+    // Waveform must follow playback audio source, not visual proxy media.
+    QString mediaPath = playbackAudioPathForClip(clip);
+    if (mediaPath.isEmpty()) {
+        mediaPath = interactivePreviewMediaPathForClip(clip);
+    }
+    if (mediaPath.isEmpty()) {
+        return QVector<qreal>(safeBins, 0.0);
+    }
+
+    const int64_t sourceStartSample = qMax<int64_t>(0, frameToSamples(qMax<int64_t>(0, clip.sourceInFrame)));
+    const int64_t sourceDurationSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const int64_t sourceEndSample = sourceStartSample + sourceDurationSamples;
+    const QString variantKey = audioDynamicsCacheKey();
+    const editor::WaveformService::WaveformProcessSettings processSettings{
+        m_audioDynamics.amplifyEnabled,
+        static_cast<float>(m_audioDynamics.amplifyDb),
+        m_audioDynamics.normalizeEnabled,
+        static_cast<float>(m_audioDynamics.normalizeTargetDb),
+        m_audioDynamics.peakReductionEnabled,
+        static_cast<float>(m_audioDynamics.peakThresholdDb),
+        m_audioDynamics.limiterEnabled,
+        static_cast<float>(m_audioDynamics.limiterThresholdDb),
+        m_audioDynamics.compressorEnabled,
+        static_cast<float>(m_audioDynamics.compressorThresholdDb),
+        static_cast<float>(m_audioDynamics.compressorRatio)};
+
+    QVector<float> minValues;
+    QVector<float> maxValues;
+    if (!editor::WaveformService::instance().queryEnvelope(mediaPath,
+                                                           sourceStartSample,
+                                                           sourceEndSample,
+                                                           safeBins,
+                                                           &minValues,
+                                                           &maxValues,
+                                                           variantKey,
+                                                           &processSettings) ||
+        minValues.size() != safeBins ||
+        maxValues.size() != safeBins) {
+        return QVector<qreal>(safeBins, 0.0);
+    }
+
+    QVector<qreal> base(safeBins, 0.0);
+    for (int i = 0; i < safeBins; ++i) {
+        const qreal peak = qMax(qAbs(static_cast<qreal>(minValues[i])),
+                                qAbs(static_cast<qreal>(maxValues[i])));
+        base[i] = qBound<qreal>(0.0, peak, 1.0);
+    }
+    return base;
 }
 
 void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRect,
                           const QList<TimelineClip>& activeAudioClips) {
+    if (activeAudioClips.isEmpty()) {
+        return;
+    }
+    const TimelineClip& clip = activeAudioClips.constFirst();
+
     painter->save();
     painter->setPen(QPen(QColor(255, 255, 255, 40), 1.5));
     painter->setBrush(QColor(255, 255, 255, 18));
@@ -1004,30 +954,160 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     painter->drawText(panel.adjusted(20, 60, -20, -20),
                       Qt::AlignTop | Qt::AlignLeft,
                       QStringLiteral("Selected audio clip: %1\nTransport audio: %2")
-                          .arg(activeAudioClips.constFirst().label)
+                          .arg(clip.label)
                           .arg(m_playing ? QStringLiteral("live") : QStringLiteral("paused")));
 
     const QRect waveRect = panel.adjusted(24, 120, -24, -36);
-    const int targetBins = qMax(96, waveRect.width() / 3);
-    QVector<qreal> waveform = audioWaveformBinsForClip(activeAudioClips.constFirst(), targetBins);
-    if (waveform.size() < targetBins) {
-        waveform.resize(targetBins);
+    const int rowCount = qBound(2, waveRect.height() / 88, 6);
+    const int binsPerRow = qMax(96, waveRect.width() / 3);
+    const int totalDrawBins = qMax(96, rowCount * binsPerRow);
+
+    QVector<qreal> waveform = audioWaveformBinsForClip(clip, totalDrawBins);
+    if (waveform.size() < totalDrawBins) {
+        waveform.resize(totalDrawBins, 0.0);
+    } else if (waveform.size() > totalDrawBins) {
+        waveform.resize(totalDrawBins);
     }
-    painter->setPen(QPen(QColor(QStringLiteral("#58c4dd")), 1.1));
+
+    QStringList speakerIds;
+    QHash<QString, int> speakerToIndex;
+    QVector<int> speakerIndexByBin(totalDrawBins, -1);
+    const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
+    const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
+    const int64_t sourceSpan = qMax<int64_t>(1, clip.durationFrames);
+    if (!sections.isEmpty()) {
+        for (int i = 0; i < totalDrawBins; ++i) {
+            const qreal t = (static_cast<qreal>(i) + 0.5) / static_cast<qreal>(totalDrawBins);
+            const int64_t sourceFrame = sourceStart + static_cast<int64_t>(std::floor(t * sourceSpan));
+            const QString speakerId = speakerAtSourceFrame(sections, sourceFrame);
+            if (speakerId.isEmpty()) {
+                continue;
+            }
+            int idx = speakerToIndex.value(speakerId, -1);
+            if (idx < 0) {
+                idx = speakerIds.size();
+                speakerIds.push_back(speakerId);
+                speakerToIndex.insert(speakerId, idx);
+            }
+            speakerIndexByBin[i] = idx;
+        }
+        const int maxGapBins = qMax(1, binsPerRow / 72);
+        fillShortUnknownSpeakerGaps(&speakerIndexByBin, maxGapBins);
+    }
+
+    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const qreal minVisibleBySamples = qBound<qreal>(
+        0.0005,
+        (500.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
+        1.0);
+    const qreal maxAudioZoom = qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.0005, minVisibleBySamples), 2000.0);
+    const qreal zoom = qBound<qreal>(0.1, m_previewZoom, maxAudioZoom);
+    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
+    const qreal startNorm = qBound<qreal>(0.0, m_previewPanOffset.x(), maxStart);
+    const auto sourceBinForVisibleIndex = [startNorm, visibleFraction, totalDrawBins](int visibleIndex) -> int {
+        const qreal t = (static_cast<qreal>(visibleIndex) + 0.5) / qMax<qreal>(1.0, totalDrawBins);
+        const qreal sourceT = startNorm + (t * visibleFraction);
+        return qBound(0, static_cast<int>(std::floor(sourceT * totalDrawBins)), totalDrawBins - 1);
+    };
+
+    // Normalize the visible waveform to unity so the strongest visible bin fills the row height.
+    qreal visiblePeak = 0.0;
+    for (int i = 0; i < totalDrawBins; ++i) {
+        const int sourceBin = sourceBinForVisibleIndex(i);
+        visiblePeak = qMax(visiblePeak, qBound<qreal>(0.0, waveform[sourceBin], 1.0));
+    }
+    const qreal unityScale = visiblePeak > 0.000001 ? (1.0 / visiblePeak) : 1.0;
+
     painter->setBrush(Qt::NoBrush);
-    const qreal centerY = static_cast<qreal>(waveRect.center().y());
-    for (int i = 0; i < waveform.size(); ++i) {
-        const qreal x =
-            static_cast<qreal>(waveRect.left()) +
-            (static_cast<qreal>(i) / qMax<qreal>(1.0, waveform.size() - 1)) * static_cast<qreal>(waveRect.width());
-        const qreal amp = qBound<qreal>(0.0, waveform[i], 1.0);
-        const qreal halfHeight = qMax<qreal>(2.0, amp * static_cast<qreal>(waveRect.height()) * 0.48);
-        painter->drawLine(QPointF(x, centerY - halfHeight), QPointF(x, centerY + halfHeight));
+    for (int row = 0; row < rowCount; ++row) {
+        const qreal rowTop = static_cast<qreal>(waveRect.top()) +
+                             (static_cast<qreal>(row) * static_cast<qreal>(waveRect.height()) / rowCount);
+        const qreal rowBottom = static_cast<qreal>(waveRect.top()) +
+                                (static_cast<qreal>(row + 1) * static_cast<qreal>(waveRect.height()) / rowCount);
+        const QRectF rowRect(static_cast<qreal>(waveRect.left()), rowTop,
+                             static_cast<qreal>(waveRect.width()), rowBottom - rowTop);
+        const qreal centerY = rowRect.center().y();
+
+        painter->setPen(QPen(QColor(255, 255, 255, 24), 1.0));
+        painter->drawLine(QPointF(rowRect.left(), centerY), QPointF(rowRect.right(), centerY));
+        painter->setPen(QPen(QColor(255, 255, 255, 14), 1.0));
+        painter->drawRect(rowRect.adjusted(0.5, 0.5, -0.5, -0.5));
+
+        int rowStartBin = row * binsPerRow;
+        int rowEndBin = qMin(totalDrawBins, rowStartBin + binsPerRow);
+        if (rowStartBin >= rowEndBin) {
+            continue;
+        }
+
+        int runStart = rowStartBin;
+        int runSpeaker = speakerIndexByBin[sourceBinForVisibleIndex(runStart)];
+        for (int i = rowStartBin + 1; i <= rowEndBin; ++i) {
+            const int idx = (i < rowEndBin)
+                ? speakerIndexByBin[sourceBinForVisibleIndex(i)]
+                : std::numeric_limits<int>::min();
+            if (idx == runSpeaker) {
+                continue;
+            }
+            if (runSpeaker >= 0 && runSpeaker < speakerIds.size()) {
+                const qreal x0 = rowRect.left() +
+                    (static_cast<qreal>(runStart - rowStartBin) / qMax<qreal>(1.0, rowEndBin - rowStartBin)) * rowRect.width();
+                const qreal x1 = rowRect.left() +
+                    (static_cast<qreal>(i - rowStartBin) / qMax<qreal>(1.0, rowEndBin - rowStartBin)) * rowRect.width();
+                painter->fillRect(QRectF(x0, rowRect.top(), qMax<qreal>(1.0, x1 - x0), rowRect.height()),
+                                  speakerColor(speakerIds.at(runSpeaker), 62));
+            }
+            runStart = i;
+            runSpeaker = idx;
+        }
+
+        const int rowBinCount = qMax(2, rowEndBin - rowStartBin);
+        QVector<qreal> rowAmplitudes(rowBinCount, 0.0);
+        for (int i = 0; i < rowBinCount; ++i) {
+            const int sourceBin = sourceBinForVisibleIndex(rowStartBin + i);
+            rowAmplitudes[i] = qBound<qreal>(0.0, waveform[sourceBin] * unityScale, 1.0);
+        }
+
+        QPainterPath areaPath;
+        QPainterPath topPath;
+        QPainterPath bottomPath;
+        areaPath.moveTo(rowRect.left(), centerY);
+        topPath.moveTo(rowRect.left(), centerY);
+        bottomPath.moveTo(rowRect.left(), centerY);
+
+        for (int i = 0; i < rowBinCount; ++i) {
+            const qreal x = rowRect.left() +
+                (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+            const qreal halfHeight = qMax<qreal>(1.0, rowAmplitudes[i] * rowRect.height() * 0.5);
+            const qreal yTop = centerY - halfHeight;
+            const qreal yBottom = centerY + halfHeight;
+            topPath.lineTo(x, yTop);
+            bottomPath.lineTo(x, yBottom);
+            areaPath.lineTo(x, yTop);
+        }
+        for (int i = rowBinCount - 1; i >= 0; --i) {
+            const qreal x = rowRect.left() +
+                (static_cast<qreal>(i) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+            const qreal halfHeight = qMax<qreal>(1.0, rowAmplitudes[i] * rowRect.height() * 0.5);
+            areaPath.lineTo(x, centerY + halfHeight);
+        }
+        areaPath.closeSubpath();
+
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(88, 196, 221, 72));
+        painter->drawPath(areaPath);
+
+        painter->setBrush(Qt::NoBrush);
+        painter->setPen(QPen(QColor(QStringLiteral("#7fd8ed")), 1.15, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter->drawPath(topPath);
+        painter->drawPath(bottomPath);
     }
+
     painter->setPen(QColor(QStringLiteral("#9fb3c8")));
     painter->drawText(panel.adjusted(20, panel.height() - 36, -20, 6),
                       Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("Waveform source: decoded clip audio (mono envelope)"));
+                      QStringLiteral("Waveform source: decoded clip audio (mono envelope), unity-normalized display, wrapped rows with speaker timeline tint | Zoom %1%")
+                          .arg(QString::number(zoom * 100.0, 'f', 0)));
     painter->restore();
 }
 

@@ -50,6 +50,7 @@ public:
         QCheckBox* speechFilterEnabledCheckBox = nullptr;
         QSpinBox* speechFilterFadeSamplesSpin = nullptr;
         QCheckBox* transcriptUnifiedEditModeCheckBox = nullptr;
+        QLineEdit* transcriptSearchFilterLineEdit = nullptr;
         QComboBox* transcriptSpeakerFilterCombo = nullptr;
         QComboBox* transcriptScriptVersionCombo = nullptr;
         QPushButton* transcriptNewVersionButton = nullptr;
@@ -138,6 +139,7 @@ private:
         int wordIndex = -1;
         int originalSegmentIndex = -1;
         int originalWordIndex = -1;
+        int renderOrder = -1;
     };
     struct FollowRange
     {
@@ -162,6 +164,7 @@ private:
                                  const TranscriptRow& entry) const;
     void refreshSpeakerFilter(const QVector<TranscriptRow>& rows);
     QString activeSpeakerFilter() const;
+    QString activeTranscriptSearchFilter() const;
     QVector<TranscriptRow> filteredRowsForSpeaker(const QVector<TranscriptRow>& rows) const;
     QStringList editLabelsForFlags(int flags) const;
     bool unifiedEditColorsEnabled() const;

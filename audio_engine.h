@@ -7,6 +7,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QFile>
+#include <QFileInfo>
 #include <QHash>
 #include <QSet>
 #include <QVector>
@@ -90,13 +91,28 @@ public:
     ~AudioEngine() { shutdown(); }
 
     void setTimelineClips(const QVector<TimelineClip>& clips) {
+        bool queueChanged = false;
         {
             std::lock_guard<std::mutex> lock(m_stateMutex);
+            const QSet<QString> nextScheduledPaths = scheduledAudioPathsFromClips(clips);
+            if (nextScheduledPaths != m_scheduledDecodePaths) {
+                const QSet<QString> addedPaths = nextScheduledPaths - m_scheduledDecodePaths;
+                const QSet<QString> removedPaths = m_scheduledDecodePaths - nextScheduledPaths;
+                for (const QString& path : removedPaths) {
+                    removePendingDecodePathLocked(path);
+                }
+                for (const QString& path : addedPaths) {
+                    enqueueDecodePathLocked(path, false, false);
+                }
+                m_scheduledDecodePaths = nextScheduledPaths;
+                queueChanged = !addedPaths.isEmpty() || !removedPaths.isEmpty();
+            }
             m_timelineClips = clips;
-            scheduleDecodesLocked(clips);
             prioritizeDecodesNearSampleLocked(m_timelineSampleCursor);
         }
-        m_decodeCondition.notify_one();
+        if (queueChanged) {
+            m_decodeCondition.notify_one();
+        }
     }
 
     void setExportRanges(const QVector<ExportRangeSegment>& ranges) {
@@ -561,12 +577,48 @@ private:
         }
     }
 
+    void removePendingDecodePathLocked(const QString& audioPath) {
+        if (audioPath.isEmpty() || !m_pendingDecodeSet.contains(audioPath)) {
+            return;
+        }
+        m_pendingDecodeSet.remove(audioPath);
+        for (auto it = m_pendingDecodePaths.begin(); it != m_pendingDecodePaths.end();) {
+            if (it->path == audioPath) {
+                it = m_pendingDecodePaths.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    QString clipAudioPathForScheduling(const TimelineClip& clip) const {
+        if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
+            return QString();
+        }
+        if (clip.audioSourceStatus == QStringLiteral("ok") &&
+            !clip.audioSourcePath.trimmed().isEmpty()) {
+            return QFileInfo(clip.audioSourcePath).absoluteFilePath();
+        }
+        if (clip.audioSourceMode == QStringLiteral("embedded")) {
+            return QFileInfo(clip.filePath).absoluteFilePath();
+        }
+        return playbackAudioPathForClip(clip);
+    }
+
+    QSet<QString> scheduledAudioPathsFromClips(const QVector<TimelineClip>& clips) const {
+        QSet<QString> paths;
+        for (const TimelineClip& clip : clips) {
+            const QString audioPath = clipAudioPathForScheduling(clip);
+            if (!audioPath.isEmpty()) {
+                paths.insert(audioPath);
+            }
+        }
+        return paths;
+    }
+
     void scheduleDecodesLocked(const QVector<TimelineClip>& clips) {
         for (const TimelineClip& clip : clips) {
-            if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
-                continue;
-            }
-            const QString audioPath = playbackAudioPathForClip(clip);
+            const QString audioPath = clipAudioPathForScheduling(clip);
             if (audioPath.isEmpty()) {
                 continue;
             }
@@ -587,10 +639,7 @@ private:
         candidates.reserve(m_timelineClips.size());
 
         for (const TimelineClip& clip : m_timelineClips) {
-            if (!clipAudioPlaybackEnabled(clip) || clip.filePath.isEmpty()) {
-                continue;
-            }
-            const QString audioPath = playbackAudioPathForClip(clip);
+            const QString audioPath = clipAudioPathForScheduling(clip);
             if (audioPath.isEmpty() || m_audioCache.contains(audioPath)) {
                 continue;
             }
@@ -1143,6 +1192,7 @@ private:
     QHash<QString, AudioClipCacheEntry> m_audioCache;
     std::deque<DecodeTask> m_pendingDecodePaths;
     QSet<QString> m_pendingDecodeSet;
+    QSet<QString> m_scheduledDecodePaths;
 
     std::thread m_decodeWorker;
     std::thread m_mixWorker;

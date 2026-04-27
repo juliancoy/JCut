@@ -23,6 +23,7 @@ constexpr int kDefaultPrefetchSkipVisiblePendingThreshold = 2;
 constexpr int kDefaultVisibleQueueReserve = 24;
 constexpr int kDefaultPlaybackWindowAhead = 16;
 constexpr int kDefaultDecoderLaneCount = 0; // 0 => auto lane count
+constexpr int kDefaultTimelineAudioEnvelopeGranularity = 256;
 constexpr DecodePreference kDefaultDecodePreference = DecodePreference::Hardware;
 
 bool envFlagEnabled(const char* name) {
@@ -57,6 +58,7 @@ std::atomic<int> g_h26xSoftwareThreadingMode{static_cast<int>(H26xSoftwareThread
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
 std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
 std::atomic<bool> g_debugDeterministicPipelineEnabled{false};
+std::atomic<int> g_debugTimelineAudioEnvelopeGranularity{kDefaultTimelineAudioEnvelopeGranularity};
 std::mutex g_decoderLaneCountCallbackMutex;
 DecoderLaneCountChangedCallback g_decoderLaneCountChangedCallback;
 
@@ -304,6 +306,10 @@ bool debugDeterministicPipelineEnabled() {
     return g_debugDeterministicPipelineEnabled.load();
 }
 
+int debugTimelineAudioEnvelopeGranularity() {
+    return g_debugTimelineAudioEnvelopeGranularity.load();
+}
+
 void setDebugPlaybackEnabled(bool enabled) {
     g_debugPlayback.store(static_cast<int>(enabled ? DebugLogLevel::Debug : DebugLogLevel::Off));
 }
@@ -397,6 +403,10 @@ void setDebugDeterministicPipelineEnabled(bool enabled) {
     g_debugDeterministicPipelineEnabled.store(enabled);
 }
 
+void setDebugTimelineAudioEnvelopeGranularity(int granularity) {
+    g_debugTimelineAudioEnvelopeGranularity.store(qBound(64, granularity, 8192));
+}
+
 RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
     RenderPipelineDefaults defaults;
 
@@ -457,7 +467,9 @@ QJsonObject debugControlsSnapshot() {
          h26xSoftwareThreadingModeToString(debugH26xSoftwareThreadingMode())},
         {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()},
         {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()},
-        {QStringLiteral("deterministic_pipeline"), debugDeterministicPipelineEnabled()}
+        {QStringLiteral("deterministic_pipeline"), debugDeterministicPipelineEnabled()},
+        {QStringLiteral("timeline_audio_envelope_granularity"),
+         debugTimelineAudioEnvelopeGranularity()}
     };
 }
 
@@ -556,6 +568,10 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
             return false;
         }
         setDebugH26xSoftwareThreadingMode(mode);
+        return true;
+    }
+    if (name == QStringLiteral("timeline_audio_envelope_granularity") && value.isDouble()) {
+        setDebugTimelineAudioEnvelopeGranularity(value.toInt());
         return true;
     }
     if (name == QStringLiteral("playhead_no_repaint") && value.isBool()) {

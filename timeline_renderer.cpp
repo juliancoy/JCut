@@ -1,6 +1,8 @@
 #include "timeline_renderer.h"
 #include "timeline_widget.h"
 #include "timeline_layout.h"
+#include "debug_controls.h"
+#include "waveform_service.h"
 
 #include <QFileInfo>
 #include <algorithm>
@@ -155,15 +157,54 @@ void TimelineRenderer::paint(QPainter* painter) {
             painter->setPen(QPen(QColor(QStringLiteral("#9fe7f4")), 2));
             painter->drawLine(envelopeRect.left(), envelopeRect.center().y(),
                              envelopeRect.right(), envelopeRect.center().y());
-            painter->setPen(Qt::NoPen);
-            for (int x = envelopeRect.left(); x < envelopeRect.right(); x += 6) {
-                const int idx = (x - envelopeRect.left()) / 6;
-                const qreal phase = static_cast<qreal>((idx * 17 + clip.startFrame + clip.sourceInFrame) % 100) / 99.0;
-                const qreal shaped = 0.2 + std::abs(std::sin(phase * 6.28318)) * 0.8;
-                const int barHeight = qMax(8, qRound(shaped * envelopeRect.height()));
-                const QRect barRect(x, envelopeRect.center().y() - barHeight / 2, 4, barHeight);
-                painter->setBrush(QColor(QStringLiteral("#f2feff")));
-                painter->drawRoundedRect(barRect, 2, 2);
+
+            const QString audioPath = playbackAudioPathForClip(clip);
+            const int64_t clipSampleSpan =
+                qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+            const qreal visibleStartRatio = qBound<qreal>(
+                0.0,
+                static_cast<qreal>(visibleClipRect.left() - clipRect.left()) /
+                    qMax<qreal>(1.0, static_cast<qreal>(clipRect.width())),
+                1.0);
+            const qreal visibleEndRatio = qBound<qreal>(
+                visibleStartRatio,
+                static_cast<qreal>(visibleClipRect.right() - clipRect.left() + 1) /
+                    qMax<qreal>(1.0, static_cast<qreal>(clipRect.width())),
+                1.0);
+            const int64_t sourceStartSample = qMax<int64_t>(0, frameToSamples(clip.sourceInFrame));
+            const int64_t visibleSampleStart = sourceStartSample + static_cast<int64_t>(
+                std::floor(static_cast<qreal>(clipSampleSpan) * visibleStartRatio));
+            const int64_t visibleSampleEnd = sourceStartSample + static_cast<int64_t>(
+                std::ceil(static_cast<qreal>(clipSampleSpan) * visibleEndRatio));
+
+            QVector<float> minVals;
+            QVector<float> maxVals;
+            const int columns = qMax(1, envelopeRect.width());
+            const bool hasWaveform = !audioPath.isEmpty() &&
+                editor::WaveformService::instance().queryEnvelope(
+                    audioPath,
+                    visibleSampleStart,
+                    qMax<int64_t>(visibleSampleStart + 1, visibleSampleEnd),
+                    columns,
+                    &minVals,
+                    &maxVals);
+
+            if (hasWaveform && minVals.size() == columns && maxVals.size() == columns) {
+                painter->setPen(QPen(QColor(QStringLiteral("#f2feff")), 1.0));
+                for (int i = 0; i < columns; ++i) {
+                    const int x = envelopeRect.left() + i;
+                    const qreal minAmp = qBound<qreal>(-1.0, static_cast<qreal>(minVals[i]), 1.0);
+                    const qreal maxAmp = qBound<qreal>(-1.0, static_cast<qreal>(maxVals[i]), 1.0);
+                    const int yTop = qRound(envelopeRect.center().y() - (maxAmp * envelopeRect.height() * 0.5));
+                    const int yBottom = qRound(envelopeRect.center().y() - (minAmp * envelopeRect.height() * 0.5));
+                    painter->drawLine(x, yTop, x, yBottom);
+                }
+            } else {
+                painter->setPen(QPen(QColor(QStringLiteral("#8fc8d3")), 1.0, Qt::DashLine));
+                painter->drawLine(envelopeRect.left(),
+                                  envelopeRect.center().y(),
+                                  envelopeRect.right(),
+                                  envelopeRect.center().y());
             }
             painter->restore();
         }

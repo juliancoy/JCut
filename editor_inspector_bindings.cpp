@@ -5,6 +5,7 @@
 #include <QColorDialog>
 #include <QDoubleSpinBox>
 #include <QLineEdit>
+#include <QList>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -45,6 +46,25 @@ void EditorWindow::bindInspectorWidgets()
     m_previewLeadPrefetchCountSpin = m_inspectorPane->previewLeadPrefetchCountSpin();
     m_previewPlaybackWindowAheadSpin = m_inspectorPane->previewPlaybackWindowAheadSpin();
     m_previewVisibleQueueReserveSpin = m_inspectorPane->previewVisibleQueueReserveSpin();
+    m_timelineAudioEnvelopeGranularitySpin = m_inspectorPane->timelineAudioEnvelopeGranularitySpin();
+    m_preferencesFeatureAiPanelCheckBox = m_inspectorPane->preferencesFeatureAiPanelCheckBox();
+    m_preferencesFeatureAiSpeakerCleanupCheckBox =
+        m_inspectorPane->preferencesFeatureAiSpeakerCleanupCheckBox();
+    m_preferencesFeatureAudioPreviewModeCheckBox =
+        m_inspectorPane->preferencesFeatureAudioPreviewModeCheckBox();
+    m_preferencesFeatureAudioDynamicsToolsCheckBox =
+        m_inspectorPane->preferencesFeatureAudioDynamicsToolsCheckBox();
+    m_audioAmplifyEnabledCheckBox = m_inspectorPane->audioAmplifyEnabledCheckBox();
+    m_audioAmplifyDbSpin = m_inspectorPane->audioAmplifyDbSpin();
+    m_audioNormalizeEnabledCheckBox = m_inspectorPane->audioNormalizeEnabledCheckBox();
+    m_audioNormalizeTargetDbSpin = m_inspectorPane->audioNormalizeTargetDbSpin();
+    m_audioPeakReductionEnabledCheckBox = m_inspectorPane->audioPeakReductionEnabledCheckBox();
+    m_audioPeakThresholdDbSpin = m_inspectorPane->audioPeakThresholdDbSpin();
+    m_audioLimiterEnabledCheckBox = m_inspectorPane->audioLimiterEnabledCheckBox();
+    m_audioLimiterThresholdDbSpin = m_inspectorPane->audioLimiterThresholdDbSpin();
+    m_audioCompressorEnabledCheckBox = m_inspectorPane->audioCompressorEnabledCheckBox();
+    m_audioCompressorThresholdDbSpin = m_inspectorPane->audioCompressorThresholdDbSpin();
+    m_audioCompressorRatioSpin = m_inspectorPane->audioCompressorRatioSpin();
     m_transcriptOverlayEnabledCheckBox = m_inspectorPane->transcriptOverlayEnabledCheckBox();
     m_transcriptMaxLinesSpin = m_inspectorPane->transcriptMaxLinesSpin();
     m_transcriptMaxCharsSpin = m_inspectorPane->transcriptMaxCharsSpin();
@@ -181,6 +201,60 @@ void EditorWindow::bindInspectorWidgets()
     }
     if (m_aiLogoutButton) {
         connect(m_aiLogoutButton, &QPushButton::clicked, this, [this]() { clearAiGatewayLogin(); });
+    }
+
+    if (m_preferencesFeatureAiPanelCheckBox) {
+        connect(m_preferencesFeatureAiPanelCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            m_featureAiPanel = checked;
+            refreshAiIntegrationState();
+            scheduleSaveState();
+        });
+    }
+    if (m_preferencesFeatureAiSpeakerCleanupCheckBox) {
+        connect(m_preferencesFeatureAiSpeakerCleanupCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            m_featureAiSpeakerCleanup = checked;
+            refreshAiIntegrationState();
+            scheduleSaveState();
+        });
+    }
+    if (m_preferencesFeatureAudioPreviewModeCheckBox) {
+        connect(m_preferencesFeatureAudioPreviewModeCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            m_featureAudioPreviewMode = checked;
+            if (!checked) {
+                applyPreviewViewMode(QStringLiteral("video"));
+            } else {
+                applyPreviewViewMode(m_previewViewMode);
+            }
+            if (m_previewModeCombo) {
+                m_previewModeCombo->setEnabled(m_featureAudioPreviewMode);
+                m_previewModeCombo->setToolTip(m_featureAudioPreviewMode
+                                                   ? QStringLiteral("Switch preview between video composition and audio waveform view.")
+                                                   : QStringLiteral("Audio preview mode disabled by feature flag."));
+            }
+            scheduleSaveState();
+        });
+    }
+    if (m_preferencesFeatureAudioDynamicsToolsCheckBox) {
+        connect(m_preferencesFeatureAudioDynamicsToolsCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            m_featureAudioDynamicsTools = checked;
+            if (m_audioToolsButton) {
+                m_audioToolsButton->setEnabled(m_featureAudioDynamicsTools);
+                m_audioToolsButton->setToolTip(m_featureAudioDynamicsTools
+                                                   ? QStringLiteral("Open the Audio tab.")
+                                                   : QStringLiteral("Audio dynamics tools disabled by feature flag."));
+            }
+            const QList<QWidget*> controls{
+                m_audioAmplifyEnabledCheckBox, m_audioAmplifyDbSpin, m_audioNormalizeEnabledCheckBox,
+                m_audioNormalizeTargetDbSpin, m_audioPeakReductionEnabledCheckBox, m_audioPeakThresholdDbSpin,
+                m_audioLimiterEnabledCheckBox, m_audioLimiterThresholdDbSpin, m_audioCompressorEnabledCheckBox,
+                m_audioCompressorThresholdDbSpin, m_audioCompressorRatioSpin};
+            for (QWidget* control : controls) {
+                if (control) {
+                    control->setEnabled(m_featureAudioDynamicsTools);
+                }
+            }
+            scheduleSaveState();
+        });
     }
 }
 
@@ -362,6 +436,31 @@ void EditorWindow::setupPreviewControls()
     const auto persistPreviewBufferingSettings = [this]() {
         scheduleSaveState();
     };
+    const auto applyAudioDynamicsFromInspector = [this]() {
+        if (!m_audioAmplifyEnabledCheckBox || !m_audioAmplifyDbSpin ||
+            !m_audioNormalizeEnabledCheckBox || !m_audioNormalizeTargetDbSpin ||
+            !m_audioPeakReductionEnabledCheckBox || !m_audioPeakThresholdDbSpin ||
+            !m_audioLimiterEnabledCheckBox || !m_audioLimiterThresholdDbSpin ||
+            !m_audioCompressorEnabledCheckBox || !m_audioCompressorThresholdDbSpin ||
+            !m_audioCompressorRatioSpin) {
+            return;
+        }
+        m_previewAudioDynamics.amplifyEnabled = m_audioAmplifyEnabledCheckBox->isChecked();
+        m_previewAudioDynamics.amplifyDb = m_audioAmplifyDbSpin->value();
+        m_previewAudioDynamics.normalizeEnabled = m_audioNormalizeEnabledCheckBox->isChecked();
+        m_previewAudioDynamics.normalizeTargetDb = m_audioNormalizeTargetDbSpin->value();
+        m_previewAudioDynamics.peakReductionEnabled = m_audioPeakReductionEnabledCheckBox->isChecked();
+        m_previewAudioDynamics.peakThresholdDb = m_audioPeakThresholdDbSpin->value();
+        m_previewAudioDynamics.limiterEnabled = m_audioLimiterEnabledCheckBox->isChecked();
+        m_previewAudioDynamics.limiterThresholdDb = m_audioLimiterThresholdDbSpin->value();
+        m_previewAudioDynamics.compressorEnabled = m_audioCompressorEnabledCheckBox->isChecked();
+        m_previewAudioDynamics.compressorThresholdDb = m_audioCompressorThresholdDbSpin->value();
+        m_previewAudioDynamics.compressorRatio = m_audioCompressorRatioSpin->value();
+        if (m_preview) {
+            m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
+        }
+        scheduleSaveState();
+    };
 
     if (m_bypassGradingCheckBox) {
         connect(m_bypassGradingCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
@@ -467,6 +566,61 @@ void EditorWindow::setupPreviewControls()
 
     if (m_previewLeadPrefetchCountSpin && m_previewLeadPrefetchEnabledCheckBox) {
         m_previewLeadPrefetchCountSpin->setEnabled(m_previewLeadPrefetchEnabledCheckBox->isChecked());
+    }
+
+    if (m_timelineAudioEnvelopeGranularitySpin) {
+        connect(m_timelineAudioEnvelopeGranularitySpin, qOverload<int>(&QSpinBox::valueChanged), this, [this](int value) {
+            editor::setDebugTimelineAudioEnvelopeGranularity(value);
+            if (m_timeline) {
+                m_timeline->update();
+            }
+            scheduleSaveState();
+        });
+    }
+
+    if (m_audioAmplifyEnabledCheckBox) {
+        connect(m_audioAmplifyEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioAmplifyDbSpin) {
+        connect(m_audioAmplifyDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioNormalizeEnabledCheckBox) {
+        connect(m_audioNormalizeEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioNormalizeTargetDbSpin) {
+        connect(m_audioNormalizeTargetDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioPeakReductionEnabledCheckBox) {
+        connect(m_audioPeakReductionEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioPeakThresholdDbSpin) {
+        connect(m_audioPeakThresholdDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioLimiterEnabledCheckBox) {
+        connect(m_audioLimiterEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioLimiterThresholdDbSpin) {
+        connect(m_audioLimiterThresholdDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioCompressorEnabledCheckBox) {
+        connect(m_audioCompressorEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioCompressorThresholdDbSpin) {
+        connect(m_audioCompressorThresholdDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioCompressorRatioSpin) {
+        connect(m_audioCompressorRatioSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
     }
 
     connect(m_inspectorPane->backgroundColorButton(), &QPushButton::clicked, this, [this]() {

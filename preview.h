@@ -10,6 +10,7 @@
 #include <QTransform>
 #include <QImage>
 #include <QColor>
+#include <QDateTime>
 #include <deque>
 #include <memory>
 #include <functional>
@@ -36,6 +37,8 @@ public:
     };
 
     struct AudioDynamicsSettings {
+        bool amplifyEnabled = false;
+        qreal amplifyDb = 0.0;
         bool normalizeEnabled = false;
         qreal normalizeTargetDb = -1.0;
         bool peakReductionEnabled = false;
@@ -246,8 +249,7 @@ private:
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
     QVector<qreal> audioWaveformBinsForClip(const TimelineClip& clip, int binCount) const;
-    QVector<qreal> audioWaveformBinsForPath(const QString& mediaPath, int binCount) const;
-    QVector<qreal> applyAudioDynamicsToWaveform(const QVector<qreal>& bins) const;
+    QString audioDynamicsCacheKey() const;
     void drawSpeakerPickOverlay(QPainter* painter) const;
     QRect fitRect(const QSize& source, const QRect& bounds) const;
     QPointF mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info, const QPointF& normalizedPoint) const;
@@ -302,7 +304,6 @@ private:
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
-    mutable QHash<QString, QVector<qreal>> m_audioWaveformCache;
     qreal m_previewZoom = 1.0;
     QPointF m_previewPanOffset;
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;

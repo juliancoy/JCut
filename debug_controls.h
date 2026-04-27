@@ -60,6 +60,7 @@ H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode();
 bool debugPlayheadNoRepaint();
 bool debugPlaybackCacheFallbackEnabled();
 bool debugDeterministicPipelineEnabled();
+int debugTimelineAudioEnvelopeGranularity();
 
 void setDebugPlaybackEnabled(bool enabled);
 void setDebugCacheEnabled(bool enabled);
@@ -81,6 +82,7 @@ void setDebugH26xSoftwareThreadingMode(H26xSoftwareThreadingMode mode);
 void setDebugPlayheadNoRepaint(bool enabled);
 void setDebugPlaybackCacheFallbackEnabled(bool enabled);
 void setDebugDeterministicPipelineEnabled(bool enabled);
+void setDebugTimelineAudioEnvelopeGranularity(int granularity);
 
 struct RenderPipelineDefaults {
     DecodePreference decodePreference = DecodePreference::Software;

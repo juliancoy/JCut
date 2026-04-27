@@ -81,6 +81,7 @@ EditorPane::EditorPane(QWidget *parent)
     m_previewInfo->setStyleSheet(QStringLiteral(
         "QLabel { background: rgba(7, 11, 17, 0.72); color: #dce6ef; border-radius: 10px; padding: 10px 12px; }"));
     m_previewInfo->setWordWrap(true);
+    m_previewInfo->setVisible(false);
     overlayLayout->addWidget(m_previewInfo, 0, Qt::AlignLeft | Qt::AlignBottom);
 
     auto *stack = new QStackedLayout;
@@ -208,7 +209,7 @@ void EditorPane::setupTransportControls()
     m_audioToolsButton = new QToolButton;
     m_audioToolsButton->setObjectName(QStringLiteral("transport.audio_tools"));
     m_audioToolsButton->setText(QStringLiteral("FX"));
-    m_audioToolsButton->setToolTip(QStringLiteral("Open audio normalization/limiter/compressor controls."));
+    m_audioToolsButton->setToolTip(QStringLiteral("Open the Audio inspector tab."));
     m_audioToolsButton->setMinimumWidth(0);
     m_audioToolsButton->setMaximumWidth(34);
     m_audioToolsButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);

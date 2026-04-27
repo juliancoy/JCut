@@ -197,6 +197,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/clip_serialization.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_engine.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transform_skip_aware_timing.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/waveform_service.cpp
 )
 
 add_library(editor_test_support STATIC ${EDITOR_TEST_SUPPORT_SOURCES})

@@ -4,6 +4,7 @@
 
 class QLabel;
 class QTabWidget;
+class QHBoxLayout;
 class QDoubleSpinBox;
 class QSpinBox;
 class QComboBox;
@@ -23,6 +24,7 @@ class InspectorPane final : public QWidget
 
 public:
     explicit InspectorPane(QWidget *parent = nullptr);
+    void setHeaderWidget(QWidget *widget);
 
     QTabWidget *tabs() const { return m_inspectorTabs; }
 
@@ -79,6 +81,7 @@ public:
     QCheckBox *transcriptItalicCheckBox() const { return m_transcriptItalicCheckBox; }
     QCheckBox *transcriptFollowCurrentWordCheckBox() const { return m_transcriptFollowCurrentWordCheckBox; }
     QCheckBox *transcriptUnifiedEditModeCheckBox() const { return m_transcriptUnifiedEditModeCheckBox; }
+    QLineEdit *transcriptSearchFilterLineEdit() const { return m_transcriptSearchFilterLineEdit; }
     QComboBox *transcriptSpeakerFilterCombo() const { return m_transcriptSpeakerFilterCombo; }
     QComboBox *transcriptScriptVersionCombo() const { return m_transcriptScriptVersionCombo; }
     QPushButton *transcriptNewVersionButton() const { return m_transcriptNewVersionButton; }
@@ -228,6 +231,22 @@ public:
     QSpinBox *previewLeadPrefetchCountSpin() const { return m_previewLeadPrefetchCountSpin; }
     QSpinBox *previewPlaybackWindowAheadSpin() const { return m_previewPlaybackWindowAheadSpin; }
     QSpinBox *previewVisibleQueueReserveSpin() const { return m_previewVisibleQueueReserveSpin; }
+    QSpinBox *timelineAudioEnvelopeGranularitySpin() const { return m_timelineAudioEnvelopeGranularitySpin; }
+    QCheckBox *preferencesFeatureAiPanelCheckBox() const { return m_preferencesFeatureAiPanelCheckBox; }
+    QCheckBox *preferencesFeatureAiSpeakerCleanupCheckBox() const { return m_preferencesFeatureAiSpeakerCleanupCheckBox; }
+    QCheckBox *preferencesFeatureAudioPreviewModeCheckBox() const { return m_preferencesFeatureAudioPreviewModeCheckBox; }
+    QCheckBox *preferencesFeatureAudioDynamicsToolsCheckBox() const { return m_preferencesFeatureAudioDynamicsToolsCheckBox; }
+    QCheckBox *audioAmplifyEnabledCheckBox() const { return m_audioAmplifyEnabledCheckBox; }
+    QDoubleSpinBox *audioAmplifyDbSpin() const { return m_audioAmplifyDbSpin; }
+    QCheckBox *audioNormalizeEnabledCheckBox() const { return m_audioNormalizeEnabledCheckBox; }
+    QDoubleSpinBox *audioNormalizeTargetDbSpin() const { return m_audioNormalizeTargetDbSpin; }
+    QCheckBox *audioPeakReductionEnabledCheckBox() const { return m_audioPeakReductionEnabledCheckBox; }
+    QDoubleSpinBox *audioPeakThresholdDbSpin() const { return m_audioPeakThresholdDbSpin; }
+    QCheckBox *audioLimiterEnabledCheckBox() const { return m_audioLimiterEnabledCheckBox; }
+    QDoubleSpinBox *audioLimiterThresholdDbSpin() const { return m_audioLimiterThresholdDbSpin; }
+    QCheckBox *audioCompressorEnabledCheckBox() const { return m_audioCompressorEnabledCheckBox; }
+    QDoubleSpinBox *audioCompressorThresholdDbSpin() const { return m_audioCompressorThresholdDbSpin; }
+    QDoubleSpinBox *audioCompressorRatioSpin() const { return m_audioCompressorRatioSpin; }
     QTableWidget *profileSummaryTable() const { return m_profileSummaryTable; }
     QComboBox *profileH26xThreadingModeCombo() const { return m_profileH26xThreadingModeCombo; }
     QTableWidget *clipsTable() const { return m_clipsTable; }
@@ -306,6 +325,8 @@ private:
     QWidget *buildTracksTab();
     QWidget *buildOutputTab();
     QWidget *buildPreviewTab();
+    QWidget *buildAudioTab();
+    QWidget *buildPreferencesTab();
     QWidget *buildProfileTab();
     QWidget *buildProjectsTab();
     QWidget *buildAiTab();
@@ -313,6 +334,7 @@ private:
 
 private:
     QTabWidget *m_inspectorTabs = nullptr;
+    QHBoxLayout *m_headerLayout = nullptr;
 
     QLabel *m_gradingPathLabel = nullptr;
     QLabel *m_opacityPathLabel = nullptr;
@@ -456,6 +478,22 @@ private:
     QSpinBox *m_previewLeadPrefetchCountSpin = nullptr;
     QSpinBox *m_previewPlaybackWindowAheadSpin = nullptr;
     QSpinBox *m_previewVisibleQueueReserveSpin = nullptr;
+    QSpinBox *m_timelineAudioEnvelopeGranularitySpin = nullptr;
+    QCheckBox *m_preferencesFeatureAiPanelCheckBox = nullptr;
+    QCheckBox *m_preferencesFeatureAiSpeakerCleanupCheckBox = nullptr;
+    QCheckBox *m_preferencesFeatureAudioPreviewModeCheckBox = nullptr;
+    QCheckBox *m_preferencesFeatureAudioDynamicsToolsCheckBox = nullptr;
+    QCheckBox *m_audioAmplifyEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
+    QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
+    QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;
+    QCheckBox *m_audioLimiterEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioLimiterThresholdDbSpin = nullptr;
+    QCheckBox *m_audioCompressorEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioCompressorThresholdDbSpin = nullptr;
+    QDoubleSpinBox *m_audioCompressorRatioSpin = nullptr;
     QTableWidget *m_profileSummaryTable = nullptr;
     QComboBox *m_profileH26xThreadingModeCombo = nullptr;
     QTableWidget *m_clipsTable = nullptr;
@@ -493,6 +531,7 @@ private:
     QCheckBox *m_transcriptItalicCheckBox = nullptr;
     QCheckBox *m_transcriptFollowCurrentWordCheckBox = nullptr;
     QCheckBox *m_transcriptUnifiedEditModeCheckBox = nullptr;
+    QLineEdit *m_transcriptSearchFilterLineEdit = nullptr;
     QComboBox *m_transcriptSpeakerFilterCombo = nullptr;
     QComboBox *m_transcriptScriptVersionCombo = nullptr;
     QPushButton *m_transcriptNewVersionButton = nullptr;
