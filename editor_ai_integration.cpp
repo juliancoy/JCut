@@ -8,8 +8,22 @@
 
 #include <QDateTime>
 #include <QMessageBox>
+#include <QMetaEnum>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QUrl>
+#include <QWidget>
+#include <QAbstractButton>
+#include <QComboBox>
+#include <QGroupBox>
+#include <QLabel>
+#include <QLineEdit>
+#include <QMainWindow>
+#include <QPlainTextEdit>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QTabWidget>
+#include <QTextBrowser>
 
 namespace {
 
@@ -80,6 +94,67 @@ bool isAuthTokenFailure(const cppmonetize::ApiError& error)
            details.contains(QStringLiteral("token")) ||
            code == QStringLiteral("invalid_jwt") ||
            code == QStringLiteral("unauthorized");
+}
+
+QString widgetLabelText(const QWidget* widget)
+{
+    if (!widget) {
+        return QString();
+    }
+    if (const auto* button = qobject_cast<const QAbstractButton*>(widget)) {
+        return button->text().trimmed();
+    }
+    if (const auto* label = qobject_cast<const QLabel*>(widget)) {
+        return label->text().trimmed();
+    }
+    if (const auto* lineEdit = qobject_cast<const QLineEdit*>(widget)) {
+        return lineEdit->text().trimmed();
+    }
+    if (const auto* plainText = qobject_cast<const QPlainTextEdit*>(widget)) {
+        return plainText->toPlainText().trimmed();
+    }
+    if (const auto* combo = qobject_cast<const QComboBox*>(widget)) {
+        return combo->currentText().trimmed();
+    }
+    if (const auto* group = qobject_cast<const QGroupBox*>(widget)) {
+        return group->title().trimmed();
+    }
+    if (const auto* tab = qobject_cast<const QTabWidget*>(widget)) {
+        if (tab->currentIndex() >= 0) {
+            return tab->tabText(tab->currentIndex()).trimmed();
+        }
+    }
+    return QString();
+}
+
+void appendUiHierarchyLines(const QObject* node, int depth, QStringList* lines)
+{
+    if (!node || !lines) {
+        return;
+    }
+    const QString indent(depth * 2, QLatin1Char(' '));
+    QString line = QStringLiteral("%1- %2").arg(indent, QString::fromLatin1(node->metaObject()->className()));
+    if (!node->objectName().trimmed().isEmpty()) {
+        line += QStringLiteral(" name=\"%1\"").arg(node->objectName().trimmed());
+    }
+    if (const auto* widget = qobject_cast<const QWidget*>(node)) {
+        const QRect g = widget->geometry();
+        line += QStringLiteral(" visible=%1 enabled=%2 geom=%3,%4,%5x%6")
+                    .arg(widget->isVisible() ? QStringLiteral("true") : QStringLiteral("false"))
+                    .arg(widget->isEnabled() ? QStringLiteral("true") : QStringLiteral("false"))
+                    .arg(g.x())
+                    .arg(g.y())
+                    .arg(g.width())
+                    .arg(g.height());
+        const QString label = widgetLabelText(widget);
+        if (!label.isEmpty()) {
+            line += QStringLiteral(" text=\"%1\"").arg(label.left(160).toHtmlEscaped());
+        }
+    }
+    lines->push_back(line);
+    for (const QObject* child : node->children()) {
+        appendUiHierarchyLines(child, depth + 1, lines);
+    }
 }
 
 }  // namespace
@@ -476,6 +551,19 @@ void EditorWindow::refreshAiIntegrationState()
     if (m_aiLogoutButton) {
         m_aiLogoutButton->setEnabled(!m_aiAuthToken.isEmpty());
     }
+    if (m_aiChatInputLineEdit) {
+        const bool chatEnabled = enabled && m_featureAiPanel;
+        m_aiChatInputLineEdit->setEnabled(chatEnabled);
+        m_aiChatInputLineEdit->setToolTip(chatEnabled ? QString() : status);
+    }
+    if (m_aiChatSendButton) {
+        const bool chatEnabled = enabled && m_featureAiPanel;
+        m_aiChatSendButton->setEnabled(chatEnabled);
+        m_aiChatSendButton->setToolTip(chatEnabled ? QString() : status);
+    }
+    if (m_aiChatClearButton) {
+        m_aiChatClearButton->setEnabled(m_aiChatHistoryEdit && !m_aiChatHistoryEdit->toPlainText().trimmed().isEmpty());
+    }
     updateProfileAvatarButton();
     if (m_aiStatusLabel) {
         m_aiStatusLabel->setText(QStringLiteral("%1 | Usage %2/%3 (fail %4)")
@@ -526,6 +614,13 @@ QJsonObject EditorWindow::buildAiProjectContext() const
     }
     root[QStringLiteral("clips")] = clips;
     return root;
+}
+
+QString EditorWindow::buildAiUiHierarchySnapshot() const
+{
+    QStringList lines;
+    appendUiHierarchyLines(this, 0, &lines);
+    return lines.join(QLatin1Char('\n'));
 }
 
 QJsonObject EditorWindow::runAiAction(const QString& action,
@@ -1024,4 +1119,123 @@ void EditorWindow::runAiCleanAssignments()
         return;
     }
     m_speakersTab->runAiCleanSpuriousAssignments();
+}
+
+void EditorWindow::appendAiChatLine(const QString& role, const QString& text)
+{
+    if (!m_aiChatHistoryEdit) {
+        return;
+    }
+    const QString trimmedRole = role.trimmed().isEmpty() ? QStringLiteral("Assistant") : role.trimmed();
+    const QString trimmedText = text.trimmed().isEmpty() ? QStringLiteral("(empty)") : text.trimmed();
+    QString roleColor = QStringLiteral("#9ec3ff");
+    if (trimmedRole.compare(QStringLiteral("Assistant"), Qt::CaseInsensitive) == 0) {
+        roleColor = QStringLiteral("#8ee59a");
+    } else if (trimmedRole.compare(QStringLiteral("System"), Qt::CaseInsensitive) == 0) {
+        roleColor = QStringLiteral("#f2d179");
+    } else if (trimmedRole.compare(QStringLiteral("Error"), Qt::CaseInsensitive) == 0) {
+        roleColor = QStringLiteral("#ff9a9a");
+    }
+    const QString html = QStringLiteral(
+        "<div style=\"margin:0 0 10px 0;\">"
+        "<div style=\"color:%1;font-weight:600;\">%2</div>"
+        "<div style=\"white-space:pre-wrap;color:#d6dee8;\">%3</div>"
+        "</div>")
+                             .arg(roleColor,
+                                  trimmedRole.toHtmlEscaped(),
+                                  trimmedText.toHtmlEscaped());
+    m_aiChatHistoryEdit->append(html);
+    if (QScrollBar* bar = m_aiChatHistoryEdit->verticalScrollBar()) {
+        bar->setValue(bar->maximum());
+    }
+    if (m_aiChatClearButton) {
+        m_aiChatClearButton->setEnabled(true);
+    }
+}
+
+void EditorWindow::runAiChatPrompt()
+{
+    if (!m_aiChatInputLineEdit) {
+        return;
+    }
+    QString prompt = m_aiChatInputLineEdit->toPlainText().trimmed();
+    if (prompt.isEmpty()) {
+        return;
+    }
+    const bool includeUi = prompt.contains(QStringLiteral("@ui"), Qt::CaseInsensitive);
+    prompt.replace(QStringLiteral("@ui"), QString(), Qt::CaseInsensitive);
+    prompt = prompt.trimmed();
+    if (prompt.isEmpty()) {
+        appendAiChatLine(
+            QStringLiteral("System"),
+            QStringLiteral("Please enter a prompt. `@ui` alone sends no question."));
+        return;
+    }
+
+    if (includeUi) {
+        appendAiChatLine(
+            QStringLiteral("System"),
+            QStringLiteral("Attached full UI hierarchy context for this turn."));
+    }
+    appendAiChatLine(QStringLiteral("You"), prompt);
+    m_aiChatInputLineEdit->setPlainText(QString());
+
+    m_aiChatMessages.push_back({QStringLiteral("user"), prompt});
+    while (m_aiChatMessages.size() > m_aiChatMaxMessages) {
+        m_aiChatMessages.removeFirst();
+    }
+
+    QString conversationContext;
+    for (const AiChatMessage& msg : std::as_const(m_aiChatMessages)) {
+        const QString roleTag = msg.role.compare(QStringLiteral("assistant"), Qt::CaseInsensitive) == 0
+            ? QStringLiteral("ASSISTANT")
+            : QStringLiteral("USER");
+        conversationContext += QStringLiteral("[%1]\n%2\n\n").arg(roleTag, msg.content);
+    }
+    if (includeUi) {
+        conversationContext += QStringLiteral("[UI_HIERARCHY]\n");
+        conversationContext += buildAiUiHierarchySnapshot();
+        conversationContext += QStringLiteral("\n\n");
+    }
+
+    QJsonObject payload;
+    payload[QStringLiteral("task")] = QStringLiteral("chat_agent");
+    payload[QStringLiteral("instructions")] =
+        QStringLiteral("You are JCut Agent. You are stateful across turns. "
+                       "Use the provided conversation and optional UI hierarchy to answer accurately. "
+                       "Give concise, actionable responses.");
+    payload[QStringLiteral("transcript_text")] = conversationContext;
+    bool ok = false;
+    QString error;
+    const QString savedModel = m_aiSelectedModel;
+    m_aiSelectedModel = QStringLiteral("deepseek-chat");
+    const QJsonObject response = runAiAction(QStringLiteral("chat"), payload, &ok, &error);
+    m_aiSelectedModel = savedModel;
+    if (!ok) {
+        appendAiChatLine(QStringLiteral("Error"), QStringLiteral("AI request failed: %1").arg(error));
+        return;
+    }
+
+    QString reply = response.value(QStringLiteral("text")).toString().trimmed();
+    if (reply.isEmpty()) {
+        reply = response.value(QStringLiteral("message")).toString().trimmed();
+    }
+    if (reply.isEmpty()) {
+        reply = response.value(QStringLiteral("output")).toString().trimmed();
+    }
+    if (reply.isEmpty()) {
+        const QJsonObject resultObj = response.value(QStringLiteral("result")).toObject();
+        reply = resultObj.value(QStringLiteral("text")).toString().trimmed();
+        if (reply.isEmpty()) {
+            reply = resultObj.value(QStringLiteral("message")).toString().trimmed();
+        }
+    }
+    if (reply.isEmpty()) {
+        reply = QStringLiteral("No text response returned.");
+    }
+    m_aiChatMessages.push_back({QStringLiteral("assistant"), reply});
+    while (m_aiChatMessages.size() > m_aiChatMaxMessages) {
+        m_aiChatMessages.removeFirst();
+    }
+    appendAiChatLine(QStringLiteral("Assistant"), reply);
 }

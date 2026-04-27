@@ -13,9 +13,11 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QTextBrowser>
 #include <QVBoxLayout>
 
 namespace {
@@ -560,12 +562,41 @@ QWidget *InspectorPane::buildAiTab()
     authRow->addWidget(m_aiLoginButton);
     authRow->addWidget(m_aiLogoutButton);
 
+    auto *chatHeading = createTabHeading(QStringLiteral("Chat"), page);
+    m_aiChatHistoryEdit = new QTextBrowser(page);
+    m_aiChatHistoryEdit->setObjectName(QStringLiteral("ai.chat_history"));
+    m_aiChatHistoryEdit->setPlaceholderText(
+        QStringLiteral("Chat responses from DeepSeek will appear here."));
+    m_aiChatHistoryEdit->setMinimumHeight(160);
+    m_aiChatHistoryEdit->setOpenExternalLinks(false);
+
+    auto *chatInputLabel = new QLabel(QStringLiteral("Prompt (Ctrl+Enter to send)"), page);
+    chatInputLabel->setStyleSheet(QStringLiteral("color: #8ea4bf;"));
+    m_aiChatInputLineEdit = new QPlainTextEdit(page);
+    m_aiChatInputLineEdit->setObjectName(QStringLiteral("ai.chat_input"));
+    m_aiChatInputLineEdit->setPlaceholderText(QStringLiteral("Ask DeepSeek anything..."));
+    m_aiChatInputLineEdit->setMinimumHeight(70);
+    m_aiChatInputLineEdit->setMaximumHeight(140);
+
+    auto *chatInputRow = new QHBoxLayout;
+    m_aiChatSendButton = new QPushButton(QStringLiteral("Send"), page);
+    m_aiChatClearButton = new QPushButton(QStringLiteral("Clear"), page);
+    m_aiChatClearButton->setEnabled(false);
+    chatInputRow->addStretch(1);
+    chatInputRow->addWidget(m_aiChatSendButton);
+    chatInputRow->addWidget(m_aiChatClearButton);
+
     layout->addWidget(summary);
     layout->addWidget(m_aiStatusLabel);
     layout->addLayout(modelForm);
     layout->addLayout(actionsRow1);
     layout->addLayout(actionsRow2);
     layout->addLayout(authRow);
+    layout->addWidget(chatHeading);
+    layout->addWidget(m_aiChatHistoryEdit);
+    layout->addWidget(chatInputLabel);
+    layout->addWidget(m_aiChatInputLineEdit);
+    layout->addLayout(chatInputRow);
     layout->addStretch(1);
     return page;
 }

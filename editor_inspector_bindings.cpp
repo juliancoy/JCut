@@ -9,6 +9,7 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QShortcut>
 #include <QSpinBox>
 #include <QTableWidget>
 
@@ -179,6 +180,10 @@ void EditorWindow::bindInspectorWidgets()
     m_aiCleanAssignmentsButton = m_inspectorPane->aiCleanAssignmentsButton();
     m_aiLoginButton = m_inspectorPane->aiLoginButton();
     m_aiLogoutButton = m_inspectorPane->aiLogoutButton();
+    m_aiChatHistoryEdit = m_inspectorPane->aiChatHistoryEdit();
+    m_aiChatInputLineEdit = m_inspectorPane->aiChatInputLineEdit();
+    m_aiChatSendButton = m_inspectorPane->aiChatSendButton();
+    m_aiChatClearButton = m_inspectorPane->aiChatClearButton();
 
     if (m_aiModelCombo) {
         connect(m_aiModelCombo, &QComboBox::currentTextChanged, this, [this](const QString& model) {
@@ -203,6 +208,22 @@ void EditorWindow::bindInspectorWidgets()
     }
     if (m_aiLogoutButton) {
         connect(m_aiLogoutButton, &QPushButton::clicked, this, [this]() { clearAiGatewayLogin(); });
+    }
+    if (m_aiChatSendButton) {
+        connect(m_aiChatSendButton, &QPushButton::clicked, this, [this]() { runAiChatPrompt(); });
+    }
+    if (m_aiChatInputLineEdit) {
+        auto* sendShortcut = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Return")), m_aiChatInputLineEdit);
+        connect(sendShortcut, &QShortcut::activated, this, [this]() { runAiChatPrompt(); });
+        auto* sendShortcut2 = new QShortcut(QKeySequence(QStringLiteral("Ctrl+Enter")), m_aiChatInputLineEdit);
+        connect(sendShortcut2, &QShortcut::activated, this, [this]() { runAiChatPrompt(); });
+    }
+    if (m_aiChatClearButton && m_aiChatHistoryEdit) {
+        connect(m_aiChatClearButton, &QPushButton::clicked, this, [this]() {
+            m_aiChatHistoryEdit->clear();
+            m_aiChatMessages.clear();
+            m_aiChatClearButton->setEnabled(false);
+        });
     }
 
     if (m_preferencesFeatureAiPanelCheckBox) {

@@ -14,6 +14,7 @@ class QTableWidget;
 class QPushButton;
 class QLineEdit;
 class QPlainTextEdit;
+class QTextBrowser;
 class QIcon;
 class QListWidget;
 class GradingHistogramWidget;
@@ -269,6 +270,10 @@ public:
     QPushButton *aiCleanAssignmentsButton() const { return m_aiCleanAssignmentsButton; }
     QPushButton *aiLoginButton() const { return m_aiLoginButton; }
     QPushButton *aiLogoutButton() const { return m_aiLogoutButton; }
+    QTextBrowser *aiChatHistoryEdit() const { return m_aiChatHistoryEdit; }
+    QPlainTextEdit *aiChatInputLineEdit() const { return m_aiChatInputLineEdit; }
+    QPushButton *aiChatSendButton() const { return m_aiChatSendButton; }
+    QPushButton *aiChatClearButton() const { return m_aiChatClearButton; }
 
     QSpinBox *outputWidthSpin() const { return m_outputWidthSpin; }
     QSpinBox *outputHeightSpin() const { return m_outputHeightSpin; }
@@ -519,6 +524,10 @@ private:
     QPushButton *m_aiCleanAssignmentsButton = nullptr;
     QPushButton *m_aiLoginButton = nullptr;
     QPushButton *m_aiLogoutButton = nullptr;
+    QTextBrowser *m_aiChatHistoryEdit = nullptr;
+    QPlainTextEdit *m_aiChatInputLineEdit = nullptr;
+    QPushButton *m_aiChatSendButton = nullptr;
+    QPushButton *m_aiChatClearButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
     QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;

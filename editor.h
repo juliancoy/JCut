@@ -43,7 +43,9 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QTextBrowser>
 #include <QStringList>
 #include <QSlider>
 #include <QSpinBox>
@@ -203,6 +205,9 @@ private:
     void runAiFindSpeakerNames();
     void runAiFindOrganizations();
     void runAiCleanAssignments();
+    void runAiChatPrompt();
+    void appendAiChatLine(const QString& role, const QString& text);
+    QString buildAiUiHierarchySnapshot() const;
     void updateProfileAvatarButton();
     void onProfileAvatarButtonClicked();
     QJsonObject buildAiProjectContext() const;
@@ -294,6 +299,10 @@ private:
     QPushButton *m_aiCleanAssignmentsButton = nullptr;
     QPushButton *m_aiLoginButton = nullptr;
     QPushButton *m_aiLogoutButton = nullptr;
+    QTextBrowser *m_aiChatHistoryEdit = nullptr;
+    QPlainTextEdit *m_aiChatInputLineEdit = nullptr;
+    QPushButton *m_aiChatSendButton = nullptr;
+    QPushButton *m_aiChatClearButton = nullptr;
     QPushButton *m_profileAvatarButton = nullptr;
 
     QToolButton *m_audioMuteButton = nullptr;
@@ -568,6 +577,12 @@ private:
     int m_aiRequestRetries = 1;
     QStringList m_aiFallbackModels;
     QVector<qint64> m_aiRecentRequestEpochMs;
+    struct AiChatMessage {
+        QString role;
+        QString content;
+    };
+    QVector<AiChatMessage> m_aiChatMessages;
+    int m_aiChatMaxMessages = 24;
 
     bool m_updatingTranscriptInspector = false;
     bool m_updatingSyncInspector = false;
