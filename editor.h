@@ -206,6 +206,8 @@ private:
     void runAiFindSpeakerNames();
     void runAiFindOrganizations();
     void runAiCleanAssignments();
+    void updateProfileAvatarButton();
+    void onProfileAvatarButtonClicked();
     QJsonObject buildAiProjectContext() const;
     QJsonObject runAiAction(const QString& action, const QJsonObject& payload, bool* okOut = nullptr, QString* errorOut = nullptr);
     void refreshProfileInspector();
@@ -295,6 +297,7 @@ private:
     QPushButton *m_aiCleanAssignmentsButton = nullptr;
     QPushButton *m_aiLoginButton = nullptr;
     QPushButton *m_aiLogoutButton = nullptr;
+    QPushButton *m_profileAvatarButton = nullptr;
 
     QToolButton *m_audioMuteButton = nullptr;
     QSlider *m_audioVolumeSlider = nullptr;

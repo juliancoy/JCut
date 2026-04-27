@@ -1475,6 +1475,57 @@ bool EditorWindow::clearAiTokenFromSecureStore(QString* errorOut) const
     return true;
 }
 
+void EditorWindow::updateProfileAvatarButton()
+{
+    if (!m_profileAvatarButton) {
+        return;
+    }
+
+    const bool loggedIn = !m_aiAuthToken.trimmed().isEmpty();
+    QString profileLabel = m_aiUserId.trimmed();
+    if (profileLabel.isEmpty()) {
+        profileLabel = loggedIn ? QStringLiteral("Profile") : QStringLiteral("Guest");
+    }
+    if (profileLabel.size() > 24) {
+        profileLabel = profileLabel.left(21) + QStringLiteral("...");
+    }
+
+    QIcon icon = QIcon::fromTheme(QStringLiteral("user-identity"));
+    if (icon.isNull()) {
+        icon = style()->standardIcon(QStyle::SP_FileIcon);
+    }
+    m_profileAvatarButton->setIcon(icon);
+    m_profileAvatarButton->setText(loggedIn ? profileLabel : QStringLiteral("Guest"));
+    m_profileAvatarButton->setToolTip(
+        loggedIn
+            ? QStringLiteral("Signed in as %1").arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId)
+            : QStringLiteral("Guest - click to sign in"));
+}
+
+void EditorWindow::onProfileAvatarButtonClicked()
+{
+    if (m_aiAuthToken.trimmed().isEmpty()) {
+        configureAiGatewayLogin();
+        return;
+    }
+
+    QMenu menu(this);
+    QAction* profileAction = menu.addAction(
+        QStringLiteral("Signed in as %1").arg(m_aiUserId.isEmpty() ? QStringLiteral("user") : m_aiUserId));
+    profileAction->setEnabled(false);
+    menu.addSeparator();
+    QAction* switchAction = menu.addAction(QStringLiteral("Switch Account"));
+    QAction* logoutAction = menu.addAction(QStringLiteral("Log Out"));
+
+    QAction* picked =
+        menu.exec(m_profileAvatarButton->mapToGlobal(QPoint(0, m_profileAvatarButton->height())));
+    if (picked == switchAction) {
+        configureAiGatewayLogin();
+    } else if (picked == logoutAction) {
+        clearAiGatewayLogin();
+    }
+}
+
 void EditorWindow::configureAiGatewayLogin()
 {
     QDialog dialog(this);
@@ -1877,6 +1928,7 @@ void EditorWindow::refreshAiIntegrationState()
     if (m_aiLogoutButton) {
         m_aiLogoutButton->setEnabled(!m_aiAuthToken.isEmpty());
     }
+    updateProfileAvatarButton();
     if (m_aiStatusLabel) {
         m_aiStatusLabel->setText(QStringLiteral("%1 | Usage %2/%3 (fail %4)")
                                      .arg(status)

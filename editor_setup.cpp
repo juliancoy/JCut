@@ -57,6 +57,8 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
         pushHistorySnapshot();
     });
     qDebug() << "[STARTUP] Explorer pane built in" << ctorTimer.elapsed() << "ms";
+    startupProfileMark(QStringLiteral("layout.explorer_pane.done"),
+                       QJsonObject{{QStringLiteral("ctor_elapsed_ms"), ctorTimer.elapsed()}});
 
     qDebug() << "[STARTUP] Building editor pane...";
     QElapsedTimer editorPaneTimer;
@@ -69,12 +71,26 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->addWidget(editorPane);
     m_explorerPane->setPreviewWindow(m_preview);
     qDebug() << "[STARTUP] Editor pane built in" << editorPaneTimer.elapsed() << "ms";
+    startupProfileMark(QStringLiteral("layout.editor_pane.done"),
+                       QJsonObject{{QStringLiteral("elapsed_ms"), editorPaneTimer.elapsed()}});
 
     m_inspectorPane = new InspectorPane(this);
     m_inspectorPane->setObjectName(QStringLiteral("column.inspector"));
     m_inspectorPane->setMinimumWidth(240);
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
+    if (m_inspectorTabs) {
+        m_profileAvatarButton = new QPushButton(m_inspectorTabs);
+        m_profileAvatarButton->setObjectName(QStringLiteral("tabs.profile_avatar_button"));
+        m_profileAvatarButton->setCursor(Qt::PointingHandCursor);
+        m_profileAvatarButton->setMinimumHeight(26);
+        m_profileAvatarButton->setToolTip(QStringLiteral("Guest"));
+        connect(m_profileAvatarButton, &QPushButton::clicked, this, [this]() {
+            onProfileAvatarButtonClicked();
+        });
+        m_inspectorTabs->setCornerWidget(m_profileAvatarButton, Qt::TopRightCorner);
+        updateProfileAvatarButton();
+    }
     if (m_inspectorTabs && m_preview) {
         const auto isTabNamed = [this](const QString& name) -> bool {
             if (!m_inspectorTabs) {
@@ -130,6 +146,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->setSizes({320, 900, 280});
 
     setCentralWidget(central);
+    startupProfileMark(QStringLiteral("layout.central_widget.done"));
 }
 
 void EditorWindow::setupPlaybackTimers()
@@ -358,11 +375,24 @@ void EditorWindow::setupAudioEngine()
 
 void EditorWindow::setupStartupLoad()
 {
+    startupProfileMark(QStringLiteral("startup_load.queue_posted"));
     QTimer::singleShot(0, this, [this]() {
+        startupProfileMark(QStringLiteral("startup_load.begin"));
         loadProjectsFromFolders();
+        startupProfileMark(QStringLiteral("startup_load.projects_loaded"));
         refreshProjectsList();
+        startupProfileMark(QStringLiteral("startup_load.projects_refreshed"));
         loadState();
+        startupProfileMark(QStringLiteral("startup_load.state_loaded"));
         setupAutosaveTimer();
+        startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
         m_inspectorPane->refresh();
+        startupProfileMark(QStringLiteral("startup_load.inspector_refreshed"));
+        m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
+            ? m_startupProfileTimer.elapsed()
+            : 0;
+        startupProfileMark(QStringLiteral("startup_load.complete"),
+                           QJsonObject{{QStringLiteral("total_ms"), m_startupProfileCompletedMs}});
+        m_startupProfileCompleted = true;
     });
 }
