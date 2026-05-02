@@ -87,6 +87,10 @@ struct RenderResult {
     qint64 maxFrameTextureStageMs = 0;
     qint64 maxFrameReadbackStageMs = 0;
     qint64 maxFrameConvertStageMs = 0;
+    QString requestedRenderBackend;
+    QString effectiveRenderBackend;
+    bool backendFallbackApplied = false;
+    QString backendFallbackReason;
     QString message;
     QJsonArray skippedClips;
     QJsonObject skippedClipReasonCounts;

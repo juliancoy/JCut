@@ -1,4 +1,6 @@
 #pragma once
+// OpenGL Render Path Header
+// PreviewWindow currently derives from QOpenGLWidget and uses OpenGL resources.
 
 #include <QOpenGLWidget>
 #include <QOpenGLFunctions>
@@ -23,35 +25,19 @@
 #include "async_decoder.h"
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
+#include "preview_surface.h"
 
 using namespace editor;
 
 class QKeyEvent;
 
-class PreviewWindow final : public QOpenGLWidget, protected QOpenGLFunctions {
+class PreviewWindow : public QOpenGLWidget, public PreviewSurface, protected QOpenGLFunctions {
     Q_OBJECT
 public:
-    enum class ViewMode {
-        Video = 0,
-        Audio = 1,
-    };
-
-    struct AudioDynamicsSettings {
-        bool amplifyEnabled = false;
-        qreal amplifyDb = 0.0;
-        bool normalizeEnabled = false;
-        qreal normalizeTargetDb = -1.0;
-        bool peakReductionEnabled = false;
-        qreal peakThresholdDb = -6.0;
-        bool limiterEnabled = false;
-        qreal limiterThresholdDb = -1.0;
-        bool compressorEnabled = false;
-        qreal compressorThresholdDb = -18.0;
-        qreal compressorRatio = 3.0;
-    };
-
     explicit PreviewWindow(QWidget* parent = nullptr);
     ~PreviewWindow() override;
+    QWidget* asWidget() override { return this; }
+    const QWidget* asWidget() const override { return this; }
 
     void setPlaybackState(bool playing);
     void setCurrentFrame(int64_t frame);
@@ -66,6 +52,7 @@ public:
     void beginBulkUpdate();
     void endBulkUpdate();
     QString backendName() const;
+    void setRenderBackendPreference(const QString& backendName);
     void setAudioMuted(bool muted);
     void setAudioVolume(qreal volume);
     void setOutputSize(const QSize& size);
@@ -78,6 +65,7 @@ public:
     void setPreviewZoom(qreal zoom);
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
+    void setBoxstreamOverlaySource(const QString& source);
     void setAudioSpeakerHoverModalEnabled(bool enabled);
     void setAudioWaveformVisible(bool visible);
     bool audioSpeakerHoverModalEnabled() const { return m_audioSpeakerHoverModalEnabled; }
@@ -121,14 +109,6 @@ public:
         return !m_selectedClipId.isEmpty() &&
                m_overlayInfo.value(m_selectedClipId).kind == PreviewOverlayKind::TranscriptOverlay;
     }
-
-    std::function<void(const QString&)> selectionRequested;
-    std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
-    std::function<void(const QString&, qreal, qreal, bool)> moveRequested;
-    std::function<void(const QString&)> createKeyframeRequested;
-    std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
-    std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
-    std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -315,6 +295,7 @@ private:
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
+    QString m_boxstreamOverlaySource = QStringLiteral("all");
     qreal m_previewZoom = 1.0;
     QPointF m_previewPanOffset;
     QHash<QString, PreviewOverlayInfo> m_overlayInfo;
@@ -332,6 +313,7 @@ private:
     int m_bulkUpdateDepth = 0;
     bool m_pendingFrameRequest = false;
     bool m_frameRequestsArmed = false;
+    bool m_forceCpuPreviewForVulkan = false;
     PreviewDragMode m_dragMode = PreviewDragMode::None;
     QPointF m_dragOriginPos;
     QRectF m_dragOriginBounds;
@@ -351,4 +333,7 @@ private:
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
     QPointF m_lastMousePos = QPointF(-10000.0, -10000.0);
+    QString m_requestedRenderBackend = QStringLiteral("opengl");
+    QString m_effectiveRenderBackend = QStringLiteral("opengl");
+    QString m_renderBackendFallbackReason;
 };

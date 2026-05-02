@@ -49,8 +49,8 @@ QVector<VideoEncoderChoice> videoEncoderChoicesForRequest(const QString& outputF
     const QString format = outputFormat.toLower();
     QVector<VideoEncoderChoice> choices;
     if (format == QStringLiteral("mp4")) {
-#if defined(Q_OS_LINUX)
         choices.push_back({QStringLiteral("h264_nvenc"), AV_PIX_FMT_NV12});
+#if defined(Q_OS_LINUX) || defined(__linux__)
         choices.push_back({QStringLiteral("h264_qsv"), AV_PIX_FMT_NV12});
         choices.push_back({QStringLiteral("h264_vaapi"), AV_PIX_FMT_NV12});
 #endif

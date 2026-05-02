@@ -182,6 +182,21 @@ QRect fitRect(const QSize& source, const QSize& bounds) {
     return QRect(topLeft, scaled);
 }
 
+QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
+    const QString safeTitle = title.trimmed().toHtmlEscaped();
+    if (safeTitle.isEmpty()) {
+        return QString();
+    }
+    return QStringLiteral(
+               "<div style=\"text-align:center;"
+               " font-weight:700;"
+               " letter-spacing:0.02em;"
+               " font-size:0.62em;"
+               " margin:0 0 0.30em 0;"
+               " color:%1;\">%2</div>")
+        .arg(color.name(QColor::HexArgb), safeTitle);
+}
+
 TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip,
                                                         int64_t timelineFrame,
                                                         const QVector<RenderSyncMarker>& markers,
@@ -245,11 +260,19 @@ void renderTranscriptOverlays(QImage* canvas,
         const QRectF textBounds = bounds.adjusted(18.0, 14.0, -18.0, -14.0);
         const QColor highlightFillColor(QStringLiteral("#fff2a8"));
         const QColor highlightTextColor(QStringLiteral("#181818"));
+        QString titleShadowHtml;
+        QString titleTextHtml;
+        if (clip.transcriptOverlay.showSpeakerTitle) {
+            const QString titleText = transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame);
+            titleShadowHtml = transcriptSpeakerTitleHtml(titleText, QColor(0, 0, 0, 200));
+            titleTextHtml = transcriptSpeakerTitleHtml(titleText, clip.transcriptOverlay.textColor);
+        }
         QTextDocument shadowDoc;
         shadowDoc.setDefaultFont(font);
         shadowDoc.setDocumentMargin(0.0);
         shadowDoc.setTextWidth(textBounds.width());
-        shadowDoc.setHtml(transcriptOverlayHtml(overlayLayout,
+        shadowDoc.setHtml(titleShadowHtml +
+                          transcriptOverlayHtml(overlayLayout,
                                                 QColor(0, 0, 0, 200),
                                                 QColor(0, 0, 0, 200),
                                                 QColor(0, 0, 0, 0)));
@@ -257,7 +280,8 @@ void renderTranscriptOverlays(QImage* canvas,
         textDoc.setDefaultFont(font);
         textDoc.setDocumentMargin(0.0);
         textDoc.setTextWidth(textBounds.width());
-        textDoc.setHtml(transcriptOverlayHtml(overlayLayout,
+        textDoc.setHtml(titleTextHtml +
+                        transcriptOverlayHtml(overlayLayout,
                                               clip.transcriptOverlay.textColor,
                                               highlightTextColor,
                                               highlightFillColor));

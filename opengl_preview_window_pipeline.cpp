@@ -1,5 +1,5 @@
-#include "preview.h"
-#include "preview_debug.h"
+#include "opengl_preview.h"
+#include "opengl_preview_debug.h"
 
 #include "async_decoder.h"
 #include "frame_handle.h"

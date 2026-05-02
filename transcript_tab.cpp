@@ -118,6 +118,18 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         m_deps.seekToTimelineFrame(m_pendingSeekTimelineFrame);
         m_pendingSeekTimelineFrame = -1;
     });
+    m_refreshDebounceTimer.setSingleShot(true);
+    connect(&m_refreshDebounceTimer, &QTimer::timeout, this, [this]() {
+        m_refreshQueued = false;
+        refresh();
+    });
+}
+
+void TranscriptTab::requestRefresh(int delayMs)
+{
+    const int safeDelayMs = qBound(0, delayMs, 500);
+    m_refreshQueued = true;
+    m_refreshDebounceTimer.start(safeDelayMs);
 }
 
 void TranscriptTab::wire()
@@ -204,6 +216,10 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptBackgroundVisibleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
+    if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
+        connect(m_widgets.transcriptShowSpeakerTitleCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
     if (m_widgets.transcriptMaxLinesSpin) {
         connect(m_widgets.transcriptMaxLinesSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &TranscriptTab::onOverlaySettingChanged);
@@ -274,19 +290,19 @@ void TranscriptTab::wire()
     }
     if (m_widgets.transcriptUnifiedEditModeCheckBox) {
         connect(m_widgets.transcriptUnifiedEditModeCheckBox, &QCheckBox::toggled,
-                this, [this](bool) { refresh(); });
+                this, [this](bool) { requestRefresh(); });
     }
     if (m_widgets.transcriptSearchFilterLineEdit) {
         connect(m_widgets.transcriptSearchFilterLineEdit, &QLineEdit::textChanged,
-                this, [this](const QString&) { refresh(); });
+                this, [this](const QString&) { requestRefresh(); });
     }
     if (m_widgets.transcriptSpeakerFilterCombo) {
         connect(m_widgets.transcriptSpeakerFilterCombo, &QComboBox::currentIndexChanged,
-                this, [this](int) { refresh(); });
+                this, [this](int) { requestRefresh(); });
     }
     if (m_widgets.transcriptShowExcludedLinesCheckBox) {
         connect(m_widgets.transcriptShowExcludedLinesCheckBox, &QCheckBox::toggled,
-                this, [this](bool) { refresh(); });
+                this, [this](bool) { requestRefresh(); });
     }
     if (m_widgets.transcriptScriptVersionCombo) {
         connect(m_widgets.transcriptScriptVersionCombo, qOverload<int>(&QComboBox::currentIndexChanged),
@@ -384,6 +400,8 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
                                          m_widgets.transcriptOverlayEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showBackground = m_widgets.transcriptBackgroundVisibleCheckBox &&
                                                 m_widgets.transcriptBackgroundVisibleCheckBox->isChecked();
+        clip.transcriptOverlay.showSpeakerTitle = m_widgets.transcriptShowSpeakerTitleCheckBox &&
+                                                  m_widgets.transcriptShowSpeakerTitleCheckBox->isChecked();
         clip.transcriptOverlay.maxLines = m_widgets.transcriptMaxLinesSpin
             ? m_widgets.transcriptMaxLinesSpin->value()
             : 2;
@@ -1072,6 +1090,7 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
 
     QSignalBlocker enabledBlock(m_widgets.transcriptOverlayEnabledCheckBox);
     QSignalBlocker backgroundBlock(m_widgets.transcriptBackgroundVisibleCheckBox);
+    QSignalBlocker titleBlock(m_widgets.transcriptShowSpeakerTitleCheckBox);
     QSignalBlocker maxLinesBlock(m_widgets.transcriptMaxLinesSpin);
     QSignalBlocker maxCharsBlock(m_widgets.transcriptMaxCharsSpin);
     QSignalBlocker autoScrollBlock(m_widgets.transcriptAutoScrollCheckBox);
@@ -1087,6 +1106,9 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     m_widgets.transcriptOverlayEnabledCheckBox->setChecked(clip.transcriptOverlay.enabled);
     if (m_widgets.transcriptBackgroundVisibleCheckBox) {
         m_widgets.transcriptBackgroundVisibleCheckBox->setChecked(clip.transcriptOverlay.showBackground);
+    }
+    if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
+        m_widgets.transcriptShowSpeakerTitleCheckBox->setChecked(clip.transcriptOverlay.showSpeakerTitle);
     }
     if (m_widgets.transcriptMaxLinesSpin) {
         m_widgets.transcriptMaxLinesSpin->setValue(clip.transcriptOverlay.maxLines);

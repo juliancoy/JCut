@@ -222,6 +222,28 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->createProxyRequested = [this](const QString &clipId) { createProxyForClip(clipId); };
     m_timeline->continueProxyRequested = [this](const QString &clipId) { continueProxyForClip(clipId); };
     m_timeline->deleteProxyRequested = [this](const QString &clipId) { deleteProxyForClip(clipId); };
+    m_timeline->generateBoxStreamRequested = [this](const QString& clipId) {
+        if (!m_timeline || !m_speakersTab) {
+            return;
+        }
+        m_timeline->setSelectedClipId(clipId);
+        m_speakersTab->refresh();
+        m_speakersTab->generateBoxStreamForSelectedClip();
+        if (m_inspectorPane) {
+            m_inspectorPane->refresh();
+        }
+    };
+    m_timeline->deleteBoxStreamRequested = [this](const QString& clipId) {
+        if (!m_timeline || !m_speakersTab) {
+            return;
+        }
+        m_timeline->setSelectedClipId(clipId);
+        m_speakersTab->refresh();
+        m_speakersTab->deleteBoxStreamForSelectedClip(true);
+        if (m_inspectorPane) {
+            m_inspectorPane->refresh();
+        }
+    };
     m_timeline->scaleToFillRequested = [this](const QString &clipId) {
         if (!m_timeline) return;
         const TimelineClip *clip = nullptr;

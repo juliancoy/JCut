@@ -253,3 +253,125 @@ Actions:
 2. No destination file exceeds 1500 lines.
 3. Behavior is unchanged except intended cleanup.
 4. Build and smoke checks pass after each step.
+
+## Dataflow Hardening Track (From `DATAFLOW.md`)
+
+### Goal
+
+Stabilize runtime behavior by enforcing one-way dataflow and eliminating UI re-entrancy loops under heavy refresh pressure.
+
+### D0: Immediate Safety Guards
+
+Source files:
+
+1. `speakers_tab.cpp`
+2. `speakers_tab.h`
+3. `transcript_tab.cpp`
+4. `inspector_pane.cpp`
+5. `timeline_widget_core.cpp`
+
+Actions:
+
+1. Add explicit re-entrancy guards (`m_refreshing*`) for each heavy panel refresh.
+2. Wrap bulk table/list repaints with `QSignalBlocker` on widget and selection model.
+3. Prevent unconditional selection writes (`setCurrentCell`/`setCurrentIndex`) during refresh.
+4. Add debug log counters for skipped re-entrant refresh attempts.
+
+Exit checks:
+
+1. No recursive refresh stack traces in gdb when idling on Speakers tab.
+2. Idle CPU after startup remains stable (no sustained pegging).
+
+### D1: Intent Routing + Debounce
+
+Source files:
+
+1. `speakers_tab.cpp`
+2. `speakers_tab_interactions.cpp`
+3. `editor.cpp`
+4. `editor_setup.cpp`
+5. `transcript_tab.cpp`
+
+Actions:
+
+1. Replace direct refresh chains with explicit intent handlers per tab.
+2. Debounce playhead-driven panel refreshes (16-50ms window).
+3. Ensure signal handlers dispatch intents only; avoid direct persistence and heavy JSON work.
+
+Exit checks:
+
+1. No direct signal -> heavy JSON parse/serialize path without debounce.
+2. Playback scrubbing does not trigger runaway refresh loops.
+
+### D2: State/Render Separation
+
+Source files:
+
+1. `speakers_tab.cpp`
+2. `transcript_tab.cpp`
+3. `inspector_pane.cpp`
+4. `preview_window_overlay.cpp`
+
+Actions:
+
+1. Split tab logic into `compute*Model(...)` and `render*Model(...)` patterns.
+2. Ban persistence calls inside render functions.
+3. Move normalization and merge logic to compute phase only.
+
+Exit checks:
+
+1. Render methods are idempotent and safe to call repeatedly.
+2. No `save*` or subprocess launches from render paths.
+
+### D3: Persistence Budgeting
+
+Source files:
+
+1. `project_state.cpp`
+2. `project_manager.cpp`
+3. `cleanup.sh`
+4. `transcript_engine.cpp`
+
+Actions:
+
+1. Add history cap policy (max entries + optional byte budget).
+2. Add snapshot dedupe before append/write.
+3. Keep heavy-field stripping before history writes.
+4. Document and automate cleanup policy for debug artifacts and backups.
+
+Exit checks:
+
+1. `history.json` remains bounded over long editing sessions.
+2. Project directory growth is predictable and recoverable with `cleanup.sh`.
+
+### D4: Worker Isolation and Schema Gate
+
+Source files:
+
+1. `speakers_tab_boxstream_actions.cpp`
+2. `docker_face_detector.py`
+3. `speaker_face_candidates.py`
+4. `sam3.sh`
+
+Actions:
+
+1. Keep detector execution and parsing off UI hot paths.
+2. Validate backend JSON schema before ingesting into app state.
+3. Normalize all backend outputs to one canonical detection schema.
+4. Enforce clear timeout/cancel/error mapping per backend.
+
+Exit checks:
+
+1. Long-running detector tasks keep UI responsive.
+2. Backend-specific malformed output fails fast with actionable errors.
+
+### Dataflow Validation Checklist (Run Per Milestone)
+
+1. Build: `cmake --build build -j4 --target jcut`
+2. Startup smoke: `./build/jcut`
+3. Runtime sanity:
+4. Open Speakers tab and scrub timeline for 30s without CPU runaway.
+5. Run one native tracking preset and one Docker tracking preset.
+6. Persistence sanity:
+7. Confirm `state.json` and `history.json` remain valid JSON after runs.
+8. Confirm no multi-hundred-MB debug growth unless explicitly retained.

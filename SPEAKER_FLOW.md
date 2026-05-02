@@ -7,10 +7,10 @@ Provide a deterministic, stage-by-stage debug pipeline for the Speaker Flow so f
 Covers this end-to-end path:
 1. Transcript ingestion and speaker IDs
 2. AI name mining and speaker profile updates
-3. Face candidate detection (`Pre-crop Faces`)
-4. Candidate-to-speaker assignment (auto + manual override)
-5. Reference writes (`Ref1`/`Ref2`)
-6. BoxStream generation (`Generate BoxStream`)
+3. Single-pass face detection + continuity tracking (`Pre-crop Faces` / FaceFind)
+4. Continuity BoxStream generation (`Generate BoxStream`, identity-agnostic)
+5. Optional track-to-identity assignment (auto + manual override)
+6. Optional reference writes (`Ref1`/`Ref2`) from resolved identity mapping
 7. Runtime tracking and Face Stabilize application
 
 ## Principles
@@ -19,6 +19,9 @@ Covers this end-to-end path:
 3. Every run has a single `run_id` that links all artefacts.
 4. Failures are first-class: write error artefacts, not only logs.
 5. UI exposes links to current run artefacts.
+6. Explicit is better than implicit: every auto/default mapping must show its source.
+7. Machine originals are immutable; human edits are layered as overrides.
+8. A resolved layer is the only source used by downstream writes.
 
 ## Proposed Debug Artefact Root
 `projects/<project_id>/debug/speaker_flow/<clip_id>/<run_id>/`
@@ -84,52 +87,57 @@ Contents:
 3. Which existing-name overwrites were user-approved.
 4. Which suggestions were rejected.
 
-### Stage 3: Face Candidate Detection
+### Stage 3: Single-Pass Face Detection + Tracking
 Files:
 1. `{videofilename}_face_detection_request.json`
 2. `{videofilename}_face_detection_output.json`
 3. `{videofilename}_face_detection_log.txt`
 4. `{videofilename}_face_crops/` (pngs)
+5. `cache/face_candidate_index.json`
+6. `cache/face_crops/` (stable crop cache)
 
 Contents:
 1. Detector params (`step`, `max_candidates`, fps, frame range).
-2. Candidate list (`frame`, `x`, `y`, `box`, `score`, crop path).
-3. Raw process stdout/stderr.
+2. Track list (`track_id`, `start_frame`, `end_frame`, `avg_score`, `length`, `detections[]`).
+3. Representative candidate list (best detection per track: `frame`, `x`, `y`, `box`, `score`, `track_id`, crop path).
+4. Raw process stdout/stderr.
+5. Cache metadata (`media_path`, `media_last_modified_ms`, `media_size_bytes`, scan params) for invalidation.
+6. Cache-hit fast path: if metadata matches, skip Python scan and load cached candidates/tracks.
 
-### Stage 4: Candidate Assignment
+### Stage 4: Continuity BoxStream Generation
+Files:
+1. `{videofilename}_continuity_boxstream_request.json`
+2. `{videofilename}_continuity_boxstream_output.json`
+3. `{videofilename}_continuity_boxstream_log.txt`
+
+Contents:
+1. Identity-agnostic mode metadata (`mode=continuity_identity_agnostic`).
+2. Scan range metadata and `only_dialogue` policy.
+3. Continuity tracks and per-track keyframe stream output.
+4. Track IDs that are stable within run for deterministic traceability.
+
+### Stage 5: Track Assignment (Optional Identity Layer)
 Files:
 1. `{videofilename}_assignment_table.json`
 2. `{videofilename}_assignment_decisions.json`
 
 Contents:
-1. Auto suggestion per candidate.
+1. Auto suggestion per representative track candidate.
 2. Manual override value if provided.
 3. Validation outcome (accepted/rejected + reason).
-4. Final resolved speaker ID per accepted candidate.
+4. Final resolved identity ID per accepted track candidate.
+5. `track_id` persisted in rows for deterministic traceability.
 
-### Stage 5: Reference Write
+### Stage 6: Reference Write (Optional Identity Consumer)
 Files:
 1. `{videofilename}_reference_write_plan.json`
 2. `{videofilename}_reference_write_result.json`
 
 Contents:
 1. Free slot availability (`ref1`, `ref2`) before write.
-2. Chosen candidate per slot.
-3. Write result per speaker/slot (`ok|blocked|error`).
+2. Chosen continuity-track candidate per slot.
+3. Write result per identity/slot (`ok|blocked|error`).
 4. Updated `framing` summary.
-
-### Stage 6: BoxStream Generation
-Files:
-1. `{videofilename}_boxstream_request.json`
-2. `{videofilename}_boxstream_output_keyframes.json`
-3. `{videofilename}_boxstream_stats.json`
-4. `{videofilename}_boxstream_log.txt`
-
-Contents:
-1. Engine path used (native/docker/linear fallback/anchor fallback).
-2. Reference inputs and speaker windows.
-3. Keyframe count, frame coverage, confidence summary (if available).
-4. Any fallback reason and error traces.
 
 ### Stage 7: Runtime Sampling / Face Stabilize
 Files:
@@ -175,6 +183,37 @@ In `Pre-crop Faces` dialog:
 1. Show detector params used.
 2. Show auto-match basis (timing overlap/nearest distance).
 3. Show per-row validation reason for rejected manual IDs.
+4. Show `Track` column (`T<id>`) to reduce duplicate-candidate confusion.
+5. Show `Default Source` per row (`Persisted (Human)` or `Auto (Timing)`).
+6. Provide explicit reset actions:
+   - `Use Auto Suggestions`
+   - `Use Persisted Mapping`
+7. Applying assignments is explicit; no background remap occurs without user confirmation.
+8. Assignment is optional: continuity BoxStreams remain valid without identity mapping.
+
+## Simplified UX Flow (Current)
+1. User runs unique-face identification first (`Pre-crop Faces`/FaceFind).
+2. System loads cache if valid (`cache/face_candidate_index.json`) or runs detect+track on cache miss/stale.
+3. User resolves all distinct faces to identity IDs (no unresolved unique face before tracking stage).
+4. User clicks `Generate BoxStream`.
+5. System generates identity-agnostic continuity BoxStreams for each track (`T<track_id>`).
+6. Optional: system loads persisted resolved mappings for this clip (if present) and marks their source explicitly.
+7. Optional: user assigns track candidates to identity IDs and may explicitly reset defaults.
+8. System persists:
+   - immutable machine run output
+   - human override run output
+   - resolved current mapping (`track_id -> identity_id`) when assignment is used
+9. Optional: system fills only empty `Ref1`/`Ref2` slots from resolved mapping and records write results.
+
+## Source Of Truth Contract
+1. `speaker_flow.clips.<clip_id>.machine_runs.<run_id>`:
+   - immutable machine candidates/tracks/suggestions.
+2. `speaker_flow.clips.<clip_id>.human_runs.<run_id>`:
+   - human assignment rows + override provenance + audit log.
+3. `speaker_flow.clips.<clip_id>.resolved_current`:
+   - authoritative identity mapping used by downstream identity consumers.
+4. Downstream steps must not infer identity directly from raw machine candidates if resolved mapping exists.
+5. Continuity BoxStreams are authoritative for motion, independent of identity mapping presence.
 
 ## Overwrite Protection (Required)
 If a stage is about to overwrite one or more existing artefacts in the target run folder:
@@ -212,6 +251,8 @@ If a stage is about to overwrite one or more existing artefacts in the target ru
 1. Add run manager + `index.json` writer.
 2. Persist Stage 3/4/5 artefacts for `Pre-crop Faces` flow.
 3. Persist Stage 6 artefacts for BoxStream generation.
+4. Add cache-first path with scan-parameter and media-metadata invalidation.
+5. Emit single-pass tracking output (`tracks` + representative `candidates`).
 
 ### Phase 2 (UX)
 1. Add Speakers debug panel with latest-run open/export.

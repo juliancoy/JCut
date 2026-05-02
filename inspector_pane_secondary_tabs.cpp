@@ -18,6 +18,7 @@
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QTextBrowser>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace {
@@ -38,6 +39,48 @@ QVBoxLayout *createTabLayout(QWidget *page)
     return layout;
 }
 
+struct DisclosureSection {
+    QWidget* container = nullptr;
+    QVBoxLayout* body = nullptr;
+};
+
+DisclosureSection createDisclosureSection(QWidget* parent,
+                                          const QString& title,
+                                          bool expanded = true)
+{
+    DisclosureSection section;
+    auto* container = new QWidget(parent);
+    auto* outer = new QVBoxLayout(container);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(4);
+
+    auto* toggle = new QToolButton(container);
+    toggle->setCheckable(true);
+    toggle->setChecked(expanded);
+    toggle->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toggle->setText(QStringLiteral("%1 %2").arg(expanded ? QStringLiteral("▼") : QStringLiteral("▶"), title));
+    toggle->setStyleSheet(QStringLiteral(
+        "QToolButton { color: #9fb3c8; font-weight: 700; border: none; text-align: left; padding: 2px 0; }"
+        "QToolButton:hover { color: #d6dee8; }"));
+    outer->addWidget(toggle);
+
+    auto* content = new QWidget(container);
+    content->setVisible(expanded);
+    auto* body = new QVBoxLayout(content);
+    body->setContentsMargins(14, 2, 0, 2);
+    body->setSpacing(6);
+    outer->addWidget(content);
+
+    QObject::connect(toggle, &QToolButton::toggled, content, [toggle, title, content](bool checked) {
+        toggle->setText(QStringLiteral("%1 %2").arg(checked ? QStringLiteral("▼") : QStringLiteral("▶"), title));
+        content->setVisible(checked);
+    });
+
+    section.container = container;
+    section.body = body;
+    return section;
+}
+
 } // namespace
 
 QWidget *InspectorPane::buildOutputTab()
@@ -49,6 +92,14 @@ QWidget *InspectorPane::buildOutputTab()
     m_outputRangeSummaryLabel = new QLabel(QStringLiteral("Timeline export range: 00:00:00:00 -> 00:00:10:00"), page);
     m_outputRangeSummaryLabel->setWordWrap(true);
     m_outputRangeSummaryLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_outputRangeSummaryLabel->setStyleSheet(QStringLiteral(
+        "QLabel {"
+        " border: 1px solid #314459;"
+        " border-radius: 10px;"
+        " background: #142234;"
+        " color: #d8e6f5;"
+        " padding: 6px 10px;"
+        "}"));
 
     auto *form = new QFormLayout;
     m_outputWidthSpin = new QSpinBox(page);
@@ -56,6 +107,7 @@ QWidget *InspectorPane::buildOutputTab()
     m_exportStartSpin = new QSpinBox(page);
     m_exportEndSpin = new QSpinBox(page);
     m_outputFormatCombo = new QComboBox(page);
+    m_renderBackendCombo = new QComboBox(page);
 
     m_outputWidthSpin->setRange(16, 7680);
     m_outputWidthSpin->setValue(1080);
@@ -69,16 +121,41 @@ QWidget *InspectorPane::buildOutputTab()
     m_outputFormatCombo->addItem(QStringLiteral("WebM"), QStringLiteral("webm"));
     m_outputFormatCombo->addItem(QStringLiteral("PNG Sequence"), QStringLiteral("png"));
     m_outputFormatCombo->addItem(QStringLiteral("JPEG Sequence"), QStringLiteral("jpg"));
+    m_renderBackendCombo->addItem(QStringLiteral("Vulkan"), QStringLiteral("vulkan"));
+    m_renderBackendCombo->addItem(QStringLiteral("OpenGL"), QStringLiteral("opengl"));
+    m_renderBackendCombo->setToolTip(
+        QStringLiteral("Renderer used for final export. Vulkan is strict and fails if unavailable; preview rendering is configured separately."));
     m_renderUseProxiesCheckBox = new QCheckBox(QStringLiteral("Use Proxies For Render"), page);
     m_renderCreateVideoFromSequenceCheckBox = new QCheckBox(QStringLiteral("Also Create Video From Sequence"), page);
     m_renderCreateVideoFromSequenceCheckBox->setChecked(true);
     m_renderCreateVideoFromSequenceCheckBox->setToolTip(QStringLiteral("Create a video file from the image sequence with audio"));
 
+    auto *rangeBubblesRow = new QHBoxLayout;
+    auto *startBubble = new QLabel(QStringLiteral("Start"), page);
+    auto *endBubble = new QLabel(QStringLiteral("End"), page);
+    for (QLabel* bubble : {startBubble, endBubble}) {
+        bubble->setStyleSheet(QStringLiteral(
+            "QLabel {"
+            " border: 1px solid #314459;"
+            " border-radius: 9px;"
+            " background: #142234;"
+            " color: #d8e6f5;"
+            " padding: 3px 8px;"
+            " font-size: 11px;"
+            " font-weight: 700;"
+            "}"));
+    }
+    rangeBubblesRow->addWidget(startBubble);
+    rangeBubblesRow->addWidget(m_exportStartSpin, 1);
+    rangeBubblesRow->addSpacing(8);
+    rangeBubblesRow->addWidget(endBubble);
+    rangeBubblesRow->addWidget(m_exportEndSpin, 1);
+
     form->addRow(QStringLiteral("Output Width"), m_outputWidthSpin);
     form->addRow(QStringLiteral("Output Height"), m_outputHeightSpin);
-    form->addRow(QStringLiteral("Export Start Frame"), m_exportStartSpin);
-    form->addRow(QStringLiteral("Export End Frame"), m_exportEndSpin);
+    form->addRow(QStringLiteral("Export Range"), rangeBubblesRow);
     form->addRow(QStringLiteral("Output Format"), m_outputFormatCombo);
+    form->addRow(QStringLiteral("Export Backend"), m_renderBackendCombo);
 
     m_backgroundColorButton = new QPushButton(page);
     m_backgroundColorButton->setText(QStringLiteral("Black"));
@@ -90,11 +167,20 @@ QWidget *InspectorPane::buildOutputTab()
 
     m_renderButton = new QPushButton(QStringLiteral("Render"), page);
 
-    layout->addWidget(m_outputRangeSummaryLabel);
-    layout->addLayout(form);
-    layout->addWidget(m_renderUseProxiesCheckBox);
-    layout->addWidget(m_renderCreateVideoFromSequenceCheckBox);
-    layout->addWidget(m_renderButton);
+    auto rangeSection = createDisclosureSection(page, QStringLiteral("Export Range"), true);
+    rangeSection.body->addWidget(m_outputRangeSummaryLabel);
+
+    auto settingsSection = createDisclosureSection(page, QStringLiteral("Render Settings"), true);
+    settingsSection.body->addLayout(form);
+    settingsSection.body->addWidget(m_renderUseProxiesCheckBox);
+    settingsSection.body->addWidget(m_renderCreateVideoFromSequenceCheckBox);
+
+    auto actionSection = createDisclosureSection(page, QStringLiteral("Render Action"), true);
+    actionSection.body->addWidget(m_renderButton);
+
+    layout->addWidget(rangeSection.container);
+    layout->addWidget(settingsSection.container);
+    layout->addWidget(actionSection.container);
     layout->addStretch(1);
 
     return page;
@@ -168,8 +254,7 @@ QWidget *InspectorPane::buildPreferencesTab()
     summary->setWordWrap(true);
     layout->addWidget(summary);
 
-    auto *autosaveHeading = createTabHeading(QStringLiteral("Autosave"), page);
-    layout->addWidget(autosaveHeading);
+    auto autosaveSection = createDisclosureSection(page, QStringLiteral("Autosave"), true);
     auto *autosaveForm = new QFormLayout();
     m_autosaveIntervalMinutesSpin = new QSpinBox(page);
     m_autosaveIntervalMinutesSpin->setRange(1, 120);
@@ -184,10 +269,10 @@ QWidget *InspectorPane::buildPreferencesTab()
     m_autosaveMaxBackupsSpin->setToolTip(
         QStringLiteral("How many autosave backup files to keep per project."));
     autosaveForm->addRow(QStringLiteral("Autosave Backups"), m_autosaveMaxBackupsSpin);
-    layout->addLayout(autosaveForm);
+    autosaveSection.body->addLayout(autosaveForm);
+    layout->addWidget(autosaveSection.container);
 
-    auto *timelineHeading = createTabHeading(QStringLiteral("Timeline"), page);
-    layout->addWidget(timelineHeading);
+    auto timelineSection = createDisclosureSection(page, QStringLiteral("Timeline"), false);
     auto *timelineForm = new QFormLayout();
     m_timelineAudioEnvelopeGranularitySpin = new QSpinBox(page);
     m_timelineAudioEnvelopeGranularitySpin->setRange(64, 8192);
@@ -196,10 +281,10 @@ QWidget *InspectorPane::buildPreferencesTab()
     m_timelineAudioEnvelopeGranularitySpin->setToolTip(
         QStringLiteral("Sample window size used to build audio envelope peaks for timeline waveform rendering."));
     timelineForm->addRow(QStringLiteral("Audio Envelope Granularity"), m_timelineAudioEnvelopeGranularitySpin);
-    layout->addLayout(timelineForm);
+    timelineSection.body->addLayout(timelineForm);
+    layout->addWidget(timelineSection.container);
 
-    auto *decodeHeading = createTabHeading(QStringLiteral("Playback + Decode"), page);
-    layout->addWidget(decodeHeading);
+    auto decodeSection = createDisclosureSection(page, QStringLiteral("Playback + Decode"), false);
     m_outputPlaybackCacheFallbackCheckBox =
         new QCheckBox(QStringLiteral("Allow Cached-Frame Fallback During Playback"), page);
     m_outputPlaybackCacheFallbackCheckBox->setChecked(editor::debugPlaybackCacheFallbackEnabled());
@@ -266,17 +351,17 @@ QWidget *InspectorPane::buildPreferencesTab()
         new QPushButton(QStringLiteral("Reset Pipeline Defaults"), page);
     m_outputResetPipelineDefaultsButton->setToolTip(
         QStringLiteral("Restore decoder/cache defaults chosen for available hardware and software."));
-    layout->addWidget(m_outputPlaybackCacheFallbackCheckBox);
-    layout->addWidget(m_outputLeadPrefetchEnabledCheckBox);
-    layout->addLayout(decodeForm);
-    layout->addWidget(m_outputDeterministicPipelineCheckBox);
-    layout->addWidget(m_outputResetPipelineDefaultsButton);
+    decodeSection.body->addWidget(m_outputPlaybackCacheFallbackCheckBox);
+    decodeSection.body->addWidget(m_outputLeadPrefetchEnabledCheckBox);
+    decodeSection.body->addLayout(decodeForm);
+    decodeSection.body->addWidget(m_outputDeterministicPipelineCheckBox);
+    decodeSection.body->addWidget(m_outputResetPipelineDefaultsButton);
+    layout->addWidget(decodeSection.container);
     if (m_outputLeadPrefetchCountSpin) {
         m_outputLeadPrefetchCountSpin->setEnabled(editor::debugLeadPrefetchEnabled());
     }
 
-    auto *featureHeading = createTabHeading(QStringLiteral("Feature Flags"), page);
-    layout->addWidget(featureHeading);
+    auto featureSection = createDisclosureSection(page, QStringLiteral("Feature Flags"), false);
     m_preferencesFeatureAiPanelCheckBox = new QCheckBox(QStringLiteral("Enable AI Assist"), page);
     m_preferencesFeatureAiSpeakerCleanupCheckBox =
         new QCheckBox(QStringLiteral("Enable AI Speaker Cleanup"), page);
@@ -284,10 +369,11 @@ QWidget *InspectorPane::buildPreferencesTab()
         new QCheckBox(QStringLiteral("Enable Audio Preview Mode"), page);
     m_preferencesFeatureAudioDynamicsToolsCheckBox =
         new QCheckBox(QStringLiteral("Enable Audio Dynamics Tools"), page);
-    layout->addWidget(m_preferencesFeatureAiPanelCheckBox);
-    layout->addWidget(m_preferencesFeatureAiSpeakerCleanupCheckBox);
-    layout->addWidget(m_preferencesFeatureAudioPreviewModeCheckBox);
-    layout->addWidget(m_preferencesFeatureAudioDynamicsToolsCheckBox);
+    featureSection.body->addWidget(m_preferencesFeatureAiPanelCheckBox);
+    featureSection.body->addWidget(m_preferencesFeatureAiSpeakerCleanupCheckBox);
+    featureSection.body->addWidget(m_preferencesFeatureAudioPreviewModeCheckBox);
+    featureSection.body->addWidget(m_preferencesFeatureAudioDynamicsToolsCheckBox);
+    layout->addWidget(featureSection.container);
     layout->addStretch(1);
     return page;
 }
@@ -535,7 +621,7 @@ QWidget *InspectorPane::buildAiTab()
         QStringLiteral("Run AI transcript and speaker workflows from a dedicated tab."), page);
     summary->setWordWrap(true);
 
-    m_aiStatusLabel = new QLabel(QStringLiteral("AI disabled: sign in to your gateway"), page);
+    m_aiStatusLabel = new QLabel(QStringLiteral("AI unavailable: use top-right Log In"), page);
     m_aiStatusLabel->setWordWrap(true);
     m_aiStatusLabel->setStyleSheet(QStringLiteral("color: #9fb3c8;"));
 
@@ -556,13 +642,18 @@ QWidget *InspectorPane::buildAiTab()
     actionsRow2->addWidget(m_aiFindOrganizationsButton);
     actionsRow2->addWidget(m_aiCleanAssignmentsButton);
 
-    auto *authRow = new QHBoxLayout;
-    m_aiLoginButton = new QPushButton(QStringLiteral("AI Login"), page);
-    m_aiLogoutButton = new QPushButton(QStringLiteral("Logout"), page);
-    authRow->addWidget(m_aiLoginButton);
-    authRow->addWidget(m_aiLogoutButton);
+    auto *authHint = new QLabel(QStringLiteral("Use top-right Log In for AI account access."), page);
+    authHint->setWordWrap(true);
+    authHint->setStyleSheet(QStringLiteral("color: #8ea4bf;"));
 
-    auto *chatHeading = createTabHeading(QStringLiteral("Chat"), page);
+    auto *subscriptionRow = new QHBoxLayout;
+    m_aiSubscribeButton = new QPushButton(QStringLiteral("Subscribe to AI"), page);
+    m_aiSubscribeButton->setObjectName(QStringLiteral("ai.subscribe_button"));
+    subscriptionRow->addWidget(m_aiSubscribeButton);
+    subscriptionRow->addStretch(1);
+
+    auto aiActionsSection = createDisclosureSection(page, QStringLiteral("AI Actions"), true);
+    auto chatSection = createDisclosureSection(page, QStringLiteral("Chat"), true);
     m_aiChatHistoryEdit = new QTextBrowser(page);
     m_aiChatHistoryEdit->setObjectName(QStringLiteral("ai.chat_history"));
     m_aiChatHistoryEdit->setPlaceholderText(
@@ -588,15 +679,60 @@ QWidget *InspectorPane::buildAiTab()
 
     layout->addWidget(summary);
     layout->addWidget(m_aiStatusLabel);
-    layout->addLayout(modelForm);
-    layout->addLayout(actionsRow1);
-    layout->addLayout(actionsRow2);
-    layout->addLayout(authRow);
-    layout->addWidget(chatHeading);
-    layout->addWidget(m_aiChatHistoryEdit);
-    layout->addWidget(chatInputLabel);
-    layout->addWidget(m_aiChatInputLineEdit);
-    layout->addLayout(chatInputRow);
+    aiActionsSection.body->addLayout(modelForm);
+    aiActionsSection.body->addLayout(actionsRow1);
+    aiActionsSection.body->addLayout(actionsRow2);
+    aiActionsSection.body->addWidget(authHint);
+    aiActionsSection.body->addLayout(subscriptionRow);
+    layout->addWidget(aiActionsSection.container);
+
+    chatSection.body->addWidget(m_aiChatHistoryEdit);
+    chatSection.body->addWidget(chatInputLabel);
+    chatSection.body->addWidget(m_aiChatInputLineEdit);
+    chatSection.body->addLayout(chatInputRow);
+    layout->addWidget(chatSection.container);
     layout->addStretch(1);
+    return page;
+}
+
+QWidget *InspectorPane::buildAccessTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Subscriptions & Purchases"), page));
+
+    auto *summary = new QLabel(
+        QStringLiteral("View account subscriptions, purchases, and active entitlements for the logged-in user."),
+        page);
+    summary->setWordWrap(true);
+    layout->addWidget(summary);
+
+    m_accessStatusLabel = new QLabel(QStringLiteral("Log in to load account access data."), page);
+    m_accessStatusLabel->setWordWrap(true);
+    m_accessStatusLabel->setStyleSheet(QStringLiteral("color: #9fb3c8;"));
+    layout->addWidget(m_accessStatusLabel);
+
+    m_accessTable = new QTableWidget(0, 5, page);
+    m_accessTable->setObjectName(QStringLiteral("access.table"));
+    m_accessTable->setHorizontalHeaderLabels(
+        QStringList{QStringLiteral("Type"),
+                    QStringLiteral("Item"),
+                    QStringLiteral("Status"),
+                    QStringLiteral("Period"),
+                    QStringLiteral("Source")});
+    m_accessTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_accessTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_accessTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_accessTable->setAlternatingRowColors(true);
+    m_accessTable->horizontalHeader()->setStretchLastSection(true);
+    m_accessTable->verticalHeader()->setVisible(false);
+    layout->addWidget(m_accessTable, 1);
+
+    auto *actions = new QHBoxLayout;
+    m_accessRefreshButton = new QPushButton(QStringLiteral("Refresh"), page);
+    actions->addStretch(1);
+    actions->addWidget(m_accessRefreshButton);
+    layout->addLayout(actions);
+
     return page;
 }

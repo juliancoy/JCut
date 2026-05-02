@@ -1,5 +1,5 @@
-#include "preview.h"
-#include "preview_debug.h"
+#include "opengl_preview.h"
+#include "opengl_preview_debug.h"
 
 #include "frame_handle.h"
 #include "async_decoder.h"
@@ -8,6 +8,7 @@
 #include "memory_budget.h"
 #include "media_pipeline_shared.h"
 #include "waveform_service.h"
+#include "render_backend.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
@@ -37,6 +38,10 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip) {
         .arg(QString::number(clip.playbackRate, 'f', 6))
         .arg(QString::number(clip.sourceFps, 'f', 6));
 }
+
+bool suppressBridgeFallbackLogs() {
+    return qEnvironmentVariableIntValue("JCUT_PREVIEW_SUPPRESS_BRIDGE_LOG") == 1;
+}
 } // namespace
 
 PreviewWindow::PreviewWindow(QWidget* parent)
@@ -44,6 +49,25 @@ PreviewWindow::PreviewWindow(QWidget* parent)
     , m_quadBuffer(QOpenGLBuffer::VertexBuffer)
     , m_polygonBuffer(QOpenGLBuffer::VertexBuffer)
 {
+    const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
+    m_requestedRenderBackend = renderBackendName(requestedBackend);
+    m_effectiveRenderBackend = QStringLiteral("opengl");
+    m_forceCpuPreviewForVulkan = false;
+    if (requestedBackend == RenderBackend::Vulkan) {
+        // Bridge mode: force non-GL composition path to avoid hard OpenGL coupling.
+        // Presentation still goes through QWidget paint on this class until a native Vulkan
+        // swapchain widget replaces QOpenGLWidget.
+        m_forceCpuPreviewForVulkan = true;
+        m_effectiveRenderBackend = QStringLiteral("vulkan-cpu-present");
+        m_renderBackendFallbackReason = QStringLiteral(
+            "Vulkan preference active; using CPU-present bridge until native Vulkan swapchain preview is wired.");
+        if (!suppressBridgeFallbackLogs()) {
+            qWarning().noquote()
+                << "[render-backend-bridge] requested=vulkan effective=vulkan-cpu-present reason=\""
+                << m_renderBackendFallbackReason << "\"";
+        }
+    }
+
     setMinimumSize(320, 180);
     setMouseTracking(true);
     m_lastPaintMs = nowMs();
@@ -277,8 +301,39 @@ void PreviewWindow::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
 }
 
 QString PreviewWindow::backendName() const {
-    return usingCpuFallback() ? QStringLiteral("CPU Preview Fallback")
-                              : QStringLiteral("OpenGL Shader Preview");
+    if (usingCpuFallback()) {
+        if (m_forceCpuPreviewForVulkan) {
+            return QStringLiteral("Vulkan Preview (CPU Present Bridge)");
+        }
+        return QStringLiteral("CPU Preview Fallback");
+    }
+    QString label = QStringLiteral("OpenGL Shader Preview");
+    if (m_requestedRenderBackend != m_effectiveRenderBackend) {
+        label += QStringLiteral(" (requested %1, using %2)")
+                     .arg(m_requestedRenderBackend, m_effectiveRenderBackend);
+    }
+    return label;
+}
+
+void PreviewWindow::setRenderBackendPreference(const QString& backendName)
+{
+    const RenderBackend requestedBackend = parseRenderBackend(backendName);
+    m_requestedRenderBackend = renderBackendName(requestedBackend);
+    m_effectiveRenderBackend = QStringLiteral("opengl");
+    m_forceCpuPreviewForVulkan = false;
+    m_renderBackendFallbackReason.clear();
+    if (requestedBackend == RenderBackend::Vulkan) {
+        m_forceCpuPreviewForVulkan = true;
+        m_effectiveRenderBackend = QStringLiteral("vulkan-cpu-present");
+        m_renderBackendFallbackReason = QStringLiteral(
+            "Vulkan preference active; using CPU-present bridge until native Vulkan swapchain preview is wired.");
+        if (!suppressBridgeFallbackLogs()) {
+            qWarning().noquote()
+                << "[render-backend-bridge] requested=vulkan effective=vulkan-cpu-present reason=\""
+                << m_renderBackendFallbackReason << "\"";
+        }
+    }
+    update();
 }
 
 void PreviewWindow::setAudioMuted(bool muted) { m_audioMuted = muted; }
@@ -322,6 +377,18 @@ void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
         return;
     }
     m_showSpeakerTrackBoxes = show;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setBoxstreamOverlaySource(const QString& source) {
+    const QString normalized = source.trimmed().isEmpty()
+        ? QStringLiteral("all")
+        : source.trimmed().toLower();
+    if (m_boxstreamOverlaySource == normalized) {
+        return;
+    }
+    m_boxstreamOverlaySource = normalized;
+    m_speakerTrackPointsCache.clear();
     scheduleRepaint();
 }
 

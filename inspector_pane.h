@@ -67,6 +67,7 @@ public:
 
     QCheckBox *transcriptOverlayEnabledCheckBox() const { return m_transcriptOverlayEnabledCheckBox; }
     QCheckBox *transcriptBackgroundVisibleCheckBox() const { return m_transcriptBackgroundVisibleCheckBox; }
+    QCheckBox *transcriptShowSpeakerTitleCheckBox() const { return m_transcriptShowSpeakerTitleCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
     QSpinBox *transcriptMaxCharsSpin() const { return m_transcriptMaxCharsSpin; }
     QCheckBox *transcriptAutoScrollCheckBox() const { return m_transcriptAutoScrollCheckBox; }
@@ -125,6 +126,9 @@ public:
     QLabel *speakerPointstreamChipLabel() const { return m_speakerPointstreamChipLabel; }
     QPushButton *speakerTrackingChipButton() const { return m_speakerTrackingChipButton; }
     QPushButton *speakerStabilizeChipButton() const { return m_speakerStabilizeChipButton; }
+    QTableWidget *speakerBoxStreamTable() const { return m_speakerBoxStreamTable; }
+    QPlainTextEdit *speakerBoxStreamDetailsEdit() const { return m_speakerBoxStreamDetailsEdit; }
+    QComboBox *speakerBoxStreamOverlaySourceCombo() const { return m_speakerBoxStreamOverlaySourceCombo; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -268,18 +272,21 @@ public:
     QPushButton *aiFindSpeakerNamesButton() const { return m_aiFindSpeakerNamesButton; }
     QPushButton *aiFindOrganizationsButton() const { return m_aiFindOrganizationsButton; }
     QPushButton *aiCleanAssignmentsButton() const { return m_aiCleanAssignmentsButton; }
-    QPushButton *aiLoginButton() const { return m_aiLoginButton; }
-    QPushButton *aiLogoutButton() const { return m_aiLogoutButton; }
+    QPushButton *aiSubscribeButton() const { return m_aiSubscribeButton; }
     QTextBrowser *aiChatHistoryEdit() const { return m_aiChatHistoryEdit; }
     QPlainTextEdit *aiChatInputLineEdit() const { return m_aiChatInputLineEdit; }
     QPushButton *aiChatSendButton() const { return m_aiChatSendButton; }
     QPushButton *aiChatClearButton() const { return m_aiChatClearButton; }
+    QLabel *accessStatusLabel() const { return m_accessStatusLabel; }
+    QTableWidget *accessTable() const { return m_accessTable; }
+    QPushButton *accessRefreshButton() const { return m_accessRefreshButton; }
 
     QSpinBox *outputWidthSpin() const { return m_outputWidthSpin; }
     QSpinBox *outputHeightSpin() const { return m_outputHeightSpin; }
     QSpinBox *exportStartSpin() const { return m_exportStartSpin; }
     QSpinBox *exportEndSpin() const { return m_exportEndSpin; }
     QComboBox *outputFormatCombo() const { return m_outputFormatCombo; }
+    QComboBox *renderBackendCombo() const { return m_renderBackendCombo; }
     QLabel *outputRangeSummaryLabel() const { return m_outputRangeSummaryLabel; }
     QCheckBox *renderUseProxiesCheckBox() const { return m_renderUseProxiesCheckBox; }
     QCheckBox *renderCreateVideoFromSequenceCheckBox() const { return m_renderCreateVideoFromSequenceCheckBox; }
@@ -338,6 +345,7 @@ private:
     QWidget *buildProfileTab();
     QWidget *buildProjectsTab();
     QWidget *buildAiTab();
+    QWidget *buildAccessTab();
     void configureInspectorTabs();
 
 private:
@@ -378,6 +386,7 @@ private:
     QComboBox *m_gradingEditModeCombo = nullptr;
     QWidget *m_gradingLevelsPanel = nullptr;
     QWidget *m_gradingCurvesPanel = nullptr;
+    QTabWidget *m_gradingCurveChannelTabs = nullptr;
     QComboBox *m_gradingCurveChannelCombo = nullptr;
     GradingHistogramWidget *m_gradingHistogramWidget = nullptr;
     QCheckBox *m_gradingCurveThreePointLockCheckBox = nullptr;
@@ -522,14 +531,17 @@ private:
     QPushButton *m_aiFindSpeakerNamesButton = nullptr;
     QPushButton *m_aiFindOrganizationsButton = nullptr;
     QPushButton *m_aiCleanAssignmentsButton = nullptr;
-    QPushButton *m_aiLoginButton = nullptr;
-    QPushButton *m_aiLogoutButton = nullptr;
+    QPushButton *m_aiSubscribeButton = nullptr;
     QTextBrowser *m_aiChatHistoryEdit = nullptr;
     QPlainTextEdit *m_aiChatInputLineEdit = nullptr;
     QPushButton *m_aiChatSendButton = nullptr;
     QPushButton *m_aiChatClearButton = nullptr;
+    QLabel *m_accessStatusLabel = nullptr;
+    QTableWidget *m_accessTable = nullptr;
+    QPushButton *m_accessRefreshButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
     QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
+    QCheckBox *m_transcriptShowSpeakerTitleCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
     QSpinBox *m_transcriptMaxCharsSpin = nullptr;
     QCheckBox *m_transcriptAutoScrollCheckBox = nullptr;
@@ -576,6 +588,10 @@ private:
     QPushButton *m_speakerAiFindNamesButton = nullptr;
     QPushButton *m_speakerAiFindOrganizationsButton = nullptr;
     QPushButton *m_speakerAiCleanAssignmentsButton = nullptr;
+    QCheckBox *m_speakerDebugCaptureCheckBox = nullptr;
+    QPushButton *m_speakerOpenLatestDebugRunButton = nullptr;
+    QPushButton *m_speakerExportDebugBundleButton = nullptr;
+    QLabel *m_speakerDebugStatusLabel = nullptr;
     QLabel *m_speakerTrackingStatusLabel = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetXSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;
@@ -588,12 +604,16 @@ private:
     QLabel *m_speakerPointstreamChipLabel = nullptr;
     QPushButton *m_speakerTrackingChipButton = nullptr;
     QPushButton *m_speakerStabilizeChipButton = nullptr;
+    QTableWidget *m_speakerBoxStreamTable = nullptr;
+    QPlainTextEdit *m_speakerBoxStreamDetailsEdit = nullptr;
+    QComboBox *m_speakerBoxStreamOverlaySourceCombo = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;
     QSpinBox *m_exportStartSpin = nullptr;
     QSpinBox *m_exportEndSpin = nullptr;
     QComboBox *m_outputFormatCombo = nullptr;
+    QComboBox *m_renderBackendCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_renderCreateVideoFromSequenceCheckBox = nullptr;

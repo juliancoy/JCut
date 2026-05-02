@@ -10,3 +10,9 @@ ffmpeg-*
 .cache
 # Local secrets
 hftoken.txt
+testbench_assets
+__pycache__
+--mode
+nasreen.mp4
+heaptrack.*.zst
+debug

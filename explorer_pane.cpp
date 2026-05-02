@@ -1,7 +1,8 @@
 // explorer_pane.cpp
 #include "explorer_pane.h"
 #include "decoder_ffmpeg_utils.h"
-#include "preview.h"
+#include "opengl_preview.h"
+#include "preview_surface.h"
 #include "render.h"
 
 #include <QAbstractItemView>
@@ -236,7 +237,7 @@ ExplorerPane::~ExplorerPane()
     m_thumbnailThread->wait();
 }
 
-void ExplorerPane::setPreviewWindow(PreviewWindow *preview)
+void ExplorerPane::setPreviewWindow(PreviewSurface *preview)
 {
     m_preview = preview;
 }
@@ -494,6 +495,8 @@ QWidget *ExplorerPane::buildTreePage()
     m_tree->setSelectionMode(QAbstractItemView::SingleSelection);
     m_tree->setDragEnabled(true);
     m_tree->setDragDropMode(QAbstractItemView::DragOnly);
+    m_tree->setSortingEnabled(true);
+    m_tree->sortByColumn(0, Qt::AscendingOrder);
     m_tree->setMouseTracking(true);
     m_tree->viewport()->installEventFilter(this);
 
@@ -1081,7 +1084,7 @@ void ExplorerPane::showExplorerHoverPreview(const QString &filePath)
     QSize targetSize(280, 180);
     if (m_preview)
     {
-        const QSize previewSize = m_preview->size() - QSize(32, 32);
+        const QSize previewSize = m_preview->asWidget()->size() - QSize(32, 32);
         if (previewSize.width() > 0 && previewSize.height() > 0)
         {
             targetSize = previewSize;
@@ -1132,8 +1135,8 @@ void ExplorerPane::showExplorerHoverPreview(const QString &filePath)
     QPoint previewAnchor(80, 80);
     if (m_preview)
     {
-        const QRect previewRect = m_preview->rect();
-        previewAnchor = m_preview->mapToGlobal(
+        const QRect previewRect = m_preview->asWidget()->rect();
+        previewAnchor = m_preview->asWidget()->mapToGlobal(
             QPoint(qMax(24, (previewRect.width() - m_explorerHoverPreview->width()) / 2),
                    qMax(24, previewRect.height() / 8)));
     }

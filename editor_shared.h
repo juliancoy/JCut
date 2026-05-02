@@ -109,6 +109,7 @@ struct TimelineClip {
     struct TranscriptOverlaySettings {
         bool enabled = false;
         bool showBackground = true;
+        bool showSpeakerTitle = false;
         bool autoScroll = false;
         bool useManualPlacement = false;
         qreal translationX = 0.0;
@@ -259,6 +260,14 @@ struct TranscriptSection {
     int64_t endFrame = 0;
     QString text;
     QVector<TranscriptWord> words;
+};
+
+struct SpeakerProfile {
+    QString speakerId;
+    QString name;
+    QString organization;
+    QString description;
+    QString avatarPath;
 };
 
 struct TranscriptOverlayLine {
@@ -442,6 +451,8 @@ bool isImageSequencePath(const QString& path);
 QStringList imageSequenceFramePaths(const QString& path);
 QString imageSequenceDisplayLabel(const QString& path);
 QString transcriptPathForClipFile(const QString& filePath);
+SpeakerProfile speakerProfileFromJson(const QString& speakerId, const QJsonObject& profileObj);
+QJsonObject speakerProfileToJson(const SpeakerProfile& profile, const QJsonObject& base = QJsonObject());
 QString transcriptEditablePathForClipFile(const QString& filePath);
 QString transcriptWorkingPathForClipFile(const QString& filePath);
 QStringList transcriptCutPathsForClipFile(const QString& filePath);
@@ -492,3 +503,6 @@ QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
                               const QColor& textColor,
                               const QColor& highlightTextColor,
                               const QColor& highlightFillColor);
+QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
+                                             const QVector<TranscriptSection>& sections,
+                                             int64_t sourceFrame);

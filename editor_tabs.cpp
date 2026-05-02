@@ -100,6 +100,7 @@ void EditorWindow::createTranscriptTab()
             m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
             m_transcriptTable, m_transcriptOverlayEnabledCheckBox,
             m_inspectorPane->transcriptBackgroundVisibleCheckBox(),
+            m_inspectorPane->transcriptShowSpeakerTitleCheckBox(),
             m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
             m_transcriptAutoScrollCheckBox, m_transcriptFollowCurrentWordCheckBox,
             m_transcriptOverlayXSpin, m_transcriptOverlayYSpin,
@@ -213,7 +214,9 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerRefsChipLabel(),
             m_inspectorPane->speakerPointstreamChipLabel(),
             m_inspectorPane->speakerTrackingChipButton(),
-            m_inspectorPane->speakerStabilizeChipButton()},
+            m_inspectorPane->speakerStabilizeChipButton(),
+            m_inspectorPane->speakerBoxStreamTable(),
+            m_inspectorPane->speakerBoxStreamDetailsEdit()},
         SpeakersTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { scheduleSaveState(); },
@@ -235,7 +238,7 @@ void EditorWindow::createSpeakersTab()
                     return;
                 }
                 m_preview->setTimelineClips(m_timeline->clips());
-                m_preview->update();
+                m_preview->asWidget()->update();
             },
             [this](QString* errorOut) -> bool {
                 refreshAiIntegrationState();
@@ -253,7 +256,7 @@ void EditorWindow::createSpeakersTab()
                 }
                 if (m_aiAuthToken.trimmed().isEmpty()) {
                     if (errorOut) {
-                        *errorOut = QStringLiteral("AI login required. Sign in from AI Assist.");
+                        *errorOut = QStringLiteral("AI login required. Use top-right Log In.");
                     }
                     return false;
                 }

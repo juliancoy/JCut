@@ -129,7 +129,7 @@ void EditorWindow::applyPreviewViewMode(const QString& modeText)
     if (!m_featureAudioPreviewMode) {
         m_previewViewMode = QStringLiteral("video");
         if (m_preview) {
-            m_preview->setViewMode(PreviewWindow::ViewMode::Video);
+            m_preview->setViewMode(PreviewSurface::ViewMode::Video);
         }
         return;
     }
@@ -139,8 +139,8 @@ void EditorWindow::applyPreviewViewMode(const QString& modeText)
                             : QStringLiteral("video");
     if (m_preview) {
         m_preview->setViewMode(m_previewViewMode == QStringLiteral("audio")
-                                   ? PreviewWindow::ViewMode::Audio
-                                   : PreviewWindow::ViewMode::Video);
+                                   ? PreviewSurface::ViewMode::Audio
+                                   : PreviewSurface::ViewMode::Video);
     }
     if (!m_loadingState) {
         scheduleSaveState();
@@ -759,4 +759,3 @@ void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speak
     request.exportEndFrame = timelineRanges.constLast().endFrame;
     renderTimelineFromOutputRequest(request);
 }
-

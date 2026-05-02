@@ -6,7 +6,8 @@
 #include "audio_engine.h"
 #include "control_server.h"
 #include "timeline_widget.h"
-#include "preview.h"
+#include "opengl_preview.h"
+#include "preview_surface.h"
 #include "editor_pane.h"
 #include "explorer_pane.h"
 #include "inspector_pane.h"
@@ -43,9 +44,13 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMainWindow>
+#include <QNetworkAccessManager>
 #include <QPlainTextEdit>
+#include <QPointer>
+#include <QPixmap>
 #include <QPushButton>
 #include <QTextBrowser>
+#include <QTreeWidget>
 #include <QStringList>
 #include <QSlider>
 #include <QSpinBox>
@@ -59,6 +64,12 @@
 #include <memory>
 
 namespace editor {
+
+enum class ProfileAccessBadge {
+    Unknown = 0,
+    Basic = 1,
+    Subscribed = 2
+};
 
 class EditorWindow : public QMainWindow
 {
@@ -196,19 +207,32 @@ private:
     void applyPreviewViewMode(const QString& modeText);
     void refreshAiIntegrationState();
     void configureAiGatewayLogin();
+    void copySupabaseSignInUrl();
     void clearAiGatewayLogin();
     QString aiSecureStoreServiceName() const;
-    bool readAiTokenFromSecureStore(QString* tokenOut) const;
-    bool writeAiTokenToSecureStore(const QString& token, QString* errorOut = nullptr) const;
+    bool readAiTokenFromSecureStore(QString* tokenOut,
+                                    QString* refreshTokenOut = nullptr,
+                                    QString* userIdOut = nullptr) const;
+    bool writeAiTokenToSecureStore(const QString& token,
+                                   const QString& refreshToken,
+                                   QString* errorOut = nullptr) const;
     bool clearAiTokenFromSecureStore(QString* errorOut = nullptr) const;
     void runAiTranscribeForSelection();
     void runAiFindSpeakerNames();
     void runAiFindOrganizations();
     void runAiCleanAssignments();
+    void runAiSubscribeCheckout();
+    void refreshAccessTabData();
     void runAiChatPrompt();
     void appendAiChatLine(const QString& role, const QString& text);
+    void ensureAiActivityWindow(const QString& title, bool clearLog = false);
+    void appendAiActivityLine(const QString& phase,
+                              const QString& details,
+                              const QString& exactText = QString());
     QString buildAiUiHierarchySnapshot() const;
     void updateProfileAvatarButton();
+    void requestProfileAvatarImage(const QString& imageUrl);
+    QPixmap buildProfileAvatarChip() const;
     void onProfileAvatarButtonClicked();
     QJsonObject buildAiProjectContext() const;
     QJsonObject runAiAction(const QString& action, const QJsonObject& payload, bool* okOut = nullptr, QString* errorOut = nullptr);
@@ -282,7 +306,7 @@ private:
     QPushButton *m_saveProjectAsButton = nullptr;
     QPushButton *m_renameProjectButton = nullptr;
 
-    PreviewWindow *m_preview = nullptr;
+    PreviewSurface *m_preview = nullptr;
     TimelineWidget *m_timeline = nullptr;
 
     QPushButton *m_playButton = nullptr;
@@ -297,13 +321,26 @@ private:
     QPushButton *m_aiFindSpeakerNamesButton = nullptr;
     QPushButton *m_aiFindOrganizationsButton = nullptr;
     QPushButton *m_aiCleanAssignmentsButton = nullptr;
-    QPushButton *m_aiLoginButton = nullptr;
-    QPushButton *m_aiLogoutButton = nullptr;
+    QPushButton *m_aiSubscribeButton = nullptr;
     QTextBrowser *m_aiChatHistoryEdit = nullptr;
+    QTreeWidget *m_aiActivityLogTree = nullptr;
     QPlainTextEdit *m_aiChatInputLineEdit = nullptr;
     QPushButton *m_aiChatSendButton = nullptr;
     QPushButton *m_aiChatClearButton = nullptr;
+    QPointer<QWidget> m_aiActivityDialog;
+    QLabel *m_accessStatusLabel = nullptr;
+    QTableWidget *m_accessTable = nullptr;
+    QPushButton *m_accessRefreshButton = nullptr;
     QPushButton *m_profileAvatarButton = nullptr;
+    QToolButton *m_profileCopyLoginButton = nullptr;
+    QPointer<QNetworkAccessManager> m_aiProfileAvatarNetwork;
+    QString m_aiProfileAvatarUrl;
+    QPixmap m_aiProfileAvatarPixmap;
+    bool m_aiProfileAvatarFetchInFlight = false;
+    bool m_aiProfileAvatarLoadFailed = false;
+    ProfileAccessBadge m_aiProfileBadge = ProfileAccessBadge::Unknown;
+    QTimer m_profileAvatarAnimationTimer;
+    int m_profileAvatarAnimationTick = 0;
 
     QToolButton *m_audioMuteButton = nullptr;
     QSlider *m_audioVolumeSlider = nullptr;
@@ -356,6 +393,7 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QCheckBox *m_speakerShowBoxStreamBoxesCheckBox = nullptr;
+    QComboBox *m_speakerBoxStreamOverlaySourceCombo = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;
@@ -409,6 +447,7 @@ private:
     QSpinBox *m_exportStartSpin = nullptr;
     QSpinBox *m_exportEndSpin = nullptr;
     QComboBox *m_outputFormatCombo = nullptr;
+    QComboBox *m_renderBackendCombo = nullptr;
     QLabel *m_outputRangeSummaryLabel = nullptr;
     QCheckBox *m_renderUseProxiesCheckBox = nullptr;
     QCheckBox *m_outputPlaybackCacheFallbackCheckBox = nullptr;
@@ -511,6 +550,7 @@ private:
     QTimer m_playbackTimer;
     QTimer m_mainThreadHeartbeatTimer;
     QTimer m_stateSaveTimer;
+    QTimer m_historySaveTimer;
     QTimer m_autosaveTimer;
 
     bool m_ignoreSeekSignal = false;
@@ -552,15 +592,18 @@ private:
     QJsonObject m_liveRenderProfile;
     QJsonObject m_lastRenderProfile;
     bool m_correctionsEnabled = true;
-    PreviewWindow::AudioDynamicsSettings m_previewAudioDynamics;
+    PreviewSurface::AudioDynamicsSettings m_previewAudioDynamics;
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
     QString m_previewViewMode = QStringLiteral("video");
+    QString m_renderBackendPreference = QStringLiteral("vulkan");
     bool m_aiIntegrationEnabled = false;
     QString m_aiIntegrationStatus;
     QString m_aiServiceUrl;
     QString m_aiProxyBaseUrl;
     QString m_aiAuthToken;
+    QString m_aiRefreshToken;
+    QString m_aiRejectedAuthToken;
     QString m_aiUserId;
     QString m_aiSelectedModel = QStringLiteral("deepseek-chat");
     QString m_aiContractVersion = QStringLiteral("unknown");

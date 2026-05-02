@@ -1,4 +1,6 @@
 #pragma once
+// OpenGL Render Path Header
+// Shared OpenGL texture upload/cache helpers used by the OpenGL preview path.
 
 #include "editor_shared.h"
 #include "frame_handle.h"

@@ -1,6 +1,7 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
 
+#include "facefind_window.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
@@ -315,8 +316,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             QStringLiteral("debug/speaker_flow/%1").arg(run.clipId));
         run.runDir = QDir(debugRoot).absoluteFilePath(run.runId);
         QDir().mkpath(run.runDir);
-        run.indexPath = QDir(run.runDir).absoluteFilePath(
-            QStringLiteral("%1_index.json").arg(run.videoStem));
+        run.indexPath = QDir(run.runDir).absoluteFilePath(QStringLiteral("index.json"));
         run.overwriteDecisionPath = QDir(run.runDir).absoluteFilePath(
             QStringLiteral("%1_overwrite_decision.json").arg(run.videoStem));
         return run;
@@ -352,6 +352,39 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
             file.close();
+        }
+    };
+    const auto writeStageErrorArtefacts = [&](DebugRun& run,
+                                              const QString& stage,
+                                              const QString& message,
+                                              const QString& details,
+                                              const QString& processOutput) {
+        const QString stageSlug = stage;
+        const QString jsonPath = QDir(run.runDir).absoluteFilePath(
+            QStringLiteral("%1_error_%2.json").arg(run.videoStem, stageSlug));
+        const QString txtPath = QDir(run.runDir).absoluteFilePath(
+            QStringLiteral("%1_error_%2.txt").arg(run.videoStem, stageSlug));
+        QJsonObject root;
+        root[QStringLiteral("run_id")] = run.runId;
+        root[QStringLiteral("stage")] = stage;
+        root[QStringLiteral("error_code")] = QStringLiteral("stage_failure");
+        root[QStringLiteral("message")] = message;
+        root[QStringLiteral("details")] = details;
+        root[QStringLiteral("stack_or_process_output")] = processOutput;
+        root[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        QFile jf(jsonPath);
+        if (jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+            jf.close();
+            addArtefact(run, jsonPath);
+        }
+        QFile tf(txtPath);
+        if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            tf.write(QStringLiteral("%1\n%2\n\n%3")
+                         .arg(message, details, processOutput)
+                         .toUtf8());
+            tf.close();
+            addArtefact(run, txtPath);
         }
     };
     const auto recordOverwriteDecision = [&](const DebugRun& run,
@@ -465,11 +498,117 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     const double sourceFps = clip->sourceFps > 0.0 ? clip->sourceFps : 30.0;
     const int stepFrames = 45;
     const int maxCandidates = 24;
+    const QString debugRootDir = QFileInfo(debugRun.runDir).dir().absolutePath();
+    const QString cacheDir = QDir(debugRootDir).absoluteFilePath(QStringLiteral("cache"));
+    const QString cacheCropsDir = QDir(cacheDir).absoluteFilePath(QStringLiteral("face_crops"));
+    const QString cacheJsonPath = QDir(cacheDir).absoluteFilePath(QStringLiteral("face_candidate_index.json"));
+    QDir().mkpath(cacheCropsDir);
+
+    const QFileInfo mediaInfo(mediaPath);
+    const qint64 mediaLastModifiedMs = mediaInfo.lastModified().toMSecsSinceEpoch();
+    const qint64 mediaSizeBytes = mediaInfo.exists() ? mediaInfo.size() : -1;
 
     QString cropsDir;
     QString outputJsonPath;
     QString requestPath;
     QString logPath;
+    QVector<facefind::Candidate> candidates;
+    bool loadedCandidatesFromCache = false;
+
+    const auto tryLoadCachedCandidates = [&]() -> bool {
+        QFile cacheFile(cacheJsonPath);
+        if (!cacheFile.exists() || !cacheFile.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        QJsonParseError parseError;
+        const QJsonDocument cacheDoc = QJsonDocument::fromJson(cacheFile.readAll(), &parseError);
+        cacheFile.close();
+        if (parseError.error != QJsonParseError::NoError || !cacheDoc.isObject()) {
+            return false;
+        }
+        const QJsonObject root = cacheDoc.object();
+        const QJsonObject scan = root.value(QStringLiteral("scan")).toObject();
+        if (scan.value(QStringLiteral("media_path")).toString() != mediaPath ||
+            scan.value(QStringLiteral("media_last_modified_ms")).toVariant().toLongLong() != mediaLastModifiedMs ||
+            scan.value(QStringLiteral("media_size_bytes")).toVariant().toLongLong() != mediaSizeBytes ||
+            scan.value(QStringLiteral("start_frame")).toVariant().toLongLong() != startFrame ||
+            scan.value(QStringLiteral("end_frame")).toVariant().toLongLong() != endFrame ||
+            scan.value(QStringLiteral("step")).toInt() != stepFrames ||
+            scan.value(QStringLiteral("max_candidates")).toInt() != maxCandidates) {
+            return false;
+        }
+        const QJsonArray items = root.value(QStringLiteral("candidates")).toArray();
+        if (items.isEmpty()) {
+            return false;
+        }
+        QVector<facefind::Candidate> loaded;
+        loaded.reserve(items.size());
+        for (const QJsonValue& value : items) {
+            const QJsonObject obj = value.toObject();
+            facefind::Candidate candidate;
+            candidate.frame = qMax<int64_t>(0, obj.value(QStringLiteral("frame")).toVariant().toLongLong());
+            candidate.x = qBound<qreal>(0.0, obj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+            candidate.y = qBound<qreal>(0.0, obj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+            candidate.box = qBound<qreal>(0.01, obj.value(QStringLiteral("box")).toDouble(0.20), 1.0);
+            candidate.score = qBound<qreal>(0.0, obj.value(QStringLiteral("score")).toDouble(0.0), 1.0);
+            candidate.trackId = obj.value(QStringLiteral("track_id")).toInt(-1);
+            candidate.cropPath = obj.value(QStringLiteral("crop_path")).toString().trimmed();
+            if (candidate.cropPath.isEmpty() || !QFileInfo::exists(candidate.cropPath)) {
+                return false;
+            }
+            loaded.push_back(candidate);
+        }
+        candidates = loaded;
+        return !candidates.isEmpty();
+    };
+
+    const auto writeCandidateCache = [&](const QVector<facefind::Candidate>& values) {
+        if (values.isEmpty()) {
+            return;
+        }
+        QJsonObject scan;
+        scan[QStringLiteral("media_path")] = mediaPath;
+        scan[QStringLiteral("media_last_modified_ms")] = mediaLastModifiedMs;
+        scan[QStringLiteral("media_size_bytes")] = mediaSizeBytes;
+        scan[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
+        scan[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
+        scan[QStringLiteral("step")] = stepFrames;
+        scan[QStringLiteral("max_candidates")] = maxCandidates;
+        scan[QStringLiteral("source_fps")] = sourceFps;
+
+        QJsonArray rows;
+        for (const facefind::Candidate& c : values) {
+            QJsonObject row;
+            row[QStringLiteral("frame")] = static_cast<qint64>(c.frame);
+            row[QStringLiteral("x")] = c.x;
+            row[QStringLiteral("y")] = c.y;
+            row[QStringLiteral("box")] = c.box;
+            row[QStringLiteral("score")] = c.score;
+            row[QStringLiteral("track_id")] = c.trackId;
+            row[QStringLiteral("crop_path")] = c.cropPath;
+            rows.push_back(row);
+        }
+        QJsonObject root;
+        root[QStringLiteral("schema_version")] = QStringLiteral("1.0");
+        root[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        root[QStringLiteral("scan")] = scan;
+        root[QStringLiteral("candidates")] = rows;
+        QFile cacheFile(cacheJsonPath);
+        if (cacheFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            cacheFile.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+            cacheFile.close();
+        }
+    };
+
+    loadedCandidatesFromCache = tryLoadCachedCandidates();
+    if (loadedCandidatesFromCache) {
+        addArtefact(debugRun, cacheJsonPath);
+        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("ok"),
+                       QStringLiteral("Loaded face candidates from cache."));
+        persistIndex(debugRun);
+    }
+
+    if (!loadedCandidatesFromCache) {
     while (true) {
         cropsDir = QDir(debugRun.runDir).absoluteFilePath(
             QStringLiteral("%1_face_crops").arg(debugRun.videoStem));
@@ -533,6 +672,12 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     if (!process.waitForStarted(5000)) {
         setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
                        QStringLiteral("Failed to start face candidate detector process."));
+        writeStageErrorArtefacts(
+            debugRun,
+            QStringLiteral("stage_3_face_detection"),
+            QStringLiteral("Failed to start face candidate detector process."),
+            QStringLiteral("QProcess failed to start within timeout."),
+            QString());
         persistIndex(debugRun);
         QMessageBox::warning(nullptr,
                              QStringLiteral("Pre-crop Faces"),
@@ -604,6 +749,12 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     if (!finished || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
         setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
                        QStringLiteral("Face candidate detection script failed."));
+        writeStageErrorArtefacts(
+            debugRun,
+            QStringLiteral("stage_3_face_detection"),
+            QStringLiteral("Face candidate detection script failed."),
+            QStringLiteral("speaker_face_candidates.py returned non-zero exit status."),
+            processOutput);
         addArtefact(debugRun, requestPath);
         addArtefact(debugRun, logPath);
         persistIndex(debugRun);
@@ -631,6 +782,12 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     if (parseError.error != QJsonParseError::NoError || !outputDoc.isObject()) {
         setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
                        QStringLiteral("Invalid face candidate output JSON."));
+        writeStageErrorArtefacts(
+            debugRun,
+            QStringLiteral("stage_3_face_detection"),
+            QStringLiteral("Invalid face candidate output JSON."),
+            QStringLiteral("Detector output JSON was missing or malformed."),
+            QString());
         addArtefact(debugRun, requestPath);
         addArtefact(debugRun, outputJsonPath);
         addArtefact(debugRun, logPath);
@@ -647,26 +804,17 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("ok"),
                    QStringLiteral("Face candidate detection completed."));
     persistIndex(debugRun);
-
-    struct FaceCandidate {
-        int64_t frame = 0;
-        qreal x = 0.5;
-        qreal y = 0.5;
-        qreal box = 0.20;
-        qreal score = 0.0;
-        QString cropPath;
-    };
-    QVector<FaceCandidate> candidates;
     const QJsonArray candidateArray = outputDoc.object().value(QStringLiteral("candidates")).toArray();
     candidates.reserve(candidateArray.size());
     for (const QJsonValue& value : candidateArray) {
         const QJsonObject obj = value.toObject();
-        FaceCandidate candidate;
+        facefind::Candidate candidate;
         candidate.frame = qMax<int64_t>(0, obj.value(QStringLiteral("frame")).toVariant().toLongLong());
         candidate.x = qBound<qreal>(0.0, obj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
         candidate.y = qBound<qreal>(0.0, obj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
         candidate.box = qBound<qreal>(0.01, obj.value(QStringLiteral("box")).toDouble(0.20), 1.0);
         candidate.score = qBound<qreal>(0.0, obj.value(QStringLiteral("score")).toDouble(0.0), 1.0);
+        candidate.trackId = obj.value(QStringLiteral("track_id")).toInt(-1);
         candidate.cropPath = obj.value(QStringLiteral("crop_path")).toString();
         if (!candidate.cropPath.trimmed().isEmpty()) {
             QFileInfo cropInfo(candidate.cropPath);
@@ -674,7 +822,18 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                 ? QDir(cropsDir).absoluteFilePath(candidate.cropPath)
                 : cropInfo.absoluteFilePath();
         }
+        if (!candidate.cropPath.isEmpty()) {
+            const QString cachedCropPath =
+                QDir(cacheCropsDir).absoluteFilePath(
+                    QStringLiteral("%1_%2.png").arg(debugRun.videoStem).arg(candidates.size(), 3, 10, QLatin1Char('0')));
+            if (!QFileInfo::exists(cachedCropPath)) {
+                QFile::copy(candidate.cropPath, cachedCropPath);
+            }
+            candidate.cropPath = cachedCropPath;
+        }
         candidates.push_back(candidate);
+    }
+    writeCandidateCache(candidates);
     }
     if (candidates.isEmpty()) {
         setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("warn"),
@@ -758,205 +917,214 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         return nearestSpeaker;
     };
 
-    QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("Assign Pre-cropped Face Candidates"));
-    dialog.resize(920, 560);
-    auto* layout = new QVBoxLayout(&dialog);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
-    auto* intro = new QLabel(
-        QStringLiteral("Review sampled face crops, then assign each crop to a transcript speaker. "
-                       "Auto suggestions are preselected from transcript timing; manual speaker ID override is optional. "
-                       "On apply, assignments fill only empty Ref1/Ref2 slots."),
-        &dialog);
-    intro->setWordWrap(true);
-    layout->addWidget(intro);
+    const QString clipFlowId =
+        (clip && !clip->id.trimmed().isEmpty()) ? clip->id.trimmed() : QStringLiteral("unknown_clip");
+    QHash<int, QString> persistedIdentityByTrackId;
+    {
+        const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        const QJsonObject clipFlowRoot = clipsRoot.value(clipFlowId).toObject();
+        const QJsonObject resolvedCurrent = clipFlowRoot.value(QStringLiteral("resolved_current")).toObject();
+        const QJsonArray resolvedMap = resolvedCurrent.value(QStringLiteral("track_identity_map")).toArray();
+        for (const QJsonValue& value : resolvedMap) {
+            const QJsonObject row = value.toObject();
+            const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+            const QString identityId = row.value(QStringLiteral("identity_id")).toString().trimmed();
+            if (trackId >= 0 && !identityId.isEmpty()) {
+                persistedIdentityByTrackId.insert(trackId, identityId);
+            }
+        }
+    }
 
-    auto* table = new QTableWidget(&dialog);
-    table->setColumnCount(7);
-    table->setHorizontalHeaderLabels(
-        QStringList{
-            QStringLiteral("Crop"),
-            QStringLiteral("Frame"),
-            QStringLiteral("X"),
-            QStringLiteral("Y"),
-            QStringLiteral("Box"),
-            QStringLiteral("Assign To (Auto)"),
-            QStringLiteral("Manual Speaker ID (Override)")});
-    table->setRowCount(candidates.size());
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table->setSelectionMode(QAbstractItemView::SingleSelection);
-    table->setSelectionBehavior(QAbstractItemView::SelectRows);
-    table->verticalHeader()->setVisible(false);
-    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+    QStringList autoSuggestedSpeakerIds;
+    autoSuggestedSpeakerIds.reserve(candidates.size());
+    for (const facefind::Candidate& candidate : std::as_const(candidates)) {
+        autoSuggestedSpeakerIds.push_back(suggestedSpeakerForFrame(candidate.frame));
+    }
 
-    auto* allowNewSpeakerIdsCheck = new QCheckBox(
-        QStringLiteral("Allow creating new speaker IDs from manual override"),
-        &dialog);
-    allowNewSpeakerIdsCheck->setChecked(false);
-    allowNewSpeakerIdsCheck->setToolTip(
-        QStringLiteral("Disabled by default to prevent typo-based speaker ID creation."));
+    QStringList suggestedSpeakerIds;
+    suggestedSpeakerIds.reserve(candidates.size());
+    QStringList defaultSourceLabels;
+    defaultSourceLabels.reserve(candidates.size());
+    for (const facefind::Candidate& candidate : std::as_const(candidates)) {
+        const QString persistedIdentity = persistedIdentityByTrackId.value(candidate.trackId).trimmed();
+        if (!persistedIdentity.isEmpty()) {
+            suggestedSpeakerIds.push_back(persistedIdentity);
+            defaultSourceLabels.push_back(QStringLiteral("Persisted (Human)"));
+            continue;
+        }
+        suggestedSpeakerIds.push_back(suggestedSpeakerForFrame(candidate.frame));
+        defaultSourceLabels.push_back(QStringLiteral("Auto (Timing)"));
+    }
+    auto persistSpeakerFlowSnapshot = [&](const QJsonObject& machinePayload,
+                                          const QJsonObject& humanPayload,
+                                          const QJsonObject& resolvedPayload) {
+        QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+        speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
 
-    auto makeSpeakerLabel = [&](const QString& speakerId) {
-        const QString name =
-            profiles.value(speakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
-        return name.isEmpty() || name == speakerId
-            ? speakerId
-            : QStringLiteral("%1 (%2)").arg(speakerId, name);
+        QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        QJsonObject clipRoot = clipsRoot.value(clipFlowId).toObject();
+        clipRoot[QStringLiteral("clip_id")] = clipFlowId;
+        clipRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+        if (!machinePayload.isEmpty()) {
+            QJsonObject machineRuns = clipRoot.value(QStringLiteral("machine_runs")).toObject();
+            machineRuns[debugRun.runId] = machinePayload;
+            clipRoot[QStringLiteral("machine_runs")] = machineRuns;
+            clipRoot[QStringLiteral("latest_machine_run_id")] = debugRun.runId;
+        }
+        if (!humanPayload.isEmpty()) {
+            QJsonObject humanRuns = clipRoot.value(QStringLiteral("human_runs")).toObject();
+            humanRuns[debugRun.runId] = humanPayload;
+            clipRoot[QStringLiteral("human_runs")] = humanRuns;
+            clipRoot[QStringLiteral("latest_human_run_id")] = debugRun.runId;
+        }
+        if (!resolvedPayload.isEmpty()) {
+            clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
+        }
+        clipsRoot[clipFlowId] = clipRoot;
+        speakerFlow[QStringLiteral("clips")] = clipsRoot;
+        transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+        m_loadedTranscriptDoc.setObject(transcriptRoot);
+
+        editor::TranscriptEngine engine;
+        engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
     };
 
-    for (int row = 0; row < candidates.size(); ++row) {
-        const FaceCandidate& candidate = candidates.at(row);
-        auto* cropItem = new QTableWidgetItem;
-        cropItem->setFlags(cropItem->flags() & ~Qt::ItemIsEditable);
-        cropItem->setTextAlignment(Qt::AlignCenter);
-        if (!candidate.cropPath.isEmpty()) {
-            QPixmap crop(candidate.cropPath);
-            if (!crop.isNull()) {
-                cropItem->setIcon(QIcon(crop.scaled(84, 84, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
-            }
-        }
-        cropItem->setToolTip(QStringLiteral("score=%1").arg(QString::number(candidate.score, 'f', 3)));
-        cropItem->setSizeHint(QSize(88, 88));
-        table->setItem(row, 0, cropItem);
-        table->setItem(row, 1, new QTableWidgetItem(QString::number(candidate.frame)));
-        table->setItem(row, 2, new QTableWidgetItem(QString::number(candidate.x, 'f', 3)));
-        table->setItem(row, 3, new QTableWidgetItem(QString::number(candidate.y, 'f', 3)));
-        table->setItem(row, 4, new QTableWidgetItem(QString::number(candidate.box, 'f', 3)));
+    {
+        QJsonArray machineCandidates;
+        QJsonArray machineSuggestions;
+        for (int i = 0; i < candidates.size(); ++i) {
+            const facefind::Candidate& c = candidates.at(i);
+            QJsonObject row;
+            row[QStringLiteral("candidate_index")] = i;
+            row[QStringLiteral("frame")] = static_cast<qint64>(c.frame);
+            row[QStringLiteral("x")] = c.x;
+            row[QStringLiteral("y")] = c.y;
+            row[QStringLiteral("box")] = c.box;
+            row[QStringLiteral("score")] = c.score;
+            row[QStringLiteral("track_id")] = c.trackId;
+            row[QStringLiteral("crop_path")] = c.cropPath;
+            machineCandidates.push_back(row);
 
-        auto* assignCombo = new QComboBox(table);
-        assignCombo->addItem(QStringLiteral("Skip"), QString());
-        for (const QString& speakerId : speakerIds) {
-            assignCombo->addItem(makeSpeakerLabel(speakerId), speakerId);
+            QJsonObject s;
+            s[QStringLiteral("candidate_index")] = i;
+            s[QStringLiteral("track_id")] = c.trackId;
+            s[QStringLiteral("suggested_identity_id")] =
+                (i < suggestedSpeakerIds.size() ? suggestedSpeakerIds.at(i) : QString());
+            s[QStringLiteral("source")] = QStringLiteral("timing_nearest");
+            machineSuggestions.push_back(s);
         }
-        table->setCellWidget(row, 5, assignCombo);
-
-        const QString suggestedSpeakerId = suggestedSpeakerForFrame(candidate.frame);
-        if (!suggestedSpeakerId.isEmpty()) {
-            const int suggestedIndex = assignCombo->findData(suggestedSpeakerId);
-            if (suggestedIndex >= 0) {
-                assignCombo->setCurrentIndex(suggestedIndex);
-            }
-        }
-
-        auto* manualIdEdit = new QLineEdit(table);
-        manualIdEdit->setPlaceholderText(QStringLiteral("Optional: type speaker ID"));
-        table->setCellWidget(row, 6, manualIdEdit);
-        table->setRowHeight(row, 92);
+        QJsonObject machinePayload;
+        machinePayload[QStringLiteral("run_id")] = debugRun.runId;
+        machinePayload[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        machinePayload[QStringLiteral("detection_source")] =
+            loadedCandidatesFromCache ? QStringLiteral("cache") : QStringLiteral("scan");
+        machinePayload[QStringLiteral("candidates")] = machineCandidates;
+        machinePayload[QStringLiteral("suggestions")] = machineSuggestions;
+        machinePayload[QStringLiteral("candidate_count")] = candidates.size();
+        machinePayload[QStringLiteral("max_candidates")] = maxCandidates;
+        machinePayload[QStringLiteral("step_frames")] = stepFrames;
+        persistSpeakerFlowSnapshot(machinePayload, QJsonObject(), QJsonObject());
     }
-    layout->addWidget(table, 1);
-    layout->addWidget(allowNewSpeakerIdsCheck);
 
-    auto* actions = new QHBoxLayout;
-    actions->addStretch(1);
-    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
-    auto* applyButton = new QPushButton(QStringLiteral("Apply Assignments"), &dialog);
-    actions->addWidget(cancelButton);
-    actions->addWidget(applyButton);
-    layout->addLayout(actions);
-    QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
-    QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
-
-    QHash<QString, QString> speakerIdByLower;
-    speakerIdByLower.reserve(speakerIds.size());
+    QHash<QString, QString> speakerLabels;
+    speakerLabels.reserve(speakerIds.size());
     for (const QString& speakerId : speakerIds) {
-        speakerIdByLower.insert(speakerId.toLower(), speakerId);
+        const QString name =
+            profiles.value(speakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+        speakerLabels.insert(
+            speakerId,
+            (name.isEmpty() || name == speakerId) ? speakerId : QStringLiteral("%1 (%2)").arg(speakerId, name));
     }
 
-    QHash<QString, QVector<FaceCandidate>> assignmentsBySpeaker;
-    QJsonArray assignmentTableRows;
-    const QRegularExpression speakerIdPattern(QStringLiteral("^[A-Za-z0-9_.-]{1,64}$"));
-    while (true) {
-        if (dialog.exec() != QDialog::Accepted) {
-            setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("skipped"),
-                           QStringLiteral("User canceled assignment dialog."));
-            persistIndex(debugRun);
-            return;
-        }
+    const facefind::AssignmentDialogResult dialogResult =
+        facefind::showFaceFindWindow(
+            nullptr,
+            candidates,
+            speakerIds,
+            speakerLabels,
+            suggestedSpeakerIds,
+            autoSuggestedSpeakerIds,
+            defaultSourceLabels);
+    if (!dialogResult.accepted) {
+        setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("skipped"),
+                       QStringLiteral("User canceled assignment dialog."));
+        persistIndex(debugRun);
+        return;
+    }
 
-        assignmentsBySpeaker.clear();
-        assignmentTableRows = QJsonArray();
-        QStringList invalidIds;
-        QStringList unknownIds;
-        for (int row = 0; row < table->rowCount(); ++row) {
-            auto* combo = qobject_cast<QComboBox*>(table->cellWidget(row, 5));
-            auto* manualIdEdit = qobject_cast<QLineEdit*>(table->cellWidget(row, 6));
-            if (!combo || !manualIdEdit) {
+    const QJsonArray assignmentTableRows = dialogResult.assignmentTableRows;
+    QHash<QString, QVector<facefind::Candidate>> assignmentsBySpeaker;
+
+    {
+        QJsonArray overrides;
+        QJsonArray auditLog;
+        QJsonArray resolvedMap;
+        QHash<int, facefind::Candidate> candidateByTrackId;
+        for (const facefind::Candidate& c : std::as_const(candidates)) {
+            if (c.trackId < 0) {
                 continue;
             }
-            const QString manualSpeakerId = manualIdEdit->text().trimmed();
-            QString speakerId =
-                manualSpeakerId.isEmpty() ? combo->currentData().toString().trimmed() : manualSpeakerId;
-            const FaceCandidate& c = candidates.at(row);
-            QJsonObject assignmentRow{
-                {QStringLiteral("row"), row},
-                {QStringLiteral("frame"), static_cast<qint64>(c.frame)},
-                {QStringLiteral("x"), c.x},
-                {QStringLiteral("y"), c.y},
-                {QStringLiteral("box"), c.box},
-                {QStringLiteral("score"), c.score},
-                {QStringLiteral("auto_selected"), combo->currentData().toString().trimmed()},
-                {QStringLiteral("manual_override"), manualSpeakerId},
-                {QStringLiteral("resolved_speaker_id"), speakerId}
-            };
-            if (speakerId.isEmpty()) {
-                assignmentRow[QStringLiteral("decision")] = QStringLiteral("skipped");
-                assignmentTableRows.push_back(assignmentRow);
-                continue;
+            const auto existing = candidateByTrackId.constFind(c.trackId);
+            if (existing == candidateByTrackId.constEnd() || c.score > existing->score) {
+                candidateByTrackId.insert(c.trackId, c);
             }
-
-            if (!speakerIdPattern.match(speakerId).hasMatch()) {
-                if (!invalidIds.contains(speakerId)) {
-                    invalidIds.push_back(speakerId);
-                }
-                assignmentRow[QStringLiteral("decision")] = QStringLiteral("invalid_id");
-                assignmentTableRows.push_back(assignmentRow);
-                continue;
-            }
-
-            const QString normalizedExistingId =
-                speakerIdByLower.value(speakerId.toLower(), QString());
-            if (!normalizedExistingId.isEmpty()) {
-                speakerId = normalizedExistingId;
-            } else if (!allowNewSpeakerIdsCheck->isChecked()) {
-                if (!unknownIds.contains(speakerId)) {
-                    unknownIds.push_back(speakerId);
-                }
-                assignmentRow[QStringLiteral("decision")] = QStringLiteral("unknown_id_blocked");
-                assignmentTableRows.push_back(assignmentRow);
-                continue;
-            }
-
-            assignmentRow[QStringLiteral("resolved_speaker_id")] = speakerId;
-            assignmentRow[QStringLiteral("decision")] = QStringLiteral("accepted");
-            assignmentTableRows.push_back(assignmentRow);
-            assignmentsBySpeaker[speakerId].push_back(candidates.at(row));
         }
 
-        if (!invalidIds.isEmpty()) {
-            QMessageBox::warning(
-                &dialog,
-                QStringLiteral("Invalid Manual Speaker ID"),
-                QStringLiteral("Manual speaker IDs must match `[A-Za-z0-9_.-]` and be 1-64 chars.\n\nInvalid: %1")
-                    .arg(invalidIds.join(QStringLiteral(", "))));
-            continue;
+        for (const QJsonValue& value : assignmentTableRows) {
+            const QJsonObject row = value.toObject();
+            const QString decision = row.value(QStringLiteral("decision")).toString();
+            const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+            if (trackId < 0 || decision != QStringLiteral("accepted")) {
+                continue;
+            }
+            const QString resolvedSpeaker = row.value(QStringLiteral("resolved_speaker_id")).toString().trimmed();
+            if (resolvedSpeaker.isEmpty()) {
+                continue;
+            }
+            const QString manualOverride = row.value(QStringLiteral("manual_override")).toString().trimmed();
+            QJsonObject overrideRow;
+            overrideRow[QStringLiteral("track_id")] = trackId;
+            overrideRow[QStringLiteral("identity_id")] = resolvedSpeaker;
+            overrideRow[QStringLiteral("source")] =
+                manualOverride.isEmpty() ? QStringLiteral("auto_selected") : QStringLiteral("human_override");
+            overrideRow[QStringLiteral("manual_override")] = !manualOverride.isEmpty();
+            overrides.push_back(overrideRow);
+
+            QJsonObject auditRow;
+            auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            auditRow[QStringLiteral("action")] = QStringLiteral("track_identity_set");
+            auditRow[QStringLiteral("track_id")] = trackId;
+            auditRow[QStringLiteral("identity_id")] = resolvedSpeaker;
+            auditRow[QStringLiteral("source")] = overrideRow.value(QStringLiteral("source")).toString();
+            auditLog.push_back(auditRow);
+
+            QJsonObject resolvedRow;
+            resolvedRow[QStringLiteral("track_id")] = trackId;
+            resolvedRow[QStringLiteral("identity_id")] = resolvedSpeaker;
+            resolvedRow[QStringLiteral("resolution_source")] = overrideRow.value(QStringLiteral("source")).toString();
+            resolvedMap.push_back(resolvedRow);
+
+            const auto trackIt = candidateByTrackId.constFind(trackId);
+            if (trackIt != candidateByTrackId.constEnd()) {
+                assignmentsBySpeaker[resolvedSpeaker].push_back(trackIt.value());
+            }
         }
-        if (!unknownIds.isEmpty()) {
-            QMessageBox::warning(
-                &dialog,
-                QStringLiteral("Unknown Speaker ID"),
-                QStringLiteral("Manual speaker IDs must match existing transcript speakers unless "
-                               "\"Allow creating new speaker IDs\" is enabled.\n\nUnknown: %1")
-                    .arg(unknownIds.join(QStringLiteral(", "))));
-            continue;
-        }
-        break;
+        QJsonObject humanPayload;
+        humanPayload[QStringLiteral("run_id")] = debugRun.runId;
+        humanPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        humanPayload[QStringLiteral("assignment_table_rows")] = assignmentTableRows;
+        humanPayload[QStringLiteral("track_identity_overrides")] = overrides;
+        humanPayload[QStringLiteral("audit_log")] = auditLog;
+
+        QJsonObject resolvedPayload;
+        resolvedPayload[QStringLiteral("run_id")] = debugRun.runId;
+        resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        resolvedPayload[QStringLiteral("track_identity_map")] = resolvedMap;
+        persistSpeakerFlowSnapshot(QJsonObject(), humanPayload, resolvedPayload);
     }
 
     if (assignmentsBySpeaker.isEmpty()) {
@@ -999,7 +1167,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             QJsonObject d;
             d[QStringLiteral("speaker_id")] = it.key();
             QJsonArray assigned;
-            for (const FaceCandidate& c : it.value()) {
+            for (const facefind::Candidate& c : it.value()) {
                 QJsonObject row;
                 row[QStringLiteral("frame")] = static_cast<qint64>(c.frame);
                 row[QStringLiteral("x")] = c.x;
@@ -1030,8 +1198,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     QJsonArray referenceWriteResult;
     for (auto it = assignmentsBySpeaker.begin(); it != assignmentsBySpeaker.end(); ++it) {
         const QString speakerId = it.key();
-        QVector<FaceCandidate> assigned = it.value();
-        std::sort(assigned.begin(), assigned.end(), [](const FaceCandidate& a, const FaceCandidate& b) {
+        QVector<facefind::Candidate> assigned = it.value();
+        std::sort(assigned.begin(), assigned.end(), [](const facefind::Candidate& a, const facefind::Candidate& b) {
             if (!qFuzzyCompare(a.score + 1.0, b.score + 1.0)) {
                 return a.score > b.score;
             }
@@ -1075,7 +1243,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
 
         const int assignCount = qMin(freeSlots.size(), assigned.size());
         for (int i = 0; i < assignCount; ++i) {
-            const FaceCandidate& candidate = assigned.at(i);
+            const facefind::Candidate& candidate = assigned.at(i);
             const bool ok = saveSpeakerTrackingReferenceAt(
                     speakerId,
                     freeSlots.at(i),
@@ -1159,4 +1327,3 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     persistIndex(debugRun);
     refresh();
 }
-

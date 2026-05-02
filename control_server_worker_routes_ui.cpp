@@ -237,26 +237,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 }
 
                 const QJsonObject before = widgetSnapshot(widget);
-                auto selectedClipFromState = [](const QJsonObject& stateObj) -> QJsonObject {
-                    const QJsonObject direct = stateObj.value(QStringLiteral("selectedClip")).toObject();
-                    if (!direct.isEmpty()) {
-                        return direct;
-                    }
-                    const QString selectedClipId =
-                        stateObj.value(QStringLiteral("selectedClipId")).toString().trimmed();
-                    if (selectedClipId.isEmpty()) {
-                        return {};
-                    }
-                    const QJsonArray timeline = stateObj.value(QStringLiteral("timeline")).toArray();
-                    for (const QJsonValue& value : timeline) {
-                        const QJsonObject clipObj = value.toObject();
-                        if (clipObj.value(QStringLiteral("id")).toString().trimmed() == selectedClipId) {
-                            return clipObj;
-                        }
-                    }
-                    return {};
-                };
-                auto disabledButtonReason = [this, selectedClipFromState](QAbstractButton* button) -> QString {
+                auto disabledButtonReason = [this](QAbstractButton* button) -> QString {
                     if (!button) {
                         return QStringLiteral("target button is disabled");
                     }
@@ -266,7 +247,8 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                         if (m_stateSnapshotCallback) {
                             stateObj = m_stateSnapshotCallback().value(QStringLiteral("state")).toObject();
                         }
-                        const QJsonObject selectedClip = selectedClipFromState(stateObj);
+                        const QJsonObject selectedClip =
+                            resolveSelectedClipState(stateObj).value(QStringLiteral("selectedClip")).toObject();
                         if (selectedClip.isEmpty()) {
                             return QStringLiteral(
                                 "Face Stabilize is disabled: no clip is selected. Select a clip first.");
@@ -710,25 +692,6 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
         QJsonObject response;
         if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this, id]() {
-                auto selectedClipFromState = [](const QJsonObject& stateObj) -> QJsonObject {
-                    const QJsonObject direct = stateObj.value(QStringLiteral("selectedClip")).toObject();
-                    if (!direct.isEmpty()) {
-                        return direct;
-                    }
-                    const QString selectedClipId =
-                        stateObj.value(QStringLiteral("selectedClipId")).toString().trimmed();
-                    if (selectedClipId.isEmpty()) {
-                        return {};
-                    }
-                    const QJsonArray timeline = stateObj.value(QStringLiteral("timeline")).toArray();
-                    for (const QJsonValue& value : timeline) {
-                        const QJsonObject clipObj = value.toObject();
-                        if (clipObj.value(QStringLiteral("id")).toString().trimmed() == selectedClipId) {
-                            return clipObj;
-                        }
-                    }
-                    return {};
-                };
                 QWidget* widget = findWidgetByObjectName(m_window, id);
                 if (!widget) {
                     return QJsonObject{
@@ -763,7 +726,8 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                             if (m_stateSnapshotCallback) {
                                 stateObj = m_stateSnapshotCallback().value(QStringLiteral("state")).toObject();
                             }
-                            const QJsonObject selectedClip = selectedClipFromState(stateObj);
+                            const QJsonObject selectedClip =
+                                resolveSelectedClipState(stateObj).value(QStringLiteral("selectedClip")).toObject();
                             if (selectedClip.isEmpty()) {
                                 error = QStringLiteral(
                                     "Face Stabilize is disabled: no clip is selected. Select a clip first.");

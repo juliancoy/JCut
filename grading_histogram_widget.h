@@ -3,6 +3,7 @@
 #include <QWidget>
 
 #include <array>
+#include <QColor>
 #include <QPointF>
 #include <QVector>
 
@@ -34,6 +35,7 @@ public:
     void setCurveSmoothingEnabled(bool enabled);
     bool curveSmoothingEnabled() const { return m_curveSmoothingEnabled; }
     bool hasAlphaHistogram() const { return m_hasAlphaHistogram; }
+    void setChartBackgroundColor(const QColor& color);
 
 signals:
     void curvePointsAdjusted(const QVector<QPointF>& points, bool finalized);
@@ -68,6 +70,7 @@ private:
     QVector<QPointF> m_points;
     bool m_threePointLockEnabled = false;
     bool m_curveSmoothingEnabled = true;
+    QColor m_chartBackgroundColor = QColor(16, 22, 30, 255);
 
     int m_activePoint = -1;
     bool m_dragging = false;

@@ -16,7 +16,10 @@ public:
     QString transcriptPathForClip(const TimelineClip &clip) const;
     QString secondsToTranscriptTime(double seconds) const;
     bool parseTranscriptTime(const QString &text, double *secondsOut) const;
+    bool loadTranscriptJson(const QString &path, QJsonDocument *docOut, QString *errorOut = nullptr) const;
     bool saveTranscriptJson(const QString &path, const QJsonDocument &doc) const;
+    bool loadBoxstreamArtifact(const QString &transcriptPath, QJsonObject *rootOut) const;
+    bool saveBoxstreamArtifact(const QString &transcriptPath, const QJsonObject &root) const;
 
     int64_t adjustedLocalFrameForClip(const TimelineClip &clip,
                                       int64_t localTimelineFrame,

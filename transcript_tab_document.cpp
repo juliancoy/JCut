@@ -135,9 +135,8 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
         }
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+    QJsonDocument transcriptDoc;
+    if (!m_transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
         if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
         }
@@ -219,9 +218,8 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
     if (showOutsideCutLinesEnabled() && transcriptPath != originalPath && QFileInfo::exists(originalPath)) {
         QFile originalFile(originalPath);
         if (originalFile.open(QIODevice::ReadOnly)) {
-            QJsonParseError originalParseError;
-            const QJsonDocument originalDoc = QJsonDocument::fromJson(originalFile.readAll(), &originalParseError);
-            if (originalParseError.error == QJsonParseError::NoError && originalDoc.isObject()) {
+            QJsonDocument originalDoc;
+            if (m_transcriptEngine.loadTranscriptJson(originalPath, &originalDoc) && originalDoc.isObject()) {
                 const QVector<TranscriptRow> originalRows = parseTranscriptRows(
                     originalDoc.object().value(QStringLiteral("segments")).toArray(),
                     m_transcriptPrependMs,

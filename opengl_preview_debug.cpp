@@ -1,6 +1,6 @@
-#include "preview_debug.h"
+#include "opengl_preview_debug.h"
 
-#include "preview.h"
+#include "opengl_preview.h"
 #include "frame_handle.h"
 #include "debug_controls.h"
 

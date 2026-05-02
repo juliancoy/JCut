@@ -1,4 +1,4 @@
-#include "preview.h"
+#include "opengl_preview.h"
 #include "titles.h"
 
 #include <QContextMenuEvent>

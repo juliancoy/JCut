@@ -290,4 +290,79 @@ QMenu* activePopupMenu() {
     return qobject_cast<QMenu*>(widget);
 }
 
+QJsonObject resolveSelectedClipState(const QJsonObject& stateObj) {
+    const QJsonObject directClip = stateObj.value(QStringLiteral("selectedClip")).toObject();
+    const QString selectedClipId = stateObj.value(QStringLiteral("selectedClipId")).toString().trimmed();
+    const QJsonArray selectedClipIds = stateObj.value(QStringLiteral("selectedClipIds")).toArray();
+    const QJsonArray timeline = stateObj.value(QStringLiteral("timeline")).toArray();
+
+    auto clipById = [&timeline](const QString& id) -> QJsonObject {
+        if (id.trimmed().isEmpty()) {
+            return {};
+        }
+        for (const QJsonValue& value : timeline) {
+            const QJsonObject clipObj = value.toObject();
+            if (clipObj.value(QStringLiteral("id")).toString().trimmed() == id.trimmed()) {
+                return clipObj;
+            }
+        }
+        return {};
+    };
+
+    QString resolvedId;
+    QJsonObject resolvedClip;
+    QString source = QStringLiteral("none");
+
+    const QString directId = directClip.value(QStringLiteral("id")).toString().trimmed();
+    if (!directClip.isEmpty() && !directId.isEmpty()) {
+        resolvedClip = directClip;
+        resolvedId = directId;
+        source = QStringLiteral("selectedClip");
+    }
+
+    if (resolvedClip.isEmpty() && !selectedClipId.isEmpty()) {
+        const QJsonObject bySelectedId = clipById(selectedClipId);
+        if (!bySelectedId.isEmpty()) {
+            resolvedClip = bySelectedId;
+            resolvedId = selectedClipId;
+            source = QStringLiteral("selectedClipId");
+        }
+    }
+
+    if (resolvedClip.isEmpty() && !selectedClipIds.isEmpty()) {
+        const QString firstSelectedId = selectedClipIds.at(0).toString().trimmed();
+        const QJsonObject bySelectedIds = clipById(firstSelectedId);
+        if (!bySelectedIds.isEmpty()) {
+            resolvedClip = bySelectedIds;
+            resolvedId = firstSelectedId;
+            source = QStringLiteral("selectedClipIds");
+        }
+    }
+
+    if (resolvedClip.isEmpty() && !timeline.isEmpty()) {
+        const QJsonObject firstClip = timeline.at(0).toObject();
+        const QString firstId = firstClip.value(QStringLiteral("id")).toString().trimmed();
+        if (!firstClip.isEmpty() && !firstId.isEmpty()) {
+            resolvedClip = firstClip;
+            resolvedId = firstId;
+            source = QStringLiteral("timeline_first");
+        }
+    }
+
+    bool consistent = true;
+    if (!selectedClipId.isEmpty() && !resolvedId.isEmpty() && selectedClipId != resolvedId) {
+        consistent = false;
+    }
+    if (!directClip.isEmpty() && !directId.isEmpty() && !resolvedId.isEmpty() && directId != resolvedId) {
+        consistent = false;
+    }
+
+    return QJsonObject{
+        {QStringLiteral("selectedClip"), resolvedClip},
+        {QStringLiteral("selectedClipId"), resolvedId},
+        {QStringLiteral("selectedClipResolutionSource"), source},
+        {QStringLiteral("selectedClipResolutionConsistent"), consistent}
+    };
+}
+
 } // namespace control_server

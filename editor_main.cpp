@@ -10,6 +10,7 @@
 #include <QLockFile>
 
 #include <limits>
+#include <memory>
 #include <cstring>
 
 namespace {
@@ -46,17 +47,21 @@ int main(int argc, char **argv)
     QApplication::setApplicationName(QStringLiteral("PanelTalkEditor"));
     qRegisterMetaType<editor::FrameHandle>();
 
-    // Single instance enforcement via lock file
-    const QString lockPath = QDir::tempPath() + QStringLiteral("/PanelTalkEditor.lock");
-    QLockFile lockFile(lockPath);
-    lockFile.setStaleLockTime(0);
-    if (!lockFile.tryLock(100)) {
-        qint64 pid = 0;
-        QString hostname, appname;
-        lockFile.getLockInfo(&pid, &hostname, &appname);
-        fprintf(stderr, "Another instance is already running (pid %lld). Exiting.\n",
-                static_cast<long long>(pid));
-        return 1;
+    std::unique_ptr<QLockFile> lockFile;
+    if (!runHeadlessSpeakerHarness) {
+        // Single instance enforcement is for the interactive editor only.
+        // Headless export harnesses must run alongside the UI and each other.
+        const QString lockPath = QDir::tempPath() + QStringLiteral("/PanelTalkEditor.lock");
+        lockFile = std::make_unique<QLockFile>(lockPath);
+        lockFile->setStaleLockTime(0);
+        if (!lockFile->tryLock(100)) {
+            qint64 pid = 0;
+            QString hostname, appname;
+            lockFile->getLockInfo(&pid, &hostname, &appname);
+            fprintf(stderr, "Another instance is already running (pid %lld). Exiting.\n",
+                    static_cast<long long>(pid));
+            return 1;
+        }
     }
 
     if (!zeroCopyPreferredEnvironmentDetected()) {

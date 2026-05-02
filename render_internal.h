@@ -194,13 +194,86 @@ QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
                                         const QVector<TimelineTrack>& tracks);
 
 class OffscreenGpuRendererPrivate;
+class OffscreenVulkanRendererPrivate;
 
-class OffscreenGpuRenderer {
+class OffscreenRenderer {
+public:
+    virtual ~OffscreenRenderer() = default;
+
+    virtual bool initialize(const QSize& outputSize, QString* errorMessage) = 0;
+    virtual QImage renderFrame(const RenderRequest& request,
+                               int64_t timelineFrame,
+                               QHash<QString, editor::DecoderContext*>& decoders,
+                               editor::AsyncDecoder* asyncDecoder,
+                               QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                               const QVector<TimelineClip>& orderedClips,
+                               QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
+                               qint64* decodeMs = nullptr,
+                               qint64* textureMs = nullptr,
+                               qint64* compositeMs = nullptr,
+                               qint64* readbackMs = nullptr,
+                               QJsonArray* skippedClips = nullptr,
+                               QJsonObject* skippedReasonCounts = nullptr) = 0;
+    virtual bool convertLastFrameToNv12(AVFrame* frame,
+                                        qint64* nv12ConvertMs = nullptr,
+                                        qint64* readbackMs = nullptr) = 0;
+    virtual bool beginLastFrameToNv12Readback(qint64* convertMs = nullptr,
+                                              qint64* readbackMs = nullptr) {
+        Q_UNUSED(convertMs)
+        Q_UNUSED(readbackMs)
+        return false;
+    }
+    virtual bool finishLastFrameToNv12Readback(AVFrame* frame,
+                                               qint64* convertMs = nullptr,
+                                               qint64* readbackMs = nullptr) {
+        Q_UNUSED(frame)
+        Q_UNUSED(convertMs)
+        Q_UNUSED(readbackMs)
+        return false;
+    }
+    virtual bool beginLastFrameToNv12CudaTransfer(qint64* convertMs = nullptr,
+                                                  qint64* transferMs = nullptr) {
+        Q_UNUSED(convertMs)
+        Q_UNUSED(transferMs)
+        return false;
+    }
+    virtual bool finishLastFrameToNv12CudaTransfer(AVFrame* cudaFrame,
+                                                   qint64* convertMs = nullptr,
+                                                   qint64* transferMs = nullptr) {
+        Q_UNUSED(cudaFrame)
+        Q_UNUSED(convertMs)
+        Q_UNUSED(transferMs)
+        return false;
+    }
+    virtual bool convertLastFrameToYuv420p(AVFrame* frame,
+                                           qint64* convertMs = nullptr,
+                                           qint64* readbackMs = nullptr) = 0;
+    virtual bool beginLastFrameToYuv420pReadback(qint64* convertMs = nullptr,
+                                                 qint64* readbackMs = nullptr) {
+        Q_UNUSED(convertMs)
+        Q_UNUSED(readbackMs)
+        return false;
+    }
+    virtual bool finishLastFrameToYuv420pReadback(AVFrame* frame,
+                                                  qint64* convertMs = nullptr,
+                                                  qint64* readbackMs = nullptr) {
+        Q_UNUSED(frame)
+        Q_UNUSED(convertMs)
+        Q_UNUSED(readbackMs)
+        return false;
+    }
+    virtual bool copyLastFrameToBgra(AVFrame* frame,
+                                     qint64* readbackMs = nullptr) = 0;
+    virtual bool supportsCudaExternalMemoryInterop() const { return false; }
+    virtual QString backendId() const = 0;
+};
+
+class OffscreenGpuRenderer : public OffscreenRenderer {
 public:
     OffscreenGpuRenderer();
-    ~OffscreenGpuRenderer();
+    ~OffscreenGpuRenderer() override;
 
-    bool initialize(const QSize& outputSize, QString* errorMessage);
+    bool initialize(const QSize& outputSize, QString* errorMessage) override;
     QImage renderFrame(const RenderRequest& request,
                        int64_t timelineFrame,
                        QHash<QString, editor::DecoderContext*>& decoders,
@@ -213,13 +286,68 @@ public:
                        qint64* compositeMs = nullptr,
                        qint64* readbackMs = nullptr,
                        QJsonArray* skippedClips = nullptr,
-                       QJsonObject* skippedReasonCounts = nullptr);
+                       QJsonObject* skippedReasonCounts = nullptr) override;
     bool convertLastFrameToNv12(AVFrame* frame,
                                 qint64* nv12ConvertMs = nullptr,
-                                qint64* readbackMs = nullptr);
+                                qint64* readbackMs = nullptr) override;
+    bool convertLastFrameToYuv420p(AVFrame* frame,
+                                   qint64* convertMs = nullptr,
+                                   qint64* readbackMs = nullptr) override;
+    bool copyLastFrameToBgra(AVFrame* frame,
+                             qint64* readbackMs = nullptr) override;
+    QString backendId() const override;
 
 private:
     std::unique_ptr<OffscreenGpuRendererPrivate> d;
+};
+
+class OffscreenVulkanRenderer : public OffscreenRenderer {
+public:
+    OffscreenVulkanRenderer();
+    ~OffscreenVulkanRenderer() override;
+
+    bool initialize(const QSize& outputSize, QString* errorMessage) override;
+    QImage renderFrame(const RenderRequest& request,
+                       int64_t timelineFrame,
+                       QHash<QString, editor::DecoderContext*>& decoders,
+                       editor::AsyncDecoder* asyncDecoder,
+                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                       const QVector<TimelineClip>& orderedClips,
+                       QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
+                       qint64* decodeMs = nullptr,
+                       qint64* textureMs = nullptr,
+                       qint64* compositeMs = nullptr,
+                       qint64* readbackMs = nullptr,
+                       QJsonArray* skippedClips = nullptr,
+                       QJsonObject* skippedReasonCounts = nullptr) override;
+    bool convertLastFrameToNv12(AVFrame* frame,
+                                qint64* nv12ConvertMs = nullptr,
+                                qint64* readbackMs = nullptr) override;
+    bool beginLastFrameToNv12Readback(qint64* convertMs = nullptr,
+                                      qint64* readbackMs = nullptr) override;
+    bool finishLastFrameToNv12Readback(AVFrame* frame,
+                                       qint64* convertMs = nullptr,
+                                       qint64* readbackMs = nullptr) override;
+    bool beginLastFrameToNv12CudaTransfer(qint64* convertMs = nullptr,
+                                          qint64* transferMs = nullptr) override;
+    bool finishLastFrameToNv12CudaTransfer(AVFrame* cudaFrame,
+                                           qint64* convertMs = nullptr,
+                                           qint64* transferMs = nullptr) override;
+    bool convertLastFrameToYuv420p(AVFrame* frame,
+                                   qint64* convertMs = nullptr,
+                                   qint64* readbackMs = nullptr) override;
+    bool beginLastFrameToYuv420pReadback(qint64* convertMs = nullptr,
+                                         qint64* readbackMs = nullptr) override;
+    bool finishLastFrameToYuv420pReadback(AVFrame* frame,
+                                          qint64* convertMs = nullptr,
+                                          qint64* readbackMs = nullptr) override;
+    bool copyLastFrameToBgra(AVFrame* frame,
+                             qint64* readbackMs = nullptr) override;
+    bool supportsCudaExternalMemoryInterop() const override;
+    QString backendId() const override;
+
+private:
+    std::unique_ptr<OffscreenVulkanRendererPrivate> d;
 };
 
 QImage renderTimelineFrame(const RenderRequest& request,

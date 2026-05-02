@@ -171,6 +171,20 @@ void GradingTab::updateCurveFromInspectorValues()
         m_widgets.gradingHistogramWidget->setSelectedChannel(channel);
     }
 
+    if (m_widgets.gradingHistogramWidget) {
+        QColor channelBackground(16, 22, 30, 255);
+        if (selectedChannelIndex == 0) {
+            channelBackground = QColor(44, 16, 16, 255);
+        } else if (selectedChannelIndex == 1) {
+            channelBackground = QColor(16, 40, 22, 255);
+        } else if (selectedChannelIndex == 2) {
+            channelBackground = QColor(16, 24, 44, 255);
+        } else if (selectedChannelIndex == 3) {
+            channelBackground = QColor(48, 38, 16, 255);
+        }
+        m_widgets.gradingHistogramWidget->setChartBackgroundColor(channelBackground);
+    }
+
     // Show only tone controls for the selected RGB channel.
     setToneSpinGroupVisible(m_widgets.shadowsRSpin,
                             m_widgets.shadowsGSpin,

@@ -20,7 +20,7 @@ class QLabel;
 class QPushButton;
 class QToolButton;
 class QStackedWidget;
-class PreviewWindow;
+class PreviewSurface;
 
 // Background worker for generating video thumbnails without blocking the UI.
 class ThumbnailWorker final : public QObject
@@ -44,7 +44,7 @@ public:
     explicit ExplorerPane(QWidget *parent = nullptr);
     ~ExplorerPane() override;
 
-    void setPreviewWindow(PreviewWindow *preview);
+    void setPreviewWindow(PreviewSurface *preview);
     void setInitialRootPath(const QString &path);
     QString currentRootPath() const;
     QString galleryPath() const;
@@ -90,7 +90,7 @@ private:
     QLabel *m_rootPathLabel = nullptr;
     QLabel *m_galleryTitleLabel = nullptr;
 
-    PreviewWindow *m_preview = nullptr;
+    PreviewSurface *m_preview = nullptr;
     QString m_currentRootPath;
     QString m_galleryFolderPath;
     mutable QHash<QString, QPixmap> m_previewPixmapCache;

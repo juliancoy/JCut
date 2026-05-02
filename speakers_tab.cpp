@@ -20,6 +20,7 @@
 #include <QImage>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QFrame>
 #include <QMenu>
 #include <QPainter>
 #include <QPainterPath>
@@ -35,6 +36,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QTextCursor>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -53,6 +55,15 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
 
 void SpeakersTab::wire()
 {
+    if (!m_boxStreamPanelRefreshTimer) {
+        m_boxStreamPanelRefreshTimer = new QTimer(this);
+        m_boxStreamPanelRefreshTimer->setSingleShot(true);
+        m_boxStreamPanelRefreshTimer->setInterval(40);
+        connect(m_boxStreamPanelRefreshTimer, &QTimer::timeout, this, [this]() {
+            m_boxStreamPanelRefreshQueued = false;
+            refreshBoxStreamPathsPanel();
+        });
+    }
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->setContextMenuPolicy(Qt::CustomContextMenu);
         m_widgets.speakersTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -66,6 +77,47 @@ void SpeakersTab::wire()
                 this, &SpeakersTab::onSpeakersSelectionChanged);
         connect(m_widgets.speakersTable, &QWidget::customContextMenuRequested,
                 this, &SpeakersTab::onSpeakersTableContextMenuRequested);
+    }
+    if (m_widgets.speakerBoxStreamTable) {
+        connect(m_widgets.speakerBoxStreamTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+            if (!m_widgets.speakerBoxStreamTable || !m_widgets.speakerBoxStreamDetailsEdit) {
+                return;
+            }
+            const int row = m_widgets.speakerBoxStreamTable->currentRow();
+            if (row < 0) {
+                m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+                    QStringLiteral("Select a BoxStream path row to inspect full JSON."));
+                return;
+            }
+            QTableWidgetItem* streamItem = m_widgets.speakerBoxStreamTable->item(row, 0);
+            const int64_t frame30 = streamItem
+                ? streamItem->data(Qt::UserRole + 2).toLongLong()
+                : -1;
+            if (frame30 >= 0 && m_deps.seekToTimelineFrame) {
+                const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+                if (clip) {
+                    const qreal sourceFps = resolvedSourceFps(*clip);
+                    const int64_t sourceFrame = qMax<int64_t>(
+                        0, static_cast<int64_t>(std::floor((static_cast<qreal>(frame30) / kTimelineFps) * sourceFps)));
+                    int64_t timelineFrame = clip->startFrame + (sourceFrame - clip->sourceInFrame);
+                    const int64_t clipEndFrame = clip->startFrame + qMax<int64_t>(0, clip->durationFrames - 1);
+                    timelineFrame = qBound<int64_t>(clip->startFrame, timelineFrame, clipEndFrame);
+                    m_deps.seekToTimelineFrame(timelineFrame);
+                }
+            }
+            QString streamJson;
+            if (streamItem) {
+                const int rowIndex = streamItem->data(Qt::UserRole + 1).toInt();
+                if (rowIndex >= 0 && rowIndex < m_boxStreamPanelRows.size()) {
+                    const QJsonObject streamObj = m_boxStreamPanelRows.at(rowIndex).toObject();
+                    streamJson = QString::fromUtf8(QJsonDocument(streamObj).toJson(QJsonDocument::Indented));
+                }
+            }
+            m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+                streamJson.isEmpty()
+                    ? QStringLiteral("No stream payload available.")
+                    : streamJson);
+        });
     }
     if (m_widgets.speakerSetReference1Button) {
         connect(m_widgets.speakerSetReference1Button, &QPushButton::clicked,
@@ -92,8 +144,24 @@ void SpeakersTab::wire()
                 this, &SpeakersTab::onSpeakerClearReferencesClicked);
     }
     if (m_widgets.speakerRunAutoTrackButton) {
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE BOXSTREAM"));
+        m_widgets.speakerRunAutoTrackButton->setMinimumHeight(40);
+        m_widgets.speakerRunAutoTrackButton->setStyleSheet(QStringLiteral(
+            "QPushButton {"
+            "  background:#f4b53f;"
+            "  color:#121820;"
+            "  border:1px solid #9b6e10;"
+            "  border-radius:6px;"
+            "  font-weight:700;"
+            "  padding:6px 10px;"
+            "}"
+            "QPushButton:disabled {"
+            "  background:#5c4c2b;"
+            "  color:#b8a783;"
+            "  border:1px solid #6a5731;"
+            "}"));
         m_widgets.speakerRunAutoTrackButton->setToolTip(
-            QStringLiteral("Generate BoxStream from one or two references."));
+            QStringLiteral("Generate identity-agnostic continuity BoxStreams for all face tracks."));
         connect(m_widgets.speakerRunAutoTrackButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerRunAutoTrackClicked);
     }
@@ -117,7 +185,7 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerGuideButton) {
         m_widgets.speakerGuideButton->setToolTip(
-            QStringLiteral("Open a quick guide for speaker reference picking and BoxStream generation."));
+            QStringLiteral("Open a quick guide for continuity BoxStream generation and mapping."));
         connect(m_widgets.speakerGuideButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerGuideClicked);
     }
@@ -182,11 +250,15 @@ void SpeakersTab::wire()
     }
     if (m_widgets.selectedSpeakerRef1ImageLabel) {
         m_widgets.selectedSpeakerRef1ImageLabel->installEventFilter(this);
-        m_widgets.selectedSpeakerRef1ImageLabel->setCursor(Qt::OpenHandCursor);
+        m_widgets.selectedSpeakerRef1ImageLabel->setCursor(Qt::PointingHandCursor);
+        m_widgets.selectedSpeakerRef1ImageLabel->setToolTip(
+            QStringLiteral("Click: open Ref 1 preview/FaceFind. Shift+Drag: adjust crop."));
     }
     if (m_widgets.selectedSpeakerRef2ImageLabel) {
         m_widgets.selectedSpeakerRef2ImageLabel->installEventFilter(this);
-        m_widgets.selectedSpeakerRef2ImageLabel->setCursor(Qt::OpenHandCursor);
+        m_widgets.selectedSpeakerRef2ImageLabel->setCursor(Qt::PointingHandCursor);
+        m_widgets.selectedSpeakerRef2ImageLabel->setToolTip(
+            QStringLiteral("Click: open Ref 2 preview/FaceFind. Shift+Drag: adjust crop."));
     }
 }
 
@@ -206,7 +278,8 @@ bool SpeakersTab::eventFilter(QObject* watched, QEvent* event)
         if (mouseEvent->button() != Qt::LeftButton) {
             break;
         }
-        if (beginSelectedReferenceAvatarDrag(referenceIndex, mouseEvent->pos())) {
+        const bool dragModifierPressed = (mouseEvent->modifiers() & Qt::ShiftModifier);
+        if (dragModifierPressed && beginSelectedReferenceAvatarDrag(referenceIndex, mouseEvent->pos())) {
             if (label) {
                 label->setCursor(Qt::ClosedHandCursor);
                 label->grabMouse();
@@ -214,16 +287,9 @@ bool SpeakersTab::eventFilter(QObject* watched, QEvent* event)
             mouseEvent->accept();
             return true;
         }
-        // If drag is not available (for example unset ref), allow click-to-arm
-        // replacement in Preview so users can still update the reference quickly.
-        if (activeCutMutable()) {
-            const QString speakerId = selectedSpeakerId();
-            if (!speakerId.isEmpty()) {
-                armReferencePickForSpeaker(speakerId, referenceIndex);
-                mouseEvent->accept();
-                return true;
-            }
-        }
+        openReferencePreviewWindow(referenceIndex);
+        mouseEvent->accept();
+        return true;
         break;
     }
     case QEvent::MouseMove: {
@@ -244,7 +310,7 @@ bool SpeakersTab::eventFilter(QObject* watched, QEvent* event)
         finishSelectedReferenceAvatarDrag(true);
         if (label) {
             label->releaseMouse();
-            label->setCursor(Qt::OpenHandCursor);
+            label->setCursor(Qt::PointingHandCursor);
         }
         mouseEvent->accept();
         return true;
@@ -263,7 +329,7 @@ bool SpeakersTab::eventFilter(QObject* watched, QEvent* event)
             finishSelectedReferenceAvatarDrag(false);
             if (label) {
                 label->releaseMouse();
-                label->setCursor(Qt::OpenHandCursor);
+                label->setCursor(Qt::PointingHandCursor);
             }
         }
         break;
@@ -313,6 +379,7 @@ void SpeakersTab::refresh()
         m_widgets.speakersTable->setEnabled(false);
         m_widgets.speakersTable->setIconSize(QSize(28, 28));
     }
+    requestRefreshBoxStreamPathsPanel();
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !clipSupportsTranscript(*clip)) {
@@ -337,28 +404,14 @@ void SpeakersTab::refresh()
         m_avatarCache.clear();
     }
 
-    QFile transcriptFile(transcriptPath);
-    if (!transcriptFile.open(QIODevice::ReadOnly)) {
+    editor::TranscriptEngine transcriptEngine;
+    QJsonDocument transcriptDoc;
+    if (!transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
         if (m_widgets.speakersInspectorClipLabel) {
             m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
         }
         if (m_widgets.speakersInspectorDetailsLabel) {
-            m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("No transcript file found."));
-        }
-        m_updating = false;
-        updateSelectedSpeakerPanel();
-        updateSpeakerTrackingStatusLabel();
-        return;
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
-        if (m_widgets.speakersInspectorClipLabel) {
-            m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
-        }
-        if (m_widgets.speakersInspectorDetailsLabel) {
-            m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
+            m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Unable to load transcript JSON file."));
         }
         m_updating = false;
         updateSelectedSpeakerPanel();
@@ -376,6 +429,7 @@ void SpeakersTab::refresh()
     }
 
     refreshSpeakersTable(transcriptDoc.object(), preferredSpeakerId);
+    requestRefreshBoxStreamPathsPanel();
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->setEnabled(activeCutMutable());
     }
@@ -383,6 +437,214 @@ void SpeakersTab::refresh()
     m_updating = false;
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
+}
+
+bool SpeakersTab::generateBoxStreamForSelectedClip()
+{
+    if (!activeCutMutable()) {
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Generate BoxStream"),
+            QStringLiteral("BoxStream actions are editable only on derived cuts (not Original)."));
+        return false;
+    }
+    onSpeakerRunAutoTrackClicked();
+    return true;
+}
+
+bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
+{
+    if (!activeCutMutable()) {
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Delete BoxStream"),
+            QStringLiteral("BoxStream actions are editable only on derived cuts (not Original)."));
+        return false;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    QJsonObject artifactRoot;
+    engine.loadBoxstreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    QJsonObject continuityByClip = artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+    const QString clipId = clip->id.trimmed();
+    const QJsonObject continuityRoot = continuityByClip.value(clipId).toObject();
+    const QJsonArray streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+
+    if (streams.isEmpty()) {
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Delete BoxStream"),
+            QStringLiteral("No BoxStream paths were found for this clip."));
+        return false;
+    }
+
+    if (confirmDialog) {
+        const auto confirmation = QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Delete BoxStream"),
+            QStringLiteral("Delete all BoxStream paths for this clip?\n\nThis cannot be undone."),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel);
+        if (confirmation != QMessageBox::Yes) {
+            return false;
+        }
+    }
+
+    continuityByClip.remove(clipId);
+    artifactRoot[QStringLiteral("continuity_boxstreams_by_clip")] = continuityByClip;
+    const bool savedArtifact = engine.saveBoxstreamArtifact(m_loadedTranscriptPath, artifactRoot);
+    if (!savedArtifact) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Delete BoxStream"),
+            QStringLiteral("Failed to save BoxStream artifact after deletion."));
+        return false;
+    }
+
+    // Keep legacy transcript-side continuity fallback in sync if present.
+    QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+    bool transcriptChanged = false;
+    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    if (clipsRoot.contains(clipId)) {
+        QJsonObject clipFlow = clipsRoot.value(clipId).toObject();
+        if (clipFlow.contains(QStringLiteral("continuity_boxstreams"))) {
+            clipFlow.remove(QStringLiteral("continuity_boxstreams"));
+            clipsRoot[clipId] = clipFlow;
+            speakerFlow[QStringLiteral("clips")] = clipsRoot;
+            transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+            transcriptChanged = true;
+        }
+    }
+    if (transcriptChanged) {
+        m_loadedTranscriptDoc.setObject(transcriptRoot);
+        engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+    }
+
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
+    }
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
+    refresh();
+    return true;
+}
+
+void SpeakersTab::requestRefreshBoxStreamPathsPanel()
+{
+    if (!m_boxStreamPanelRefreshTimer) {
+        refreshBoxStreamPathsPanel();
+        return;
+    }
+    m_boxStreamPanelRefreshQueued = true;
+    m_boxStreamPanelRefreshTimer->start();
+}
+
+void SpeakersTab::refreshBoxStreamPathsPanel()
+{
+    if (!m_widgets.speakerBoxStreamTable || m_refreshingBoxStreamPathsPanel) {
+        return;
+    }
+    m_refreshingBoxStreamPathsPanel = true;
+    struct RefreshGuard {
+        bool& flag;
+        ~RefreshGuard() { flag = false; }
+    } guard{m_refreshingBoxStreamPathsPanel};
+
+    QSignalBlocker tableBlocker(m_widgets.speakerBoxStreamTable);
+    QSignalBlocker selectionBlocker(
+        m_widgets.speakerBoxStreamTable->selectionModel());
+    m_widgets.speakerBoxStreamTable->clearContents();
+    m_widgets.speakerBoxStreamTable->setRowCount(0);
+    m_boxStreamPanelRows = QJsonArray();
+    if (m_widgets.speakerBoxStreamDetailsEdit) {
+        m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+            QStringLiteral("Select a BoxStream path row to inspect full JSON."));
+    }
+    if (!m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return;
+    }
+
+    const QFileInfo transcriptInfo(m_loadedTranscriptPath);
+    const QString refreshSignature =
+        clip->id + QLatin1Char('|') +
+        m_loadedTranscriptPath + QLatin1Char('|') +
+        QString::number(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0);
+    if (refreshSignature == m_boxStreamPanelRefreshSignature) {
+        return;
+    }
+
+    editor::TranscriptEngine transcriptEngine;
+    QJsonObject artifactRoot;
+    const bool loadedArtifact = transcriptEngine.loadBoxstreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    QJsonArray streams;
+    if (loadedArtifact) {
+        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+        const QJsonObject continuityRoot = byClip.value(clip->id.trimmed()).toObject();
+        streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    }
+    if (streams.isEmpty()) {
+        // Legacy fallback: older transcripts stored continuity under speaker_flow in transcript JSON.
+        const QJsonObject root = m_loadedTranscriptDoc.object();
+        const QJsonObject speakerFlow = root.value(QStringLiteral("speaker_flow")).toObject();
+        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
+        const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_boxstreams")).toObject();
+        streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    }
+    m_boxStreamPanelRefreshSignature = refreshSignature;
+    m_boxStreamPanelRows = streams;
+    m_widgets.speakerBoxStreamTable->setRowCount(streams.size());
+    for (int row = 0; row < streams.size(); ++row) {
+        const QJsonObject streamObj = streams.at(row).toObject();
+        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+        int64_t minFrame = std::numeric_limits<int64_t>::max();
+        int64_t maxFrame = std::numeric_limits<int64_t>::min();
+        QString sourceTag;
+        for (const QJsonValue& value : keyframes) {
+            const QJsonObject keyframe = value.toObject();
+            const int64_t frame = keyframe.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong();
+            minFrame = qMin(minFrame, frame);
+            maxFrame = qMax(maxFrame, frame);
+            if (sourceTag.isEmpty()) {
+                sourceTag = keyframe.value(QString(kTranscriptSpeakerTrackingSourceKey)).toString().trimmed();
+            }
+        }
+        const QString rangeText = keyframes.isEmpty()
+            ? QStringLiteral("-")
+            : QStringLiteral("%1..%2").arg(minFrame).arg(maxFrame);
+        auto* streamItem = new QTableWidgetItem(streamId.isEmpty() ? QStringLiteral("—") : streamId);
+        streamItem->setData(Qt::UserRole + 1, row);
+        const qlonglong seekFrame = keyframes.isEmpty() ? static_cast<qlonglong>(-1) : static_cast<qlonglong>(minFrame);
+        streamItem->setData(Qt::UserRole + 2, QVariant(seekFrame));
+        auto* trackItem = new QTableWidgetItem(trackId >= 0 ? QString::number(trackId) : QStringLiteral("—"));
+        auto* countItem = new QTableWidgetItem(QString::number(keyframes.size()));
+        auto* rangeItem = new QTableWidgetItem(rangeText);
+        auto* sourceItem = new QTableWidgetItem(sourceTag.isEmpty() ? QStringLiteral("continuity_track_v1") : sourceTag);
+        m_widgets.speakerBoxStreamTable->setItem(row, 0, streamItem);
+        m_widgets.speakerBoxStreamTable->setItem(row, 1, trackItem);
+        m_widgets.speakerBoxStreamTable->setItem(row, 2, countItem);
+        m_widgets.speakerBoxStreamTable->setItem(row, 3, rangeItem);
+        m_widgets.speakerBoxStreamTable->setItem(row, 4, sourceItem);
+    }
+    if (streams.isEmpty() && m_widgets.speakerBoxStreamDetailsEdit) {
+        m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+            QStringLiteral("No BoxStream paths found for this clip. Generate BoxStream first."));
+    } else if (!streams.isEmpty()) {
+        m_widgets.speakerBoxStreamTable->setCurrentCell(0, 0);
+    }
 }
 
 void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
@@ -427,17 +689,15 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
     m_widgets.speakersTable->setRowCount(ids.size());
     for (int row = 0; row < ids.size(); ++row) {
         const QString id = ids.at(row);
-        const QJsonObject profile = profiles.value(id).toObject();
-        const QString name = profile.value(QString(kTranscriptSpeakerNameKey)).toString(id);
-        const QString organization = profile.value(QStringLiteral("organization")).toString().trimmed();
-        QString description = profile.value(QStringLiteral("brief_description")).toString().trimmed();
-        if (description.isEmpty()) {
-            description = profile.value(QStringLiteral("description")).toString().trimmed();
-        }
-        const QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
+        const QJsonObject profileJson = profiles.value(id).toObject();
+        const SpeakerProfile speakerProfile = speakerProfileFromJson(id, profileJson);
+        const QString name = speakerProfile.name.isEmpty() ? id : speakerProfile.name;
+        const QString organization = speakerProfile.organization;
+        const QString description = speakerProfile.description;
+        const QJsonObject location = profileJson.value(QString(kTranscriptSpeakerLocationKey)).toObject();
         const double x = location.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5);
         const double y = location.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85);
-        const QJsonObject tracking = speakerFramingObject(profile);
+        const QJsonObject tracking = speakerFramingObject(profileJson);
         const QString trackingMode =
             tracking.value(QString(kTranscriptSpeakerTrackingModeKey)).toString(QStringLiteral("Manual"));
         const int keyframeCount =
@@ -473,7 +733,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         auto* avatarItem = new QTableWidgetItem();
         avatarItem->setFlags(avatarItem->flags() & ~Qt::ItemIsEditable);
         avatarItem->setData(Qt::UserRole, id);
-        avatarItem->setIcon(QIcon(speakerAvatarForRow(*clip, transcriptRoot, profile, id)));
+        avatarItem->setIcon(QIcon(speakerAvatarForRow(*clip, transcriptRoot, profileJson, id)));
         const uint hueHash = qHash(id);
         const QColor speakerHueTint = QColor::fromHsv(static_cast<int>(hueHash % 360), 160, 92, 105);
         avatarItem->setBackground(QBrush(speakerHueTint));
@@ -841,6 +1101,201 @@ QPixmap SpeakersTab::speakerReferenceAvatar(const TimelineClip& clip,
     return avatar;
 }
 
+QPixmap SpeakersTab::referenceFullFramePreview(const TimelineClip& clip,
+                                               const QString& speakerId,
+                                               const QJsonObject& refObj,
+                                               QSize targetSize)
+{
+    Q_UNUSED(speakerId);
+    const int outputW = qMax(640, targetSize.width());
+    const int outputH = qMax(360, targetSize.height());
+    QImage canvas(outputW, outputH, QImage::Format_ARGB32_Premultiplied);
+    canvas.fill(QColor(QStringLiteral("#111820")));
+
+    const int64_t sourceFrame30 =
+        qMax<int64_t>(0, refObj.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong());
+    const qreal locX = qBound<qreal>(0.0, refObj.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0);
+    const qreal locY = qBound<qreal>(0.0, refObj.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85), 1.0);
+    const qreal boxSizeNorm = qBound<qreal>(
+        -1.0, refObj.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(-1.0), 1.0);
+
+    const qreal sourceFps = resolvedSourceFps(clip);
+    const int64_t decodeFrame = qMax<int64_t>(
+        0, static_cast<int64_t>(std::floor((static_cast<qreal>(sourceFrame30) / kTimelineFps) * sourceFps)));
+
+    const QString mediaPath = interactivePreviewMediaPathForClip(clip);
+    editor::DecoderContext ctx(mediaPath);
+    if (!ctx.initialize()) {
+        return QPixmap::fromImage(canvas);
+    }
+
+    const editor::FrameHandle frame = ctx.decodeFrame(decodeFrame);
+    const QImage image = frame.hasCpuImage() ? frame.cpuImage() : QImage();
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
+        return QPixmap::fromImage(canvas);
+    }
+
+    QPainter painter(&canvas);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+    const QImage display = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const QSize scaled = display.size().scaled(canvas.size(), Qt::KeepAspectRatio);
+    const QRect drawRect(
+        (canvas.width() - scaled.width()) / 2,
+        (canvas.height() - scaled.height()) / 2,
+        scaled.width(),
+        scaled.height());
+    painter.drawImage(drawRect, display);
+
+    const qreal refPxX = drawRect.left() + (locX * drawRect.width());
+    const qreal refPxY = drawRect.top() + (locY * drawRect.height());
+    const int minSide = qMin(drawRect.width(), drawRect.height());
+    int boxSide = qMax(48, minSide / 4);
+    if (boxSizeNorm > 0.0) {
+        boxSide = qBound(48, static_cast<int>(std::round(boxSizeNorm * minSide)), minSide);
+    }
+    const QRectF boxRect(refPxX - (boxSide / 2.0), refPxY - (boxSide / 2.0), boxSide, boxSide);
+
+    painter.setPen(QPen(QColor(QStringLiteral("#ffb347")), 2.0));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(boxRect);
+    painter.setPen(QPen(QColor(QStringLiteral("#6fd6ff")), 3.0));
+    painter.drawEllipse(QPointF(refPxX, refPxY), 5.0, 5.0);
+    painter.setPen(QPen(QColor(QStringLiteral("#6fd6ff")), 1.0));
+    painter.drawLine(QPointF(refPxX - 14.0, refPxY), QPointF(refPxX + 14.0, refPxY));
+    painter.drawLine(QPointF(refPxX, refPxY - 14.0), QPointF(refPxX, refPxY + 14.0));
+
+    return QPixmap::fromImage(canvas);
+}
+
+bool SpeakersTab::openReferencePreviewWindow(int referenceIndex)
+{
+    if (referenceIndex != 1 && referenceIndex != 2) {
+        return false;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return false;
+    }
+    QString speakerId;
+    QJsonObject refObj;
+    if (!selectedSpeakerReferenceObject(referenceIndex, &speakerId, &refObj)) {
+        if (activeCutMutable()) {
+            onSpeakerPrecropFacesClicked();
+            return true;
+        }
+        return false;
+    }
+
+    QDialog* dialog = new QDialog();
+    dialog->setAttribute(Qt::WA_DeleteOnClose, true);
+    dialog->setWindowTitle(QStringLiteral("Ref %1 Source Preview").arg(referenceIndex));
+    dialog->resize(980, 720);
+
+    QVBoxLayout* root = new QVBoxLayout(dialog);
+    root->setContentsMargins(10, 10, 10, 10);
+    root->setSpacing(8);
+
+    QLabel* imageLabel = new QLabel(dialog);
+    imageLabel->setAlignment(Qt::AlignCenter);
+    imageLabel->setMinimumSize(640, 360);
+    imageLabel->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    imageLabel->setStyleSheet(QStringLiteral("background:#0d141d;border:1px solid #263748;border-radius:8px;"));
+    root->addWidget(imageLabel, 1);
+
+    QLabel* detailLabel = new QLabel(dialog);
+    detailLabel->setWordWrap(true);
+    detailLabel->setStyleSheet(QStringLiteral("color:#9eb6cf;"));
+    root->addWidget(detailLabel);
+
+    QFrame* controlsFrame = new QFrame(dialog);
+    controlsFrame->setStyleSheet(QStringLiteral(
+        "QFrame{background:#101924;border:1px solid #2a3f53;border-radius:8px;}"));
+    QVBoxLayout* controlsLayout = new QVBoxLayout(controlsFrame);
+    controlsLayout->setContentsMargins(8, 8, 8, 8);
+    controlsLayout->setSpacing(6);
+
+    QLabel* sentenceLabel = new QLabel(dialog);
+    sentenceLabel->setWordWrap(true);
+    sentenceLabel->setStyleSheet(QStringLiteral("color:#d5e5f6;"));
+    controlsLayout->addWidget(sentenceLabel);
+
+    QHBoxLayout* sentenceButtons = new QHBoxLayout();
+    QPushButton* prevButton = new QPushButton(QStringLiteral("Prev Sentence"), dialog);
+    QPushButton* nextButton = new QPushButton(QStringLiteral("Next Sentence"), dialog);
+    QPushButton* randomButton = new QPushButton(QStringLiteral("Random Sentence"), dialog);
+    sentenceButtons->addWidget(prevButton);
+    sentenceButtons->addWidget(nextButton);
+    sentenceButtons->addWidget(randomButton);
+    controlsLayout->addLayout(sentenceButtons);
+
+    QHBoxLayout* refButtons = new QHBoxLayout();
+    QPushButton* pickButton = new QPushButton(QStringLiteral("Pick Ref %1 (Shift+Drag)").arg(referenceIndex), dialog);
+    QPushButton* setButton = new QPushButton(QStringLiteral("Set Ref %1 @ Current Frame").arg(referenceIndex), dialog);
+    refButtons->addWidget(pickButton);
+    refButtons->addWidget(setButton);
+    controlsLayout->addLayout(refButtons);
+    root->addWidget(controlsFrame);
+
+    auto refreshDialog = [this, imageLabel, detailLabel, sentenceLabel, referenceIndex]() {
+        const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        QString refSpeakerId;
+        QJsonObject latestRef;
+        if (!selectedClip || !selectedSpeakerReferenceObject(referenceIndex, &refSpeakerId, &latestRef)) {
+            imageLabel->setPixmap(QPixmap());
+            detailLabel->setText(QStringLiteral("Reference unavailable."));
+            sentenceLabel->setText(QStringLiteral("Sentence context unavailable."));
+            return;
+        }
+        imageLabel->setPixmap(referenceFullFramePreview(*selectedClip, refSpeakerId, latestRef, QSize(1100, 620)));
+        const int64_t frame30 =
+            qMax<int64_t>(0, latestRef.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong());
+        const qreal xNorm =
+            qBound<qreal>(0.0, latestRef.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0);
+        const qreal yNorm =
+            qBound<qreal>(0.0, latestRef.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85), 1.0);
+        detailLabel->setText(
+            QStringLiteral("Untransformed clip frame %1 | Speaker %2 | x=%3 y=%4")
+                .arg(frame30)
+                .arg(refSpeakerId)
+                .arg(QString::number(xNorm, 'f', 3))
+                .arg(QString::number(yNorm, 'f', 3)));
+        sentenceLabel->setText(currentSpeakerSentenceAtCurrentFrame(refSpeakerId));
+    };
+
+    connect(prevButton, &QPushButton::clicked, dialog, [this, refreshDialog, speakerId]() {
+        navigateSpeakerSentence(speakerId, SentenceNavAction::Previous);
+        refreshDialog();
+    });
+    connect(nextButton, &QPushButton::clicked, dialog, [this, refreshDialog, speakerId]() {
+        navigateSpeakerSentence(speakerId, SentenceNavAction::Next);
+        refreshDialog();
+    });
+    connect(randomButton, &QPushButton::clicked, dialog, [this, refreshDialog, speakerId]() {
+        navigateSpeakerSentence(speakerId, SentenceNavAction::Random);
+        refreshDialog();
+    });
+    connect(pickButton, &QPushButton::clicked, dialog, [this, referenceIndex]() {
+        const QString id = selectedSpeakerId();
+        if (!id.isEmpty()) {
+            armReferencePickForSpeaker(id, referenceIndex);
+        }
+    });
+    connect(setButton, &QPushButton::clicked, dialog, [this, refreshDialog, referenceIndex]() {
+        const QString id = selectedSpeakerId();
+        if (id.isEmpty()) {
+            return;
+        }
+        saveSpeakerTrackingReference(id, referenceIndex);
+        refreshDialog();
+    });
+
+    refreshDialog();
+    dialog->show();
+    return true;
+}
+
 QString SpeakersTab::speakerTrackingSummary(const QJsonObject& profile) const
 {
     const QJsonObject tracking = speakerFramingObject(profile);
@@ -900,7 +1355,7 @@ bool SpeakersTab::ensureAiActionReady(const QString& actionTitle) const
         nullptr,
         actionTitle,
         error.isEmpty()
-            ? QStringLiteral("AI login required. Sign in from AI Assist.")
+            ? QStringLiteral("AI login required. Use top-right Log In.")
             : error);
     return false;
 }
@@ -947,7 +1402,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit);
-        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate BoxStream"));
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE BOXSTREAM"));
     }
     if (m_widgets.speakerBoxstreamSettingsButton) {
         m_widgets.speakerBoxstreamSettingsButton->setEnabled(canEdit);
@@ -1010,12 +1465,22 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
                 : QStringLiteral("Pick Ref 2 (Shift+Drag)"));
     }
 
+    const bool hasClipWideBoxStream =
+        selectedClip &&
+        (!selectedClip->speakerFramingKeyframes.isEmpty() ||
+         !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty());
+
     if (!mutableCut) {
         m_widgets.speakerTrackingStatusLabel->setText(QString());
         return;
     }
     if (speakerId.isEmpty()) {
-        m_widgets.speakerTrackingStatusLabel->setText(QString());
+        if (!hasClipWideBoxStream && m_loadedTranscriptDoc.isObject()) {
+            m_widgets.speakerTrackingStatusLabel->setText(
+                QStringLiteral("[MISSING] All-speakers BoxStream artefact has not been created."));
+        } else {
+            m_widgets.speakerTrackingStatusLabel->setText(QString());
+        }
         return;
     }
     if (!m_loadedTranscriptDoc.isObject()) {
@@ -1037,14 +1502,19 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerRefsChipLabel->setText(QStringLiteral("Refs: %1/2").arg(refCount));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
-        m_widgets.speakerPointstreamChipLabel->setText(
-            hasPointstream ? QStringLiteral("BoxStream: Ready") : QStringLiteral("BoxStream: None"));
+        if (!hasClipWideBoxStream) {
+            m_widgets.speakerPointstreamChipLabel->setText(
+                QStringLiteral("BoxStream: MISSING (All Speakers)"));
+        } else {
+            m_widgets.speakerPointstreamChipLabel->setText(
+                QStringLiteral("BoxStream: ClipWide Ready"));
+        }
     }
     if (m_widgets.speakerTrackingChipButton) {
         m_widgets.speakerTrackingChipButton->setText(
             trackingEnabled ? QStringLiteral("Tracking: ON") : QStringLiteral("Tracking: OFF"));
         m_widgets.speakerTrackingChipButton->setChecked(trackingEnabled);
-        m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasPointstream);
+        m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasClipWideBoxStream);
     }
     if (selectedClip) {
         const bool hasRuntimeBinding = !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty();
@@ -1098,15 +1568,8 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
 
     if (m_widgets.speakerRunAutoTrackButton) {
-        const bool hasAnyRef = hasRef1 || hasRef2;
-        m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit && hasAnyRef);
-        if (!hasAnyRef) {
-            m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate BoxStream (need Ref 1)"));
-        } else if (hasRef1 && hasRef2) {
-            m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate BoxStream (2 refs)"));
-        } else {
-            m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate BoxStream (1 ref mode)"));
-        }
+        m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit);
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE BOXSTREAM (CONTINUITY)"));
     }
 
     if (m_pendingReferencePick == 1 || m_pendingReferencePick == 2) {
@@ -1115,10 +1578,17 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         return;
     }
 
+    if (!hasClipWideBoxStream) {
+        m_widgets.speakerTrackingStatusLabel->setText(
+            QStringLiteral("[MISSING] All-speakers BoxStream artefact has not been created. "
+                           "Run Generate BoxStream to create it."));
+        return;
+    }
+
     m_widgets.speakerTrackingStatusLabel->setText(
         QStringLiteral("Refs: %1/2 | BoxStream: %2 | Tracking: %3 | Face Stabilize: %4")
             .arg(refCount)
-            .arg(hasPointstream ? QStringLiteral("Ready") : QStringLiteral("None"))
+            .arg(QStringLiteral("ClipWide Ready"))
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
             .arg((selectedClip && selectedClip->speakerFramingEnabled) ? QStringLiteral("ON") : QStringLiteral("OFF")));
 }

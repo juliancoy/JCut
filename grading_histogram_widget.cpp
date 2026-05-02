@@ -200,6 +200,16 @@ void GradingHistogramWidget::setCurveSmoothingEnabled(bool enabled)
     update();
 }
 
+void GradingHistogramWidget::setChartBackgroundColor(const QColor& color)
+{
+    const QColor normalized = color.isValid() ? color : QColor(16, 22, 30, 255);
+    if (m_chartBackgroundColor == normalized) {
+        return;
+    }
+    m_chartBackgroundColor = normalized;
+    update();
+}
+
 QRectF GradingHistogramWidget::chartRect() const
 {
     constexpr qreal kLeft = 10.0;
@@ -216,7 +226,10 @@ QPointF GradingHistogramWidget::pointToWidget(const QPointF& point) const
 {
     const QRectF rect = chartRect();
     const qreal x = rect.left() + (qBound<qreal>(0.0, point.x(), 1.0) * rect.width());
-    const qreal y = rect.bottom() - (qBound<qreal>(0.0, point.y(), 1.0) * rect.height());
+    // Display curve in delta space: zero adjustment (y == x) is centered, not diagonal.
+    const qreal delta = qBound<qreal>(-1.0, point.y() - point.x(), 1.0);
+    const qreal displayNorm = qBound<qreal>(0.0, (delta * 0.5) + 0.5, 1.0);
+    const qreal y = rect.bottom() - (displayNorm * rect.height());
     return QPointF(x, y);
 }
 
@@ -226,9 +239,11 @@ QPointF GradingHistogramWidget::widgetToPoint(const QPointF& pos) const
     const qreal xNorm = rect.width() <= 0.0
                             ? 0.0
                             : qBound<qreal>(0.0, (pos.x() - rect.left()) / rect.width(), 1.0);
-    const qreal yNorm = rect.height() <= 0.0
-                            ? 0.0
-                            : qBound<qreal>(0.0, (rect.bottom() - pos.y()) / rect.height(), 1.0);
+    const qreal displayNorm = rect.height() <= 0.0
+                                  ? 0.5
+                                  : qBound<qreal>(0.0, (rect.bottom() - pos.y()) / rect.height(), 1.0);
+    const qreal delta = (displayNorm - 0.5) * 2.0;
+    const qreal yNorm = qBound<qreal>(0.0, xNorm + delta, 1.0);
     return QPointF(xNorm, yNorm);
 }
 
@@ -311,7 +326,7 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
     painter.setRenderHint(QPainter::Antialiasing, true);
 
     const QRectF rect = chartRect();
-    painter.fillRect(rect.adjusted(-1, -1, 1, 1), QColor(16, 22, 30, 255));
+    painter.fillRect(rect.adjusted(-1, -1, 1, 1), m_chartBackgroundColor);
     painter.setPen(QPen(QColor(52, 66, 82, 220), 1.0));
     painter.drawRect(rect);
 
@@ -322,10 +337,14 @@ void GradingHistogramWidget::paintEvent(QPaintEvent* event)
         painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()));
         painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y));
     }
-    // Passthrough reference bar (neutral adjustment).
+    // Flat reference bar: 0 adjustment (passthrough).
     const qreal midY = rect.center().y();
     painter.setPen(QPen(QColor(160, 170, 182, 155), 1.2));
     painter.drawLine(QPointF(rect.left(), midY), QPointF(rect.right(), midY));
+    painter.setPen(QPen(QColor(188, 198, 210, 170), 1.0));
+    painter.drawText(QRectF(rect.left() + 6.0, rect.top() + 2.0, 170.0, 14.0),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     QStringLiteral("0 = passthrough"));
 
     if (m_hasHistogram) {
         QColor histogramFillColor(130, 170, 255, 56);

@@ -1,7 +1,9 @@
-#include "preview.h"
+// OpenGL Render Path File
+// This file is OpenGL-specific and renders transcript overlays via GL.
+#include "opengl_preview.h"
 
 #include "gl_frame_texture_shared.h"
-#include "preview_debug.h"
+#include "opengl_preview_debug.h"
 
 #include <QCryptographicHash>
 #include <QOpenGLShaderProgram>
@@ -17,6 +19,21 @@ void setFontPixelSizeRobust(QFont* font, qreal pixelSize, const QPaintDevice* de
     }
     const qreal dpiY = (device && device->logicalDpiY() > 0) ? device->logicalDpiY() : 96.0;
     font->setPointSizeF((pixelSize * 72.0) / dpiY);
+}
+
+QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
+    const QString safeTitle = title.trimmed().toHtmlEscaped();
+    if (safeTitle.isEmpty()) {
+        return QString();
+    }
+    return QStringLiteral(
+               "<div style=\"text-align:center;"
+               " font-weight:700;"
+               " letter-spacing:0.02em;"
+               " font-size:0.62em;"
+               " margin:0 0 0.30em 0;"
+               " color:%1;\">%2</div>")
+        .arg(color.name(QColor::HexArgb), safeTitle);
 }
 }
 
@@ -186,9 +203,16 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
     }
     const QColor highlightFillColor(QStringLiteral("#fff2a8"));
     const QColor highlightTextColor(QStringLiteral("#181818"));
-    const QString shadowHtml =
-        transcriptOverlayHtml(overlayLayout, QColor(0, 0, 0, 200), QColor(0, 0, 0, 200), QColor(0, 0, 0, 0));
-    const QString textHtml = transcriptOverlayHtml(
+    QString titleShadowHtml;
+    QString titleTextHtml;
+    if (clip.transcriptOverlay.showSpeakerTitle) {
+        const QString titleText = transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame);
+        titleShadowHtml = transcriptSpeakerTitleHtml(titleText, QColor(0, 0, 0, 200));
+        titleTextHtml = transcriptSpeakerTitleHtml(titleText, clip.transcriptOverlay.textColor);
+    }
+    const QString shadowHtml = titleShadowHtml + transcriptOverlayHtml(
+        overlayLayout, QColor(0, 0, 0, 200), QColor(0, 0, 0, 200), QColor(0, 0, 0, 0));
+    const QString textHtml = titleTextHtml + transcriptOverlayHtml(
         overlayLayout, clip.transcriptOverlay.textColor, highlightTextColor, highlightFillColor);
     if (textHtml.isEmpty()) {
         return;

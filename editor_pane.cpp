@@ -1,6 +1,8 @@
 #include "editor_pane.h"
 
-#include "preview.h"
+#include "opengl_preview.h"
+#include "preview_surface.h"
+#include "preview_surface_factory.h"
 #include "timeline_widget.h"
 #include "timeline_container.h"
 
@@ -49,10 +51,11 @@ EditorPane::EditorPane(QWidget *parent)
     previewLayout->setContentsMargins(0, 0, 0, 0);
     previewLayout->setSpacing(0);
 
-    m_preview = new PreviewWindow;
-    m_preview->setObjectName(QStringLiteral("preview.window"));
-    m_preview->setFocusPolicy(Qt::StrongFocus);
-    m_preview->setMinimumSize(160, 120);
+    m_preview = createPreviewSurfaceForConfiguredBackend();
+    QWidget* previewWidget = m_preview->asWidget();
+    previewWidget->setObjectName(QStringLiteral("preview.window"));
+    previewWidget->setFocusPolicy(Qt::StrongFocus);
+    previewWidget->setMinimumSize(160, 120);
     m_preview->setOutputSize(QSize(1080, 1920));
 
     auto *overlay = new QWidget;
@@ -86,7 +89,7 @@ EditorPane::EditorPane(QWidget *parent)
 
     auto *stack = new QStackedLayout;
     stack->setStackingMode(QStackedLayout::StackAll);
-    stack->addWidget(m_preview);
+    stack->addWidget(previewWidget);
     stack->addWidget(overlay);
     previewLayout->addLayout(stack);
 

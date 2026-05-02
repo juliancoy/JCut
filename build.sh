@@ -20,6 +20,7 @@ BUILD_TARGET="editor"
 RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
 FFMPEG_REBUILT="0"
+RUN_FACE_BENCH="no"
 
 ensure_submodule_checkout() {
     local submodule_path="$1"
@@ -232,9 +233,12 @@ for arg in "$@"; do
         --run)
             RUN_EDITOR="yes"
             ;;
+        --headless-face-bench)
+            RUN_FACE_BENCH="yes"
+            ;;
         *)
             echo "Unknown argument: $arg" >&2
-            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia] [--with-tests] [--ninja|--make] [--run]" >&2
+            echo "Usage: $0 [--asan] [--ffmpeg-enable-nvidia] [--with-tests] [--ninja|--make] [--run] [--headless-face-bench]" >&2
             exit 1
             ;;
     esac
@@ -313,4 +317,16 @@ if [[ "${RUN_EDITOR}" == "yes" ]]; then
     # Filter out --run from args passed to editor
     shift  # Remove --run from "$@"
     exec "${BUILD_DIR}/jcut" "$@"
+fi
+
+if [[ "${RUN_FACE_BENCH}" == "yes" ]]; then
+    VIDEO_PATH="${SCRIPT_DIR}/nasreen.mp4"
+    if [[ ! -f "${VIDEO_PATH}" ]]; then
+        echo "Headless face bench requested but video is missing: ${VIDEO_PATH}" >&2
+        exit 1
+    fi
+    echo "Running headless face tracer benchmark on ${VIDEO_PATH} ..."
+    python3 "${SCRIPT_DIR}/face_tracer_bench.py" \
+        --video "${VIDEO_PATH}" \
+        --out-dir "${BUILD_DIR}/face_tracer_bench"
 fi

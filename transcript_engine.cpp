@@ -2,9 +2,15 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QDir>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QSaveFile>
+#include <QDataStream>
+#include <QMutex>
+#include <QMutexLocker>
+#include <QtEndian>
 
 #include <algorithm>
 #include <cmath>
@@ -12,6 +18,175 @@
 namespace editor
 {
 namespace {
+struct BoxstreamDocCacheEntry {
+    qint64 modifiedMs = 0;
+    qint64 fileSize = 0;
+    QJsonDocument doc;
+};
+
+QMutex g_boxstreamDocCacheMutex;
+QHash<QString, BoxstreamDocCacheEntry> g_boxstreamDocCache;
+
+QString boxstreamPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_boxstream.bin"));
+}
+
+QString legacyJsonBoxstreamPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_boxstream.json"));
+}
+
+QByteArray boxstreamMagic()
+{
+    return QByteArrayLiteral("JCUTBOX1");
+}
+
+bool loadBoxstreamDocFromFile(const QString& path, QJsonDocument* outDoc)
+{
+    if (!outDoc) {
+        return false;
+    }
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        return false;
+    }
+    const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = info.size();
+    {
+        QMutexLocker locker(&g_boxstreamDocCacheMutex);
+        const auto cached = g_boxstreamDocCache.constFind(path);
+        if (cached != g_boxstreamDocCache.constEnd() &&
+            cached->modifiedMs == modifiedMs &&
+            cached->fileSize == fileSize &&
+            cached->doc.isObject()) {
+            *outDoc = cached->doc;
+            return true;
+        }
+    }
+
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    const QByteArray payload = file.readAll();
+    if (payload.size() < boxstreamMagic().size() + static_cast<int>(sizeof(quint32) * 2)) {
+        return false;
+    }
+    if (!payload.startsWith(boxstreamMagic())) {
+        return false;
+    }
+    const char* raw = payload.constData() + boxstreamMagic().size();
+    const quint32 version = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
+    raw += sizeof(quint32);
+    const quint32 jsonSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
+    raw += sizeof(quint32);
+    if (version != 1) {
+        return false;
+    }
+    const int headerSize = boxstreamMagic().size() + static_cast<int>(sizeof(quint32) * 2);
+    if (jsonSize > static_cast<quint32>(payload.size() - headerSize)) {
+        return false;
+    }
+    const QByteArray jsonBytes(raw, static_cast<int>(jsonSize));
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        return false;
+    }
+    {
+        QMutexLocker locker(&g_boxstreamDocCacheMutex);
+        g_boxstreamDocCache.insert(path, BoxstreamDocCacheEntry{modifiedMs, fileSize, doc});
+    }
+    *outDoc = doc;
+    return true;
+}
+
+bool saveBoxstreamDocToFile(const QString& path, const QJsonDocument& doc)
+{
+    if (!doc.isObject()) {
+        return false;
+    }
+    const QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
+    if (jsonBytes.size() > std::numeric_limits<quint32>::max()) {
+        return false;
+    }
+    QByteArray payload;
+    payload.reserve(boxstreamMagic().size() + static_cast<int>(sizeof(quint32) * 2) + jsonBytes.size());
+    payload.append(boxstreamMagic());
+    quint32 version = qToLittleEndian<quint32>(1);
+    quint32 jsonSize = qToLittleEndian<quint32>(static_cast<quint32>(jsonBytes.size()));
+    payload.append(reinterpret_cast<const char*>(&version), sizeof(quint32));
+    payload.append(reinterpret_cast<const char*>(&jsonSize), sizeof(quint32));
+    payload.append(jsonBytes);
+
+    QSaveFile out(path);
+    if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    if (out.write(payload) != payload.size()) {
+        out.cancelWriting();
+        return false;
+    }
+    if (!out.commit()) {
+        return false;
+    }
+    const QFileInfo info(path);
+    QMutexLocker locker(&g_boxstreamDocCacheMutex);
+    g_boxstreamDocCache.insert(path, BoxstreamDocCacheEntry{
+        info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0,
+        info.exists() ? info.size() : 0,
+        doc});
+    return true;
+}
+
+bool mergeBoxstreamSpeakerProfiles(const QString& transcriptPath, QJsonObject* root)
+{
+    if (!root) {
+        return false;
+    }
+    QJsonDocument boxstreamDoc;
+    if (!loadBoxstreamDocFromFile(boxstreamPathForTranscriptPath(transcriptPath), &boxstreamDoc)) {
+        QFile legacyFile(legacyJsonBoxstreamPathForTranscriptPath(transcriptPath));
+        if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        QJsonParseError parseError;
+        boxstreamDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !boxstreamDoc.isObject()) {
+            return false;
+        }
+    }
+    if (!boxstreamDoc.isObject()) {
+        return false;
+    }
+    const QJsonObject boxstreamRoot = boxstreamDoc.object();
+    const QJsonObject boxstreamProfiles = boxstreamRoot.value(QStringLiteral("speaker_profiles")).toObject();
+    if (boxstreamProfiles.isEmpty()) {
+        return false;
+    }
+    QJsonObject transcriptProfiles = root->value(QStringLiteral("speaker_profiles")).toObject();
+    for (auto it = boxstreamProfiles.constBegin(); it != boxstreamProfiles.constEnd(); ++it) {
+        const QString speakerId = it.key().trimmed();
+        if (speakerId.isEmpty()) {
+            continue;
+        }
+        const QJsonObject boxProfile = it.value().toObject();
+        if (boxProfile.isEmpty()) {
+            continue;
+        }
+        QJsonObject transcriptProfile = transcriptProfiles.value(speakerId).toObject();
+        const QJsonObject framing = boxProfile.value(QStringLiteral("framing")).toObject();
+        if (!framing.isEmpty()) {
+            transcriptProfile[QStringLiteral("framing")] = framing;
+        }
+        transcriptProfiles[ speakerId ] = transcriptProfile;
+    }
+    (*root)[QStringLiteral("speaker_profiles")] = transcriptProfiles;
+    return true;
+}
 
 QVector<ExportRangeSegment> mergeRanges(const QVector<ExportRangeSegment>& ranges)
 {
@@ -135,14 +310,103 @@ bool TranscriptEngine::parseTranscriptTime(const QString &text, double *secondsO
         return true;
     }
 
+bool TranscriptEngine::loadTranscriptJson(const QString &path,
+                                          QJsonDocument *docOut,
+                                          QString *errorOut) const
+    {
+        if (!docOut) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Null output document pointer.");
+            }
+            return false;
+        }
+        QFile transcriptFile(path);
+        if (!transcriptFile.open(QIODevice::ReadOnly)) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Unable to open transcript file.");
+            }
+            return false;
+        }
+        QJsonParseError parseError;
+        QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Invalid transcript JSON.");
+            }
+            return false;
+        }
+        QJsonObject root = transcriptDoc.object();
+        mergeBoxstreamSpeakerProfiles(path, &root);
+        *docOut = QJsonDocument(root);
+        return true;
+    }
+
+bool TranscriptEngine::loadBoxstreamArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
+    {
+        if (!rootOut) {
+            return false;
+        }
+        QJsonDocument boxstreamDoc;
+        if (loadBoxstreamDocFromFile(boxstreamPathForTranscriptPath(transcriptPath), &boxstreamDoc) &&
+            boxstreamDoc.isObject()) {
+            *rootOut = boxstreamDoc.object();
+            return true;
+        }
+        QFile legacyFile(legacyJsonBoxstreamPathForTranscriptPath(transcriptPath));
+        if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        QJsonParseError parseError;
+        const QJsonDocument legacyDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !legacyDoc.isObject()) {
+            return false;
+        }
+        *rootOut = legacyDoc.object();
+        return true;
+    }
+
+bool TranscriptEngine::saveBoxstreamArtifact(const QString &transcriptPath, const QJsonObject &root) const
+    {
+        return saveBoxstreamDocToFile(boxstreamPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+    }
+
 bool TranscriptEngine::saveTranscriptJson(const QString &path, const QJsonDocument &doc) const
     {
+        if (!doc.isObject()) {
+            return false;
+        }
+        QJsonObject root = doc.object();
+        QJsonObject transcriptProfiles = root.value(QStringLiteral("speaker_profiles")).toObject();
+        QJsonObject boxstreamProfiles;
+        for (auto it = transcriptProfiles.begin(); it != transcriptProfiles.end(); ++it) {
+            QJsonObject profileObj = it.value().toObject();
+            const QJsonObject framingObj = profileObj.value(QStringLiteral("framing")).toObject();
+            if (!framingObj.isEmpty()) {
+                QJsonObject outProfile;
+                outProfile[QStringLiteral("framing")] = framingObj;
+                boxstreamProfiles[it.key()] = outProfile;
+                profileObj.remove(QStringLiteral("framing"));
+                it.value() = profileObj;
+            }
+        }
+        root[QStringLiteral("speaker_profiles")] = transcriptProfiles;
+
+        if (!boxstreamProfiles.isEmpty()) {
+            QJsonObject boxstreamRoot;
+            loadBoxstreamArtifact(path, &boxstreamRoot);
+            boxstreamRoot[QStringLiteral("schema")] = QStringLiteral("jcut_boxstream_v1");
+            boxstreamRoot[QStringLiteral("speaker_profiles")] = boxstreamProfiles;
+            if (!saveBoxstreamArtifact(path, boxstreamRoot)) {
+                return false;
+            }
+        }
+
         QSaveFile file(path);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         {
             return false;
         }
-        const QByteArray payload = doc.toJson(QJsonDocument::Indented);
+        const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
         if (file.write(payload) != payload.size())
         {
             file.cancelWriting();
@@ -270,16 +534,8 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
                 continue;
             }
 
-            QFile transcriptFile(transcriptPathForClip(clip));
-            if (!transcriptFile.open(QIODevice::ReadOnly))
-            {
-                continue;
-            }
-
-            QJsonParseError parseError;
-            const QJsonDocument transcriptDoc =
-                QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-            if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject())
+            QJsonDocument transcriptDoc;
+            if (!loadTranscriptJson(transcriptPathForClip(clip), &transcriptDoc))
             {
                 continue;
             }
@@ -393,6 +649,8 @@ void TranscriptEngine::invalidateCache()
     m_transcriptWordRangesCache.clear();
     m_transcriptWordRangesCacheSignature.clear();
     m_transcriptWordRangesMergedCache.clear();
+    QMutexLocker locker(&g_boxstreamDocCacheMutex);
+    g_boxstreamDocCache.clear();
 }
 
 } // namespace editor

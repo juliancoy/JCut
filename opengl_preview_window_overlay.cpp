@@ -1,5 +1,5 @@
-#include "preview.h"
-#include "preview_debug.h"
+#include "opengl_preview.h"
+#include "opengl_preview_debug.h"
 #include "debug_controls.h"
 #include "titles.h"
 #include "decoder_image_io.h"
@@ -187,6 +187,44 @@ QPixmap hoverSpeakerImage(const HoverSpeakerProfile& profile, int edgePx) {
     }
     cache.insert(cacheKey, pix);
     return pix;
+}
+
+QPixmap fallbackSpeakerAvatar(const QString& speakerId, const QString& displayName, int edgePx) {
+    const int size = qBound(28, edgePx, 192);
+    QPixmap avatar(size, size);
+    avatar.fill(Qt::transparent);
+    QPainter p(&avatar);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const uint hueHash = qHash(speakerId.trimmed().isEmpty() ? displayName : speakerId);
+    QColor base = QColor::fromHsv(static_cast<int>(hueHash % 360), 140, 165);
+    p.setPen(Qt::NoPen);
+    p.setBrush(base);
+    p.drawEllipse(QRect(0, 0, size, size));
+    p.setPen(QPen(QColor(255, 255, 255, 210), 1.3));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(1.0, 1.0, size - 2.0, size - 2.0));
+
+    QString initials = displayName.trimmed();
+    if (initials.isEmpty()) {
+        initials = speakerId.trimmed();
+    }
+    if (initials.isEmpty()) {
+        initials = QStringLiteral("?");
+    } else {
+        const QStringList parts = initials.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        if (parts.size() >= 2) {
+            initials = parts.at(0).left(1) + parts.at(1).left(1);
+        } else {
+            initials = parts.first().left(2);
+        }
+    }
+    p.setPen(QColor(245, 250, 255));
+    QFont f = p.font();
+    f.setBold(true);
+    f.setPointSize(qMax(10, size / 3));
+    p.setFont(f);
+    p.drawText(QRect(0, 0, size, size), Qt::AlignCenter, initials.toUpper());
+    return avatar;
 }
 
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame) {
@@ -1369,48 +1407,87 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         const QString hoverDesc = profile && !profile->description.trimmed().isEmpty()
             ? profile->description.trimmed()
             : QStringLiteral("No speaker description available.");
-        const QPixmap profileImage = profile ? hoverSpeakerImage(*profile, 76) : QPixmap();
-        const QString hoverText = QStringLiteral("Name: %1\nSpeaker ID: %2\nOrganization: %3\nDescription: %4\nFrame: %5\nAmp: %6\nView Pos: %7%")
-                                      .arg(hoverName,
-                                           hoverSpeakerId,
-                                           hoverOrg.isEmpty() ? QStringLiteral("None") : hoverOrg,
-                                           hoverDesc)
-                                      .arg(hoverSourceFrame)
-                                      .arg(QString::number(hoverAmplitude, 'f', 3))
-                                      .arg(QString::number(hoverTimelinePercent, 'f', 1));
-        const QFontMetrics fm(painter->font());
-        const int imageWidth = profileImage.isNull() ? 0 : 76;
-        const int textWidth = profileImage.isNull() ? 320 : 244;
-        const QRect textRect = fm.boundingRect(QRect(0, 0, textWidth, 220),
-                                               Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
-                                               hoverText);
-        const QRect modalRect(panel.right() - (textRect.width() + imageWidth + 30) - 34,
-                              panel.top() + 22,
-                              textRect.width() + imageWidth + 30,
-                              qMax(textRect.height() + 14, profileImage.isNull() ? 0 : (imageWidth + 18)));
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(8, 13, 20, 225));
-        painter->drawRoundedRect(modalRect, 8, 8);
-        if (!profileImage.isNull()) {
-            const QRect imageRect(modalRect.left() + 8, modalRect.top() + 8, imageWidth, imageWidth);
-            painter->save();
-            QPainterPath imageClip;
-            imageClip.addRoundedRect(imageRect, 6, 6);
-            painter->setClipPath(imageClip);
-            painter->drawPixmap(imageRect, profileImage);
-            painter->restore();
-        } else {
-            painter->setPen(QColor(170, 184, 198, 170));
-            painter->drawText(QRect(modalRect.left() + 8, modalRect.top() + 8, 76, 20),
-                              Qt::AlignLeft | Qt::AlignVCenter,
-                              QStringLiteral("Image: none"));
+        QPixmap profileImage = profile ? hoverSpeakerImage(*profile, 72) : QPixmap();
+        if (profileImage.isNull()) {
+            profileImage = fallbackSpeakerAvatar(hoverSpeakerId, hoverName, 72);
         }
+
+        const QString metaText = QStringLiteral("ID %1  •  Frame %2  •  Amp %3  •  Pos %4%")
+                                     .arg(hoverSpeakerId)
+                                     .arg(hoverSourceFrame)
+                                     .arg(QString::number(hoverAmplitude, 'f', 3))
+                                     .arg(QString::number(hoverTimelinePercent, 'f', 1));
+        const QString organizationText = hoverOrg.isEmpty() ? QStringLiteral("Independent") : hoverOrg;
+
+        const QFont bodyFontBase = painter->font();
+        QFont nameFont = bodyFontBase;
+        nameFont.setPointSizeF(nameFont.pointSizeF() + 1.0);
+        nameFont.setBold(true);
+        QFont metaFont = bodyFontBase;
+        metaFont.setPointSizeF(qMax(8.0, metaFont.pointSizeF() - 1.0));
+
+        const int imageWidth = 72;
+        const int cardTextWidth = 300;
+        QFontMetrics nameFm(nameFont);
+        QFontMetrics metaFm(metaFont);
+        QFontMetrics bodyFm(bodyFontBase);
+        const int nameH = nameFm.boundingRect(QRect(0, 0, cardTextWidth, 80),
+                                              Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                                              hoverName).height();
+        const int orgH = bodyFm.boundingRect(QRect(0, 0, cardTextWidth, 60),
+                                             Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                                             organizationText).height();
+        const int metaH = metaFm.boundingRect(QRect(0, 0, cardTextWidth, 60),
+                                              Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                                              metaText).height();
+        const int descH = bodyFm.boundingRect(QRect(0, 0, cardTextWidth, 240),
+                                              Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
+                                              hoverDesc).height();
+        const int textBlockH = nameH + orgH + metaH + descH + 22;
+        const int cardH = qMax(textBlockH + 20, imageWidth + 20);
+        const int cardW = imageWidth + cardTextWidth + 34;
+        const QRect modalRect(panel.right() - cardW - 34, panel.top() + 22, cardW, cardH);
+
+        QLinearGradient g(modalRect.topLeft(), modalRect.bottomLeft());
+        g.setColorAt(0.0, QColor(12, 19, 29, 238));
+        g.setColorAt(1.0, QColor(7, 12, 19, 235));
+        painter->setPen(QPen(QColor(94, 127, 160, 170), 1.0));
+        painter->setBrush(g);
+        painter->drawRoundedRect(modalRect, 10, 10);
+
+        const QRect imageRect(modalRect.left() + 10, modalRect.top() + 10, imageWidth, imageWidth);
+        painter->save();
+        QPainterPath imageClip;
+        imageClip.addEllipse(imageRect);
+        painter->setClipPath(imageClip);
+        painter->drawPixmap(imageRect, profileImage);
+        painter->restore();
+        painter->setPen(QPen(QColor(189, 218, 244, 170), 1.2));
+        painter->setBrush(Qt::NoBrush);
+        painter->drawEllipse(QRectF(imageRect).adjusted(0.5, 0.5, -0.5, -0.5));
+
+        int tx = imageRect.right() + 12;
+        int ty = modalRect.top() + 10;
+        painter->setPen(QColor(QStringLiteral("#e8f6ff")));
+        painter->setFont(nameFont);
+        painter->drawText(QRect(tx, ty, cardTextWidth, nameH), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, hoverName);
+        ty += nameH + 3;
+
+        painter->setFont(bodyFontBase);
+        painter->setPen(QColor(151, 192, 224));
+        painter->drawText(QRect(tx, ty, cardTextWidth, orgH), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, organizationText);
+        ty += orgH + 4;
+
+        painter->setFont(metaFont);
+        painter->setPen(QColor(132, 164, 191));
+        painter->drawText(QRect(tx, ty, cardTextWidth, metaH), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, metaText);
+        ty += metaH + 7;
+
+        painter->setFont(bodyFontBase);
         painter->setPen(QColor(QStringLiteral("#dff5ff")));
-        const int textLeft = modalRect.left() + (profileImage.isNull() ? 8 : (imageWidth + 14));
-        painter->drawText(QRect(textLeft, modalRect.top() + 7,
-                                modalRect.right() - textLeft - 8, modalRect.height() - 14),
+        painter->drawText(QRect(tx, ty, cardTextWidth, modalRect.bottom() - ty - 10),
                           Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap,
-                          hoverText);
+                          hoverDesc);
     }
 
     painter->setPen(QColor(QStringLiteral("#9fb3c8")));
@@ -1420,4 +1497,3 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
                           .arg(QString::number(zoom * 100.0, 'f', 0)));
     painter->restore();
 }
-

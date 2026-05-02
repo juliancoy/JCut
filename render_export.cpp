@@ -1,15 +1,104 @@
 #include "render_internal.h"
+#include "render_backend.h"
+#include "vulkan_backend.h"
 
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-
 using namespace render_detail;
+
+namespace {
+
+bool configureCudaHardwareFrames(AVCodecContext* codecCtx,
+                                 AVPixelFormat swFormat,
+                                 QString* errorMessage)
+{
+    if (!codecCtx) {
+        return false;
+    }
+    AVBufferRef* deviceRef = nullptr;
+    int ret = av_hwdevice_ctx_create(&deviceRef, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+    if (ret < 0) {
+        if (errorMessage) {
+            *errorMessage = render_detail::avErrToString(ret);
+        }
+        return false;
+    }
+
+    AVBufferRef* framesRef = av_hwframe_ctx_alloc(deviceRef);
+    if (!framesRef) {
+        av_buffer_unref(&deviceRef);
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("av_hwframe_ctx_alloc failed");
+        }
+        return false;
+    }
+
+    auto* frames = reinterpret_cast<AVHWFramesContext*>(framesRef->data);
+    frames->format = AV_PIX_FMT_CUDA;
+    frames->sw_format = swFormat;
+    frames->width = codecCtx->width;
+    frames->height = codecCtx->height;
+    frames->initial_pool_size = 8;
+
+    ret = av_hwframe_ctx_init(framesRef);
+    if (ret < 0) {
+        if (errorMessage) {
+            *errorMessage = render_detail::avErrToString(ret);
+        }
+        av_buffer_unref(&framesRef);
+        av_buffer_unref(&deviceRef);
+        return false;
+    }
+
+    codecCtx->pix_fmt = AV_PIX_FMT_CUDA;
+    codecCtx->hw_device_ctx = av_buffer_ref(deviceRef);
+    codecCtx->hw_frames_ctx = av_buffer_ref(framesRef);
+    av_buffer_unref(&framesRef);
+    av_buffer_unref(&deviceRef);
+
+    if (!codecCtx->hw_device_ctx || !codecCtx->hw_frames_ctx) {
+        av_buffer_unref(&codecCtx->hw_device_ctx);
+        av_buffer_unref(&codecCtx->hw_frames_ctx);
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to retain CUDA hardware frame references.");
+        }
+        return false;
+    }
+    return true;
+}
+
+void configureVideoCodecContext(AVCodecContext* ctx,
+                                const AVCodec* codec,
+                                const RenderRequest& request,
+                                AVPixelFormat pixelFormat,
+                                AVFormatContext* formatCtx)
+{
+    ctx->codec_id = codec->id;
+    ctx->codec_type = AVMEDIA_TYPE_VIDEO;
+    ctx->width = request.outputSize.width();
+    ctx->height = request.outputSize.height();
+    ctx->time_base = AVRational{1, kTimelineFps};
+    ctx->framerate = AVRational{kTimelineFps, 1};
+    ctx->gop_size = kTimelineFps;
+    ctx->max_b_frames = 0;
+    ctx->pix_fmt = pixelFormat;
+    ctx->bit_rate = 8'000'000;
+
+    if (formatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
+        ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+    }
+}
+
+} // namespace
 
 RenderResult renderTimelineToFile(const RenderRequest& request,
                                   const std::function<bool(const RenderProgress&)>& progressCallback) {
     RenderResult result;
+    const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
+    result.requestedRenderBackend = renderBackendName(requestedBackend);
+    result.effectiveRenderBackend = QStringLiteral("none");
     if (request.outputPath.isEmpty()) {
         result.message = QStringLiteral("No output path selected.");
         return result;
@@ -42,22 +131,34 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
 
     struct ScopedRenderDecodeSafety {
+        bool preferHardware = false;
         editor::DecodePreference previousDecodePreference = editor::debugDecodePreference();
         editor::H26xSoftwareThreadingMode previousThreadingMode =
             editor::debugH26xSoftwareThreadingMode();
         bool previousDeterministic = editor::debugDeterministicPipelineEnabled();
-        ScopedRenderDecodeSafety() {
-            editor::setDebugDecodePreference(editor::DecodePreference::Software);
-            editor::setDebugH26xSoftwareThreadingMode(
-                editor::H26xSoftwareThreadingMode::SingleThread);
-            editor::setDebugDeterministicPipelineEnabled(true);
+        explicit ScopedRenderDecodeSafety(bool preferHardwareDecode)
+            : preferHardware(preferHardwareDecode) {
+            const bool enableExperimentalHardwareDecode =
+                preferHardware &&
+                qEnvironmentVariableIntValue("JCUT_VULKAN_HW_DECODE_EXPERIMENTAL") == 1;
+            if (enableExperimentalHardwareDecode) {
+                editor::setDebugDecodePreference(editor::DecodePreference::Hardware);
+                editor::setDebugH26xSoftwareThreadingMode(
+                    editor::H26xSoftwareThreadingMode::SingleThread);
+                editor::setDebugDeterministicPipelineEnabled(true);
+            } else {
+                editor::setDebugDecodePreference(editor::DecodePreference::Software);
+                editor::setDebugH26xSoftwareThreadingMode(
+                    editor::H26xSoftwareThreadingMode::SingleThread);
+                editor::setDebugDeterministicPipelineEnabled(true);
+            }
         }
         ~ScopedRenderDecodeSafety() {
             editor::setDebugDecodePreference(previousDecodePreference);
             editor::setDebugH26xSoftwareThreadingMode(previousThreadingMode);
             editor::setDebugDeterministicPipelineEnabled(previousDeterministic);
         }
-    } scopedDecodeSafety;
+    } scopedDecodeSafety(requestedBackend == RenderBackend::Vulkan);
 
     QVector<ExportRangeSegment> exportRanges = request.exportRanges;
     if (exportRanges.isEmpty()) {
@@ -79,9 +180,50 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     }
     const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips, request.tracks);
     QString gpuInitializationError;
-    OffscreenGpuRenderer gpuRenderer;
-    const bool gpuInitialized = gpuRenderer.initialize(request.outputSize, &gpuInitializationError);
+
+    std::unique_ptr<OffscreenRenderer> activeRenderer;
+    if (requestedBackend == RenderBackend::Vulkan) {
+        const VulkanAvailabilityResult vulkan = probeVulkanBackendAvailability();
+        if (!vulkan.available) {
+            result.backendFallbackApplied = true;
+            result.backendFallbackReason = vulkan.status;
+            result.message = QStringLiteral(
+                "Vulkan backend requested for export, but Vulkan is unavailable. "
+                "OpenGL fallback is disabled.");
+            return result;
+        }
+        activeRenderer = std::make_unique<OffscreenVulkanRenderer>();
+        result.effectiveRenderBackend = QStringLiteral("vulkan");
+    } else {
+        activeRenderer = std::make_unique<OffscreenGpuRenderer>();
+    }
+
+    const bool gpuInitialized = activeRenderer && activeRenderer->initialize(request.outputSize, &gpuInitializationError);
     const bool useGpuRenderer = gpuInitialized;
+    if (!useGpuRenderer) {
+        result.backendFallbackApplied = true;
+        result.backendFallbackReason = gpuInitializationError;
+        if (requestedBackend == RenderBackend::Vulkan) {
+            result.message = QStringLiteral(
+                "Vulkan backend requested for export, but Vulkan renderer initialization failed. "
+                "OpenGL fallback is disabled.");
+            return result;
+        }
+        result.effectiveRenderBackend = QStringLiteral("cpu");
+    }
+    if (useGpuRenderer) {
+        result.effectiveRenderBackend = activeRenderer->backendId();
+    }
+    if (requestedBackend == RenderBackend::Vulkan &&
+        qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_MEMORY_REQUIRED", QStringLiteral("0")) != QStringLiteral("0") &&
+        (!activeRenderer || !activeRenderer->supportsCudaExternalMemoryInterop())) {
+        result.backendFallbackApplied = false;
+        result.backendFallbackReason = QStringLiteral("Vulkan/CUDA external-memory interop is unavailable.");
+        result.message = QStringLiteral(
+            "Vulkan/CUDA external-memory interop was required, but the selected Vulkan device "
+            "does not expose the required external memory/semaphore FD capability.");
+        return result;
+    }
     result.usedGpu = useGpuRenderer;
 
     AVFormatContext* formatCtx = nullptr;
@@ -107,6 +249,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         const AVCodec* candidate = avcodec_find_encoder_by_name(choice.label.toUtf8().constData());
         if (!candidate) {
             attemptedEncoders.push_back(choice.label + QStringLiteral(" (unavailable)"));
+            qWarning().noquote()
+                << QStringLiteral("Video encoder unavailable: %1 not registered in linked FFmpeg")
+                       .arg(choice.label);
             continue;
         }
 
@@ -116,32 +261,72 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             continue;
         }
 
-        candidateCtx->codec_id = candidate->id;
-        candidateCtx->codec_type = AVMEDIA_TYPE_VIDEO;
-        candidateCtx->width = request.outputSize.width();
-        candidateCtx->height = request.outputSize.height();
-        candidateCtx->time_base = AVRational{1, kTimelineFps};
-        candidateCtx->framerate = AVRational{kTimelineFps, 1};
-        candidateCtx->gop_size = kTimelineFps;
-        candidateCtx->max_b_frames = 0;
-        candidateCtx->pix_fmt = choice.pixelFormat == AV_PIX_FMT_NONE
-                                    ? pixelFormatForCodec(candidate, request.outputFormat)
-                                    : choice.pixelFormat;
-        candidateCtx->bit_rate = 8'000'000;
-
-        if (formatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
-            candidateCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
+        const AVPixelFormat candidateSwFormat =
+            choice.pixelFormat == AV_PIX_FMT_NONE
+                ? pixelFormatForCodec(candidate, request.outputFormat)
+                : choice.pixelFormat;
+        configureVideoCodecContext(candidateCtx, candidate, request, candidateSwFormat, formatCtx);
 
         configureCodecOptions(candidateCtx, request.outputFormat, choice.label);
-        if (avcodec_open2(candidateCtx, candidate, nullptr) >= 0) {
+        const bool tryCudaFrames =
+            choice.label == QStringLiteral("h264_nvenc") &&
+            qEnvironmentVariable("JCUT_NVENC_CUDA_HWFRAMES", QStringLiteral("1")) != QStringLiteral("0");
+        if (tryCudaFrames) {
+            QString cudaError;
+            if (configureCudaHardwareFrames(candidateCtx, candidateSwFormat, &cudaError)) {
+                const int cudaOpenResult = avcodec_open2(candidateCtx, candidate, nullptr);
+                if (cudaOpenResult >= 0) {
+                    qInfo().noquote()
+                        << QStringLiteral("Video encoder selected: %1 pix_fmt=%2 sw_pix_fmt=%3")
+                               .arg(choice.label,
+                                    QString::fromLatin1(av_get_pix_fmt_name(candidateCtx->pix_fmt)),
+                                    QString::fromLatin1(av_get_pix_fmt_name(candidateSwFormat)));
+                    codec = candidate;
+                    codecCtx = candidateCtx;
+                    codecLabel = choice.label;
+                    break;
+                }
+                const QString openError = avErrToString(cudaOpenResult);
+                attemptedEncoders.push_back(choice.label + QStringLiteral(" cuda (open failed: %1)").arg(openError));
+                qWarning().noquote()
+                    << QStringLiteral("Video encoder unavailable: %1 pix_fmt=cuda sw_pix_fmt=%2 error=%3")
+                           .arg(choice.label,
+                                QString::fromLatin1(av_get_pix_fmt_name(candidateSwFormat)),
+                                openError);
+            } else {
+                attemptedEncoders.push_back(choice.label + QStringLiteral(" cuda (setup failed: %1)").arg(cudaError));
+                qWarning().noquote()
+                    << QStringLiteral("Video encoder unavailable: %1 cuda setup failed: %2")
+                           .arg(choice.label, cudaError);
+            }
+            avcodec_free_context(&candidateCtx);
+            candidateCtx = avcodec_alloc_context3(candidate);
+            if (!candidateCtx) {
+                attemptedEncoders.push_back(choice.label + QStringLiteral(" cpu fallback (alloc failed)"));
+                continue;
+            }
+            configureVideoCodecContext(candidateCtx, candidate, request, candidateSwFormat, formatCtx);
+            configureCodecOptions(candidateCtx, request.outputFormat, choice.label);
+        }
+        const int openResult = avcodec_open2(candidateCtx, candidate, nullptr);
+        if (openResult >= 0) {
+            qInfo().noquote()
+                << QStringLiteral("Video encoder selected: %1 pix_fmt=%2")
+                       .arg(choice.label,
+                            QString::fromLatin1(av_get_pix_fmt_name(candidateCtx->pix_fmt)));
             codec = candidate;
             codecCtx = candidateCtx;
             codecLabel = choice.label;
             break;
         }
 
-        attemptedEncoders.push_back(choice.label + QStringLiteral(" (open failed)"));
+        const QString openError = avErrToString(openResult);
+        attemptedEncoders.push_back(choice.label + QStringLiteral(" (open failed: %1)").arg(openError));
+        qWarning().noquote()
+            << QStringLiteral("Video encoder unavailable: %1 pix_fmt=%2 error=%3")
+                   .arg(choice.label,
+                        QString::fromLatin1(av_get_pix_fmt_name(candidateCtx->pix_fmt)),
+                        openError);
         avcodec_free_context(&candidateCtx);
     }
 
@@ -161,20 +346,11 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             return result;
         }
 
-        codecCtx->codec_id = codec->id;
-        codecCtx->codec_type = AVMEDIA_TYPE_VIDEO;
-        codecCtx->width = request.outputSize.width();
-        codecCtx->height = request.outputSize.height();
-        codecCtx->time_base = AVRational{1, kTimelineFps};
-        codecCtx->framerate = AVRational{kTimelineFps, 1};
-        codecCtx->gop_size = kTimelineFps;
-        codecCtx->max_b_frames = 0;
-        codecCtx->pix_fmt = pixelFormatForCodec(codec, request.outputFormat);
-        codecCtx->bit_rate = 8'000'000;
-
-        if (formatCtx->oformat->flags & AVFMT_GLOBALHEADER) {
-            codecCtx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        }
+        configureVideoCodecContext(codecCtx,
+                                   codec,
+                                   request,
+                                   pixelFormatForCodec(codec, request.outputFormat),
+                                   formatCtx);
 
         configureCodecOptions(codecCtx, request.outputFormat, codecLabel);
 
@@ -184,6 +360,10 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             result.message = QStringLiteral("Failed to open encoder %1.").arg(codecLabel);
             return result;
         }
+        qInfo().noquote()
+            << QStringLiteral("Video encoder selected: %1 pix_fmt=%2")
+                   .arg(codecLabel,
+                        QString::fromLatin1(av_get_pix_fmt_name(codecCtx->pix_fmt)));
     }
 
     const bool usingHardwareEncode = isHardwareEncoderLabel(codecLabel);
@@ -230,15 +410,52 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         return result;
     }
 
-    const bool directNv12Conversion = codecCtx->pix_fmt == AV_PIX_FMT_NV12;
+    QHash<QString, QVector<TranscriptSection>> transcriptCache;
+    bool hasTranscriptOverlay = false;
+    for (const TimelineClip& clip : orderedClips) {
+        if (clip.transcriptOverlay.enabled) {
+            hasTranscriptOverlay = true;
+            break;
+        }
+    }
+
+    const bool cudaHardwareFrames =
+        codecCtx->pix_fmt == AV_PIX_FMT_CUDA && codecCtx->hw_frames_ctx != nullptr;
+    const AVPixelFormat encoderInputPixFmt =
+        cudaHardwareFrames ? AV_PIX_FMT_NV12 : codecCtx->pix_fmt;
+    const bool directNv12Conversion = encoderInputPixFmt == AV_PIX_FMT_NV12;
+    const bool vulkanGpuRenderer =
+        useGpuRenderer && activeRenderer && activeRenderer->backendId() == QStringLiteral("vulkan");
+    const bool vulkanGpuNv12Conversion =
+        vulkanGpuRenderer &&
+        encoderInputPixFmt == AV_PIX_FMT_NV12 &&
+        !hasTranscriptOverlay &&
+        !request.createVideoFromImageSequence;
+    const bool vulkanCudaExternalTransfer =
+        vulkanGpuNv12Conversion &&
+        cudaHardwareFrames &&
+        activeRenderer &&
+        activeRenderer->supportsCudaExternalMemoryInterop() &&
+        qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_TRANSFER", QStringLiteral("1")) != QStringLiteral("0");
+    if (vulkanCudaExternalTransfer) {
+        qInfo().noquote() << QStringLiteral(
+            "Vulkan export path: direct external-memory NV12 transfer into CUDA encoder frames enabled.");
+    }
+    const bool vulkanGpuYuv420pConversion =
+        vulkanGpuRenderer &&
+        encoderInputPixFmt == AV_PIX_FMT_YUV420P &&
+        !hasTranscriptOverlay &&
+        !request.createVideoFromImageSequence;
+    const bool needsSoftwareColorConverter =
+        !directNv12Conversion && !vulkanGpuYuv420pConversion;
     SwsContext* swsCtx = nullptr;
-    if (!directNv12Conversion) {
+    if (needsSoftwareColorConverter) {
         swsCtx = sws_getContext(codecCtx->width,
                                 codecCtx->height,
                                 AV_PIX_FMT_BGRA,
                                 codecCtx->width,
                                 codecCtx->height,
-                                codecCtx->pix_fmt,
+                                encoderInputPixFmt,
                                 SWS_BILINEAR,
                                 nullptr,
                                 nullptr,
@@ -258,9 +475,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         }
     }
 
-    AVFrame* sourceFrame = directNv12Conversion ? nullptr : av_frame_alloc();
+    AVFrame* sourceFrame = needsSoftwareColorConverter ? av_frame_alloc() : nullptr;
     AVFrame* encodedFrame = av_frame_alloc();
-    if ((!directNv12Conversion && !sourceFrame) || !encodedFrame) {
+    if ((needsSoftwareColorConverter && !sourceFrame) || !encodedFrame) {
         if (sourceFrame) av_frame_free(&sourceFrame);
         if (encodedFrame) av_frame_free(&encodedFrame);
         sws_freeContext(swsCtx);
@@ -282,7 +499,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         sourceFrame->width = codecCtx->width;
         sourceFrame->height = codecCtx->height;
     }
-    encodedFrame->format = codecCtx->pix_fmt;
+    encodedFrame->format = encoderInputPixFmt;
     encodedFrame->width = codecCtx->width;
     encodedFrame->height = codecCtx->height;
 
@@ -304,6 +521,52 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         result.message = QStringLiteral("Failed to allocate render frame buffers.");
         return result;
     }
+    constexpr int kAsyncGpuFrameCount = 3;
+    constexpr int kAsyncGpuMaxPendingReadbacks = 2;
+    QVector<AVFrame*> asyncGpuFrames;
+    QString asyncFrameAllocationError;
+    if (vulkanGpuNv12Conversion || vulkanGpuYuv420pConversion) {
+        asyncGpuFrames.reserve(kAsyncGpuFrameCount);
+        for (int i = 0; i < kAsyncGpuFrameCount; ++i) {
+            AVFrame* frame = av_frame_alloc();
+            if (!frame) {
+                asyncFrameAllocationError = QStringLiteral("Failed to allocate async Vulkan encoder frame.");
+                break;
+            }
+            frame->format = vulkanCudaExternalTransfer ? AV_PIX_FMT_CUDA : encoderInputPixFmt;
+            frame->width = codecCtx->width;
+            frame->height = codecCtx->height;
+            const int frameAllocResult = vulkanCudaExternalTransfer
+                ? av_hwframe_get_buffer(codecCtx->hw_frames_ctx, frame, 0)
+                : av_frame_get_buffer(frame, 32);
+            if (frameAllocResult < 0) {
+                av_frame_free(&frame);
+                asyncFrameAllocationError = QStringLiteral("Failed to allocate async Vulkan encoder frame buffer: %1")
+                                                .arg(avErrToString(frameAllocResult));
+                break;
+            }
+            asyncGpuFrames.push_back(frame);
+        }
+        if (!asyncFrameAllocationError.isEmpty()) {
+            for (AVFrame* frame : asyncGpuFrames) {
+                av_frame_free(&frame);
+            }
+            av_frame_free(&sourceFrame);
+            av_frame_free(&encodedFrame);
+            sws_freeContext(swsCtx);
+            av_write_trailer(formatCtx);
+            if (!(formatCtx->oformat->flags & AVFMT_NOFILE)) {
+                avio_closep(&formatCtx->pb);
+            }
+            if (audioState.codecCtx) {
+                avcodec_free_context(&audioState.codecCtx);
+            }
+            avcodec_free_context(&codecCtx);
+            avformat_free_context(formatCtx);
+            result.message = asyncFrameAllocationError;
+            return result;
+        }
+    }
 
     int64_t outputPts = 0;
     int64_t framesCompleted = 0;
@@ -322,7 +585,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                              asyncFrameCache.erase(asyncFrameCache.begin());
                          }
                      });
-    QHash<QString, QVector<TranscriptSection>> transcriptCache;
     QString errorMessage;
     QElapsedTimer totalTimer;
     totalTimer.start();
@@ -345,6 +607,91 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QVector<RenderFrameStageStats> worstFrames;
     QJsonArray lastSkippedClips;
     QJsonObject skippedReasonCounts;
+    struct PendingAsyncGpuFrame {
+        AVFrame* frame = nullptr;
+        int64_t timelineFrame = 0;
+        int segmentIndex = 0;
+        qint64 frameRenderMs = 0;
+        qint64 frameDecodeMs = 0;
+        qint64 frameTextureMs = 0;
+        qint64 frameReadbackMs = 0;
+        qint64 frameConvertStartMs = 0;
+        int64_t pts = 0;
+    };
+    QVector<PendingAsyncGpuFrame> pendingAsyncGpuFrames;
+    int asyncGpuFrameCursor = 0;
+    auto asyncFrameIsPending = [&](AVFrame* frame) {
+        for (const PendingAsyncGpuFrame& pending : pendingAsyncGpuFrames) {
+            if (pending.frame == frame) {
+                return true;
+            }
+        }
+        return false;
+    };
+    auto finishOldestAsyncGpuFrame = [&]() -> bool {
+        if (pendingAsyncGpuFrames.isEmpty()) {
+            return true;
+        }
+        PendingAsyncGpuFrame pending = pendingAsyncGpuFrames.takeFirst();
+        if (!pending.frame ||
+            (pending.frame->format != AV_PIX_FMT_CUDA && av_frame_make_writable(pending.frame) < 0)) {
+            errorMessage = QStringLiteral("Failed to make async Vulkan encoder frame writable.");
+            return false;
+        }
+        QElapsedTimer convertTimer;
+        convertTimer.start();
+        if (pending.frame->format == AV_PIX_FMT_CUDA) {
+            if (!activeRenderer->finishLastFrameToNv12CudaTransfer(pending.frame,
+                                                                   &totalRenderNv12StageMs,
+                                                                   &totalGpuReadbackMs)) {
+                errorMessage = QStringLiteral("Failed to finish Vulkan frame %1 direct CUDA transfer.")
+                                   .arg(pending.timelineFrame);
+                return false;
+            }
+        } else if (pending.frame->format == AV_PIX_FMT_NV12) {
+            if (!activeRenderer->finishLastFrameToNv12Readback(pending.frame,
+                                                               &totalRenderNv12StageMs,
+                                                               &totalGpuReadbackMs)) {
+                errorMessage = QStringLiteral("Failed to finish Vulkan frame %1 NV12 GPU readback.")
+                                   .arg(pending.timelineFrame);
+                return false;
+            }
+        } else {
+            if (!activeRenderer->finishLastFrameToYuv420pReadback(pending.frame,
+                                                                  &totalRenderNv12StageMs,
+                                                                  &totalGpuReadbackMs)) {
+                errorMessage = QStringLiteral("Failed to finish Vulkan frame %1 YUV420P GPU readback.")
+                                   .arg(pending.timelineFrame);
+                return false;
+            }
+        }
+        const qint64 frameConvertMs = pending.frameConvertStartMs + convertTimer.elapsed();
+        totalConvertStageMs += frameConvertMs;
+        pending.frame->pts = pending.pts;
+        QElapsedTimer encodeTimer;
+        encodeTimer.start();
+        if (!encodeFrame(codecCtx, stream, formatCtx, pending.frame, &errorMessage)) {
+            return false;
+        }
+        totalEncodeStageMs += encodeTimer.elapsed();
+        maxFrameRenderStageMs = qMax(maxFrameRenderStageMs, pending.frameRenderMs);
+        maxFrameDecodeStageMs = qMax(maxFrameDecodeStageMs, pending.frameDecodeMs);
+        maxFrameTextureStageMs = qMax(maxFrameTextureStageMs, pending.frameTextureMs);
+        maxFrameReadbackStageMs = qMax(maxFrameReadbackStageMs, pending.frameReadbackMs);
+        maxFrameConvertStageMs = qMax(maxFrameConvertStageMs, frameConvertMs);
+        recordWorstFrame(&worstFrames,
+                         RenderFrameStageStats{
+                             pending.timelineFrame,
+                             pending.segmentIndex + 1,
+                             pending.frameRenderMs,
+                             pending.frameDecodeMs,
+                             pending.frameTextureMs,
+                             pending.frameReadbackMs,
+                             frameConvertMs
+                         });
+        ++framesCompleted;
+        return true;
+    };
 
     for (int segmentIndex = 0; segmentIndex < exportRanges.size(); ++segmentIndex) {
         const ExportRangeSegment& range = exportRanges[segmentIndex];
@@ -411,9 +758,15 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             qint64 frameTextureMs = 0;
             qint64 frameCompositeMs = 0;
             qint64 frameReadbackMs = 0;
+            qint64* frameReadbackMsPtr = &frameReadbackMs;
+            const bool directGpuFrameReadback =
+                useGpuRenderer && !hasTranscriptOverlay && !request.createVideoFromImageSequence;
+            if (directGpuFrameReadback) {
+                frameReadbackMsPtr = nullptr;
+            }
             QJsonArray frameSkippedClips;
             QImage rendered = useGpuRenderer
-                ? gpuRenderer.renderFrame(request,
+                ? activeRenderer->renderFrame(request,
                                           timelineFrame,
                                           decoders,
                                           &asyncDecoder,
@@ -423,7 +776,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                           &frameDecodeMs,
                                           &frameTextureMs,
                                           &frameCompositeMs,
-                                          &frameReadbackMs,
+                                          frameReadbackMsPtr,
                                           &frameSkippedClips,
                                           &skippedReasonCounts)
                 : renderTimelineFrame(request,
@@ -441,17 +794,19 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             totalRenderTextureStageMs += frameTextureMs;
             totalRenderCompositeStageMs += frameCompositeMs;
             totalGpuReadbackMs += frameReadbackMs;
-            if (rendered.isNull()) {
+            if (rendered.isNull() && !directGpuFrameReadback) {
                 errorMessage = useGpuRenderer
                     ? QStringLiteral("Failed to render GPU timeline frame %1.").arg(timelineFrame)
                     : QStringLiteral("Failed to render timeline frame %1.").arg(timelineFrame);
                 break;
             }
 
-            QElapsedTimer overlayTimer;
-            overlayTimer.start();
-            renderTranscriptOverlays(&rendered, request, timelineFrame, orderedClips, transcriptCache);
-            totalOverlayStageMs += overlayTimer.elapsed();
+            if ((!directNv12Conversion || hasTranscriptOverlay) && !rendered.isNull()) {
+                QElapsedTimer overlayTimer;
+                overlayTimer.start();
+                renderTranscriptOverlays(&rendered, request, timelineFrame, orderedClips, transcriptCache);
+                totalOverlayStageMs += overlayTimer.elapsed();
+            }
 
             // Save intermediate image files if requested
             if (request.createVideoFromImageSequence && !namedDirPath.isEmpty() && !request.imageSequenceFormat.isEmpty()) {
@@ -533,7 +888,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.skippedClipReasonCounts = skippedReasonCounts;
                 progress.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
                 progress.worstFrameTable = buildWorstFrameTable(worstFrames);
-                progress.previewFrame = rendered;
+                if (!directNv12Conversion || hasTranscriptOverlay) {
+                    progress.previewFrame = rendered;
+                }
                 if (!progressCallback(progress)) {
                     result.cancelled = true;
                     errorMessage = QStringLiteral("Render cancelled.");
@@ -551,8 +908,67 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             QElapsedTimer convertTimer;
             convertTimer.start();
             if (directNv12Conversion) {
+                if (directGpuFrameReadback &&
+                    rendered.isNull() &&
+                    vulkanGpuNv12Conversion) {
+                    if (pendingAsyncGpuFrames.size() >= kAsyncGpuMaxPendingReadbacks &&
+                        !finishOldestAsyncGpuFrame()) {
+                        break;
+                    }
+                    if (asyncGpuFrames.isEmpty()) {
+                        errorMessage = QStringLiteral("No async Vulkan encoder frames are available.");
+                        break;
+                    }
+                    AVFrame* gpuFrame = asyncGpuFrames[asyncGpuFrameCursor % asyncGpuFrames.size()];
+                    ++asyncGpuFrameCursor;
+                    while (asyncFrameIsPending(gpuFrame)) {
+                        if (!finishOldestAsyncGpuFrame()) {
+                            break;
+                        }
+                        gpuFrame = asyncGpuFrames[asyncGpuFrameCursor % asyncGpuFrames.size()];
+                        ++asyncGpuFrameCursor;
+                    }
+                    if (!errorMessage.isEmpty()) {
+                        break;
+                    }
+                    if (gpuFrame->format != AV_PIX_FMT_CUDA && av_frame_make_writable(gpuFrame) < 0) {
+                        errorMessage = QStringLiteral("Failed to make async Vulkan encoder frame writable.");
+                        break;
+                    }
+                    const bool beginNv12 = vulkanCudaExternalTransfer
+                        ? activeRenderer->beginLastFrameToNv12CudaTransfer(&totalRenderNv12StageMs,
+                                                                           &totalGpuReadbackMs)
+                        : activeRenderer->beginLastFrameToNv12Readback(&totalRenderNv12StageMs,
+                                                                       &totalGpuReadbackMs);
+                    if (!beginNv12) {
+                        errorMessage = QStringLiteral(
+                            "Failed to convert Vulkan frame %1 to NV12 on GPU.")
+                                           .arg(timelineFrame);
+                        break;
+                    }
+                    const qint64 frameConvertMs = convertTimer.elapsed();
+                    pendingAsyncGpuFrames.push_back(PendingAsyncGpuFrame{
+                        gpuFrame,
+                        timelineFrame,
+                        segmentIndex,
+                        renderStageTimer.elapsed(),
+                        frameDecodeMs,
+                        frameTextureMs,
+                        frameReadbackMs,
+                        frameConvertMs,
+                        outputPts++
+                    });
+                    if (pendingAsyncGpuFrames.size() > kAsyncGpuMaxPendingReadbacks &&
+                        !finishOldestAsyncGpuFrame()) {
+                        break;
+                    }
+                    if (!errorMessage.isEmpty()) {
+                        break;
+                    }
+                    continue;
+                }
                 const bool gpuNv12Converted =
-                    useGpuRenderer && gpuRenderer.convertLastFrameToNv12(encodedFrame,
+                    useGpuRenderer && activeRenderer->convertLastFrameToNv12(encodedFrame,
                                                                          &totalRenderNv12StageMs,
                                                                          &totalGpuReadbackMs);
                 if (!gpuNv12Converted && !fillNv12FrameFromImage(rendered, encodedFrame)) {
@@ -560,11 +976,112 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                     break;
                 }
             } else {
-                const int copyBytesPerRow = qMin(static_cast<int>(rendered.bytesPerLine()), sourceFrame->linesize[0]);
-                for (int y = 0; y < rendered.height(); ++y) {
-                    memcpy(sourceFrame->data[0] + (y * sourceFrame->linesize[0]),
-                           rendered.constScanLine(y),
-                           copyBytesPerRow);
+                if (directGpuFrameReadback &&
+                    rendered.isNull() &&
+                    vulkanGpuYuv420pConversion) {
+                    if (pendingAsyncGpuFrames.size() >= kAsyncGpuMaxPendingReadbacks &&
+                        !finishOldestAsyncGpuFrame()) {
+                        break;
+                    }
+                    if (asyncGpuFrames.isEmpty()) {
+                        errorMessage = QStringLiteral("No async Vulkan encoder frames are available.");
+                        break;
+                    }
+                    AVFrame* gpuFrame = asyncGpuFrames[asyncGpuFrameCursor % asyncGpuFrames.size()];
+                    ++asyncGpuFrameCursor;
+                    while (asyncFrameIsPending(gpuFrame)) {
+                        if (!finishOldestAsyncGpuFrame()) {
+                            break;
+                        }
+                        gpuFrame = asyncGpuFrames[asyncGpuFrameCursor % asyncGpuFrames.size()];
+                        ++asyncGpuFrameCursor;
+                    }
+                    if (!errorMessage.isEmpty()) {
+                        break;
+                    }
+                    if (av_frame_make_writable(gpuFrame) < 0) {
+                        errorMessage = QStringLiteral("Failed to make async Vulkan encoder frame writable.");
+                        break;
+                    }
+                    if (!activeRenderer->beginLastFrameToYuv420pReadback(&totalRenderNv12StageMs,
+                                                                         &totalGpuReadbackMs)) {
+                        errorMessage = QStringLiteral(
+                            "Failed to convert Vulkan frame %1 to YUV420P on GPU. "
+                            "CPU swscale fallback is disabled for Vulkan.")
+                                           .arg(timelineFrame);
+                        break;
+                    }
+                    const qint64 frameConvertMs = convertTimer.elapsed();
+                    pendingAsyncGpuFrames.push_back(PendingAsyncGpuFrame{
+                        gpuFrame,
+                        timelineFrame,
+                        segmentIndex,
+                        renderStageTimer.elapsed(),
+                        frameDecodeMs,
+                        frameTextureMs,
+                        frameReadbackMs,
+                        frameConvertMs,
+                        outputPts++
+                    });
+                    // Keep a small backlog so GPU readback for the newest frames can overlap CPU encode of older frames.
+                    if (pendingAsyncGpuFrames.size() > kAsyncGpuMaxPendingReadbacks &&
+                        !finishOldestAsyncGpuFrame()) {
+                        break;
+                    }
+                    if (!errorMessage.isEmpty()) {
+                        break;
+                    }
+                    continue;
+                }
+                if (directGpuFrameReadback &&
+                    rendered.isNull() &&
+                    encoderInputPixFmt == AV_PIX_FMT_YUV420P &&
+                    activeRenderer->convertLastFrameToYuv420p(encodedFrame,
+                                                              &totalRenderNv12StageMs,
+                                                              &totalGpuReadbackMs)) {
+                    const qint64 frameConvertMs = convertTimer.elapsed();
+                    totalConvertStageMs += frameConvertMs;
+                    encodedFrame->pts = outputPts++;
+                    QElapsedTimer encodeTimer;
+                    encodeTimer.start();
+                    if (!encodeFrame(codecCtx, stream, formatCtx, encodedFrame, &errorMessage)) {
+                        break;
+                    }
+                    totalEncodeStageMs += encodeTimer.elapsed();
+                    const qint64 frameRenderMs = renderStageTimer.elapsed();
+                    maxFrameRenderStageMs = qMax(maxFrameRenderStageMs, frameRenderMs);
+                    maxFrameDecodeStageMs = qMax(maxFrameDecodeStageMs, frameDecodeMs);
+                    maxFrameTextureStageMs = qMax(maxFrameTextureStageMs, frameTextureMs);
+                    maxFrameReadbackStageMs = qMax(maxFrameReadbackStageMs, frameReadbackMs);
+                    maxFrameConvertStageMs = qMax(maxFrameConvertStageMs, frameConvertMs);
+                    recordWorstFrame(&worstFrames,
+                                     RenderFrameStageStats{
+                                         timelineFrame,
+                                         segmentIndex + 1,
+                                         frameRenderMs,
+                                         frameDecodeMs,
+                                         frameTextureMs,
+                                         frameReadbackMs,
+                                         frameConvertMs
+                                     });
+                    ++framesCompleted;
+                    if (!errorMessage.isEmpty()) {
+                        break;
+                    }
+                    continue;
+                }
+                if (directGpuFrameReadback && rendered.isNull()) {
+                    if (!activeRenderer->copyLastFrameToBgra(sourceFrame, &totalGpuReadbackMs)) {
+                        errorMessage = QStringLiteral("Failed to read back Vulkan frame %1 for encoding.").arg(timelineFrame);
+                        break;
+                    }
+                } else {
+                    const int copyBytesPerRow = qMin(static_cast<int>(rendered.bytesPerLine()), sourceFrame->linesize[0]);
+                    for (int y = 0; y < rendered.height(); ++y) {
+                        memcpy(sourceFrame->data[0] + (y * sourceFrame->linesize[0]),
+                               rendered.constScanLine(y),
+                               copyBytesPerRow);
+                    }
                 }
 
                 if (sws_scale(swsCtx,
@@ -614,6 +1131,12 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         }
     }
 
+    while (errorMessage.isEmpty() && !pendingAsyncGpuFrames.isEmpty()) {
+        if (!finishOldestAsyncGpuFrame()) {
+            break;
+        }
+    }
+
     if (errorMessage.isEmpty()) {
         encodeFrame(codecCtx, stream, formatCtx, nullptr, &errorMessage);
     }
@@ -628,6 +1151,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     av_write_trailer(formatCtx);
     asyncDecoder.shutdown();
     qDeleteAll(decoders);
+    for (AVFrame* frame : asyncGpuFrames) {
+        av_frame_free(&frame);
+    }
     av_frame_free(&sourceFrame);
     av_frame_free(&encodedFrame);
     sws_freeContext(swsCtx);
@@ -637,6 +1163,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     if (audioState.codecCtx) {
         avcodec_free_context(&audioState.codecCtx);
     }
+    // Release Vulkan/CUDA external-memory imports while FFmpeg's CUDA device context is still alive.
+    activeRenderer.reset();
     avcodec_free_context(&codecCtx);
     avformat_free_context(formatCtx);
 
@@ -688,9 +1216,16 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     result.skippedClipReasonCounts = skippedReasonCounts;
     result.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
     result.worstFrameTable = buildWorstFrameTable(worstFrames);
+    QString renderPathSuffix;
+    if (useGpuRenderer && activeRenderer) {
+        renderPathSuffix = QStringLiteral("\nRender path: %1").arg(activeRenderer->backendId());
+    } else if (!useGpuRenderer) {
+        renderPathSuffix = QStringLiteral("\nGPU export path unavailable, used CPU fallback: %1")
+                               .arg(gpuInitializationError);
+    }
     result.message = QStringLiteral("Rendered %1 video frames to %2%3")
                          .arg(framesCompleted)
                          .arg(QDir::toNativeSeparators(request.outputPath))
-                         .arg(useGpuRenderer ? QString() : QStringLiteral("\nGPU export path unavailable, used CPU fallback: %1").arg(gpuInitializationError));
+                         .arg(renderPathSuffix);
     return result;
 }

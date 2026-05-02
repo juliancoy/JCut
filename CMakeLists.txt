@@ -12,6 +12,7 @@ set(CMAKE_AUTOUIC ON)
 
 option(EDITOR_ASAN "Enable AddressSanitizer" OFF)
 option(EDITOR_BUILD_TESTS "Build editor tests" ON)
+option(JCUT_USE_OPENCV_CONTRIB "Enable OpenCV contrib modules (tracking backends)" ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -24,25 +25,99 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 find_package(OpenGL REQUIRED)
+find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent OpenGLWidgets Test)
+find_program(GLSLANG_VALIDATOR glslangValidator)
+find_library(CUDA_DRIVER_LIBRARY cuda)
 
-set(EDITOR_FFMPEG_PREFIX
-    "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-install"
-    CACHE PATH "Pinned FFmpeg install prefix used by this project")
-set(EDITOR_FFMPEG_PKGCONFIG_DIR "${EDITOR_FFMPEG_PREFIX}/lib/pkgconfig")
-
-if(NOT EXISTS "${EDITOR_FFMPEG_PKGCONFIG_DIR}/libavcodec.pc")
-    message(FATAL_ERROR
-        "Bundled FFmpeg pkg-config files not found at ${EDITOR_FFMPEG_PKGCONFIG_DIR}. "
-        "Run ./build.sh to bootstrap the pinned FFmpeg build.")
+set(JCUT_OPENCV_SOURCE "none")
+set(JCUT_OPENCV_LIBS "")
+set(JCUT_OPENCV_INCLUDES "")
+set(JCUT_HAVE_OPENCV_CONTRIB 0)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/CMakeLists.txt")
+    if(JCUT_USE_OPENCV_CONTRIB AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv_contrib/modules/tracking/CMakeLists.txt")
+        set(OPENCV_EXTRA_MODULES_PATH
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv_contrib/modules"
+            CACHE PATH "" FORCE)
+        set(BUILD_LIST "core,imgproc,objdetect,dnn,video,tracking" CACHE STRING "" FORCE)
+        set(JCUT_HAVE_OPENCV_CONTRIB 1)
+    else()
+        set(BUILD_LIST "core,imgproc,objdetect,dnn" CACHE STRING "" FORCE)
+    endif()
+    set(BUILD_opencv_world OFF CACHE BOOL "" FORCE)
+    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_PERF_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(INSTALL_CREATE_UNINSTALL_TARGET OFF CACHE BOOL "" FORCE)
+    set(WITH_IPP OFF CACHE BOOL "" FORCE)
+    set(_saved_automoc "${CMAKE_AUTOMOC}")
+    set(_saved_autorcc "${CMAKE_AUTORCC}")
+    set(_saved_autouic "${CMAKE_AUTOUIC}")
+    set(CMAKE_AUTOMOC OFF)
+    set(CMAKE_AUTORCC OFF)
+    set(CMAKE_AUTOUIC OFF)
+    add_subdirectory(external/opencv EXCLUDE_FROM_ALL)
+    set(CMAKE_AUTOMOC "${_saved_automoc}")
+    set(CMAKE_AUTORCC "${_saved_autorcc}")
+    set(CMAKE_AUTOUIC "${_saved_autouic}")
+    set(JCUT_OPENCV_SOURCE "submodule")
+    set(JCUT_OPENCV_LIBS opencv_core opencv_imgproc opencv_objdetect opencv_dnn)
+    if(JCUT_HAVE_OPENCV_CONTRIB)
+        list(APPEND JCUT_OPENCV_LIBS opencv_video opencv_tracking)
+    endif()
+    set(JCUT_OPENCV_INCLUDES
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/core/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/dnn/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/imgproc/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/objdetect/include"
+        "${CMAKE_CURRENT_BINARY_DIR}/external/opencv"
+        "${CMAKE_CURRENT_BINARY_DIR}")
+    if(JCUT_HAVE_OPENCV_CONTRIB)
+        list(APPEND JCUT_OPENCV_INCLUDES
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/video/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv_contrib/modules/tracking/include")
+    endif()
+else()
+    if(JCUT_USE_OPENCV_CONTRIB)
+        find_package(OpenCV QUIET COMPONENTS core imgproc objdetect dnn video tracking)
+    else()
+        find_package(OpenCV QUIET COMPONENTS core imgproc objdetect dnn)
+    endif()
+    if(OpenCV_FOUND)
+        set(JCUT_OPENCV_SOURCE "system")
+        set(JCUT_OPENCV_LIBS ${OpenCV_LIBS})
+        set(JCUT_OPENCV_INCLUDES ${OpenCV_INCLUDE_DIRS})
+        if(JCUT_USE_OPENCV_CONTRIB)
+            list(FIND OpenCV_LIBS opencv_tracking _opencv_tracking_idx)
+            if(NOT _opencv_tracking_idx EQUAL -1)
+                set(JCUT_HAVE_OPENCV_CONTRIB 1)
+            endif()
+        endif()
+    endif()
 endif()
 
-set(_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
-if(_saved_pkg_config_path)
-    set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}:${_saved_pkg_config_path}")
-else()
-    set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}")
+option(JCUT_USE_SYSTEM_FFMPEG
+    "Use system FFmpeg libraries. Required when system FFmpeg provides encoders such as NVENC that the pinned build lacks."
+    ON)
+set(EDITOR_FFMPEG_PREFIX
+    "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-install"
+    CACHE PATH "Pinned FFmpeg install prefix used when JCUT_USE_SYSTEM_FFMPEG is OFF")
+
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set(EDITOR_FFMPEG_PKGCONFIG_DIR "${EDITOR_FFMPEG_PREFIX}/lib/pkgconfig")
+    if(NOT EXISTS "${EDITOR_FFMPEG_PKGCONFIG_DIR}/libavcodec.pc")
+        message(FATAL_ERROR
+            "Bundled FFmpeg pkg-config files not found at ${EDITOR_FFMPEG_PKGCONFIG_DIR}. "
+            "Run ./build.sh to bootstrap the pinned FFmpeg build or configure with -DJCUT_USE_SYSTEM_FFMPEG=ON.")
+    endif()
+
+    set(_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
+    if(_saved_pkg_config_path)
+        set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}:${_saved_pkg_config_path}")
+    else()
+        set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}")
+    endif()
 endif()
 
 pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
@@ -53,12 +128,14 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libswresample
 )
 
-set(_expected_ffmpeg_libdir "${EDITOR_FFMPEG_PREFIX}/lib")
-list(FIND FFMPEG_LIBRARY_DIRS "${_expected_ffmpeg_libdir}" _ffmpeg_libdir_match)
-if(_ffmpeg_libdir_match EQUAL -1)
-    message(FATAL_ERROR
-        "Resolved FFmpeg libraries are not from the pinned prefix. "
-        "Expected ${_expected_ffmpeg_libdir}, got: ${FFMPEG_LIBRARY_DIRS}")
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set(_expected_ffmpeg_libdir "${EDITOR_FFMPEG_PREFIX}/lib")
+    list(FIND FFMPEG_LIBRARY_DIRS "${_expected_ffmpeg_libdir}" _ffmpeg_libdir_match)
+    if(_ffmpeg_libdir_match EQUAL -1)
+        message(FATAL_ERROR
+            "Resolved FFmpeg libraries are not from the pinned prefix. "
+            "Expected ${_expected_ffmpeg_libdir}, got: ${FFMPEG_LIBRARY_DIRS}")
+    endif()
 endif()
 
 set(MOTIVE3D_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d")
@@ -73,6 +150,7 @@ if(EXISTS "${MOTIVE3D_INCLUDE_DIR}")
     )
 endif()
 
+set(RTAUDIO_TARGETNAME_UNINSTALL "rtaudio_uninstall" CACHE STRING "" FORCE)
 add_subdirectory(rtaudio EXCLUDE_FROM_ALL)
 set(JCUT_SUPABASE_URL "https://ivwutugdrpugjqglxabw.supabase.co" CACHE STRING
     "Default Supabase project URL for desktop auth.")
@@ -135,6 +213,7 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/model\\.cpp$"
     ".*/model_import_shared\\.cpp$"
     ".*/model_runtime\\.cpp$"
+    ".*/backend_headless_compare_main\\.cpp$"
 )
 
 set(EDITOR_APP_SOURCES "${EDITOR_ALL_CPP}")
@@ -147,9 +226,42 @@ list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor\\.cpp$")
 list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor_main\\.cpp$")
 list(FILTER EDITOR_CORE_SOURCES EXCLUDE REGEX ".*/editor_ai_integration\\.cpp$")
 
+set(JCUT_VULKAN_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_shaders")
+set(JCUT_VULKAN_SHADER_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12_y.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12_uv.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_u.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_v.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p.comp
+)
+set(JCUT_VULKAN_SHADER_OUTPUTS "")
+if(GLSLANG_VALIDATOR)
+    foreach(shader IN LISTS JCUT_VULKAN_SHADER_SOURCES)
+        get_filename_component(shader_name ${shader} NAME)
+        set(out_file "${JCUT_VULKAN_SHADER_OUTPUT_DIR}/${shader_name}.spv")
+        add_custom_command(
+            OUTPUT ${out_file}
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+            COMMAND ${GLSLANG_VALIDATOR} -V "${shader}" -o "${out_file}"
+            DEPENDS "${shader}"
+            COMMENT "Compiling Vulkan shader ${shader_name}"
+            VERBATIM
+        )
+        list(APPEND JCUT_VULKAN_SHADER_OUTPUTS "${out_file}")
+    endforeach()
+    add_custom_target(jcut_vulkan_shaders DEPENDS ${JCUT_VULKAN_SHADER_OUTPUTS})
+else()
+    message(WARNING "glslangValidator not found; Vulkan shader SPIR-V build artifacts will not be generated.")
+endif()
+
 add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/preview.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/opengl_preview.h
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
 )
 
@@ -170,14 +282,32 @@ target_link_libraries(editor_core
         Qt6::Concurrent
         Qt6::OpenGLWidgets
         OpenGL::GL
+        Vulkan::Vulkan
         Threads::Threads
         PkgConfig::FFMPEG
         rtaudio
 )
+if(CUDA_DRIVER_LIBRARY)
+    target_link_libraries(editor_core PUBLIC ${CUDA_DRIVER_LIBRARY})
+    target_compile_definitions(editor_core PUBLIC JCUT_HAS_CUDA_DRIVER=1)
+else()
+    target_compile_definitions(editor_core PUBLIC JCUT_HAS_CUDA_DRIVER=0)
+endif()
+if(JCUT_OPENCV_LIBS)
+    target_link_libraries(editor_core PUBLIC ${JCUT_OPENCV_LIBS})
+    target_include_directories(editor_core PUBLIC ${JCUT_OPENCV_INCLUDES})
+    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV=1)
+    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB})
+else()
+    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV=0)
+    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV_CONTRIB=0)
+endif()
 
-set_target_properties(editor_core PROPERTIES
-    BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
-)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(editor_core PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
 
 if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_core PUBLIC Qt6::GuiPrivate)
@@ -186,7 +316,11 @@ endif()
 target_compile_definitions(editor_core
     PUBLIC
         QT_DEPRECATED_WARNINGS
+        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
 )
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(editor_core jcut_vulkan_shaders)
+endif()
 
 set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/async_decoder.cpp
@@ -246,6 +380,10 @@ target_link_libraries(editor_test_support
         PkgConfig::FFMPEG
         rtaudio
 )
+if(JCUT_OPENCV_LIBS)
+    target_link_libraries(editor_test_support PUBLIC ${JCUT_OPENCV_LIBS})
+    target_include_directories(editor_test_support PUBLIC ${JCUT_OPENCV_INCLUDES})
+endif()
 
 if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_test_support PUBLIC Qt6::GuiPrivate)
@@ -271,12 +409,24 @@ if(TARGET CPPMonetize::cppmonetize)
 endif()
 set_target_properties(editor PROPERTIES
     OUTPUT_NAME "jcut"
-    BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(editor PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
 
 if(APPLE)
     set_target_properties(editor PROPERTIES MACOSX_BUNDLE TRUE)
 endif()
+
+add_executable(jcut_headless_backend_compare
+    ${CMAKE_CURRENT_SOURCE_DIR}/backend_headless_compare_main.cpp
+)
+set_target_properties(jcut_headless_backend_compare PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
 
 if(EDITOR_BUILD_TESTS)
     enable_testing()
