@@ -25,7 +25,19 @@ RUN_FACE_BENCH="no"
 ensure_submodule_checkout() {
     local submodule_path="$1"
     local checkout_dir="$2"
+    local required_rel_path="${3:-}"
+
+    local has_checkout="0"
     if [[ -d "${checkout_dir}" ]]; then
+        if [[ -n "${required_rel_path}" ]]; then
+            if [[ -e "${checkout_dir}/${required_rel_path}" ]]; then
+                has_checkout="1"
+            fi
+        elif find "${checkout_dir}" -mindepth 1 -print -quit >/dev/null 2>&1; then
+            has_checkout="1"
+        fi
+    fi
+    if [[ "${has_checkout}" == "1" ]]; then
         return 0
     fi
     if ! git -C "${REPO_ROOT}" config -f .gitmodules --get "submodule.${submodule_path}.path" >/dev/null 2>&1; then
@@ -35,6 +47,10 @@ ensure_submodule_checkout() {
     git -C "${REPO_ROOT}" submodule update --init --recursive -- "${submodule_path}"
     if [[ ! -d "${checkout_dir}" ]]; then
         echo "Submodule checkout missing at ${checkout_dir}" >&2
+        exit 1
+    fi
+    if [[ -n "${required_rel_path}" && ! -e "${checkout_dir}/${required_rel_path}" ]]; then
+        echo "Submodule checkout missing expected file ${checkout_dir}/${required_rel_path}" >&2
         exit 1
     fi
 }
@@ -244,9 +260,9 @@ for arg in "$@"; do
     esac
 done
 
-ensure_submodule_checkout "${FFMPEG_SUBMODULE_PATH}" "${FFMPEG_SRC_DIR}"
+ensure_submodule_checkout "${FFMPEG_SUBMODULE_PATH}" "${FFMPEG_SRC_DIR}" "configure"
 if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
-    ensure_submodule_checkout "${NVCODEC_SUBMODULE_PATH}" "${NVCODEC_SRC_DIR}"
+    ensure_submodule_checkout "${NVCODEC_SUBMODULE_PATH}" "${NVCODEC_SRC_DIR}" "Makefile"
 fi
 
 ensure_ffmpeg_installed

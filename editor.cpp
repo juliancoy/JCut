@@ -459,6 +459,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const PlaybackAudioWarpMode playbackAudioWarpMode = playbackAudioWarpModeFromString(
         root.value(QStringLiteral("playbackAudioWarpMode"))
             .toString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::Disabled)));
+    const bool playbackLoopEnabled =
+        root.value(QStringLiteral("playbackLoopEnabled")).toBool(false);
     const qreal timelineZoom = root.value(QStringLiteral("timelineZoom")).toDouble(4.0);
     const int timelineVerticalScroll = root.value(QStringLiteral("timelineVerticalScroll")).toInt(0);
     const int64_t exportStartFrame = root.value(QStringLiteral("exportStartFrame")).toVariant().toLongLong();
@@ -982,7 +984,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         }
     }
     applyPlaybackRuntimeConfig(
-        PlaybackRuntimeConfig{playbackSpeed, playbackClockSource, playbackAudioWarpMode});
+        PlaybackRuntimeConfig{playbackSpeed, playbackClockSource, playbackAudioWarpMode, playbackLoopEnabled});
     
     if (m_preview) {
         m_preview->setOutputSize(QSize(outputWidth, outputHeight));

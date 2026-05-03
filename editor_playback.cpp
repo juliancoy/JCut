@@ -7,6 +7,7 @@
 #include <QSignalBlocker>
 
 #include <cmath>
+#include <algorithm>
 
 namespace editor {
 
@@ -19,8 +20,13 @@ void EditorWindow::advanceFrame()
         int64_t audioSample = qMax<int64_t>(0, m_audioEngine->currentSample());
         const qreal audioFramePosition = samplesToFramePosition(audioSample);
         const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
+        const int64_t currentFrame = m_timeline->currentFrame();
+        if (audioFrame + 2 < currentFrame) {
+            setPlaybackActive(false);
+            return;
+        }
 
-        if (audioFrame == m_timeline->currentFrame()) {
+        if (audioFrame == currentFrame) {
             ++m_audioClockStallTicks;
             if (m_audioClockStallTicks <= m_audioClockStallThresholdTicks) {
                 if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
@@ -62,7 +68,9 @@ void EditorWindow::advanceFrame()
     }
 
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    const int64_t nextSample = nextPlaybackSample(m_absolutePlaybackSample, deltaSamples, ranges);
+    const int64_t currentSample = m_absolutePlaybackSample;
+    bool reachedEnd = false;
+    const int64_t nextSample = nextPlaybackSample(currentSample, deltaSamples, ranges, &reachedEnd);
     if (m_preview) {
         const int64_t nextFrame =
             qBound<int64_t>(0,
@@ -71,6 +79,15 @@ void EditorWindow::advanceFrame()
         m_preview->preparePlaybackAdvance(nextFrame);
     }
     setCurrentPlaybackSample(nextSample, false, true);
+    if (reachedEnd) {
+        if (m_playbackLoopEnabled) {
+            const int64_t loopStartFrame =
+                ranges.isEmpty() ? 0 : qMax<int64_t>(0, ranges.constFirst().startFrame);
+            setCurrentPlaybackSample(frameToSamples(loopStartFrame), false, true);
+        } else {
+            setPlaybackActive(false);
+        }
+    }
 }
 
 bool EditorWindow::speechFilterPlaybackEnabled() const
@@ -98,12 +115,42 @@ QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
 {
     if (!m_timeline) return {};
     QVector<ExportRangeSegment> ranges = m_timeline->exportRanges();
-    if (!speechFilterPlaybackEnabled()) return ranges;
-    return m_transcriptEngine.transcriptWordExportRanges(ranges,
-                                                         m_timeline->clips(),
-                                                         m_timeline->renderSyncMarkers(),
-                                                         m_transcriptPrependMs,
-                                                         m_transcriptPostpendMs);
+    if (speechFilterPlaybackEnabled()) {
+        ranges = m_transcriptEngine.transcriptWordExportRanges(ranges,
+                                                               m_timeline->clips(),
+                                                               m_timeline->renderSyncMarkers(),
+                                                               m_transcriptPrependMs,
+                                                               m_transcriptPostpendMs);
+    }
+    if (ranges.isEmpty()) {
+        return ranges;
+    }
+
+    std::sort(ranges.begin(), ranges.end(), [](const ExportRangeSegment& a, const ExportRangeSegment& b) {
+        if (a.startFrame != b.startFrame) {
+            return a.startFrame < b.startFrame;
+        }
+        return a.endFrame < b.endFrame;
+    });
+
+    QVector<ExportRangeSegment> normalized;
+    normalized.reserve(ranges.size());
+    for (const ExportRangeSegment& range : ranges) {
+        if (range.endFrame < range.startFrame) {
+            continue;
+        }
+        if (normalized.isEmpty()) {
+            normalized.push_back(range);
+            continue;
+        }
+        ExportRangeSegment& last = normalized.last();
+        if (range.startFrame <= (last.endFrame + 1)) {
+            last.endFrame = qMax(last.endFrame, range.endFrame);
+        } else {
+            normalized.push_back(range);
+        }
+    }
+    return normalized;
 }
 int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
 {
@@ -112,20 +159,24 @@ int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
     if (ranges.isEmpty()) {
         const int64_t nextFrame = currentFrame + 1;
-        return nextFrame > m_timeline->totalFrames() ? 0 : nextFrame;
+        return qMin<int64_t>(m_timeline->totalFrames(), nextFrame);
     }
 
     for (const ExportRangeSegment &range : ranges) {
         if (currentFrame < range.startFrame) return range.startFrame;
         if (currentFrame >= range.startFrame && currentFrame < range.endFrame) return currentFrame + 1;
     }
-    return ranges.constFirst().startFrame;
+    return qMin<int64_t>(m_timeline->totalFrames(), ranges.constLast().endFrame);
 }
 
 int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
                                          int64_t deltaSamples,
-                                         const QVector<ExportRangeSegment>& ranges) const
+                                         const QVector<ExportRangeSegment>& ranges,
+                                         bool* reachedEnd) const
 {
+    if (reachedEnd) {
+        *reachedEnd = false;
+    }
     if (!m_timeline) {
         return qMax<int64_t>(0, currentSample + qMax<int64_t>(0, deltaSamples));
     }
@@ -134,11 +185,11 @@ int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
         return qBound<int64_t>(0, currentSample, totalSamples);
     }
     if (ranges.isEmpty()) {
-        int64_t next = currentSample + deltaSamples;
-        if (next > totalSamples) {
-            next %= qMax<int64_t>(1, totalSamples + 1);
+        const int64_t next = qBound<int64_t>(0, currentSample + deltaSamples, totalSamples);
+        if (reachedEnd && next >= totalSamples) {
+            *reachedEnd = true;
         }
-        return qBound<int64_t>(0, next, totalSamples);
+        return next;
     }
 
     auto rangeStartSample = [](const ExportRangeSegment& range) {
@@ -148,8 +199,9 @@ int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
         return frameToSamples(range.endFrame + 1);
     };
 
-    int64_t sample = qMax<int64_t>(0, currentSample);
+    int64_t sample = qBound<int64_t>(0, currentSample, totalSamples);
     int64_t remaining = deltaSamples;
+    const int64_t lastRangeEndExclusive = rangeEndSampleExclusive(ranges.constLast());
     int guard = 0;
     while (remaining > 0 && guard++ < 4096) {
         int activeIndex = -1;
@@ -169,7 +221,11 @@ int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
 
         if (activeIndex < 0) {
             if (nextIndex < 0) {
-                nextIndex = 0;
+                sample = qBound<int64_t>(0, lastRangeEndExclusive - 1, totalSamples);
+                if (reachedEnd) {
+                    *reachedEnd = true;
+                }
+                break;
             }
             sample = rangeStartSample(ranges.at(nextIndex));
             continue;
@@ -183,7 +239,14 @@ int64_t EditorWindow::nextPlaybackSample(int64_t currentSample,
             break;
         }
         remaining -= available;
-        const int nextRangeIndex = (activeIndex + 1) % ranges.size();
+        const int nextRangeIndex = activeIndex + 1;
+        if (nextRangeIndex >= ranges.size()) {
+            sample = qBound<int64_t>(0, endExclusive - 1, totalSamples);
+            if (reachedEnd) {
+                *reachedEnd = true;
+            }
+            break;
+        }
         sample = rangeStartSample(ranges.at(nextRangeIndex));
     }
 
@@ -393,6 +456,7 @@ EditorWindow::PlaybackRuntimeConfig EditorWindow::playbackRuntimeConfig() const
     config.speed = m_playbackSpeed;
     config.clockSource = m_playbackClockSource;
     config.audioWarpMode = m_playbackAudioWarpMode;
+    config.loopEnabled = m_playbackLoopEnabled;
     return config;
 }
 
@@ -402,17 +466,20 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
     const PlaybackAudioWarpMode normalizedWarpMode =
         normalizedPlaybackAudioWarpMode(normalizedSpeed, requestedConfig.audioWarpMode);
     const PlaybackClockSource normalizedClockSource = requestedConfig.clockSource;
+    const bool normalizedLoopEnabled = requestedConfig.loopEnabled;
 
     const bool speedChanged = qAbs(m_playbackSpeed - normalizedSpeed) >= 0.0001;
     const bool clockChanged = m_playbackClockSource != normalizedClockSource;
     const bool warpChanged = m_playbackAudioWarpMode != normalizedWarpMode;
-    if (!speedChanged && !clockChanged && !warpChanged) {
+    const bool loopChanged = m_playbackLoopEnabled != normalizedLoopEnabled;
+    if (!speedChanged && !clockChanged && !warpChanged && !loopChanged) {
         return;
     }
 
     m_playbackSpeed = normalizedSpeed;
     m_playbackClockSource = normalizedClockSource;
     m_playbackAudioWarpMode = normalizedWarpMode;
+    m_playbackLoopEnabled = normalizedLoopEnabled;
 
     if (m_playbackSpeedCombo) {
         const int speedIndex = m_playbackSpeedCombo->findData(normalizedSpeed);
