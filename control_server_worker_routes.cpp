@@ -58,6 +58,11 @@ void mergePlaybackConfigIntoState(const QJsonObject& playbackConfig, QJsonObject
                 state->value(QStringLiteral("playbackAudioWarpMode"))
                     .toString(QStringLiteral("disabled")));
     }
+    if (playbackConfig.contains(QStringLiteral("playback_loop_enabled"))) {
+        (*state)[QStringLiteral("playbackLoopEnabled")] =
+            playbackConfig.value(QStringLiteral("playback_loop_enabled")).toBool(
+                state->value(QStringLiteral("playbackLoopEnabled")).toBool(false));
+    }
 }
 
 } // namespace

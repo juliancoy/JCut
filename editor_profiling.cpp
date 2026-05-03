@@ -207,7 +207,8 @@ QJsonObject EditorWindow::playbackConfigSnapshot() const
         {QStringLiteral("ok"), true},
         {QStringLiteral("playback_speed"), config.speed},
         {QStringLiteral("clock_source"), playbackClockSourceToString(config.clockSource)},
-        {QStringLiteral("audio_warp_mode"), playbackAudioWarpModeToString(config.audioWarpMode)}
+        {QStringLiteral("audio_warp_mode"), playbackAudioWarpModeToString(config.audioWarpMode)},
+        {QStringLiteral("playback_loop_enabled"), config.loopEnabled}
     };
 }
 
@@ -261,6 +262,19 @@ QJsonObject EditorWindow::applyPlaybackConfigPatch(const QJsonObject& patch)
             };
         }
         setPlaybackAudioWarpMode(playbackAudioWarpModeFromString(raw));
+    }
+
+    if (patch.contains(QStringLiteral("playback_loop_enabled"))) {
+        if (!patch.value(QStringLiteral("playback_loop_enabled")).isBool()) {
+            error = QStringLiteral("playback_loop_enabled must be a boolean");
+            return QJsonObject{
+                {QStringLiteral("ok"), false},
+                {QStringLiteral("error"), error}
+            };
+        }
+        PlaybackRuntimeConfig config = playbackRuntimeConfig();
+        config.loopEnabled = patch.value(QStringLiteral("playback_loop_enabled")).toBool();
+        applyPlaybackRuntimeConfig(config);
     }
 
     return playbackConfigSnapshot();

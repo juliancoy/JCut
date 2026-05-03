@@ -595,6 +595,7 @@ QJsonObject EditorWindow::buildStateJson() const
         playbackClockSourceToString(playbackConfig.clockSource);
     root[QStringLiteral("playbackAudioWarpMode")] =
         playbackAudioWarpModeToString(playbackConfig.audioWarpMode);
+    root[QStringLiteral("playbackLoopEnabled")] = playbackConfig.loopEnabled;
     root[QStringLiteral("previewViewMode")] = m_previewViewMode;
     root[QStringLiteral("aiSelectedModel")] = m_aiSelectedModel;
     root[QStringLiteral("aiProxyBaseUrl")] = m_aiProxyBaseUrl;

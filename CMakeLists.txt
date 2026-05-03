@@ -274,6 +274,16 @@ set_target_properties(editor PROPERTIES
     BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
 )
 
+add_executable(project_roundtrip_cli
+    ${CMAKE_CURRENT_SOURCE_DIR}/project_roundtrip_cli.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp
+)
+target_link_libraries(project_roundtrip_cli
+    PRIVATE
+        Qt6::Core
+        Qt6::Widgets
+)
+
 if(APPLE)
     set_target_properties(editor PROPERTIES MACOSX_BUNDLE TRUE)
 endif()

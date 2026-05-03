@@ -79,6 +79,7 @@ private:
         qreal speed = 1.0;
         PlaybackClockSource clockSource = PlaybackClockSource::Auto;
         PlaybackAudioWarpMode audioWarpMode = PlaybackAudioWarpMode::Disabled;
+        bool loopEnabled = false;
     };
 
     QWidget *buildEditorPane();
@@ -171,7 +172,8 @@ private:
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
     int64_t nextPlaybackSample(int64_t currentSample,
                                int64_t deltaSamples,
-                               const QVector<ExportRangeSegment>& ranges) const;
+                               const QVector<ExportRangeSegment>& ranges,
+                               bool* reachedEnd = nullptr) const;
     int64_t stepForwardFrame(int64_t currentFrame) const;
     int64_t stepBackwardFrame(int64_t currentFrame) const;
     QString clipLabelForId(const QString &clipId) const;
@@ -461,6 +463,7 @@ private:
     bool m_speechFilterRangeCrossfade = false;
     PlaybackClockSource m_playbackClockSource = PlaybackClockSource::Auto;
     PlaybackAudioWarpMode m_playbackAudioWarpMode = PlaybackAudioWarpMode::Disabled;
+    bool m_playbackLoopEnabled = false;
     mutable TranscriptEngine m_transcriptEngine;
 
     QDoubleSpinBox *m_transcriptOverlayXSpin = nullptr;
