@@ -538,6 +538,15 @@ bool ControlServerWorker::refreshStateCacheFromUi(int timeoutMs, QString* errorO
         }
         return false;
     }
+    const QJsonObject selectedResolution = resolveSelectedClipState(snapshot);
+    snapshot[QStringLiteral("selectedClip")] =
+        selectedResolution.value(QStringLiteral("selectedClip")).toObject();
+    snapshot[QStringLiteral("selectedClipId")] =
+        selectedResolution.value(QStringLiteral("selectedClipId")).toString();
+    snapshot[QStringLiteral("selectedClipResolutionSource")] =
+        selectedResolution.value(QStringLiteral("selectedClipResolutionSource")).toString();
+    snapshot[QStringLiteral("selectedClipResolutionConsistent")] =
+        selectedResolution.value(QStringLiteral("selectedClipResolutionConsistent")).toBool(true);
     m_lastStateSnapshot = snapshot;
     m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
     ++m_stateSnapshotSuccessCount;

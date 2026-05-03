@@ -1,5 +1,5 @@
-#include "preview.h"
-#include "preview_debug.h"
+#include "opengl_preview.h"
+#include "opengl_preview_debug.h"
 
 #include "frame_handle.h"
 #include "async_decoder.h"
@@ -8,10 +8,13 @@
 #include "memory_budget.h"
 #include "media_pipeline_shared.h"
 #include "waveform_service.h"
+#include "render_backend.h"
+#include "render_internal.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QOpenGLWidget>
 #include <QPointer>
 #include <QThread>
@@ -37,6 +40,10 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip) {
         .arg(QString::number(clip.playbackRate, 'f', 6))
         .arg(QString::number(clip.sourceFps, 'f', 6));
 }
+
+bool suppressBridgeFallbackLogs() {
+    return qEnvironmentVariableIntValue("JCUT_PREVIEW_SUPPRESS_BRIDGE_LOG") == 1;
+}
 } // namespace
 
 PreviewWindow::PreviewWindow(QWidget* parent)
@@ -44,6 +51,9 @@ PreviewWindow::PreviewWindow(QWidget* parent)
     , m_quadBuffer(QOpenGLBuffer::VertexBuffer)
     , m_polygonBuffer(QOpenGLBuffer::VertexBuffer)
 {
+    const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
+    configurePreviewBackend(requestedBackend, false);
+
     setMinimumSize(320, 180);
     setMouseTracking(true);
     m_lastPaintMs = nowMs();
@@ -277,8 +287,28 @@ void PreviewWindow::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
 }
 
 QString PreviewWindow::backendName() const {
-    return usingCpuFallback() ? QStringLiteral("CPU Preview Fallback")
-                              : QStringLiteral("OpenGL Shader Preview");
+    if (usingCpuFallback()) {
+        if (m_vulkanPreviewActive) {
+            return QStringLiteral("Vulkan Preview (Offscreen Composite)");
+        }
+        if (m_forceCpuPreviewForVulkan) {
+            return QStringLiteral("Vulkan Preview (Fallback Pending)");
+        }
+        return QStringLiteral("CPU Preview Fallback");
+    }
+    QString label = QStringLiteral("OpenGL Shader Preview");
+    if (m_requestedRenderBackend != m_effectiveRenderBackend) {
+        label += QStringLiteral(" (requested %1, using %2)")
+                     .arg(m_requestedRenderBackend, m_effectiveRenderBackend);
+    }
+    return label;
+}
+
+void PreviewWindow::setRenderBackendPreference(const QString& backendName)
+{
+    const RenderBackend requestedBackend = parseRenderBackend(backendName);
+    configurePreviewBackend(requestedBackend, true);
+    update();
 }
 
 void PreviewWindow::setAudioMuted(bool muted) { m_audioMuted = muted; }
@@ -288,7 +318,76 @@ void PreviewWindow::setOutputSize(const QSize& size) {
     const QSize sanitized(qMax(16, size.width()), qMax(16, size.height()));
     if (m_outputSize == sanitized) return;
     m_outputSize = sanitized;
+    if (m_requestedRenderBackend == QStringLiteral("vulkan")) {
+        ensureVulkanPreviewRenderer(false);
+    }
     scheduleRepaint();
+}
+
+bool PreviewWindow::configurePreviewBackend(RenderBackend requestedBackend, bool promptOnFallback)
+{
+    m_requestedRenderBackend = renderBackendName(requestedBackend);
+    m_effectiveRenderBackend = QStringLiteral("opengl");
+    m_forceCpuPreviewForVulkan = false;
+    m_vulkanPreviewActive = false;
+    m_renderBackendFallbackReason.clear();
+    if (requestedBackend == RenderBackend::Vulkan) {
+        m_forceCpuPreviewForVulkan = true;
+        if (!ensureVulkanPreviewRenderer(promptOnFallback)) {
+            return false;
+        }
+        m_effectiveRenderBackend = QStringLiteral("vulkan");
+    } else {
+        m_vulkanPreviewRenderer.reset();
+        m_vulkanPreviewDecoders.clear();
+        m_vulkanPreviewAsyncFrameCache.clear();
+    }
+    return true;
+}
+
+bool PreviewWindow::ensureVulkanPreviewRenderer(bool promptOnFallback)
+{
+    m_vulkanPreviewRenderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
+    QString error;
+    const QSize targetSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    if (m_vulkanPreviewRenderer->initialize(targetSize, &error)) {
+        m_vulkanPreviewActive = true;
+        m_forceCpuPreviewForVulkan = true;
+        m_renderBackendFallbackReason.clear();
+        return true;
+    }
+
+    m_vulkanPreviewRenderer.reset();
+    m_vulkanPreviewDecoders.clear();
+    m_vulkanPreviewAsyncFrameCache.clear();
+    m_vulkanPreviewActive = false;
+    m_forceCpuPreviewForVulkan = false;
+    m_effectiveRenderBackend = QStringLiteral("opengl");
+    m_renderBackendFallbackReason = error.isEmpty()
+        ? QStringLiteral("Vulkan preview initialization failed.")
+        : error;
+
+    bool allowFallback = true;
+    if (promptOnFallback && !qEnvironmentVariable("QT_QPA_PLATFORM").contains("offscreen", Qt::CaseInsensitive)) {
+        const QString prompt = QStringLiteral(
+            "Vulkan preview initialization failed:\n\n%1\n\nFall back to OpenGL preview?")
+                                   .arg(m_renderBackendFallbackReason);
+        allowFallback = QMessageBox::question(this,
+                                              QStringLiteral("Vulkan Preview Unavailable"),
+                                              prompt,
+                                              QMessageBox::Yes | QMessageBox::No,
+                                              QMessageBox::Yes) == QMessageBox::Yes;
+    }
+    if (!allowFallback) {
+        m_forceCpuPreviewForVulkan = true;
+        m_vulkanPreviewActive = false;
+        m_effectiveRenderBackend = QStringLiteral("vulkan");
+    } else if (!suppressBridgeFallbackLogs()) {
+        qWarning().noquote()
+            << "[render-backend-fallback] requested=vulkan effective=opengl reason=\""
+            << m_renderBackendFallbackReason << "\"";
+    }
+    return allowFallback;
 }
 
 void PreviewWindow::setHideOutsideOutputWindow(bool hide) {
@@ -322,6 +421,18 @@ void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
         return;
     }
     m_showSpeakerTrackBoxes = show;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setBoxstreamOverlaySource(const QString& source) {
+    const QString normalized = source.trimmed().isEmpty()
+        ? QStringLiteral("all")
+        : source.trimmed().toLower();
+    if (m_boxstreamOverlaySource == normalized) {
+        return;
+    }
+    m_boxstreamOverlaySource = normalized;
+    m_speakerTrackPointsCache.clear();
     scheduleRepaint();
 }
 

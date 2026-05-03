@@ -31,6 +31,7 @@ public:
         QTableWidget* transcriptTable = nullptr;
         QCheckBox* transcriptOverlayEnabledCheckBox = nullptr;
         QCheckBox* transcriptBackgroundVisibleCheckBox = nullptr;
+        QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;
         QSpinBox* transcriptMaxCharsSpin = nullptr;
         QCheckBox* transcriptAutoScrollCheckBox = nullptr;
@@ -114,6 +115,7 @@ private slots:
     void onTranscriptDeleteVersion();
 
 private:
+    void requestRefresh(int delayMs = 35);
     struct TranscriptRow
     {
         enum EditFlag
@@ -207,4 +209,6 @@ private:
     int m_persistedSelectedSegmentIndex = -1;
     int m_persistedSelectedWordIndex = -1;
     bool m_updatingScriptVersionSelector = false;
+    QTimer m_refreshDebounceTimer;
+    bool m_refreshQueued = false;
 };

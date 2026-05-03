@@ -165,15 +165,41 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     const QJsonObject tracking = speakerFramingObject(profile);
     const QJsonObject ref1Obj = tracking.value(QString(kTranscriptSpeakerTrackingRef1Key)).toObject();
     const QJsonObject ref2Obj = tracking.value(QString(kTranscriptSpeakerTrackingRef2Key)).toObject();
+    auto referenceIconFromSelectedTableRow = [&](int column) -> QPixmap {
+        if (!m_widgets.speakersTable) {
+            return QPixmap();
+        }
+        const int row = m_widgets.speakersTable->currentRow();
+        if (row < 0) {
+            return QPixmap();
+        }
+        QTableWidgetItem* item = m_widgets.speakersTable->item(row, column);
+        if (!item) {
+            return QPixmap();
+        }
+        const QIcon icon = item->icon();
+        if (icon.isNull()) {
+            return QPixmap();
+        }
+        return icon.pixmap(120, 120);
+    };
     if (m_widgets.selectedSpeakerRef1ImageLabel) {
-        m_widgets.selectedSpeakerRef1ImageLabel->setPixmap(speakerReferenceAvatar(*clip, speakerId, ref1Obj, 120));
+        QPixmap avatar = referenceIconFromSelectedTableRow(6);
+        if (avatar.isNull()) {
+            avatar = speakerReferenceAvatar(*clip, speakerId, ref1Obj, 120);
+        }
+        m_widgets.selectedSpeakerRef1ImageLabel->setPixmap(avatar);
         m_widgets.selectedSpeakerRef1ImageLabel->setToolTip(
             ref1Obj.isEmpty()
                 ? QStringLiteral("Ref1 unset")
                 : QStringLiteral("Ref1 set. Drag to reposition, wheel to zoom crop."));
     }
     if (m_widgets.selectedSpeakerRef2ImageLabel) {
-        m_widgets.selectedSpeakerRef2ImageLabel->setPixmap(speakerReferenceAvatar(*clip, speakerId, ref2Obj, 120));
+        QPixmap avatar = referenceIconFromSelectedTableRow(7);
+        if (avatar.isNull()) {
+            avatar = speakerReferenceAvatar(*clip, speakerId, ref2Obj, 120);
+        }
+        m_widgets.selectedSpeakerRef2ImageLabel->setPixmap(avatar);
         m_widgets.selectedSpeakerRef2ImageLabel->setToolTip(
             ref2Obj.isEmpty()
                 ? QStringLiteral("Ref2 unset")
@@ -1104,11 +1130,6 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     const QJsonObject tracking = speakerFramingObject(profile);
     const bool trackingEnabled = transcriptTrackingEnabled(tracking);
     const bool hasTrackingModel = transcriptTrackingHasPointstream(tracking);
-    bool hasRef1 = false;
-    bool hasRef2 = false;
-    transcriptTrackingReferencePoint(tracking, kTranscriptSpeakerTrackingRef1Key, &hasRef1);
-    transcriptTrackingReferencePoint(tracking, kTranscriptSpeakerTrackingRef2Key, &hasRef2);
-    const bool hasAnyRef = hasRef1 || hasRef2;
     const bool canMutate = activeCutMutable();
 
     QAction* enableTrackingAction = menu.addAction(QStringLiteral("Enable Subtitle Face Tracking"));
@@ -1129,7 +1150,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     enableTrackingAction->setEnabled(canMutate && hasTrackingModel && !trackingEnabled);
     disableTrackingAction->setEnabled(canMutate && trackingEnabled);
     if (runAutoTrackAction) {
-        runAutoTrackAction->setEnabled(canMutate && hasAnyRef);
+        runAutoTrackAction->setEnabled(canMutate);
     }
     if (deleteAutoTrackAction) {
         deleteAutoTrackAction->setEnabled(canMutate && hasTrackingModel);
@@ -1164,18 +1185,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     }
 
     if (chosen == runAutoTrackAction) {
-        if (!runAutoTrackForSpeaker(speakerId, true)) {
-            refresh();
-            return;
-        }
-        emit transcriptDocumentChanged();
-        if (m_deps.scheduleSaveState) {
-            m_deps.scheduleSaveState();
-        }
-        if (m_deps.pushHistorySnapshot) {
-            m_deps.pushHistorySnapshot();
-        }
-        refresh();
+        onSpeakerRunAutoTrackClicked();
         return;
     }
 
@@ -1493,4 +1503,3 @@ void SpeakersTab::onSpeakerStabilizeChipClicked()
     }
     refresh();
 }
-

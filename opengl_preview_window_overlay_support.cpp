@@ -1,4 +1,4 @@
-#include "preview.h"
+#include "opengl_preview.h"
 #include "waveform_service.h"
 
 #include <QApplication>

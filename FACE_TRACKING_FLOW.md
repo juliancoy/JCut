@@ -39,9 +39,16 @@ This is the intended end-to-end flow starting from a clip that has both video an
 3. `Set Ref 1` / `Set Ref 2` at the current playhead frame.
 
 ## 8. Generate BoxStream (Tracking Data)
-1. Select a speaker row with at least `Ref1` set.
-2. Click `Generate BoxStream`.
-3. Optional: set both refs first for stronger tracking quality, then regenerate.
+1. Before generating, run a unique-face identification pass:
+2. In `Speakers`, use `Pre-crop Faces`/FaceFind and confirm every distinct on-screen person has exactly one resolved identity mapping.
+3. Resolve duplicates and unknowns before continuing (no unresolved unique faces).
+4. Select a speaker row with at least `Ref1` set.
+5. Click `Generate BoxStream`.
+6. In preflight, choose algorithm based on goal:
+7. `DNN Auto (CUDA/CPU)` for strong general face detection.
+8. `OpenCV Contrib CSRT` for stability on moderate motion (quality-first).
+9. `OpenCV Contrib KCF` for lighter/faster tracking (speed-first).
+10. Optional: set both refs first for stronger tracking quality, then regenerate.
 
 ## 9. Enable Speaker Tracking
 1. Turn on `Tracking` for the speaker (Tracking chip/button).

@@ -53,10 +53,11 @@ void InspectorPane::configureInspectorTabs()
         {13, "Preview", QStyle::SP_MediaPlay, "Preview: editor preview display controls"},
         {14, "Audio", QStyle::SP_MediaVolume, "Audio: preview audio dynamics processing controls"},
         {15, "AI Assist", QStyle::SP_FileDialogDetailedView, "AI Assist: model, auth, and AI workflow actions"},
-        {16, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {17, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {18, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
-        {19, "Preferences", QStyle::SP_FileDialogContentsView, "Preferences: app-level behavior and feature flags"},
+        {16, "Access", QStyle::SP_DialogYesButton, "Access: account subscriptions, purchases, and AI usage status"},
+        {17, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
+        {18, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {19, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {20, "Preferences", QStyle::SP_FileDialogContentsView, "Preferences: app-level behavior and feature flags"},
     };
 
     for (const TabSpec& spec : specs) {
@@ -92,4 +93,3 @@ void InspectorPane::configureInspectorTabs()
         " border-radius: 6px;"
         " }"));
 }
-

@@ -147,6 +147,27 @@ def merge_or_append(candidates, new_item, frame_window):
     candidates.append(new_item)
 
 
+def iou_xywh(a, b):
+    ax1 = a["x"] - (a["box"] / 2.0)
+    ay1 = a["y"] - (a["box"] / 2.0)
+    ax2 = a["x"] + (a["box"] / 2.0)
+    ay2 = a["y"] + (a["box"] / 2.0)
+    bx1 = b["x"] - (b["box"] / 2.0)
+    by1 = b["y"] - (b["box"] / 2.0)
+    bx2 = b["x"] + (b["box"] / 2.0)
+    by2 = b["y"] + (b["box"] / 2.0)
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    area_a = max(1e-6, (ax2 - ax1) * (ay2 - ay1))
+    area_b = max(1e-6, (bx2 - bx1) * (by2 - by1))
+    return inter / max(1e-6, area_a + area_b - inter)
+
+
 def main():
     args = parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -172,8 +193,10 @@ def main():
     end = int(max(args.start_frame, args.end_frame))
     step = int(max(1, args.step))
     frame_window = int(max(step * 2, 60))
-
-    candidates = []
+    max_track_gap = max(step * 2, 90)
+    next_track_id = 1
+    tracks = []
+    active_tracks = []
     try:
         for frame30 in range(start, end + 1, step):
             src_frame = canonical_to_source_frame(frame30, source_fps)
@@ -195,19 +218,63 @@ def main():
                 side = float(max(fw, fh))
                 cx = float(x) + (float(fw) / 2.0)
                 cy = float(y) + (float(fh) / 2.0)
-                item = {
+                det = {
                     "frame": int(frame30),
                     "x": clamp(cx / float(w), 0.0, 1.0),
                     "y": clamp(cy / float(h), 0.0, 1.0),
                     "box": clamp(side / min_side, 0.01, 1.0),
                     "score": clamp(side / min_side, 0.0, 1.0),
                 }
-                merge_or_append(candidates, item, frame_window)
+                best_track = None
+                best_score = -1.0
+                for t in active_tracks:
+                    if frame30 - t["last_frame"] > max_track_gap:
+                        continue
+                    anchor = t["last_detection"]
+                    iou = iou_xywh(anchor, det)
+                    center_dist = abs(anchor["x"] - det["x"]) + abs(anchor["y"] - det["y"])
+                    score = iou - (0.8 * center_dist)
+                    if score > best_score:
+                        best_score = score
+                        best_track = t
+                if best_track is None or best_score < 0.05:
+                    best_track = {
+                        "track_id": next_track_id,
+                        "start_frame": int(frame30),
+                        "end_frame": int(frame30),
+                        "last_frame": int(frame30),
+                        "last_detection": dict(det),
+                        "detections": [],
+                    }
+                    next_track_id += 1
+                    tracks.append(best_track)
+                    active_tracks.append(best_track)
+                best_track["detections"].append(dict(det))
+                best_track["end_frame"] = int(frame30)
+                best_track["last_frame"] = int(frame30)
+                best_track["last_detection"] = dict(det)
     finally:
         reader.close()
 
+    for t in tracks:
+        detections = t.get("detections", [])
+        if not detections:
+            continue
+        best = max(detections, key=lambda d: (d.get("score", 0.0), -d.get("frame", 0)))
+        t["best"] = dict(best)
+        t["avg_score"] = sum(d.get("score", 0.0) for d in detections) / float(max(1, len(detections)))
+        t["length"] = len(detections)
+
+    tracks = [t for t in tracks if t.get("detections")]
+    tracks.sort(key=lambda t: (-t.get("avg_score", 0.0), -t.get("length", 0), t.get("start_frame", 0)))
+    tracks = tracks[: max(1, int(args.max_candidates))]
+
+    candidates = []
+    for t in tracks:
+        best = dict(t["best"])
+        best["track_id"] = int(t["track_id"])
+        merge_or_append(candidates, best, frame_window)
     candidates.sort(key=lambda c: (-c["score"], c["frame"]))
-    candidates = candidates[: max(1, int(args.max_candidates))]
 
     for idx, item in enumerate(candidates):
         src_frame = canonical_to_source_frame(item["frame"], source_fps)
@@ -224,8 +291,20 @@ def main():
         crop_path = os.path.join(args.output_dir, crop_name)
         cv2.imwrite(crop_path, crop)
         item["crop_path"] = crop_path
+    serialized_tracks = []
+    for t in tracks:
+        d = {
+            "track_id": int(t["track_id"]),
+            "start_frame": int(t["start_frame"]),
+            "end_frame": int(t["end_frame"]),
+            "avg_score": float(t.get("avg_score", 0.0)),
+            "length": int(t.get("length", 0)),
+            "best": dict(t.get("best", {})),
+            "detections": list(t.get("detections", [])),
+        }
+        serialized_tracks.append(d)
 
-    payload = {"candidates": candidates}
+    payload = {"candidates": candidates, "tracks": serialized_tracks}
     with open(args.output_json, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
     print(f"Wrote {len(candidates)} candidates to {args.output_json}")

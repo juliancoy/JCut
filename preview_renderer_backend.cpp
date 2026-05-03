@@ -1,6 +1,8 @@
 #include "preview_renderer_backend.h"
 
 #include "gpu_compositor.h"
+#include "render_backend.h"
+#include "vulkan_backend.h"
 
 #include <QDebug>
 #include <QElapsedTimer>
@@ -45,39 +47,61 @@ bool PreviewRenderer::initialize() {
         return true;
     }
 
-    m_fallbackSurface = std::make_unique<QOffscreenSurface>();
-    m_fallbackSurface->setFormat(QSurfaceFormat::defaultFormat());
-    m_fallbackSurface->create();
-    qDebug() << "[STARTUP] Offscreen surface created in" << initTimer.elapsed() << "ms";
+    const RenderBackend desiredBackend = desiredRenderBackendFromEnvironment();
+    qDebug().noquote() << "[render-backend] requested=" << renderBackendName(desiredBackend);
 
-    if (!m_fallbackSurface->isValid()) {
-        qWarning() << "Failed to create fallback surface";
-        return false;
+    auto createOpenGlRhi = [this]() -> bool {
+        m_fallbackSurface = std::make_unique<QOffscreenSurface>();
+        m_fallbackSurface->setFormat(QSurfaceFormat::defaultFormat());
+        m_fallbackSurface->create();
+        if (!m_fallbackSurface->isValid()) {
+            qWarning() << "Failed to create fallback surface";
+            return false;
+        }
+        QElapsedTimer rhiTimer;
+        rhiTimer.start();
+        QRhiGles2InitParams params;
+        params.format = QSurfaceFormat::defaultFormat();
+        params.fallbackSurface = m_fallbackSurface.get();
+        m_rhi.reset(QRhi::create(QRhi::OpenGLES2, &params, QRhi::Flags()));
+        qDebug() << "[STARTUP] QRhi::create(OpenGLES2) took" << rhiTimer.elapsed() << "ms";
+        return m_rhi != nullptr;
+    };
+
+    const bool wantsVulkan = (desiredBackend == RenderBackend::Vulkan || desiredBackend == RenderBackend::Auto);
+    if (wantsVulkan) {
+        qDebug() << "[vulkan] attempting QRhi Vulkan initialization";
+        VulkanBackendResult vk = createVulkanBackendRhi();
+        if (vk.rhi) {
+            m_rhi = std::move(vk.rhi);
+            m_backendName = QString::fromLatin1(m_rhi->backendName());
+            qDebug() << "[vulkan] initialized backend:" << m_backendName;
+        } else {
+            qWarning().noquote()
+                << "[render-backend-fallback] vulkan_init_failed reason=\"" << vk.status
+                << "\" fallback=opengl";
+        }
     }
 
-    qDebug() << "[STARTUP] Creating QRhi OpenGL context...";
-    QElapsedTimer rhiTimer;
-    rhiTimer.start();
-    QRhiGles2InitParams params;
-    params.format = QSurfaceFormat::defaultFormat();
-    params.fallbackSurface = m_fallbackSurface.get();
+    if (!m_rhi && (desiredBackend == RenderBackend::OpenGL || desiredBackend == RenderBackend::Auto || desiredBackend == RenderBackend::Vulkan)) {
+        qDebug() << "[STARTUP] Creating QRhi OpenGL context...";
+        if (!createOpenGlRhi()) {
+            qWarning() << "[render-backend-fallback] opengl_init_failed fallback=null";
+        }
+    }
 
-    m_rhi.reset(QRhi::create(QRhi::OpenGLES2, &params, QRhi::Flags()));
-    qDebug() << "[STARTUP] QRhi::create(OpenGLES2) took" << rhiTimer.elapsed() << "ms";
-
-    if (m_rhi) {
-        m_backendName = QString::fromLatin1(m_rhi->backendName());
-        qDebug() << "PreviewRenderer: Using backend:" << m_backendName;
-    } else {
+    if (!m_rhi) {
         QRhiInitParams nullParams;
         m_rhi.reset(QRhi::create(QRhi::Null, &nullParams, QRhi::Flags()));
-
         if (m_rhi) {
             m_backendName = QString::fromLatin1(m_rhi->backendName()) + QStringLiteral(" (fallback)");
         } else {
             qWarning() << "Failed to initialize any RHI backend";
             return false;
         }
+    } else {
+        m_backendName = QString::fromLatin1(m_rhi->backendName());
+        qDebug() << "PreviewRenderer: Using backend:" << m_backendName;
     }
 
     qDebug() << "[STARTUP] Initializing GPUCompositor...";

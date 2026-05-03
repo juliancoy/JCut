@@ -425,9 +425,18 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
                 return m_getPlaybackConfigCallback ? m_getPlaybackConfigCallback() : QJsonObject{};
             })) {
             mergePlaybackConfigIntoState(playbackConfig, &state);
-            m_lastStateSnapshot = state;
-            m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
         }
+        const QJsonObject selectedResolution = resolveSelectedClipState(state);
+        state[QStringLiteral("selectedClip")] =
+            selectedResolution.value(QStringLiteral("selectedClip")).toObject();
+        state[QStringLiteral("selectedClipId")] =
+            selectedResolution.value(QStringLiteral("selectedClipId")).toString();
+        state[QStringLiteral("selectedClipResolutionSource")] =
+            selectedResolution.value(QStringLiteral("selectedClipResolutionSource")).toString();
+        state[QStringLiteral("selectedClipResolutionConsistent")] =
+            selectedResolution.value(QStringLiteral("selectedClipResolutionConsistent")).toBool(true);
+        m_lastStateSnapshot = state;
+        m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
 
         ++m_stateSnapshotServedCachedCount;
         writeJson(socket, 200, QJsonObject{

@@ -124,6 +124,10 @@ EditorWindow::EditorWindow(quint16 controlPort)
 
 EditorWindow::~EditorWindow()
 {
+    if (m_historySaveTimer.isActive()) {
+        m_historySaveTimer.stop();
+        saveHistoryNow();
+    }
     saveStateNow();
 }
 
@@ -136,6 +140,10 @@ void EditorWindow::closeEvent(QCloseEvent *event)
     }
     if (m_audioEngine) {
         m_audioEngine->stop();
+    }
+    if (m_historySaveTimer.isActive()) {
+        m_historySaveTimer.stop();
+        saveHistoryNow();
     }
     saveStateNow();
     QMainWindow::closeEvent(event);
@@ -353,6 +361,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int outputWidth = qMax(16, root.value(QStringLiteral("outputWidth")).toInt(1080));
     const int outputHeight = qMax(16, root.value(QStringLiteral("outputHeight")).toInt(1920));
     const QString outputFormat = root.value(QStringLiteral("outputFormat")).toString(QStringLiteral("mp4"));
+    const QString renderBackendPreference = root.value(QStringLiteral("render_backend"))
+                                                .toString(QStringLiteral("vulkan"))
+                                                .trimmed()
+                                                .toLower();
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
@@ -360,6 +372,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
+    const QString previewBoxstreamOverlaySource =
+        root.value(QStringLiteral("previewBoxstreamOverlaySource")).toString(QStringLiteral("all")).trimmed();
     const int autosaveIntervalMinutes = qBound(
         1,
         root.value(QStringLiteral("autosaveIntervalMinutes"))
@@ -450,6 +464,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int64_t exportStartFrame = root.value(QStringLiteral("exportStartFrame")).toVariant().toLongLong();
     const int64_t exportEndFrame = root.value(QStringLiteral("exportEndFrame")).toVariant().toLongLong();
     const QString previewViewMode = root.value(QStringLiteral("previewViewMode")).toString(QStringLiteral("video"));
+    m_renderBackendPreference = renderBackendPreference.isEmpty()
+                                    ? QStringLiteral("vulkan")
+                                    : renderBackendPreference;
+    qputenv("JCUT_RENDER_BACKEND", m_renderBackendPreference.toUtf8());
     const QString aiSelectedModel = root.value(QStringLiteral("aiSelectedModel")).toString(QStringLiteral("deepseek-chat"));
     const QString aiProxyBaseUrl = root.value(QStringLiteral("aiProxyBaseUrl")).toString();
     const QString aiAuthToken = root.value(QStringLiteral("aiAuthToken")).toString();
@@ -463,7 +481,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const int aiRateLimitPerMinute = qMax(1, root.value(QStringLiteral("aiRateLimitPerMinute")).toInt(12));
     const int aiRequestTimeoutMs = qMax(1000, root.value(QStringLiteral("aiRequestTimeoutMs")).toInt(15000));
     const int aiRequestRetries = qBound(0, root.value(QStringLiteral("aiRequestRetries")).toInt(1), 3);
-    PreviewWindow::AudioDynamicsSettings loadedAudioDynamics;
+    PreviewSurface::AudioDynamicsSettings loadedAudioDynamics;
     loadedAudioDynamics.amplifyEnabled = root.value(QStringLiteral("audioAmplifyEnabled")).toBool(false);
     loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
     loadedAudioDynamics.normalizeEnabled = root.value(QStringLiteral("audioNormalizeEnabled")).toBool(false);
@@ -714,14 +732,22 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         const int formatIndex = m_outputFormatCombo->findData(outputFormat);
         if (formatIndex >= 0) m_outputFormatCombo->setCurrentIndex(formatIndex);
     }
+    if (m_renderBackendCombo) {
+        QSignalBlocker block(m_renderBackendCombo);
+        const int backendIndex = m_renderBackendCombo->findData(m_renderBackendPreference);
+        if (backendIndex >= 0) {
+            m_renderBackendCombo->setCurrentIndex(backendIndex);
+        }
+    }
     m_lastRenderOutputPath = lastRenderOutputPath;
     m_aiSelectedModel = aiSelectedModel;
     m_aiProxyBaseUrl = aiProxyBaseUrl.trimmed();
     m_aiAuthToken = aiAuthToken.trimmed();
     if (!m_aiAuthToken.isEmpty()) {
         QString secureStoreError;
-        if (writeAiTokenToSecureStore(m_aiAuthToken, &secureStoreError)) {
+        if (writeAiTokenToSecureStore(m_aiAuthToken, QString(), &secureStoreError)) {
             m_aiAuthToken.clear();
+            m_aiRefreshToken.clear();
         } else {
             qWarning() << "AI token migration to secure store failed:" << secureStoreError;
         }
@@ -762,6 +788,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_speakerShowBoxStreamBoxesCheckBox) {
         QSignalBlocker block(m_speakerShowBoxStreamBoxesCheckBox);
         m_speakerShowBoxStreamBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
+    }
+    if (m_speakerBoxStreamOverlaySourceCombo) {
+        QSignalBlocker block(m_speakerBoxStreamOverlaySourceCombo);
+        int sourceIndex =
+            m_speakerBoxStreamOverlaySourceCombo->findData(previewBoxstreamOverlaySource, Qt::MatchFixedString);
+        if (sourceIndex < 0) {
+            sourceIndex = m_speakerBoxStreamOverlaySourceCombo->findData(QStringLiteral("all"), Qt::MatchFixedString);
+        }
+        if (sourceIndex >= 0) {
+            m_speakerBoxStreamOverlaySourceCombo->setCurrentIndex(sourceIndex);
+        }
     }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
@@ -952,6 +989,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
+        m_preview->setBoxstreamOverlaySource(previewBoxstreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;
         m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
@@ -1188,4 +1226,3 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_inspectorPane->refresh();
     });
 }
-

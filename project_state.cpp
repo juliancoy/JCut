@@ -18,6 +18,55 @@
 
 using namespace editor;
 
+namespace {
+
+void stripHeavyClipState(QJsonObject* clipObj)
+{
+    if (!clipObj) {
+        return;
+    }
+    clipObj->remove(QStringLiteral("speakerFramingKeyframes"));
+}
+
+void stripHeavyStateSnapshot(QJsonObject* snapshot)
+{
+    if (!snapshot) {
+        return;
+    }
+
+    QJsonArray timeline = snapshot->value(QStringLiteral("timeline")).toArray();
+    for (int i = 0; i < timeline.size(); ++i) {
+        QJsonObject clipObj = timeline.at(i).toObject();
+        stripHeavyClipState(&clipObj);
+        timeline[i] = clipObj;
+    }
+    (*snapshot)[QStringLiteral("timeline")] = timeline;
+
+    QJsonObject selectedClip = snapshot->value(QStringLiteral("selectedClip")).toObject();
+    stripHeavyClipState(&selectedClip);
+    (*snapshot)[QStringLiteral("selectedClip")] = selectedClip;
+}
+
+bool sanitizeHistoryEntriesInPlace(QJsonArray* entries)
+{
+    if (!entries) {
+        return false;
+    }
+    bool changed = false;
+    for (int i = 0; i < entries->size(); ++i) {
+        QJsonObject snapshot = entries->at(i).toObject();
+        const QJsonObject before = snapshot;
+        stripHeavyStateSnapshot(&snapshot);
+        if (snapshot != before) {
+            (*entries)[i] = snapshot;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+} // namespace
+
 void EditorWindow::loadState()
 {
     const bool startupMarking = !m_startupProfileCompleted;
@@ -44,11 +93,15 @@ void EditorWindow::loadState()
     {
         const QJsonObject historyRoot = QJsonDocument::fromJson(historyFile.readAll()).object();
         m_historyEntries = historyRoot.value(QStringLiteral("entries")).toArray();
+        const bool historySanitized = sanitizeHistoryEntriesInPlace(&m_historyEntries);
         m_historyIndex = historyRoot.value(QStringLiteral("index")).toInt(m_historyEntries.size() - 1);
         if (!m_historyEntries.isEmpty())
         {
             m_historyIndex = qBound(0, m_historyIndex, m_historyEntries.size() - 1);
             root = m_historyEntries.at(m_historyIndex).toObject();
+        }
+        if (historySanitized) {
+            saveHistoryNow();
         }
     }
     markStartup(QStringLiteral("load_state.history_read.end"),
@@ -517,6 +570,10 @@ QJsonObject EditorWindow::buildStateJson() const
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
         m_speakerShowBoxStreamBoxesCheckBox ? m_speakerShowBoxStreamBoxesCheckBox->isChecked() : false;
+    root[QStringLiteral("previewBoxstreamOverlaySource")] =
+        m_speakerBoxStreamOverlaySourceCombo
+            ? m_speakerBoxStreamOverlaySourceCombo->currentData().toString()
+            : QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
     root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();
@@ -596,6 +653,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("playbackAudioWarpMode")] =
         playbackAudioWarpModeToString(playbackConfig.audioWarpMode);
     root[QStringLiteral("previewViewMode")] = m_previewViewMode;
+    root[QStringLiteral("render_backend")] = m_renderBackendPreference;
     root[QStringLiteral("aiSelectedModel")] = m_aiSelectedModel;
     root[QStringLiteral("aiProxyBaseUrl")] = m_aiProxyBaseUrl;
     root[QStringLiteral("feature_ai_panel")] = m_featureAiPanel;
@@ -651,7 +709,9 @@ QJsonObject EditorWindow::buildStateJson() const
     {
         for (const TimelineClip &clip : m_timeline->clips())
         {
-            const QJsonObject clipObj = clipToJson(clip);
+            QJsonObject clipObj = clipToJson(clip);
+            // Keep project state lightweight: dense facial tracking keyframes live in transcript boxstream sidecars.
+            clipObj.remove(QStringLiteral("speakerFramingKeyframes"));
             timeline.push_back(clipObj);
             if (!selectedClipId.isEmpty() && clip.id == selectedClipId)
             {
@@ -766,7 +826,10 @@ void EditorWindow::saveHistoryNow()
 
     QJsonObject root;
     root[QStringLiteral("index")] = m_historyIndex;
-    root[QStringLiteral("entries")] = m_historyEntries;
+    QJsonArray sanitizedEntries = m_historyEntries;
+    sanitizeHistoryEntriesInPlace(&sanitizedEntries);
+    m_historyEntries = sanitizedEntries;
+    root[QStringLiteral("entries")] = sanitizedEntries;
 
     QSaveFile file(historyFilePath());
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
@@ -792,7 +855,8 @@ void EditorWindow::pushHistorySnapshot()
         return;
     }
 
-    const QJsonObject snapshot = buildStateJson();
+    QJsonObject snapshot = buildStateJson();
+    stripHeavyStateSnapshot(&snapshot);
     if (m_historyIndex >= 0 &&
         m_historyIndex < m_historyEntries.size() &&
         m_historyEntries.at(m_historyIndex).toObject() == snapshot)
@@ -812,7 +876,9 @@ void EditorWindow::pushHistorySnapshot()
     }
 
     m_historyIndex = m_historyEntries.size() - 1;
-    saveHistoryNow();
+    if (!m_historySaveTimer.isActive()) {
+        m_historySaveTimer.start();
+    }
 }
 
 void EditorWindow::setupAutosaveTimer()

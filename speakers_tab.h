@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QPixmap>
 #include <QTableWidget>
 #include <QHash>
@@ -15,6 +16,8 @@ class QLabel;
 class QPushButton;
 class QDoubleSpinBox;
 class QCheckBox;
+class QPlainTextEdit;
+class QTimer;
 
 class SpeakersTab : public TableTabBase {
     Q_OBJECT
@@ -57,6 +60,8 @@ public:
         QLabel* speakerPointstreamChipLabel = nullptr;
         QPushButton* speakerTrackingChipButton = nullptr;
         QPushButton* speakerStabilizeChipButton = nullptr;
+        QTableWidget* speakerBoxStreamTable = nullptr;
+        QPlainTextEdit* speakerBoxStreamDetailsEdit = nullptr;
     };
 
     struct Dependencies : public TableTabBase::Dependencies {
@@ -73,6 +78,8 @@ public:
 
     void wire();
     void refresh();
+    bool generateBoxStreamForSelectedClip();
+    bool deleteBoxStreamForSelectedClip(bool confirmDialog = true);
     bool handlePreviewPoint(const QString& clipId, qreal xNorm, qreal yNorm);
     bool handlePreviewBox(const QString& clipId, qreal xNorm, qreal yNorm, qreal boxSizeNorm);
     bool runAiFindSpeakerNames();
@@ -109,6 +116,7 @@ private slots:
     void onSpeakerApplyFramingToClipChanged(bool checked);
 
 private:
+    void requestRefreshBoxStreamPathsPanel();
     enum class SentenceNavAction {
         Previous,
         Next,
@@ -116,6 +124,12 @@ private:
     };
 
     bool eventFilter(QObject* watched, QEvent* event) override;
+    void refreshBoxStreamPathsPanel();
+    bool openReferencePreviewWindow(int referenceIndex);
+    QPixmap referenceFullFramePreview(const TimelineClip& clip,
+                                      const QString& speakerId,
+                                      const QJsonObject& refObj,
+                                      QSize targetSize = QSize(960, 540));
     bool clipSupportsTranscript(const TimelineClip& clip) const;
     bool activeCutMutable() const;
     QString originalTranscriptPathForClip(const QString& clipFilePath) const;
@@ -132,26 +146,6 @@ private:
     bool seekToSpeakerSegmentRelative(const QString& speakerId, int direction);
     bool seekToSpeakerRandomSentence(const QString& speakerId);
     bool cycleFramingModeForSpeaker(const QString& speakerId);
-    bool runAutoTrackForSpeaker(const QString& speakerId, bool forceModelTracking = false);
-    bool runNativeAutoTrackForSpeaker(const TimelineClip& clip,
-                                      const QString& speakerId,
-                                      const QJsonObject& ref1,
-                                      const QJsonObject& ref2,
-                                      const QVector<QPair<int64_t, int64_t>>& activeWindows,
-                                      int64_t startFrame,
-                                      int64_t endFrame,
-                                      int stepFrames,
-                                      QJsonArray* keyframesOut,
-                                      QString* errorOut);
-    bool runDockerAutoTrackForSpeaker(const TimelineClip& clip,
-                                      const QString& speakerId,
-                                      const QJsonObject& ref1,
-                                      const QJsonObject& ref2,
-                                      int64_t startFrame,
-                                      int64_t endFrame,
-                                      int stepFrames,
-                                      QJsonArray* keyframesOut,
-                                      QString* errorOut);
     bool navigateSpeakerSentence(const QString& speakerId, SentenceNavAction action);
     QVector<int64_t> speakerSourceFrames(const QJsonObject& transcriptRoot,
                                          const QString& speakerId) const;
@@ -210,4 +204,9 @@ private:
     bool m_updatingSpeakerFramingTargetControls = false;
     QString m_lastSelectionSeekSpeakerId;
     QString m_lastSelectionSeekClipId;
+    bool m_refreshingBoxStreamPathsPanel = false;
+    bool m_boxStreamPanelRefreshQueued = false;
+    QTimer* m_boxStreamPanelRefreshTimer = nullptr;
+    QString m_boxStreamPanelRefreshSignature;
+    QJsonArray m_boxStreamPanelRows;
 };

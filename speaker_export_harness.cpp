@@ -362,10 +362,41 @@ int runSpeakerExportHarness(const SpeakerExportHarnessConfig& config) {
     out << "Harness done in " << timer.elapsed() << "ms\n";
     out << "  success: " << (result.success ? "true" : "false") << "\n";
     out << "  cancelled: " << (result.cancelled ? "true" : "false") << "\n";
+    out << "  requestedBackend: " << result.requestedRenderBackend << "\n";
+    out << "  effectiveBackend: " << result.effectiveRenderBackend << "\n";
+    out << "  backendFallbackApplied: " << (result.backendFallbackApplied ? "true" : "false") << "\n";
+    out << "  backendFallbackReason: " << result.backendFallbackReason << "\n";
     out << "  usedGpu: " << (result.usedGpu ? "true" : "false") << "\n";
     out << "  usedHardwareEncode: " << (result.usedHardwareEncode ? "true" : "false") << "\n";
     out << "  encoder: " << result.encoderLabel << "\n";
     out << "  framesRendered: " << result.framesRendered << "\n";
+    out << "  elapsedMs: " << result.elapsedMs << "\n";
+    out << "  renderStageMs: " << result.renderStageMs << "\n";
+    out << "  renderDecodeStageMs: " << result.renderDecodeStageMs << "\n";
+    out << "  renderTextureStageMs: " << result.renderTextureStageMs << "\n";
+    out << "  renderCompositeStageMs: " << result.renderCompositeStageMs << "\n";
+    out << "  renderNv12StageMs: " << result.renderNv12StageMs << "\n";
+    out << "  gpuReadbackMs: " << result.gpuReadbackMs << "\n";
+    out << "  overlayStageMs: " << result.overlayStageMs << "\n";
+    out << "  convertStageMs: " << result.convertStageMs << "\n";
+    out << "  encodeStageMs: " << result.encodeStageMs << "\n";
+    out << "  audioStageMs: " << result.audioStageMs << "\n";
+    out << "  maxFrameRenderStageMs: " << result.maxFrameRenderStageMs << "\n";
+    out << "  maxFrameDecodeStageMs: " << result.maxFrameDecodeStageMs << "\n";
+    out << "  maxFrameTextureStageMs: " << result.maxFrameTextureStageMs << "\n";
+    out << "  maxFrameReadbackStageMs: " << result.maxFrameReadbackStageMs << "\n";
+    out << "  maxFrameConvertStageMs: " << result.maxFrameConvertStageMs << "\n";
+    if (result.framesRendered > 0) {
+        const double frames = static_cast<double>(result.framesRendered);
+        out << "  avgRenderStageMsPerFrame: " << (result.renderStageMs / frames) << "\n";
+        out << "  avgDecodeMsPerFrame: " << (result.renderDecodeStageMs / frames) << "\n";
+        out << "  avgTextureMsPerFrame: " << (result.renderTextureStageMs / frames) << "\n";
+        out << "  avgCompositeMsPerFrame: " << (result.renderCompositeStageMs / frames) << "\n";
+        out << "  avgNv12MsPerFrame: " << (result.renderNv12StageMs / frames) << "\n";
+        out << "  avgReadbackMsPerFrame: " << (result.gpuReadbackMs / frames) << "\n";
+        out << "  avgConvertMsPerFrame: " << (result.convertStageMs / frames) << "\n";
+        out << "  avgEncodeMsPerFrame: " << (result.encodeStageMs / frames) << "\n";
+    }
     out << "  message: " << result.message << "\n";
     out.flush();
 

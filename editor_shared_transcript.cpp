@@ -1,4 +1,5 @@
 #include "editor_shared.h"
+#include "transcript_engine.h"
 
 #include <QDir>
 #include <QFile>
@@ -20,6 +21,47 @@
 QString transcriptPathForClipFile(const QString& filePath) {
     const QFileInfo info(filePath);
     return info.dir().filePath(info.completeBaseName() + QStringLiteral(".json"));
+}
+
+SpeakerProfile speakerProfileFromJson(const QString& speakerId, const QJsonObject& profileObj)
+{
+    SpeakerProfile profile;
+    profile.speakerId = speakerId.trimmed();
+    profile.name = profileObj.value(QStringLiteral("name")).toString().trimmed();
+    profile.organization = profileObj.value(QStringLiteral("organization")).toString().trimmed();
+    profile.description = profileObj.value(QStringLiteral("brief_description")).toString().trimmed();
+    if (profile.description.isEmpty()) {
+        profile.description = profileObj.value(QStringLiteral("description")).toString().trimmed();
+    }
+    profile.avatarPath = profileObj.value(QStringLiteral("avatar_path")).toString().trimmed();
+    if (profile.avatarPath.isEmpty()) {
+        profile.avatarPath = profileObj.value(QStringLiteral("avatarPath")).toString().trimmed();
+    }
+    return profile;
+}
+
+QJsonObject speakerProfileToJson(const SpeakerProfile& profile, const QJsonObject& base)
+{
+    QJsonObject out = base;
+    const QString name = profile.name.trimmed();
+    const QString organization = profile.organization.trimmed();
+    const QString description = profile.description.trimmed();
+    const QString avatarPath = profile.avatarPath.trimmed();
+
+    if (!name.isEmpty()) {
+        out[QStringLiteral("name")] = name;
+    }
+    if (!organization.isEmpty()) {
+        out[QStringLiteral("organization")] = organization;
+    }
+    if (!description.isEmpty()) {
+        out[QStringLiteral("brief_description")] = description;
+        out[QStringLiteral("description")] = description;
+    }
+    if (!avatarPath.isEmpty()) {
+        out[QStringLiteral("avatar_path")] = avatarPath;
+    }
+    return out;
 }
 
 namespace {
@@ -53,6 +95,11 @@ struct SpeakerProfileCacheEntry {
     QHash<QString, SpeakerProfileRuntime> profilesBySpeaker;
 };
 
+struct SpeakerIdentityCacheEntry {
+    qint64 mtimeMs = -1;
+    QHash<QString, QString> titleBySpeaker;
+};
+
 QMutex& speakerProfileCacheMutex() {
     static QMutex mutex;
     return mutex;
@@ -60,6 +107,11 @@ QMutex& speakerProfileCacheMutex() {
 
 QHash<QString, SpeakerProfileCacheEntry>& speakerProfileCacheByPath() {
     static QHash<QString, SpeakerProfileCacheEntry> cache;
+    return cache;
+}
+
+QHash<QString, SpeakerIdentityCacheEntry>& speakerIdentityCacheByPath() {
+    static QHash<QString, SpeakerIdentityCacheEntry> cache;
     return cache;
 }
 
@@ -209,14 +261,9 @@ QVector<SpeakerTrackingKeyframe> sanitizeTrackingKeyframes(const QVector<Speaker
 }
 
 QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transcriptPath) {
-    QFile transcriptFile(transcriptPath);
-    if (!transcriptFile.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+    editor::TranscriptEngine engine;
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
         return {};
     }
 
@@ -273,6 +320,33 @@ QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transc
         runtime.keyframes = sanitizeTrackingKeyframes(runtime.keyframes);
 
         parsed.insert(speakerId, runtime);
+    }
+    return parsed;
+}
+
+QHash<QString, QString> parseSpeakerTitles(const QString& transcriptPath) {
+    editor::TranscriptEngine engine;
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+        return {};
+    }
+
+    QHash<QString, QString> parsed;
+    const QJsonObject profilesObj =
+        transcriptDoc.object().value(QStringLiteral("speaker_profiles")).toObject();
+    for (auto it = profilesObj.constBegin(); it != profilesObj.constEnd(); ++it) {
+        const QString speakerId = it.key().trimmed();
+        if (speakerId.isEmpty()) {
+            continue;
+        }
+        const QJsonObject profileObj = it.value().toObject();
+        const QString name = profileObj.value(QStringLiteral("name")).toString().trimmed();
+        const QString organization = profileObj.value(QStringLiteral("organization")).toString().trimmed();
+        QString title = name.isEmpty() ? speakerId : name;
+        if (!organization.isEmpty()) {
+            title += QStringLiteral(" - ") + organization;
+        }
+        parsed.insert(speakerId, title);
     }
     return parsed;
 }
@@ -500,14 +574,9 @@ bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* edita
 }
 
 QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath) {
-    QFile transcriptFile(transcriptPath);
-    if (!transcriptFile.open(QIODevice::ReadOnly)) {
-        return {};
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+    editor::TranscriptEngine engine;
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
         return {};
     }
 
@@ -681,9 +750,34 @@ void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath) {
     QMutexLocker locker(&speakerProfileCacheMutex());
     if (transcriptPath.isEmpty()) {
         speakerProfileCacheByPath().clear();
+        speakerIdentityCacheByPath().clear();
     } else {
         speakerProfileCacheByPath().remove(transcriptPath);
+        speakerIdentityCacheByPath().remove(transcriptPath);
     }
+}
+
+QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
+                                             const QVector<TranscriptSection>& sections,
+                                             int64_t sourceFrame) {
+    const QString speakerId = activeSpeakerForSourceFrame(sections, sourceFrame);
+    if (speakerId.isEmpty() || transcriptPath.isEmpty()) {
+        return QString();
+    }
+
+    const QFileInfo info(transcriptPath);
+    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    QMutexLocker locker(&speakerProfileCacheMutex());
+    SpeakerIdentityCacheEntry& entry = speakerIdentityCacheByPath()[transcriptPath];
+    if (entry.mtimeMs != mtimeMs) {
+        entry.mtimeMs = mtimeMs;
+        entry.titleBySpeaker = parseSpeakerTitles(transcriptPath);
+    }
+    const QString title = entry.titleBySpeaker.value(speakerId).trimmed();
+    if (!title.isEmpty()) {
+        return title;
+    }
+    return speakerId;
 }
 
 QJsonObject transcriptSpeakerTrackingConfigSnapshot() {

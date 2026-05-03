@@ -1,8 +1,10 @@
 #include "timeline_widget.h"
+#include "transcript_engine.h"
 #include "titles.h"
 
 #include <QApplication>
 #include <QClipboard>
+#include <QJsonArray>
 
 void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     const int clipIndex = clipIndexAt(event->pos());
@@ -63,6 +65,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* createProxyAction = nullptr;
     QAction* continueProxyAction = nullptr;
     QAction* deleteProxyAction = nullptr;
+    QAction* generateBoxStreamAction = nullptr;
+    QAction* deleteBoxStreamAction = nullptr;
 
     QSet<QString> contextSelection = selectedClipIds();
     if (clipIndex >= 0 && !clickedClipId.isEmpty() && !contextSelection.contains(clickedClipId)) {
@@ -170,6 +174,27 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             deleteProxyAction = proxyMenu->addAction(QStringLiteral("Delete Proxy"));
             deleteProxyAction->setEnabled(canProxy);
         }
+        const bool canBoxStream =
+            m_clips[clipIndex].mediaType == ClipMediaType::Audio || m_clips[clipIndex].hasAudio;
+        bool hasBoxStream = false;
+        const QString transcriptPath = activeTranscriptPathForClipFile(m_clips[clipIndex].filePath);
+        if (!transcriptPath.trimmed().isEmpty()) {
+            editor::TranscriptEngine transcriptEngine;
+            QJsonObject artifactRoot;
+            if (transcriptEngine.loadBoxstreamArtifact(transcriptPath, &artifactRoot)) {
+                const QJsonObject byClip =
+                    artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+                const QJsonObject continuityRoot =
+                    byClip.value(m_clips[clipIndex].id.trimmed()).toObject();
+                hasBoxStream =
+                    !continuityRoot.value(QStringLiteral("streams")).toArray().isEmpty();
+            }
+        }
+        QMenu* boxStreamMenu = menu.addMenu(QStringLiteral("BoxStream"));
+        generateBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Generate BoxStream..."));
+        generateBoxStreamAction->setEnabled(canBoxStream);
+        deleteBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Delete BoxStream..."));
+        deleteBoxStreamAction->setEnabled(canBoxStream && hasBoxStream);
         propertiesAction = menu.addAction(QStringLiteral("Properties"));
         menu.addSeparator();
     }
@@ -497,6 +522,20 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     if (selected == deleteProxyAction) {
         if (deleteProxyRequested && clipIndex >= 0) {
             deleteProxyRequested(m_clips[clipIndex].id);
+        }
+        return;
+    }
+
+    if (selected == generateBoxStreamAction) {
+        if (generateBoxStreamRequested && clipIndex >= 0) {
+            generateBoxStreamRequested(m_clips[clipIndex].id);
+        }
+        return;
+    }
+
+    if (selected == deleteBoxStreamAction) {
+        if (deleteBoxStreamRequested && clipIndex >= 0) {
+            deleteBoxStreamRequested(m_clips[clipIndex].id);
         }
         return;
     }

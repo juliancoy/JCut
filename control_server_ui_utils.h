@@ -20,5 +20,6 @@ bool sendSyntheticClick(QWidget* window, const QPoint& pos, Qt::MouseButton butt
 bool sendSyntheticClick(QWidget* window, const QPoint& pos);
 QJsonObject menuSnapshot(QMenu* menu);
 QMenu* activePopupMenu();
+QJsonObject resolveSelectedClipState(const QJsonObject& stateObj);
 
 } // namespace control_server

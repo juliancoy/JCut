@@ -1,5 +1,7 @@
-#include "preview.h"
-#include "preview_debug.h"
+// OpenGL Render Path File
+// This file is OpenGL-specific and implements GL initialization/rendering.
+#include "opengl_preview.h"
+#include "opengl_preview_debug.h"
 
 #include "frame_handle.h"
 #include "gl_frame_texture_shared.h"
@@ -149,6 +151,9 @@ void PreviewWindow::initializeGL() {
 void PreviewWindow::resizeGL(int w, int h) { Q_UNUSED(w) Q_UNUSED(h) }
 
 bool PreviewWindow::usingCpuFallback() const {
+    if (m_forceCpuPreviewForVulkan) {
+        return true;
+    }
     return !context() || !isValid() || !m_shaderProgram || !m_correctionMaskShaderProgram;
 }
 

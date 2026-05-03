@@ -40,6 +40,7 @@ void EditorWindow::bindInspectorWidgets()
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
     m_speakerShowBoxStreamBoxesCheckBox = m_inspectorPane->speakerShowBoxStreamBoxesCheckBox();
+    m_speakerBoxStreamOverlaySourceCombo = m_inspectorPane->speakerBoxStreamOverlaySourceCombo();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -138,6 +139,7 @@ void EditorWindow::bindInspectorWidgets()
     m_exportStartSpin = m_inspectorPane->exportStartSpin();
     m_exportEndSpin = m_inspectorPane->exportEndSpin();
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
+    m_renderBackendCombo = m_inspectorPane->renderBackendCombo();
     m_outputRangeSummaryLabel = m_inspectorPane->outputRangeSummaryLabel();
     m_renderUseProxiesCheckBox = m_inspectorPane->renderUseProxiesCheckBox();
     m_outputPlaybackCacheFallbackCheckBox = m_inspectorPane->outputPlaybackCacheFallbackCheckBox();
@@ -178,12 +180,14 @@ void EditorWindow::bindInspectorWidgets()
     m_aiFindSpeakerNamesButton = m_inspectorPane->aiFindSpeakerNamesButton();
     m_aiFindOrganizationsButton = m_inspectorPane->aiFindOrganizationsButton();
     m_aiCleanAssignmentsButton = m_inspectorPane->aiCleanAssignmentsButton();
-    m_aiLoginButton = m_inspectorPane->aiLoginButton();
-    m_aiLogoutButton = m_inspectorPane->aiLogoutButton();
+    m_aiSubscribeButton = m_inspectorPane->aiSubscribeButton();
     m_aiChatHistoryEdit = m_inspectorPane->aiChatHistoryEdit();
     m_aiChatInputLineEdit = m_inspectorPane->aiChatInputLineEdit();
     m_aiChatSendButton = m_inspectorPane->aiChatSendButton();
     m_aiChatClearButton = m_inspectorPane->aiChatClearButton();
+    m_accessStatusLabel = m_inspectorPane->accessStatusLabel();
+    m_accessTable = m_inspectorPane->accessTable();
+    m_accessRefreshButton = m_inspectorPane->accessRefreshButton();
 
     if (m_aiModelCombo) {
         connect(m_aiModelCombo, &QComboBox::currentTextChanged, this, [this](const QString& model) {
@@ -203,11 +207,8 @@ void EditorWindow::bindInspectorWidgets()
     if (m_aiCleanAssignmentsButton) {
         connect(m_aiCleanAssignmentsButton, &QPushButton::clicked, this, [this]() { runAiCleanAssignments(); });
     }
-    if (m_aiLoginButton) {
-        connect(m_aiLoginButton, &QPushButton::clicked, this, [this]() { configureAiGatewayLogin(); });
-    }
-    if (m_aiLogoutButton) {
-        connect(m_aiLogoutButton, &QPushButton::clicked, this, [this]() { clearAiGatewayLogin(); });
+    if (m_aiSubscribeButton) {
+        connect(m_aiSubscribeButton, &QPushButton::clicked, this, [this]() { runAiSubscribeCheckout(); });
     }
     if (m_aiChatSendButton) {
         connect(m_aiChatSendButton, &QPushButton::clicked, this, [this]() { runAiChatPrompt(); });
@@ -224,6 +225,9 @@ void EditorWindow::bindInspectorWidgets()
             m_aiChatMessages.clear();
             m_aiChatClearButton->setEnabled(false);
         });
+    }
+    if (m_accessRefreshButton) {
+        connect(m_accessRefreshButton, &QPushButton::clicked, this, [this]() { refreshAccessTabData(); });
     }
 
     if (m_preferencesFeatureAiPanelCheckBox) {
@@ -524,6 +528,33 @@ void EditorWindow::setupPreviewControls()
             scheduleSaveState();
             pushHistorySnapshot();
         });
+    }
+    if (m_speakerBoxStreamOverlaySourceCombo) {
+        connect(m_speakerBoxStreamOverlaySourceCombo,
+                &QComboBox::currentIndexChanged,
+                this,
+                [this](int index) {
+                    if (m_preview && m_speakerBoxStreamOverlaySourceCombo) {
+                        m_preview->setBoxstreamOverlaySource(
+                            m_speakerBoxStreamOverlaySourceCombo->itemData(index).toString());
+                    }
+                    scheduleSaveState();
+                });
+    }
+    if (m_renderBackendCombo) {
+        connect(m_renderBackendCombo,
+                &QComboBox::currentIndexChanged,
+                this,
+                [this](int index) {
+                    const QString backend = m_renderBackendCombo->itemData(index).toString().trimmed().toLower();
+                    if (backend.isEmpty()) {
+                        return;
+                    }
+                    m_renderBackendPreference = backend;
+                    qputenv("JCUT_RENDER_BACKEND", m_renderBackendPreference.toUtf8());
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
     }
 
     // Preview zoom controls

@@ -8,7 +8,7 @@
 #include <QComboBox>
 #include <QWidget>
 
-class PreviewWindow;
+class PreviewSurface;
 class TimelineWidget;
 class TimelineContainer;
 
@@ -19,7 +19,7 @@ class EditorPane final : public QWidget
 public:
     explicit EditorPane(QWidget *parent = nullptr);
 
-    PreviewWindow *previewWindow() const { return m_preview; }
+    PreviewSurface *previewWindow() const { return m_preview; }
     TimelineWidget *timelineWidget() const;
     TimelineContainer *timelineContainer() const { return m_timelineContainer; }
 
@@ -51,7 +51,7 @@ signals:
 
 private:
     void setupTransportControls();
-    PreviewWindow *m_preview = nullptr;
+    PreviewSurface *m_preview = nullptr;
     TimelineContainer *m_timelineContainer = nullptr;
 
     QPushButton *m_playButton = nullptr;

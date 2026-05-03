@@ -1,5 +1,5 @@
 #include "editor.h"
-#include "preview_debug.h"
+#include "opengl_preview_debug.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -80,7 +80,12 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorPane) {
-        m_profileAvatarButton = new QPushButton(m_inspectorPane);
+        QWidget* authHeader = new QWidget(m_inspectorPane);
+        auto* authRow = new QHBoxLayout(authHeader);
+        authRow->setContentsMargins(0, 0, 0, 0);
+        authRow->setSpacing(4);
+
+        m_profileAvatarButton = new QPushButton(authHeader);
         m_profileAvatarButton->setObjectName(QStringLiteral("tabs.profile_avatar_button"));
         m_profileAvatarButton->setCursor(Qt::PointingHandCursor);
         m_profileAvatarButton->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
@@ -89,7 +94,24 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
         connect(m_profileAvatarButton, &QPushButton::clicked, this, [this]() {
             onProfileAvatarButtonClicked();
         });
-        m_inspectorPane->setHeaderWidget(m_profileAvatarButton);
+
+        m_profileCopyLoginButton = new QToolButton(authHeader);
+        m_profileCopyLoginButton->setObjectName(QStringLiteral("tabs.profile_copy_login_button"));
+        m_profileCopyLoginButton->setCursor(Qt::PointingHandCursor);
+        m_profileCopyLoginButton->setText(QStringLiteral("📋"));
+        m_profileCopyLoginButton->setStyleSheet(QStringLiteral(
+            "QToolButton#tabs\\.profile_copy_login_button {"
+            " border: 1px solid #2e3b4a; border-radius: 6px; padding: 0; background: #1b2430; font-size: 14px; }"
+            "QToolButton#tabs\\.profile_copy_login_button:hover { background: #233142; border-color: #4a5c71; }"));
+        m_profileCopyLoginButton->setFixedSize(30, 30);
+        m_profileCopyLoginButton->setToolTip(QStringLiteral("Copy browser sign-in URL"));
+        connect(m_profileCopyLoginButton, &QToolButton::clicked, this, [this]() {
+            copySupabaseSignInUrl();
+        });
+
+        authRow->addWidget(m_profileAvatarButton);
+        authRow->addWidget(m_profileCopyLoginButton);
+        m_inspectorPane->setHeaderWidget(authHeader);
         updateProfileAvatarButton();
     }
     if (m_inspectorTabs && m_preview) {
@@ -288,6 +310,10 @@ void EditorWindow::setupStateSaveTimer()
     m_stateSaveTimer.setSingleShot(true);
     m_stateSaveTimer.setInterval(m_stateSaveDebounceIntervalMs);
     connect(&m_stateSaveTimer, &QTimer::timeout, this, [this]() { saveStateNow(); });
+
+    m_historySaveTimer.setSingleShot(true);
+    m_historySaveTimer.setInterval(m_stateSaveDebounceIntervalMs);
+    connect(&m_historySaveTimer, &QTimer::timeout, this, [this]() { saveHistoryNow(); });
 }
 
 void EditorWindow::setupDeferredSeekTimers()

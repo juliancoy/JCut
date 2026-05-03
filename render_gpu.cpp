@@ -843,9 +843,32 @@ QImage OffscreenGpuRenderer::renderFrame(const RenderRequest& request,
 }
 
 bool OffscreenGpuRenderer::convertLastFrameToNv12(AVFrame* frame,
-                                                   qint64* nv12ConvertMs,
-                                                   qint64* readbackMs) {
+                                                  qint64* nv12ConvertMs,
+                                                  qint64* readbackMs) {
     return d->convertLastFrameToNv12(frame, nv12ConvertMs, readbackMs);
+}
+
+bool OffscreenGpuRenderer::convertLastFrameToYuv420p(AVFrame* frame,
+                                                     qint64* convertMs,
+                                                     qint64* readbackMs)
+{
+    Q_UNUSED(frame);
+    Q_UNUSED(convertMs);
+    Q_UNUSED(readbackMs);
+    return false;
+}
+
+bool OffscreenGpuRenderer::copyLastFrameToBgra(AVFrame* frame,
+                                               qint64* readbackMs)
+{
+    Q_UNUSED(frame);
+    Q_UNUSED(readbackMs);
+    return false;
+}
+
+QString OffscreenGpuRenderer::backendId() const
+{
+    return QStringLiteral("opengl");
 }
 
 QImage renderTimelineFrame(const RenderRequest& request,
@@ -959,7 +982,47 @@ bool encodeFrame(AVCodecContext* codecCtx,
                  AVFormatContext* formatCtx,
                  AVFrame* frame,
                  QString* errorMessage) {
-    int ret = avcodec_send_frame(codecCtx, frame);
+    AVFrame* submittedFrame = frame;
+    AVFrame* hwFrame = nullptr;
+    if (frame &&
+        codecCtx &&
+        codecCtx->pix_fmt == AV_PIX_FMT_CUDA &&
+        codecCtx->hw_frames_ctx &&
+        frame->format != AV_PIX_FMT_CUDA) {
+        hwFrame = av_frame_alloc();
+        if (!hwFrame) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to allocate CUDA encoder frame.");
+            }
+            return false;
+        }
+        hwFrame->format = AV_PIX_FMT_CUDA;
+        hwFrame->width = frame->width;
+        hwFrame->height = frame->height;
+        hwFrame->pts = frame->pts;
+        int ret = av_hwframe_get_buffer(codecCtx->hw_frames_ctx, hwFrame, 0);
+        if (ret < 0) {
+            av_frame_free(&hwFrame);
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to allocate CUDA hardware frame: %1")
+                                    .arg(avErrToString(ret));
+            }
+            return false;
+        }
+        ret = av_hwframe_transfer_data(hwFrame, frame, 0);
+        if (ret < 0) {
+            av_frame_free(&hwFrame);
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to upload frame to CUDA encoder surface: %1")
+                                    .arg(avErrToString(ret));
+            }
+            return false;
+        }
+        submittedFrame = hwFrame;
+    }
+
+    int ret = avcodec_send_frame(codecCtx, submittedFrame);
+    av_frame_free(&hwFrame);
     if (ret < 0) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("Failed to send frame to encoder: %1").arg(avErrToString(ret));
