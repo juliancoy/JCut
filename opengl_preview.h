@@ -26,6 +26,10 @@
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
 #include "preview_surface.h"
+#include "render_backend.h"
+#include "render_internal.h"
+#include "render_backend.h"
+#include "render_internal.h"
 
 using namespace editor;
 
@@ -250,10 +254,14 @@ private:
     bool clipIdIsTitle(const QString& clipId) const;
     TimelineClip::TransformKeyframe evaluateTransformForSelectedClip() const;
     void updatePreviewCursor(const QPointF& position);
+    bool configurePreviewBackend(RenderBackend requestedBackend, bool promptOnFallback);
+    bool ensureVulkanPreviewRenderer(bool promptOnFallback);
+    bool renderVulkanCompositeFrame(QImage* outputFrame);
 
     std::unique_ptr<AsyncDecoder> m_decoder;
     std::unique_ptr<TimelineCache> m_cache;
     std::unique_ptr<PlaybackFramePipeline> m_playbackPipeline;
+    std::unique_ptr<render_detail::OffscreenRenderer> m_vulkanPreviewRenderer;
     std::unique_ptr<QOpenGLShaderProgram> m_shaderProgram;
     std::unique_ptr<QOpenGLShaderProgram> m_correctionMaskShaderProgram;
     std::unique_ptr<QOpenGLShaderProgram> m_overlayShaderProgram;
@@ -262,6 +270,7 @@ private:
 
     bool m_glInitialized = false;
     bool m_glResourcesReleased = false;
+    bool m_vulkanPreviewActive = false;
     QColor m_backgroundColor = QColor(Qt::black);
     bool m_playing = false;
     bool m_audioMuted = false;
@@ -306,6 +315,8 @@ private:
     GLuint m_curveLutTextureId = 0;
     QHash<QString, editor::GlTextureCacheEntry> m_transcriptTextureCache;
     QHash<QString, FrameHandle> m_lastPresentedFrames;
+    QHash<QString, editor::DecoderContext*> m_vulkanPreviewDecoders;
+    QHash<render_detail::RenderAsyncFrameKey, FrameHandle> m_vulkanPreviewAsyncFrameCache;
     mutable QJsonObject m_lastFrameSelectionStats;
     static constexpr int kRenderTimeHistorySize = 60;
     std::deque<qint64> m_renderTimeHistory;

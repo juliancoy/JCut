@@ -293,15 +293,17 @@ if [[ "${FFMPEG_REBUILT}" == "1" ]]; then
     rm -rf "${BUILD_DIR}"
 fi
 
-if [[ "${ASAN}" == "ON" ]]; then
-    cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
-        -G "${CMAKE_GENERATOR}" \
-        -DEDITOR_ASAN=ON \
-        -DCMAKE_BUILD_TYPE=Debug
-else
-    cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
-        -G "${CMAKE_GENERATOR}" \
-        -DEDITOR_ASAN=OFF
+if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+    if [[ "${ASAN}" == "ON" ]]; then
+        cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
+            -G "${CMAKE_GENERATOR}" \
+            -DEDITOR_ASAN=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+    else
+        cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
+            -G "${CMAKE_GENERATOR}" \
+            -DEDITOR_ASAN=OFF
+    fi
 fi
 if [[ "${BUILD_TARGET}" == "all" ]]; then
     cmake --build "${BUILD_DIR}" -j

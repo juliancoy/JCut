@@ -4,6 +4,7 @@
 #include "titles.h"
 #include "decoder_image_io.h"
 #include "waveform_service.h"
+#include "render_internal.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,6 +24,10 @@
 
 namespace {
 constexpr int64_t kMaxHeldPresentationFrameDelta = 8;
+
+bool suppressBridgeFallbackLogs() {
+    return qEnvironmentVariableIntValue("JCUT_PREVIEW_SUPPRESS_BRIDGE_LOG") == 1;
+}
 
 struct HoverSpeakerProfile {
     QString speakerId;
@@ -639,6 +644,51 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     if (m_hideOutsideOutputWindow) {
         painter->setClipRect(compositeRect);
     }
+    if (m_vulkanPreviewActive) {
+        QImage vulkanFrame;
+        if (renderVulkanCompositeFrame(&vulkanFrame) && !vulkanFrame.isNull()) {
+            const QRect fitted = fitRect(vulkanFrame.size(), compositeRect);
+            painter->drawImage(fitted, vulkanFrame);
+            m_lastFrameSelectionStats = QJsonObject{
+                {QStringLiteral("path"), QStringLiteral("vulkan")},
+                {QStringLiteral("active_visual_clips"), activeClips.size()},
+                {QStringLiteral("frame_width"), vulkanFrame.width()},
+                {QStringLiteral("frame_height"), vulkanFrame.height()}
+            };
+        } else {
+            m_vulkanPreviewActive = false;
+            m_vulkanPreviewRenderer.reset();
+            m_vulkanPreviewDecoders.clear();
+            m_vulkanPreviewAsyncFrameCache.clear();
+            m_forceCpuPreviewForVulkan = false;
+            m_effectiveRenderBackend = QStringLiteral("opengl");
+            m_renderBackendFallbackReason = QStringLiteral(
+                "Vulkan preview frame render failed; falling back to OpenGL.");
+            if (!suppressBridgeFallbackLogs()) {
+                qWarning().noquote()
+                    << "[render-backend-fallback] requested=vulkan effective=opengl reason=\""
+                    << m_renderBackendFallbackReason << "\"";
+            }
+        }
+    }
+    if (m_vulkanPreviewActive) {
+        QList<TimelineClip> activeAudioClips;
+        for (const TimelineClip& clip : m_clips) {
+            if (clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample)) {
+                activeAudioClips.push_back(clip);
+            }
+        }
+        if (!activeAudioClips.isEmpty()) {
+            drawAudioBadge(painter, compositeRect, activeAudioClips);
+        }
+        for (const TimelineClip& clip : activeClips) {
+            if (clipShowsTranscriptOverlay(clip)) {
+                drawTranscriptOverlay(painter, clip, compositeRect);
+            }
+        }
+        painter->restore();
+        return;
+    }
     bool drewAnyFrame = false;
     bool waitingForFrame = false;
     int usedPlaybackPipelineCount = 0;
@@ -942,6 +992,61 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     painter->restore();
 }
 
+bool PreviewWindow::renderVulkanCompositeFrame(QImage* outputFrame)
+{
+    if (!outputFrame || !m_vulkanPreviewRenderer || !m_vulkanPreviewActive) {
+        return false;
+    }
+
+    RenderRequest request;
+    request.outputPath = QStringLiteral("preview://vulkan");
+    request.outputFormat = QStringLiteral("preview");
+    request.outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    request.correctionsEnabled = m_correctionsEnabled;
+    request.clips = m_clips;
+    request.tracks = m_tracks;
+    request.renderSyncMarkers = m_renderSyncMarkers;
+    request.exportStartFrame = m_currentFrame;
+    request.exportEndFrame = m_currentFrame;
+
+    QVector<TimelineClip> orderedClips;
+    orderedClips.reserve(m_clips.size());
+    for (const TimelineClip& clip : m_clips) {
+        if (clipVisualPlaybackEnabled(clip, m_tracks)) {
+            orderedClips.push_back(clip);
+        }
+    }
+    std::sort(orderedClips.begin(), orderedClips.end(), [](const TimelineClip& a, const TimelineClip& b) {
+        if (a.trackIndex == b.trackIndex) {
+            return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
+        }
+        return a.trackIndex > b.trackIndex;
+    });
+
+    qint64 decodeMs = 0;
+    qint64 textureMs = 0;
+    qint64 compositeMs = 0;
+    qint64 readbackMs = 0;
+    QImage frame = m_vulkanPreviewRenderer->renderFrame(request,
+                                                        m_currentFrame,
+                                                        m_vulkanPreviewDecoders,
+                                                        m_decoder.get(),
+                                                        &m_vulkanPreviewAsyncFrameCache,
+                                                        orderedClips,
+                                                        nullptr,
+                                                        &decodeMs,
+                                                        &textureMs,
+                                                        &compositeMs,
+                                                        &readbackMs,
+                                                        nullptr,
+                                                        nullptr);
+    if (frame.isNull()) {
+        return false;
+    }
+    *outputFrame = frame;
+    return true;
+}
+
 void PreviewWindow::drawEmptyState(QPainter* painter, const QRect& safeRect) {
     painter->setPen(QColor(QStringLiteral("#f5f8fb")));
     QFont titleFont = painter->font();
@@ -1059,7 +1164,7 @@ void PreviewWindow::drawFramePlaceholder(QPainter* painter, const QRect& targetR
 }
 
 void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRect,
-                          const QList<TimelineClip>& activeAudioClips) {
+                                         const QList<TimelineClip>& activeAudioClips) {
     if (activeAudioClips.isEmpty()) {
         return;
     }

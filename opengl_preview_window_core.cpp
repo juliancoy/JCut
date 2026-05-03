@@ -9,10 +9,12 @@
 #include "media_pipeline_shared.h"
 #include "waveform_service.h"
 #include "render_backend.h"
+#include "render_internal.h"
 
 #include <QElapsedTimer>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMessageBox>
 #include <QOpenGLWidget>
 #include <QPointer>
 #include <QThread>
@@ -50,23 +52,7 @@ PreviewWindow::PreviewWindow(QWidget* parent)
     , m_polygonBuffer(QOpenGLBuffer::VertexBuffer)
 {
     const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
-    m_requestedRenderBackend = renderBackendName(requestedBackend);
-    m_effectiveRenderBackend = QStringLiteral("opengl");
-    m_forceCpuPreviewForVulkan = false;
-    if (requestedBackend == RenderBackend::Vulkan) {
-        // Bridge mode: force non-GL composition path to avoid hard OpenGL coupling.
-        // Presentation still goes through QWidget paint on this class until a native Vulkan
-        // swapchain widget replaces QOpenGLWidget.
-        m_forceCpuPreviewForVulkan = true;
-        m_effectiveRenderBackend = QStringLiteral("vulkan-cpu-present");
-        m_renderBackendFallbackReason = QStringLiteral(
-            "Vulkan preference active; using CPU-present bridge until native Vulkan swapchain preview is wired.");
-        if (!suppressBridgeFallbackLogs()) {
-            qWarning().noquote()
-                << "[render-backend-bridge] requested=vulkan effective=vulkan-cpu-present reason=\""
-                << m_renderBackendFallbackReason << "\"";
-        }
-    }
+    configurePreviewBackend(requestedBackend, false);
 
     setMinimumSize(320, 180);
     setMouseTracking(true);
@@ -302,8 +288,11 @@ void PreviewWindow::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
 
 QString PreviewWindow::backendName() const {
     if (usingCpuFallback()) {
+        if (m_vulkanPreviewActive) {
+            return QStringLiteral("Vulkan Preview (Offscreen Composite)");
+        }
         if (m_forceCpuPreviewForVulkan) {
-            return QStringLiteral("Vulkan Preview (CPU Present Bridge)");
+            return QStringLiteral("Vulkan Preview (Fallback Pending)");
         }
         return QStringLiteral("CPU Preview Fallback");
     }
@@ -318,21 +307,7 @@ QString PreviewWindow::backendName() const {
 void PreviewWindow::setRenderBackendPreference(const QString& backendName)
 {
     const RenderBackend requestedBackend = parseRenderBackend(backendName);
-    m_requestedRenderBackend = renderBackendName(requestedBackend);
-    m_effectiveRenderBackend = QStringLiteral("opengl");
-    m_forceCpuPreviewForVulkan = false;
-    m_renderBackendFallbackReason.clear();
-    if (requestedBackend == RenderBackend::Vulkan) {
-        m_forceCpuPreviewForVulkan = true;
-        m_effectiveRenderBackend = QStringLiteral("vulkan-cpu-present");
-        m_renderBackendFallbackReason = QStringLiteral(
-            "Vulkan preference active; using CPU-present bridge until native Vulkan swapchain preview is wired.");
-        if (!suppressBridgeFallbackLogs()) {
-            qWarning().noquote()
-                << "[render-backend-bridge] requested=vulkan effective=vulkan-cpu-present reason=\""
-                << m_renderBackendFallbackReason << "\"";
-        }
-    }
+    configurePreviewBackend(requestedBackend, true);
     update();
 }
 
@@ -343,7 +318,76 @@ void PreviewWindow::setOutputSize(const QSize& size) {
     const QSize sanitized(qMax(16, size.width()), qMax(16, size.height()));
     if (m_outputSize == sanitized) return;
     m_outputSize = sanitized;
+    if (m_requestedRenderBackend == QStringLiteral("vulkan")) {
+        ensureVulkanPreviewRenderer(false);
+    }
     scheduleRepaint();
+}
+
+bool PreviewWindow::configurePreviewBackend(RenderBackend requestedBackend, bool promptOnFallback)
+{
+    m_requestedRenderBackend = renderBackendName(requestedBackend);
+    m_effectiveRenderBackend = QStringLiteral("opengl");
+    m_forceCpuPreviewForVulkan = false;
+    m_vulkanPreviewActive = false;
+    m_renderBackendFallbackReason.clear();
+    if (requestedBackend == RenderBackend::Vulkan) {
+        m_forceCpuPreviewForVulkan = true;
+        if (!ensureVulkanPreviewRenderer(promptOnFallback)) {
+            return false;
+        }
+        m_effectiveRenderBackend = QStringLiteral("vulkan");
+    } else {
+        m_vulkanPreviewRenderer.reset();
+        m_vulkanPreviewDecoders.clear();
+        m_vulkanPreviewAsyncFrameCache.clear();
+    }
+    return true;
+}
+
+bool PreviewWindow::ensureVulkanPreviewRenderer(bool promptOnFallback)
+{
+    m_vulkanPreviewRenderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
+    QString error;
+    const QSize targetSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    if (m_vulkanPreviewRenderer->initialize(targetSize, &error)) {
+        m_vulkanPreviewActive = true;
+        m_forceCpuPreviewForVulkan = true;
+        m_renderBackendFallbackReason.clear();
+        return true;
+    }
+
+    m_vulkanPreviewRenderer.reset();
+    m_vulkanPreviewDecoders.clear();
+    m_vulkanPreviewAsyncFrameCache.clear();
+    m_vulkanPreviewActive = false;
+    m_forceCpuPreviewForVulkan = false;
+    m_effectiveRenderBackend = QStringLiteral("opengl");
+    m_renderBackendFallbackReason = error.isEmpty()
+        ? QStringLiteral("Vulkan preview initialization failed.")
+        : error;
+
+    bool allowFallback = true;
+    if (promptOnFallback && !qEnvironmentVariable("QT_QPA_PLATFORM").contains("offscreen", Qt::CaseInsensitive)) {
+        const QString prompt = QStringLiteral(
+            "Vulkan preview initialization failed:\n\n%1\n\nFall back to OpenGL preview?")
+                                   .arg(m_renderBackendFallbackReason);
+        allowFallback = QMessageBox::question(this,
+                                              QStringLiteral("Vulkan Preview Unavailable"),
+                                              prompt,
+                                              QMessageBox::Yes | QMessageBox::No,
+                                              QMessageBox::Yes) == QMessageBox::Yes;
+    }
+    if (!allowFallback) {
+        m_forceCpuPreviewForVulkan = true;
+        m_vulkanPreviewActive = false;
+        m_effectiveRenderBackend = QStringLiteral("vulkan");
+    } else if (!suppressBridgeFallbackLogs()) {
+        qWarning().noquote()
+            << "[render-backend-fallback] requested=vulkan effective=opengl reason=\""
+            << m_renderBackendFallbackReason << "\"";
+    }
+    return allowFallback;
 }
 
 void PreviewWindow::setHideOutsideOutputWindow(bool hide) {
