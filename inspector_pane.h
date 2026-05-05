@@ -246,8 +246,13 @@ public:
     QDoubleSpinBox *audioAmplifyDbSpin() const { return m_audioAmplifyDbSpin; }
     QCheckBox *audioSpeakerHoverModalCheckBox() const { return m_audioSpeakerHoverModalCheckBox; }
     QCheckBox *audioShowWaveformCheckBox() const { return m_audioShowWaveformCheckBox; }
+    QCheckBox *audioWaveformPreviewProcessedCheckBox() const { return m_audioWaveformPreviewProcessedCheckBox; }
     QCheckBox *audioNormalizeEnabledCheckBox() const { return m_audioNormalizeEnabledCheckBox; }
     QDoubleSpinBox *audioNormalizeTargetDbSpin() const { return m_audioNormalizeTargetDbSpin; }
+    QCheckBox *audioSelectiveNormalizeEnabledCheckBox() const { return m_audioSelectiveNormalizeEnabledCheckBox; }
+    QDoubleSpinBox *audioSelectiveNormalizeMinSecondsSpin() const { return m_audioSelectiveNormalizeMinSecondsSpin; }
+    QDoubleSpinBox *audioSelectiveNormalizePeakDbSpin() const { return m_audioSelectiveNormalizePeakDbSpin; }
+    QSpinBox *audioSelectiveNormalizePassesSpin() const { return m_audioSelectiveNormalizePassesSpin; }
     QCheckBox *audioPeakReductionEnabledCheckBox() const { return m_audioPeakReductionEnabledCheckBox; }
     QDoubleSpinBox *audioPeakThresholdDbSpin() const { return m_audioPeakThresholdDbSpin; }
     QCheckBox *audioLimiterEnabledCheckBox() const { return m_audioLimiterEnabledCheckBox; }
@@ -504,8 +509,13 @@ private:
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
+    QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
+    QCheckBox *m_audioSelectiveNormalizeEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
+    QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
+    QSpinBox *m_audioSelectiveNormalizePassesSpin = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;
     QCheckBox *m_audioLimiterEnabledCheckBox = nullptr;

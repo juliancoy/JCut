@@ -38,6 +38,29 @@ class QKeyEvent;
 class PreviewWindow : public QOpenGLWidget, public PreviewSurface, protected QOpenGLFunctions {
     Q_OBJECT
 public:
+    enum class ViewMode {
+        Video = 0,
+        Audio = 1,
+    };
+
+    struct AudioDynamicsSettings {
+        bool amplifyEnabled = false;
+        qreal amplifyDb = 0.0;
+        bool normalizeEnabled = false;
+        qreal normalizeTargetDb = -1.0;
+        bool selectiveNormalizeEnabled = false;
+        qreal selectiveNormalizeMinSegmentSeconds = 0.5;
+        qreal selectiveNormalizePeakDb = -1.0;
+        int selectiveNormalizePasses = 1;
+        bool peakReductionEnabled = false;
+        qreal peakThresholdDb = -6.0;
+        bool limiterEnabled = false;
+        qreal limiterThresholdDb = -1.0;
+        bool compressorEnabled = false;
+        qreal compressorThresholdDb = -18.0;
+        qreal compressorRatio = 3.0;
+        bool waveformPreviewPostProcessing = true;
+    };
     explicit PreviewWindow(QWidget* parent = nullptr);
     ~PreviewWindow() override;
     QWidget* asWidget() override { return this; }

@@ -5,11 +5,15 @@
 #include <QPainter>
 
 QString PreviewWindow::audioDynamicsCacheKey() const {
-    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10")
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15")
         .arg(m_audioDynamics.amplifyEnabled ? 1 : 0)
         .arg(m_audioDynamics.amplifyDb, 0, 'f', 2)
         .arg(m_audioDynamics.normalizeEnabled ? 1 : 0)
         .arg(m_audioDynamics.normalizeTargetDb, 0, 'f', 2)
+        .arg(m_audioDynamics.selectiveNormalizeEnabled ? 1 : 0)
+        .arg(m_audioDynamics.selectiveNormalizeMinSegmentSeconds, 0, 'f', 2)
+        .arg(m_audioDynamics.selectiveNormalizePeakDb, 0, 'f', 2)
+        .arg(m_audioDynamics.selectiveNormalizePasses)
         .arg(m_audioDynamics.peakReductionEnabled ? 1 : 0)
         .arg(m_audioDynamics.peakThresholdDb, 0, 'f', 2)
         .arg(m_audioDynamics.limiterEnabled ? 1 : 0)
@@ -17,7 +21,8 @@ QString PreviewWindow::audioDynamicsCacheKey() const {
         .arg(m_audioDynamics.compressorEnabled ? 1 : 0)
         .arg(QStringLiteral("%1|%2")
                  .arg(m_audioDynamics.compressorThresholdDb, 0, 'f', 2)
-                 .arg(m_audioDynamics.compressorRatio, 0, 'f', 2));
+                 .arg(m_audioDynamics.compressorRatio, 0, 'f', 2))
+        .arg(m_audioDynamics.waveformPreviewPostProcessing ? 1 : 0);
 }
 
 bool PreviewWindow::audioWaveformEnvelopeForClip(const TimelineClip& clip,
@@ -55,12 +60,18 @@ bool PreviewWindow::audioWaveformEnvelopeForClip(const TimelineClip& clip,
         visibleStartOffset + 1,
         visibleEndOffset,
         sourceDurationSamples);
-    const QString variantKey = audioDynamicsCacheKey();
+    const QString variantKey = m_audioDynamics.waveformPreviewPostProcessing
+        ? audioDynamicsCacheKey()
+        : QStringLiteral("disk");
     const editor::WaveformService::WaveformProcessSettings processSettings{
         m_audioDynamics.amplifyEnabled,
         static_cast<float>(m_audioDynamics.amplifyDb),
         m_audioDynamics.normalizeEnabled,
         static_cast<float>(m_audioDynamics.normalizeTargetDb),
+        m_audioDynamics.selectiveNormalizeEnabled,
+        static_cast<float>(m_audioDynamics.selectiveNormalizeMinSegmentSeconds),
+        static_cast<float>(m_audioDynamics.selectiveNormalizePeakDb),
+        m_audioDynamics.selectiveNormalizePasses,
         m_audioDynamics.peakReductionEnabled,
         static_cast<float>(m_audioDynamics.peakThresholdDb),
         m_audioDynamics.limiterEnabled,
@@ -78,7 +89,9 @@ bool PreviewWindow::audioWaveformEnvelopeForClip(const TimelineClip& clip,
                                                            &minValues,
                                                            &maxValues,
                                                            variantKey,
-                                                           &processSettings) ||
+                                                           m_audioDynamics.waveformPreviewPostProcessing
+                                                               ? &processSettings
+                                                               : nullptr) ||
         minValues.size() != safeBins ||
         maxValues.size() != safeBins) {
         return false;

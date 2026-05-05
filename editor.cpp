@@ -488,6 +488,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     loadedAudioDynamics.amplifyDb = root.value(QStringLiteral("audioAmplifyDb")).toDouble(0.0);
     loadedAudioDynamics.normalizeEnabled = root.value(QStringLiteral("audioNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.normalizeTargetDb = root.value(QStringLiteral("audioNormalizeTargetDb")).toDouble(-1.0);
+    loadedAudioDynamics.selectiveNormalizeEnabled =
+        root.value(QStringLiteral("audioSelectiveNormalizeEnabled")).toBool(false);
+    loadedAudioDynamics.selectiveNormalizeMinSegmentSeconds =
+        root.value(QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds")).toDouble(0.5);
+    loadedAudioDynamics.selectiveNormalizePeakDb =
+        root.value(QStringLiteral("audioSelectiveNormalizePeakDb")).toDouble(-1.0);
+    loadedAudioDynamics.selectiveNormalizePasses =
+        qBound(1, root.value(QStringLiteral("audioSelectiveNormalizePasses")).toInt(1), 8);
+    loadedAudioDynamics.waveformPreviewPostProcessing =
+        root.value(QStringLiteral("audioWaveformPreviewPostProcessing")).toBool(true);
     loadedAudioDynamics.peakReductionEnabled = root.value(QStringLiteral("audioPeakReductionEnabled")).toBool(false);
     loadedAudioDynamics.peakThresholdDb = root.value(QStringLiteral("audioPeakThresholdDb")).toDouble(-6.0);
     loadedAudioDynamics.limiterEnabled = root.value(QStringLiteral("audioLimiterEnabled")).toBool(false);
@@ -1059,6 +1069,36 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_audioNormalizeTargetDbSpin);
         m_audioNormalizeTargetDbSpin->setValue(m_previewAudioDynamics.normalizeTargetDb);
         m_audioNormalizeTargetDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioSelectiveNormalizeEnabledCheckBox) {
+        QSignalBlocker block(m_audioSelectiveNormalizeEnabledCheckBox);
+        m_audioSelectiveNormalizeEnabledCheckBox->setChecked(
+            m_previewAudioDynamics.selectiveNormalizeEnabled);
+        m_audioSelectiveNormalizeEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioSelectiveNormalizeMinSecondsSpin) {
+        QSignalBlocker block(m_audioSelectiveNormalizeMinSecondsSpin);
+        m_audioSelectiveNormalizeMinSecondsSpin->setValue(
+            m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds);
+        m_audioSelectiveNormalizeMinSecondsSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioSelectiveNormalizePeakDbSpin) {
+        QSignalBlocker block(m_audioSelectiveNormalizePeakDbSpin);
+        m_audioSelectiveNormalizePeakDbSpin->setValue(
+            m_previewAudioDynamics.selectiveNormalizePeakDb);
+        m_audioSelectiveNormalizePeakDbSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioSelectiveNormalizePassesSpin) {
+        QSignalBlocker block(m_audioSelectiveNormalizePassesSpin);
+        m_audioSelectiveNormalizePassesSpin->setValue(
+            m_previewAudioDynamics.selectiveNormalizePasses);
+        m_audioSelectiveNormalizePassesSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioWaveformPreviewProcessedCheckBox) {
+        QSignalBlocker block(m_audioWaveformPreviewProcessedCheckBox);
+        m_audioWaveformPreviewProcessedCheckBox->setChecked(
+            m_previewAudioDynamics.waveformPreviewPostProcessing);
+        m_audioWaveformPreviewProcessedCheckBox->setEnabled(m_featureAudioDynamicsTools);
     }
     if (m_audioPeakReductionEnabledCheckBox) {
         QSignalBlocker block(m_audioPeakReductionEnabledCheckBox);

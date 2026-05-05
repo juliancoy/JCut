@@ -70,7 +70,8 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("slow_seek_update_count"), m_setCurrentPlaybackSampleSlowCount.load()},
         {QStringLiteral("last_inspector_refresh_duration_ms"), m_lastInspectorRefreshDurationMs.load()},
         {QStringLiteral("max_inspector_refresh_duration_ms"), m_maxInspectorRefreshDurationMs.load()},
-        {QStringLiteral("slow_inspector_refresh_count"), m_inspectorRefreshSlowCount.load()}};
+        {QStringLiteral("slow_inspector_refresh_count"), m_inspectorRefreshSlowCount.load()},
+        {QStringLiteral("last_playback_stop_reason"), m_lastPlaybackStopReason}};
 
     if (m_preview) {
         snapshot[QStringLiteral("preview")] = m_preview->profilingSnapshot();
@@ -208,7 +209,8 @@ QJsonObject EditorWindow::playbackConfigSnapshot() const
         {QStringLiteral("playback_speed"), config.speed},
         {QStringLiteral("clock_source"), playbackClockSourceToString(config.clockSource)},
         {QStringLiteral("audio_warp_mode"), playbackAudioWarpModeToString(config.audioWarpMode)},
-        {QStringLiteral("playback_loop_enabled"), config.loopEnabled}
+        {QStringLiteral("playback_loop_enabled"), config.loopEnabled},
+        {QStringLiteral("last_playback_stop_reason"), m_lastPlaybackStopReason}
     };
 }
 

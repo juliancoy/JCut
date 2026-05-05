@@ -17,6 +17,10 @@ public:
         float amplifyDb = 0.0f;
         bool normalizeEnabled = false;
         float normalizeTargetDb = -1.0f;
+        bool selectiveNormalizeEnabled = false;
+        float selectiveNormalizeMinSegmentSeconds = 0.5f;
+        float selectiveNormalizePeakDb = -1.0f;
+        int selectiveNormalizePasses = 1;
         bool peakReductionEnabled = false;
         float peakThresholdDb = -6.0f;
         bool limiterEnabled = false;
@@ -83,6 +87,7 @@ private:
                       bool ok);
     void trimCacheLocked(int maxEntries);
     QVector<WaveformLevel> buildProcessedLevels(const QVector<WaveformLevel>& sourceLevels,
+                                                int sampleRate,
                                                 const WaveformProcessSettings& settings) const;
 
     static bool decodePyramidForPath(const QString& mediaPath,

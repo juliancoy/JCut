@@ -673,6 +673,13 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("audioWaveformVisible")] = m_audioWaveformVisible;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
+    root[QStringLiteral("audioSelectiveNormalizeEnabled")] = m_previewAudioDynamics.selectiveNormalizeEnabled;
+    root[QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds")] =
+        m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds;
+    root[QStringLiteral("audioSelectiveNormalizePeakDb")] = m_previewAudioDynamics.selectiveNormalizePeakDb;
+    root[QStringLiteral("audioSelectiveNormalizePasses")] = m_previewAudioDynamics.selectiveNormalizePasses;
+    root[QStringLiteral("audioWaveformPreviewPostProcessing")] =
+        m_previewAudioDynamics.waveformPreviewPostProcessing;
     root[QStringLiteral("audioPeakReductionEnabled")] = m_previewAudioDynamics.peakReductionEnabled;
     root[QStringLiteral("audioPeakThresholdDb")] = m_previewAudioDynamics.peakThresholdDb;
     root[QStringLiteral("audioLimiterEnabled")] = m_previewAudioDynamics.limiterEnabled;
