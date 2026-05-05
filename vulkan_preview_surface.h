@@ -1,12 +1,9 @@
 #pragma once
 
 #include "preview_surface.h"
-#include "vulkan_context.h"
-#include "vulkan_renderer.h"
 
 #include <memory>
 
-class VulkanPreviewWindow;
 class PreviewWindow;
 class QWidget;
 
@@ -14,8 +11,9 @@ class VulkanPreviewSurface final : public PreviewSurface {
 public:
     explicit VulkanPreviewSurface(QWidget* parent = nullptr);
     ~VulkanPreviewSurface() override;
-    bool isNativeActive() const { return m_nativeActive; }
-    QString nativeFailureReason() const { return m_nativeFailureReason; }
+    bool isNativeActive() const { return false; }
+    bool isNativePresentationActive() const { return false; }
+    QString nativeFailureReason() const { return m_failureReason; }
 
     QWidget* asWidget() override;
     const QWidget* asWidget() const override;
@@ -79,17 +77,8 @@ public:
     bool selectedOverlayIsTranscript() const override;
 
 private:
-    bool initializeNativeSurface(QWidget* parent);
     PreviewWindow* activeDelegate() const;
-    void requestNativeUpdate();
-    bool usingParityBridge() const;
 
-    bool m_nativeActive = false;
-    bool m_nativeParityBridgeActive = false;
-    QString m_nativeFailureReason;
+    QString m_failureReason;
     std::unique_ptr<PreviewWindow> m_delegate;
-    QWidget* m_nativeContainer = nullptr;
-    VulkanContext m_vulkanContext;
-    VulkanNativeWindow* m_vulkanWindow = nullptr;
-    VulkanRendererState m_nativeState;
 };

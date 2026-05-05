@@ -33,6 +33,8 @@
 #include <algorithm>
 #include <memory>
 
+#include <vulkan/vulkan.h>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -196,6 +198,19 @@ QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
 class OffscreenGpuRendererPrivate;
 class OffscreenVulkanRendererPrivate;
 
+struct OffscreenVulkanFrame {
+    VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue = VK_NULL_HANDLE;
+    uint32_t queueFamilyIndex = UINT32_MAX;
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView imageView = VK_NULL_HANDLE;
+    VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    QSize size;
+    bool queueSupportsCompute = false;
+    bool valid = false;
+};
+
 class OffscreenRenderer {
 public:
     virtual ~OffscreenRenderer() = default;
@@ -343,6 +358,8 @@ public:
                                           qint64* readbackMs = nullptr) override;
     bool copyLastFrameToBgra(AVFrame* frame,
                              qint64* readbackMs = nullptr) override;
+    bool lastRenderedVulkanFrame(OffscreenVulkanFrame* frame,
+                                 QString* errorMessage = nullptr) const;
     bool supportsCudaExternalMemoryInterop() const override;
     QString backendId() const override;
 

@@ -5,6 +5,7 @@
 #include "decoder_image_io.h"
 #include "waveform_service.h"
 #include "render_internal.h"
+#include "vulkan_preview_compositor.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -664,6 +665,8 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
             m_effectiveRenderBackend = QStringLiteral("opengl");
             m_renderBackendFallbackReason = QStringLiteral(
                 "Vulkan preview frame render failed; falling back to OpenGL.");
+            ++m_renderBackendFallbackCount;
+            m_lastRenderBackendFallbackMs = nowMs();
             if (!suppressBridgeFallbackLogs()) {
                 qWarning().noquote()
                     << "[render-backend-fallback] requested=vulkan effective=opengl reason=\""
@@ -680,11 +683,6 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         }
         if (!activeAudioClips.isEmpty()) {
             drawAudioBadge(painter, compositeRect, activeAudioClips);
-        }
-        for (const TimelineClip& clip : activeClips) {
-            if (clipShowsTranscriptOverlay(clip)) {
-                drawTranscriptOverlay(painter, clip, compositeRect);
-            }
         }
         painter->restore();
         return;
@@ -998,50 +996,131 @@ bool PreviewWindow::renderVulkanCompositeFrame(QImage* outputFrame)
         return false;
     }
 
-    RenderRequest request;
-    request.outputPath = QStringLiteral("preview://vulkan");
-    request.outputFormat = QStringLiteral("preview");
-    request.outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
-    request.correctionsEnabled = m_correctionsEnabled;
-    request.clips = m_clips;
-    request.tracks = m_tracks;
-    request.renderSyncMarkers = m_renderSyncMarkers;
-    request.exportStartFrame = m_currentFrame;
-    request.exportEndFrame = m_currentFrame;
+    VulkanRendererState state;
+    state.outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    state.currentFrame = m_currentFrame;
+    state.bypassGrading = m_bypassGrading;
+    state.correctionsEnabled = m_correctionsEnabled;
+    state.clips = m_clips;
+    state.tracks = m_tracks;
+    state.renderSyncMarkers = m_renderSyncMarkers;
 
-    QVector<TimelineClip> orderedClips;
-    orderedClips.reserve(m_clips.size());
-    for (const TimelineClip& clip : m_clips) {
-        if (clipVisualPlaybackEnabled(clip, m_tracks)) {
-            orderedClips.push_back(clip);
+    QString composeError;
+    QImage frame;
+    if (!vulkan_preview::composeFrame(&state, m_currentFrame, &frame, &composeError)) {
+        ++m_vulkanComposeFailureCount;
+        m_lastVulkanComposeFailureMs = nowMs();
+        if (!composeError.trimmed().isEmpty()) {
+            m_renderBackendFallbackReason = composeError;
         }
+        return false;
     }
-    std::sort(orderedClips.begin(), orderedClips.end(), [](const TimelineClip& a, const TimelineClip& b) {
-        if (a.trackIndex == b.trackIndex) {
-            return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
-        }
-        return a.trackIndex > b.trackIndex;
-    });
-
-    qint64 decodeMs = 0;
-    qint64 textureMs = 0;
-    qint64 compositeMs = 0;
-    qint64 readbackMs = 0;
-    QImage frame = m_vulkanPreviewRenderer->renderFrame(request,
-                                                        m_currentFrame,
-                                                        m_vulkanPreviewDecoders,
-                                                        m_decoder.get(),
-                                                        &m_vulkanPreviewAsyncFrameCache,
-                                                        orderedClips,
-                                                        nullptr,
-                                                        &decodeMs,
-                                                        &textureMs,
-                                                        &compositeMs,
-                                                        &readbackMs,
-                                                        nullptr,
-                                                        nullptr);
+    ++m_vulkanComposeSuccessCount;
+    m_lastVulkanComposeSuccessMs = nowMs();
     if (frame.isNull()) {
         return false;
+    }
+    const QList<TimelineClip> activeClips = getActiveClips();
+    if (!activeClips.isEmpty()) {
+        QPainter painter(&frame);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QRect compositeRect(QPoint(0, 0), frame.size());
+        m_overlayInfo.clear();
+        m_paintOrder.clear();
+
+        if (m_showSpeakerTrackPoints || m_showSpeakerTrackBoxes) {
+            drawSpeakerTrackPointsOverlay(&painter, activeClips);
+        }
+        drawSpeakerFramingTargetOverlay(&painter, activeClips, compositeRect);
+
+        for (const TimelineClip& clip : activeClips) {
+            if (clip.mediaType == ClipMediaType::Title && !clip.titleKeyframes.isEmpty()) {
+                const int64_t localFrame = qMax<int64_t>(0, m_currentFrame - clip.startFrame);
+                const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+                const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+                    clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+                const EvaluatedTitle title =
+                    composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
+                if (title.valid && !title.text.isEmpty()) {
+                    const qreal sx = m_outputSize.width() > 0
+                        ? static_cast<qreal>(compositeRect.width()) / m_outputSize.width() : 1.0;
+                    const qreal sy = m_outputSize.height() > 0
+                        ? static_cast<qreal>(compositeRect.height()) / m_outputSize.height() : 1.0;
+                    QFont font(title.fontFamily);
+                    font.setPointSizeF(title.fontSize * qMin(sx, sy));
+                    font.setBold(title.bold);
+                    font.setItalic(title.italic);
+                    const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
+                    const qreal cx = compositeRect.center().x() + title.x * sx;
+                    const qreal cy = compositeRect.center().y() + title.y * sy;
+                    const qreal windowPaddingPx = title.windowEnabled
+                        ? qMax<qreal>(0.0, title.windowPadding * qMin(sx, sy))
+                        : 0.0;
+                    const qreal frameExtraPx = title.windowFrameEnabled
+                        ? (qMax<qreal>(0.0, title.windowFrameGap * qMin(sx, sy)) +
+                           (qMax<qreal>(0.0, title.windowFrameWidth * qMin(sx, sy)) * 0.5))
+                        : 0.0;
+                    PreviewOverlayInfo info;
+                    info.bounds = QRectF(cx - metrics.width / 2.0 - 4 - windowPaddingPx - frameExtraPx,
+                                         cy - metrics.height / 2.0 - 4 - windowPaddingPx - frameExtraPx,
+                                         metrics.width + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0),
+                                         metrics.height + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0));
+                    m_overlayInfo.insert(clip.id, info);
+                    m_paintOrder.push_back(clip.id);
+                }
+            }
+        }
+
+        for (const TimelineClip& clip : activeClips) {
+            const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
+            if (clip.id == m_selectedClipId && info.bounds.isValid()) {
+                painter.setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2.0));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRect(info.bounds);
+                if (info.rightHandle.isValid()) {
+                    painter.setBrush(QColor(QStringLiteral("#fff4c2")));
+                    painter.drawRect(info.rightHandle);
+                    painter.drawRect(info.bottomHandle);
+                    painter.drawRect(info.cornerHandle);
+                }
+            }
+        }
+        if (m_showCorrectionOverlays) {
+            for (const TimelineClip& clip : activeClips) {
+                const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
+                if (clip.id != m_selectedClipId || !info.bounds.isValid() || clip.correctionPolygons.isEmpty()) {
+                    continue;
+                }
+                QVector<TimelineClip::CorrectionPolygon> visiblePolygons;
+                if (m_selectedCorrectionPolygon >= 0 &&
+                    m_selectedCorrectionPolygon < clip.correctionPolygons.size()) {
+                    visiblePolygons.push_back(clip.correctionPolygons[m_selectedCorrectionPolygon]);
+                }
+                if (visiblePolygons.isEmpty()) {
+                    for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
+                        if (polygon.pointsNormalized.size() >= 3) {
+                            visiblePolygons.push_back(polygon);
+                        }
+                    }
+                }
+                painter.save();
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                painter.setPen(QPen(QColor(255, 92, 92, 220), 2.0));
+                painter.setBrush(QColor(255, 92, 92, 48));
+                for (const TimelineClip::CorrectionPolygon& polygon : visiblePolygons) {
+                    QPainterPath path;
+                    const QPointF first = mapNormalizedClipPointToScreen(info, polygon.pointsNormalized.constFirst());
+                    path.moveTo(first);
+                    for (int i = 1; i < polygon.pointsNormalized.size(); ++i) {
+                        const QPointF point = mapNormalizedClipPointToScreen(info, polygon.pointsNormalized[i]);
+                        path.lineTo(point);
+                    }
+                    path.closeSubpath();
+                    painter.drawPath(path);
+                }
+                painter.restore();
+            }
+        }
     }
     *outputFrame = frame;
     return true;

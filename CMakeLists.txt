@@ -13,6 +13,7 @@ set(CMAKE_AUTOUIC ON)
 option(EDITOR_ASAN "Enable AddressSanitizer" OFF)
 option(EDITOR_BUILD_TESTS "Build editor tests" ON)
 option(JCUT_USE_OPENCV_CONTRIB "Enable OpenCV contrib modules (tracking backends)" ON)
+option(JCUT_ENABLE_OPENCV_CUDA "Build bundled OpenCV with CUDA DNN support when CUDA/cuDNN are available" OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -51,6 +52,13 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/CMakeLists.txt")
     set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(INSTALL_CREATE_UNINSTALL_TARGET OFF CACHE BOOL "" FORCE)
     set(WITH_IPP OFF CACHE BOOL "" FORCE)
+    set(WITH_VULKAN ON CACHE BOOL "" FORCE)
+    if(JCUT_ENABLE_OPENCV_CUDA)
+        set(WITH_CUDA ON CACHE BOOL "" FORCE)
+        set(WITH_CUBLAS ON CACHE BOOL "" FORCE)
+        set(WITH_CUDNN ON CACHE BOOL "" FORCE)
+        set(OPENCV_DNN_CUDA ON CACHE BOOL "" FORCE)
+    endif()
     set(_saved_automoc "${CMAKE_AUTOMOC}")
     set(_saved_autorcc "${CMAKE_AUTORCC}")
     set(_saved_autouic "${CMAKE_AUTOUIC}")
@@ -99,7 +107,7 @@ endif()
 
 option(JCUT_USE_SYSTEM_FFMPEG
     "Use system FFmpeg libraries. Required when system FFmpeg provides encoders such as NVENC that the pinned build lacks."
-    ON)
+    OFF)
 set(EDITOR_FFMPEG_PREFIX
     "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-install"
     CACHE PATH "Pinned FFmpeg install prefix used when JCUT_USE_SYSTEM_FFMPEG is OFF")
@@ -214,6 +222,10 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/model_import_shared\\.cpp$"
     ".*/model_runtime\\.cpp$"
     ".*/backend_headless_compare_main\\.cpp$"
+    ".*/vulkan_dnn_video_infer_main\\.cpp$"
+    ".*/vulkan_boxstream_offscreen_main\\.cpp$"
+    ".*/vulkan_boxstream_test_ui_main\\.cpp$"
+    ".*/vulkan_zero_copy_video_preprocess_main\\.cpp$"
 )
 
 set(EDITOR_APP_SOURCES "${EDITOR_ALL_CPP}")
@@ -238,6 +250,8 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_u.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_v.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_preprocess.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_infer_heuristic.comp
 )
 set(JCUT_VULKAN_SHADER_OUTPUTS "")
 if(GLSLANG_VALIDATOR)
@@ -430,6 +444,150 @@ target_link_libraries(project_roundtrip_cli
 if(APPLE)
     set_target_properties(editor PROPERTIES MACOSX_BUNDLE TRUE)
 endif()
+
+add_executable(jcut_vulkan_dnn_video_infer
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_dnn_video_infer_main.cpp
+)
+target_include_directories(jcut_vulkan_dnn_video_infer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${JCUT_OPENCV_INCLUDES}
+)
+target_link_libraries(jcut_vulkan_dnn_video_infer PRIVATE
+    editor_test_support
+    ${JCUT_OPENCV_LIBS}
+    PkgConfig::FFMPEG
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    target_link_libraries(jcut_vulkan_dnn_video_infer PRIVATE
+        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
+    target_link_options(jcut_vulkan_dnn_video_infer PRIVATE
+        "LINKER:--no-as-needed")
+endif()
+set_target_properties(jcut_vulkan_dnn_video_infer PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(jcut_vulkan_dnn_video_infer PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
+
+add_executable(jcut_vulkan_zero_copy_video_preprocess
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_video_preprocess_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
+)
+target_include_directories(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+    editor_test_support
+    Vulkan::Vulkan
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
+    target_link_options(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+        "LINKER:--no-as-needed")
+endif()
+target_compile_definitions(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+)
+set_target_properties(jcut_vulkan_zero_copy_video_preprocess PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(jcut_vulkan_zero_copy_video_preprocess jcut_vulkan_shaders)
+endif()
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(jcut_vulkan_zero_copy_video_preprocess PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
+
+add_executable(jcut_vulkan_boxstream_offscreen
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_offscreen_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/boxstream_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
+)
+target_include_directories(jcut_vulkan_boxstream_offscreen PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${JCUT_OPENCV_INCLUDES}
+)
+target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE
+    editor_test_support
+    Vulkan::Vulkan
+    ${JCUT_OPENCV_LIBS}
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE
+        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
+    target_link_options(jcut_vulkan_boxstream_offscreen PRIVATE
+        "LINKER:--no-as-needed")
+endif()
+target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE
+    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+    JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB}
+)
+if(JCUT_OPENCV_LIBS)
+    target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAVE_OPENCV=1)
+else()
+    target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAVE_OPENCV=0)
+endif()
+set_target_properties(jcut_vulkan_boxstream_offscreen PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(jcut_vulkan_boxstream_offscreen jcut_vulkan_shaders)
+endif()
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(jcut_vulkan_boxstream_offscreen PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
+
+add_executable(jcut_vulkan_boxstream_test_ui
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_test_ui_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/boxstream_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
+)
+target_link_libraries(jcut_vulkan_boxstream_test_ui PRIVATE
+    editor_test_support
+    Vulkan::Vulkan
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    target_link_libraries(jcut_vulkan_boxstream_test_ui PRIVATE
+        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
+    target_link_options(jcut_vulkan_boxstream_test_ui PRIVATE
+        "LINKER:--no-as-needed")
+endif()
+target_compile_definitions(jcut_vulkan_boxstream_test_ui PRIVATE
+    JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB}
+    JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+)
+if(JCUT_OPENCV_LIBS)
+    target_compile_definitions(jcut_vulkan_boxstream_test_ui PRIVATE JCUT_HAVE_OPENCV=1)
+else()
+    target_compile_definitions(jcut_vulkan_boxstream_test_ui PRIVATE JCUT_HAVE_OPENCV=0)
+endif()
+set_target_properties(jcut_vulkan_boxstream_test_ui PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(jcut_vulkan_boxstream_test_ui PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
+add_dependencies(jcut_vulkan_boxstream_test_ui jcut_vulkan_boxstream_offscreen)
 
 add_executable(jcut_headless_backend_compare
     ${CMAKE_CURRENT_SOURCE_DIR}/backend_headless_compare_main.cpp

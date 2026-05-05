@@ -1,9 +1,14 @@
 #include "render_internal.h"
+#include "titles.h"
 
 #include <QDebug>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFontMetricsF>
 #include <QImage>
+#include <QPainter>
+#include <QRawFont>
 #include <QScopeGuard>
 
 #if JCUT_HAS_CUDA_DRIVER
@@ -20,6 +25,242 @@ extern "C" {
 namespace render_detail {
 
 namespace {
+
+struct SubtitlePixelCounts {
+    int dark = 0;
+    int bright = 0;
+    int yellow = 0;
+    int nonTransparent = 0;
+};
+
+bool vulkanSubtitleDebugEnabled()
+{
+    return qEnvironmentVariableIntValue("EDITOR_DEBUG_VULKAN_SUBTITLES") == 1;
+}
+
+bool vulkanSubtitleDumpEnabled()
+{
+    return qEnvironmentVariableIntValue("EDITOR_DUMP_VULKAN_SUBTITLES") == 1;
+}
+
+SubtitlePixelCounts countSubtitlePixels(const QImage& image, const QRectF& bounds)
+{
+    SubtitlePixelCounts counts;
+    if (image.isNull() || bounds.isEmpty()) {
+        return counts;
+    }
+    const int left = qMax(0, static_cast<int>(std::floor(bounds.left())));
+    const int top = qMax(0, static_cast<int>(std::floor(bounds.top())));
+    const int right = qMin(image.width() - 1, static_cast<int>(std::ceil(bounds.right())));
+    const int bottom = qMin(image.height() - 1, static_cast<int>(std::ceil(bounds.bottom())));
+    for (int y = top; y <= bottom; ++y) {
+        for (int x = left; x <= right; ++x) {
+            const QColor c = image.pixelColor(x, y);
+            if (c.alpha() > 8) {
+                ++counts.nonTransparent;
+            }
+            if (c.alpha() > 80 && c.red() < 70 && c.green() < 70 && c.blue() < 70) {
+                ++counts.dark;
+            }
+            if (c.alpha() > 80 && c.red() > 210 && c.green() > 210 && c.blue() > 210) {
+                ++counts.bright;
+            }
+            if (c.alpha() > 80 && c.red() > 200 && c.green() > 180 && c.blue() > 80 && c.blue() < 220) {
+                ++counts.yellow;
+            }
+        }
+    }
+    return counts;
+}
+
+QRectF alphaBoundsForImage(const QImage& image)
+{
+    if (image.isNull()) {
+        return QRectF();
+    }
+    int minX = image.width();
+    int minY = image.height();
+    int maxX = -1;
+    int maxY = -1;
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            if (image.pixelColor(x, y).alpha() <= 8) {
+                continue;
+            }
+            minX = qMin(minX, x);
+            minY = qMin(minY, y);
+            maxX = qMax(maxX, x);
+            maxY = qMax(maxY, y);
+        }
+    }
+    if (maxX < minX || maxY < minY) {
+        return QRectF();
+    }
+    return QRectF(QPointF(minX, minY), QPointF(maxX + 1, maxY + 1));
+}
+
+QImage frameHandleToCpuImage(const editor::FrameHandle& frame)
+{
+    if (frame.hasCpuImage()) {
+        return frame.cpuImage();
+    }
+    if (!frame.hasHardwareFrame()) {
+        return QImage();
+    }
+
+    const AVFrame* hwFrame = frame.hardwareFrame();
+    if (!hwFrame) {
+        return QImage();
+    }
+
+    AVFrame* swFrame = av_frame_alloc();
+    if (!swFrame) {
+        return QImage();
+    }
+
+    QImage output;
+    if (av_hwframe_transfer_data(swFrame, hwFrame, 0) < 0) {
+        av_frame_free(&swFrame);
+        return output;
+    }
+
+    AVPixelFormat sourceFormat = static_cast<AVPixelFormat>(swFrame->format);
+    if (sourceFormat == AV_PIX_FMT_YUVJ420P) {
+        sourceFormat = AV_PIX_FMT_YUV420P;
+    }
+
+    SwsContext* sws = sws_getContext(swFrame->width,
+                                     swFrame->height,
+                                     sourceFormat,
+                                     swFrame->width,
+                                     swFrame->height,
+                                     AV_PIX_FMT_BGRA,
+                                     SWS_BILINEAR,
+                                     nullptr,
+                                     nullptr,
+                                     nullptr);
+    if (!sws) {
+        av_frame_free(&swFrame);
+        return output;
+    }
+
+    output = QImage(swFrame->width, swFrame->height, QImage::Format_ARGB32);
+    if (output.isNull()) {
+        sws_freeContext(sws);
+        av_frame_free(&swFrame);
+        return output;
+    }
+
+    uint8_t* dstData[4] = {output.bits(), nullptr, nullptr, nullptr};
+    int dstLinesize[4] = {static_cast<int>(output.bytesPerLine()), 0, 0, 0};
+    sws_scale(sws,
+              swFrame->data,
+              swFrame->linesize,
+              0,
+              swFrame->height,
+              dstData,
+              dstLinesize);
+
+    sws_freeContext(sws);
+    av_frame_free(&swFrame);
+    return output;
+}
+
+void blendPixel(QImage* image, int x, int y, const QColor& color, int alpha)
+{
+    if (!image || x < 0 || y < 0 || x >= image->width() || y >= image->height() || alpha <= 0) {
+        return;
+    }
+    QColor src(color);
+    src.setAlpha(qBound(0, alpha, 255));
+    QColor dst = image->pixelColor(x, y);
+    const qreal sa = src.alphaF();
+    const qreal da = dst.alphaF();
+    const qreal outA = sa + (da * (1.0 - sa));
+    if (outA <= 0.0) {
+        image->setPixelColor(x, y, Qt::transparent);
+        return;
+    }
+    const qreal r = ((src.redF() * sa) + (dst.redF() * da * (1.0 - sa))) / outA;
+    const qreal g = ((src.greenF() * sa) + (dst.greenF() * da * (1.0 - sa))) / outA;
+    const qreal b = ((src.blueF() * sa) + (dst.blueF() * da * (1.0 - sa))) / outA;
+    image->setPixelColor(x, y, QColor::fromRgbF(r, g, b, outA));
+}
+
+void fillRoundedRectSoftware(QImage* image, const QRectF& rect, qreal radius, const QColor& color)
+{
+    if (!image || image->isNull() || rect.isEmpty()) {
+        return;
+    }
+    const int left = qMax(0, static_cast<int>(std::floor(rect.left())));
+    const int top = qMax(0, static_cast<int>(std::floor(rect.top())));
+    const int right = qMin(image->width() - 1, static_cast<int>(std::ceil(rect.right())));
+    const int bottom = qMin(image->height() - 1, static_cast<int>(std::ceil(rect.bottom())));
+    const qreal r = qMax<qreal>(0.0, radius);
+    const qreal cxLeft = rect.left() + r;
+    const qreal cxRight = rect.right() - r;
+    const qreal cyTop = rect.top() + r;
+    const qreal cyBottom = rect.bottom() - r;
+    for (int y = top; y <= bottom; ++y) {
+        for (int x = left; x <= right; ++x) {
+            const qreal px = static_cast<qreal>(x) + 0.5;
+            const qreal py = static_cast<qreal>(y) + 0.5;
+            bool inside = true;
+            if (r > 0.0 && px < cxLeft && py < cyTop) {
+                inside = std::hypot(px - cxLeft, py - cyTop) <= r;
+            } else if (r > 0.0 && px > cxRight && py < cyTop) {
+                inside = std::hypot(px - cxRight, py - cyTop) <= r;
+            } else if (r > 0.0 && px < cxLeft && py > cyBottom) {
+                inside = std::hypot(px - cxLeft, py - cyBottom) <= r;
+            } else if (r > 0.0 && px > cxRight && py > cyBottom) {
+                inside = std::hypot(px - cxRight, py - cyBottom) <= r;
+            }
+            if (inside) {
+                blendPixel(image, x, y, color, color.alpha());
+            }
+        }
+    }
+}
+
+int alphaAt(const QImage& image, int x, int y)
+{
+    if (image.format() == QImage::Format_Alpha8 || image.format() == QImage::Format_Grayscale8) {
+        return static_cast<int>(image.constScanLine(y)[x]);
+    }
+    return image.pixelColor(x, y).alpha();
+}
+
+qreal drawGlyphText(QImage* image,
+                    const QRawFont& rawFont,
+                    qreal x,
+                    qreal baseline,
+                    const QString& text,
+                    const QColor& color)
+{
+    if (!image || !rawFont.isValid() || text.isEmpty()) {
+        return 0.0;
+    }
+    const QVector<quint32> glyphs = rawFont.glyphIndexesForString(text);
+    const QVector<QPointF> advances = rawFont.advancesForGlyphIndexes(glyphs);
+    qreal cursor = x;
+    for (int i = 0; i < glyphs.size(); ++i) {
+        const quint32 glyph = glyphs.at(i);
+        const QRectF bounds = rawFont.boundingRect(glyph);
+        const QImage alpha = rawFont.alphaMapForGlyph(glyph, QRawFont::PixelAntialiasing);
+        const int glyphX = static_cast<int>(std::floor(cursor + bounds.left()));
+        const int glyphY = static_cast<int>(std::floor(baseline + bounds.top()));
+        for (int gy = 0; gy < alpha.height(); ++gy) {
+            for (int gx = 0; gx < alpha.width(); ++gx) {
+                const int a = alphaAt(alpha, gx, gy);
+                if (a > 0) {
+                    blendPixel(image, glyphX + gx, glyphY + gy, color, (a * color.alpha()) / 255);
+                }
+            }
+        }
+        cursor += (i < advances.size()) ? advances.at(i).x() : bounds.width();
+    }
+    return cursor - x;
+}
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
                         uint32_t typeFilter,
@@ -119,6 +360,10 @@ void transitionImageLayout(VkCommandBuffer cmd,
                            VkImageLayout oldLayout,
                            VkImageLayout newLayout)
 {
+    if (oldLayout == newLayout) {
+        return;
+    }
+
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = oldLayout;
@@ -152,6 +397,12 @@ void transitionImageLayout(VkCommandBuffer cmd,
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         srcStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+        dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+               newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+        barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        srcStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         dstStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
                newLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
@@ -210,7 +461,7 @@ void transitionImageLayout(VkCommandBuffer cmd,
 
 class OffscreenVulkanRendererPrivate {
 public:
-    static constexpr int kMaxLayerTextures = 1;
+    static constexpr int kMaxLayerTextures = 8;
     static constexpr int kFrameSlots = 3;
     struct FrameSlot {
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -355,6 +606,15 @@ public:
         }
 
         vkGetDeviceQueue(m_device, m_graphicsQueueFamily, 0, &m_graphicsQueue);
+        uint32_t selectedQueueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &selectedQueueFamilyCount, nullptr);
+        QVector<VkQueueFamilyProperties> selectedFamilies(static_cast<int>(selectedQueueFamilyCount));
+        vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice,
+                                                 &selectedQueueFamilyCount,
+                                                 selectedFamilies.data());
+        m_graphicsQueueSupportsCompute =
+            m_graphicsQueueFamily < static_cast<uint32_t>(selectedFamilies.size()) &&
+            (selectedFamilies[static_cast<int>(m_graphicsQueueFamily)].queueFlags & VK_QUEUE_COMPUTE_BIT);
         m_vkGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
             vkGetDeviceProcAddr(m_device, "vkGetMemoryFdKHR"));
         qInfo().noquote()
@@ -663,9 +923,10 @@ public:
             return false;
         }
 
-        const VkDeviceSize stagingSize =
+        const VkDeviceSize layerStagingSize =
             static_cast<VkDeviceSize>(m_outputSize.width()) *
             static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
+        const VkDeviceSize stagingSize = layerStagingSize * kMaxLayerTextures;
         VkBufferCreateInfo stagingBufInfo{};
         stagingBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
         stagingBufInfo.size = stagingSize;
@@ -1500,12 +1761,19 @@ public:
         m_graphicsQueueFamily = UINT32_MAX;
         m_initialized = false;
         m_yuv420pPlanesPrimed = false;
+        m_colorImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     struct LayerInput {
         QImage image;
         QString cacheKey;
+        float brightness = 0.0f;
+        float contrast = 1.0f;
+        float saturation = 1.0f;
         float opacity = 1.0f;
+        float shadows[3] = {0.0f, 0.0f, 0.0f};
+        float midtones[3] = {0.0f, 0.0f, 0.0f};
+        float highlights[3] = {0.0f, 0.0f, 0.0f};
         float mvp[16] = {
             1.f,0.f,0.f,0.f,
             0.f,1.f,0.f,0.f,
@@ -1616,13 +1884,19 @@ public:
 
         struct Push {
             float mvp[16];
+            float brightness;
+            float contrast;
+            float saturation;
             float opacity;
+            float shadows[3];
+            float midtones[3];
+            float highlights[3];
         } push{};
         transitionImageLayout(m_commandBuffer,
                               m_colorImage,
-                              m_colorImagePrimed ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
-                                                 : VK_IMAGE_LAYOUT_UNDEFINED,
+                              m_colorImageLayout,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         VkClearColorValue clearColor{};
         clearColor.float32[0] = 0.0f;
         clearColor.float32[1] = 0.0f;
@@ -1644,6 +1918,7 @@ public:
                               m_colorImage,
                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        m_colorImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
         VkClearValue clearValue{};
         clearValue.color = {{0.0f, 0.0f, 0.0f, 1.0f}};
@@ -1672,6 +1947,9 @@ public:
         int layerIndex = 0;
         while (layerIndex < layers.size()) {
             const int batchCount = qMin(kMaxLayerTextures, layers.size() - layerIndex);
+            const VkDeviceSize layerStagingSize =
+                static_cast<VkDeviceSize>(m_outputSize.width()) *
+                static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
             for (int i = 0; i < batchCount; ++i) {
                 const LayerInput& layer = layers.at(layerIndex + i);
                 if (layer.image.isNull()) {
@@ -1697,7 +1975,10 @@ public:
                     return QImage();
                 }
                 const size_t bytes = static_cast<size_t>(rgba.sizeInBytes());
-                std::memcpy(m_stagingMapped, rgba.constBits(), bytes);
+                const VkDeviceSize stagingOffset = layerStagingSize * i;
+                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset,
+                            rgba.constBits(),
+                            bytes);
 
                 LayerTextureSlot& slot = m_layerSlots[i];
                 transitionImageLayout(
@@ -1706,7 +1987,7 @@ public:
                     slot.uploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
                 VkBufferImageCopy uploadRegion{};
-                uploadRegion.bufferOffset = 0;
+                uploadRegion.bufferOffset = stagingOffset;
                 uploadRegion.bufferRowLength = 0;
                 uploadRegion.bufferImageHeight = 0;
                 uploadRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -1752,7 +2033,13 @@ public:
                                         0,
                                         nullptr);
                 std::memcpy(push.mvp, layer.mvp, sizeof(push.mvp));
+                push.brightness = layer.brightness;
+                push.contrast = layer.contrast;
+                push.saturation = layer.saturation;
                 push.opacity = qBound(0.0f, layer.opacity, 1.0f);
+                std::memcpy(push.shadows, layer.shadows, sizeof(push.shadows));
+                std::memcpy(push.midtones, layer.midtones, sizeof(push.midtones));
+                std::memcpy(push.highlights, layer.highlights, sizeof(push.highlights));
                 vkCmdPushConstants(m_commandBuffer,
                                    m_effectsPipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -1769,6 +2056,7 @@ public:
                               m_colorImage,
                               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        m_colorImageLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         if (readbackToImage) {
             VkBufferImageCopy readbackRegion{};
             readbackRegion.bufferOffset = 0;
@@ -1824,6 +2112,60 @@ public:
         }
         m_colorImagePrimed = true;
         return out;
+    }
+
+    bool finishLastFrameForExternalSampling(OffscreenVulkanFrame* frame, QString* errorMessage) const
+    {
+        if (!frame) {
+            return false;
+        }
+        frame->valid = false;
+        if (!m_initialized || m_device == VK_NULL_HANDLE || m_colorImageView == VK_NULL_HANDLE ||
+            m_activeSlotIndex < 0 || m_activeSlotIndex >= m_frameSlots.size()) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("No rendered Vulkan frame is available.");
+            }
+            return false;
+        }
+        auto* self = const_cast<OffscreenVulkanRendererPrivate*>(this);
+        if (m_commandBufferOpenForConversion) {
+            transitionImageLayout(self->m_commandBuffer,
+                                  self->m_colorImage,
+                                  self->m_colorImageLayout,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            self->m_colorImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            if (vkEndCommandBuffer(self->m_commandBuffer) != VK_SUCCESS) {
+                if (errorMessage) {
+                    *errorMessage = QStringLiteral("Failed to finish Vulkan render command buffer.");
+                }
+                return false;
+            }
+            if (!self->submitAndWait()) {
+                if (errorMessage) {
+                    *errorMessage = QStringLiteral("Failed to submit Vulkan render command buffer.");
+                }
+                return false;
+            }
+            self->m_commandBufferOpenForConversion = false;
+        } else if (m_colorImageLayout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                   m_colorImageLayout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Rendered Vulkan frame is not in a sampleable state.");
+            }
+            return false;
+        }
+
+        frame->physicalDevice = m_physicalDevice;
+        frame->device = m_device;
+        frame->queue = m_graphicsQueue;
+        frame->queueFamilyIndex = m_graphicsQueueFamily;
+        frame->image = m_colorImage;
+        frame->imageView = m_colorImageView;
+        frame->imageLayout = m_colorImageLayout;
+        frame->size = m_outputSize;
+        frame->queueSupportsCompute = m_graphicsQueueSupportsCompute;
+        frame->valid = true;
+        return true;
     }
 
     bool convertLastFrameToNv12(AVFrame* frame, qint64* nv12ConvertMs, qint64* readbackMs)
@@ -2477,6 +2819,157 @@ public:
                m_cudaExportBuffersReady;
     }
 
+    void renderTranscriptLayer(QImage* layer,
+                               const RenderRequest& request,
+                               int64_t timelineFrame,
+                               const QVector<TimelineClip>& orderedClips)
+    {
+        if (!layer) {
+            return;
+        }
+        renderTranscriptOverlays(layer, request, timelineFrame, orderedClips, m_transcriptCache);
+    }
+
+    void renderTranscriptLayerVulkanText(QImage* layer,
+                                         const RenderRequest& request,
+                                         int64_t timelineFrame,
+                                         const QVector<TimelineClip>& orderedClips)
+    {
+        if (!layer || layer->isNull()) {
+            return;
+        }
+        const bool debugSubtitles = vulkanSubtitleDebugEnabled();
+        const bool dumpSubtitles = vulkanSubtitleDumpEnabled();
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const bool emitDiagnostics = debugSubtitles && (now - m_lastSubtitleDiagnosticMs >= 1000);
+        if (emitDiagnostics) {
+            m_lastSubtitleDiagnosticMs = now;
+        }
+        for (const TimelineClip& clip : orderedClips) {
+            if (timelineFrame < clip.startFrame || timelineFrame >= clip.startFrame + clip.durationFrames) {
+                continue;
+            }
+            if (!((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled)) {
+                continue;
+            }
+            const TranscriptOverlayLayout overlayLayout =
+                transcriptOverlayLayoutForFrame(clip, timelineFrame, request.renderSyncMarkers, m_transcriptCache);
+
+            const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+            const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+                clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
+            const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
+            const QRectF bounds = transcriptOverlayRectInOutputSpace(
+                clip, request.outputSize, transcriptPath, sections, sourceFrame);
+            if (overlayLayout.lines.isEmpty()) {
+                if (emitDiagnostics) {
+                    qWarning().noquote()
+                        << QStringLiteral("[vulkan-subtitle] frame=%1 clip=%2 media=%3 has_audio=%4 enabled=%5 path=\"%6\" sections=%7 source_frame=%8 lines=0 reason=empty_layout")
+                               .arg(timelineFrame)
+                               .arg(clip.id)
+                               .arg(clipMediaTypeLabel(clip.mediaType))
+                               .arg(clip.hasAudio)
+                               .arg(clip.transcriptOverlay.enabled)
+                               .arg(transcriptPath)
+                               .arg(sections.size())
+                               .arg(sourceFrame);
+                }
+                continue;
+            }
+            if (clip.transcriptOverlay.showBackground) {
+                fillRoundedRectSoftware(layer, bounds, 14.0, QColor(0, 0, 0, 120));
+            }
+
+            QFont font(clip.transcriptOverlay.fontFamily);
+            font.setPixelSize(clip.transcriptOverlay.fontPointSize);
+            font.setBold(clip.transcriptOverlay.bold);
+            font.setItalic(clip.transcriptOverlay.italic);
+            const QRawFont rawFont = QRawFont::fromFont(font);
+            if (!rawFont.isValid()) {
+                qWarning().noquote()
+                    << QStringLiteral("[vulkan-compose] transcript text skipped: invalid raw font \"%1\"")
+                           .arg(clip.transcriptOverlay.fontFamily);
+                continue;
+            }
+            int glyphCount = 0;
+            QFontMetricsF metrics(font);
+            const QRectF textBounds = bounds.adjusted(18.0, 14.0, -18.0, -14.0);
+            const qreal lineHeight = qMax<qreal>(1.0, metrics.lineSpacing());
+            const qreal totalHeight = lineHeight * static_cast<qreal>(overlayLayout.lines.size());
+            qreal baseline = textBounds.top() +
+                             qMax<qreal>(0.0, (textBounds.height() - totalHeight) / 2.0) +
+                             metrics.ascent();
+            const QColor textColor = clip.transcriptOverlay.textColor.isValid()
+                                         ? clip.transcriptOverlay.textColor
+                                         : QColor(Qt::white);
+            const QColor shadowColor(0, 0, 0, 200);
+            const QColor highlightFillColor(QStringLiteral("#fff2a8"));
+            const QColor highlightTextColor(QStringLiteral("#181818"));
+            for (const TranscriptOverlayLine& line : overlayLayout.lines) {
+                const QString lineText = line.words.join(QLatin1Char(' '));
+                const qreal lineWidth = metrics.horizontalAdvance(lineText);
+                const qreal startX = textBounds.left() + qMax<qreal>(0.0, (textBounds.width() - lineWidth) / 2.0);
+                qreal cursor = startX;
+                for (int wordIndex = 0; wordIndex < line.words.size(); ++wordIndex) {
+                    const QString word = line.words.at(wordIndex);
+                    const qreal wordWidth = metrics.horizontalAdvance(word);
+                    const bool active = wordIndex == line.activeWord;
+                    if (active) {
+                        const QRectF highlight(cursor - 5.0,
+                                               baseline - metrics.ascent() - 2.0,
+                                               wordWidth + 10.0,
+                                               lineHeight + 4.0);
+                        fillRoundedRectSoftware(layer, highlight, 8.0, highlightFillColor);
+                    }
+                    const QColor glyphColor = active ? highlightTextColor : textColor;
+                    glyphCount += rawFont.glyphIndexesForString(word).size();
+                    drawGlyphText(layer, rawFont, cursor + 3.0, baseline + 3.0, word, shadowColor);
+                    drawGlyphText(layer, rawFont, cursor, baseline, word, glyphColor);
+                    cursor += wordWidth;
+                    if (wordIndex + 1 < line.words.size()) {
+                        cursor += metrics.horizontalAdvance(QLatin1Char(' '));
+                    }
+                }
+                baseline += lineHeight;
+            }
+            const SubtitlePixelCounts counts = countSubtitlePixels(*layer, bounds);
+            if (emitDiagnostics) {
+                qWarning().noquote()
+                    << QStringLiteral("[vulkan-subtitle] frame=%1 clip=%2 media=%3 has_audio=%4 enabled=%5 path=\"%6\" sections=%7 source_frame=%8 lines=%9 glyphs=%10 font=\"%11\" raw_font=%12 bounds=(%13,%14 %15x%16) pixels_dark=%17 pixels_bright=%18 pixels_yellow=%19 pixels_alpha=%20")
+                           .arg(timelineFrame)
+                           .arg(clip.id)
+                           .arg(clipMediaTypeLabel(clip.mediaType))
+                           .arg(clip.hasAudio)
+                           .arg(clip.transcriptOverlay.enabled)
+                           .arg(transcriptPath)
+                           .arg(sections.size())
+                           .arg(sourceFrame)
+                           .arg(overlayLayout.lines.size())
+                           .arg(glyphCount)
+                           .arg(clip.transcriptOverlay.fontFamily)
+                           .arg(rawFont.isValid())
+                           .arg(bounds.x(), 0, 'f', 1)
+                           .arg(bounds.y(), 0, 'f', 1)
+                           .arg(bounds.width(), 0, 'f', 1)
+                           .arg(bounds.height(), 0, 'f', 1)
+                           .arg(counts.dark)
+                           .arg(counts.bright)
+                           .arg(counts.yellow)
+                           .arg(counts.nonTransparent);
+            }
+            if (dumpSubtitles && now - m_lastSubtitleDumpMs >= 1000) {
+                m_lastSubtitleDumpMs = now;
+                const QString baseName = QStringLiteral("jcut-vulkan-subtitle-layer-f%1-%2.png")
+                                             .arg(timelineFrame)
+                                             .arg(clip.id.left(8));
+                const QString path = QDir::temp().filePath(baseName);
+                layer->save(path);
+                qWarning().noquote()
+                    << QStringLiteral("[vulkan-subtitle] dumped_layer=\"%1\"").arg(path);
+            }
+        }
+    }
+
 private:
     QSize m_outputSize;
     bool m_initialized = false;
@@ -2488,6 +2981,7 @@ private:
     VkQueue m_graphicsQueue = VK_NULL_HANDLE;
     bool m_externalMemoryFdSupported = false;
     bool m_externalSemaphoreFdSupported = false;
+    bool m_graphicsQueueSupportsCompute = false;
     PFN_vkGetMemoryFdKHR m_vkGetMemoryFdKHR = nullptr;
 
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
@@ -2523,6 +3017,9 @@ private:
     };
     QVector<LayerTextureSlot> m_layerSlots;
     QHash<QString, QImage> m_preparedImageCache;
+    QHash<QString, QVector<TranscriptSection>> m_transcriptCache;
+    qint64 m_lastSubtitleDiagnosticMs = 0;
+    qint64 m_lastSubtitleDumpMs = 0;
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
     void* m_stagingMapped = nullptr;
@@ -2567,6 +3064,7 @@ private:
     VkFramebuffer m_yuv420pVFramebuffer = VK_NULL_HANDLE;
     AVFrame* m_nv12ScratchFrame = nullptr;
     bool m_colorImagePrimed = false;
+    VkImageLayout m_colorImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     bool m_yuv420pPlanesPrimed = false;
     bool m_commandBufferOpenForConversion = false;
 };
@@ -2615,37 +3113,99 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         *readbackMs = 0;
     }
     QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
-    layers.reserve(orderedClips.size());
+    layers.reserve(orderedClips.size() + 1);
+    bool hasTranscriptCandidate = false;
+    int visualClipCandidates = 0;
+    int visualLayersResolved = 0;
+    int decodePathMissingCount = 0;
+    int decodeNullCount = 0;
+    int decodeConvertFailCount = 0;
+    QRectF transcriptLayerBounds;
     for (const TimelineClip& clip : orderedClips) {
         if (timelineFrame < clip.startFrame || timelineFrame >= clip.startFrame + clip.durationFrames) {
             continue;
         }
-        if (!clipVisualPlaybackEnabled(clip, request.tracks) ||
-            clip.mediaType == ClipMediaType::Title ||
-            clip.filePath.isEmpty()) {
+        if (!clipVisualPlaybackEnabled(clip, request.tracks)) {
             continue;
         }
+        if ((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled) {
+            hasTranscriptCandidate = true;
+        }
         const TimelineClip::GradingKeyframe grade =
-            evaluateClipGradingAtPosition(clip, static_cast<qreal>(timelineFrame));
+            request.bypassGrading
+                ? TimelineClip::GradingKeyframe{}
+                : evaluateClipGradingAtPosition(clip, static_cast<qreal>(timelineFrame));
         if (grade.opacity <= 0.001) {
             continue;
         }
+        if (clip.mediaType == ClipMediaType::Title) {
+            if (clip.titleKeyframes.isEmpty()) {
+                continue;
+            }
+            const int64_t localFrame = qMax<int64_t>(0, timelineFrame - clip.startFrame);
+            const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
+            const EvaluatedTitle title = composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(grade.opacity));
+            if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
+                continue;
+            }
+
+            QImage titleImage(request.outputSize, QImage::Format_ARGB32_Premultiplied);
+            titleImage.fill(Qt::transparent);
+            QPainter titlePainter(&titleImage);
+            titlePainter.setRenderHint(QPainter::Antialiasing, true);
+            titlePainter.setRenderHint(QPainter::TextAntialiasing, true);
+            drawTitleOverlay(&titlePainter, QRect(QPoint(0, 0), request.outputSize), title, request.outputSize);
+            titlePainter.end();
+
+            OffscreenVulkanRendererPrivate::LayerInput layer;
+            layer.image = titleImage;
+            layer.opacity = 1.0f;
+            layers.push_back(layer);
+            continue;
+        }
+        const QString decodePath = playbackMediaPathForClip(clip);
+        if (decodePath.isEmpty()) {
+            ++decodePathMissingCount;
+            continue;
+        }
+        ++visualClipCandidates;
         const int64_t localFrame =
             sourceFrameForClipAtTimelinePosition(
                 clip, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
         const qint64 decodeStart = QDateTime::currentMSecsSinceEpoch();
         const editor::FrameHandle frame =
-            decodeRenderFrame(clip.filePath, localFrame, decoders, asyncDecoder, asyncFrameCache);
+            decodeRenderFrame(decodePath, localFrame, decoders, asyncDecoder, asyncFrameCache);
         if (decodeMs) {
             *decodeMs += (QDateTime::currentMSecsSinceEpoch() - decodeStart);
         }
-        if (!frame.isNull() && frame.hasCpuImage()) {
+        if (frame.isNull()) {
+            ++decodeNullCount;
+            continue;
+        }
+        const QImage layerImage = frameHandleToCpuImage(frame);
+        if (layerImage.isNull()) {
+            ++decodeConvertFailCount;
+            continue;
+        }
+        if (!frame.isNull()) {
             OffscreenVulkanRendererPrivate::LayerInput layer;
-            layer.image = frame.cpuImage();
+            layer.image = layerImage;
             if (clip.mediaType == ClipMediaType::Image) {
                 layer.cacheKey = clip.id + QStringLiteral(":prepared_rgba");
             }
             layer.opacity = static_cast<float>(grade.opacity);
+            layer.brightness = static_cast<float>(grade.brightness);
+            layer.contrast = static_cast<float>(grade.contrast);
+            layer.saturation = static_cast<float>(grade.saturation);
+            layer.shadows[0] = static_cast<float>(grade.shadowsR);
+            layer.shadows[1] = static_cast<float>(grade.shadowsG);
+            layer.shadows[2] = static_cast<float>(grade.shadowsB);
+            layer.midtones[0] = static_cast<float>(grade.midtonesR);
+            layer.midtones[1] = static_cast<float>(grade.midtonesG);
+            layer.midtones[2] = static_cast<float>(grade.midtonesB);
+            layer.highlights[0] = static_cast<float>(grade.highlightsR);
+            layer.highlights[1] = static_cast<float>(grade.highlightsG);
+            layer.highlights[2] = static_cast<float>(grade.highlightsB);
             const TimelineClip::TransformKeyframe transform =
                 evaluateClipRenderTransformAtPosition(
                     clip, static_cast<qreal>(timelineFrame), request.outputSize);
@@ -2666,7 +3226,28 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
                 layer.mvp[i] = mvpData[i];
             }
             layers.push_back(layer);
+            ++visualLayersResolved;
         }
+    }
+    if (hasTranscriptCandidate) {
+        QImage transcriptLayer(request.outputSize, QImage::Format_ARGB32_Premultiplied);
+        transcriptLayer.fill(Qt::transparent);
+        d->renderTranscriptLayerVulkanText(&transcriptLayer, request, timelineFrame, orderedClips);
+        transcriptLayerBounds = alphaBoundsForImage(transcriptLayer);
+        OffscreenVulkanRendererPrivate::LayerInput overlay;
+        overlay.image = transcriptLayer;
+        overlay.opacity = 1.0f;
+        layers.push_back(overlay);
+    }
+    if (visualClipCandidates > 0 && visualLayersResolved == 0) {
+        qWarning().noquote()
+            << QStringLiteral("[vulkan-compose] no visual layers resolved at frame=%1 candidates=%2 decode_path_missing=%3 decode_null=%4 convert_fail=%5")
+                   .arg(timelineFrame)
+                   .arg(visualClipCandidates)
+                   .arg(decodePathMissingCount)
+                   .arg(decodeNullCount)
+                   .arg(decodeConvertFailCount);
+        return QImage();
     }
     if (layers.isEmpty()) {
         OffscreenVulkanRendererPrivate::LayerInput black;
@@ -2683,6 +3264,30 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
     }
     if (!shouldReadbackToImage) {
         return QImage();
+    }
+    if (hasTranscriptCandidate && !output.isNull() && vulkanSubtitleDebugEnabled()) {
+        const QRectF countBounds = transcriptLayerBounds.isValid()
+                                       ? transcriptLayerBounds
+                                       : QRectF(QPointF(0, 0), QSizeF(output.size()));
+        const SubtitlePixelCounts counts = countSubtitlePixels(output, countBounds);
+        qWarning().noquote()
+            << QStringLiteral("[vulkan-subtitle-composite] frame=%1 bounds=(%2,%3 %4x%5) pixels_dark=%6 pixels_bright=%7 pixels_yellow=%8 pixels_alpha=%9")
+                   .arg(timelineFrame)
+                   .arg(countBounds.x(), 0, 'f', 1)
+                   .arg(countBounds.y(), 0, 'f', 1)
+                   .arg(countBounds.width(), 0, 'f', 1)
+                   .arg(countBounds.height(), 0, 'f', 1)
+                   .arg(counts.dark)
+                   .arg(counts.bright)
+                   .arg(counts.yellow)
+                   .arg(counts.nonTransparent);
+        if (vulkanSubtitleDumpEnabled()) {
+            const QString path = QDir::temp().filePath(
+                QStringLiteral("jcut-vulkan-composited-frame-f%1.png").arg(timelineFrame));
+            output.save(path);
+            qWarning().noquote()
+                << QStringLiteral("[vulkan-subtitle-composite] dumped_frame=\"%1\"").arg(path);
+        }
     }
     return output;
 }
@@ -2744,6 +3349,12 @@ bool OffscreenVulkanRenderer::copyLastFrameToBgra(AVFrame* frame,
                                                   qint64* readbackMs)
 {
     return d && d->copyLastFrameToBgra(frame, readbackMs);
+}
+
+bool OffscreenVulkanRenderer::lastRenderedVulkanFrame(OffscreenVulkanFrame* frame,
+                                                      QString* errorMessage) const
+{
+    return d && d->finishLastFrameForExternalSampling(frame, errorMessage);
 }
 
 bool OffscreenVulkanRenderer::supportsCudaExternalMemoryInterop() const

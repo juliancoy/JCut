@@ -62,7 +62,7 @@ QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
                " font-size:0.62em;"
                " margin:0 0 0.30em 0;"
                " color:%1;\">%2</div>")
-        .arg(color.name(QColor::HexArgb), safeTitle);
+        .arg(color.name(QColor::HexRgb), safeTitle);
 }
 }
 

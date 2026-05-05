@@ -89,6 +89,7 @@ private slots:
     void testTranscriptFrameMappingUsesSourceSeconds();
     void testTranscriptOverlaySizingHelpersClampToBox();
     void testTranscriptOverlayLayoutHelperMatchesSectionLayout();
+    void testTranscriptOverlayHtmlUsesQtRichTextRgbColors();
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
     void testTranscriptOverlayManualPlacementOverridesSpeakerTracking();
@@ -512,6 +513,26 @@ void TestTranscriptLogic::testTranscriptOverlayLayoutHelperMatchesSectionLayout(
         QCOMPARE(actual.lines.at(i).words, expected.lines.at(i).words);
         QCOMPARE(actual.lines.at(i).activeWord, expected.lines.at(i).activeWord);
     }
+}
+
+void TestTranscriptLogic::testTranscriptOverlayHtmlUsesQtRichTextRgbColors() {
+    TranscriptOverlayLayout layout;
+    TranscriptOverlayLine line;
+    line.words = {QStringLiteral("hello"), QStringLiteral("world")};
+    line.activeWord = 1;
+    layout.lines.push_back(line);
+
+    const QString html = transcriptOverlayHtml(layout,
+                                               QColor(QStringLiteral("#ffffffff")),
+                                               QColor(QStringLiteral("#ff181818")),
+                                               QColor(QStringLiteral("#fffff2a8")));
+
+    QVERIFY(html.contains(QStringLiteral("#ffffff")));
+    QVERIFY(html.contains(QStringLiteral("#181818")));
+    QVERIFY(html.contains(QStringLiteral("#fff2a8")));
+    QVERIFY(!html.contains(QStringLiteral("#ffffffff")));
+    QVERIFY(!html.contains(QStringLiteral("#ff181818")));
+    QVERIFY(!html.contains(QStringLiteral("#fffff2a8")));
 }
 
 void TestTranscriptLogic::testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation() {

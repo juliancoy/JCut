@@ -73,6 +73,9 @@ private:
     void showExplorerHoverPreview(const QString &filePath);
     void hideExplorerHoverPreview();
     void onThumbnailReady(const QString &filePath, const QString &cacheKey, const QImage &image);
+    void showPathContextMenu(const QString &absolutePath, const QPoint &globalPos);
+    void showTreeContextMenu(const QPoint &pos);
+    void showGalleryContextMenu(const QPoint &pos);
 
     QWidget *buildUi();
     QWidget *buildTreePage();

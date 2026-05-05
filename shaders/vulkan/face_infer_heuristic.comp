@@ -1,0 +1,119 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer TensorBuffer {
+    float tensor[];
+};
+
+struct Detection {
+    float x;
+    float y;
+    float w;
+    float h;
+    float confidence;
+    float pad0;
+    float pad1;
+    float pad2;
+};
+
+layout(std430, binding = 1) buffer DetectionBuffer {
+    uint count;
+    uint maxCount;
+    uint reserved0;
+    uint reserved1;
+    Detection detections[];
+};
+
+layout(push_constant) uniform PushConstants {
+    int tensorWidth;
+    int tensorHeight;
+    int gridWidth;
+    int gridHeight;
+    float threshold;
+    int scaleIndex;
+} pc;
+
+float channelValue(int c, int x, int y)
+{
+    int plane = pc.tensorWidth * pc.tensorHeight;
+    return tensor[c * plane + y * pc.tensorWidth + x];
+}
+
+void main()
+{
+    uint gx = gl_GlobalInvocationID.x;
+    uint gy = gl_GlobalInvocationID.y;
+    if (gx >= uint(pc.gridWidth) || gy >= uint(pc.gridHeight)) {
+        return;
+    }
+
+    float scales[3] = float[3](0.16, 0.24, 0.34);
+    float winNorm = scales[clamp(pc.scaleIndex, 0, 2)];
+    int win = int(round(winNorm * float(pc.tensorWidth)));
+    win = clamp(win, 24, pc.tensorWidth - 2);
+    int stepX = max(1, (pc.tensorWidth - win) / max(1, pc.gridWidth - 1));
+    int stepY = max(1, (pc.tensorHeight - win) / max(1, pc.gridHeight - 1));
+    int x0 = int(gx) * stepX;
+    int y0 = int(gy) * stepY;
+    x0 = clamp(x0, 0, pc.tensorWidth - win - 1);
+    y0 = clamp(y0, 0, pc.tensorHeight - win - 1);
+
+    float skin = 0.0;
+    float contrast = 0.0;
+    float centerWeight = 0.0;
+    const int samples = 10;
+    for (int sy = 0; sy < samples; ++sy) {
+        for (int sx = 0; sx < samples; ++sx) {
+            int px = x0 + (sx * win) / samples + win / (samples * 2);
+            int py = y0 + (sy * win) / samples + win / (samples * 2);
+            px = clamp(px, 1, pc.tensorWidth - 2);
+            py = clamp(py, 1, pc.tensorHeight - 2);
+
+            float b = channelValue(0, px, py) + 104.0;
+            float g = channelValue(1, px, py) + 177.0;
+            float r = channelValue(2, px, py) + 123.0;
+            float maxc = max(r, max(g, b));
+            float minc = min(r, min(g, b));
+            bool skinRgb = r > 70.0 && g > 45.0 && b > 25.0 &&
+                           (maxc - minc) > 12.0 && r > g && g > b &&
+                           (r - g) < 85.0;
+            float lum = 0.299 * r + 0.587 * g + 0.114 * b;
+            bool plausibleLum = lum > 45.0 && lum < 235.0;
+            float dx = abs(float(sx) - 4.5) / 4.5;
+            float dy = abs(float(sy) - 4.5) / 4.5;
+            float weight = 1.0 - clamp((dx * dx + dy * dy) * 0.35, 0.0, 0.7);
+            if (skinRgb && plausibleLum) {
+                skin += weight;
+            }
+            centerWeight += weight;
+
+            float b1 = channelValue(0, px + 1, py) + 104.0;
+            float g1 = channelValue(1, px + 1, py) + 177.0;
+            float r1 = channelValue(2, px + 1, py) + 123.0;
+            float lum1 = 0.299 * r1 + 0.587 * g1 + 0.114 * b1;
+            contrast += abs(lum1 - lum) / 255.0;
+        }
+    }
+
+    float skinRatio = skin / max(centerWeight, 0.001);
+    float contrastRatio = contrast / float(samples * samples);
+    float aspectPrior = 1.0;
+    float score = skinRatio * 0.95 + clamp(contrastRatio * 4.0, 0.0, 0.22) + aspectPrior * 0.06;
+    if (score < pc.threshold) {
+        return;
+    }
+
+    uint idx = atomicAdd(count, 1u);
+    if (idx >= maxCount) {
+        return;
+    }
+    detections[idx].x = float(x0) / float(pc.tensorWidth);
+    detections[idx].y = float(y0) / float(pc.tensorHeight);
+    detections[idx].w = float(win) / float(pc.tensorWidth);
+    detections[idx].h = float(win) / float(pc.tensorHeight);
+    detections[idx].confidence = clamp(score, 0.0, 1.0);
+    detections[idx].pad0 = 0.0;
+    detections[idx].pad1 = 0.0;
+    detections[idx].pad2 = 0.0;
+}

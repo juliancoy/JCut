@@ -30,33 +30,42 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
     PreviewBackendDecision decision;
     decision.requested = renderBackendName(configured);
 
-    if (configured == RenderBackend::Vulkan) {
+    const bool preferVulkan = (configured == RenderBackend::Vulkan || configured == RenderBackend::Auto);
+    if (preferVulkan) {
         auto* surface = new VulkanPreviewSurface(parent);
-        if (surface->isNativeActive()) {
-            decision.effective = QStringLiteral("vulkan");
-            decision.reason = QStringLiteral("Native Vulkan preview surface initialized.");
+        const QString surfaceBackend = surface->backendName();
+        if (surface->asWidget()) {
+            const bool vulkanCompositor = surfaceBackend.contains(QStringLiteral("Vulkan"), Qt::CaseInsensitive);
+            decision.effective = vulkanCompositor ? QStringLiteral("vulkan") : QStringLiteral("opengl");
+            decision.fallbackApplied = !vulkanCompositor;
+            if (vulkanCompositor) {
+                decision.reason = QStringLiteral("Using Vulkan offscreen compositor preview.");
+            } else {
+                decision.reason = QStringLiteral("Vulkan preview unavailable; using OpenGL preview fallback.");
+            }
             logDecision(decision);
             if (decisionOut) {
                 *decisionOut = decision;
             }
             return surface;
-        } else {
-            decision.effective = QStringLiteral("vulkan");
-            decision.fallbackApplied = true;
-            const QString nativeReason = surface->nativeFailureReason().trimmed();
-            decision.reason = nativeReason.isEmpty()
-                ? QStringLiteral("Native Vulkan preview surface unavailable.")
-                : nativeReason;
-            logDecision(decision);
-            if (decisionOut) {
-                *decisionOut = decision;
-            }
-            delete surface;
-            return new PreviewWindow(parent);
         }
+        decision.effective = QStringLiteral("opengl");
+        decision.fallbackApplied = true;
+        const QString nativeReason = surface->nativeFailureReason().trimmed();
+        decision.reason = nativeReason.isEmpty()
+            ? QStringLiteral("Vulkan preview surface unavailable.")
+            : nativeReason;
+        logDecision(decision);
+        if (decisionOut) {
+            *decisionOut = decision;
+        }
+        delete surface;
+        auto* fallback = new PreviewWindow(parent);
+        fallback->setRenderBackendPreference(QStringLiteral("opengl"));
+        return fallback;
     }
 
-    if (configured == RenderBackend::OpenGL || configured == RenderBackend::Auto || configured == RenderBackend::Null) {
+    if (configured == RenderBackend::OpenGL || configured == RenderBackend::Null) {
         decision.effective = QStringLiteral("opengl");
         decision.reason = QStringLiteral("Selected OpenGL preview path.");
         if (configured == RenderBackend::Null) {

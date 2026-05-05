@@ -44,9 +44,8 @@ RenderBackend desiredPreviewBackendFromEnvironment()
 {
     const QString configured = qEnvironmentVariable("JCUT_PREVIEW_BACKEND").trimmed();
     if (configured.isEmpty()) {
-        // Vulkan export is strict by default, but preview remains OpenGL until
-        // the native Vulkan preview path reaches feature parity.
-        return RenderBackend::OpenGL;
+        // Default preview to Vulkan unless explicitly overridden.
+        return RenderBackend::Vulkan;
     }
     return parseRenderBackend(configured);
 }

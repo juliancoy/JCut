@@ -1,0 +1,45 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D inputImage;
+layout(std430, binding = 1) buffer TensorBuffer {
+    float data[];
+} tensor;
+
+layout(push_constant) uniform PushConstants {
+    int dstWidth;
+    int dstHeight;
+    int sourceIsSrgb;
+    int reserved;
+} pc;
+
+vec3 srgbToLinear(vec3 c)
+{
+    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+    vec3 lower = c / 12.92;
+    vec3 higher = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(higher, lower, cutoff);
+}
+
+void main()
+{
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (gid.x >= uint(pc.dstWidth) || gid.y >= uint(pc.dstHeight)) {
+        return;
+    }
+
+    vec2 uv = (vec2(gid) + vec2(0.5)) / vec2(pc.dstWidth, pc.dstHeight);
+    vec3 rgb = texture(inputImage, uv).rgb;
+    if (pc.sourceIsSrgb != 0) {
+        rgb = srgbToLinear(rgb);
+    }
+
+    uint pixel = gid.y * uint(pc.dstWidth) + gid.x;
+    uint plane = uint(pc.dstWidth) * uint(pc.dstHeight);
+
+    // Match OpenCV Res10 blobFromImage(..., mean=BGR(104,177,123), swapRB=false).
+    tensor.data[pixel] = rgb.b * 255.0 - 104.0;
+    tensor.data[plane + pixel] = rgb.g * 255.0 - 177.0;
+    tensor.data[(2u * plane) + pixel] = rgb.r * 255.0 - 123.0;
+}

@@ -7,6 +7,7 @@
 
 #include <QAbstractItemView>
 #include <QApplication>
+#include <QClipboard>
 #include <QDialog>
 #include <QDir>
 #include <QDrag>
@@ -22,6 +23,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QMimeData>
@@ -312,6 +314,66 @@ void ExplorerPane::restoreExpandedExplorerPaths(const QStringList &paths)
     }
 }
 
+void ExplorerPane::showPathContextMenu(const QString &absolutePath, const QPoint &globalPos)
+{
+    const QFileInfo info(absolutePath);
+    if (!info.exists())
+    {
+        return;
+    }
+
+    QMenu menu(this);
+    QAction *copyPathAction = menu.addAction(QStringLiteral("Copy Absolute Path"));
+    connect(copyPathAction, &QAction::triggered, this, [path = info.absoluteFilePath()]()
+    {
+        if (QClipboard *clipboard = QApplication::clipboard())
+        {
+            clipboard->setText(path);
+        }
+    });
+    menu.exec(globalPos);
+}
+
+void ExplorerPane::showTreeContextMenu(const QPoint &pos)
+{
+    if (!m_tree || !m_fsModel)
+    {
+        return;
+    }
+
+    const QModelIndex index = m_tree->indexAt(pos);
+    if (!index.isValid())
+    {
+        return;
+    }
+
+    const QFileInfo info = m_fsModel->fileInfo(index);
+    if (info.exists() && (info.isFile() || info.isDir()))
+    {
+        showPathContextMenu(info.absoluteFilePath(), m_tree->viewport()->mapToGlobal(pos));
+    }
+}
+
+void ExplorerPane::showGalleryContextMenu(const QPoint &pos)
+{
+    if (!m_galleryList)
+    {
+        return;
+    }
+
+    QListWidgetItem *item = m_galleryList->itemAt(pos);
+    if (!item)
+    {
+        return;
+    }
+
+    const QFileInfo info(item->data(Qt::UserRole).toString());
+    if (info.exists() && (info.isFile() || info.isDir()))
+    {
+        showPathContextMenu(info.absoluteFilePath(), m_galleryList->viewport()->mapToGlobal(pos));
+    }
+}
+
 bool ExplorerPane::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == (m_tree ? m_tree->viewport() : nullptr))
@@ -498,6 +560,7 @@ QWidget *ExplorerPane::buildTreePage()
     m_tree->setSortingEnabled(true);
     m_tree->sortByColumn(0, Qt::AscendingOrder);
     m_tree->setMouseTracking(true);
+    m_tree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_tree->viewport()->installEventFilter(this);
 
     layout->addWidget(m_tree, 1);
@@ -519,6 +582,9 @@ QWidget *ExplorerPane::buildTreePage()
             emit fileActivated(info.absoluteFilePath());
         }
     });
+
+    connect(m_tree, &QTreeView::customContextMenuRequested,
+            this, &ExplorerPane::showTreeContextMenu);
 
     connect(m_tree, &QTreeView::entered, this, [this](const QModelIndex &index)
     {
@@ -582,6 +648,7 @@ QWidget *ExplorerPane::buildGalleryPage()
     m_galleryList->setDragEnabled(true);
     m_galleryList->setDragDropMode(QAbstractItemView::DragOnly);
     m_galleryList->setMouseTracking(true);
+    m_galleryList->setContextMenuPolicy(Qt::CustomContextMenu);
     m_galleryList->viewport()->installEventFilter(this);
 
     layout->addWidget(m_galleryList, 1);
@@ -617,6 +684,9 @@ QWidget *ExplorerPane::buildGalleryPage()
             emit fileActivated(path);
         }
     });
+
+    connect(m_galleryList, &QListWidget::customContextMenuRequested,
+            this, &ExplorerPane::showGalleryContextMenu);
 
     connect(m_galleryList, &QListWidget::itemEntered, this, [this](QListWidgetItem *item)
     {

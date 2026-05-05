@@ -1,7 +1,22 @@
 #include "render_internal.h"
 #include "decoder_context.h"
 
+#include <QFileInfo>
+
 namespace render_detail {
+
+namespace {
+
+QString transcriptSectionsCacheKeyForClip(const TimelineClip& clip)
+{
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QFileInfo info(transcriptPath);
+    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    return clip.filePath + QLatin1Char('|') + transcriptPath + QLatin1Char('|') +
+           QString::number(mtimeMs);
+}
+
+} // namespace
 
 void enqueueRenderSequenceLookahead(const RenderRequest& request,
                                     int64_t timelineFrame,
@@ -17,7 +32,7 @@ void enqueueRenderSequenceLookahead(const RenderRequest& request,
     QVector<editor::SequencePrefetchClip> sequenceClips;
     sequenceClips.reserve(orderedClips.size());
     for (const TimelineClip& clip : orderedClips) {
-        sequenceClips.push_back(editor::SequencePrefetchClip{clip, clip.filePath});
+        sequenceClips.push_back(editor::SequencePrefetchClip{clip, playbackMediaPathForClip(clip)});
     }
     const QVector<int64_t> futureTimelineFrames =
         editor::collectLookaheadTimelineFrames(timelineFrame,
@@ -65,7 +80,7 @@ void prewarmRenderSequenceSegment(const RenderRequest& request,
     QVector<editor::SequencePrefetchClip> sequenceClips;
     sequenceClips.reserve(orderedClips.size());
     for (const TimelineClip& clip : orderedClips) {
-        sequenceClips.push_back(editor::SequencePrefetchClip{clip, clip.filePath});
+        sequenceClips.push_back(editor::SequencePrefetchClip{clip, playbackMediaPathForClip(clip)});
     }
     const QVector<int64_t> prewarmTimelineFrames =
         editor::collectLookaheadTimelineFrames(segmentStartFrame - 1,
@@ -194,7 +209,7 @@ QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
                " font-size:0.62em;"
                " margin:0 0 0.30em 0;"
                " color:%1;\">%2</div>")
-        .arg(color.name(QColor::HexArgb), safeTitle);
+        .arg(color.name(QColor::HexRgb), safeTitle);
 }
 
 TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip,
@@ -204,8 +219,16 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
     if (!((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled)) {
         return {};
     }
-    const QString cacheKey = clip.filePath;
+    const QString cacheKey = transcriptSectionsCacheKeyForClip(clip);
     if (!transcriptCache.contains(cacheKey)) {
+        const QString clipCachePrefix = clip.filePath + QLatin1Char('|');
+        for (auto it = transcriptCache.begin(); it != transcriptCache.end();) {
+            if (it.key().startsWith(clipCachePrefix)) {
+                it = transcriptCache.erase(it);
+            } else {
+                ++it;
+            }
+        }
         transcriptCache.insert(cacheKey, loadTranscriptSections(activeTranscriptPathForClipFile(clip.filePath)));
     }
     const QVector<TranscriptSection>& sections = transcriptCache.value(cacheKey);
@@ -240,7 +263,7 @@ void renderTranscriptOverlays(QImage* canvas,
         }
 
         const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-        const auto sectionsIt = transcriptCache.constFind(clip.filePath);
+        const auto sectionsIt = transcriptCache.constFind(transcriptSectionsCacheKeyForClip(clip));
         const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
             clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
         const QVector<TranscriptSection> emptySections;

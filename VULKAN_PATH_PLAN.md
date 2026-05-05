@@ -8,7 +8,7 @@ Final meaning:
 - If Vulkan init/runtime fails => automatic OpenGL fallback with one clear reason.
 - Bridge modes (`vulkan-cpu-present`) are temporary and must be removed before completion.
 
-## Snapshot (as of 2026-05-01)
+## Snapshot (as of 2026-05-03)
 
 ## Completed
 - Backend preference plumbing exists and is persisted (`opengl`, `vulkan`, etc.).
@@ -21,13 +21,15 @@ Final meaning:
 - `vulkan_context.*` added for dedicated Vulkan instance ownership.
 - `vulkan_renderer.*` added for native `QVulkanWindowRenderer` state-driven loop scaffold.
 - Vulkan parity bridge mode added in `VulkanPreviewSurface`:
-  - native Vulkan surface can stay initialized while full timeline/overlay/interaction rendering is driven by the proven preview compositor path
-  - enabled by default when native Vulkan is active (`JCUT_VULKAN_PARITY_BRIDGE != 0`)
-- Native Vulkan surface attempt (`QVulkanWindow`) wired behind opt-in:
+  - full timeline/overlay/interaction rendering is driven by the proven preview compositor path
+  - used by default for the Vulkan backend until the native swapchain compositor reaches parity
+- Native Vulkan surface attempt (`QVulkanWindow`) kept behind opt-in:
   - `JCUT_VULKAN_NATIVE_SURFACE=1`
-- Runtime reporting now reflects actual outcome:
-  - native init success => `effective=vulkan`
-  - otherwise => `effective=vulkan-cpu-present` with fallback reason.
+  - native surface still uses parity bridge unless `JCUT_VULKAN_PARITY_BRIDGE=0`
+- Runtime reporting should reflect actual outcome:
+  - default Vulkan path => full Vulkan preview compositor through the stable preview surface
+  - native init success with bridge disabled => experimental native swapchain path
+  - init/runtime failure => OpenGL fallback with reason.
 - Existing bridge fallback path remains stable and benchmark harness still works.
 
 ## Not Completed (Critical)
@@ -42,7 +44,7 @@ Final meaning:
 ## Current Architecture State
 - `PreviewSurface` is the shared interface used by editor orchestration.
 - `VulkanPreviewSurface` currently does:
-  - try native `QVulkanWindow` init (optional via env)
+  - try native `QVulkanWindow` init only when explicitly requested
   - run parity bridge path for full feature parity in Vulkan backend mode
   - optionally run native state path via `VulkanRendererState` + `VulkanNativeWindow` when bridge is disabled
   - otherwise fallback to `VulkanPreviewWindow` bridge delegate
@@ -127,7 +129,7 @@ Final meaning:
 
 ## Known Issues / Risks To Address Tomorrow
 1. Native Vulkan mode currently initializes surface but is not full compositor parity.
-2. Native renderer currently presents scaffold frames only; timeline composition is not wired.
+2. Native renderer currently does not record swapchain draw commands for the composed preview frame; do not use it as the default path.
 3. Swapchain/device-loss fallback hardening is not implemented yet.
 4. Ensure no hidden OpenGL dependency remains once compositor migration completes.
 

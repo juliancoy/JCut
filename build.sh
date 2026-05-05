@@ -21,6 +21,7 @@ RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
 FFMPEG_REBUILT="0"
 RUN_FACE_BENCH="no"
+JCUT_OPENCV_CUDA_MODE="${JCUT_OPENCV_CUDA:-auto}"
 
 ensure_submodule_checkout() {
     local submodule_path="$1"
@@ -309,18 +310,55 @@ if [[ "${FFMPEG_REBUILT}" == "1" ]]; then
     rm -rf "${BUILD_DIR}"
 fi
 
-if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
-    if [[ "${ASAN}" == "ON" ]]; then
-        cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
-            -G "${CMAKE_GENERATOR}" \
-            -DEDITOR_ASAN=ON \
-            -DCMAKE_BUILD_TYPE=Debug
+opencv_cuda_args=(-DJCUT_ENABLE_OPENCV_CUDA=OFF)
+if [[ "${JCUT_OPENCV_CUDA_MODE}" != "off" ]]; then
+    has_nvcc="0"
+    has_cudnn="0"
+    if command -v nvcc >/dev/null 2>&1; then
+        has_nvcc="1"
+    fi
+    if { compgen -G "/usr/include/cudnn*.h" >/dev/null || compgen -G "/usr/local/cuda/include/cudnn*.h" >/dev/null; } &&
+       ldconfig -p 2>/dev/null | grep -q 'libcudnn'; then
+        has_cudnn="1"
+    fi
+    if [[ "${has_nvcc}" == "1" && "${has_cudnn}" == "1" ]]; then
+        opencv_cuda_args=(
+            -DJCUT_ENABLE_OPENCV_CUDA=ON
+            -DWITH_CUDA=ON
+            -DWITH_CUBLAS=ON
+            -DWITH_CUDNN=ON
+            -DOPENCV_DNN_CUDA=ON
+        )
+    elif [[ "${JCUT_OPENCV_CUDA_MODE}" == "on" ]]; then
+        echo "Requested JCUT_OPENCV_CUDA=on, but CUDA DNN prerequisites are incomplete (nvcc=${has_nvcc}, cudnn=${has_cudnn})." >&2
+        echo "Install CUDA Toolkit plus cuDNN development headers/libraries, then rerun the build." >&2
+        exit 1
     else
-        cmake -S "${SCRIPT_DIR}" -B "${BUILD_DIR}" \
-            -G "${CMAKE_GENERATOR}" \
-            -DEDITOR_ASAN=OFF
+        echo "OpenCV CUDA DNN not enabled (nvcc=${has_nvcc}, cudnn=${has_cudnn}); CUDA detector preset will be available only after rebuilding with cuDNN."
     fi
 fi
+
+cmake_configure_args=(
+    -S "${SCRIPT_DIR}"
+    -B "${BUILD_DIR}"
+    -G "${CMAKE_GENERATOR}"
+    -DJCUT_USE_SYSTEM_FFMPEG=OFF
+    -DJCUT_USE_OPENCV_CONTRIB=ON
+    -DWITH_VULKAN=ON
+    "${opencv_cuda_args[@]}"
+)
+if [[ "${ASAN}" == "ON" ]]; then
+    cmake_configure_args+=(
+        -DEDITOR_ASAN=ON
+        -DCMAKE_BUILD_TYPE=Debug
+    )
+else
+    cmake_configure_args+=(
+        -DEDITOR_ASAN=OFF
+    )
+fi
+cmake "${cmake_configure_args[@]}"
+
 if [[ "${BUILD_TARGET}" == "all" ]]; then
     cmake --build "${BUILD_DIR}" -j
 else

@@ -366,6 +366,8 @@ bool PreviewWindow::ensureVulkanPreviewRenderer(bool promptOnFallback)
     m_renderBackendFallbackReason = error.isEmpty()
         ? QStringLiteral("Vulkan preview initialization failed.")
         : error;
+    ++m_renderBackendFallbackCount;
+    m_lastRenderBackendFallbackMs = nowMs();
 
     bool allowFallback = true;
     if (promptOnFallback && !qEnvironmentVariable("QT_QPA_PLATFORM").contains("offscreen", Qt::CaseInsensitive)) {
@@ -603,6 +605,18 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("widget_visible"), isVisible()},
                          {QStringLiteral("updates_enabled"), updatesEnabled()},
                          {QStringLiteral("bypass_grading"), m_bypassGrading}};
+    snapshot[QStringLiteral("render_backend")] = QJsonObject{
+        {QStringLiteral("requested"), m_requestedRenderBackend},
+        {QStringLiteral("effective"), m_effectiveRenderBackend},
+        {QStringLiteral("vulkan_preview_active"), m_vulkanPreviewActive},
+        {QStringLiteral("fallback_reason"), m_renderBackendFallbackReason},
+        {QStringLiteral("fallback_count"), m_renderBackendFallbackCount},
+        {QStringLiteral("last_fallback_ms"), m_lastRenderBackendFallbackMs},
+        {QStringLiteral("vulkan_compose_success_count"), m_vulkanComposeSuccessCount},
+        {QStringLiteral("vulkan_compose_failure_count"), m_vulkanComposeFailureCount},
+        {QStringLiteral("last_vulkan_compose_success_ms"), m_lastVulkanComposeSuccessMs},
+        {QStringLiteral("last_vulkan_compose_failure_ms"), m_lastVulkanComposeFailureMs}
+    };
 
     // Render timing statistics
     QJsonObject renderTiming;

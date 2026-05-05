@@ -347,4 +347,10 @@ private:
     QString m_requestedRenderBackend = QStringLiteral("opengl");
     QString m_effectiveRenderBackend = QStringLiteral("opengl");
     QString m_renderBackendFallbackReason;
+    qint64 m_renderBackendFallbackCount = 0;
+    qint64 m_lastRenderBackendFallbackMs = 0;
+    qint64 m_vulkanComposeSuccessCount = 0;
+    qint64 m_vulkanComposeFailureCount = 0;
+    qint64 m_lastVulkanComposeSuccessMs = 0;
+    qint64 m_lastVulkanComposeFailureMs = 0;
 };

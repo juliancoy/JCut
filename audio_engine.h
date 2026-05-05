@@ -978,6 +978,44 @@ private:
                   qreal playbackRate) {
         std::fill(output, output + frames * m_channelCount, 0.0f);
         const qreal clampedRate = qBound<qreal>(0.1, playbackRate, 3.0);
+        struct PreparedClipAudio {
+            const TimelineClip* clip = nullptr;
+            AudioClipCacheEntry audio;
+            int64_t clipStartSample = 0;
+            int64_t clipEndSample = 0;
+            int64_t sourceInSample = 0;
+        };
+        QVector<PreparedClipAudio> preparedClips;
+        preparedClips.reserve(context.clips.size());
+        for (const TimelineClip& clip : context.clips) {
+            if (!clipAudioPlaybackEnabled(clip)) {
+                continue;
+            }
+            const QString audioPath = playbackAudioPathForClip(clip);
+            const AudioClipCacheEntry audio = clipCacheForPathCopy(audioPath);
+            if (!audio.valid) {
+                continue;
+            }
+            const int64_t clipStartSample = clipTimelineStartSamples(clip);
+            const int64_t sourceInSample = clipSourceInSamples(clip);
+            const int64_t clipAvailableSamples =
+                (audio.samples.size() / m_channelCount) - sourceInSample;
+            if (clipAvailableSamples <= 0) {
+                continue;
+            }
+            const int64_t clipEndSample = clipStartSample + qMin<int64_t>(
+                clip.durationFrames * m_sampleRate / kTimelineFps, clipAvailableSamples);
+            if (clipEndSample <= clipStartSample) {
+                continue;
+            }
+            PreparedClipAudio prepared;
+            prepared.clip = &clip;
+            prepared.audio = audio;
+            prepared.clipStartSample = clipStartSample;
+            prepared.clipEndSample = clipEndSample;
+            prepared.sourceInSample = sourceInSample;
+            preparedClips.push_back(prepared);
+        }
 
         for (int outFrame = 0; outFrame < frames; ++outFrame) {
             const int64_t timelineOffset =
@@ -985,25 +1023,11 @@ private:
             const int64_t timelineSamplePos = chunkStartSample + timelineOffset;
             const int outIndex = outFrame * m_channelCount;
 
-            for (const TimelineClip& clip : context.clips) {
-                if (!clipAudioPlaybackEnabled(clip)) {
-                    continue;
-                }
-                const AudioClipCacheEntry audio = clipCacheForPathCopy(playbackAudioPathForClip(clip));
-                if (!audio.valid) {
-                    continue;
-                }
-
-                const int64_t clipStartSample = clipTimelineStartSamples(clip);
-                const int64_t sourceInSample = clipSourceInSamples(clip);
-                const int64_t clipAvailableSamples =
-                    (audio.samples.size() / m_channelCount) - sourceInSample;
-                if (clipAvailableSamples <= 0) {
-                    continue;
-                }
-                const int64_t clipEndSample = clipStartSample + qMin<int64_t>(
-                    clip.durationFrames * m_sampleRate / kTimelineFps, clipAvailableSamples);
-                if (timelineSamplePos < clipStartSample || timelineSamplePos >= clipEndSample) {
+            for (const PreparedClipAudio& prepared : preparedClips) {
+                const TimelineClip& clip = *prepared.clip;
+                const AudioClipCacheEntry& audio = prepared.audio;
+                if (timelineSamplePos < prepared.clipStartSample ||
+                    timelineSamplePos >= prepared.clipEndSample) {
                     continue;
                 }
 
@@ -1031,8 +1055,8 @@ private:
                 const float primaryClipGain = calculateClipCrossfadeGain(
                     timelineSamplePos,
                     clip,
-                    clipStartSample,
-                    clipEndSample,
+                    prepared.clipStartSample,
+                    prepared.clipEndSample,
                     clip.fadeSamples > 0 ? clip.fadeSamples : m_defaultFadeSamples);
                 const float primaryGain = primarySpeechGain * primaryClipGain;
                 if (primaryGain > 0.0f) {
@@ -1049,8 +1073,8 @@ private:
                         const float secondaryClipGain = calculateClipCrossfadeGain(
                             secondaryTimelineSample,
                             clip,
-                            clipStartSample,
-                            clipEndSample,
+                            prepared.clipStartSample,
+                            prepared.clipEndSample,
                             clip.fadeSamples > 0 ? clip.fadeSamples : m_defaultFadeSamples);
                         const float secondaryGain = secondarySpeechGain * secondaryClipGain;
                         output[outIndex] += audio.samples[secondaryInIndex] * secondaryGain;

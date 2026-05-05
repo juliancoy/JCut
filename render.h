@@ -52,6 +52,7 @@ struct RenderRequest {
     QString imageSequenceFormat;  // "jpeg", "webp", or empty for none
     QSize outputSize;
     bool useProxyMedia = false;
+    bool bypassGrading = false;
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues

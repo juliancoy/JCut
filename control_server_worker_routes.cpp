@@ -762,28 +762,39 @@ bool ControlServerWorker::handleHistoryRoutes(QTcpSocket* socket, const Request&
 bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request& request) {
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/profile")) {
         m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+        const QJsonObject snapshot = fastSnapshot();
+        const bool uiResponsive =
+            snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
+            m_uiHeartbeatStaleMs;
         if (m_lastProfileSnapshot.isEmpty()) {
             const QString error = m_lastProfileRefreshError.isEmpty()
                 ? QStringLiteral("profile snapshot unavailable; cache warming")
                 : m_lastProfileRefreshError;
-            writeError(socket, 503, error);
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), false},
+                {QStringLiteral("live"), false},
+                {QStringLiteral("ui_thread_responsive"), uiResponsive},
+                {QStringLiteral("ui_error"), error},
+                {QStringLiteral("profile"), QJsonObject{}},
+                {QStringLiteral("served_cached"), false},
+                {QStringLiteral("cache"), profileCacheMeta()},
+                {QStringLiteral("fast_snapshot"), snapshot}
+            });
             return true;
         }
         ++m_profileServedCachedCount;
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         const qint64 ageMs = m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1;
         const bool live = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
-        const QJsonObject snapshot = fastSnapshot();
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), live},
-            {QStringLiteral("ui_thread_responsive"),
-             snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
-                 m_uiHeartbeatStaleMs},
+            {QStringLiteral("ui_thread_responsive"), uiResponsive},
             {QStringLiteral("ui_error"), m_lastProfileRefreshError},
             {QStringLiteral("profile"), m_lastProfileSnapshot},
             {QStringLiteral("served_cached"), true},
-            {QStringLiteral("cache"), profileCacheMeta()}
+            {QStringLiteral("cache"), profileCacheMeta()},
+            {QStringLiteral("fast_snapshot"), snapshot}
         });
         return true;
     }

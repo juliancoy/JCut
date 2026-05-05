@@ -1095,8 +1095,8 @@ QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
             if (wordIndex == line.activeWord) {
                 wordHtml = QStringLiteral(
                                "<span style=\"background:%1;color:%2;border-radius:0.28em;padding:0.02em 0.18em;\">%3</span>")
-                               .arg(highlightFillColor.name(QColor::HexArgb),
-                                    highlightTextColor.name(QColor::HexArgb),
+                               .arg(highlightFillColor.name(QColor::HexRgb),
+                                    highlightTextColor.name(QColor::HexRgb),
                                     wordHtml);
             }
             htmlWords.push_back(wordHtml);
@@ -1107,5 +1107,5 @@ QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
     }
 
     return QStringLiteral("<div style=\"color:%1;text-align:center;\">%2</div>")
-        .arg(textColor.name(QColor::HexArgb), htmlLines.join(QStringLiteral("<br/>")));
+        .arg(textColor.name(QColor::HexRgb), htmlLines.join(QStringLiteral("<br/>")));
 }
