@@ -177,6 +177,30 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/CPPMonetize/CMakeLists.txt")
     add_subdirectory(external/CPPMonetize EXCLUDE_FROM_ALL)
 endif()
 
+set(JCUT_HAVE_NCNN 0)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ncnn/CMakeLists.txt")
+    set(NCNN_VULKAN ON CACHE BOOL "" FORCE)
+    set(NCNN_SHARED_LIB OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(NCNN_INSTALL_SDK OFF CACHE BOOL "" FORCE)
+    set(NCNN_OPENMP OFF CACHE BOOL "" FORCE)
+    set(NCNN_SIMPLEVK OFF CACHE BOOL "" FORCE)
+    set(_saved_automoc "${CMAKE_AUTOMOC}")
+    set(_saved_autorcc "${CMAKE_AUTORCC}")
+    set(_saved_autouic "${CMAKE_AUTOUIC}")
+    set(CMAKE_AUTOMOC OFF)
+    set(CMAKE_AUTORCC OFF)
+    set(CMAKE_AUTOUIC OFF)
+    add_subdirectory(external/ncnn EXCLUDE_FROM_ALL)
+    set(CMAKE_AUTOMOC "${_saved_automoc}")
+    set(CMAKE_AUTORCC "${_saved_autorcc}")
+    set(CMAKE_AUTOUIC "${_saved_autouic}")
+    set(JCUT_HAVE_NCNN 1)
+endif()
+
 execute_process(
     COMMAND git rev-parse --short=12 HEAD
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -224,6 +248,7 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/backend_headless_compare_main\\.cpp$"
     ".*/vulkan_dnn_video_infer_main\\.cpp$"
     ".*/vulkan_boxstream_offscreen_main\\.cpp$"
+    ".*/vulkan_boxstream_preview_main\\.cpp$"
     ".*/vulkan_boxstream_test_ui_main\\.cpp$"
     ".*/vulkan_zero_copy_video_preprocess_main\\.cpp$"
 )
@@ -431,6 +456,24 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
     )
 endif()
 
+add_executable(jcut_vulkan_boxstream_preview
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_preview_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_ai_integration.cpp
+)
+target_link_libraries(jcut_vulkan_boxstream_preview PRIVATE editor_core)
+if(TARGET CPPMonetize::cppmonetize)
+    target_link_libraries(jcut_vulkan_boxstream_preview PRIVATE CPPMonetize::cppmonetize)
+endif()
+set_target_properties(jcut_vulkan_boxstream_preview PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+if(NOT JCUT_USE_SYSTEM_FFMPEG)
+    set_target_properties(jcut_vulkan_boxstream_preview PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+endif()
+
 add_executable(project_roundtrip_cli
     ${CMAKE_CURRENT_SOURCE_DIR}/project_roundtrip_cli.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp
@@ -514,6 +557,7 @@ add_executable(jcut_vulkan_boxstream_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
 )
 target_include_directories(jcut_vulkan_boxstream_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -525,6 +569,9 @@ target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE
     Vulkan::Vulkan
     ${JCUT_OPENCV_LIBS}
 )
+if(TARGET ncnn)
+    target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE ncnn)
+endif()
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
     target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE
         "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
@@ -534,6 +581,7 @@ endif()
 target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE
     JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
     JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB}
+    JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
 )
 if(JCUT_OPENCV_LIBS)
     target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAVE_OPENCV=1)

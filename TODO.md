@@ -1,38 +1,34 @@
 # TODO
 
-_Last updated: 2026-05-04_
+_Last updated: 2026-05-05_
 
 ## Current State
 - Main app builds: `cmake --build build --target jcut -j$(nproc)`.
 - Focused regressions pass: `ctest --test-dir build -R 'test_integration|test_vulkan_subtitle_render' --output-on-failure`.
-- Native `QVulkanWindow` path is no longer clear-only: it can blit a composed preview `QImage` into the Vulkan swapchain using `preview_blit.vert/frag`.
+- Native `QVulkanWindow` path owns a direct swapchain presenter and records Vulkan commands without a `QImage` bridge.
+- REST `/profile` preview diagnostics verified: `presenter=qvulkanwindow_direct_swapchain`, `swapchain_present=true`, `qimage_bridge=false`, `qimage_materialized=false`.
+- Vulkan preview now uses strict hardware-zero-copy decode readiness: CPU `QImage` frame materialization is rejected instead of being treated as a Vulkan-presentable frame.
 - Native Vulkan face path exists and runs GPU preprocessing plus native Vulkan heuristic candidate inference. It is not a production model-backed detector yet.
 - Standalone Vulkan face path reports GPU inference candidates on `nasreen.mp4`.
 - Decode is still not end-to-end zero-copy: current benchmark decode emits CPU frames before Vulkan upload.
 
-## Resume First Tomorrow
-1. Run a native preview smoke with bridge disabled:
-   `JCUT_VULKAN_NATIVE_SURFACE=1 JCUT_VULKAN_PARITY_BRIDGE=0 ./build/jcut`
-2. Verify the REST/profile diagnostics report:
-   `path=vulkan_native_swapchain_blit`
-   `swapchain_present=true`
-3. If the window is black, debug in this order:
-   - shader SPIR-V exists under `build/generated/vulkan_shaders/preview_blit.*.spv`
-   - descriptor image layout is `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL`
-   - `uploadFrame()` is called with a non-null RGBA image
-   - pipeline creation returns a non-null `m_pipeline`
-   - `m_window->currentFramebuffer()` and `defaultRenderPass()` are valid during `startNextFrame()`
-4. After smoke is confirmed, start removing the CPU `QImage` bridge from the native swapchain path.
+## Resume Next
+1. Move full clip texture upload/composition into the direct presenter.
+2. Add/import a hardware-frame-to-`VkImage` handoff for CUDA/VAAPI frames; unsupported systems should continue reporting `ready_decode_status_clips=0`, not fall back to `QImage`.
+3. Keep Vulkan frame presentation in swapchain-owned resources; do not reintroduce `QImage` or CPU readback in the Vulkan preview path.
+4. Validate one-clip render correctness, then resize/scrub/playback stress.
 
 ## Native Vulkan Preview And Compositor
 - [ ] Finish the native swapchain-driven Vulkan compositor so `effective=vulkan` means native Vulkan composition, not bridge/parity mode.
-  - Started: native `QVulkanWindow` now has a swapchain texture-blit renderer for composed preview frames.
-  - Remaining: remove dependency on shared offscreen compositor readback and feed Vulkan resources directly.
+  - Started: native `QVulkanWindow` now owns direct swapchain presentation and records frame commands without `QImage`.
+  - Remaining: move full clip texture upload/composition into the direct presenter.
 - [ ] Route clip frame upload/composition directly through Vulkan resources and pipelines.
 - [ ] Connect timeline frame data directly into the native Vulkan compositor.
+- [x] Connect Vulkan preview to decode/cache readiness without accepting CPU `QImage` frames as Vulkan-presentable.
 - [ ] Harden resize, swapchain recreation, and device-loss handling.
 - [ ] Harden OpenGL fallback for Vulkan init failure, swapchain failure, and device loss.
-- [ ] Remove `vulkan-cpu-present` / parity bridge from the production path after native compositor parity is proven.
+- [x] Remove `vulkan-cpu-present` / parity bridge from the production preview path.
+- [x] Remove tracked duplicate `backup_preview/` preview implementation.
 - [ ] Run parity and throughput validation against representative projects.
 
 ## Decode To Vulkan Zero-Copy
@@ -50,11 +46,11 @@ _Last updated: 2026-05-04_
 - [ ] Tune thresholds and candidate limits on `nasreen.mp4` plus crowded scenes.
 - [ ] Add quality metrics: detection count, false-positive proxy, track length, ID-switch proxy, and runtime.
 
-## BoxStream Native Tracking
-- [ ] Extend the headless benchmark to include native Vulkan BoxStream inference.
+## FaceStream Native Tracking
+- [ ] Extend the headless benchmark to include native Vulkan FaceStream inference.
 - [ ] Compare native Vulkan against Python hybrid, Docker hybrid, Haar, YOLO, and RetinaFace paths.
 - [ ] Stabilize native Vulkan tracks with association tuning and smoothing.
-- [ ] Keep BoxStream schema compatibility while adding source metadata for native Vulkan inference.
+- [ ] Keep FaceStream schema compatibility while adding source metadata for native Vulkan inference.
 - [ ] Update UI copy once native Vulkan inference is production-grade rather than heuristic.
 
 ## Native C++ Production Tracker
@@ -86,9 +82,7 @@ end_to_end_zero_copy=0
 ```
 
 ## Files To Look At First
-- `vulkan_renderer.cpp`: native `QVulkanWindow` swapchain blit renderer.
-- `vulkan_preview_compositor.cpp`: shared offscreen Vulkan compositor still producing the source `QImage` for native blit.
-- `shaders/vulkan/preview_blit.vert`
-- `shaders/vulkan/preview_blit.frag`
+- `vulkan_preview_surface.cpp`: direct `QVulkanWindow` swapchain presenter; no `QImage` bridge.
+- `vulkan_boxstream_offscreen_main.cpp`: default zero-copy Vulkan FaceStream verifier, with materialized compatibility mode behind `--materialized-generate-boxstream`.
 - `vulkan_zero_copy_face_detector.cpp`: Vulkan preprocessing + heuristic inference compute pipelines.
-- `speakers_tab_boxstream_actions.cpp`: UI integration for native Vulkan BoxStream inference.
+- `speakers_tab_boxstream_actions.cpp`: UI integration for native Vulkan FaceStream inference.

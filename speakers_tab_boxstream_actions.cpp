@@ -73,7 +73,7 @@ using namespace jcut::boxstream;
 void SpeakersTab::onSpeakerBoxStreamSettingsClicked()
 {
     QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("BoxStream Settings"));
+    dialog.setWindowTitle(QStringLiteral("FaceStream Settings"));
     dialog.setWindowFlag(Qt::Window, true);
     dialog.resize(520, 230);
     auto* layout = new QVBoxLayout(&dialog);
@@ -81,9 +81,9 @@ void SpeakersTab::onSpeakerBoxStreamSettingsClicked()
     layout->setSpacing(8);
 
     auto* infoLabel = new QLabel(
-        QStringLiteral("Configure BoxStream-related smoothing options.\n\n"
-                       "These are not part of BoxStream preflight so run setup stays minimal.\n"
-                       "Generate BoxStream itself does not apply clip transforms."),
+        QStringLiteral("Configure FaceStream-related smoothing options.\n\n"
+                       "These are not part of FaceStream preflight so run setup stays minimal.\n"
+                       "Generate FaceStream itself does not apply clip transforms."),
         &dialog);
     infoLabel->setWordWrap(true);
     layout->addWidget(infoLabel);
@@ -128,9 +128,9 @@ void SpeakersTab::onSpeakerGuideClicked()
             "Subtitle Face Tracking Guide\n\n"
             "1. Run Pre-crop Faces (FaceFind) first.\n"
             "2. Identify all unique faces and resolve duplicates/unknowns.\n"
-            "3. Click Generate BoxStream.\n"
+            "3. Click Generate FaceStream.\n"
             "4. The system detects and tracks face continuity across transcript time.\n"
-            "5. Independent BoxStreams are created per continuity track (T<id>).\n"
+            "5. Independent FaceStreams are created per continuity track (T<id>).\n"
             "6. Optional: enable dialogue-only scanning in preflight.\n\n"
             "FaceBox Target\n"
             "- In Speakers, set Face X / Face Y for desired on-screen face position.\n"
@@ -140,7 +140,7 @@ void SpeakersTab::onSpeakerGuideClicked()
             "- Face Stabilize is a separate clip-level toggle.\n"
             "- It applies generated face keyframes to the selected clip.\n\n"
             "Range Policy\n"
-            "- Generate BoxStream scans transcript-global continuity by default.\n"
+            "- Generate FaceStream scans transcript-global continuity by default.\n"
             "- It is not limited to the selected clip's source-in/source-out range.\n\n"
             "Tips\n"
             "- Square selection is required and enforced.\n"

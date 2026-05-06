@@ -25,9 +25,9 @@
 #include "async_decoder.h"
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
+#include "preview_interaction_state.h"
+#include "preview_overlay_model.h"
 #include "preview_surface.h"
-#include "render_backend.h"
-#include "render_internal.h"
 #include "render_backend.h"
 #include "render_internal.h"
 
@@ -75,29 +75,29 @@ public:
     bool audioSpeakerHoverModalEnabled() const { return m_audioSpeakerHoverModalEnabled; }
     bool audioWaveformVisible() const { return m_audioWaveformVisible; }
     void setViewMode(ViewMode mode);
-    ViewMode viewMode() const { return m_viewMode; }
+    ViewMode viewMode() const { return m_interaction.viewMode; }
     void setAudioDynamicsSettings(const AudioDynamicsSettings& settings);
     AudioDynamicsSettings audioDynamicsSettings() const { return m_audioDynamics; }
     void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setTitleOverlayInteractionOnly(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
-        if (m_correctionDrawMode == enabled) {
+        if (m_interaction.correctionDrawMode == enabled) {
             return;
         }
-        m_correctionDrawMode = enabled;
-        if (m_correctionDrawMode) {
-            m_dragMode = PreviewDragMode::None;
-            m_dragOriginBounds = QRectF();
+        m_interaction.correctionDrawMode = enabled;
+        if (m_interaction.correctionDrawMode) {
+            m_interaction.transient.dragMode = PreviewDragMode::None;
+            m_interaction.transient.dragOriginBounds = QRectF();
         }
         update();
     }
-    bool correctionDrawMode() const { return m_correctionDrawMode; }
-    bool transcriptOverlayInteractionEnabled() const { return m_transcriptOverlayInteractionEnabled; }
-    bool titleOverlayInteractionOnly() const { return m_titleOverlayInteractionOnly; }
-    void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_correctionDraftPoints = points; update(); }
-    qreal previewZoom() const { return m_previewZoom; }
-    void resetPreviewPan() { m_previewPanOffset = QPointF(); }
-    QSize outputSize() const { return m_outputSize; }
+    bool correctionDrawMode() const { return m_interaction.correctionDrawMode; }
+    bool transcriptOverlayInteractionEnabled() const { return m_interaction.transcriptOverlayInteractionEnabled; }
+    bool titleOverlayInteractionOnly() const { return m_interaction.titleOverlayInteractionOnly; }
+    void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_interaction.transient.correctionDraftPoints = points; update(); }
+    qreal previewZoom() const { return m_interaction.previewZoom; }
+    void resetPreviewPan() { m_interaction.previewPanOffset = QPointF(); }
+    QSize outputSize() const { return m_interaction.outputSize; }
     bool bypassGrading() const;
     bool correctionsEnabled() const { return m_correctionsEnabled; }
     bool audioMuted() const;
@@ -110,8 +110,8 @@ public:
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
     bool selectedOverlayIsTranscript() const {
-        return !m_selectedClipId.isEmpty() &&
-               m_overlayInfo.value(m_selectedClipId).kind == PreviewOverlayKind::TranscriptOverlay;
+        return !m_interaction.selectedClipId.isEmpty() &&
+               m_overlayModel.overlays.value(m_interaction.selectedClipId).kind == PreviewOverlayKind::TranscriptOverlay;
     }
 
 protected:
@@ -130,29 +130,6 @@ protected:
     void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
-    enum class PreviewOverlayKind {
-        VisualClip,
-        TranscriptOverlay,
-    };
-
-    struct PreviewOverlayInfo {
-        PreviewOverlayKind kind = PreviewOverlayKind::VisualClip;
-        QRectF bounds;
-        QRectF rightHandle;
-        QRectF bottomHandle;
-        QRectF cornerHandle;
-        QTransform clipTransform;
-        QSizeF clipPixelSize;
-    };
-
-    enum class PreviewDragMode {
-        None,
-        Move,
-        ResizeX,
-        ResizeY,
-        ResizeBoth,
-    };
-
     QRect previewCanvasBaseRect() const;
     QRect scaledCanvasRect(const QRect& baseRect) const;
     QPointF previewCanvasScale(const QRect& targetRect) const;
@@ -256,7 +233,6 @@ private:
     void updatePreviewCursor(const QPointF& position);
     bool configurePreviewBackend(RenderBackend requestedBackend, bool promptOnFallback);
     bool ensureVulkanPreviewRenderer(bool promptOnFallback);
-    bool renderVulkanCompositeFrame(QImage* outputFrame);
 
     std::unique_ptr<AsyncDecoder> m_decoder;
     std::unique_ptr<TimelineCache> m_cache;
@@ -271,21 +247,10 @@ private:
     bool m_glInitialized = false;
     bool m_glResourcesReleased = false;
     bool m_vulkanPreviewActive = false;
-    QColor m_backgroundColor = QColor(Qt::black);
-    bool m_playing = false;
-    bool m_audioMuted = false;
-    qreal m_audioVolume = 0.8;
     bool m_bypassGrading = false;
     bool m_correctionsEnabled = true;
-    ViewMode m_viewMode = ViewMode::Video;
+    PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
-    int64_t m_currentFrame = 0;
-    int64_t m_currentSample = 0;
-    qreal m_currentFramePosition = 0.0;
-    int m_clipCount = 0;
-    QVector<TimelineClip> m_clips;
-    QVector<TimelineTrack> m_tracks;
-    QVector<RenderSyncMarker> m_renderSyncMarkers;
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
     QTimer m_repaintTimer;
@@ -299,15 +264,11 @@ private:
     qint64 m_maxRenderDurationMs = 0;
     qint64 m_renderCount = 0;
     qint64 m_totalRenderDurationMs = 0;
-    QString m_selectedClipId;
-    QSize m_outputSize = QSize(1080, 1920);
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
     QString m_boxstreamOverlaySource = QStringLiteral("all");
-    qreal m_previewZoom = 1.0;
-    QPointF m_previewPanOffset;
-    QHash<QString, PreviewOverlayInfo> m_overlayInfo;
+        PreviewOverlayModel m_overlayModel;
     mutable QHash<QString, qreal> m_audioDisplayPeakCache;
     mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;
     mutable QHash<QString, SpeakerTrackPointCacheEntry> m_speakerTrackPointsCache;
@@ -320,30 +281,14 @@ private:
     mutable QJsonObject m_lastFrameSelectionStats;
     static constexpr int kRenderTimeHistorySize = 60;
     std::deque<qint64> m_renderTimeHistory;
-    QVector<QString> m_paintOrder;
     int m_bulkUpdateDepth = 0;
     bool m_pendingFrameRequest = false;
     bool m_frameRequestsArmed = false;
     bool m_forceCpuPreviewForVulkan = false;
-    PreviewDragMode m_dragMode = PreviewDragMode::None;
-    QPointF m_dragOriginPos;
-    QRectF m_dragOriginBounds;
-    TimelineClip::TransformKeyframe m_dragOriginTransform;
-    QPointF m_dragOriginTranscriptTranslation;
-    bool m_correctionDrawMode = false;
-    bool m_transcriptOverlayInteractionEnabled = false;
-    bool m_titleOverlayInteractionOnly = false;
     bool m_showCorrectionOverlays = false;
     int m_selectedCorrectionPolygon = -1;
-    QVector<QPointF> m_correctionDraftPoints;
-    bool m_speakerPickDragActive = false;
-    QString m_speakerPickClipId;
-    QPointF m_speakerPickStartPos;
-    QPointF m_speakerPickCurrentPos;
-    QString m_speakerPickHintClipId;
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
-    QPointF m_lastMousePos = QPointF(-10000.0, -10000.0);
     QString m_requestedRenderBackend = QStringLiteral("opengl");
     QString m_effectiveRenderBackend = QStringLiteral("opengl");
     QString m_renderBackendFallbackReason;

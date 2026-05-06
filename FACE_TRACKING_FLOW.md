@@ -38,12 +38,12 @@ This is the intended end-to-end flow starting from a clip that has both video an
 2. `Pick Ref 1 (Shift+Drag)` / `Pick Ref 2 (Shift+Drag)` in Preview, or
 3. `Set Ref 1` / `Set Ref 2` at the current playhead frame.
 
-## 8. Generate BoxStream (Tracking Data)
+## 8. Generate FaceStream (Tracking Data)
 1. Before generating, run a unique-face identification pass:
 2. In `Speakers`, use `Pre-crop Faces`/FaceFind and confirm every distinct on-screen person has exactly one resolved identity mapping.
 3. Resolve duplicates and unknowns before continuing (no unresolved unique faces).
 4. Select a speaker row with at least `Ref1` set.
-5. Click `Generate BoxStream`.
+5. Click `Generate FaceStream`.
 6. In preflight, choose algorithm based on goal:
 7. `DNN Auto (CUDA/CPU)` for strong general face detection.
 8. `OpenCV Contrib CSRT` for stability on moderate motion (quality-first).
@@ -52,7 +52,7 @@ This is the intended end-to-end flow starting from a clip that has both video an
 
 ## 9. Enable Speaker Tracking
 1. Turn on `Tracking` for the speaker (Tracking chip/button).
-2. Confirm the state shows BoxStream ready/active.
+2. Confirm the state shows FaceStream ready/active.
 
 ## 10. Set FaceBox Target
 1. In `Speakers`, use `FaceBox (Yellow Box)` controls:
@@ -66,7 +66,7 @@ This is the intended end-to-end flow starting from a clip that has both video an
 ## 12. Validate and Iterate
 1. Scrub and play through speaker changes.
 2. If tracking drifts:
-3. Add/adjust refs, regenerate BoxStream, and re-check target placement.
+3. Add/adjust refs, regenerate FaceStream, and re-check target placement.
 4. Re-run `Pre-crop Faces` when new candidates are needed.
 
 ## 13. Render

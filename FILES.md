@@ -98,11 +98,9 @@ All files above are Position: `L4` with `L3` rendering internals.
 ## 8) Vulkan Preview/Backend Scaffolding
 
 - `vulkan_backend.h/.cpp` — QRhi Vulkan backend creation helper. Position: `L3 infrastructure`.
-- `vulkan_context.h/.cpp` — Vulkan instance lifecycle and availability/failure reason abstraction. Position: `L3 infrastructure`.
 - `preview_renderer_backend.h/.cpp` — QRhi backend init (Vulkan/OpenGL/Null), compositor init. Position: `L3`.
-- `vulkan_renderer.h/.cpp` — Minimal Vulkan renderer scaffold for preview window path. Position: `L3`.
-- `vulkan_preview_window.h/.cpp` — Vulkan-oriented preview window bridge/scaffold. Position: `L4/L3`.
-- `vulkan_preview_surface.h/.cpp` — Native Vulkan surface wrapper and bridge delegation behavior. Position: `L4/L3`.
+- `direct_vulkan_preview_presenter.h/.cpp` — Direct `QVulkanWindow` swapchain presenter, device/surface preflight, and strict decode-readiness visualization. Position: `L4/L3`.
+- `vulkan_preview_surface.h/.cpp` — Direct `QVulkanWindow` preview surface adapter and hardware-zero-copy decode readiness bridge. Position: `L4/L3`.
 
 ## 9) Compositing and Effects
 

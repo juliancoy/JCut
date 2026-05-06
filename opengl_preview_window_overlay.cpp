@@ -5,7 +5,6 @@
 #include "decoder_image_io.h"
 #include "waveform_service.h"
 #include "render_internal.h"
-#include "vulkan_preview_compositor.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -337,15 +336,15 @@ void PreviewWindow::paintEvent(QPaintEvent* event) {
 }
 
 QRect PreviewWindow::previewCanvasBaseRect() const {
-    return previewCanvasBaseRectForWidget(rect(), m_outputSize, 36);
+    return previewCanvasBaseRectForWidget(rect(), m_interaction.outputSize, 36);
 }
 
 QRect PreviewWindow::scaledCanvasRect(const QRect& baseRect) const {
-    return scaledPreviewCanvasRect(baseRect, m_previewZoom, m_previewPanOffset);
+    return scaledPreviewCanvasRect(baseRect, m_interaction.previewZoom, m_interaction.previewPanOffset);
 }
 
 QPointF PreviewWindow::previewCanvasScale(const QRect& targetRect) const {
-    return previewCanvasScaleForTargetRect(targetRect, m_outputSize);
+    return previewCanvasScaleForTargetRect(targetRect, m_interaction.outputSize);
 }
 
 QPointF PreviewWindow::mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info,
@@ -379,9 +378,9 @@ QPointF PreviewWindow::mapScreenPointToNormalizedClip(const PreviewOverlayInfo& 
 }
 
 void PreviewWindow::drawBackground(QPainter* painter) {
-    const float phase = std::fmod(static_cast<float>(m_currentFramePosition), 180.0f) / 179.0f;
-    const float clipFactor = qBound(0.0f, static_cast<float>(m_clipCount) / 8.0f, 1.0f);
-    const float motion = m_playing ? phase : 0.25f;
+    const float phase = std::fmod(static_cast<float>(m_interaction.currentFramePosition), 180.0f) / 179.0f;
+    const float clipFactor = qBound(0.0f, static_cast<float>(m_interaction.clipCount) / 8.0f, 1.0f);
+    const float motion = m_interaction.playing ? phase : 0.25f;
 
     QLinearGradient gradient(rect().topLeft(), rect().bottomRight());
     gradient.setColorAt(0.0, QColor::fromRgbF(0.08f + 0.22f * motion,
@@ -418,17 +417,17 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
     painter->drawRoundedRect(safeRect, 18, 18);
 
     QList<TimelineClip> activeAudioClips;
-    for (const TimelineClip& clip : m_clips) {
+    for (const TimelineClip& clip : m_interaction.clips) {
         const bool includeForAudioView =
             clipAudioPlaybackEnabled(clip) &&
-            (clip.id == m_selectedClipId || isSampleWithinClip(clip, m_currentSample));
+            (clip.id == m_interaction.selectedClipId || isSampleWithinClip(clip, m_interaction.currentSample));
         const bool includeAsFallback =
-            clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample);
+            clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_interaction.currentSample);
         if (includeForAudioView || includeAsFallback) {
             activeAudioClips.push_back(clip);
         }
     }
-    if (m_viewMode == ViewMode::Audio || activeClips.isEmpty()) {
+    if (m_interaction.viewMode == ViewMode::Audio || activeClips.isEmpty()) {
         if (!activeAudioClips.isEmpty()) {
             drawAudioPlaceholder(painter, safeRect, activeAudioClips);
         } else {
@@ -477,20 +476,20 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
     for (const TimelineClip& clip : activeClips) {
         if (clip.mediaType == ClipMediaType::Title && !clip.titleKeyframes.isEmpty()) {
             const int64_t localFrame = qMax<int64_t>(0,
-                m_currentFrame - clip.startFrame);
+                m_interaction.currentFrame - clip.startFrame);
             const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
             const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-                clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+                clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
             const EvaluatedTitle title =
                 composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
-            drawTitleOverlay(painter, compositeRect, title, m_outputSize);
+            drawTitleOverlay(painter, compositeRect, title, m_interaction.outputSize);
 
             // Register overlay bounds so the title is draggable in the preview
             if (title.valid && !title.text.isEmpty()) {
-                const qreal sx = m_outputSize.width() > 0
-                    ? static_cast<qreal>(compositeRect.width()) / m_outputSize.width() : 1.0;
-                const qreal sy = m_outputSize.height() > 0
-                    ? static_cast<qreal>(compositeRect.height()) / m_outputSize.height() : 1.0;
+                const qreal sx = m_interaction.outputSize.width() > 0
+                    ? static_cast<qreal>(compositeRect.width()) / m_interaction.outputSize.width() : 1.0;
+                const qreal sy = m_interaction.outputSize.height() > 0
+                    ? static_cast<qreal>(compositeRect.height()) / m_interaction.outputSize.height() : 1.0;
                 QFont font(title.fontFamily);
                 font.setPointSizeF(title.fontSize * qMin(sx, sy));
                 font.setBold(title.bold);
@@ -511,15 +510,15 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                                     metrics.height + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0));
                 PreviewOverlayInfo info;
                 info.bounds = bounds;
-                m_overlayInfo.insert(clip.id, info);
-                m_paintOrder.push_back(clip.id);
+                m_overlayModel.overlays.insert(clip.id, info);
+                m_overlayModel.paintOrder.push_back(clip.id);
             }
         }
     }
 
     for (const TimelineClip& clip : activeClips) {
-        const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
-        if (clip.id == m_selectedClipId && info.bounds.isValid()) {
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
+        if (clip.id == m_interaction.selectedClipId && info.bounds.isValid()) {
             painter->setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2.0));
             painter->setBrush(Qt::NoBrush);
             painter->drawRect(info.bounds);
@@ -534,8 +533,8 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
 
     if (m_showCorrectionOverlays) {
         for (const TimelineClip& clip : activeClips) {
-            const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
-            if (clip.id != m_selectedClipId || !info.bounds.isValid() || clip.correctionPolygons.isEmpty()) {
+            const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
+            if (clip.id != m_interaction.selectedClipId || !info.bounds.isValid() || clip.correctionPolygons.isEmpty()) {
                 continue;
             }
             QVector<TimelineClip::CorrectionPolygon> visiblePolygons;
@@ -573,16 +572,16 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         }
     }
 
-    if (!m_correctionDraftPoints.isEmpty() && (m_showCorrectionOverlays || m_correctionDrawMode)) {
-        const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
+    if (!m_interaction.transient.correctionDraftPoints.isEmpty() && (m_showCorrectionOverlays || m_interaction.correctionDrawMode)) {
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(m_interaction.selectedClipId);
         if (info.bounds.isValid()) {
             painter->save();
             painter->setRenderHint(QPainter::Antialiasing, true);
             painter->setPen(QPen(QColor(255, 200, 64, 230), 2.0, Qt::DashLine));
             painter->setBrush(QColor(255, 200, 64, 64));
             QPolygonF polygon;
-            polygon.reserve(m_correctionDraftPoints.size());
-            for (const QPointF& pointNorm : m_correctionDraftPoints) {
+            polygon.reserve(m_interaction.transient.correctionDraftPoints.size());
+            for (const QPointF& pointNorm : m_interaction.transient.correctionDraftPoints) {
                 polygon.push_back(mapNormalizedClipPointToScreen(info, pointNorm));
             }
             if (!polygon.isEmpty()) {
@@ -611,22 +610,22 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
 void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRect,
                            const QList<TimelineClip>& activeClips) {
     painter->save();
-    m_overlayInfo.clear();
-    m_paintOrder.clear();
+    m_overlayModel.overlays.clear();
+    m_overlayModel.paintOrder.clear();
     
     // Draw background panel
     painter->setPen(QPen(QColor(255, 255, 255, 40), 1.5));
     painter->setBrush(QColor(255, 255, 255, 18));
     painter->drawRoundedRect(safeRect, 18, 18);
     
-    if (m_viewMode == ViewMode::Audio || activeClips.isEmpty()) {
+    if (m_interaction.viewMode == ViewMode::Audio || activeClips.isEmpty()) {
         QList<TimelineClip> activeAudioClips;
-        for (const TimelineClip& clip : m_clips) {
+        for (const TimelineClip& clip : m_interaction.clips) {
             const bool includeForAudioView =
                 clipAudioPlaybackEnabled(clip) &&
-                (clip.id == m_selectedClipId || isSampleWithinClip(clip, m_currentSample));
+                (clip.id == m_interaction.selectedClipId || isSampleWithinClip(clip, m_interaction.currentSample));
             const bool includeAsFallback =
-                clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample);
+                clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_interaction.currentSample);
             if (includeForAudioView || includeAsFallback) {
                 activeAudioClips.push_back(clip);
             }
@@ -645,48 +644,6 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     if (m_hideOutsideOutputWindow) {
         painter->setClipRect(compositeRect);
     }
-    if (m_vulkanPreviewActive) {
-        QImage vulkanFrame;
-        if (renderVulkanCompositeFrame(&vulkanFrame) && !vulkanFrame.isNull()) {
-            const QRect fitted = fitRect(vulkanFrame.size(), compositeRect);
-            painter->drawImage(fitted, vulkanFrame);
-            m_lastFrameSelectionStats = QJsonObject{
-                {QStringLiteral("path"), QStringLiteral("vulkan")},
-                {QStringLiteral("active_visual_clips"), activeClips.size()},
-                {QStringLiteral("frame_width"), vulkanFrame.width()},
-                {QStringLiteral("frame_height"), vulkanFrame.height()}
-            };
-        } else {
-            m_vulkanPreviewActive = false;
-            m_vulkanPreviewRenderer.reset();
-            m_vulkanPreviewDecoders.clear();
-            m_vulkanPreviewAsyncFrameCache.clear();
-            m_forceCpuPreviewForVulkan = false;
-            m_effectiveRenderBackend = QStringLiteral("opengl");
-            m_renderBackendFallbackReason = QStringLiteral(
-                "Vulkan preview frame render failed; falling back to OpenGL.");
-            ++m_renderBackendFallbackCount;
-            m_lastRenderBackendFallbackMs = nowMs();
-            if (!suppressBridgeFallbackLogs()) {
-                qWarning().noquote()
-                    << "[render-backend-fallback] requested=vulkan effective=opengl reason=\""
-                    << m_renderBackendFallbackReason << "\"";
-            }
-        }
-    }
-    if (m_vulkanPreviewActive) {
-        QList<TimelineClip> activeAudioClips;
-        for (const TimelineClip& clip : m_clips) {
-            if (clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample)) {
-                activeAudioClips.push_back(clip);
-            }
-        }
-        if (!activeAudioClips.isEmpty()) {
-            drawAudioBadge(painter, compositeRect, activeAudioClips);
-        }
-        painter->restore();
-        return;
-    }
     bool drewAnyFrame = false;
     bool waitingForFrame = false;
     int usedPlaybackPipelineCount = 0;
@@ -702,13 +659,13 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         if (clip.mediaType == ClipMediaType::Title) {
             continue; // Title clips are drawn as text overlays below
         }
-        const int64_t localFrame = sourceFrameForSample(clip, m_currentSample);
+        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
         const bool isImageSequence = clip.sourceKind == MediaSourceKind::ImageSequence &&
                                      clip.mediaType != ClipMediaType::Image;
-        const bool usePlaybackPipeline = m_playing && isImageSequence;
-        const bool usePlaybackBuffer = !isImageSequence && m_playing && m_cache;
+        const bool usePlaybackPipeline = m_interaction.playing && isImageSequence;
+        const bool usePlaybackBuffer = !isImageSequence && m_interaction.playing && m_cache;
         const bool allowApproximateFrame =
-            m_playing &&
+            m_interaction.playing &&
             (usePlaybackPipeline || !m_cache ||
              m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs()));
         QString selection = QStringLiteral("none");
@@ -737,7 +694,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                                     : m_cache->getLatestCachedFrame(clip.id, localFrame);
                     }
                 } else {
-                    frame = m_playing
+                    frame = m_interaction.playing
                                 ? m_cache->getLatestCachedFrame(clip.id, localFrame)
                                 : m_cache->getBestCachedFrame(clip.id, localFrame);
                 }
@@ -748,7 +705,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                     selection = QStringLiteral("exact");
                 } else {
                     ++bestCount;
-                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
+                    selection = m_interaction.playing ? QStringLiteral("latest") : QStringLiteral("best");
                 }
             }
         }
@@ -769,7 +726,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
             const FrameHandle cacheExact = m_cache->getCachedFrame(clip.id, localFrame);
             frame = !cacheExact.isNull()
                         ? cacheExact
-                        : (m_playing
+                        : (m_interaction.playing
                                ? m_cache->getLatestCachedFrame(clip.id, localFrame)
                                : m_cache->getBestCachedFrame(clip.id, localFrame));
             if (!frame.isNull()) {
@@ -778,7 +735,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                     selection = QStringLiteral("exact");
                 } else {
                     ++bestCount;
-                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
+                    selection = m_interaction.playing ? QStringLiteral("latest") : QStringLiteral("best");
                 }
             }
         }
@@ -808,14 +765,14 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                                     localFrame,
                                     exactFrame,
                                     frame,
-                                    m_currentFramePosition);
+                                    m_interaction.currentFramePosition);
         if (frame.isNull()) {
-            if (usePlaybackPipeline && m_playbackPipeline && m_playing) {
+            if (usePlaybackPipeline && m_playbackPipeline && m_interaction.playing) {
                 static constexpr int kMaxVisibleBacklog = 4;
                 if (m_playbackPipeline->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
                     m_lastFrameRequestMs = nowMs();
                     m_playbackPipeline->requestFramesForSample(
-                        m_currentSample,
+                        m_interaction.currentSample,
                         [this]() {
                             QMetaObject::invokeMethod(this, [this]() {
                                 scheduleRepaint();
@@ -915,8 +872,8 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     }
 
     QList<TimelineClip> activeAudioClips;
-    for (const TimelineClip& clip : m_clips) {
-        if (clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_currentSample)) {
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_interaction.currentSample)) {
             activeAudioClips.push_back(clip);
         }
     }
@@ -931,18 +888,18 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     // Draw title overlays and register their bounds for drag interaction
     for (const TimelineClip& clip : activeClips) {
         if (clip.mediaType == ClipMediaType::Title && !clip.titleKeyframes.isEmpty()) {
-            const int64_t localFrame = qMax<int64_t>(0, m_currentFrame - clip.startFrame);
+            const int64_t localFrame = qMax<int64_t>(0, m_interaction.currentFrame - clip.startFrame);
             const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
             const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-                clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+                clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
             const EvaluatedTitle title =
                 composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
-            drawTitleOverlay(painter, compositeRect, title, m_outputSize);
+            drawTitleOverlay(painter, compositeRect, title, m_interaction.outputSize);
             if (title.valid && !title.text.isEmpty()) {
-                const qreal sx = m_outputSize.width() > 0
-                    ? static_cast<qreal>(compositeRect.width()) / m_outputSize.width() : 1.0;
-                const qreal sy = m_outputSize.height() > 0
-                    ? static_cast<qreal>(compositeRect.height()) / m_outputSize.height() : 1.0;
+                const qreal sx = m_interaction.outputSize.width() > 0
+                    ? static_cast<qreal>(compositeRect.width()) / m_interaction.outputSize.width() : 1.0;
+                const qreal sy = m_interaction.outputSize.height() > 0
+                    ? static_cast<qreal>(compositeRect.height()) / m_interaction.outputSize.height() : 1.0;
                 QFont font(title.fontFamily);
                 font.setPointSizeF(title.fontSize * qMin(sx, sy));
                 font.setBold(title.bold);
@@ -962,15 +919,15 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                                      cy - metrics.height / 2.0 - 4 - windowPaddingPx - frameExtraPx,
                                      metrics.width + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0),
                                      metrics.height + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0));
-                m_overlayInfo.insert(clip.id, info);
-                m_paintOrder.push_back(clip.id);
+                m_overlayModel.overlays.insert(clip.id, info);
+                m_overlayModel.paintOrder.push_back(clip.id);
             }
         }
     }
     // Draw selection handles for all clips with overlay info
     for (const TimelineClip& clip : activeClips) {
-        const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
-        if (clip.id == m_selectedClipId && info.bounds.isValid()) {
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
+        if (clip.id == m_interaction.selectedClipId && info.bounds.isValid()) {
             painter->setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2.0));
             painter->setBrush(Qt::NoBrush);
             painter->drawRect(info.bounds);
@@ -988,142 +945,6 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
     drawSpeakerPickOverlay(painter);
 
     painter->restore();
-}
-
-bool PreviewWindow::renderVulkanCompositeFrame(QImage* outputFrame)
-{
-    if (!outputFrame || !m_vulkanPreviewRenderer || !m_vulkanPreviewActive) {
-        return false;
-    }
-
-    VulkanRendererState state;
-    state.outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
-    state.currentFrame = m_currentFrame;
-    state.bypassGrading = m_bypassGrading;
-    state.correctionsEnabled = m_correctionsEnabled;
-    state.clips = m_clips;
-    state.tracks = m_tracks;
-    state.renderSyncMarkers = m_renderSyncMarkers;
-
-    QString composeError;
-    QImage frame;
-    if (!vulkan_preview::composeFrame(&state, m_currentFrame, &frame, &composeError)) {
-        ++m_vulkanComposeFailureCount;
-        m_lastVulkanComposeFailureMs = nowMs();
-        if (!composeError.trimmed().isEmpty()) {
-            m_renderBackendFallbackReason = composeError;
-        }
-        return false;
-    }
-    ++m_vulkanComposeSuccessCount;
-    m_lastVulkanComposeSuccessMs = nowMs();
-    if (frame.isNull()) {
-        return false;
-    }
-    const QList<TimelineClip> activeClips = getActiveClips();
-    if (!activeClips.isEmpty()) {
-        QPainter painter(&frame);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        const QRect compositeRect(QPoint(0, 0), frame.size());
-        m_overlayInfo.clear();
-        m_paintOrder.clear();
-
-        if (m_showSpeakerTrackPoints || m_showSpeakerTrackBoxes) {
-            drawSpeakerTrackPointsOverlay(&painter, activeClips);
-        }
-        drawSpeakerFramingTargetOverlay(&painter, activeClips, compositeRect);
-
-        for (const TimelineClip& clip : activeClips) {
-            if (clip.mediaType == ClipMediaType::Title && !clip.titleKeyframes.isEmpty()) {
-                const int64_t localFrame = qMax<int64_t>(0, m_currentFrame - clip.startFrame);
-                const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
-                const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-                    clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
-                const EvaluatedTitle title =
-                    composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
-                if (title.valid && !title.text.isEmpty()) {
-                    const qreal sx = m_outputSize.width() > 0
-                        ? static_cast<qreal>(compositeRect.width()) / m_outputSize.width() : 1.0;
-                    const qreal sy = m_outputSize.height() > 0
-                        ? static_cast<qreal>(compositeRect.height()) / m_outputSize.height() : 1.0;
-                    QFont font(title.fontFamily);
-                    font.setPointSizeF(title.fontSize * qMin(sx, sy));
-                    font.setBold(title.bold);
-                    font.setItalic(title.italic);
-                    const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
-                    const qreal cx = compositeRect.center().x() + title.x * sx;
-                    const qreal cy = compositeRect.center().y() + title.y * sy;
-                    const qreal windowPaddingPx = title.windowEnabled
-                        ? qMax<qreal>(0.0, title.windowPadding * qMin(sx, sy))
-                        : 0.0;
-                    const qreal frameExtraPx = title.windowFrameEnabled
-                        ? (qMax<qreal>(0.0, title.windowFrameGap * qMin(sx, sy)) +
-                           (qMax<qreal>(0.0, title.windowFrameWidth * qMin(sx, sy)) * 0.5))
-                        : 0.0;
-                    PreviewOverlayInfo info;
-                    info.bounds = QRectF(cx - metrics.width / 2.0 - 4 - windowPaddingPx - frameExtraPx,
-                                         cy - metrics.height / 2.0 - 4 - windowPaddingPx - frameExtraPx,
-                                         metrics.width + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0),
-                                         metrics.height + 8 + (windowPaddingPx * 2.0) + (frameExtraPx * 2.0));
-                    m_overlayInfo.insert(clip.id, info);
-                    m_paintOrder.push_back(clip.id);
-                }
-            }
-        }
-
-        for (const TimelineClip& clip : activeClips) {
-            const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
-            if (clip.id == m_selectedClipId && info.bounds.isValid()) {
-                painter.setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2.0));
-                painter.setBrush(Qt::NoBrush);
-                painter.drawRect(info.bounds);
-                if (info.rightHandle.isValid()) {
-                    painter.setBrush(QColor(QStringLiteral("#fff4c2")));
-                    painter.drawRect(info.rightHandle);
-                    painter.drawRect(info.bottomHandle);
-                    painter.drawRect(info.cornerHandle);
-                }
-            }
-        }
-        if (m_showCorrectionOverlays) {
-            for (const TimelineClip& clip : activeClips) {
-                const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
-                if (clip.id != m_selectedClipId || !info.bounds.isValid() || clip.correctionPolygons.isEmpty()) {
-                    continue;
-                }
-                QVector<TimelineClip::CorrectionPolygon> visiblePolygons;
-                if (m_selectedCorrectionPolygon >= 0 &&
-                    m_selectedCorrectionPolygon < clip.correctionPolygons.size()) {
-                    visiblePolygons.push_back(clip.correctionPolygons[m_selectedCorrectionPolygon]);
-                }
-                if (visiblePolygons.isEmpty()) {
-                    for (const TimelineClip::CorrectionPolygon& polygon : clip.correctionPolygons) {
-                        if (polygon.pointsNormalized.size() >= 3) {
-                            visiblePolygons.push_back(polygon);
-                        }
-                    }
-                }
-                painter.save();
-                painter.setRenderHint(QPainter::Antialiasing, true);
-                painter.setPen(QPen(QColor(255, 92, 92, 220), 2.0));
-                painter.setBrush(QColor(255, 92, 92, 48));
-                for (const TimelineClip::CorrectionPolygon& polygon : visiblePolygons) {
-                    QPainterPath path;
-                    const QPointF first = mapNormalizedClipPointToScreen(info, polygon.pointsNormalized.constFirst());
-                    path.moveTo(first);
-                    for (int i = 1; i < polygon.pointsNormalized.size(); ++i) {
-                        const QPointF point = mapNormalizedClipPointToScreen(info, polygon.pointsNormalized[i]);
-                        path.lineTo(point);
-                    }
-                    path.closeSubpath();
-                    painter.drawPath(path);
-                }
-                painter.restore();
-            }
-        }
-    }
-    *outputFrame = frame;
-    return true;
 }
 
 void PreviewWindow::drawEmptyState(QPainter* painter, const QRect& safeRect) {
@@ -1144,7 +965,7 @@ void PreviewWindow::drawEmptyState(QPainter* painter, const QRect& safeRect) {
     painter->drawText(safeRect.adjusted(20, 58, -20, -20),
                       Qt::AlignTop | Qt::AlignLeft,
                       QStringLiteral("No active clips at this frame.\nFrame %1\nQRhi backend: %2\nGrading: %3")
-                          .arg(m_currentFramePosition, 0, 'f', 3)
+                          .arg(m_interaction.currentFramePosition, 0, 'f', 3)
                           .arg(backendName())
                           .arg(m_bypassGrading ? QStringLiteral("bypassed") : QStringLiteral("on")));
 }
@@ -1158,7 +979,7 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
         QImage img = frame.cpuImage();
         if (!m_bypassGrading) {
             EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-                clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+                clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
             if (!m_correctionsEnabled) {
                 effects.correctionPolygons.clear();
             }
@@ -1167,7 +988,7 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
         
         const QRect fitted = fitRect(img.size(), targetRect);
         const TimelineClip::TransformKeyframe transform =
-            evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition, m_outputSize);
+            evaluateClipRenderTransformAtPosition(clip, m_interaction.currentFramePosition, m_interaction.outputSize);
         const QPointF previewScale = previewCanvasScale(targetRect);
         painter->translate(fitted.center().x() + (transform.translationX * previewScale.x()),
                            fitted.center().y() + (transform.translationY * previewScale.y()));
@@ -1203,12 +1024,12 @@ void PreviewWindow::drawFrameLayer(QPainter* painter, const QRect& targetRect,
                                    bounds.bottom() - kHandleSize * 1.5,
                                    kHandleSize * 1.5,
                                    kHandleSize * 1.5);
-        m_overlayInfo.insert(clip.id, info);
-        m_paintOrder.push_back(clip.id);
+        m_overlayModel.overlays.insert(clip.id, info);
+        m_overlayModel.paintOrder.push_back(clip.id);
 
         painter->resetTransform();
         painter->setClipping(false);
-        if (clip.id == m_selectedClipId) {
+        if (clip.id == m_interaction.selectedClipId) {
             painter->setPen(QPen(QColor(QStringLiteral("#fff4c2")), 2.0));
             painter->setBrush(Qt::NoBrush);
             painter->drawRect(bounds);
@@ -1278,7 +1099,7 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
                       Qt::AlignTop | Qt::AlignLeft,
                       QStringLiteral("Selected audio clip: %1\nTransport audio: %2")
                           .arg(clip.label)
-                          .arg(m_playing ? QStringLiteral("live") : QStringLiteral("paused")));
+                          .arg(m_interaction.playing ? QStringLiteral("live") : QStringLiteral("paused")));
 
     const QRect waveRect = panel.adjusted(24, 120, -24, -36);
     const qreal rulerGutterWidth = qBound<qreal>(32.0, waveRect.width() * 0.12, 56.0);
@@ -1300,10 +1121,10 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         1.0);
     const qreal maxAudioZoom =
         qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
-    const qreal zoom = qBound<qreal>(1.0, m_previewZoom, maxAudioZoom);
+    const qreal zoom = qBound<qreal>(1.0, m_interaction.previewZoom, maxAudioZoom);
     const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
     const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, m_previewPanOffset.x(), maxStart);
+    const qreal startNorm = qBound<qreal>(0.0, m_interaction.previewPanOffset.x(), maxStart);
     const qreal endNorm = qBound<qreal>(startNorm, startNorm + visibleFraction, 1.0);
 
     QVector<qreal> waveformMin(totalDrawBins, 0.0);
@@ -1556,11 +1377,11 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
         }
 
         if (m_audioSpeakerHoverModalEnabled &&
-            m_lastMousePos.x() >= rowRect.left() && m_lastMousePos.x() <= rowRect.right() &&
-            m_lastMousePos.y() >= rowRect.top() && m_lastMousePos.y() <= rowRect.bottom()) {
+            m_interaction.transient.lastMousePos.x() >= rowRect.left() && m_interaction.transient.lastMousePos.x() <= rowRect.right() &&
+            m_interaction.transient.lastMousePos.y() >= rowRect.top() && m_interaction.transient.lastMousePos.y() <= rowRect.bottom()) {
             const qreal rowXNorm = qBound<qreal>(
                 0.0,
-                (m_lastMousePos.x() - rowRect.left()) / qMax<qreal>(1.0, rowRect.width()),
+                (m_interaction.transient.lastMousePos.x() - rowRect.left()) / qMax<qreal>(1.0, rowRect.width()),
                 1.0);
             const int hoverBinInRow = qBound(
                 0,

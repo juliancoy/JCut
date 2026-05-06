@@ -36,7 +36,7 @@ bool VulkanFrameProvider::ensureInitialized(const QSize& size)
         initialized = false;
         failed = true;
         failureReason = error.isEmpty()
-            ? QStringLiteral("Vulkan BoxStream renderer initialization failed.")
+            ? QStringLiteral("Vulkan FaceStream renderer initialization failed.")
             : error;
         return false;
     }
@@ -147,7 +147,7 @@ QImage renderFrameWithVulkan(VulkanFrameProvider* provider,
     }
     if (frame.isNull()) {
         provider->failed = true;
-        provider->failureReason = QStringLiteral("Vulkan BoxStream frame render returned null.");
+        provider->failureReason = QStringLiteral("Vulkan FaceStream frame render returned null.");
     }
     return frame;
 }
@@ -205,7 +205,7 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
     if (!provider->renderer->lastRenderedVulkanFrame(frame, &error)) {
         provider->failed = true;
         provider->failureReason = error.isEmpty()
-            ? QStringLiteral("Vulkan BoxStream frame render returned no GPU image.")
+            ? QStringLiteral("Vulkan FaceStream frame render returned no GPU image.")
             : error;
         if (errorMessage) {
             *errorMessage = provider->failureReason;

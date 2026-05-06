@@ -32,7 +32,7 @@ class BoxstreamTestWindow final : public QWidget {
 public:
     BoxstreamTestWindow()
     {
-        setWindowTitle(QStringLiteral("JCut Vulkan BoxStream Integrated Test UI"));
+        setWindowTitle(QStringLiteral("JCut Vulkan FaceStream Integrated Test UI"));
         resize(980, 760);
 
         auto* root = new QVBoxLayout(this);

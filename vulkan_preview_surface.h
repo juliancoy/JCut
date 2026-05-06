@@ -1,18 +1,30 @@
 #pragma once
 
+#include "preview_interaction_state.h"
 #include "preview_surface.h"
+#include "debug_controls.h"
+
+#include <QJsonObject>
+#include <QHash>
+#include <QSet>
 
 #include <memory>
 
-class PreviewWindow;
 class QWidget;
+class QObject;
+class DirectVulkanPreviewPresenter;
+
+namespace editor {
+class AsyncDecoder;
+class TimelineCache;
+}
 
 class VulkanPreviewSurface final : public PreviewSurface {
 public:
     explicit VulkanPreviewSurface(QWidget* parent = nullptr);
     ~VulkanPreviewSurface() override;
-    bool isNativeActive() const { return false; }
-    bool isNativePresentationActive() const { return false; }
+    bool isNativeActive() const;
+    bool isNativePresentationActive() const;
     QString nativeFailureReason() const { return m_failureReason; }
 
     QWidget* asWidget() override;
@@ -77,8 +89,63 @@ public:
     bool selectedOverlayIsTranscript() const override;
 
 private:
-    PreviewWindow* activeDelegate() const;
+    struct BoxstreamKeyframe {
+        int64_t frame = -1;
+        QRectF boxNorm;
+        qreal confidence = 0.0;
+        QString source;
+    };
+    struct BoxstreamTrack {
+        QString streamId;
+        QString source;
+        int trackId = -1;
+        QVector<BoxstreamKeyframe> keyframes;
+    };
+    struct BoxstreamOverlayCacheEntry {
+        QString signature;
+        QVector<BoxstreamTrack> tracks;
+    };
 
+    void requestNativeUpdate();
+    void updateNativeTitle();
+    void ensureFramePipeline();
+    void registerVisibleClips();
+    void requestFramesForCurrentPosition();
+    void refreshVulkanFrameStatuses();
+    void refreshBoxstreamOverlays();
+    QVector<BoxstreamTrack> loadBoxstreamTracksForClip(const TimelineClip& clip);
+    QVector<BoxstreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
+                                                         const QJsonObject& artifactRoot) const;
+    bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
+    int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
+
+    std::unique_ptr<DirectVulkanPreviewPresenter> m_presenter;
+    std::unique_ptr<QObject> m_pipelineOwner;
+    std::unique_ptr<editor::AsyncDecoder> m_decoder;
+    std::unique_ptr<editor::TimelineCache> m_cache;
+    QSet<QString> m_registeredClips;
+    QHash<QString, BoxstreamOverlayCacheEntry> m_boxstreamOverlayCache;
+    PreviewInteractionState m_interaction;
+    AudioDynamicsSettings m_audioDynamics;
     QString m_failureReason;
-    std::unique_ptr<PreviewWindow> m_delegate;
+    QString m_boxstreamOverlaySource;
+    QString m_activeAudioClipLabel;
+    bool m_hideOutsideOutputWindow = true;
+    bool m_bypassGrading = false;
+    bool m_correctionsEnabled = true;
+    bool m_showCorrectionOverlays = true;
+    bool m_showSpeakerTrackPoints = true;
+    bool m_showSpeakerTrackBoxes = true;
+    bool m_audioSpeakerHoverModalEnabled = true;
+    bool m_audioWaveformVisible = true;
+    bool m_forcedZeroCopyDecodePreference = false;
+    editor::DecodePreference m_previousDecodePreference = editor::DecodePreference::Hardware;
+    bool m_bulkUpdating = false;
+    int m_bulkDepth = 0;
+    int m_selectedCorrectionPolygon = -1;
+    int m_frameStatusExactCount = 0;
+    int m_frameStatusApproxCount = 0;
+    int m_frameStatusMissingCount = 0;
+    int m_frameStatusHardwareCount = 0;
+    int m_frameStatusCpuCount = 0;
 };

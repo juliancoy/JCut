@@ -190,10 +190,10 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
                     !continuityRoot.value(QStringLiteral("streams")).toArray().isEmpty();
             }
         }
-        QMenu* boxStreamMenu = menu.addMenu(QStringLiteral("BoxStream"));
-        generateBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Generate BoxStream..."));
+        QMenu* boxStreamMenu = menu.addMenu(QStringLiteral("FaceStream"));
+        generateBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Generate FaceStream..."));
         generateBoxStreamAction->setEnabled(canBoxStream);
-        deleteBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Delete BoxStream..."));
+        deleteBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Delete FaceStream..."));
         deleteBoxStreamAction->setEnabled(canBoxStream && hasBoxStream);
         propertiesAction = menu.addAction(QStringLiteral("Properties"));
         menu.addSeparator();

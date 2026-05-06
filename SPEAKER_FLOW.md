@@ -8,7 +8,7 @@ Covers this end-to-end path:
 1. Transcript ingestion and speaker IDs
 2. AI name mining and speaker profile updates
 3. Single-pass face detection + continuity tracking (`Pre-crop Faces` / FaceFind)
-4. Continuity BoxStream generation (`Generate BoxStream`, identity-agnostic)
+4. Continuity FaceStream generation (`Generate FaceStream`, identity-agnostic)
 5. Optional track-to-identity assignment (auto + manual override)
 6. Optional reference writes (`Ref1`/`Ref2`) from resolved identity mapping
 7. Runtime tracking and Face Stabilize application
@@ -104,7 +104,7 @@ Contents:
 5. Cache metadata (`media_path`, `media_last_modified_ms`, `media_size_bytes`, scan params) for invalidation.
 6. Cache-hit fast path: if metadata matches, skip Python scan and load cached candidates/tracks.
 
-### Stage 4: Continuity BoxStream Generation
+### Stage 4: Continuity FaceStream Generation
 Files:
 1. `{videofilename}_continuity_boxstream_request.json`
 2. `{videofilename}_continuity_boxstream_output.json`
@@ -189,14 +189,14 @@ In `Pre-crop Faces` dialog:
    - `Use Auto Suggestions`
    - `Use Persisted Mapping`
 7. Applying assignments is explicit; no background remap occurs without user confirmation.
-8. Assignment is optional: continuity BoxStreams remain valid without identity mapping.
+8. Assignment is optional: continuity FaceStreams remain valid without identity mapping.
 
 ## Simplified UX Flow (Current)
 1. User runs unique-face identification first (`Pre-crop Faces`/FaceFind).
 2. System loads cache if valid (`cache/face_candidate_index.json`) or runs detect+track on cache miss/stale.
 3. User resolves all distinct faces to identity IDs (no unresolved unique face before tracking stage).
-4. User clicks `Generate BoxStream`.
-5. System generates identity-agnostic continuity BoxStreams for each track (`T<track_id>`).
+4. User clicks `Generate FaceStream`.
+5. System generates identity-agnostic continuity FaceStreams for each track (`T<track_id>`).
 6. Optional: system loads persisted resolved mappings for this clip (if present) and marks their source explicitly.
 7. Optional: user assigns track candidates to identity IDs and may explicitly reset defaults.
 8. System persists:
@@ -213,7 +213,7 @@ In `Pre-crop Faces` dialog:
 3. `speaker_flow.clips.<clip_id>.resolved_current`:
    - authoritative identity mapping used by downstream identity consumers.
 4. Downstream steps must not infer identity directly from raw machine candidates if resolved mapping exists.
-5. Continuity BoxStreams are authoritative for motion, independent of identity mapping presence.
+5. Continuity FaceStreams are authoritative for motion, independent of identity mapping presence.
 
 ## Overwrite Protection (Required)
 If a stage is about to overwrite one or more existing artefacts in the target run folder:
@@ -250,7 +250,7 @@ If a stage is about to overwrite one or more existing artefacts in the target ru
 ### Phase 1 (Foundational)
 1. Add run manager + `index.json` writer.
 2. Persist Stage 3/4/5 artefacts for `Pre-crop Faces` flow.
-3. Persist Stage 6 artefacts for BoxStream generation.
+3. Persist Stage 6 artefacts for FaceStream generation.
 4. Add cache-first path with scan-parameter and media-metadata invalidation.
 5. Emit single-pass tracking output (`tracks` + representative `candidates`).
 
@@ -272,6 +272,6 @@ If a stage is about to overwrite one or more existing artefacts in the target ru
 
 ## Suggested Next Task Breakdown
 1. Implement `SpeakerFlowDebugRun` utility in C++ (run lifecycle + index writer).
-2. Integrate it into `onSpeakerPrecropFacesClicked` and BoxStream actions.
+2. Integrate it into `onSpeakerPrecropFacesClicked` and FaceStream actions.
 3. Add artefact writes in `speaker_face_candidates.py` and `speaker_boxstream.py` (request/response logs).
 4. Add minimal Speakers debug panel UI controls and wiring.

@@ -33,16 +33,10 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
     const bool preferVulkan = (configured == RenderBackend::Vulkan || configured == RenderBackend::Auto);
     if (preferVulkan) {
         auto* surface = new VulkanPreviewSurface(parent);
-        const QString surfaceBackend = surface->backendName();
-        if (surface->asWidget()) {
-            const bool vulkanCompositor = surfaceBackend.contains(QStringLiteral("Vulkan"), Qt::CaseInsensitive);
-            decision.effective = vulkanCompositor ? QStringLiteral("vulkan") : QStringLiteral("opengl");
-            decision.fallbackApplied = !vulkanCompositor;
-            if (vulkanCompositor) {
-                decision.reason = QStringLiteral("Using Vulkan offscreen compositor preview.");
-            } else {
-                decision.reason = QStringLiteral("Vulkan preview unavailable; using OpenGL preview fallback.");
-            }
+        if (surface->asWidget() && surface->isNativePresentationActive()) {
+            decision.effective = QStringLiteral("vulkan");
+            decision.fallbackApplied = false;
+            decision.reason = QStringLiteral("Using direct Vulkan swapchain preview presenter.");
             logDecision(decision);
             if (decisionOut) {
                 *decisionOut = decision;

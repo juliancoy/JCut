@@ -4,6 +4,8 @@
 #include "debug_controls.h"
 #include "editor_shared.h"
 #include "frame_handle.h"
+#include "vulkan_res10_ncnn_face_detector.h"
+#include "vulkan_zero_copy_face_detector.h"
 
 #include <QDir>
 #include <QDataStream>
@@ -20,6 +22,7 @@
 #include <QPainter>
 #include <QPixmap>
 #include <QString>
+#include <QStringList>
 #include <QtGlobal>
 
 #include <vulkan/vulkan.h>
@@ -34,6 +37,7 @@
 #include <vector>
 
 #if JCUT_HAVE_OPENCV
+#include <opencv2/dnn.hpp>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect.hpp>
 #endif
@@ -47,11 +51,16 @@ struct Options {
     int stride = 12;
     int maxDetections = 256;
     int previewFrames = 24;
-    float threshold = 0.28f;
+    float threshold = 0.45f;
+    QString detector = QStringLiteral("jcut-dnn");
+    QString res10ParamPath;
+    QString res10BinPath;
     QString previewSocket;
-    bool livePreview = true;
+    bool livePreview = false;
     bool writePreviewFiles = false;
-    editor::DecodePreference decodePreference = editor::DecodePreference::Software;
+    bool materializedGenerateBoxstream = false;
+    bool heuristicZeroCopyDetector = false;
+    editor::DecodePreference decodePreference = editor::DecodePreference::HardwareZeroCopy;
 };
 
 struct Detection {
@@ -71,7 +80,10 @@ void usage(const char* argv0)
     std::cerr << "Usage: " << argv0
               << " [video] [--out-dir DIR] [--max-frames N] [--stride N]"
               << " [--threshold F] [--preview-frames N]"
-              << " [--no-preview-window] [--preview-files]"
+              << " [--detector jcut-dnn|jcut-heuristic-zero-copy]  # default: trained Vulkan DNN"
+              << " [--res10-param PATH] [--res10-bin PATH]"
+              << " [--preview-window] [--no-preview-window] [--preview-files]"
+              << " [--materialized-generate-boxstream]"
               << " [--decode software|hardware|auto|hardware_zero_copy]\n";
 }
 
@@ -110,16 +122,48 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--preview-frames");
             if (!v) return false;
             options->previewFrames = std::max(0, std::atoi(v));
+        } else if (arg == "--detector") {
+            const char* v = next("--detector");
+            if (!v) return false;
+            const QString detector = QString::fromLocal8Bit(v).trimmed().toLower();
+            if (detector == QStringLiteral("jcut-heuristic-zero-copy") ||
+                detector == QStringLiteral("vulkan-zero-copy-heuristic")) {
+                options->heuristicZeroCopyDetector = true;
+                options->detector = QStringLiteral("jcut-heuristic-zero-copy");
+            } else if (detector != QStringLiteral("jcut-dnn") &&
+                detector != QStringLiteral("jcut-dnn-vulkan") &&
+                detector != QStringLiteral("res10-vulkan") &&
+                detector != QStringLiteral("native-jcut-dnn") &&
+                detector != QStringLiteral("native_vulkan_dnn")) {
+                std::cerr << "Unsupported --detector value: " << v
+                          << ". Use jcut-dnn or jcut-heuristic-zero-copy.\n";
+                return false;
+            } else {
+                options->heuristicZeroCopyDetector = false;
+                options->detector = QStringLiteral("jcut-dnn");
+            }
+        } else if (arg == "--res10-param") {
+            const char* v = next("--res10-param");
+            if (!v) return false;
+            options->res10ParamPath = QString::fromLocal8Bit(v);
+        } else if (arg == "--res10-bin") {
+            const char* v = next("--res10-bin");
+            if (!v) return false;
+            options->res10BinPath = QString::fromLocal8Bit(v);
         } else if (arg == "--preview-socket") {
             const char* v = next("--preview-socket");
             if (!v) return false;
             options->previewSocket = QString::fromLocal8Bit(v);
+        } else if (arg == "--preview-window") {
+            options->livePreview = true;
         } else if (arg == "--no-preview-window") {
             options->livePreview = false;
         } else if (arg == "--preview-files") {
             options->writePreviewFiles = true;
         } else if (arg == "--no-preview-files") {
             options->writePreviewFiles = false;
+        } else if (arg == "--materialized-generate-boxstream") {
+            options->materializedGenerateBoxstream = true;
         } else if (arg == "--decode") {
             const char* v = next("--decode");
             if (!v) return false;
@@ -137,6 +181,32 @@ bool parseArgs(int argc, char** argv, Options* options)
         }
     }
     return true;
+}
+
+QString findRes10NcnnModelFile(const QString& explicitPath, const QString& fileName)
+{
+    if (!explicitPath.isEmpty()) {
+        return explicitPath;
+    }
+    const QStringList roots{
+        QDir::currentPath(),
+        QCoreApplication::applicationDirPath(),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral(".."))
+    };
+    const QStringList rels{
+        QStringLiteral("assets/models/%1").arg(fileName),
+        QStringLiteral("testbench_assets/models/%1").arg(fileName),
+        QStringLiteral("models/%1").arg(fileName)
+    };
+    for (const QString& root : roots) {
+        for (const QString& rel : rels) {
+            const QString candidate = QDir(root).absoluteFilePath(rel);
+            if (QFileInfo::exists(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return QDir::current().absoluteFilePath(QStringLiteral("assets/models/%1").arg(fileName));
 }
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
@@ -162,7 +232,7 @@ public:
     {
         VkApplicationInfo app{};
         app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        app.pApplicationName = "jcut-vulkan-boxstream-offscreen";
+        app.pApplicationName = "jcut-dnn-facestream-generator";
         app.apiVersion = VK_API_VERSION_1_1;
 
         VkInstanceCreateInfo instanceInfo{};
@@ -205,10 +275,35 @@ public:
         queueInfo.queueCount = 1;
         queueInfo.pQueuePriorities = &priority;
 
+        uint32_t extensionCount = 0;
+        vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, nullptr);
+        std::vector<VkExtensionProperties> extensionProperties(extensionCount);
+        if (extensionCount) {
+            vkEnumerateDeviceExtensionProperties(physicalDevice, nullptr, &extensionCount, extensionProperties.data());
+        }
+        auto hasDeviceExtension = [&](const char* name) {
+            return std::any_of(extensionProperties.begin(), extensionProperties.end(), [&](const VkExtensionProperties& ext) {
+                return std::strcmp(ext.extensionName, name) == 0;
+            });
+        };
+        std::vector<const char*> enabledExtensions;
+        auto enableIfAvailable = [&](const char* name) {
+            if (hasDeviceExtension(name)) {
+                enabledExtensions.push_back(name);
+            }
+        };
+        enableIfAvailable(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME);
+        enableIfAvailable(VK_KHR_DESCRIPTOR_UPDATE_TEMPLATE_EXTENSION_NAME);
+        enableIfAvailable(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);
+        enableIfAvailable(VK_KHR_MAINTENANCE1_EXTENSION_NAME);
+        enableIfAvailable(VK_KHR_MAINTENANCE3_EXTENSION_NAME);
+
         VkDeviceCreateInfo deviceInfo{};
         deviceInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         deviceInfo.queueCreateInfoCount = 1;
         deviceInfo.pQueueCreateInfos = &queueInfo;
+        deviceInfo.enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size());
+        deviceInfo.ppEnabledExtensionNames = enabledExtensions.empty() ? nullptr : enabledExtensions.data();
         if (vkCreateDevice(physicalDevice, &deviceInfo, nullptr, &device) != VK_SUCCESS) {
             if (error) *error = QStringLiteral("Failed to create Vulkan device.");
             return false;
@@ -245,7 +340,6 @@ public:
 
     bool attachExternalDevice(const jcut::vulkan_detector::VulkanDeviceContext& context, QString* error)
     {
-        release();
         if (context.physicalDevice == VK_NULL_HANDLE ||
             context.device == VK_NULL_HANDLE ||
             context.queue == VK_NULL_HANDLE ||
@@ -253,6 +347,14 @@ public:
             if (error) *error = QStringLiteral("Invalid external Vulkan detector context.");
             return false;
         }
+        if (!ownsInstanceAndDevice &&
+            physicalDevice == context.physicalDevice &&
+            device == context.device &&
+            queue == context.queue &&
+            queueFamilyIndex == context.queueFamilyIndex) {
+            return true;
+        }
+        release();
         ownsInstanceAndDevice = false;
         physicalDevice = context.physicalDevice;
         device = context.device;
@@ -602,6 +704,214 @@ QVector<Detection> readDetections(VulkanHarnessContext& vk, int imageWidth, int 
     return out;
 }
 
+QVector<Detection> detectVulkanFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDetector* detector,
+                                     VulkanHarnessContext* vk,
+                                     const render_detail::OffscreenVulkanFrame& frame,
+                                     int maxDetections,
+                                     float threshold,
+                                     double* vulkanMs,
+                                     QString* error)
+{
+    QVector<Detection> out;
+    if (!detector || !vk || !frame.valid) {
+        if (error) *error = QStringLiteral("Invalid Vulkan detector frame.");
+        return out;
+    }
+    if (!vk->attachExternalDevice({frame.physicalDevice,
+                                   frame.device,
+                                   frame.queue,
+                                   frame.queueFamilyIndex}, error)) {
+        return out;
+    }
+    if (!detector->isInitialized() &&
+        !detector->initialize(vk->detectorContext(), error)) {
+        return out;
+    }
+    if (!vk->ensureDetectorBuffers(detector->tensorSpec().byteSize(), maxDetections, error)) {
+        return out;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    const jcut::vulkan_detector::VulkanExternalImage source{
+        frame.imageView,
+        frame.imageLayout,
+        frame.size,
+        false
+    };
+    const jcut::vulkan_detector::VulkanTensorBuffer tensor{
+        vk->tensorBuffer,
+        detector->tensorSpec().byteSize()
+    };
+    if (!detector->preprocessToTensor(source, tensor, error)) {
+        return out;
+    }
+    const jcut::vulkan_detector::VulkanTensorBuffer detectionBuffer{
+        vk->detectionBuffer,
+        vk->detectionSize
+    };
+    if (!detector->inferFromTensor(tensor, detectionBuffer, maxDetections, threshold, error)) {
+        return out;
+    }
+    out = readDetections(*vk, frame.size.width(), frame.size.height());
+    if (vulkanMs) {
+        *vulkanMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+    }
+    return out;
+}
+
+QVector<Detection> detectRes10VulkanFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDetector* preprocessor,
+                                          jcut::vulkan_detector::VulkanRes10NcnnFaceDetector* detector,
+                                          VulkanHarnessContext* vk,
+                                          const render_detail::OffscreenVulkanFrame& frame,
+                                          const QString& paramPath,
+                                          const QString& binPath,
+                                          float threshold,
+                                          double* vulkanMs,
+                                          QString* error)
+{
+    QVector<Detection> out;
+    if (!preprocessor || !detector || !vk || !frame.valid) {
+        if (error) *error = QStringLiteral("Invalid Vulkan Res10 detector frame.");
+        return out;
+    }
+    if (!vk->attachExternalDevice({frame.physicalDevice,
+                                   frame.device,
+                                   frame.queue,
+                                   frame.queueFamilyIndex}, error)) {
+        return out;
+    }
+    if (!preprocessor->isInitialized() &&
+        !preprocessor->initialize(vk->detectorContext(), error)) {
+        return out;
+    }
+    if (!detector->isInitialized() &&
+        !detector->initialize(vk->detectorContext(), paramPath, binPath, error)) {
+        return out;
+    }
+    if (!vk->ensureDetectorBuffers(preprocessor->tensorSpec().byteSize(), 1, error)) {
+        return out;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    const jcut::vulkan_detector::VulkanExternalImage source{
+        frame.imageView,
+        frame.imageLayout,
+        frame.size,
+        false
+    };
+    const jcut::vulkan_detector::VulkanTensorBuffer tensor{
+        vk->tensorBuffer,
+        preprocessor->tensorSpec().byteSize()
+    };
+    if (!preprocessor->preprocessToTensor(source, tensor, error)) {
+        return out;
+    }
+    const QVector<jcut::vulkan_detector::Res10Detection> raw =
+        detector->inferFromTensor(tensor, frame.size.width(), frame.size.height(), threshold, error);
+    out.reserve(raw.size());
+    for (const auto& det : raw) {
+        out.push_back({det.box, det.confidence});
+    }
+    if (vulkanMs) {
+        *vulkanMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+    }
+    return out;
+}
+
+#if JCUT_HAVE_OPENCV
+bool hasVulkanDnnTarget()
+{
+    const std::vector<cv::dnn::Target> targets =
+        cv::dnn::getAvailableTargets(cv::dnn::DNN_BACKEND_VKCOM);
+    return std::find(targets.begin(), targets.end(), cv::dnn::DNN_TARGET_VULKAN) != targets.end();
+}
+
+bool initializeTrainedVulkanDnn(cv::dnn::Net* net, QString* error)
+{
+    if (!net) {
+        if (error) *error = QStringLiteral("Invalid trained Vulkan DNN runtime.");
+        return false;
+    }
+    if (!hasVulkanDnnTarget()) {
+        if (error) *error = QStringLiteral("OpenCV VKCOM/Vulkan DNN target is unavailable in this build/runtime.");
+        return false;
+    }
+    QString proto;
+    QString model;
+    if (!jcut::boxstream::ensureFaceDnnModel(QDir::currentPath(), &proto, &model)) {
+        if (error) *error = QStringLiteral("OpenCV Res10 SSD face detector assets are missing or could not be downloaded.");
+        return false;
+    }
+    try {
+        *net = cv::dnn::readNetFromCaffe(proto.toStdString(), model.toStdString());
+        net->setPreferableBackend(cv::dnn::DNN_BACKEND_VKCOM);
+        net->setPreferableTarget(cv::dnn::DNN_TARGET_VULKAN);
+    } catch (const cv::Exception& e) {
+        if (error) *error = QStringLiteral("Failed to initialize trained Vulkan DNN: %1").arg(e.what());
+        return false;
+    }
+    return true;
+}
+
+QVector<Detection> detectTrainedVulkanDnn(cv::dnn::Net* net,
+                                          const cv::Mat& bgr,
+                                          float threshold,
+                                          double* inferenceMs,
+                                          QString* error)
+{
+    QVector<Detection> out;
+    if (!net || bgr.empty()) {
+        return out;
+    }
+    QElapsedTimer timer;
+    timer.start();
+    try {
+        cv::Mat blob = cv::dnn::blobFromImage(
+            bgr, 1.0, cv::Size(300, 300), cv::Scalar(104.0, 177.0, 123.0), false, false);
+        net->setInput(blob);
+        const cv::Mat detections = net->forward();
+        if (detections.dims != 4 || detections.size[2] <= 0 || detections.size[3] < 7) {
+            if (error) *error = QStringLiteral("Unexpected trained Vulkan DNN output shape.");
+            return out;
+        }
+        const int width = bgr.cols;
+        const int height = bgr.rows;
+        for (int i = 0; i < detections.size[2]; ++i) {
+            const float* row = detections.ptr<float>(0, 0, i);
+            const float confidence = row[2];
+            if (confidence < threshold) {
+                continue;
+            }
+            int x1 = static_cast<int>(row[3] * width);
+            int y1 = static_cast<int>(row[4] * height);
+            int x2 = static_cast<int>(row[5] * width);
+            int y2 = static_cast<int>(row[6] * height);
+            x1 = qBound(0, x1, qMax(0, width - 1));
+            y1 = qBound(0, y1, qMax(0, height - 1));
+            x2 = qBound(0, x2, qMax(0, width - 1));
+            y2 = qBound(0, y2, qMax(0, height - 1));
+            QRectF box(x1, y1, qMax(0, x2 - x1), qMax(0, y2 - y1));
+            box = box.intersected(QRectF(0, 0, width, height));
+            if (box.width() >= 8.0 && box.height() >= 8.0) {
+                out.push_back({box, confidence});
+            }
+        }
+    } catch (const cv::Exception& e) {
+        if (error) *error = QStringLiteral("Trained Vulkan DNN inference failed: %1").arg(e.what());
+        return {};
+    }
+    if (inferenceMs) {
+        *inferenceMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+    }
+    std::sort(out.begin(), out.end(), [](const Detection& a, const Detection& b) {
+        return a.confidence > b.confidence;
+    });
+    return out;
+}
+#endif
+
 void updateTracks(QVector<Track>* tracks,
                   const QVector<Detection>& detections,
                   int frameNumber,
@@ -714,11 +1024,11 @@ int main(int argc, char** argv)
     QLabel previewWindow;
     QLabel* previewWindowPtr = nullptr;
     if (options.livePreview && !platformIsOffscreen) {
-        previewWindow.setWindowTitle(QStringLiteral("JCut Vulkan BoxStream Offscreen Preview"));
+        previewWindow.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator Offscreen Preview"));
         previewWindow.setAlignment(Qt::AlignCenter);
         previewWindow.setMinimumSize(960, 540);
         previewWindow.setStyleSheet(QStringLiteral("background:#111; color:#ddd; border:1px solid #333;"));
-        previewWindow.setText(QStringLiteral("Waiting for Vulkan BoxStream preview..."));
+        previewWindow.setText(QStringLiteral("Waiting for JCut DNN FaceStream preview..."));
         previewWindow.show();
         previewWindowPtr = &previewWindow;
         app.processEvents();
@@ -760,25 +1070,58 @@ int main(int argc, char** argv)
     }
 
     QString error;
-#if !JCUT_HAVE_OPENCV
-    std::cerr << "OpenCV is not enabled in this build; Generate BoxStream native scan is unavailable.\n";
-    return 2;
-#else
+#if JCUT_HAVE_OPENCV
     cv::CascadeClassifier faceCascade;
     cv::CascadeClassifier faceCascadeAlt;
     cv::CascadeClassifier faceCascadeProfile;
-    const QString cascadePath = jcut::boxstream::findCascadeFile(QStringLiteral("haarcascade_frontalface_default.xml"));
-    if (cascadePath.isEmpty() || !faceCascade.load(cascadePath.toStdString())) {
-        std::cerr << "Failed to load Haar cascade for Generate BoxStream native scan.\n";
+    if (options.materializedGenerateBoxstream) {
+        const QString cascadePath = jcut::boxstream::findCascadeFile(QStringLiteral("haarcascade_frontalface_default.xml"));
+        if (cascadePath.isEmpty() || !faceCascade.load(cascadePath.toStdString())) {
+            std::cerr << "Failed to load Haar cascade for materialized Generate FaceStream scan.\n";
+            return 2;
+        }
+        const QString altCascadePath = jcut::boxstream::findCascadeFile(QStringLiteral("haarcascade_frontalface_alt2.xml"));
+        if (!altCascadePath.isEmpty()) {
+            faceCascadeAlt.load(altCascadePath.toStdString());
+        }
+        const QString profileCascadePath = jcut::boxstream::findCascadeFile(QStringLiteral("haarcascade_profileface.xml"));
+        if (!profileCascadePath.isEmpty()) {
+            faceCascadeProfile.load(profileCascadePath.toStdString());
+        }
+    }
+#else
+    if (options.materializedGenerateBoxstream) {
+        std::cerr << "OpenCV is not enabled in this build; materialized Generate FaceStream scan is unavailable.\n";
         return 2;
     }
-    const QString altCascadePath = jcut::boxstream::findCascadeFile(QStringLiteral("haarcascade_frontalface_alt2.xml"));
-    if (!altCascadePath.isEmpty()) {
-        faceCascadeAlt.load(altCascadePath.toStdString());
+#endif
+    const bool zeroCopyVulkanDetector = !options.materializedGenerateBoxstream;
+    const QString res10ParamPath = findRes10NcnnModelFile(
+        options.res10ParamPath, QStringLiteral("res10_300x300_ssd_ncnn.param"));
+    const QString res10BinPath = findRes10NcnnModelFile(
+        options.res10BinPath, QStringLiteral("res10_300x300_ssd_ncnn.bin"));
+    if (zeroCopyVulkanDetector &&
+        (options.livePreview || options.writePreviewFiles || previewSocketPtr)) {
+        std::cerr << "Preview output is disabled on the Vulkan zero-copy detection path because it would require QImage/readback. "
+                  << "Use --materialized-generate-boxstream for the legacy CPU preview path.\n";
+        options.livePreview = false;
+        previewWindow.hide();
+        previewWindowPtr = nullptr;
+        previewSocketPtr = nullptr;
+        options.writePreviewFiles = false;
     }
-    const QString profileCascadePath = jcut::boxstream::findCascadeFile(QStringLiteral("haarcascade_profileface.xml"));
-    if (!profileCascadePath.isEmpty()) {
-        faceCascadeProfile.load(profileCascadePath.toStdString());
+    if (zeroCopyVulkanDetector && !options.heuristicZeroCopyDetector) {
+        std::cout << "detector=res10_ssd_ncnn_vulkan_zero_copy_v1"
+                  << " name=\"JCut DNN FaceStream Generator\""
+                  << " inference_backend=ncnn_vulkan"
+                  << " model_param=\"" << res10ParamPath.toStdString() << "\""
+                  << " model_bin=\"" << res10BinPath.toStdString() << "\""
+                  << " qimage_materialized=0\n";
+    } else if (options.heuristicZeroCopyDetector) {
+        std::cout << "detector=native_jcut_heuristic_zero_copy_v1"
+                  << " name=\"JCut DNN FaceStream Generator\""
+                  << " decode=hardware_zero_copy"
+                  << " qimage_materialized=0\n";
     }
 
     int decoded = 0;
@@ -789,9 +1132,13 @@ int main(int argc, char** argv)
     int previewWritten = 0;
     double renderDecodeMsTotal = 0.0;
     double renderCompositeMsTotal = 0.0;
+    double vulkanDetectMsTotal = 0.0;
     QVector<Track> tracks;
     QJsonArray frameRows;
     bool printedAppVulkanFailure = false;
+    VulkanHarnessContext detectorContext;
+    jcut::vulkan_detector::VulkanZeroCopyFaceDetector zeroCopyDetector;
+    jcut::vulkan_detector::VulkanRes10NcnnFaceDetector res10Detector;
 
     const auto wallStart = std::chrono::steady_clock::now();
     for (int frameNumber = 0; frameNumber < options.maxFrames; ++frameNumber) {
@@ -801,88 +1148,184 @@ int main(int argc, char** argv)
         }
 
         jcut::boxstream::VulkanFrameStats renderStats;
-        QImage frameImage = jcut::boxstream::renderFrameWithVulkan(&appFrameProvider,
-                                                                   sourceClip,
-                                                                   options.videoPath,
-                                                                   frameNumber,
-                                                                   frameNumber,
-                                                                   renderSize,
-                                                                   &renderStats);
-        const bool appVulkanFrame = !frameImage.isNull();
-        if (appVulkanFrame) {
-            ++hardwareFrames;
-        } else {
-            if (appFrameProvider.failed && !printedAppVulkanFailure) {
-                std::cerr << "Application Vulkan frame path unavailable: "
-                          << appFrameProvider.failureReason.toStdString() << "\n";
-                printedAppVulkanFailure = true;
-            }
-            editor::FrameHandle frame = decoder.decodeFrame(frameNumber);
-            if (frame.isNull()) {
-                break;
-            }
-            if (frame.hasHardwareFrame() || frame.hasGpuTexture()) ++hardwareFrames;
-            if (!frame.hasCpuImage()) {
+        QVector<Detection> detections;
+        QSize detectionFrameSize = renderSize;
+        bool appVulkanFrame = false;
+        double vulkanDetectMs = 0.0;
+
+        if (zeroCopyVulkanDetector) {
+            render_detail::OffscreenVulkanFrame vulkanFrame;
+            error.clear();
+            if (!jcut::boxstream::renderFrameToVulkan(&appFrameProvider,
+                                                      sourceClip,
+                                                      options.videoPath,
+                                                      frameNumber,
+                                                      frameNumber,
+                                                      renderSize,
+                                                      &vulkanFrame,
+                                                      &renderStats,
+                                                      &error)) {
+                if (!printedAppVulkanFailure) {
+                    std::cerr << "Application Vulkan frame path unavailable: "
+                              << error.toStdString() << "\n";
+                    printedAppVulkanFailure = true;
+                }
                 continue;
             }
-            frameImage = frame.cpuImage();
-            ++cpuFrames;
-        }
-        if (frameImage.isNull()) {
-            continue;
-        }
-
-        const cv::Mat bgr = jcut::boxstream::qImageToBgrMat(frameImage);
-        cv::Mat gray;
-        cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
-        cv::equalizeHist(gray, gray);
-
-        const int minSide = qMax(1, qMin(frameImage.width(), frameImage.height()));
-        const double scaleFactor = 1.08;
-        const int baseNeighbors = 5;
-        const int minDivisor = 22;
-        const double minWeight = 0.2;
-        const cv::Size minFace(qMax(18, minSide / minDivisor), qMax(18, minSide / minDivisor));
-        const cv::Size maxFace(qMax(minFace.width + 1, (minSide * 3) / 4),
-                               qMax(minFace.height + 1, (minSide * 3) / 4));
-        std::vector<jcut::boxstream::WeightedDetection> weightedDetections;
-        auto runCascade = [&](cv::CascadeClassifier& cascade, int minNeighbors, double weightBias) {
-            if (cascade.empty()) {
-                return;
+            appVulkanFrame = true;
+            ++hardwareFrames;
+            detectionFrameSize = vulkanFrame.size;
+            error.clear();
+            if (options.heuristicZeroCopyDetector) {
+                detections = detectVulkanFrame(&zeroCopyDetector,
+                                               &detectorContext,
+                                               vulkanFrame,
+                                               options.maxDetections,
+                                               options.threshold,
+                                               &vulkanDetectMs,
+                                               &error);
+            } else {
+                detections = detectRes10VulkanFrame(&zeroCopyDetector,
+                                                    &res10Detector,
+                                                    &detectorContext,
+                                                    vulkanFrame,
+                                                    res10ParamPath,
+                                                    res10BinPath,
+                                                    options.threshold,
+                                                    &vulkanDetectMs,
+                                                    &error);
             }
-            std::vector<cv::Rect> raw;
-            std::vector<int> rejectLevels;
-            std::vector<double> levelWeights;
-            cascade.detectMultiScale(
-                gray, raw, rejectLevels, levelWeights,
-                scaleFactor, minNeighbors, cv::CASCADE_SCALE_IMAGE, minFace, maxFace, true);
-            for (int i = 0; i < static_cast<int>(raw.size()); ++i) {
-                const double weight = (i < static_cast<int>(levelWeights.size()) ? levelWeights[i] : 0.0) + weightBias;
-                if (weight >= minWeight) {
-                    weightedDetections.push_back({raw[i], weight});
+            if (!error.isEmpty() && detections.isEmpty()) {
+                std::cerr << "Vulkan zero-copy detection failed at frame "
+                          << frameNumber << ": " << error.toStdString() << "\n";
+                continue;
+            }
+        } else {
+#if JCUT_HAVE_OPENCV
+            QImage frameImage = jcut::boxstream::renderFrameWithVulkan(&appFrameProvider,
+                                                                       sourceClip,
+                                                                       options.videoPath,
+                                                                       frameNumber,
+                                                                       frameNumber,
+                                                                       renderSize,
+                                                                       &renderStats);
+            appVulkanFrame = !frameImage.isNull();
+            if (appVulkanFrame) {
+                ++hardwareFrames;
+            } else {
+                if (appFrameProvider.failed && !printedAppVulkanFailure) {
+                    std::cerr << "Application Vulkan frame path unavailable: "
+                              << appFrameProvider.failureReason.toStdString() << "\n";
+                    printedAppVulkanFailure = true;
+                }
+                editor::FrameHandle frame = decoder.decodeFrame(frameNumber);
+                if (frame.isNull()) {
+                    break;
+                }
+                if (frame.hasHardwareFrame() || frame.hasGpuTexture()) ++hardwareFrames;
+                if (!frame.hasCpuImage()) {
+                    continue;
+                }
+                frameImage = frame.cpuImage();
+                ++cpuFrames;
+            }
+            if (frameImage.isNull()) {
+                continue;
+            }
+            detectionFrameSize = frameImage.size();
+
+            const cv::Mat bgr = jcut::boxstream::qImageToBgrMat(frameImage);
+            cv::Mat gray;
+            cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+            cv::equalizeHist(gray, gray);
+
+            const int minSide = qMax(1, qMin(frameImage.width(), frameImage.height()));
+            const double scaleFactor = 1.08;
+            const int baseNeighbors = 5;
+            const int minDivisor = 22;
+            const double minWeight = 0.2;
+            const cv::Size minFace(qMax(18, minSide / minDivisor), qMax(18, minSide / minDivisor));
+            const cv::Size maxFace(qMax(minFace.width + 1, (minSide * 3) / 4),
+                                   qMax(minFace.height + 1, (minSide * 3) / 4));
+            std::vector<jcut::boxstream::WeightedDetection> weightedDetections;
+            auto runCascade = [&](cv::CascadeClassifier& cascade, int minNeighbors, double weightBias) {
+                if (cascade.empty()) {
+                    return;
+                }
+                std::vector<cv::Rect> raw;
+                std::vector<int> rejectLevels;
+                std::vector<double> levelWeights;
+                cascade.detectMultiScale(
+                    gray, raw, rejectLevels, levelWeights,
+                    scaleFactor, minNeighbors, cv::CASCADE_SCALE_IMAGE, minFace, maxFace, true);
+                for (int i = 0; i < static_cast<int>(raw.size()); ++i) {
+                    const double weight = (i < static_cast<int>(levelWeights.size()) ? levelWeights[i] : 0.0) + weightBias;
+                    if (weight >= minWeight) {
+                        weightedDetections.push_back({raw[i], weight});
+                    }
+                }
+            };
+            runCascade(faceCascade, baseNeighbors, 0.0);
+            runCascade(faceCascadeAlt, qMax(2, baseNeighbors - 1), -0.05);
+            runCascade(faceCascadeProfile, qMax(2, baseNeighbors - 1), -0.10);
+
+            const std::vector<jcut::boxstream::WeightedDetection> filtered =
+                jcut::boxstream::filterAndSuppressDetections(std::move(weightedDetections), frameImage.size());
+            detections.reserve(static_cast<int>(filtered.size()));
+            for (const jcut::boxstream::WeightedDetection& det : filtered) {
+                detections.push_back({QRectF(det.box.x, det.box.y, det.box.width, det.box.height),
+                                      static_cast<float>(det.weight)});
+            }
+
+            const bool needsPreviewFrame =
+                previewWindowPtr ||
+                previewSocketPtr ||
+                (options.writePreviewFiles && previewWritten < options.previewFrames);
+            if (needsPreviewFrame) {
+                const QImage preview = buildPreview(frameImage, tracks, detections);
+                if (previewSocketPtr) {
+                    sendPreviewFrame(previewSocketPtr, preview);
+                }
+                if (previewWindowPtr && !preview.isNull()) {
+                    previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
+                        previewWindowPtr->size(),
+                        Qt::KeepAspectRatio,
+                        Qt::SmoothTransformation));
+                    previewWindowPtr->setWindowTitle(QStringLiteral(
+                        "JCut Materialized Generate FaceStream - frame %1 tracks %2")
+                        .arg(frameNumber)
+                        .arg(tracks.size()));
+                    app.processEvents();
+                    if (!previewWindowPtr->isVisible()) {
+                        options.livePreview = false;
+                        previewWindowPtr = nullptr;
+                    }
+                }
+                if (options.writePreviewFiles && previewWritten < options.previewFrames) {
+                    const QString previewPath = QDir(options.outputDir).filePath(
+                        QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
+                    preview.save(previewPath);
+                    ++previewWritten;
                 }
             }
-        };
-        runCascade(faceCascade, baseNeighbors, 0.0);
-        runCascade(faceCascadeAlt, qMax(2, baseNeighbors - 1), -0.05);
-        runCascade(faceCascadeProfile, qMax(2, baseNeighbors - 1), -0.10);
-
-        const std::vector<jcut::boxstream::WeightedDetection> filtered =
-            jcut::boxstream::filterAndSuppressDetections(std::move(weightedDetections), frameImage.size());
-        QVector<Detection> detections;
-        detections.reserve(static_cast<int>(filtered.size()));
-        for (const jcut::boxstream::WeightedDetection& det : filtered) {
-            detections.push_back({QRectF(det.box.x, det.box.y, det.box.width, det.box.height),
-                                  static_cast<float>(det.weight)});
+#endif
         }
-        updateTracks(&tracks, detections, frameNumber, frameImage.size());
+        updateTracks(&tracks, detections, frameNumber, detectionFrameSize);
 
         ++processed;
         totalDetections += detections.size();
         renderDecodeMsTotal += renderStats.decodeMs;
         renderCompositeMsTotal += renderStats.compositeMs;
+        vulkanDetectMsTotal += vulkanDetectMs;
+        const QString detectorId = options.materializedGenerateBoxstream
+            ? QStringLiteral("materialized_generate_facestream_opencv_cascade_v1")
+            : (options.heuristicZeroCopyDetector
+                   ? QStringLiteral("native_jcut_heuristic_zero_copy_v1")
+                   : QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1"));
+        const bool qimageMaterialized = options.materializedGenerateBoxstream;
         frameRows.append(QJsonObject{
             {QStringLiteral("frame"), frameNumber},
+            {QStringLiteral("detector"), detectorId},
             {QStringLiteral("detections"), detections.size()},
             {QStringLiteral("tracks"), tracks.size()},
             {QStringLiteral("app_vulkan_frame_path"), appVulkanFrame},
@@ -890,41 +1333,11 @@ int main(int argc, char** argv)
             {QStringLiteral("app_render_texture_ms"), renderStats.textureMs},
             {QStringLiteral("app_render_composite_ms"), renderStats.compositeMs},
             {QStringLiteral("app_render_readback_ms"), renderStats.readbackMs},
-            {QStringLiteral("generate_boxstream_native_hybrid_vulkan"), true}
+            {QStringLiteral("vulkan_zero_copy_detection_ms"), vulkanDetectMs},
+            {QStringLiteral("qimage_materialized"), qimageMaterialized}
         });
-
-        const bool needsPreviewFrame =
-            previewWindowPtr ||
-            previewSocketPtr ||
-            (options.writePreviewFiles && previewWritten < options.previewFrames);
-        if (needsPreviewFrame) {
-            const QImage preview = buildPreview(frameImage, tracks, detections);
-            if (previewSocketPtr) {
-                sendPreviewFrame(previewSocketPtr, preview);
-            }
-            if (previewWindowPtr && !preview.isNull()) {
-                previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
-                    previewWindowPtr->size(),
-                    Qt::KeepAspectRatio,
-                    Qt::SmoothTransformation));
-                previewWindowPtr->setWindowTitle(QStringLiteral(
-                    "JCut Generate BoxStream Thin Wrapper - frame %1 tracks %2")
-                    .arg(frameNumber)
-                    .arg(tracks.size()));
-                app.processEvents();
-                if (!previewWindowPtr->isVisible()) {
-                    options.livePreview = false;
-                    previewWindowPtr = nullptr;
-                }
-            }
-            if (options.writePreviewFiles && previewWritten < options.previewFrames) {
-                const QString previewPath = QDir(options.outputDir).filePath(
-                    QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
-                preview.save(previewPath);
-                ++previewWritten;
-            }
-        }
         std::cout << "frame=" << frameNumber
+                  << " detector=" << detectorId.toStdString()
                   << " detections=" << detections.size()
                   << " tracks=" << tracks.size()
                   << " app_vulkan_frame_path=" << (appVulkanFrame ? 1 : 0)
@@ -932,11 +1345,11 @@ int main(int argc, char** argv)
                   << " render_texture_ms=" << renderStats.textureMs
                   << " render_composite_ms=" << renderStats.compositeMs
                   << " render_readback_ms=" << renderStats.readbackMs
-                  << " generate_boxstream_native_hybrid_vulkan=1\n";
+                  << " vulkan_zero_copy_detection_ms=" << vulkanDetectMs
+                  << " qimage_materialized=" << (qimageMaterialized ? 1 : 0)
+                  << "\n";
     }
     const auto wallEnd = std::chrono::steady_clock::now();
-
-#endif
     QJsonArray trackRows;
     for (const Track& track : tracks) {
         trackRows.append(QJsonObject{
@@ -946,17 +1359,22 @@ int main(int argc, char** argv)
             {QStringLiteral("detections"), track.detections}
         });
     }
+    const QString backend = options.materializedGenerateBoxstream
+        ? QStringLiteral("materialized_generate_facestream_opencv_cascade_v1")
+        : (options.heuristicZeroCopyDetector
+               ? QStringLiteral("native_jcut_heuristic_zero_copy_v1")
+               : QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1"));
     writeJson(QDir(options.outputDir).filePath(QStringLiteral("tracks.json")), QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_boxstream_offscreen_tracks_v1")},
         {QStringLiteral("video"), options.videoPath},
-        {QStringLiteral("backend"), QStringLiteral("native_hybrid_vulkan_v1")},
+        {QStringLiteral("backend"), backend},
         {QStringLiteral("tracks"), trackRows},
         {QStringLiteral("frames"), frameRows}
     });
     const QJsonArray streams = jcut::boxstream::buildContinuityStreams(
         trackRows,
         QJsonObject{},
-        QStringLiteral("native_hybrid_vulkan_v1"),
+        backend,
         false);
     const QJsonObject continuityRoot = jcut::boxstream::buildContinuityRoot(
         QStringLiteral("offscreen"),
@@ -975,7 +1393,9 @@ int main(int argc, char** argv)
     const QJsonObject summary{
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("output_dir"), QDir(options.outputDir).absolutePath()},
-        {QStringLiteral("backend"), QStringLiteral("native_hybrid_vulkan_v1")},
+        {QStringLiteral("generator_name"), QStringLiteral("JCut DNN FaceStream Generator")},
+        {QStringLiteral("backend"), backend},
+        {QStringLiteral("detector"), backend},
         {QStringLiteral("decoded_frames"), decoded},
         {QStringLiteral("processed_frames"), processed},
         {QStringLiteral("cpu_frames"), cpuFrames},
@@ -988,10 +1408,15 @@ int main(int argc, char** argv)
         {QStringLiteral("preview_frames_written"), previewWritten},
         {QStringLiteral("avg_render_decode_ms"), processed ? renderDecodeMsTotal / processed : 0.0},
         {QStringLiteral("avg_render_composite_ms"), processed ? renderCompositeMsTotal / processed : 0.0},
+        {QStringLiteral("avg_vulkan_zero_copy_detection_ms"), processed ? vulkanDetectMsTotal / processed : 0.0},
         {QStringLiteral("wall_sec"), std::chrono::duration<double>(wallEnd - wallStart).count()},
         {QStringLiteral("decode_zero_copy"), decodeZeroCopy},
-        {QStringLiteral("generate_boxstream_native_hybrid_vulkan"), true},
-        {QStringLiteral("zero_copy_note"), QStringLiteral("This wrapper follows the Generate BoxStream Native Production Hybrid (Vulkan Decode Path): frames are composed by the app Vulkan renderer, then materialized for the same OpenCV continuity detector/preview used by the program option.")}
+        {QStringLiteral("qimage_materialized"), options.materializedGenerateBoxstream},
+        {QStringLiteral("vulkan_path_uses_qimage"), false},
+        {QStringLiteral("current_mode_uses_qimage"), options.materializedGenerateBoxstream},
+        {QStringLiteral("zero_copy_note"), options.materializedGenerateBoxstream
+            ? QStringLiteral("Materialized compatibility mode: frames are rendered by Vulkan, read back to QImage, and scanned by the legacy OpenCV continuity detector.")
+            : QStringLiteral("Res10 ncnn Vulkan path: frames remain as Vulkan images through preprocessing/inference; only compact detection metadata is read back. No QImage frame materialization is used.")}
     };
     writeJson(QDir(options.outputDir).filePath(QStringLiteral("summary.json")), summary);
     std::cout << "summary " << QJsonDocument(summary).toJson(QJsonDocument::Compact).constData() << "\n";

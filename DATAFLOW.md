@@ -38,7 +38,7 @@ Define a single, enforceable dataflow architecture for JCut so UI responsiveness
 - Must not mutate domain state directly.
 
 2. Intent layer
-- Converts low-level UI events to explicit intents (e.g., `SelectSpeaker`, `RefreshBoxStreamPanel`).
+- Converts low-level UI events to explicit intents (e.g., `SelectSpeaker`, `RefreshFaceStreamPanel`).
 
 3. State reducer
 - Pure-ish deterministic state transition functions.
@@ -150,14 +150,14 @@ Exit criteria:
 
 ---
 
-## Speakers/BoxStream Dataflow (Target)
+## Speakers/FaceStream Dataflow (Target)
 1. Intent: `IdentifyUniqueFaces(clipId, options)`
 2. Effect: run candidate detection/tracking and populate identity-resolution table.
 3. Reducer: persist resolved unique-face mapping for all distinct faces.
-4. Intent: `GenerateBoxStream(clipId, preset, options)` (allowed only after unique-face pass is resolved).
+4. Intent: `GenerateFaceStream(clipId, preset, options)` (allowed only after unique-face pass is resolved).
 5. Reducer: mark job state `running`.
 6. Effect: run selected backend (native/docker/python/sam3).
-7. Effect result intent: `BoxStreamGenerated(payload)` or `BoxStreamFailed(error)`.
+7. Effect result intent: `FaceStreamGenerated(payload)` or `FaceStreamFailed(error)`.
 8. Reducer:
 - validate schema
 - update boxstream sidecar refs

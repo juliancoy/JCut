@@ -324,8 +324,8 @@ bool ControlServerWorker::handleParadigms(QTcpSocket* socket, const Request& req
                 <tr><td><code>transcript_tab_document.cpp</code></td><td>🟩 Transcript document</td><td>🟩 Satellite</td><td>🟫 Load/parse/version/persist</td><td>🟩 Extracted to cap</td></tr>
                 <tr><td><code>speakers_tab.cpp</code></td><td>🟦 Speakers core</td><td>🟦 Facade</td><td>🟧 Wiring/refresh/model summary</td><td>🟩 Below cap</td></tr>
                 <tr><td><code>speakers_tab_interactions.cpp</code></td><td>🟩 Speakers interactions</td><td>🟩 Satellite</td><td>🟨 Selection/reference/context actions</td><td>🟩 Extracted to cap</td></tr>
-                <tr><td><code>speakers_tab_boxstream_engines.cpp</code></td><td>🟩 BoxStream engines</td><td>🟩 Satellite</td><td>🟥 Native/docker engine execution</td><td>🟩 Extracted to cap</td></tr>
-                <tr><td><code>speakers_tab_boxstream_actions.cpp</code></td><td>🟩 BoxStream actions</td><td>🟩 Satellite</td><td>🟧 Workflow orchestration + preview framing</td><td>🟩 Extracted to cap</td></tr>
+                <tr><td><code>speakers_tab_boxstream_engines.cpp</code></td><td>🟩 FaceStream engines</td><td>🟩 Satellite</td><td>🟥 Native/docker engine execution</td><td>🟩 Extracted to cap</td></tr>
+                <tr><td><code>speakers_tab_boxstream_actions.cpp</code></td><td>🟩 FaceStream actions</td><td>🟩 Satellite</td><td>🟧 Workflow orchestration + preview framing</td><td>🟩 Extracted to cap</td></tr>
                 <tr><td><code>speakers_tab_internal.h</code></td><td>🟪 Shared helper slice</td><td>🟪 Helper module</td><td>🟪 Internal constants/utilities</td><td>🟩 Prevents duplication</td></tr>
             </tbody>
         </table>

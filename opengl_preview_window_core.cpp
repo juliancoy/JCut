@@ -76,11 +76,11 @@ PreviewWindow::PreviewWindow(QWidget* parent)
             m_frameRequestTimer.start();
         }
 
-        if (stalledPresentation && (m_playing || pendingDecodeWork)) {
+        if (stalledPresentation && (m_interaction.playing || pendingDecodeWork)) {
             update();
         }
 
-        if (!m_playing && !pendingDecodeWork) {
+        if (!m_interaction.playing && !pendingDecodeWork) {
             m_repaintTimer.stop();
         }
     });
@@ -123,10 +123,10 @@ void PreviewWindow::setPlaybackState(bool playing) {
     playbackTrace(QStringLiteral("PreviewWindow::setPlaybackState"),
                   QStringLiteral("playing=%1 clips=%2 cache=%3")
                       .arg(playing)
-                      .arg(m_clips.size())
+                      .arg(m_interaction.clips.size())
                       .arg(m_cache != nullptr));
-    m_playing = playing;
-    if (playing && !m_clips.isEmpty()) {
+    m_interaction.playing = playing;
+    if (playing && !m_interaction.clips.isEmpty()) {
         ensurePipeline();
     }
     if (m_cache) {
@@ -160,7 +160,7 @@ void PreviewWindow::setCurrentPlaybackSample(int64_t samplePosition) {
     const qreal framePosition = samplesToFramePosition(sanitizedSample);
     const int64_t displayFrame = qMax<int64_t>(0, static_cast<int64_t>(std::floor(framePosition)));
     const bool discontinuousFrameJump =
-        m_playing && qAbs(displayFrame - m_currentFrame) > 2;
+        m_interaction.playing && qAbs(displayFrame - m_interaction.currentFrame) > 2;
     playbackTrace(QStringLiteral("PreviewWindow::setCurrentPlaybackSample"),
                   QStringLiteral("sample=%1 frame=%2 visible=%3 cache=%4")
                       .arg(sanitizedSample)
@@ -170,9 +170,9 @@ void PreviewWindow::setCurrentPlaybackSample(int64_t samplePosition) {
     if (discontinuousFrameJump) {
         m_lastPresentedFrames.clear();
     }
-    m_currentSample = sanitizedSample;
-    m_currentFramePosition = framePosition;
-    m_currentFrame = displayFrame;
+    m_interaction.currentSample = sanitizedSample;
+    m_interaction.currentFramePosition = framePosition;
+    m_interaction.currentFrame = displayFrame;
     if (m_cache) {
         m_cache->setPlayheadFrame(displayFrame);
     }
@@ -193,23 +193,23 @@ void PreviewWindow::setCurrentPlaybackSample(int64_t samplePosition) {
     scheduleRepaint();
 }
 
-void PreviewWindow::setClipCount(int count) { m_clipCount = count; scheduleRepaint(); }
+void PreviewWindow::setClipCount(int count) { m_interaction.clipCount = count; scheduleRepaint(); }
 
 void PreviewWindow::setSelectedClipId(const QString& clipId) {
-    if (m_selectedClipId == clipId) return;
-    m_selectedClipId = clipId;
+    if (m_interaction.selectedClipId == clipId) return;
+    m_interaction.selectedClipId = clipId;
     scheduleRepaint();
 }
 
 void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
     playbackTrace(QStringLiteral("PreviewWindow::setTimelineClips"),
                   QStringLiteral("clips=%1 cache=%2").arg(clips.size()).arg(m_cache != nullptr));
-    m_clips = clips;
+    m_interaction.clips = clips;
     m_audioDisplayPeakCache.clear();
     m_transcriptSectionsCache.clear();
     QSet<QString> visualClipIds;
     for (const auto& clip : clips) {
-        if (clipVisualPlaybackEnabled(clip, m_tracks)) visualClipIds.insert(clip.id);
+        if (clipVisualPlaybackEnabled(clip, m_interaction.tracks)) visualClipIds.insert(clip.id);
     }
     for (auto it = m_lastPresentedFrames.begin(); it != m_lastPresentedFrames.end();) {
         if (!visualClipIds.contains(it.key())) it = m_lastPresentedFrames.erase(it);
@@ -226,7 +226,7 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
     QSet<QString> registeredIds;
     QHash<QString, QString> nextRegisteredClipRegistrationKeys;
     for (const auto& clip : clips) {
-        if (!clipVisualPlaybackEnabled(clip, m_tracks)) continue;
+        if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks)) continue;
         registeredIds.insert(clip.id);
 
         const QString registrationKey = cacheRegistrationKeyForClip(clip);
@@ -257,12 +257,12 @@ void PreviewWindow::setTimelineClips(const QVector<TimelineClip>& clips) {
 }
 
 void PreviewWindow::setTimelineTracks(const QVector<TimelineTrack>& tracks) {
-    m_tracks = tracks;
-    setTimelineClips(m_clips);
+    m_interaction.tracks = tracks;
+    setTimelineClips(m_interaction.clips);
 }
 
 void PreviewWindow::setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) {
-    m_renderSyncMarkers = markers;
+    m_interaction.renderSyncMarkers = markers;
     if (m_cache) m_cache->setRenderSyncMarkers(markers);
     if (m_playbackPipeline) m_playbackPipeline->setRenderSyncMarkers(markers);
     if (m_bulkUpdateDepth > 0) m_pendingFrameRequest = true;
@@ -289,7 +289,7 @@ void PreviewWindow::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
 QString PreviewWindow::backendName() const {
     if (usingCpuFallback()) {
         if (m_vulkanPreviewActive) {
-            return QStringLiteral("Vulkan Preview (Offscreen Composite)");
+            return QStringLiteral("Vulkan Preview");
         }
         if (m_forceCpuPreviewForVulkan) {
             return QStringLiteral("Vulkan Preview (Fallback Pending)");
@@ -311,13 +311,13 @@ void PreviewWindow::setRenderBackendPreference(const QString& backendName)
     update();
 }
 
-void PreviewWindow::setAudioMuted(bool muted) { m_audioMuted = muted; }
-void PreviewWindow::setAudioVolume(qreal volume) { m_audioVolume = qBound<qreal>(0.0, volume, 1.0); }
+void PreviewWindow::setAudioMuted(bool muted) { m_interaction.audioMuted = muted; }
+void PreviewWindow::setAudioVolume(qreal volume) { m_interaction.audioVolume = qBound<qreal>(0.0, volume, 1.0); }
 
 void PreviewWindow::setOutputSize(const QSize& size) {
     const QSize sanitized(qMax(16, size.width()), qMax(16, size.height()));
-    if (m_outputSize == sanitized) return;
-    m_outputSize = sanitized;
+    if (m_interaction.outputSize == sanitized) return;
+    m_interaction.outputSize = sanitized;
     if (m_requestedRenderBackend == QStringLiteral("vulkan")) {
         ensureVulkanPreviewRenderer(false);
     }
@@ -347,25 +347,14 @@ bool PreviewWindow::configurePreviewBackend(RenderBackend requestedBackend, bool
 
 bool PreviewWindow::ensureVulkanPreviewRenderer(bool promptOnFallback)
 {
-    m_vulkanPreviewRenderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
-    QString error;
-    const QSize targetSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
-    if (m_vulkanPreviewRenderer->initialize(targetSize, &error)) {
-        m_vulkanPreviewActive = true;
-        m_forceCpuPreviewForVulkan = true;
-        m_renderBackendFallbackReason.clear();
-        return true;
-    }
-
     m_vulkanPreviewRenderer.reset();
     m_vulkanPreviewDecoders.clear();
     m_vulkanPreviewAsyncFrameCache.clear();
     m_vulkanPreviewActive = false;
     m_forceCpuPreviewForVulkan = false;
     m_effectiveRenderBackend = QStringLiteral("opengl");
-    m_renderBackendFallbackReason = error.isEmpty()
-        ? QStringLiteral("Vulkan preview initialization failed.")
-        : error;
+    m_renderBackendFallbackReason =
+        QStringLiteral("Vulkan preview requires a direct Vulkan presenter; the QImage offscreen bridge is disabled.");
     ++m_renderBackendFallbackCount;
     m_lastRenderBackendFallbackMs = nowMs();
 
@@ -399,14 +388,14 @@ void PreviewWindow::setHideOutsideOutputWindow(bool hide) {
 }
 
 void PreviewWindow::setBackgroundColor(const QColor& color) {
-    if (m_backgroundColor == color) return;
-    m_backgroundColor = color;
+    if (m_interaction.backgroundColor == color) return;
+    m_interaction.backgroundColor = color;
     scheduleRepaint();
 }
 
 void PreviewWindow::setPreviewZoom(qreal zoom) {
     // Keep a wide global bound for REST/UI control; interaction paths clamp per mode.
-    m_previewZoom = qBound<qreal>(0.1, zoom, 100000.0);
+    m_interaction.previewZoom = qBound<qreal>(0.1, zoom, 100000.0);
     scheduleRepaint();
 }
 
@@ -455,12 +444,12 @@ void PreviewWindow::setAudioWaveformVisible(bool visible) {
 }
 
 void PreviewWindow::setViewMode(ViewMode mode) {
-    if (m_viewMode == mode) {
+    if (m_interaction.viewMode == mode) {
         return;
     }
-    m_viewMode = mode;
-    if (m_viewMode == ViewMode::Video) {
-        m_previewZoom = qBound<qreal>(0.1, m_previewZoom, 20.0);
+    m_interaction.viewMode = mode;
+    if (m_interaction.viewMode == ViewMode::Video) {
+        m_interaction.previewZoom = qBound<qreal>(0.1, m_interaction.previewZoom, 20.0);
     }
     scheduleRepaint();
 }
@@ -472,28 +461,28 @@ void PreviewWindow::setAudioDynamicsSettings(const AudioDynamicsSettings& settin
 }
 
 void PreviewWindow::setTranscriptOverlayInteractionEnabled(bool enabled) {
-    if (m_transcriptOverlayInteractionEnabled == enabled) {
+    if (m_interaction.transcriptOverlayInteractionEnabled == enabled) {
         return;
     }
-    m_transcriptOverlayInteractionEnabled = enabled;
-    if (!enabled && m_dragMode != PreviewDragMode::None) {
-        const PreviewOverlayInfo selectedInfo = m_overlayInfo.value(m_selectedClipId);
+    m_interaction.transcriptOverlayInteractionEnabled = enabled;
+    if (!enabled && m_interaction.transient.dragMode != PreviewDragMode::None) {
+        const PreviewOverlayInfo selectedInfo = m_overlayModel.overlays.value(m_interaction.selectedClipId);
         if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
-            m_dragMode = PreviewDragMode::None;
-            m_dragOriginBounds = QRectF();
+            m_interaction.transient.dragMode = PreviewDragMode::None;
+            m_interaction.transient.dragOriginBounds = QRectF();
         }
     }
     scheduleRepaint();
 }
 
 void PreviewWindow::setTitleOverlayInteractionOnly(bool enabled) {
-    if (m_titleOverlayInteractionOnly == enabled) {
+    if (m_interaction.titleOverlayInteractionOnly == enabled) {
         return;
     }
-    m_titleOverlayInteractionOnly = enabled;
-    if (m_titleOverlayInteractionOnly && !clipIdIsTitle(m_selectedClipId)) {
-        m_dragMode = PreviewDragMode::None;
-        m_dragOriginBounds = QRectF();
+    m_interaction.titleOverlayInteractionOnly = enabled;
+    if (m_interaction.titleOverlayInteractionOnly && !clipIdIsTitle(m_interaction.selectedClipId)) {
+        m_interaction.transient.dragMode = PreviewDragMode::None;
+        m_interaction.transient.dragOriginBounds = QRectF();
     }
     scheduleRepaint();
 }
@@ -513,12 +502,12 @@ void PreviewWindow::setCorrectionsEnabled(bool enabled) {
 }
 
 bool PreviewWindow::bypassGrading() const { return m_bypassGrading; }
-bool PreviewWindow::audioMuted() const { return m_audioMuted; }
-int PreviewWindow::audioVolumePercent() const { return qRound(m_audioVolume * 100.0); }
+bool PreviewWindow::audioMuted() const { return m_interaction.audioMuted; }
+int PreviewWindow::audioVolumePercent() const { return qRound(m_interaction.audioVolume * 100.0); }
 
 QString PreviewWindow::activeAudioClipLabel() const {
-    for (const TimelineClip& clip : m_clips) {
-        if (clipAudioPlaybackEnabled(clip) && isSampleWithinClip(clip, m_currentSample)) {
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (clipAudioPlaybackEnabled(clip) && isSampleWithinClip(clip, m_interaction.currentSample)) {
             return clip.label;
         }
     }
@@ -540,13 +529,13 @@ QImage PreviewWindow::latestPresentedFrameImageForClip(const QString& clipId) co
         return QImage();
     }
 
-    for (const TimelineClip& clip : m_clips) {
+    for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.id != clipId || clip.durationFrames <= 0) {
             continue;
         }
         const int64_t localFrame = qBound<int64_t>(
             0,
-            static_cast<int64_t>(std::floor(m_currentFramePosition)) - clip.startFrame,
+            static_cast<int64_t>(std::floor(m_interaction.currentFramePosition)) - clip.startFrame,
             qMax<int64_t>(0, clip.durationFrames - 1));
         const FrameHandle cached = m_cache->getCachedFrame(clip.id, localFrame);
         if (!cached.isNull() && cached.hasCpuImage()) {
@@ -562,7 +551,7 @@ bool PreviewWindow::clipIdIsTitle(const QString& clipId) const {
     if (clipId.isEmpty()) {
         return false;
     }
-    for (const TimelineClip& clip : m_clips) {
+    for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.id == clipId) {
             return clip.mediaType == ClipMediaType::Title;
         }
@@ -572,8 +561,8 @@ bool PreviewWindow::clipIdIsTitle(const QString& clipId) const {
 
 QList<TimelineClip> PreviewWindow::getActiveClips() const {
     QList<TimelineClip> active;
-    for (const TimelineClip& clip : m_clips) {
-        if (isSampleWithinClip(clip, m_currentSample)) active.push_back(clip);
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (isSampleWithinClip(clip, m_interaction.currentSample)) active.push_back(clip);
     }
     std::sort(active.begin(), active.end(), [](const TimelineClip& a, const TimelineClip& b) {
         if (a.trackIndex == b.trackIndex) return a.startFrame < b.startFrame;
@@ -585,9 +574,9 @@ QList<TimelineClip> PreviewWindow::getActiveClips() const {
 QJsonObject PreviewWindow::profilingSnapshot() const {
     const qint64 now = nowMs();
     QJsonObject snapshot{{QStringLiteral("backend"), backendName()},
-                         {QStringLiteral("playing"), m_playing},
-                         {QStringLiteral("current_frame"), static_cast<qint64>(m_currentFrame)},
-                         {QStringLiteral("clip_count"), m_clips.size()},
+                         {QStringLiteral("playing"), m_interaction.playing},
+                         {QStringLiteral("current_frame"), static_cast<qint64>(m_interaction.currentFrame)},
+                         {QStringLiteral("clip_count"), m_interaction.clips.size()},
                          {QStringLiteral("pipeline_initialized"), m_cache != nullptr},
                          {QStringLiteral("repaint_strategy"), QStringLiteral("direct_update")},
                          {QStringLiteral("last_frame_request_ms"), m_lastFrameRequestMs},
@@ -626,8 +615,8 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
     renderTiming[QStringLiteral("avg_ms")] = m_renderCount > 0 
         ? static_cast<double>(m_totalRenderDurationMs) / static_cast<double>(m_renderCount) 
         : 0.0;
-    renderTiming[QStringLiteral("target_ms")] = m_playing ? 33.33 : 16.67; // 30fps vs 60fps target
-    renderTiming[QStringLiteral("slow_frame")] = m_lastRenderDurationMs > (m_playing ? 33 : 16);
+    renderTiming[QStringLiteral("target_ms")] = m_interaction.playing ? 33.33 : 16.67; // 30fps vs 60fps target
+    renderTiming[QStringLiteral("slow_frame")] = m_lastRenderDurationMs > (m_interaction.playing ? 33 : 16);
     
     // Calculate 95th percentile
     if (!m_renderTimeHistory.empty()) {
@@ -667,7 +656,7 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
     }
 
     if (m_playbackPipeline) {
-        snapshot[QStringLiteral("playback_pipeline")] = QJsonObject{{QStringLiteral("active"), m_playing},
+        snapshot[QStringLiteral("playback_pipeline")] = QJsonObject{{QStringLiteral("active"), m_interaction.playing},
                                                                      {QStringLiteral("buffered_frames"), m_playbackPipeline->bufferedFrameCount()},
                                                                      {QStringLiteral("pending_visible_requests"), m_playbackPipeline->pendingVisibleRequestCount()},
                                                                      {QStringLiteral("dropped_presentation_frames"), m_playbackPipeline->droppedPresentationFrameCount()}};
@@ -695,7 +684,7 @@ void PreviewWindow::resetProfilingStats() {
 void PreviewWindow::scheduleRepaint() {
     m_lastRepaintScheduleMs = nowMs();
     if (isVisible() && !m_repaintTimer.isActive() &&
-        (m_playing || m_pendingFrameRequest || (m_cache && m_cache->pendingVisibleRequestCount() > 0))) {
+        (m_interaction.playing || m_pendingFrameRequest || (m_cache && m_cache->pendingVisibleRequestCount() > 0))) {
         m_repaintTimer.start();
     }
     if (QThread::currentThread() == thread()) {

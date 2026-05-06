@@ -261,15 +261,15 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                 .trimmed();
                         if (keyCount <= 0 && runtimeSpeakerId.isEmpty()) {
                             return QStringLiteral(
-                                "Face Stabilize is disabled: selected clip has no BoxStream runtime binding. "
-                                "Generate BoxStream for this clip first.");
+                                "Face Stabilize is disabled: selected clip has no FaceStream runtime binding. "
+                                "Generate FaceStream for this clip first.");
                         }
                         return QStringLiteral(
                             "Face Stabilize is disabled by current UI state.");
                     }
                     if (text.startsWith(QStringLiteral("Tracking"), Qt::CaseInsensitive)) {
                         return QStringLiteral(
-                            "Tracking is disabled: select a speaker with an Auto-Track BoxStream first.");
+                            "Tracking is disabled: select a speaker with an Auto-Track FaceStream first.");
                     }
                     return QStringLiteral("target button is disabled");
                 };
@@ -740,15 +740,15 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                         .trimmed();
                                 if (keyCount <= 0 && runtimeSpeakerId.isEmpty()) {
                                     error = QStringLiteral(
-                                        "Face Stabilize is disabled: selected clip has no BoxStream runtime binding. "
-                                        "Generate BoxStream for this clip first.");
+                                        "Face Stabilize is disabled: selected clip has no FaceStream runtime binding. "
+                                        "Generate FaceStream for this clip first.");
                                 } else {
                                     error = QStringLiteral("Face Stabilize is disabled by current UI state.");
                                 }
                             }
                         } else if (text.startsWith(QStringLiteral("Tracking"), Qt::CaseInsensitive)) {
                             error = QStringLiteral(
-                                "Tracking is disabled: select a speaker with an Auto-Track BoxStream first.");
+                                "Tracking is disabled: select a speaker with an Auto-Track FaceStream first.");
                         } else {
                             error = QStringLiteral("target button is disabled");
                         }

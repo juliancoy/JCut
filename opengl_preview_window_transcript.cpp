@@ -194,7 +194,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         }
     }
 
-    // Add identity-agnostic continuity BoxStream tracks so post users can compare detector outputs.
+    // Add identity-agnostic continuity FaceStream tracks so post users can compare detector outputs.
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
     if (engine.loadBoxstreamArtifact(transcriptPath, &artifactRoot)) {
@@ -301,7 +301,7 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         if (!clipSupportsTranscript(clip)) {
             continue;
         }
-        const PreviewOverlayInfo info = m_overlayInfo.value(clip.id);
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
         if (!info.bounds.isValid()) {
             continue;
         }
@@ -326,7 +326,7 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
         const int64_t sourceEnd = sourceStart + qMax<int64_t>(0, clip.durationFrames - 1);
         const int64_t currentSourceFrame =
-            transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+            transcriptFrameForClipAtTimelineSample(clip, m_interaction.currentSample, m_interaction.renderSyncMarkers);
         int64_t nearestDistance = std::numeric_limits<int64_t>::max();
         struct OverlayCandidate {
             SpeakerTrackPoint point;
@@ -422,7 +422,7 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
     }
 
     const TimelineClip* selectedClip = nullptr;
-    const QString selectedId = m_selectedClipId.trimmed();
+    const QString selectedId = m_interaction.selectedClipId.trimmed();
     if (!selectedId.isEmpty()) {
         for (const TimelineClip& clip : activeClips) {
             if (clip.id == selectedId) {
@@ -494,19 +494,19 @@ TranscriptOverlayLayout PreviewWindow::transcriptOverlayLayoutForClip(const Time
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     if (sections.isEmpty()) return {};
     const int64_t sourceFrame =
-        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+        transcriptFrameForClipAtTimelineSample(clip, m_interaction.currentSample, m_interaction.renderSyncMarkers);
     return transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
 }
 
 QRectF PreviewWindow::transcriptOverlayRectForTarget(const TimelineClip& clip, const QRect& targetRect) const {
     const QPointF previewScale = previewCanvasScale(targetRect);
-    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const QSize outputSize = m_interaction.outputSize.isValid() ? m_interaction.outputSize : QSize(1080, 1920);
     const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(outputSize.width()));
     const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(outputSize.height()));
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     const int64_t sourceFrame =
-        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+        transcriptFrameForClipAtTimelineSample(clip, m_interaction.currentSample, m_interaction.renderSyncMarkers);
     const QRectF outputRect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, transcriptPath, sections, sourceFrame);
     const QSizeF size(outputRect.width() * previewScale.x(),
@@ -522,7 +522,7 @@ QRectF PreviewWindow::transcriptOverlayRectForTarget(const TimelineClip& clip, c
 }
 
 QSizeF PreviewWindow::transcriptOverlaySizeForSelectedClip() const {
-    const PreviewOverlayInfo info = m_overlayInfo.value(m_selectedClipId);
+    const PreviewOverlayInfo info = m_overlayModel.overlays.value(m_interaction.selectedClipId);
     const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
     const QPointF previewScale = previewCanvasScale(compositeRect);
     if (previewScale.x() == 0.0 || previewScale.y() == 0.0) {
@@ -535,11 +535,11 @@ QSizeF PreviewWindow::transcriptOverlaySizeForSelectedClip() const {
 void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip& clip, const QRect& targetRect) {
     const TranscriptOverlayLayout overlayLayout = transcriptOverlayLayoutForClip(clip);
     if (overlayLayout.lines.isEmpty()) return;
-    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const QSize outputSize = m_interaction.outputSize.isValid() ? m_interaction.outputSize : QSize(1080, 1920);
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     const int64_t sourceFrame =
-        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+        transcriptFrameForClipAtTimelineSample(clip, m_interaction.currentSample, m_interaction.renderSyncMarkers);
     const QRectF outputRect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, transcriptPath, sections, sourceFrame);
     if (outputRect.width() <= 0.0 || outputRect.height() <= 0.0) return;
@@ -574,7 +574,7 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
     painter->drawImage(bounds, image);
     painter->restore();
 
-    if (m_transcriptOverlayInteractionEnabled) {
+    if (m_interaction.transcriptOverlayInteractionEnabled) {
         PreviewOverlayInfo info;
         info.kind = PreviewOverlayKind::TranscriptOverlay;
         info.bounds = bounds;
@@ -582,7 +582,7 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
         info.rightHandle = QRectF(bounds.right() - kHandleSize, bounds.center().y() - kHandleSize, kHandleSize, kHandleSize * 2.0);
         info.bottomHandle = QRectF(bounds.center().x() - kHandleSize, bounds.bottom() - kHandleSize, kHandleSize * 2.0, kHandleSize);
         info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5, bounds.bottom() - kHandleSize * 1.5, kHandleSize * 1.5, kHandleSize * 1.5);
-        m_overlayInfo.insert(clip.id, info);
-        m_paintOrder.push_back(clip.id);
+        m_overlayModel.overlays.insert(clip.id, info);
+        m_overlayModel.paintOrder.push_back(clip.id);
     }
 }

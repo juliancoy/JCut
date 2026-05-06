@@ -1295,11 +1295,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     selectedActionsRow->addWidget(m_selectedSpeakerNextSentenceButton);
     selectedActionsRow->addWidget(m_selectedSpeakerRandomSentenceButton);
     auto *boxstreamActionRow = new QHBoxLayout;
-    m_speakerRunAutoTrackButton = new QPushButton(QStringLiteral("Generate BoxStream"), page);
+    m_speakerRunAutoTrackButton = new QPushButton(QStringLiteral("Generate FaceStream"), page);
     m_speakerRunAutoTrackButton->setObjectName(QStringLiteral("speakers.generate_boxstream"));
     m_speakerRunAutoTrackButton->setMinimumHeight(32);
     m_speakerRunAutoTrackButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_speakerBoxstreamSettingsButton = new QPushButton(QStringLiteral("BoxStream Settings"), page);
+    m_speakerBoxstreamSettingsButton = new QPushButton(QStringLiteral("FaceStream Settings"), page);
     m_speakerBoxstreamSettingsButton->setObjectName(QStringLiteral("speakers.boxstream_settings"));
     m_speakerBoxstreamSettingsButton->setMinimumHeight(32);
     m_speakerBoxstreamSettingsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
@@ -1370,7 +1370,7 @@ QWidget *InspectorPane::buildSpeakersTab()
         return chip;
     };
     m_speakerRefsChipLabel = makeStateChip(QStringLiteral("Refs: 0/2"));
-    m_speakerPointstreamChipLabel = makeStateChip(QStringLiteral("BoxStream: None"));
+    m_speakerPointstreamChipLabel = makeStateChip(QStringLiteral("FaceStream: None"));
     m_speakerTrackingChipButton = makeToggleChip(QStringLiteral("Tracking: OFF"));
     m_speakerStabilizeChipButton = makeToggleChip(QStringLiteral("Face Stabilize: OFF"));
     m_speakerTrackingChipButton->setObjectName(QStringLiteral("speakers.tracking_toggle"));
@@ -1388,10 +1388,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingZoomEnabledCheckBox =
         new QCheckBox(QStringLiteral("Show FaceBox"), page);
     m_speakerShowBoxStreamBoxesCheckBox =
-        new QCheckBox(QStringLiteral("Show All BoxStreams in Preview"), page);
+        new QCheckBox(QStringLiteral("Show All FaceStreams in Preview"), page);
     m_speakerShowBoxStreamBoxesCheckBox->setChecked(false);
     m_speakerShowBoxStreamBoxesCheckBox->setToolTip(
-        QStringLiteral("Draw all BoxStream face boxes for active clips in Preview."));
+        QStringLiteral("Draw all FaceStream face boxes for active clips in Preview."));
     auto *faceboxControlsRow = new QHBoxLayout;
     faceboxControlsRow->setContentsMargins(0, 0, 0, 0);
     faceboxControlsRow->setSpacing(8);
@@ -1418,7 +1418,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingTargetBoxSpin->setSingleStep(0.01);
     m_speakerFramingTargetBoxSpin->setValue(0.20);
     m_speakerFramingTargetBoxSpin->setToolTip(
-        QStringLiteral("FaceBox normalized side length used by Generate BoxStream zoom."));
+        QStringLiteral("FaceBox normalized side length used by Generate FaceStream zoom."));
     auto *targetForm = new QFormLayout;
     targetForm->addRow(QStringLiteral("Yellow Box X"), m_speakerFramingTargetXSpin);
     targetForm->addRow(QStringLiteral("Yellow Box Y"), m_speakerFramingTargetYSpin);
@@ -1439,19 +1439,19 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerTrackingStatusLabel->setWordWrap(true);
     m_speakerTrackingStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
-    auto *boxstreamStartTitle = new QLabel(QStringLiteral("Step 1: Identify Unique Faces + Generate BoxStream"), page);
+    auto *boxstreamStartTitle = new QLabel(QStringLiteral("Step 1: Identify Unique Faces + Generate FaceStream"), page);
     boxstreamStartTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *boxstreamStepsLabel = new QLabel(
         QStringLiteral("Tracker pipeline:\n"
                        "1) Detect faces\n"
                        "2) Associate detections to tracks\n"
                        "3) Smooth track center/size\n"
-                       "4) Persist continuity BoxStreams\n"
+                       "4) Persist continuity FaceStreams\n"
                        "5) Preview superimposed by tracker source"),
         page);
     boxstreamStepsLabel->setWordWrap(true);
     boxstreamStepsLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
-    auto *mappingTitle = new QLabel(QStringLiteral("Step 2: Speaker to BoxStream Mapping"), page);
+    auto *mappingTitle = new QLabel(QStringLiteral("Step 2: Speaker to FaceStream Mapping"), page);
     mappingTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *mappingHelp = new QLabel(
         QStringLiteral("First resolve all unique faces in FaceFind, then use this matrix to assign and refine each speaker path."),
@@ -1526,7 +1526,7 @@ QWidget *InspectorPane::buildSpeakersTab()
 
     auto *boxstreamPage = new QWidget(speakersSubtabs);
     auto *boxstreamLayout = createTabLayout(boxstreamPage);
-    auto *boxstreamTitle = new QLabel(QStringLiteral("BoxStream Paths"), boxstreamPage);
+    auto *boxstreamTitle = new QLabel(QStringLiteral("FaceStream Paths"), boxstreamPage);
     boxstreamTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *boxstreamHelp = new QLabel(
         QStringLiteral("View generated continuity tracks (paths) for the selected clip from speaker_flow.continuity_boxstreams."),
@@ -1553,7 +1553,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerBoxStreamTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     m_speakerBoxStreamDetailsEdit = new QPlainTextEdit(boxstreamPage);
     m_speakerBoxStreamDetailsEdit->setReadOnly(true);
-    m_speakerBoxStreamDetailsEdit->setPlaceholderText(QStringLiteral("Select a BoxStream path row to inspect full JSON."));
+    m_speakerBoxStreamDetailsEdit->setPlaceholderText(QStringLiteral("Select a FaceStream path row to inspect full JSON."));
     m_speakerBoxStreamDetailsEdit->setMinimumHeight(160);
     auto *overlaySourceRow = new QHBoxLayout;
     overlaySourceRow->setContentsMargins(0, 0, 0, 0);
@@ -1608,7 +1608,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakersSubtabs->addTab(identityPage, QStringLiteral("Identity"));
     speakersSubtabs->addTab(trackingPage, QStringLiteral("Tracking"));
     speakersSubtabs->addTab(sentencePage, QStringLiteral("Sentence"));
-    speakersSubtabs->addTab(boxstreamPage, QStringLiteral("BoxStream Paths"));
+    speakersSubtabs->addTab(boxstreamPage, QStringLiteral("FaceStream Paths"));
     speakersSubtabs->addTab(debugPage, QStringLiteral("Debug"));
     layout->addWidget(speakersSubtabs, 1);
     return page;

@@ -108,23 +108,23 @@ void PreviewWindow::drawAudioBadge(QPainter* painter, const QRect& targetRect,
 
 void PreviewWindow::drawSpeakerPickOverlay(QPainter* painter) const {
     const bool speakerPickReady =
-        !m_speakerPickDragActive &&
+        !m_interaction.transient.speakerPickDragActive &&
         (QApplication::keyboardModifiers() & Qt::ShiftModifier) &&
         (speakerPointRequested || speakerBoxRequested) &&
-        !m_speakerPickHintClipId.isEmpty();
-    const QString clipId = m_speakerPickDragActive ? m_speakerPickClipId : m_speakerPickHintClipId;
+        !m_interaction.transient.speakerPickHintClipId.isEmpty();
+    const QString clipId = m_interaction.transient.speakerPickDragActive ? m_interaction.transient.speakerPickClipId : m_interaction.transient.speakerPickHintClipId;
     if (clipId.isEmpty()) {
         return;
     }
-    const PreviewOverlayInfo info = m_overlayInfo.value(clipId);
+    const PreviewOverlayInfo info = m_overlayModel.overlays.value(clipId);
     if (!info.bounds.isValid() || info.bounds.width() <= 1.0 || info.bounds.height() <= 1.0) {
         return;
     }
 
-    const QPointF start = m_speakerPickDragActive ? m_speakerPickStartPos : m_speakerPickCurrentPos;
-    const QPointF current = m_speakerPickDragActive
-        ? (m_speakerPickCurrentPos.isNull() ? start : m_speakerPickCurrentPos)
-        : m_speakerPickCurrentPos;
+    const QPointF start = m_interaction.transient.speakerPickDragActive ? m_interaction.transient.speakerPickStartPos : m_interaction.transient.speakerPickCurrentPos;
+    const QPointF current = m_interaction.transient.speakerPickDragActive
+        ? (m_interaction.transient.speakerPickCurrentPos.isNull() ? start : m_interaction.transient.speakerPickCurrentPos)
+        : m_interaction.transient.speakerPickCurrentPos;
     const QPointF startNorm = mapScreenPointToNormalizedClip(info, start);
     const QPointF currentNorm = mapScreenPointToNormalizedClip(info, current);
     const qreal dx = currentNorm.x() - startNorm.x();
@@ -147,7 +147,7 @@ void PreviewWindow::drawSpeakerPickOverlay(QPainter* painter) const {
                       QPointF(centerPx.x(), centerPx.y() + 8.0));
 
     QString hintText = QStringLiteral("Speaker pick ready: Shift+Drag square");
-    if (m_speakerPickDragActive && dragDistance >= 0.01) {
+    if (m_interaction.transient.speakerPickDragActive && dragDistance >= 0.01) {
         const qreal side = qBound<qreal>(0.02, qMax(std::abs(dx), std::abs(dy)), 1.0);
         const qreal cx = qBound<qreal>(0.0, (startNorm.x() + currentNorm.x()) * 0.5, 1.0);
         const qreal cy = qBound<qreal>(0.0, (startNorm.y() + currentNorm.y()) * 0.5, 1.0);
@@ -163,7 +163,7 @@ void PreviewWindow::drawSpeakerPickOverlay(QPainter* painter) const {
         painter->setBrush(QColor(72, 190, 255, 52));
         painter->drawRect(square);
         hintText = QStringLiteral("Release: set head box");
-    } else if (m_speakerPickDragActive) {
+    } else if (m_interaction.transient.speakerPickDragActive) {
         painter->setPen(QPen(QColor(72, 190, 255, 230), 2.0));
         painter->setBrush(QColor(72, 190, 255, 80));
         painter->drawEllipse(centerPx, 5.0, 5.0);

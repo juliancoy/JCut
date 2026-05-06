@@ -222,11 +222,11 @@ void PreviewWindow::paintGL() {
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
     glViewport(0, 0, width() * devicePixelRatio(), height() * devicePixelRatio());
-    if (m_clipCount > 0) {
-        glClearColor(m_backgroundColor.redF(), m_backgroundColor.greenF(), m_backgroundColor.blueF(), 1.0f);
+    if (m_interaction.clipCount > 0) {
+        glClearColor(m_interaction.backgroundColor.redF(), m_interaction.backgroundColor.greenF(), m_interaction.backgroundColor.blueF(), 1.0f);
     } else {
-        const float phase = static_cast<float>(m_currentFrame % 180) / 179.0f;
-        const float motion = m_playing ? phase : 0.25f;
+        const float phase = static_cast<float>(m_interaction.currentFrame % 180) / 179.0f;
+        const float motion = m_interaction.playing ? phase : 0.25f;
         glClearColor(0.08f + 0.12f * motion, 0.08f, 0.10f + 0.16f * (1.0f - motion), 1.0f);
     }
     glClear(GL_COLOR_BUFFER_BIT);
@@ -238,7 +238,7 @@ void PreviewWindow::paintGL() {
     painter.setRenderHint(QPainter::Antialiasing, true);
     bool drewAnyFrame = false;
     bool waitingForFrame = false;
-    if (m_viewMode == ViewMode::Video) {
+    if (m_interaction.viewMode == ViewMode::Video) {
         renderCompositedPreviewGL(compositeRect, activeClips, drewAnyFrame, waitingForFrame);
     }
     drawCompositedPreviewOverlay(&painter, safeRect, compositeRect, activeClips, drewAnyFrame, waitingForFrame);
@@ -255,13 +255,13 @@ void PreviewWindow::paintGL() {
         m_renderTimeHistory.pop_front();
     }
 
-    if (m_playing || (m_cache && m_cache->pendingVisibleRequestCount() > 0) ||
+    if (m_interaction.playing || (m_cache && m_cache->pendingVisibleRequestCount() > 0) ||
         (m_decoder && m_decoder->pendingRequestCount() > 0)) {
         scheduleRepaint();
     }
 }
 
-PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect& targetRect,
+PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect& targetRect,
                                                                     const TimelineClip& clip,
                                                                     const FrameHandle& frame) {
     PreviewOverlayInfo overlayInfo;
@@ -279,7 +279,7 @@ PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect&
 
     const QRect fitted = fitRect(frame.size(), targetRect);
     const TimelineClip::TransformKeyframe transform =
-        evaluateClipRenderTransformAtPosition(clip, m_currentFramePosition, m_outputSize);
+        evaluateClipRenderTransformAtPosition(clip, m_interaction.currentFramePosition, m_interaction.outputSize);
     const QPointF previewScale = previewCanvasScale(targetRect);
     const QPointF center(fitted.center().x() + (transform.translationX * previewScale.x()),
                          fitted.center().y() + (transform.translationY * previewScale.y()));
@@ -295,7 +295,7 @@ PreviewWindow::PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect&
     model.scale(fitted.width() * transform.scaleX, fitted.height() * transform.scaleY, 1.0f);
 
     EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-        clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+        clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
     if (m_bypassGrading) {
         effects.grading = TimelineClip::GradingKeyframe{};
     }
@@ -444,8 +444,8 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                               const QList<TimelineClip>& activeClips,
                                               bool& drewAnyFrame,
                                               bool& waitingForFrame) {
-    m_overlayInfo.clear();
-    m_paintOrder.clear();
+    m_overlayModel.overlays.clear();
+    m_overlayModel.paintOrder.clear();
     int usedPlaybackPipelineCount = 0;
     int presentationCount = 0;
     int exactCount = 0;
@@ -466,7 +466,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                   compositeRect.height());
     }
     for (const TimelineClip& clip : activeClips) {
-        if (!clipVisualPlaybackEnabled(clip, m_tracks)) {
+        if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks)) {
             continue;
         }
         if (clip.mediaType == ClipMediaType::Title) {
@@ -474,7 +474,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
         }
         if (!m_bypassGrading) {
             const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
-                clip, m_tracks, m_currentFramePosition, m_renderSyncMarkers);
+                clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
             if (effects.grading.opacity <= 0.0001) {
                 ++skippedZeroOpacityCount;
                 clipSelections.append(QJsonObject{
@@ -483,20 +483,20 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                     {QStringLiteral("media_type"), clipMediaTypeLabel(clip.mediaType)},
                     {QStringLiteral("source_kind"), mediaSourceKindLabel(clip.sourceKind)},
                     {QStringLiteral("playback_pipeline"), false},
-                    {QStringLiteral("local_frame"), static_cast<qint64>(sourceFrameForSample(clip, m_currentSample))},
+                    {QStringLiteral("local_frame"), static_cast<qint64>(sourceFrameForSample(clip, m_interaction.currentSample))},
                     {QStringLiteral("selection"), QStringLiteral("skipped_zero_opacity")},
                     {QStringLiteral("frame_storage"), QStringLiteral("none")}
                 });
                 continue;
             }
         }
-        const int64_t localFrame = sourceFrameForSample(clip, m_currentSample);
+        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
         const bool usePlaybackPipeline =
-            m_playing &&
+            m_interaction.playing &&
             clip.sourceKind == MediaSourceKind::ImageSequence &&
             clip.mediaType != ClipMediaType::Image;
         const bool allowApproximateFrame =
-            m_playing &&
+            m_interaction.playing &&
             (usePlaybackPipeline || !m_cache ||
              m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs()));
         QString selection = QStringLiteral("none");
@@ -514,7 +514,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
         } else {
             frame = exactFrame;
             if (frame.isNull() && m_cache && allowApproximateFrame) {
-                frame = m_playing ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                frame = m_interaction.playing ? m_cache->getLatestCachedFrame(clip.id, localFrame)
                                   : m_cache->getBestCachedFrame(clip.id, localFrame);
                 if (frame.isNull() && editor::debugPlaybackCacheFallbackEnabled()) {
                     frame = m_cache->getBestCachedFrame(clip.id, localFrame);
@@ -526,7 +526,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                     selection = QStringLiteral("exact");
                 } else {
                     ++bestCount;
-                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
+                    selection = m_interaction.playing ? QStringLiteral("latest") : QStringLiteral("best");
                 }
             }
         }
@@ -547,7 +547,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             const FrameHandle cacheExact = m_cache->getCachedFrame(clip.id, localFrame);
             frame = !cacheExact.isNull()
                         ? cacheExact
-                        : (m_playing
+                        : (m_interaction.playing
                                ? m_cache->getLatestCachedFrame(clip.id, localFrame)
                                : m_cache->getBestCachedFrame(clip.id, localFrame));
             if (!frame.isNull()) {
@@ -556,7 +556,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                     selection = QStringLiteral("exact");
                 } else {
                     ++bestCount;
-                    selection = m_playing ? QStringLiteral("latest") : QStringLiteral("best");
+                    selection = m_interaction.playing ? QStringLiteral("latest") : QStringLiteral("best");
                 }
             }
         }
@@ -586,14 +586,14 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                     localFrame,
                                     exactFrame,
                                     frame,
-                                    m_currentFramePosition);
+                                    m_interaction.currentFramePosition);
         if (frame.isNull()) {
-            if (usePlaybackPipeline && m_playbackPipeline && m_playing) {
+            if (usePlaybackPipeline && m_playbackPipeline && m_interaction.playing) {
                 static constexpr int kMaxVisibleBacklog = 4;
                 if (m_playbackPipeline->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
                     m_lastFrameRequestMs = nowMs();
                     m_playbackPipeline->requestFramesForSample(
-                        m_currentSample,
+                        m_interaction.currentSample,
                         [this]() {
                             QMetaObject::invokeMethod(this, [this]() {
                                 scheduleRepaint();
@@ -678,8 +678,8 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                        bounds.bottom() - kHandleSize * 1.5,
                                        kHandleSize * 1.5,
                                        kHandleSize * 1.5);
-            m_overlayInfo.insert(clip.id, info);
-            m_paintOrder.push_back(clip.id);
+            m_overlayModel.overlays.insert(clip.id, info);
+            m_overlayModel.paintOrder.push_back(clip.id);
         }
         drewAnyFrame = true;
     }

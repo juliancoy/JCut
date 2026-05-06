@@ -6,12 +6,12 @@ Build a full **native C++ production face tracker** path (no Python, no Docker) 
 - ReID: ArcFace embeddings (ONNX)
 - Association: IoU + embedding similarity
 - Smoothing: temporal stabilization
-- Output: existing BoxStream schema
+- Output: existing FaceStream schema
 
 ## 1) Scope And Acceptance
 - [ ] Runs from UI with no Python runtime.
 - [ ] Runs from UI with no Docker runtime.
-- [ ] Produces current continuity BoxStream JSON schema (no downstream breakage).
+- [ ] Produces current continuity FaceStream JSON schema (no downstream breakage).
 - [ ] Meets or beats current local hybrid tracking stability on `nasreen.mp4`.
 - [ ] CPU-first implementation works reliably.
 - [ ] Optional GPU acceleration can be added without API/schema changes.
@@ -57,7 +57,7 @@ Build a full **native C++ production face tracker** path (no Python, no Docker) 
 - [ ] Expose smoothing strength in config.
 - [ ] Ensure smoothing does not drift off-face on cuts/occlusion.
 
-## 6) BoxStream Integration
+## 6) FaceStream Integration
 - [x] Add new detector preset in `BoxstreamDetectorPreset`:
   - [x] `NativeHybridCpu`
   - [ ] (future) `NativeHybridGpu`
@@ -103,6 +103,6 @@ Build a full **native C++ production face tracker** path (no Python, no Docker) 
 
 ## 11) Suggested Milestones
 - [ ] Week 1: ONNX runtime + model plumbing + detector/embedder wrappers.
-- [ ] Week 2: tracker association + smoothing + BoxStream write path.
+- [ ] Week 2: tracker association + smoothing + FaceStream write path.
 - [ ] Week 3: UI stage reporting + benchmark integration + tuning.
 - [ ] Week 4: stabilization, docs, default switch.

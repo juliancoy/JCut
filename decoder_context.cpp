@@ -799,6 +799,15 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
         }
     }
 
+    if (decodePreference == DecodePreference::HardwareZeroCopy) {
+        decodeTrace(QStringLiteral("DecoderContext::convertToFrame.reject-materialized"),
+                    QStringLiteral("file=%1 frame=%2 fmt=%3")
+                        .arg(shortPath(m_path))
+                        .arg(frameNumber)
+                        .arg(avFrame->format));
+        return FrameHandle();
+    }
+
     QImage image = convertAVFrameToImage(avFrame);
     if (image.isNull()) {
         return FrameHandle();

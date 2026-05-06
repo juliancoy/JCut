@@ -51,15 +51,15 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!selectedClip) {
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"), QStringLiteral("Select a clip first."));
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), QStringLiteral("Select a clip first."));
         return;
     }
 
     bool onlyDialogue = false;
-    BoxstreamDetectorPreset detectorPreset = BoxstreamDetectorPreset::HaarBalanced;
+    BoxstreamDetectorPreset detectorPreset = BoxstreamDetectorPreset::NativeVulkanDnn;
     {
         QDialog preflightDialog;
-        preflightDialog.setWindowTitle(QStringLiteral("Generate BoxStream Preflight"));
+        preflightDialog.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator"));
         preflightDialog.setWindowFlag(Qt::Window, true);
         preflightDialog.resize(560, 220);
         auto* layout = new QVBoxLayout(&preflightDialog);
@@ -67,7 +67,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         layout->setSpacing(8);
         auto* infoLabel = new QLabel(
             QStringLiteral("This run is identity-agnostic and continuity-based.\n\n"
-                           "It generates independent BoxStreams for all detected face tracks."),
+                           "JCut DNN FaceStream Generator creates independent FaceStreams for all detected face tracks."),
             &preflightDialog);
         infoLabel->setWordWrap(true);
         layout->addWidget(infoLabel);
@@ -78,7 +78,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         auto* algoRow = new QHBoxLayout;
         auto* algoLabel = new QLabel(QStringLiteral("Detection algorithm"), &preflightDialog);
         auto* algoCombo = new QComboBox(&preflightDialog);
-        algoCombo->addItem(QStringLiteral("Haar Balanced (Recommended)"),
+        algoCombo->addItem(QStringLiteral("Haar Balanced"),
                            static_cast<int>(BoxstreamDetectorPreset::HaarBalanced));
         algoCombo->addItem(QStringLiteral("Haar Small Faces"),
                            static_cast<int>(BoxstreamDetectorPreset::HaarSmallFaces));
@@ -93,8 +93,9 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         algoCombo->addItem(QStringLiteral("Native CUDA DNN Face Detector"),
                            static_cast<int>(BoxstreamDetectorPreset::NativeCudaDnn));
         const int cudaDnnIndex = algoCombo->count() - 1;
-        algoCombo->addItem(QStringLiteral("Native Vulkan Face Preprocess (JCut Vulkan)"),
+        algoCombo->addItem(QStringLiteral("JCut DNN FaceStream Generator (Default)"),
                            static_cast<int>(BoxstreamDetectorPreset::NativeVulkanDnn));
+        const int jcutDnnIndex = algoCombo->count() - 1;
         algoCombo->addItem(QStringLiteral("Python Script (Legacy)"),
                            static_cast<int>(BoxstreamDetectorPreset::PythonLegacy));
         algoCombo->addItem(QStringLiteral("Local Production Hybrid (CPU, Non-Docker)"),
@@ -154,7 +155,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                            "1. Detect faces each sample frame\n"
                            "2. Associate detections into tracks (IoU + ReID where available)\n"
                            "3. Temporal smoothing (center + size)\n"
-                           "4. Write continuity BoxStreams\n"
+                           "4. Write continuity FaceStreams\n"
                            "5. Preview superimposed overlays by tracker source"),
             &preflightDialog);
         stepsLabel->setWordWrap(true);
@@ -175,6 +176,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         algoRow->addWidget(algoLabel);
         algoRow->addWidget(algoCombo, 1);
         layout->addLayout(algoRow);
+        algoCombo->setCurrentIndex(jcutDnnIndex);
         auto* buttons = new QHBoxLayout;
         buttons->addStretch(1);
         auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &preflightDialog);
@@ -217,7 +219,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     };
     const QString mediaPath = resolveMediaPath(*selectedClip);
     if (mediaPath.isEmpty()) {
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                              QStringLiteral("No playable media was found for this clip."));
         return;
     }
@@ -373,7 +375,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QProcess proc;
         if (detectorPreset == BoxstreamDetectorPreset::PythonLegacy) {
             if (!QFileInfo::exists(faceScriptPath)) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("speaker_face_candidates.py was not found."));
                 return;
             }
@@ -394,7 +396,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             const QString runnerPath = QDir(QDir::currentPath()).absoluteFilePath(
                 QStringLiteral("docker_face_detector.py"));
             if (!QFileInfo::exists(runnerPath)) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("docker_face_detector.py was not found."));
                 return;
             }
@@ -417,7 +419,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         } else if (detectorPreset == BoxstreamDetectorPreset::Sam3Face) {
             const QString sam3Path = QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("sam3.sh"));
             if (!QFileInfo::exists(sam3Path)) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("sam3.sh was not found."));
                 return;
             }
@@ -443,19 +445,19 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             if (detectorPreset == BoxstreamDetectorPreset::DockerInsightFace ||
                 detectorPreset == BoxstreamDetectorPreset::DockerHybrid) {
                 imageName = qEnvironmentVariable(
-                    "JCUT_BOXSTREAM_IMAGE_INSIGHTFACE",
+                    "JCUT_FACESTREAM_IMAGE_INSIGHTFACE",
                     QStringLiteral("pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime"));
             } else if (detectorPreset == BoxstreamDetectorPreset::DockerYoloFace) {
                 imageName = qEnvironmentVariable(
-                    "JCUT_BOXSTREAM_IMAGE_YOLOFACE",
+                    "JCUT_FACESTREAM_IMAGE_YOLOFACE",
                     QStringLiteral("ultralytics/ultralytics:latest"));
             } else if (detectorPreset == BoxstreamDetectorPreset::DockerMtcnn) {
                 imageName = qEnvironmentVariable(
-                    "JCUT_BOXSTREAM_IMAGE_MTCNN",
+                    "JCUT_FACESTREAM_IMAGE_MTCNN",
                     QStringLiteral("pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime"));
             } else {
                 imageName = qEnvironmentVariable(
-                    "JCUT_BOXSTREAM_IMAGE_OPENCV_DNN",
+                    "JCUT_FACESTREAM_IMAGE_OPENCV_DNN",
                     QStringLiteral("python:3.11-slim"));
             }
             const QString mediaMount = QStringLiteral("/jcut_media");
@@ -476,13 +478,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 QStringLiteral("docker_face_detector.py"));
             jsonPathToRead = hostOutputPath;
             if (!QFileInfo::exists(runnerHostPath)) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("docker_face_detector.py was not found."));
                 return;
             }
             QStringList args = {
                 QStringLiteral("run"), QStringLiteral("--rm"),
-                QStringLiteral("--gpus"), qEnvironmentVariable("JCUT_BOXSTREAM_DOCKER_GPUS", QStringLiteral("all")),
+                QStringLiteral("--gpus"), qEnvironmentVariable("JCUT_FACESTREAM_DOCKER_GPUS", QStringLiteral("all")),
                 QStringLiteral("-v"), QStringLiteral("%1:%2:ro").arg(mediaHostMount, mediaMount),
                 QStringLiteral("-v"), QStringLiteral("%1:%2").arg(debugRun.runDir, outMount),
                 QStringLiteral("-v"), QStringLiteral("%1:%2:ro").arg(weightsHostDir, weightsMount),
@@ -541,7 +543,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QString mergedOutput;
         if (dockerTerminalMode) {
             QDialog terminalDialog;
-            terminalDialog.setWindowTitle(QStringLiteral("BoxStream Docker Terminal"));
+            terminalDialog.setWindowTitle(QStringLiteral("FaceStream Docker Terminal"));
             terminalDialog.setWindowFlag(Qt::Window, true);
             terminalDialog.resize(980, 560);
             auto* terminalLayout = new QVBoxLayout(&terminalDialog);
@@ -550,7 +552,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             auto* statusLabel = new QLabel(QStringLiteral("Running detector container..."), &terminalDialog);
             terminalLayout->addWidget(statusLabel);
             auto* stepsLabel = new QLabel(
-                QStringLiteral("Steps: 1) Detect  2) Associate  3) Smooth  4) Write BoxStreams  5) Preview Overlay"),
+                QStringLiteral("Steps: 1) Detect  2) Associate  3) Smooth  4) Write FaceStreams  5) Preview Overlay"),
                 &terminalDialog);
             stepsLabel->setStyleSheet(QStringLiteral("color:#9fb3c8; font-size:11px;"));
             terminalLayout->addWidget(stepsLabel);
@@ -648,7 +650,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             cancelButton->setEnabled(false);
             closeButton->setEnabled(true);
             if (canceled) {
-                QMessageBox::information(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::information(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                          QStringLiteral("Docker detector canceled."));
                 return;
             }
@@ -672,7 +674,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
                 m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
                 processOutput, {requestPath, outputPath, logPath});
-            QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"), processOutput);
+            QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), processOutput);
             return;
         }
 
@@ -744,14 +746,14 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         if (detectorPreset != BoxstreamDetectorPreset::Sam3Face) {
             QFile outputFile(jsonPathToRead);
             if (!outputFile.open(QIODevice::ReadOnly)) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("Detector finished but no output JSON was produced."));
                 return;
             }
             QJsonParseError parseError;
             const QJsonDocument outputDoc = QJsonDocument::fromJson(outputFile.readAll(), &parseError);
             if (parseError.error != QJsonParseError::NoError || !outputDoc.isObject()) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("Detector output JSON was invalid."));
                 return;
             }
@@ -815,7 +817,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             }
             tracksJson = loaded;
             if (tracksJson.isEmpty()) {
-                QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                      QStringLiteral("SAM3 completed but no bounding boxes were found in its JSON outputs."));
                 return;
             }
@@ -830,7 +832,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
         m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
         QStringLiteral("OpenCV C++ not available in this build."), {requestPath});
-    QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+    QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                          QStringLiteral("OpenCV is not linked in this build."));
     return;
 #else
@@ -852,7 +854,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
             QStringLiteral("Haar cascade XML not found."), {requestPath});
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                              QStringLiteral("Haar cascade file not found. Expected it under external/opencv/data/haarcascades."));
         return;
     }
@@ -863,7 +865,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
             QStringLiteral("Failed to load Haar cascade XML."), {requestPath});
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                              QStringLiteral("Failed to load Haar cascade classifier."));
         return;
     }
@@ -903,8 +905,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
-            QStringLiteral("Failed to initialize decoder for Generate BoxStream."), {requestPath});
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+            QStringLiteral("Failed to initialize decoder for JCut DNN FaceStream Generator."), {requestPath});
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                              QStringLiteral("Could not open media for face scanning."));
         return;
     }
@@ -939,7 +941,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
             QStringLiteral("OpenCV contrib tracking is not enabled in this build."),
             {requestPath});
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                              QStringLiteral("OpenCV contrib tracking is unavailable. Rebuild with JCUT_USE_OPENCV_CONTRIB=ON."));
         return;
     }
@@ -953,12 +955,12 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
                 m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
                 vulkanError.isEmpty()
-                    ? QStringLiteral("Failed to initialize native JCut Vulkan face preprocessing.")
+                    ? QStringLiteral("Failed to initialize JCut DNN FaceStream Generator.")
                     : vulkanError,
                 {requestPath});
-            QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+            QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                  vulkanError.isEmpty()
-                                     ? QStringLiteral("Native JCut Vulkan face preprocessing is unavailable.")
+                                     ? QStringLiteral("JCut DNN FaceStream Generator is unavailable.")
                                      : vulkanError);
             return;
         }
@@ -972,7 +974,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
                 m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
                 QStringLiteral("Failed to resolve/download OpenCV DNN face model."), {requestPath});
-            QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+            QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                  QStringLiteral("DNN model missing and download failed."));
             return;
         }
@@ -992,7 +994,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                         indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
                         m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
                         QStringLiteral("OpenCV DNN CUDA backend is unavailable in this build/runtime."), {requestPath});
-                    QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+                    QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                          QStringLiteral("OpenCV DNN CUDA backend is unavailable. Rebuild OpenCV with CUDA, cuBLAS, cuDNN, and OPENCV_DNN_CUDA enabled."));
                     return;
                 }
@@ -1032,7 +1034,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
                 m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
                 QStringLiteral("Failed to load OpenCV DNN model."), {requestPath});
-            QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+            QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                                  QStringLiteral("Could not initialize DNN face detector."));
             return;
         }
@@ -1046,7 +1048,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     int64_t contribSampleCounter = 0;
 
     QDialog progressDialog;
-    progressDialog.setWindowTitle(QStringLiteral("BoxStream Progress"));
+    progressDialog.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator"));
     progressDialog.setWindowFlag(Qt::Window, true);
     progressDialog.resize(720, 560);
     auto* progressLayout = new QVBoxLayout(&progressDialog);
@@ -1054,7 +1056,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     progressLayout->setSpacing(8);
     auto* progressLabel = new QLabel(QStringLiteral("Scanning continuity tracks..."), &progressDialog);
     if (wantsNativeJcutVulkanDnn) {
-        progressLabel->setText(QStringLiteral("Running JCut Vulkan face preprocessing. Native Vulkan inference is not implemented yet."));
+        progressLabel->setText(QStringLiteral("Running JCut DNN FaceStream Generator."));
     }
     progressLayout->addWidget(progressLabel);
     auto* frameLabel = new QLabel(QStringLiteral("Frame 0/0 | Tracks: 0"), &progressDialog);
@@ -1427,9 +1429,9 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
-            QStringLiteral("Generate BoxStream canceled by user."), {requestPath, outputPath, logPath});
-        QMessageBox::information(nullptr, QStringLiteral("Generate BoxStream"),
-                                 QStringLiteral("BoxStream generation canceled."));
+            QStringLiteral("JCut DNN FaceStream Generator canceled by user."), {requestPath, outputPath, logPath});
+        QMessageBox::information(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
+                                 QStringLiteral("JCut DNN FaceStream generation canceled."));
         return;
     }
 
@@ -1462,7 +1464,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             : (detectorPreset == BoxstreamDetectorPreset::NativeCudaDnn
                    ? QStringLiteral("Native CUDA DNN")
                    : (detectorPreset == BoxstreamDetectorPreset::NativeVulkanDnn
-                   ? QStringLiteral("Native JCut Vulkan preprocess")
+                   ? QStringLiteral("JCut DNN FaceStream Generator")
                    : (detectorPreset == BoxstreamDetectorPreset::NativeHybridCpu
                           ? QStringLiteral("Native hybrid (C++ CPU)")
                           : QStringLiteral("OpenCV Haar"))));
@@ -1492,13 +1494,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             logFile.close();
         }
         const QString noTracksMessage = detectorPreset == BoxstreamDetectorPreset::NativeVulkanDnn
-            ? QStringLiteral("Native JCut Vulkan inference ran, but no stable BoxStream tracks passed filtering.")
+            ? QStringLiteral("JCut DNN FaceStream Generator ran, but no stable FaceStream tracks passed filtering.")
             : QStringLiteral("No face tracks detected by OpenCV continuity detector.");
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),
             noTracksMessage, {requestPath, outputPath, logPath});
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
                              detectorPreset == BoxstreamDetectorPreset::NativeVulkanDnn
                                  ? noTracksMessage
                                  : QStringLiteral("No face tracks were detected."));
@@ -1532,13 +1534,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
         m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), saved ? QStringLiteral("ok") : QStringLiteral("error"),
         saved
-            ? QStringLiteral("Continuity BoxStreams generated.")
-            : QStringLiteral("Failed to save transcript after continuity BoxStream generation."),
+            ? QStringLiteral("Continuity FaceStreams generated.")
+            : QStringLiteral("Failed to save transcript after continuity FaceStream generation."),
         {requestPath, outputPath, logPath});
 
     if (!saved) {
-        QMessageBox::warning(nullptr, QStringLiteral("Generate BoxStream"),
-                             QStringLiteral("Generated continuity BoxStreams, but failed to save transcript."));
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
+                             QStringLiteral("Generated continuity FaceStreams, but failed to save transcript."));
         refresh();
         return;
     }
@@ -1552,9 +1554,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
     QMessageBox::information(
         nullptr,
-        QStringLiteral("Generate BoxStream"),
-        QStringLiteral("Generated %1 continuity BoxStream(s).")
+        QStringLiteral("JCut DNN FaceStream Generator"),
+        QStringLiteral("Generated %1 continuity FaceStream(s).")
             .arg(streams.size()));
     refresh();
 }
-

@@ -202,7 +202,7 @@ QWidget *InspectorPane::buildPreviewTab()
         QStringLiteral("Clip the preview to the current output frame so off-frame content is hidden."));
 
     m_previewShowSpeakerTrackPointsCheckBox =
-        new QCheckBox(QStringLiteral("Show BoxStream Points"), page);
+        new QCheckBox(QStringLiteral("Show FaceStream Points"), page);
     m_previewShowSpeakerTrackPointsCheckBox->setChecked(false);
     m_previewShowSpeakerTrackPointsCheckBox->setToolTip(
         QStringLiteral("Draw all speaker framing keyframe points on top of active clips."));

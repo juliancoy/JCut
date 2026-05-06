@@ -1134,11 +1134,11 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
 
     QAction* enableTrackingAction = menu.addAction(QStringLiteral("Enable Subtitle Face Tracking"));
     QAction* disableTrackingAction = menu.addAction(QStringLiteral("Disable Subtitle Face Tracking"));
-    QMenu* autoTrackMenu = menu.addMenu(QStringLiteral("BoxStream"));
+    QMenu* autoTrackMenu = menu.addMenu(QStringLiteral("FaceStream"));
     QAction* runAutoTrackAction = nullptr;
     QAction* deleteAutoTrackAction = nullptr;
-    runAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Generate BoxStream"));
-    deleteAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Delete BoxStream"));
+    runAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Generate FaceStream"));
+    deleteAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Delete FaceStream"));
     menu.addSeparator();
     const QString exportLabel = selectedSpeakerIds.size() > 1
         ? QStringLiteral("Export Video (%1 Speakers)").arg(selectedSpeakerIds.size())
@@ -1444,7 +1444,7 @@ void SpeakersTab::onSpeakerTrackingChipClicked()
     if (!transcriptTrackingHasPointstream(tracking)) {
         if (m_widgets.speakerTrackingStatusLabel) {
             m_widgets.speakerTrackingStatusLabel->setText(
-                QStringLiteral("Cannot enable Tracking: no pointstream exists yet. Generate BoxStream first."));
+                QStringLiteral("Cannot enable Tracking: no pointstream exists yet. Generate FaceStream first."));
         }
         return;
     }
@@ -1481,7 +1481,7 @@ void SpeakersTab::onSpeakerStabilizeChipClicked()
     if (requestedEnabled && !hasFramingData) {
         if (m_widgets.speakerTrackingStatusLabel) {
             m_widgets.speakerTrackingStatusLabel->setText(
-                QStringLiteral("Cannot enable Face Stabilize: no runtime BoxStream binding. Generate BoxStream first."));
+                QStringLiteral("Cannot enable Face Stabilize: no runtime FaceStream binding. Generate FaceStream first."));
         }
         return;
     }

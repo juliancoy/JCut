@@ -6,9 +6,9 @@ Deliver a **native Vulkan preview path** with a **deterministic OpenGL fallback*
 Final meaning:
 - `requested=vulkan` + `effective=vulkan` => true native Vulkan presentation/composition path.
 - If Vulkan init/runtime fails => automatic OpenGL fallback with one clear reason.
-- Bridge modes (`vulkan-cpu-present`) are temporary and must be removed before completion.
+- Bridge modes (`vulkan-cpu-present`, offscreen Vulkan-to-`QImage` presentation) are removed from the production preview path.
 
-## Snapshot (as of 2026-05-03)
+## Snapshot (as of 2026-05-05)
 
 ## Completed
 - Backend preference plumbing exists and is persisted (`opengl`, `vulkan`, etc.).
@@ -17,26 +17,20 @@ Final meaning:
 - Structured backend decision logs implemented:
   - `[render-backend-selection] ...`
   - `[render-backend-fallback] ...`
-- `vulkan_preview_surface.*` scaffold added.
-- `vulkan_context.*` added for dedicated Vulkan instance ownership.
-- `vulkan_renderer.*` added for native `QVulkanWindowRenderer` state-driven loop scaffold.
-- Vulkan parity bridge mode added in `VulkanPreviewSurface`:
-  - full timeline/overlay/interaction rendering is driven by the proven preview compositor path
-  - used by default for the Vulkan backend until the native swapchain compositor reaches parity
-- Native Vulkan surface attempt (`QVulkanWindow`) kept behind opt-in:
-  - `JCUT_VULKAN_NATIVE_SURFACE=1`
-  - native surface still uses parity bridge unless `JCUT_VULKAN_PARITY_BRIDGE=0`
+- `vulkan_preview_surface.*` owns the direct `QVulkanWindow` swapchain presenter.
+- The old parity bridge and offscreen `QImage` compositor are removed from the Vulkan preview path.
+- Native Vulkan presentation is the default Vulkan preview attempt.
+- The REST `/profile` preview payload reports `presenter=qvulkanwindow_direct_swapchain`, `swapchain_present=true`, `qimage_bridge=false`, and `qimage_materialized=false` when the direct presenter is active.
+- Vulkan preview decode readiness is strict: `HardwareZeroCopy` mode rejects materialized CPU frames, so unsupported hardware reports missing GPU-ready frames instead of using `QImage`.
+- The tracked duplicate `backup_preview/` implementation has been removed.
 - Runtime reporting should reflect actual outcome:
-  - default Vulkan path => full Vulkan preview compositor through the stable preview surface
-  - native init success with bridge disabled => experimental native swapchain path
+  - default Vulkan path => direct swapchain presenter
   - init/runtime failure => OpenGL fallback with reason.
-- Existing bridge fallback path remains stable and benchmark harness still works.
 
 ## Not Completed (Critical)
-- Native Vulkan path does **not** yet render full preview composition parity (timeline frames/overlays/interactions) independently.
-- Current native path is scaffold-level surface init, not full compositor.
+- Native Vulkan path does **not** yet render full decoded video frame composition parity (timeline video textures/overlays/interactions) independently.
+- Current native path records direct swapchain commands and state/decode-readiness-driven clip rectangles, but does not yet import/upload/compose full timeline frame textures.
 - Independent native compositor parity (without bridge) is not complete yet.
-- Native renderer is still clear-frame scaffold (no timeline frame composition yet).
 - Fallback logging consolidated to factory-level decision logging (single fallback line).
 
 ---
@@ -44,10 +38,10 @@ Final meaning:
 ## Current Architecture State
 - `PreviewSurface` is the shared interface used by editor orchestration.
 - `VulkanPreviewSurface` currently does:
-  - try native `QVulkanWindow` init only when explicitly requested
-  - run parity bridge path for full feature parity in Vulkan backend mode
-  - optionally run native state path via `VulkanRendererState` + `VulkanNativeWindow` when bridge is disabled
-  - otherwise fallback to `VulkanPreviewWindow` bridge delegate
+  - route through the shared preview interface
+  - own a direct `QVulkanWindow` swapchain presenter
+  - refuse the old QImage offscreen-composite bridge
+  - fall back to OpenGL only if the native Vulkan presenter cannot be created
 - OpenGL/legacy rendering logic still lives in `PreviewWindow` (`QOpenGLWidget` monolith).
 
 ---
@@ -65,8 +59,10 @@ Final meaning:
 - No duplicate backend fallback logs.
 
 ## Phase 2: Vulkan Compositor Path (Core Rendering)
-- [ ] Implement Vulkan render loop for preview frames (swapchain-driven).
+- [x] Implement Vulkan render loop for preview frames (swapchain-driven).
+- [x] Connect decode/cache readiness metadata to the Vulkan presenter without accepting CPU `QImage` frames.
 - [ ] Port frame upload/composition from OpenGL path to Vulkan resources/pipelines.
+- [ ] Import CUDA/VAAPI hardware frames into Vulkan images, or provide an explicitly non-Vulkan fallback outside `effective=vulkan`.
 - [ ] Connect timeline frame data path directly into Vulkan compositor.
 - [ ] Validate resize/recreate/device-lost handling.
 
@@ -74,9 +70,9 @@ Final meaning:
 - Native Vulkan mode renders visual clip frames without OpenGL rendering dependency.
 
 ## Phase 3: Overlay + Interaction Parity
-- [x] Port transcript/title/speaker/corrections overlays to Vulkan backend path (parity bridge mode).
-- [x] Port hit-testing/drag/resize/edit interaction behavior for overlays (parity bridge mode).
-- [x] Maintain correction draw mode + transcript/title interaction modes (parity bridge mode).
+- [ ] Port transcript/title/speaker/corrections overlays to the direct Vulkan presenter.
+- [ ] Port hit-testing/drag/resize/edit interaction behavior for overlays to shared state plus Vulkan presenter.
+- [ ] Maintain correction draw mode + transcript/title interaction modes without a bridge.
 
 ### Exit Criteria
 - Feature parity with OpenGL preview interactions for agreed workflows.
@@ -90,8 +86,8 @@ Final meaning:
 - Vulkan failures never crash or dead-end preview; OpenGL fallback always usable.
 
 ## Phase 5: Bridge Retirement
-- [ ] Remove `vulkan-cpu-present` bridge mode from normal path.
-- [ ] Remove parity bridge mode (`JCUT_VULKAN_PARITY_BRIDGE`) after native compositor reaches parity.
+- [x] Remove `vulkan-cpu-present` bridge mode from normal path.
+- [x] Remove parity bridge mode from the Vulkan preview path.
 - [ ] Keep only final selection/fallback logging paths.
 
 ### Exit Criteria
@@ -114,9 +110,6 @@ Final meaning:
 - `preview_surface_factory.h/.cpp`
 - `preview_widget_factory.h/.cpp` (compat path still present)
 - `vulkan_preview_surface.h/.cpp`
-- `vulkan_preview_window.h/.cpp`
-- `vulkan_context.h/.cpp`
-- `vulkan_renderer.h/.cpp`
 - `preview_window_core.cpp` (bridge logging guard)
 - `scripts/vulkan_parity_throughput.sh`
 
@@ -128,8 +121,8 @@ Final meaning:
 ---
 
 ## Known Issues / Risks To Address Tomorrow
-1. Native Vulkan mode currently initializes surface but is not full compositor parity.
-2. Native renderer currently does not record swapchain draw commands for the composed preview frame; do not use it as the default path.
+1. Native Vulkan mode presents through a direct swapchain, but it is not full compositor parity.
+2. Native renderer currently records state/decode-readiness-driven preview commands, not decoded timeline video texture composition.
 3. Swapchain/device-loss fallback hardening is not implemented yet.
 4. Ensure no hidden OpenGL dependency remains once compositor migration completes.
 

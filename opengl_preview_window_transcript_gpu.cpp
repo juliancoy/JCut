@@ -178,11 +178,11 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
         return;
     }
 
-    const QSize outputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+    const QSize outputSize = m_interaction.outputSize.isValid() ? m_interaction.outputSize : QSize(1080, 1920);
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
     const QVector<TranscriptSection>& sections = transcriptSectionsForClip(clip);
     const int64_t sourceFrame =
-        transcriptFrameForClipAtTimelineSample(clip, m_currentSample, m_renderSyncMarkers);
+        transcriptFrameForClipAtTimelineSample(clip, m_interaction.currentSample, m_interaction.renderSyncMarkers);
     const QRectF outputRect = transcriptOverlayRectInOutputSpace(
         clip, outputSize, transcriptPath, sections, sourceFrame);
     if (outputRect.width() <= 0.0 || outputRect.height() <= 0.0) {
@@ -261,7 +261,7 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
     m_overlayShaderProgram->disableAttributeArray(positionLoc);
     m_overlayShaderProgram->release();
 
-    if (m_transcriptOverlayInteractionEnabled) {
+    if (m_interaction.transcriptOverlayInteractionEnabled) {
         PreviewOverlayInfo info;
         info.kind = PreviewOverlayKind::TranscriptOverlay;
         info.bounds = bounds;
@@ -269,7 +269,7 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
         info.rightHandle = QRectF(bounds.right() - kHandleSize, bounds.center().y() - kHandleSize, kHandleSize, kHandleSize * 2.0);
         info.bottomHandle = QRectF(bounds.center().x() - kHandleSize, bounds.bottom() - kHandleSize, kHandleSize * 2.0, kHandleSize);
         info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5, bounds.bottom() - kHandleSize * 1.5, kHandleSize * 1.5, kHandleSize * 1.5);
-        m_overlayInfo.insert(clip.id, info);
-        m_paintOrder.push_back(clip.id);
+        m_overlayModel.overlays.insert(clip.id, info);
+        m_overlayModel.paintOrder.push_back(clip.id);
     }
 }

@@ -86,7 +86,7 @@ void SpeakersTab::wire()
             const int row = m_widgets.speakerBoxStreamTable->currentRow();
             if (row < 0) {
                 m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
-                    QStringLiteral("Select a BoxStream path row to inspect full JSON."));
+                    QStringLiteral("Select a FaceStream path row to inspect full JSON."));
                 return;
             }
             QTableWidgetItem* streamItem = m_widgets.speakerBoxStreamTable->item(row, 0);
@@ -144,7 +144,7 @@ void SpeakersTab::wire()
                 this, &SpeakersTab::onSpeakerClearReferencesClicked);
     }
     if (m_widgets.speakerRunAutoTrackButton) {
-        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE BOXSTREAM"));
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("JCUT DNN FACESTREAM"));
         m_widgets.speakerRunAutoTrackButton->setMinimumHeight(40);
         m_widgets.speakerRunAutoTrackButton->setStyleSheet(QStringLiteral(
             "QPushButton {"
@@ -161,13 +161,13 @@ void SpeakersTab::wire()
             "  border:1px solid #6a5731;"
             "}"));
         m_widgets.speakerRunAutoTrackButton->setToolTip(
-            QStringLiteral("Generate identity-agnostic continuity BoxStreams for all face tracks."));
+            QStringLiteral("Run the default JCut DNN FaceStream Generator for all face tracks."));
         connect(m_widgets.speakerRunAutoTrackButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerRunAutoTrackClicked);
     }
     if (m_widgets.speakerBoxstreamSettingsButton) {
         m_widgets.speakerBoxstreamSettingsButton->setToolTip(
-            QStringLiteral("Open BoxStream-specific runtime smoothing options."));
+            QStringLiteral("Open FaceStream-specific runtime smoothing options."));
         connect(m_widgets.speakerBoxstreamSettingsButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerBoxStreamSettingsClicked);
     }
@@ -185,7 +185,7 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerGuideButton) {
         m_widgets.speakerGuideButton->setToolTip(
-            QStringLiteral("Open a quick guide for continuity BoxStream generation and mapping."));
+            QStringLiteral("Open a quick guide for continuity FaceStream generation and mapping."));
         connect(m_widgets.speakerGuideButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerGuideClicked);
     }
@@ -444,8 +444,8 @@ bool SpeakersTab::generateBoxStreamForSelectedClip()
     if (!activeCutMutable()) {
         QMessageBox::information(
             nullptr,
-            QStringLiteral("Generate BoxStream"),
-            QStringLiteral("BoxStream actions are editable only on derived cuts (not Original)."));
+            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("FaceStream actions are editable only on derived cuts (not Original)."));
         return false;
     }
     onSpeakerRunAutoTrackClicked();
@@ -457,8 +457,8 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
     if (!activeCutMutable()) {
         QMessageBox::information(
             nullptr,
-            QStringLiteral("Delete BoxStream"),
-            QStringLiteral("BoxStream actions are editable only on derived cuts (not Original)."));
+            QStringLiteral("Delete FaceStream"),
+            QStringLiteral("FaceStream actions are editable only on derived cuts (not Original)."));
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -477,16 +477,16 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
     if (streams.isEmpty()) {
         QMessageBox::information(
             nullptr,
-            QStringLiteral("Delete BoxStream"),
-            QStringLiteral("No BoxStream paths were found for this clip."));
+            QStringLiteral("Delete FaceStream"),
+            QStringLiteral("No FaceStream paths were found for this clip."));
         return false;
     }
 
     if (confirmDialog) {
         const auto confirmation = QMessageBox::warning(
             nullptr,
-            QStringLiteral("Delete BoxStream"),
-            QStringLiteral("Delete all BoxStream paths for this clip?\n\nThis cannot be undone."),
+            QStringLiteral("Delete FaceStream"),
+            QStringLiteral("Delete all FaceStream paths for this clip?\n\nThis cannot be undone."),
             QMessageBox::Yes | QMessageBox::Cancel,
             QMessageBox::Cancel);
         if (confirmation != QMessageBox::Yes) {
@@ -500,8 +500,8 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
     if (!savedArtifact) {
         QMessageBox::warning(
             nullptr,
-            QStringLiteral("Delete BoxStream"),
-            QStringLiteral("Failed to save BoxStream artifact after deletion."));
+            QStringLiteral("Delete FaceStream"),
+            QStringLiteral("Failed to save FaceStream artifact after deletion."));
         return false;
     }
 
@@ -565,7 +565,7 @@ void SpeakersTab::refreshBoxStreamPathsPanel()
     m_boxStreamPanelRows = QJsonArray();
     if (m_widgets.speakerBoxStreamDetailsEdit) {
         m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
-            QStringLiteral("Select a BoxStream path row to inspect full JSON."));
+            QStringLiteral("Select a FaceStream path row to inspect full JSON."));
     }
     if (!m_loadedTranscriptDoc.isObject()) {
         return;
@@ -641,7 +641,7 @@ void SpeakersTab::refreshBoxStreamPathsPanel()
     }
     if (streams.isEmpty() && m_widgets.speakerBoxStreamDetailsEdit) {
         m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
-            QStringLiteral("No BoxStream paths found for this clip. Generate BoxStream first."));
+            QStringLiteral("No FaceStream paths found for this clip. Run JCut DNN FaceStream Generator first."));
     } else if (!streams.isEmpty()) {
         m_widgets.speakerBoxStreamTable->setCurrentCell(0, 0);
     }
@@ -1378,7 +1378,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerRefsChipLabel->setText(QStringLiteral("Refs: 0/2"));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
-        m_widgets.speakerPointstreamChipLabel->setText(QStringLiteral("BoxStream: None"));
+        m_widgets.speakerPointstreamChipLabel->setText(QStringLiteral("FaceStream: None"));
     }
     if (m_widgets.speakerTrackingChipButton) {
         m_widgets.speakerTrackingChipButton->setText(QStringLiteral("Tracking: OFF"));
@@ -1402,7 +1402,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit);
-        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE BOXSTREAM"));
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE FACESTREAM"));
     }
     if (m_widgets.speakerBoxstreamSettingsButton) {
         m_widgets.speakerBoxstreamSettingsButton->setEnabled(canEdit);
@@ -1477,7 +1477,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     if (speakerId.isEmpty()) {
         if (!hasClipWideBoxStream && m_loadedTranscriptDoc.isObject()) {
             m_widgets.speakerTrackingStatusLabel->setText(
-                QStringLiteral("[MISSING] All-speakers BoxStream artefact has not been created."));
+                QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created."));
         } else {
             m_widgets.speakerTrackingStatusLabel->setText(QString());
         }
@@ -1504,10 +1504,10 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     if (m_widgets.speakerPointstreamChipLabel) {
         if (!hasClipWideBoxStream) {
             m_widgets.speakerPointstreamChipLabel->setText(
-                QStringLiteral("BoxStream: MISSING (All Speakers)"));
+                QStringLiteral("FaceStream: MISSING (All Speakers)"));
         } else {
             m_widgets.speakerPointstreamChipLabel->setText(
-                QStringLiteral("BoxStream: ClipWide Ready"));
+                QStringLiteral("FaceStream: ClipWide Ready"));
         }
     }
     if (m_widgets.speakerTrackingChipButton) {
@@ -1528,7 +1528,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
                 QStringLiteral("Face Stabilize: %1 | %2")
                     .arg(clipFramingState)
                     .arg(hasRuntimeBinding
-                        ? QStringLiteral("Runtime BoxStream")
+                        ? QStringLiteral("Runtime FaceStream")
                         : QStringLiteral("%1 keys").arg(selectedClip->speakerFramingKeyframes.size())));
         }
         if (m_widgets.speakerStabilizeChipButton) {
@@ -1541,11 +1541,11 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             m_widgets.speakerStabilizeChipButton->setEnabled(canToggleStabilize);
             if (!selectedClip->speakerFramingEnabled && !hasFramingData) {
                 m_widgets.speakerStabilizeChipButton->setToolTip(
-                    QStringLiteral("Face Stabilize needs a BoxStream speaker binding. "
-                                   "Generate BoxStream with this clip selected."));
+                    QStringLiteral("Face Stabilize needs a FaceStream speaker binding. "
+                                   "Run JCut DNN FaceStream Generator with this clip selected."));
             } else if (hasRuntimeBinding) {
                 m_widgets.speakerStabilizeChipButton->setToolTip(
-                    QStringLiteral("Face Stabilize uses runtime BoxStream transforms for speaker %1.")
+                    QStringLiteral("Face Stabilize uses runtime FaceStream transforms for speaker %1.")
                         .arg(selectedClip->speakerFramingSpeakerId));
             } else {
                 m_widgets.speakerStabilizeChipButton->setToolTip(
@@ -1569,7 +1569,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
 
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit);
-        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE BOXSTREAM (CONTINUITY)"));
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE FACESTREAM (CONTINUITY)"));
     }
 
     if (m_pendingReferencePick == 1 || m_pendingReferencePick == 2) {
@@ -1580,13 +1580,13 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
 
     if (!hasClipWideBoxStream) {
         m_widgets.speakerTrackingStatusLabel->setText(
-            QStringLiteral("[MISSING] All-speakers BoxStream artefact has not been created. "
-                           "Run Generate BoxStream to create it."));
+            QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created. "
+                           "Run JCut DNN FaceStream Generator to create it."));
         return;
     }
 
     m_widgets.speakerTrackingStatusLabel->setText(
-        QStringLiteral("Refs: %1/2 | BoxStream: %2 | Tracking: %3 | Face Stabilize: %4")
+        QStringLiteral("Refs: %1/2 | FaceStream: %2 | Tracking: %3 | Face Stabilize: %4")
             .arg(refCount)
             .arg(QStringLiteral("ClipWide Ready"))
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))

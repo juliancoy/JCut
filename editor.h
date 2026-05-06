@@ -80,6 +80,10 @@ public:
     ~EditorWindow() override;
 
     void addFileToTimeline(const QString &filePath, int64_t startFrame = -1);
+    bool prepareVulkanBoxStreamPreviewRun(const QString& filePath,
+                                          bool createHarnessTranscript,
+                                          QString* errorOut = nullptr);
+    bool triggerGenerateBoxStreamForSelectedClip(QString* errorOut = nullptr);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
