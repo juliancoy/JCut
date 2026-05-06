@@ -314,9 +314,7 @@ bool EditorWindow::readAiTokenFromSecureStore(QString* tokenOut,
         if (token.isEmpty()) {
             continue;
         }
-        const QString refreshToken = store->loadRefreshToken().hasValue()
-            ? store->loadRefreshToken().value().trimmed()
-            : QString();
+        const QString refreshToken;
         const QString userId = store->loadUserId().hasValue()
             ? store->loadUserId().value().trimmed()
             : QString();
@@ -353,7 +351,8 @@ bool EditorWindow::writeAiTokenToSecureStore(const QString& token,
     cfg.orgName = QStringLiteral("jcut");
     cfg.serviceName = aiSecureStoreServiceName();
     auto store = cppmonetize::createDefaultTokenStore(cfg);
-    const auto writeResult = store->storeSession(token.trimmed(), refreshToken.trimmed(), m_aiUserId.trimmed());
+    Q_UNUSED(refreshToken);
+    const auto writeResult = store->storeToken(token.trimmed(), m_aiUserId.trimmed());
     if (!writeResult.hasValue()) {
         if (errorOut) {
             *errorOut = writeResult.error().message;
@@ -669,7 +668,7 @@ void EditorWindow::configureAiGatewayLogin()
         return;
     }
     const QString token = loginResult.value().token.trimmed();
-    const QString refreshToken = loginResult.value().refreshToken.trimmed();
+    const QString refreshToken;
     const QString email = loginResult.value().email.trimmed();
     if (token.isEmpty()) {
         QMessageBox::warning(this,
@@ -887,36 +886,9 @@ void EditorWindow::refreshAiIntegrationState()
         std::optional<cppmonetize::AiEntitlements> entitlements;
         std::optional<cppmonetize::AiUsageStatus> usageStatus;
         bool entitledByContract = false;
-        const auto tryRefreshAuthToken = [this, timeoutMs]() -> bool {
-            if (m_aiRefreshToken.trimmed().isEmpty()) {
-                return false;
-            }
-            cppmonetize::OAuthDesktopFlow oauthFlow;
-            const auto oauthCfgResult = oauthFlow.resolveSupabaseConfig(m_aiProxyBaseUrl, timeoutMs);
-            if (!oauthCfgResult.hasValue()) {
-                return false;
-            }
-            const auto refreshResult = oauthFlow.refreshWithToken(
-                oauthCfgResult.value(), m_aiRefreshToken, timeoutMs);
-            if (!refreshResult.hasValue()) {
-                return false;
-            }
-            const QString refreshedAccess = refreshResult.value().token.trimmed();
-            if (refreshedAccess.isEmpty()) {
-                return false;
-            }
-            m_aiAuthToken = refreshedAccess;
-            const QString refreshedRefresh = refreshResult.value().refreshToken.trimmed();
-            if (!refreshedRefresh.isEmpty()) {
-                m_aiRefreshToken = refreshedRefresh;
-            }
-            const QString refreshedEmail = refreshResult.value().email.trimmed();
-            if (!refreshedEmail.isEmpty()) {
-                m_aiUserId = refreshedEmail;
-            }
-            QString secureStoreError;
-            writeAiTokenToSecureStore(m_aiAuthToken, m_aiRefreshToken, &secureStoreError);
-            return true;
+        const auto tryRefreshAuthToken = [this]() -> bool {
+            Q_UNUSED(this);
+            return false;
         };
 
         auto entResult = client.getAiEntitlements(m_aiAuthToken);
@@ -1111,35 +1083,8 @@ void EditorWindow::refreshAccessTabData()
     cppmonetize::MonetizeClient client =
         createJCutMonetizeClient(normalizedBase, m_aiRequestTimeoutMs);
     auto tryRefreshAuthToken = [this]() -> bool {
-        if (m_aiRefreshToken.trimmed().isEmpty()) {
-            return false;
-        }
-        cppmonetize::OAuthDesktopFlow oauthFlow;
-        const auto oauthCfgResult = oauthFlow.resolveSupabaseConfig(m_aiProxyBaseUrl, m_aiRequestTimeoutMs);
-        if (!oauthCfgResult.hasValue()) {
-            return false;
-        }
-        const auto refreshResult = oauthFlow.refreshWithToken(
-            oauthCfgResult.value(), m_aiRefreshToken, m_aiRequestTimeoutMs);
-        if (!refreshResult.hasValue()) {
-            return false;
-        }
-        const QString refreshedAccess = refreshResult.value().token.trimmed();
-        if (refreshedAccess.isEmpty()) {
-            return false;
-        }
-        m_aiAuthToken = refreshedAccess;
-        const QString refreshedRefresh = refreshResult.value().refreshToken.trimmed();
-        if (!refreshedRefresh.isEmpty()) {
-            m_aiRefreshToken = refreshedRefresh;
-        }
-        const QString refreshedEmail = refreshResult.value().email.trimmed();
-        if (!refreshedEmail.isEmpty()) {
-            m_aiUserId = refreshedEmail;
-        }
-        QString secureStoreError;
-        writeAiTokenToSecureStore(m_aiAuthToken, m_aiRefreshToken, &secureStoreError);
-        return true;
+        Q_UNUSED(this);
+        return false;
     };
     const bool supabaseDirect = isSupabaseProjectBase(normalizedBase);
 
@@ -1361,35 +1306,8 @@ QJsonObject EditorWindow::runAiAction(const QString& action,
     cppmonetize::MonetizeClient client =
         createJCutMonetizeClient(normalizedBase, m_aiRequestTimeoutMs);
     const auto tryRefreshAuthToken = [this]() -> bool {
-        if (m_aiRefreshToken.trimmed().isEmpty()) {
-            return false;
-        }
-        cppmonetize::OAuthDesktopFlow oauthFlow;
-        const auto oauthCfgResult = oauthFlow.resolveSupabaseConfig(m_aiProxyBaseUrl, m_aiRequestTimeoutMs);
-        if (!oauthCfgResult.hasValue()) {
-            return false;
-        }
-        const auto refreshResult =
-            oauthFlow.refreshWithToken(oauthCfgResult.value(), m_aiRefreshToken, m_aiRequestTimeoutMs);
-        if (!refreshResult.hasValue()) {
-            return false;
-        }
-        const QString refreshedAccess = refreshResult.value().token.trimmed();
-        if (refreshedAccess.isEmpty()) {
-            return false;
-        }
-        m_aiAuthToken = refreshedAccess;
-        const QString refreshedRefresh = refreshResult.value().refreshToken.trimmed();
-        if (!refreshedRefresh.isEmpty()) {
-            m_aiRefreshToken = refreshedRefresh;
-        }
-        const QString refreshedEmail = refreshResult.value().email.trimmed();
-        if (!refreshedEmail.isEmpty()) {
-            m_aiUserId = refreshedEmail;
-        }
-        QString secureStoreError;
-        writeAiTokenToSecureStore(m_aiAuthToken, m_aiRefreshToken, &secureStoreError);
-        return true;
+        Q_UNUSED(this);
+        return false;
     };
 
     QString lastError;

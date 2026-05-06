@@ -7,6 +7,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QSaveFile>
+#include <QStringList>
 #include <QDataStream>
 #include <QMutex>
 #include <QMutexLocker>
@@ -37,6 +38,141 @@ QString legacyJsonBoxstreamPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
     return info.dir().filePath(info.completeBaseName() + QStringLiteral("_boxstream.json"));
+}
+
+QString transcriptTextCompanionPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral(".txt"));
+}
+
+bool tokenNeedsLeadingSpace(const QString& token)
+{
+    if (token.isEmpty()) {
+        return false;
+    }
+    const QChar first = token.front();
+    if (first.isSpace()) {
+        return false;
+    }
+    if (first == QLatin1Char('.') || first == QLatin1Char(',') || first == QLatin1Char('!') ||
+        first == QLatin1Char('?') || first == QLatin1Char(':') || first == QLatin1Char(';') ||
+        first == QLatin1Char(')') || first == QLatin1Char(']') || first == QLatin1Char('}') ||
+        first == QLatin1Char('%') || first == QLatin1Char('\'')) {
+        return false;
+    }
+    return true;
+}
+
+QString transcriptTokenText(const QJsonObject& wordObj)
+{
+    const QString word = wordObj.value(QStringLiteral("word")).toString();
+    if (!word.trimmed().isEmpty()) {
+        return word;
+    }
+    return wordObj.value(QStringLiteral("text")).toString();
+}
+
+QString buildCompactTranscriptText(const QJsonObject& root)
+{
+    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+    QString currentSpeaker;
+    QString currentText;
+    QStringList lines;
+    QHash<QString, int> speakerIndexByToken;
+    int nextSpeakerIndex = 1;
+    const QString unknownSpeakerToken = QStringLiteral("__UNKNOWN_SPEAKER__");
+
+    auto speakerLabelForToken = [&](const QString& rawToken, int fallbackUnknownIndex) {
+        const QString token = rawToken.trimmed();
+        if (token.isEmpty()) {
+            return QStringLiteral("SPEAKER_%1").arg(fallbackUnknownIndex);
+        }
+        if (!speakerIndexByToken.contains(token)) {
+            speakerIndexByToken.insert(token, nextSpeakerIndex++);
+        }
+        return QStringLiteral("SPEAKER_%1").arg(speakerIndexByToken.value(token));
+    };
+
+    auto flushLine = [&]() {
+        const QString text = currentText.simplified();
+        if (!currentSpeaker.isEmpty() && !text.isEmpty()) {
+            lines.push_back(QStringLiteral("%1: %2").arg(currentSpeaker, text));
+        }
+        currentSpeaker.clear();
+        currentText.clear();
+    };
+
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segmentObj = segValue.toObject();
+        const QString segmentSpeakerToken = segmentObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const int unknownSpeakerIndexForSegment = 1;
+        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            QString wordSpeakerToken = wordObj.value(QStringLiteral("speaker"))
+                                           .toString(segmentSpeakerToken)
+                                           .trimmed();
+            if (wordSpeakerToken.isEmpty()) {
+                wordSpeakerToken = unknownSpeakerToken;
+            }
+            const QString speaker =
+                speakerLabelForToken(wordSpeakerToken, unknownSpeakerIndexForSegment);
+            const QString token = transcriptTokenText(wordObj);
+            if (token.trimmed().isEmpty()) {
+                continue;
+            }
+            if (!currentSpeaker.isEmpty() && currentSpeaker != speaker) {
+                flushLine();
+            }
+            if (currentSpeaker.isEmpty()) {
+                currentSpeaker = speaker;
+            }
+            if (!currentText.isEmpty() && tokenNeedsLeadingSpace(token)) {
+                currentText += QLatin1Char(' ');
+            }
+            currentText += token;
+        }
+
+        if (words.isEmpty()) {
+            QString fallbackSpeakerToken = segmentSpeakerToken;
+            if (fallbackSpeakerToken.isEmpty()) {
+                fallbackSpeakerToken = unknownSpeakerToken;
+            }
+            const QString speaker =
+                speakerLabelForToken(fallbackSpeakerToken, unknownSpeakerIndexForSegment);
+            const QString text = segmentObj.value(QStringLiteral("text")).toString().trimmed();
+            if (!text.isEmpty()) {
+                if (!currentSpeaker.isEmpty() && currentSpeaker != speaker) {
+                    flushLine();
+                }
+                if (currentSpeaker.isEmpty()) {
+                    currentSpeaker = speaker;
+                }
+                if (!currentText.isEmpty()) {
+                    currentText += QLatin1Char(' ');
+                }
+                currentText += text;
+            }
+        }
+    }
+
+    flushLine();
+    return lines.join(QLatin1Char('\n')) + (lines.isEmpty() ? QString() : QStringLiteral("\n"));
+}
+
+bool saveTranscriptTextCompanion(const QString& transcriptPath, const QJsonObject& root)
+{
+    QSaveFile file(transcriptTextCompanionPath(transcriptPath));
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    const QByteArray payload = buildCompactTranscriptText(root).toUtf8();
+    if (file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
+    return file.commit();
 }
 
 QByteArray boxstreamMagic()
@@ -412,7 +548,31 @@ bool TranscriptEngine::saveTranscriptJson(const QString &path, const QJsonDocume
             file.cancelWriting();
             return false;
         }
-        return file.commit();
+        if (!file.commit()) {
+            return false;
+        }
+        return saveTranscriptTextCompanion(path, root);
+    }
+
+bool TranscriptEngine::ensureTranscriptTextCompanion(const QString &path) const
+    {
+        if (path.trimmed().isEmpty()) {
+            return false;
+        }
+        const QFileInfo jsonInfo(path);
+        if (!jsonInfo.exists() || !jsonInfo.isFile()) {
+            return false;
+        }
+        const QFileInfo txtInfo(transcriptTextCompanionPath(path));
+        if (txtInfo.exists() && txtInfo.isFile() && txtInfo.size() > 0) {
+            return true;
+        }
+
+        QJsonDocument doc;
+        if (!loadTranscriptJson(path, &doc) || !doc.isObject()) {
+            return false;
+        }
+        return saveTranscriptTextCompanion(path, doc.object());
     }
 
 int64_t TranscriptEngine::adjustedLocalFrameForClip(const TimelineClip &clip,

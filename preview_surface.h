@@ -27,6 +27,10 @@ public:
         qreal amplifyDb = 0.0;
         bool normalizeEnabled = false;
         qreal normalizeTargetDb = -1.0;
+        bool selectiveNormalizeEnabled = false;
+        qreal selectiveNormalizeMinSegmentSeconds = 0.5;
+        qreal selectiveNormalizePeakDb = -1.0;
+        int selectiveNormalizePasses = 1;
         bool peakReductionEnabled = false;
         qreal peakThresholdDb = -6.0;
         bool limiterEnabled = false;
@@ -34,6 +38,7 @@ public:
         bool compressorEnabled = false;
         qreal compressorThresholdDb = -18.0;
         qreal compressorRatio = 3.0;
+        bool waveformPreviewPostProcessing = true;
     };
 
     virtual ~PreviewSurface() = default;
