@@ -47,14 +47,17 @@ namespace {
 struct Options {
     QString videoPath = QStringLiteral("/mnt/Cancer/PanelVid2TikTok/Politics/YTDown.com_YouTube_Meet-the-Candidates-for-Baltimore-County_Media_Hho5MORgIj8_001_1080p.mp4");
     QString outputDir = QStringLiteral("testbench_assets/vulkan_boxstream_offscreen");
-    int maxFrames = 240;
-    int stride = 12;
+    int maxFrames = 0; // 0 => full video
+    int stride = 1;
     int maxDetections = 256;
+    int maxFacesPerFrame = 0; // 0 => no post-cap
     int previewFrames = 24;
+    int previewStride = 12;
     float threshold = 0.45f;
     QString detector = QStringLiteral("jcut-dnn");
     QString res10ParamPath;
     QString res10BinPath;
+    QString paramsFile;
     QString previewSocket;
     bool livePreview = false;
     bool writePreviewFiles = false;
@@ -75,11 +78,71 @@ struct Track {
     QJsonArray detections;
 };
 
+struct RuntimeTuning {
+    int stride = 1;
+    int maxDetections = 256;
+    int maxFacesPerFrame = 0;
+    float threshold = 0.45f;
+    float roiX1 = 0.0f;
+    float roiY1 = 0.0f;
+    float roiX2 = 1.0f;
+    float roiY2 = 1.0f;
+    float minFaceAreaRatio = 0.0f;
+    float maxFaceAreaRatio = 1.0f;
+    float minAspect = 0.0f;
+    float maxAspect = 100.0f;
+};
+
+QVector<Detection> sanitizeDetections(const QVector<Detection>& raw,
+                                      const QSize& frameSize,
+                                      int maxFacesPerFrame,
+                                      const RuntimeTuning& tuning)
+{
+    QVector<Detection> out;
+    if (!frameSize.isValid()) {
+        return raw;
+    }
+    out.reserve(raw.size());
+    const QRectF roiRect(tuning.roiX1 * frameSize.width(),
+                         tuning.roiY1 * frameSize.height(),
+                         (tuning.roiX2 - tuning.roiX1) * frameSize.width(),
+                         (tuning.roiY2 - tuning.roiY1) * frameSize.height());
+    const double frameArea = static_cast<double>(frameSize.width()) * static_cast<double>(frameSize.height());
+    for (const auto& d : raw) {
+        QRectF box = d.box.intersected(QRectF(0, 0, frameSize.width(), frameSize.height()));
+        if (box.width() <= 1.0 || box.height() <= 1.0) {
+            continue;
+        }
+        const QPointF c = box.center();
+        if (!roiRect.contains(c)) {
+            continue;
+        }
+        const double areaRatio = (box.width() * box.height()) / qMax(1.0, frameArea);
+        if (areaRatio < tuning.minFaceAreaRatio || areaRatio > tuning.maxFaceAreaRatio) {
+            continue;
+        }
+        const double aspect = box.width() / qMax(1.0, box.height());
+        if (aspect < tuning.minAspect || aspect > tuning.maxAspect) {
+            continue;
+        }
+        out.push_back({box, d.confidence});
+    }
+    std::sort(out.begin(), out.end(), [](const Detection& a, const Detection& b) {
+        return a.confidence > b.confidence;
+    });
+    if (maxFacesPerFrame > 0 && out.size() > maxFacesPerFrame) {
+        out.resize(maxFacesPerFrame);
+    }
+    return out;
+}
+
 void usage(const char* argv0)
 {
     std::cerr << "Usage: " << argv0
               << " [video] [--out-dir DIR] [--max-frames N] [--stride N]"
-              << " [--threshold F] [--preview-frames N]"
+              << " [--threshold F] [--preview-frames N] [--preview-stride N]"
+              << " [--full-video] [--max-faces-per-frame N]"
+              << " [--params-file PATH]"
               << " [--detector jcut-dnn|jcut-heuristic-zero-copy]  # default: trained Vulkan DNN"
               << " [--res10-param PATH] [--res10-bin PATH]"
               << " [--preview-window] [--no-preview-window] [--preview-files]"
@@ -109,11 +172,17 @@ bool parseArgs(int argc, char** argv, Options* options)
         } else if (arg == "--max-frames") {
             const char* v = next("--max-frames");
             if (!v) return false;
-            options->maxFrames = std::max(1, std::atoi(v));
+            options->maxFrames = std::max(0, std::atoi(v));
         } else if (arg == "--stride") {
             const char* v = next("--stride");
             if (!v) return false;
             options->stride = std::max(1, std::atoi(v));
+        } else if (arg == "--full-video") {
+            options->maxFrames = 0;
+        } else if (arg == "--max-faces-per-frame") {
+            const char* v = next("--max-faces-per-frame");
+            if (!v) return false;
+            options->maxFacesPerFrame = std::max(0, std::atoi(v));
         } else if (arg == "--threshold") {
             const char* v = next("--threshold");
             if (!v) return false;
@@ -122,6 +191,10 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--preview-frames");
             if (!v) return false;
             options->previewFrames = std::max(0, std::atoi(v));
+        } else if (arg == "--preview-stride") {
+            const char* v = next("--preview-stride");
+            if (!v) return false;
+            options->previewStride = std::max(1, std::atoi(v));
         } else if (arg == "--detector") {
             const char* v = next("--detector");
             if (!v) return false;
@@ -150,6 +223,10 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--res10-bin");
             if (!v) return false;
             options->res10BinPath = QString::fromLocal8Bit(v);
+        } else if (arg == "--params-file") {
+            const char* v = next("--params-file");
+            if (!v) return false;
+            options->paramsFile = QString::fromLocal8Bit(v);
         } else if (arg == "--preview-socket") {
             const char* v = next("--preview-socket");
             if (!v) return false;
@@ -180,6 +257,62 @@ bool parseArgs(int argc, char** argv, Options* options)
             options->videoPath = QString::fromLocal8Bit(arg.c_str());
         }
     }
+    return true;
+}
+
+bool applyRuntimeParamsFile(const QString& path,
+                            const QFileInfo& info,
+                            RuntimeTuning* tuning,
+                            QDateTime* lastAppliedMtime)
+{
+    if (!tuning || !lastAppliedMtime || path.isEmpty()) {
+        return false;
+    }
+    if (!info.exists()) {
+        return false;
+    }
+    const QDateTime mtime = info.lastModified();
+    if (lastAppliedMtime->isValid() && mtime <= *lastAppliedMtime) {
+        return false;
+    }
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+        return false;
+    }
+    const QJsonObject o = doc.object();
+    if (o.contains(QStringLiteral("stride"))) {
+        tuning->stride = qMax(1, o.value(QStringLiteral("stride")).toInt(tuning->stride));
+    }
+    if (o.contains(QStringLiteral("max_detections"))) {
+        tuning->maxDetections = qMax(1, o.value(QStringLiteral("max_detections")).toInt(tuning->maxDetections));
+    }
+    if (o.contains(QStringLiteral("max_faces_per_frame"))) {
+        tuning->maxFacesPerFrame = qMax(0, o.value(QStringLiteral("max_faces_per_frame")).toInt(tuning->maxFacesPerFrame));
+    }
+    if (o.contains(QStringLiteral("threshold"))) {
+        tuning->threshold = std::clamp(static_cast<float>(o.value(QStringLiteral("threshold")).toDouble(tuning->threshold)),
+                                       0.0f,
+                                       1.0f);
+    }
+    if (o.contains(QStringLiteral("roi_x1"))) tuning->roiX1 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_x1")).toDouble(tuning->roiX1)), 0.0f, 1.0f);
+    if (o.contains(QStringLiteral("roi_y1"))) tuning->roiY1 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_y1")).toDouble(tuning->roiY1)), 0.0f, 1.0f);
+    if (o.contains(QStringLiteral("roi_x2"))) tuning->roiX2 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_x2")).toDouble(tuning->roiX2)), 0.0f, 1.0f);
+    if (o.contains(QStringLiteral("roi_y2"))) tuning->roiY2 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_y2")).toDouble(tuning->roiY2)), 0.0f, 1.0f);
+    if (tuning->roiX2 < tuning->roiX1) std::swap(tuning->roiX1, tuning->roiX2);
+    if (tuning->roiY2 < tuning->roiY1) std::swap(tuning->roiY1, tuning->roiY2);
+    if (o.contains(QStringLiteral("min_face_area_ratio"))) tuning->minFaceAreaRatio = std::clamp(static_cast<float>(o.value(QStringLiteral("min_face_area_ratio")).toDouble(tuning->minFaceAreaRatio)), 0.0f, 1.0f);
+    if (o.contains(QStringLiteral("max_face_area_ratio"))) tuning->maxFaceAreaRatio = std::clamp(static_cast<float>(o.value(QStringLiteral("max_face_area_ratio")).toDouble(tuning->maxFaceAreaRatio)), 0.0f, 1.0f);
+    if (tuning->maxFaceAreaRatio < tuning->minFaceAreaRatio) std::swap(tuning->minFaceAreaRatio, tuning->maxFaceAreaRatio);
+    if (o.contains(QStringLiteral("min_aspect"))) tuning->minAspect = std::clamp(static_cast<float>(o.value(QStringLiteral("min_aspect")).toDouble(tuning->minAspect)), 0.0f, 100.0f);
+    if (o.contains(QStringLiteral("max_aspect"))) tuning->maxAspect = std::clamp(static_cast<float>(o.value(QStringLiteral("max_aspect")).toDouble(tuning->maxAspect)), 0.0f, 100.0f);
+    if (tuning->maxAspect < tuning->minAspect) std::swap(tuning->minAspect, tuning->maxAspect);
+    *lastAppliedMtime = mtime;
     return true;
 }
 
@@ -1049,8 +1182,12 @@ int main(int argc, char** argv)
     sourceClip.hasAudio = false;
     sourceClip.startFrame = 0;
     sourceClip.sourceInFrame = 0;
-    sourceClip.durationFrames = qMax<int64_t>(1, options.maxFrames);
-    sourceClip.sourceDurationFrames = qMax<int64_t>(1, options.maxFrames);
+    const int64_t decoderDurationFrames = qMax<int64_t>(0, decoder.info().durationFrames);
+    const int64_t targetFrames = options.maxFrames > 0
+        ? static_cast<int64_t>(options.maxFrames)
+        : qMax<int64_t>(1, decoderDurationFrames);
+    sourceClip.durationFrames = qMax<int64_t>(1, targetFrames);
+    sourceClip.sourceDurationFrames = qMax<int64_t>(1, targetFrames);
     sourceClip.sourceFps = 30.0;
     sourceClip.playbackRate = 1.0;
     jcut::boxstream::VulkanFrameProvider appFrameProvider;
@@ -1100,16 +1237,6 @@ int main(int argc, char** argv)
         options.res10ParamPath, QStringLiteral("res10_300x300_ssd_ncnn.param"));
     const QString res10BinPath = findRes10NcnnModelFile(
         options.res10BinPath, QStringLiteral("res10_300x300_ssd_ncnn.bin"));
-    if (zeroCopyVulkanDetector &&
-        (options.livePreview || options.writePreviewFiles || previewSocketPtr)) {
-        std::cerr << "Preview output is disabled on the Vulkan zero-copy detection path because it would require QImage/readback. "
-                  << "Use --materialized-generate-boxstream for the legacy CPU preview path.\n";
-        options.livePreview = false;
-        previewWindow.hide();
-        previewWindowPtr = nullptr;
-        previewSocketPtr = nullptr;
-        options.writePreviewFiles = false;
-    }
     if (zeroCopyVulkanDetector && !options.heuristicZeroCopyDetector) {
         std::cout << "detector=res10_ssd_ncnn_vulkan_zero_copy_v1"
                   << " name=\"JCut DNN FaceStream Generator\""
@@ -1132,6 +1259,7 @@ int main(int argc, char** argv)
     int previewWritten = 0;
     double renderDecodeMsTotal = 0.0;
     double renderCompositeMsTotal = 0.0;
+    double renderReadbackMsTotal = 0.0;
     double vulkanDetectMsTotal = 0.0;
     QVector<Track> tracks;
     QJsonArray frameRows;
@@ -1139,11 +1267,30 @@ int main(int argc, char** argv)
     VulkanHarnessContext detectorContext;
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector zeroCopyDetector;
     jcut::vulkan_detector::VulkanRes10NcnnFaceDetector res10Detector;
+    RuntimeTuning tuning{
+        options.stride,
+        options.maxDetections,
+        options.maxFacesPerFrame,
+        options.threshold
+    };
+    QDateTime paramsMtime;
 
     const auto wallStart = std::chrono::steady_clock::now();
-    for (int frameNumber = 0; frameNumber < options.maxFrames; ++frameNumber) {
+    const int totalFrames = static_cast<int>(qMax<int64_t>(1, targetFrames));
+    for (int frameNumber = 0; frameNumber < totalFrames; ++frameNumber) {
+        if (!options.paramsFile.isEmpty()) {
+            QFileInfo paramsInfo(options.paramsFile);
+            if (applyRuntimeParamsFile(options.paramsFile, paramsInfo, &tuning, &paramsMtime)) {
+                std::cout << "runtime_params"
+                          << " stride=" << tuning.stride
+                          << " threshold=" << tuning.threshold
+                          << " max_detections=" << tuning.maxDetections
+                          << " max_faces_per_frame=" << tuning.maxFacesPerFrame
+                          << "\n";
+            }
+        }
         ++decoded;
-        if ((frameNumber % options.stride) != 0) {
+        if ((frameNumber % tuning.stride) != 0) {
             continue;
         }
 
@@ -1180,8 +1327,8 @@ int main(int argc, char** argv)
                 detections = detectVulkanFrame(&zeroCopyDetector,
                                                &detectorContext,
                                                vulkanFrame,
-                                               options.maxDetections,
-                                               options.threshold,
+                                               tuning.maxDetections,
+                                               tuning.threshold,
                                                &vulkanDetectMs,
                                                &error);
             } else {
@@ -1191,7 +1338,7 @@ int main(int argc, char** argv)
                                                     vulkanFrame,
                                                     res10ParamPath,
                                                     res10BinPath,
-                                                    options.threshold,
+                                                    tuning.threshold,
                                                     &vulkanDetectMs,
                                                     &error);
             }
@@ -1199,6 +1346,48 @@ int main(int argc, char** argv)
                 std::cerr << "Vulkan zero-copy detection failed at frame "
                           << frameNumber << ": " << error.toStdString() << "\n";
                 continue;
+            }
+            detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
+            const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
+            const bool needsPreviewFrame =
+                previewFrameDue &&
+                (previewWindowPtr ||
+                 previewSocketPtr ||
+                 (options.writePreviewFiles && previewWritten < options.previewFrames));
+            if (needsPreviewFrame) {
+                QImage frameImage = jcut::boxstream::readLastRenderedVulkanFrameImage(&appFrameProvider,
+                                                                                       &renderStats,
+                                                                                       &error);
+                if (!frameImage.isNull()) {
+                    const QImage preview = buildPreview(frameImage, tracks, detections);
+                    if (previewSocketPtr) {
+                        sendPreviewFrame(previewSocketPtr, preview);
+                    }
+                    if (previewWindowPtr && !preview.isNull()) {
+                        previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
+                            previewWindowPtr->size(),
+                            Qt::KeepAspectRatio,
+                            Qt::SmoothTransformation));
+                        previewWindowPtr->setWindowTitle(QStringLiteral(
+                            "JCut DNN FaceStream Generator - frame %1 tracks %2")
+                            .arg(frameNumber)
+                            .arg(tracks.size()));
+                        app.processEvents();
+                        if (!previewWindowPtr->isVisible()) {
+                            options.livePreview = false;
+                            previewWindowPtr = nullptr;
+                        }
+                    }
+                    if (options.writePreviewFiles && previewWritten < options.previewFrames) {
+                        const QString previewPath = QDir(options.outputDir).filePath(
+                            QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
+                        preview.save(previewPath);
+                        ++previewWritten;
+                    }
+                } else if (!error.isEmpty() && !printedAppVulkanFailure) {
+                    std::cerr << "Preview readback unavailable: " << error.toStdString() << "\n";
+                    printedAppVulkanFailure = true;
+                }
             }
         } else {
 #if JCUT_HAVE_OPENCV
@@ -1276,11 +1465,14 @@ int main(int argc, char** argv)
                 detections.push_back({QRectF(det.box.x, det.box.y, det.box.width, det.box.height),
                                       static_cast<float>(det.weight)});
             }
+            detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
 
+            const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
             const bool needsPreviewFrame =
-                previewWindowPtr ||
-                previewSocketPtr ||
-                (options.writePreviewFiles && previewWritten < options.previewFrames);
+                previewFrameDue &&
+                (previewWindowPtr ||
+                 previewSocketPtr ||
+                 (options.writePreviewFiles && previewWritten < options.previewFrames));
             if (needsPreviewFrame) {
                 const QImage preview = buildPreview(frameImage, tracks, detections);
                 if (previewSocketPtr) {
@@ -1316,6 +1508,7 @@ int main(int argc, char** argv)
         totalDetections += detections.size();
         renderDecodeMsTotal += renderStats.decodeMs;
         renderCompositeMsTotal += renderStats.compositeMs;
+        renderReadbackMsTotal += renderStats.readbackMs;
         vulkanDetectMsTotal += vulkanDetectMs;
         const QString detectorId = options.materializedGenerateBoxstream
             ? QStringLiteral("materialized_generate_facestream_opencv_cascade_v1")
@@ -1380,7 +1573,7 @@ int main(int argc, char** argv)
         QStringLiteral("offscreen"),
         false,
         0,
-        qMax(0, options.maxFrames - 1),
+        qMax(0, totalFrames - 1),
         streams);
     writeJson(QDir(options.outputDir).filePath(QStringLiteral("continuity_boxstream.json")), QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_boxstream_v1")},
@@ -1396,8 +1589,23 @@ int main(int argc, char** argv)
         {QStringLiteral("generator_name"), QStringLiteral("JCut DNN FaceStream Generator")},
         {QStringLiteral("backend"), backend},
         {QStringLiteral("detector"), backend},
+        {QStringLiteral("max_frames"), totalFrames},
+        {QStringLiteral("stride"), tuning.stride},
+        {QStringLiteral("runtime_threshold"), tuning.threshold},
+        {QStringLiteral("runtime_max_detections"), tuning.maxDetections},
+        {QStringLiteral("runtime_max_faces_per_frame"), tuning.maxFacesPerFrame},
+        {QStringLiteral("runtime_roi_x1"), tuning.roiX1},
+        {QStringLiteral("runtime_roi_y1"), tuning.roiY1},
+        {QStringLiteral("runtime_roi_x2"), tuning.roiX2},
+        {QStringLiteral("runtime_roi_y2"), tuning.roiY2},
+        {QStringLiteral("runtime_min_face_area_ratio"), tuning.minFaceAreaRatio},
+        {QStringLiteral("runtime_max_face_area_ratio"), tuning.maxFaceAreaRatio},
+        {QStringLiteral("runtime_min_aspect"), tuning.minAspect},
+        {QStringLiteral("runtime_max_aspect"), tuning.maxAspect},
+        {QStringLiteral("runtime_params_file"), options.paramsFile},
         {QStringLiteral("decoded_frames"), decoded},
         {QStringLiteral("processed_frames"), processed},
+        {QStringLiteral("sampling_note"), QStringLiteral("processed_frames increments only on frames where frame_number %% stride == 0")},
         {QStringLiteral("cpu_frames"), cpuFrames},
         {QStringLiteral("hardware_frames"), hardwareFrames},
         {QStringLiteral("app_vulkan_decode_path_frames"), hardwareFrames},
@@ -1406,8 +1614,10 @@ int main(int argc, char** argv)
         {QStringLiteral("total_detections"), totalDetections},
         {QStringLiteral("track_count"), tracks.size()},
         {QStringLiteral("preview_frames_written"), previewWritten},
+        {QStringLiteral("preview_stride"), options.previewStride},
         {QStringLiteral("avg_render_decode_ms"), processed ? renderDecodeMsTotal / processed : 0.0},
         {QStringLiteral("avg_render_composite_ms"), processed ? renderCompositeMsTotal / processed : 0.0},
+        {QStringLiteral("avg_render_readback_ms"), processed ? renderReadbackMsTotal / processed : 0.0},
         {QStringLiteral("avg_vulkan_zero_copy_detection_ms"), processed ? vulkanDetectMsTotal / processed : 0.0},
         {QStringLiteral("wall_sec"), std::chrono::duration<double>(wallEnd - wallStart).count()},
         {QStringLiteral("decode_zero_copy"), decodeZeroCopy},

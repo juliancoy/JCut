@@ -115,6 +115,8 @@ Contents:
 2. Scan range metadata and `only_dialogue` policy.
 3. Continuity tracks and per-track keyframe stream output.
 4. Track IDs that are stable within run for deterministic traceability.
+5. Native Vulkan runs may include live tuning metadata for threshold, stride, candidate caps, ROI, area, and aspect filters.
+6. Preview/debug artifacts are sampled separately from detector processing via preview stride, because preview readback is not part of the zero-copy detector path.
 
 ### Stage 5: Track Assignment (Optional Identity Layer)
 Files:

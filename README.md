@@ -75,6 +75,38 @@ If built with `--with-tests`, run:
 ctest --test-dir build --output-on-failure
 ```
 
+## Vulkan FaceStream Harness
+
+`jcut_vulkan_boxstream_offscreen` runs the native Vulkan FaceStream detector outside the editor. By default it scans the full video at full frame rate; use `--max-frames` and `--stride` for bounded tests.
+
+```bash
+./build/jcut_vulkan_boxstream_offscreen input.mp4 \
+  --full-video \
+  --params-file /tmp/jcut_runtime_params.json \
+  --out-dir /tmp/jcut_facestream
+```
+
+Runtime tuning can be changed while the process is running by editing the JSON file passed with `--params-file`:
+
+```json
+{
+  "threshold": 0.62,
+  "stride": 1,
+  "max_detections": 128,
+  "max_faces_per_frame": 4,
+  "roi_x1": 0.18,
+  "roi_y1": 0.42,
+  "roi_x2": 0.92,
+  "roi_y2": 0.98,
+  "min_face_area_ratio": 0.002,
+  "max_face_area_ratio": 0.09,
+  "min_aspect": 0.6,
+  "max_aspect": 1.7
+}
+```
+
+Preview output is useful for inspection but slower because it requires GPU readback. Use `--preview-stride N` to throttle preview updates; keep `--no-preview-window --no-preview-files` for throughput profiling.
+
 ## Project Structure
 
 - `editor*.cpp/.h`: main editor window and UI orchestration

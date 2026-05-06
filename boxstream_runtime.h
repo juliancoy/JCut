@@ -54,6 +54,10 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
                          VulkanFrameStats* stats = nullptr,
                          QString* errorMessage = nullptr);
 
+QImage readLastRenderedVulkanFrameImage(VulkanFrameProvider* provider,
+                                        VulkanFrameStats* stats = nullptr,
+                                        QString* errorMessage = nullptr);
+
 QImage buildScanPreview(const QImage& source, const QVector<QRect>& detections, int activeTracks);
 
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,

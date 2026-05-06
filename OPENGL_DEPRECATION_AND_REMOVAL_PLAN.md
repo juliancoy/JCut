@@ -79,12 +79,15 @@ Requirements:
 - FaceStream test wrapper uses the same native Generate FaceStream path as the program.
 - Obsolete offscreen-readback `QVulkanWindow` scaffold remains removed.
 - Vulkan render stats distinguish decode, texture, composite, readback, and detector stages.
+- FaceStream preview/debug readback is explicitly opt-in and throttled with `--preview-stride`; normal detector throughput should be profiled with preview output disabled.
+- The offscreen FaceStream harness supports live detector tuning through `--params-file` for threshold, stride, candidate caps, ROI, area, and aspect filters.
 
 Exit gates:
 
 - `editor` builds cleanly.
 - `jcut_vulkan_boxstream_offscreen` builds and runs on the reference video.
 - Vulkan preview fallback decisions are visible in logs.
+- Preview/readback timing is visible in the offscreen summary when preview output is enabled.
 - No stale `QVulkanWindow` scaffold references remain.
 
 ## Phase 2: Extract Shared Preview Interaction

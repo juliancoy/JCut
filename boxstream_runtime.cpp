@@ -217,6 +217,62 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
     return true;
 }
 
+QImage readLastRenderedVulkanFrameImage(VulkanFrameProvider* provider,
+                                        VulkanFrameStats* stats,
+                                        QString* errorMessage)
+{
+    if (!provider || !provider->renderer) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Missing Vulkan frame provider/renderer.");
+        }
+        return {};
+    }
+
+    AVFrame* bgra = av_frame_alloc();
+    if (!bgra) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to allocate BGRA preview frame.");
+        }
+        return {};
+    }
+    bgra->format = AV_PIX_FMT_BGRA;
+    bgra->width = qMax(1, provider->outputSize.width());
+    bgra->height = qMax(1, provider->outputSize.height());
+    if (av_frame_get_buffer(bgra, 32) < 0) {
+        av_frame_free(&bgra);
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Failed to allocate BGRA preview buffer.");
+        }
+        return {};
+    }
+
+    qint64 readbackMs = 0;
+    if (!provider->renderer->copyLastFrameToBgra(bgra, &readbackMs)) {
+        av_frame_free(&bgra);
+        provider->failed = true;
+        provider->failureReason = QStringLiteral("Failed to read back last rendered Vulkan frame.");
+        if (errorMessage) {
+            *errorMessage = provider->failureReason;
+        }
+        return {};
+    }
+
+    QImage wrapped(reinterpret_cast<const uchar*>(bgra->data[0]),
+                   bgra->width,
+                   bgra->height,
+                   bgra->linesize[0],
+                   QImage::Format_ARGB32);
+    QImage out = wrapped.copy().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    av_frame_free(&bgra);
+
+    if (stats) {
+        stats->readbackMs += readbackMs;
+    }
+    provider->failed = false;
+    provider->failureReason.clear();
+    return out;
+}
+
 QImage buildScanPreview(const QImage& source, const QVector<QRect>& detections, int activeTracks)
 {
     if (source.isNull()) {

@@ -799,12 +799,18 @@ void AsyncDecoder::initSharedHwDevices() {
 
         AVBufferRef* hwCtx = nullptr;
         const int ret = av_hwdevice_ctx_create(&hwCtx, type, deviceName, nullptr, 0);
+        const char* typeName = av_hwdevice_get_type_name(type);
+        const QString typeLabel = typeName
+            ? QString::fromLatin1(typeName)
+            : QStringLiteral("unknown");
         if (ret >= 0 && hwCtx) {
             m_sharedHwDevices.insert(static_cast<int>(type), hwCtx);
-            qDebug() << "AsyncDecoder: shared hw device created for type" << type;
+            qDebug() << "AsyncDecoder: shared hw device created for type" << type
+                     << "(" << typeLabel << ")";
         } else {
             qDebug() << "AsyncDecoder: shared hw device unavailable for type" << type
-                     << "— worker threads will use software decode";
+                     << "(" << typeLabel << ")"
+                     << "— decoders requiring this type will fall back";
         }
     }
 }
