@@ -22,7 +22,7 @@ void EditorWindow::advanceFrame()
         const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
         const int64_t currentFrame = m_timeline->currentFrame();
         if (audioFrame + 2 < currentFrame) {
-            setPlaybackActive(false);
+            stopPlaybackWithReason(QStringLiteral("audio_clock_regression"));
             return;
         }
 
@@ -85,7 +85,7 @@ void EditorWindow::advanceFrame()
                 ranges.isEmpty() ? 0 : qMax<int64_t>(0, ranges.constFirst().startFrame);
             setCurrentPlaybackSample(frameToSamples(loopStartFrame), false, true);
         } else {
-            setPlaybackActive(false);
+            stopPlaybackWithReason(QStringLiteral("range_end"));
         }
     }
 }
@@ -614,6 +614,7 @@ void EditorWindow::setPlaybackActive(bool playing)
     }
 
     if (playing) {
+        m_lastPlaybackStopReason = QStringLiteral("none");
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = nowMs();
         if (m_preview &&
@@ -665,9 +666,19 @@ void EditorWindow::setPlaybackActive(bool playing)
     scheduleSaveState();
 }
 
+void EditorWindow::stopPlaybackWithReason(const QString& reason)
+{
+    m_lastPlaybackStopReason = reason.isEmpty() ? QStringLiteral("unknown") : reason;
+    setPlaybackActive(false);
+}
+
 void EditorWindow::togglePlayback()
 {
-    setPlaybackActive(!playbackActive());
+    if (playbackActive()) {
+        stopPlaybackWithReason(QStringLiteral("manual_pause"));
+    } else {
+        setPlaybackActive(true);
+    }
 }
 
 void EditorWindow::onRestartDecodersRequested()

@@ -1095,11 +1095,15 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     bodyFont.setPointSize(qMax(10, bodyFont.pointSize() - 2));
     painter->setFont(bodyFont);
     painter->setPen(QColor(QStringLiteral("#c8d5e0")));
+    const QString waveformSource = m_audioDynamics.waveformPreviewPostProcessing
+        ? QStringLiteral("preview post-processing")
+        : QStringLiteral("on-disk decoded audio");
     painter->drawText(panel.adjusted(20, 60, -20, -20),
                       Qt::AlignTop | Qt::AlignLeft,
-                      QStringLiteral("Selected audio clip: %1\nTransport audio: %2")
+                      QStringLiteral("Selected audio clip: %1\nTransport audio: %2\nWaveform source: %3")
                           .arg(clip.label)
-                          .arg(m_interaction.playing ? QStringLiteral("live") : QStringLiteral("paused")));
+                          .arg(m_interaction.playing ? QStringLiteral("live") : QStringLiteral("paused"))
+                          .arg(waveformSource));
 
     const QRect waveRect = panel.adjusted(24, 120, -24, -36);
     const qreal rulerGutterWidth = qBound<qreal>(32.0, waveRect.width() * 0.12, 56.0);
@@ -1498,7 +1502,7 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     painter->setPen(QColor(QStringLiteral("#9fb3c8")));
     painter->drawText(panel.adjusted(20, panel.height() - 36, -20, 6),
                       Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("Waveform source: decoded clip audio (mono envelope), absolute full-scale display (1.0 = 0 dBFS), wrapped rows with speaker timeline tint | Zoom %1%")
+                      QStringLiteral("Waveform: mono envelope, absolute full-scale display (1.0 = 0 dBFS), wrapped rows with speaker timeline tint | Zoom %1%")
                           .arg(QString::number(zoom * 100.0, 'f', 0)));
     painter->restore();
 }

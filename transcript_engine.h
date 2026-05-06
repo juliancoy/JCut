@@ -18,6 +18,7 @@ public:
     bool parseTranscriptTime(const QString &text, double *secondsOut) const;
     bool loadTranscriptJson(const QString &path, QJsonDocument *docOut, QString *errorOut = nullptr) const;
     bool saveTranscriptJson(const QString &path, const QJsonDocument &doc) const;
+    bool ensureTranscriptTextCompanion(const QString &path) const;
     bool loadBoxstreamArtifact(const QString &transcriptPath, QJsonObject *rootOut) const;
     bool saveBoxstreamArtifact(const QString &transcriptPath, const QJsonObject &root) const;
 

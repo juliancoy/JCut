@@ -258,6 +258,7 @@ private:
     void reconcileActivePlaybackAudioState();
     void updatePlaybackTimerInterval();
     void setPlaybackActive(bool playing);
+    void stopPlaybackWithReason(const QString& reason);
     void togglePlayback();
     bool playbackActive() const;
 
@@ -416,8 +417,13 @@ private:
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
+    QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
+    QCheckBox *m_audioSelectiveNormalizeEnabledCheckBox = nullptr;
+    QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
+    QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
+    QSpinBox *m_audioSelectiveNormalizePassesSpin = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;
     QCheckBox *m_audioLimiterEnabledCheckBox = nullptr;
@@ -578,6 +584,7 @@ private:
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
+    QString m_lastPlaybackStopReason = QStringLiteral("none");
     double m_timelineAdvanceCarrySamples = 0.0;
     int64_t m_lastTimelineAdvanceTickMs = 0;
     QTimer m_transcriptClickSeekTimer;

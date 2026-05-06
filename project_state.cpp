@@ -12,6 +12,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QDebug>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QCoreApplication>
@@ -124,6 +125,49 @@ void EditorWindow::loadState()
     markStartup(QStringLiteral("load_state.apply_state.begin"));
     applyStateJson(root);
     markStartup(QStringLiteral("load_state.apply_state.end"));
+
+    {
+        QSet<QString> transcriptPaths;
+        if (m_timeline) {
+            const QVector<TimelineClip> clips = m_timeline->clips();
+            for (const TimelineClip& clip : clips) {
+                const QString clipPath = clip.filePath.trimmed();
+                if (clipPath.isEmpty()) {
+                    continue;
+                }
+                const QString originalPath = transcriptPathForClipFile(clipPath);
+                const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+                const QString activePath = activeTranscriptPathForClipFile(clipPath);
+                if (!originalPath.isEmpty()) {
+                    transcriptPaths.insert(originalPath);
+                }
+                if (!editablePath.isEmpty()) {
+                    transcriptPaths.insert(editablePath);
+                }
+                if (!activePath.isEmpty()) {
+                    transcriptPaths.insert(activePath);
+                }
+            }
+        }
+
+        int createdTxtCount = 0;
+        for (const QString& transcriptPath : transcriptPaths) {
+            const QFileInfo txtInfo(QFileInfo(transcriptPath).dir().filePath(
+                QFileInfo(transcriptPath).completeBaseName() + QStringLiteral(".txt")));
+            if (txtInfo.exists()) {
+                continue;
+            }
+            if (m_transcriptEngine.ensureTranscriptTextCompanion(transcriptPath)) {
+                ++createdTxtCount;
+            }
+        }
+        markStartup(QStringLiteral("load_state.transcript_txt_backfill"),
+                    QJsonObject{
+                        {QStringLiteral("transcript_path_count"), transcriptPaths.size()},
+                        {QStringLiteral("txt_created_count"), createdTxtCount}
+                    });
+    }
+
     if (m_historyEntries.isEmpty())
     {
         pushHistorySnapshot();
@@ -673,6 +717,13 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("audioWaveformVisible")] = m_audioWaveformVisible;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
+    root[QStringLiteral("audioSelectiveNormalizeEnabled")] = m_previewAudioDynamics.selectiveNormalizeEnabled;
+    root[QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds")] =
+        m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds;
+    root[QStringLiteral("audioSelectiveNormalizePeakDb")] = m_previewAudioDynamics.selectiveNormalizePeakDb;
+    root[QStringLiteral("audioSelectiveNormalizePasses")] = m_previewAudioDynamics.selectiveNormalizePasses;
+    root[QStringLiteral("audioWaveformPreviewPostProcessing")] =
+        m_previewAudioDynamics.waveformPreviewPostProcessing;
     root[QStringLiteral("audioPeakReductionEnabled")] = m_previewAudioDynamics.peakReductionEnabled;
     root[QStringLiteral("audioPeakThresholdDb")] = m_previewAudioDynamics.peakThresholdDb;
     root[QStringLiteral("audioLimiterEnabled")] = m_previewAudioDynamics.limiterEnabled;
