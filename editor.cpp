@@ -496,6 +496,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("audioSelectiveNormalizePeakDb")).toDouble(-1.0);
     loadedAudioDynamics.selectiveNormalizePasses =
         qBound(1, root.value(QStringLiteral("audioSelectiveNormalizePasses")).toInt(1), 8);
+    loadedAudioDynamics.transcriptNormalizeEnabled =
+        root.value(QStringLiteral("audioTranscriptNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.waveformPreviewPostProcessing =
         root.value(QStringLiteral("audioWaveformPreviewPostProcessing")).toBool(true);
     loadedAudioDynamics.peakReductionEnabled = root.value(QStringLiteral("audioPeakReductionEnabled")).toBool(false);
@@ -1093,6 +1095,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_audioSelectiveNormalizePassesSpin->setValue(
             m_previewAudioDynamics.selectiveNormalizePasses);
         m_audioSelectiveNormalizePassesSpin->setEnabled(m_featureAudioDynamicsTools);
+    }
+    if (m_audioTranscriptNormalizeEnabledCheckBox) {
+        QSignalBlocker block(m_audioTranscriptNormalizeEnabledCheckBox);
+        m_audioTranscriptNormalizeEnabledCheckBox->setChecked(
+            m_previewAudioDynamics.transcriptNormalizeEnabled);
+        m_audioTranscriptNormalizeEnabledCheckBox->setEnabled(m_featureAudioDynamicsTools);
     }
     if (m_audioWaveformPreviewProcessedCheckBox) {
         QSignalBlocker block(m_audioWaveformPreviewProcessedCheckBox);

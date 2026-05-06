@@ -216,6 +216,10 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptBackgroundVisibleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
+    if (m_widgets.transcriptShadowEnabledCheckBox) {
+        connect(m_widgets.transcriptShadowEnabledCheckBox, &QCheckBox::toggled,
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         connect(m_widgets.transcriptShowSpeakerTitleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
@@ -400,6 +404,8 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
                                          m_widgets.transcriptOverlayEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showBackground = m_widgets.transcriptBackgroundVisibleCheckBox &&
                                                 m_widgets.transcriptBackgroundVisibleCheckBox->isChecked();
+        clip.transcriptOverlay.showShadow = m_widgets.transcriptShadowEnabledCheckBox &&
+                                            m_widgets.transcriptShadowEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showSpeakerTitle = m_widgets.transcriptShowSpeakerTitleCheckBox &&
                                                   m_widgets.transcriptShowSpeakerTitleCheckBox->isChecked();
         clip.transcriptOverlay.maxLines = m_widgets.transcriptMaxLinesSpin
@@ -980,6 +986,13 @@ void TranscriptTab::onTranscriptSelectionChanged()
         return;
     }
 
+    QWidget* focus = QApplication::focusWidget();
+    const bool tableHasFocus =
+        focus && (focus == m_widgets.transcriptTable || m_widgets.transcriptTable->isAncestorOf(focus));
+    if (!tableHasFocus) {
+        return;
+    }
+
     scheduleSeekToTranscriptRow(selectedRows.constFirst().row());
 }
 
@@ -1090,6 +1103,7 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
 
     QSignalBlocker enabledBlock(m_widgets.transcriptOverlayEnabledCheckBox);
     QSignalBlocker backgroundBlock(m_widgets.transcriptBackgroundVisibleCheckBox);
+    QSignalBlocker shadowBlock(m_widgets.transcriptShadowEnabledCheckBox);
     QSignalBlocker titleBlock(m_widgets.transcriptShowSpeakerTitleCheckBox);
     QSignalBlocker maxLinesBlock(m_widgets.transcriptMaxLinesSpin);
     QSignalBlocker maxCharsBlock(m_widgets.transcriptMaxCharsSpin);
@@ -1106,6 +1120,9 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     m_widgets.transcriptOverlayEnabledCheckBox->setChecked(clip.transcriptOverlay.enabled);
     if (m_widgets.transcriptBackgroundVisibleCheckBox) {
         m_widgets.transcriptBackgroundVisibleCheckBox->setChecked(clip.transcriptOverlay.showBackground);
+    }
+    if (m_widgets.transcriptShadowEnabledCheckBox) {
+        m_widgets.transcriptShadowEnabledCheckBox->setChecked(clip.transcriptOverlay.showShadow);
     }
     if (m_widgets.transcriptShowSpeakerTitleCheckBox) {
         m_widgets.transcriptShowSpeakerTitleCheckBox->setChecked(clip.transcriptOverlay.showSpeakerTitle);

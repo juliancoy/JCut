@@ -134,6 +134,7 @@ void KeyframeTabBase::onTableSelectionChangedBase(QTableWidget* table, QTimer* d
                                                   int64_t* pendingSeekFrame)
 {
     if (m_updating || m_syncingTableSelection) return;
+    if (!table) return;
     
     const QSet<int64_t> selectedFrames = editor::collectSelectedFrameRoles(table);
     const int64_t primaryFrame = editor::primarySelectedFrameRole(table);
@@ -156,7 +157,10 @@ void KeyframeTabBase::onTableSelectionChangedBase(QTableWidget* table, QTimer* d
     
     // Optional: deferred seek to timeline frame
     if (deferredSeekTimer && pendingSeekFrame) {
-        if (selectedClip && m_deps.seekToTimelineFrame) {
+        QWidget* focus = QApplication::focusWidget();
+        const bool tableHasFocus =
+            focus && (focus == table || table->isAncestorOf(focus));
+        if (tableHasFocus && selectedClip && m_deps.seekToTimelineFrame) {
             *pendingSeekFrame = selectedClip->startFrame + primaryFrame;
             deferredSeekTimer->start(QApplication::doubleClickInterval());
         }

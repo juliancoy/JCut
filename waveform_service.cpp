@@ -352,7 +352,9 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
     }
     const float amplifyGain = settings.amplifyEnabled ? dbToAmp(settings.amplifyDb) : 1.0f;
     const float normalizeTarget = dbToAmp(std::clamp(settings.normalizeTargetDb, -24.0f, 0.0f));
-    const float selectivePeakLinear = dbToAmp(std::clamp(settings.selectiveNormalizePeakDb, -24.0f, 0.0f));
+    // Selective normalization targets a consistent near-full speaking level.
+    // Keep a small headroom to avoid clipping artifacts in preview dynamics.
+    constexpr float kSelectiveTargetLinear = 0.95f;
     const int selectivePasses = qBound(1, settings.selectiveNormalizePasses, 8);
     const float minSegmentSeconds = std::clamp(settings.selectiveNormalizeMinSegmentSeconds, 0.1f, 30.0f);
     const int safeSampleRate = qMax(1, sampleRate);
@@ -405,7 +407,7 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
                     segmentPeak = 0.0f;
                     return;
                 }
-                const float gain = selectivePeakLinear / segmentPeak;
+                const float gain = kSelectiveTargetLinear / segmentPeak;
                 for (int i = start; i < endIndex; ++i) {
                     level->minValues[i] = std::clamp(level->minValues[i] * gain, -1.0f, 1.0f);
                     level->maxValues[i] = std::clamp(level->maxValues[i] * gain, -1.0f, 1.0f);
@@ -419,7 +421,7 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
 
             for (int i = 0; i < level->minValues.size(); ++i) {
                 const float localPeak = std::max(std::abs(level->minValues[i]), std::abs(level->maxValues[i]));
-                if (localPeak > selectivePeakLinear) {
+                if (localPeak > 0.000001f) {
                     if (start < 0) {
                         start = i;
                         segmentPeak = localPeak;

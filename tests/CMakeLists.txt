@@ -10,6 +10,7 @@ set(EDITOR_TEST_TARGETS
     test_transform_skip_aware_timing
     test_preview_geometry
     test_waveform_service
+    test_shader_grading_logic
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)

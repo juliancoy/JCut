@@ -109,6 +109,7 @@ struct TimelineClip {
     struct TranscriptOverlaySettings {
         bool enabled = false;
         bool showBackground = true;
+        bool showShadow = true;
         bool showSpeakerTitle = false;
         bool autoScroll = false;
         bool useManualPlacement = false;

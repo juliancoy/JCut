@@ -51,6 +51,7 @@ WHISPERX_DEVICE_ARGS=()
 WHISPERX_EXTRA_ARGS=()
 WHISPERX_TOKEN_ARGS=()
 WHISPERX_MODEL="large-v3"
+WHISPERX_LANGUAGE="en"
 HF_TOKEN_REQUIRED=0
 
 if [[ $HAS_NVIDIA_RUNTIME -eq 1 ]]; then
@@ -109,6 +110,8 @@ docker run "${DOCKER_GPU_ARGS[@]}" "${DOCKER_TTY_ARGS[@]}" \
   -v "$PROJECT_ROOT":/app -w /app \
   -v "$INPUT_DIR":"$CONTAINER_MEDIA_DIR" \
   -e HOME="/tmp" \
+  -e WHISPER_MODEL="$WHISPERX_MODEL" \
+  -e LANG="$WHISPERX_LANGUAGE" \
   -e MPLCONFIGDIR="/tmp/.cache/matplotlib" \
   -e HF_HOME="/tmp/.cache/huggingface" \
   -e HF_HUB_CACHE="/tmp/.cache/huggingface/hub" \
@@ -117,10 +120,8 @@ docker run "${DOCKER_GPU_ARGS[@]}" "${DOCKER_TTY_ARGS[@]}" \
   -e HF_TOKEN="$HF_TOKEN" \
   ghcr.io/jim60105/whisperx:large-v3-tl-77e20c4 \
   whisperx "$CONTAINER_INPUT_PATH" \
-    --model "$WHISPERX_MODEL" \
     --output_dir "$OUT_DIR" \
     --output_format json \
-    --language en \
     "${WHISPERX_DEVICE_ARGS[@]}" \
     "${WHISPERX_EXTRA_ARGS[@]}" \
     "${WHISPERX_TOKEN_ARGS[@]}"

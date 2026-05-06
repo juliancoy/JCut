@@ -67,6 +67,7 @@ public:
 
     QCheckBox *transcriptOverlayEnabledCheckBox() const { return m_transcriptOverlayEnabledCheckBox; }
     QCheckBox *transcriptBackgroundVisibleCheckBox() const { return m_transcriptBackgroundVisibleCheckBox; }
+    QCheckBox *transcriptShadowEnabledCheckBox() const { return m_transcriptShadowEnabledCheckBox; }
     QCheckBox *transcriptShowSpeakerTitleCheckBox() const { return m_transcriptShowSpeakerTitleCheckBox; }
     QSpinBox *transcriptMaxLinesSpin() const { return m_transcriptMaxLinesSpin; }
     QSpinBox *transcriptMaxCharsSpin() const { return m_transcriptMaxCharsSpin; }
@@ -253,6 +254,7 @@ public:
     QDoubleSpinBox *audioSelectiveNormalizeMinSecondsSpin() const { return m_audioSelectiveNormalizeMinSecondsSpin; }
     QDoubleSpinBox *audioSelectiveNormalizePeakDbSpin() const { return m_audioSelectiveNormalizePeakDbSpin; }
     QSpinBox *audioSelectiveNormalizePassesSpin() const { return m_audioSelectiveNormalizePassesSpin; }
+    QCheckBox *audioTranscriptNormalizeEnabledCheckBox() const { return m_audioTranscriptNormalizeEnabledCheckBox; }
     QCheckBox *audioPeakReductionEnabledCheckBox() const { return m_audioPeakReductionEnabledCheckBox; }
     QDoubleSpinBox *audioPeakThresholdDbSpin() const { return m_audioPeakThresholdDbSpin; }
     QCheckBox *audioLimiterEnabledCheckBox() const { return m_audioLimiterEnabledCheckBox; }
@@ -516,6 +518,7 @@ private:
     QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
     QSpinBox *m_audioSelectiveNormalizePassesSpin = nullptr;
+    QCheckBox *m_audioTranscriptNormalizeEnabledCheckBox = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;
     QCheckBox *m_audioLimiterEnabledCheckBox = nullptr;
@@ -551,6 +554,7 @@ private:
     QPushButton *m_accessRefreshButton = nullptr;
     QCheckBox *m_transcriptOverlayEnabledCheckBox = nullptr;
     QCheckBox *m_transcriptBackgroundVisibleCheckBox = nullptr;
+    QCheckBox *m_transcriptShadowEnabledCheckBox = nullptr;
     QCheckBox *m_transcriptShowSpeakerTitleCheckBox = nullptr;
     QSpinBox *m_transcriptMaxLinesSpin = nullptr;
     QSpinBox *m_transcriptMaxCharsSpin = nullptr;

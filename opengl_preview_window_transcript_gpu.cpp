@@ -207,11 +207,15 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
     QString titleTextHtml;
     if (clip.transcriptOverlay.showSpeakerTitle) {
         const QString titleText = transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame);
-        titleShadowHtml = transcriptSpeakerTitleHtml(titleText, QColor(0, 0, 0, 200));
+        if (clip.transcriptOverlay.showShadow) {
+            titleShadowHtml = transcriptSpeakerTitleHtml(titleText, QColor(0, 0, 0, 200));
+        }
         titleTextHtml = transcriptSpeakerTitleHtml(titleText, clip.transcriptOverlay.textColor);
     }
-    const QString shadowHtml = titleShadowHtml + transcriptOverlayHtml(
-        overlayLayout, QColor(0, 0, 0, 200), QColor(0, 0, 0, 200), QColor(0, 0, 0, 0));
+    const QString shadowHtml = clip.transcriptOverlay.showShadow
+        ? (titleShadowHtml + transcriptOverlayHtml(
+            overlayLayout, QColor(0, 0, 0, 200), QColor(0, 0, 0, 200), QColor(0, 0, 0, 0)))
+        : QString();
     const QString textHtml = titleTextHtml + transcriptOverlayHtml(
         overlayLayout, clip.transcriptOverlay.textColor, highlightTextColor, highlightFillColor);
     if (textHtml.isEmpty()) {

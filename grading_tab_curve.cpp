@@ -24,6 +24,35 @@ void setToneSpinGroupVisible(QDoubleSpinBox* r, QDoubleSpinBox* g, QDoubleSpinBo
     if (b) b->setVisible(channelIndex == 2);
 }
 
+QVector<QPointF> threePointCurveFromToneValues(qreal shadows, qreal midtones, qreal highlights)
+{
+    QVector<QPointF> points;
+    points.push_back(QPointF(0.0, qBound<qreal>(0.0, 0.0 + (shadows * 0.25), 1.0)));
+    points.push_back(QPointF(0.5, qBound<qreal>(0.0, 0.5 + (midtones * 0.20), 1.0)));
+    points.push_back(QPointF(1.0, qBound<qreal>(0.0, 1.0 + (highlights * 0.25), 1.0)));
+    return sanitizeGradingCurvePoints(points);
+}
+
+void toneValuesFromThreePointCurve(const QVector<QPointF>& points,
+                                   qreal* shadowsOut,
+                                   qreal* midtonesOut,
+                                   qreal* highlightsOut)
+{
+    if (!shadowsOut || !midtonesOut || !highlightsOut) {
+        return;
+    }
+    QVector<QPointF> sanitized = sanitizeGradingCurvePoints(points);
+    if (sanitized.size() < 3) {
+        sanitized = defaultGradingCurvePoints();
+    }
+    const qreal y0 = sanitized.at(0).y();
+    const qreal y1 = sanitized.at(sanitized.size() / 2).y();
+    const qreal y2 = sanitized.constLast().y();
+    *shadowsOut = qBound<qreal>(-2.0, (y0 - 0.0) / 0.25, 2.0);
+    *midtonesOut = qBound<qreal>(-2.0, (y1 - 0.5) / 0.20, 2.0);
+    *highlightsOut = qBound<qreal>(-2.0, (y2 - 1.0) / 0.25, 2.0);
+}
+
 } // namespace
 
 void GradingTab::onCurveChannelChanged(int index)
@@ -41,6 +70,12 @@ void GradingTab::onCurveAdjusted(const QVector<QPointF>& points, bool finalized)
         return;
     }
     if (comboAlphaSelected(m_widgets.gradingCurveChannelCombo)) {
+        return;
+    }
+    if (m_curveThreePointLock) {
+        syncToneSpinsFromCurvePoints(points);
+        updateCurveFromInspectorValues();
+        applyGradeFromInspector(finalized);
         return;
     }
     applyCurvePointsToCurrentChannel(points);
@@ -272,6 +307,7 @@ void GradingTab::onSaturationChanged(double value)
 void GradingTab::onShadowsRChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -279,6 +315,7 @@ void GradingTab::onShadowsRChanged(double value)
 void GradingTab::onShadowsGChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -286,6 +323,7 @@ void GradingTab::onShadowsGChanged(double value)
 void GradingTab::onShadowsBChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -293,6 +331,7 @@ void GradingTab::onShadowsBChanged(double value)
 void GradingTab::onMidtonesRChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -300,6 +339,7 @@ void GradingTab::onMidtonesRChanged(double value)
 void GradingTab::onMidtonesGChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -307,6 +347,7 @@ void GradingTab::onMidtonesGChanged(double value)
 void GradingTab::onMidtonesBChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -314,6 +355,7 @@ void GradingTab::onMidtonesBChanged(double value)
 void GradingTab::onHighlightsRChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -321,6 +363,7 @@ void GradingTab::onHighlightsRChanged(double value)
 void GradingTab::onHighlightsGChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
 }
@@ -328,6 +371,78 @@ void GradingTab::onHighlightsGChanged(double value)
 void GradingTab::onHighlightsBChanged(double value)
 {
     Q_UNUSED(value);
+    syncCurrentChannelCurveFromToneSpins();
     updateCurveFromInspectorValues();
     applyGradeFromInspector(false);
+}
+
+void GradingTab::syncCurrentChannelCurveFromToneSpins()
+{
+    if (!m_curveThreePointLock || !m_widgets.gradingCurveChannelCombo) {
+        return;
+    }
+    const int channelIndex = qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 3);
+    if (channelIndex == 3) {
+        return;
+    }
+    qreal shadows = 0.0;
+    qreal midtones = 0.0;
+    qreal highlights = 0.0;
+    if (channelIndex == 0) {
+        shadows = m_widgets.shadowsRSpin ? m_widgets.shadowsRSpin->value() : 0.0;
+        midtones = m_widgets.midtonesRSpin ? m_widgets.midtonesRSpin->value() : 0.0;
+        highlights = m_widgets.highlightsRSpin ? m_widgets.highlightsRSpin->value() : 0.0;
+        m_curvePointsR = threePointCurveFromToneValues(shadows, midtones, highlights);
+    } else if (channelIndex == 1) {
+        shadows = m_widgets.shadowsGSpin ? m_widgets.shadowsGSpin->value() : 0.0;
+        midtones = m_widgets.midtonesGSpin ? m_widgets.midtonesGSpin->value() : 0.0;
+        highlights = m_widgets.highlightsGSpin ? m_widgets.highlightsGSpin->value() : 0.0;
+        m_curvePointsG = threePointCurveFromToneValues(shadows, midtones, highlights);
+    } else {
+        shadows = m_widgets.shadowsBSpin ? m_widgets.shadowsBSpin->value() : 0.0;
+        midtones = m_widgets.midtonesBSpin ? m_widgets.midtonesBSpin->value() : 0.0;
+        highlights = m_widgets.highlightsBSpin ? m_widgets.highlightsBSpin->value() : 0.0;
+        m_curvePointsB = threePointCurveFromToneValues(shadows, midtones, highlights);
+    }
+}
+
+void GradingTab::syncToneSpinsFromCurvePoints(const QVector<QPointF>& points)
+{
+    if (!m_curveThreePointLock || !m_widgets.gradingCurveChannelCombo) {
+        return;
+    }
+    const int channelIndex = qBound(0, m_widgets.gradingCurveChannelCombo->currentIndex(), 3);
+    if (channelIndex == 3) {
+        return;
+    }
+    qreal shadows = 0.0;
+    qreal midtones = 0.0;
+    qreal highlights = 0.0;
+    toneValuesFromThreePointCurve(points, &shadows, &midtones, &highlights);
+    QSignalBlocker shadowsRBlock(m_widgets.shadowsRSpin);
+    QSignalBlocker shadowsGBlock(m_widgets.shadowsGSpin);
+    QSignalBlocker shadowsBBlock(m_widgets.shadowsBSpin);
+    QSignalBlocker midtonesRBlock(m_widgets.midtonesRSpin);
+    QSignalBlocker midtonesGBlock(m_widgets.midtonesGSpin);
+    QSignalBlocker midtonesBBlock(m_widgets.midtonesBSpin);
+    QSignalBlocker highlightsRBlock(m_widgets.highlightsRSpin);
+    QSignalBlocker highlightsGBlock(m_widgets.highlightsGSpin);
+    QSignalBlocker highlightsBBlock(m_widgets.highlightsBSpin);
+
+    if (channelIndex == 0) {
+        if (m_widgets.shadowsRSpin) m_widgets.shadowsRSpin->setValue(shadows);
+        if (m_widgets.midtonesRSpin) m_widgets.midtonesRSpin->setValue(midtones);
+        if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(highlights);
+        m_curvePointsR = threePointCurveFromToneValues(shadows, midtones, highlights);
+    } else if (channelIndex == 1) {
+        if (m_widgets.shadowsGSpin) m_widgets.shadowsGSpin->setValue(shadows);
+        if (m_widgets.midtonesGSpin) m_widgets.midtonesGSpin->setValue(midtones);
+        if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(highlights);
+        m_curvePointsG = threePointCurveFromToneValues(shadows, midtones, highlights);
+    } else {
+        if (m_widgets.shadowsBSpin) m_widgets.shadowsBSpin->setValue(shadows);
+        if (m_widgets.midtonesBSpin) m_widgets.midtonesBSpin->setValue(midtones);
+        if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(highlights);
+        m_curvePointsB = threePointCurveFromToneValues(shadows, midtones, highlights);
+    }
 }

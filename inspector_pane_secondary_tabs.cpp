@@ -429,18 +429,15 @@ QWidget *InspectorPane::buildAudioTab()
     m_audioSelectiveNormalizeMinSecondsSpin->setSingleStep(0.1);
     m_audioSelectiveNormalizeMinSecondsSpin->setDecimals(1);
     m_audioSelectiveNormalizeMinSecondsSpin->setSuffix(QStringLiteral(" s"));
-    m_audioSelectiveNormalizePeakDbSpin = new QDoubleSpinBox(page);
-    m_audioSelectiveNormalizePeakDbSpin->setRange(-24.0, 0.0);
-    m_audioSelectiveNormalizePeakDbSpin->setSingleStep(0.5);
-    m_audioSelectiveNormalizePeakDbSpin->setDecimals(1);
-    m_audioSelectiveNormalizePeakDbSpin->setSuffix(QStringLiteral(" dB"));
+    m_audioSelectiveNormalizePeakDbSpin = nullptr;
     m_audioSelectiveNormalizePassesSpin = new QSpinBox(page);
     m_audioSelectiveNormalizePassesSpin->setRange(1, 8);
     m_audioSelectiveNormalizePassesSpin->setValue(1);
+    m_audioTranscriptNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
     form->addRow(QStringLiteral("Selective Normalize"), m_audioSelectiveNormalizeEnabledCheckBox);
     form->addRow(QStringLiteral("Selective Min Segment"), m_audioSelectiveNormalizeMinSecondsSpin);
-    form->addRow(QStringLiteral("Selective Peak Limit"), m_audioSelectiveNormalizePeakDbSpin);
     form->addRow(QStringLiteral("Selective Passes"), m_audioSelectiveNormalizePassesSpin);
+    form->addRow(QStringLiteral("Transcript Normalize"), m_audioTranscriptNormalizeEnabledCheckBox);
 
     m_audioPeakReductionEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
     m_audioPeakThresholdDbSpin = new QDoubleSpinBox(page);

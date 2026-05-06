@@ -31,6 +31,7 @@ public:
         qreal selectiveNormalizeMinSegmentSeconds = 0.5;
         qreal selectiveNormalizePeakDb = -1.0;
         int selectiveNormalizePasses = 1;
+        bool transcriptNormalizeEnabled = false;
         bool peakReductionEnabled = false;
         qreal peakThresholdDb = -6.0;
         bool limiterEnabled = false;

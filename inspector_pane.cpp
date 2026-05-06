@@ -351,7 +351,11 @@ QWidget *InspectorPane::buildGradingTab()
 
     auto *curveOptionsLayout = new QHBoxLayout;
     m_gradingCurveThreePointLockCheckBox =
-        new QCheckBox(QStringLiteral("Lock 3-Point Curve"), m_gradingCurvesPanel);
+        new QCheckBox(QStringLiteral("Link Numbers + 3-Point Curve"), m_gradingCurvesPanel);
+    m_gradingCurveThreePointLockCheckBox->setChecked(true);
+    m_gradingCurveThreePointLockCheckBox->setToolTip(QStringLiteral(
+        "When enabled, Shadows/Midtones/Highlights numbers and the 3-point curve stay linked "
+        "and represent one grading control."));
     m_gradingCurveSmoothingCheckBox =
         new QCheckBox(QStringLiteral("Curve Smoothing"), m_gradingCurvesPanel);
     m_gradingCurveSmoothingCheckBox->setChecked(true);
@@ -1025,6 +1029,7 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->setSpacing(4);
     m_transcriptOverlayEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Overlay"), settingsContainer);
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
+    m_transcriptShadowEnabledCheckBox = new QCheckBox(QStringLiteral("Show Shadow"), settingsContainer);
     m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Speaker Title"), settingsContainer);
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
     m_transcriptMaxCharsSpin = new QSpinBox(settingsContainer);
@@ -1073,6 +1078,7 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     form->addRow(QStringLiteral("Overlay"), m_transcriptOverlayEnabledCheckBox);
     form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
+    form->addRow(QStringLiteral("Shadow"), m_transcriptShadowEnabledCheckBox);
     form->addRow(QStringLiteral("Title"), m_transcriptShowSpeakerTitleCheckBox);
     form->addRow(QStringLiteral("Max Lines"), m_transcriptMaxLinesSpin);
     form->addRow(QStringLiteral("Max Chars"), m_transcriptMaxCharsSpin);

@@ -324,7 +324,7 @@ void GradingTab::refresh()
         m_curvePointsG = defaultGradingCurvePoints();
         m_curvePointsB = defaultGradingCurvePoints();
         m_curvePointsLuma = defaultGradingCurvePoints();
-        m_curveThreePointLock = false;
+        m_curveThreePointLock = true;
         m_curveSmoothingEnabled = true;
         if (m_widgets.gradingCurveThreePointLockCheckBox) {
             m_widgets.gradingCurveThreePointLockCheckBox->setChecked(m_curveThreePointLock);
@@ -424,10 +424,18 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
         keyframe.highlightsR = m_widgets.highlightsRSpin ? m_widgets.highlightsRSpin->value() : 0.0;
         keyframe.highlightsG = m_widgets.highlightsGSpin ? m_widgets.highlightsGSpin->value() : 0.0;
         keyframe.highlightsB = m_widgets.highlightsBSpin ? m_widgets.highlightsBSpin->value() : 0.0;
-        keyframe.curvePointsR = sanitizeGradingCurvePoints(m_curvePointsR);
-        keyframe.curvePointsG = sanitizeGradingCurvePoints(m_curvePointsG);
-        keyframe.curvePointsB = sanitizeGradingCurvePoints(m_curvePointsB);
-        keyframe.curvePointsLuma = sanitizeGradingCurvePoints(m_curvePointsLuma);
+        keyframe.curvePointsR = m_curveThreePointLock
+            ? defaultGradingCurvePoints()
+            : sanitizeGradingCurvePoints(m_curvePointsR);
+        keyframe.curvePointsG = m_curveThreePointLock
+            ? defaultGradingCurvePoints()
+            : sanitizeGradingCurvePoints(m_curvePointsG);
+        keyframe.curvePointsB = m_curveThreePointLock
+            ? defaultGradingCurvePoints()
+            : sanitizeGradingCurvePoints(m_curvePointsB);
+        keyframe.curvePointsLuma = m_curveThreePointLock
+            ? defaultGradingCurvePoints()
+            : sanitizeGradingCurvePoints(m_curvePointsLuma);
         keyframe.curveThreePointLock = m_curveThreePointLock;
         keyframe.curveSmoothingEnabled = m_curveSmoothingEnabled;
         keyframe.linearInterpolation = true;
@@ -895,7 +903,7 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
     edited.curvePointsG = defaultGradingCurvePoints();
     edited.curvePointsB = defaultGradingCurvePoints();
     edited.curvePointsLuma = defaultGradingCurvePoints();
-    edited.curveThreePointLock = false;
+    edited.curveThreePointLock = true;
     edited.curveSmoothingEnabled = true;
 
     edited.frame = qBound<int64_t>(0, edited.frame, qMax<int64_t>(0, selectedClip->durationFrames - 1));
@@ -1083,7 +1091,7 @@ GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const Ti
     result.curvePointsG = defaultGradingCurvePoints();
     result.curvePointsB = defaultGradingCurvePoints();
     result.curvePointsLuma = defaultGradingCurvePoints();
-    result.curveThreePointLock = false;
+    result.curveThreePointLock = true;
     result.curveSmoothingEnabled = true;
     result.linearInterpolation = true;
 
@@ -1232,12 +1240,26 @@ void GradingTab::updateSpinBoxesFromKeyframe(const GradingKeyframeDisplay& keyfr
     if (m_widgets.highlightsRSpin) m_widgets.highlightsRSpin->setValue(keyframe.highlightsR);
     if (m_widgets.highlightsGSpin) m_widgets.highlightsGSpin->setValue(keyframe.highlightsG);
     if (m_widgets.highlightsBSpin) m_widgets.highlightsBSpin->setValue(keyframe.highlightsB);
-    m_curvePointsR = sanitizeGradingCurvePoints(keyframe.curvePointsR);
-    m_curvePointsG = sanitizeGradingCurvePoints(keyframe.curvePointsG);
-    m_curvePointsB = sanitizeGradingCurvePoints(keyframe.curvePointsB);
-    m_curvePointsLuma = sanitizeGradingCurvePoints(keyframe.curvePointsLuma);
     m_curveThreePointLock = keyframe.curveThreePointLock;
     m_curveSmoothingEnabled = keyframe.curveSmoothingEnabled;
+    if (m_curveThreePointLock) {
+        auto threePoint = [](qreal shadows, qreal midtones, qreal highlights) {
+            QVector<QPointF> points;
+            points.push_back(QPointF(0.0, qBound<qreal>(0.0, 0.0 + (shadows * 0.25), 1.0)));
+            points.push_back(QPointF(0.5, qBound<qreal>(0.0, 0.5 + (midtones * 0.20), 1.0)));
+            points.push_back(QPointF(1.0, qBound<qreal>(0.0, 1.0 + (highlights * 0.25), 1.0)));
+            return sanitizeGradingCurvePoints(points);
+        };
+        m_curvePointsR = threePoint(keyframe.shadowsR, keyframe.midtonesR, keyframe.highlightsR);
+        m_curvePointsG = threePoint(keyframe.shadowsG, keyframe.midtonesG, keyframe.highlightsG);
+        m_curvePointsB = threePoint(keyframe.shadowsB, keyframe.midtonesB, keyframe.highlightsB);
+        m_curvePointsLuma = defaultGradingCurvePoints();
+    } else {
+        m_curvePointsR = sanitizeGradingCurvePoints(keyframe.curvePointsR);
+        m_curvePointsG = sanitizeGradingCurvePoints(keyframe.curvePointsG);
+        m_curvePointsB = sanitizeGradingCurvePoints(keyframe.curvePointsB);
+        m_curvePointsLuma = sanitizeGradingCurvePoints(keyframe.curvePointsLuma);
+    }
     if (m_widgets.gradingCurveThreePointLockCheckBox) {
         QSignalBlocker lockBlock(m_widgets.gradingCurveThreePointLockCheckBox);
         m_widgets.gradingCurveThreePointLockCheckBox->setChecked(m_curveThreePointLock);
@@ -1496,4 +1518,3 @@ void GradingTab::onTableCustomContextMenu(const QPoint& pos)
         removeSelectedKeyframes();
     }
 }
-

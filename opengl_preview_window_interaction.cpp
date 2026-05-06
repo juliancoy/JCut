@@ -178,14 +178,22 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
         
         if (m_interaction.transient.dragMode == PreviewDragMode::Move) {
             if (moveRequested) {
-                const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
-                const QPointF previewScale = previewCanvasScale(compositeRect);
+                QSizeF dragClipSize = selectedInfo.clipPixelSize;
+                if (dragClipSize.width() <= 1.0 || dragClipSize.height() <= 1.0) {
+                    const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
+                    dragClipSize = QSizeF(compositeRect.width(), compositeRect.height());
+                }
+                const QSize safeOutputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+                const qreal previewScaleX = qMax<qreal>(0.0001,
+                    dragClipSize.width() / qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width())));
+                const qreal previewScaleY = qMax<qreal>(0.0001,
+                    dragClipSize.height() / qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.height())));
+                const bool invertVertical = (m_effectiveRenderBackend == QStringLiteral("vulkan"));
                 const qreal deltaX =
-                    (event->position().x() - m_interaction.transient.dragOriginPos.x()) /
-                    qMax<qreal>(0.0001, previewScale.x());
+                    (event->position().x() - m_interaction.transient.dragOriginPos.x()) / previewScaleX;
                 const qreal deltaY =
-                    (event->position().y() - m_interaction.transient.dragOriginPos.y()) /
-                    qMax<qreal>(0.0001, previewScale.y());
+                    (event->position().y() - m_interaction.transient.dragOriginPos.y()) / previewScaleY;
+                const qreal translationDeltaY = invertVertical ? -deltaY : deltaY;
 
                 if (selectedInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
                     const QSize safeOutputSize = m_interaction.outputSize.isValid() ? m_interaction.outputSize : QSize(1080, 1920);
@@ -205,7 +213,7 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
 
                 moveRequested(m_interaction.selectedClipId,
                               m_interaction.transient.dragOriginTransform.translationX + deltaX,
-                              m_interaction.transient.dragOriginTransform.translationY + deltaY,
+                              m_interaction.transient.dragOriginTransform.translationY + translationDeltaY,
                               false);
             }
             event->accept();

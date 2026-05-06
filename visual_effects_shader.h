@@ -97,7 +97,7 @@ inline const char* visualEffectsFragmentShaderSource() {
 
             float midtoneWeight = smoothMidtones(luminance);
             vec3 midtoneAdjust = u_midtones * midtoneWeight;
-            rgb = pow(rgb, vec3(1.0) / (vec3(1.0) + midtoneAdjust));
+            rgb = pow(max(rgb, vec3(0.0)), vec3(1.0) / max(vec3(0.0001), (vec3(1.0) + midtoneAdjust)));
 
             float highlightWeight = smoothHighlights(luminance);
             rgb += u_highlights * highlightWeight;
@@ -113,6 +113,7 @@ inline const char* visualEffectsFragmentShaderSource() {
             }
 
             rgb = ((rgb - 0.5) * u_contrast) + 0.5 + vec3(u_brightness);
+            luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
             rgb = mix(vec3(luminance), rgb, u_saturation);
             rgb = clamp(rgb, 0.0, 1.0);
             color.a = clamp(sourceAlpha * u_opacity, 0.0, 1.0);
@@ -235,7 +236,7 @@ inline const char* visualEffectsFragmentShaderSourceVulkan() {
 
             float midtoneWeight = smoothMidtones(luminance);
             vec3 midtoneAdjust = p.u_midtones * midtoneWeight;
-            rgb = pow(rgb, vec3(1.0) / (vec3(1.0) + midtoneAdjust));
+            rgb = pow(max(rgb, vec3(0.0)), vec3(1.0) / max(vec3(0.0001), (vec3(1.0) + midtoneAdjust)));
 
             float highlightWeight = smoothHighlights(luminance);
             rgb += p.u_highlights * highlightWeight;
@@ -251,6 +252,7 @@ inline const char* visualEffectsFragmentShaderSourceVulkan() {
             }
 
             rgb = ((rgb - 0.5) * p.u_contrast) + 0.5 + vec3(p.u_brightness);
+            luminance = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
             rgb = mix(vec3(luminance), rgb, p.u_saturation);
             rgb = clamp(rgb, 0.0, 1.0);
             color.a = clamp(sourceAlpha * p.u_opacity, 0.0, 1.0);

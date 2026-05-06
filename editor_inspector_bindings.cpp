@@ -67,6 +67,7 @@ void EditorWindow::bindInspectorWidgets()
     m_audioSelectiveNormalizeMinSecondsSpin = m_inspectorPane->audioSelectiveNormalizeMinSecondsSpin();
     m_audioSelectiveNormalizePeakDbSpin = m_inspectorPane->audioSelectiveNormalizePeakDbSpin();
     m_audioSelectiveNormalizePassesSpin = m_inspectorPane->audioSelectiveNormalizePassesSpin();
+    m_audioTranscriptNormalizeEnabledCheckBox = m_inspectorPane->audioTranscriptNormalizeEnabledCheckBox();
     m_audioPeakReductionEnabledCheckBox = m_inspectorPane->audioPeakReductionEnabledCheckBox();
     m_audioPeakThresholdDbSpin = m_inspectorPane->audioPeakThresholdDbSpin();
     m_audioLimiterEnabledCheckBox = m_inspectorPane->audioLimiterEnabledCheckBox();
@@ -475,7 +476,7 @@ void EditorWindow::setupPreviewControls()
         if (!m_audioAmplifyEnabledCheckBox || !m_audioAmplifyDbSpin ||
             !m_audioNormalizeEnabledCheckBox || !m_audioNormalizeTargetDbSpin ||
             !m_audioSelectiveNormalizeEnabledCheckBox || !m_audioSelectiveNormalizeMinSecondsSpin ||
-            !m_audioSelectiveNormalizePeakDbSpin || !m_audioSelectiveNormalizePassesSpin ||
+            !m_audioSelectiveNormalizePassesSpin || !m_audioTranscriptNormalizeEnabledCheckBox ||
             !m_audioPeakReductionEnabledCheckBox || !m_audioPeakThresholdDbSpin ||
             !m_audioLimiterEnabledCheckBox || !m_audioLimiterThresholdDbSpin ||
             !m_audioCompressorEnabledCheckBox || !m_audioCompressorThresholdDbSpin ||
@@ -489,10 +490,12 @@ void EditorWindow::setupPreviewControls()
         m_previewAudioDynamics.selectiveNormalizeEnabled = m_audioSelectiveNormalizeEnabledCheckBox->isChecked();
         m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds =
             m_audioSelectiveNormalizeMinSecondsSpin->value();
-        m_previewAudioDynamics.selectiveNormalizePeakDb =
-            m_audioSelectiveNormalizePeakDbSpin->value();
+        // Selective normalization now always targets near-full speech volume.
+        m_previewAudioDynamics.selectiveNormalizePeakDb = -0.5;
         m_previewAudioDynamics.selectiveNormalizePasses =
             m_audioSelectiveNormalizePassesSpin->value();
+        m_previewAudioDynamics.transcriptNormalizeEnabled =
+            m_audioTranscriptNormalizeEnabledCheckBox->isChecked();
         m_previewAudioDynamics.peakReductionEnabled = m_audioPeakReductionEnabledCheckBox->isChecked();
         m_previewAudioDynamics.peakThresholdDb = m_audioPeakThresholdDbSpin->value();
         m_previewAudioDynamics.limiterEnabled = m_audioLimiterEnabledCheckBox->isChecked();
@@ -693,13 +696,13 @@ void EditorWindow::setupPreviewControls()
         connect(m_audioSelectiveNormalizeMinSecondsSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
     }
-    if (m_audioSelectiveNormalizePeakDbSpin) {
-        connect(m_audioSelectiveNormalizePeakDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
-                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
-    }
     if (m_audioSelectiveNormalizePassesSpin) {
         connect(m_audioSelectiveNormalizePassesSpin, qOverload<int>(&QSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](int) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioTranscriptNormalizeEnabledCheckBox) {
+        connect(m_audioTranscriptNormalizeEnabledCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
     }
     if (m_audioWaveformPreviewProcessedCheckBox) {
         connect(m_audioWaveformPreviewProcessedCheckBox, &QCheckBox::toggled, this,

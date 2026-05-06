@@ -100,6 +100,7 @@ void EditorWindow::createTranscriptTab()
             m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
             m_transcriptTable, m_transcriptOverlayEnabledCheckBox,
             m_inspectorPane->transcriptBackgroundVisibleCheckBox(),
+            m_inspectorPane->transcriptShadowEnabledCheckBox(),
             m_inspectorPane->transcriptShowSpeakerTitleCheckBox(),
             m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
             m_transcriptAutoScrollCheckBox, m_transcriptFollowCurrentWordCheckBox,

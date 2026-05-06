@@ -118,7 +118,7 @@ private:
         QVector<QPointF> curvePointsG;
         QVector<QPointF> curvePointsB;
         QVector<QPointF> curvePointsLuma;
-        bool curveThreePointLock = false;
+        bool curveThreePointLock = true;
         bool curveSmoothingEnabled = true;
         bool linearInterpolation = true;
     };
@@ -148,6 +148,8 @@ private:
     void updateCurveFromInspectorValues();
     QVector<QPointF> currentChannelCurvePoints() const;
     void applyCurvePointsToCurrentChannel(const QVector<QPointF>& points);
+    void syncCurrentChannelCurveFromToneSpins();
+    void syncToneSpinsFromCurvePoints(const QVector<QPointF>& points);
     bool configureAutoOpposeSettings(AutoOpposeSettings* settings);
 
     Widgets m_widgets;
@@ -159,7 +161,7 @@ private:
     QVector<QPointF> m_curvePointsG;
     QVector<QPointF> m_curvePointsB;
     QVector<QPointF> m_curvePointsLuma;
-    bool m_curveThreePointLock = false;
+    bool m_curveThreePointLock = true;
     bool m_curveSmoothingEnabled = true;
     AutoOpposeSettings m_autoOpposeSettings;
 };

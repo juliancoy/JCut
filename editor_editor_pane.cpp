@@ -4,6 +4,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
 #include <QStyle>
 #include <QToolButton>
 
@@ -12,6 +14,38 @@ using namespace editor;
 namespace {
 bool clipSupportsTranscriptOverlay(const TimelineClip& clip) {
     return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
+}
+
+QIcon makePlayPauseIcon(bool playing, const QSize& size = QSize(16, 16))
+{
+    const auto makeVariant = [&](const QColor& fg) -> QPixmap {
+        QPixmap pix(size);
+        pix.fill(Qt::transparent);
+        QPainter p(&pix);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(fg);
+        const qreal w = static_cast<qreal>(size.width());
+        const qreal h = static_cast<qreal>(size.height());
+        if (playing) {
+            p.drawRect(QRectF(w * 0.30, h * 0.20, w * 0.16, h * 0.60));
+            p.drawRect(QRectF(w * 0.54, h * 0.20, w * 0.16, h * 0.60));
+        } else {
+            QPainterPath tri;
+            tri.moveTo(w * 0.34, h * 0.20);
+            tri.lineTo(w * 0.72, h * 0.50);
+            tri.lineTo(w * 0.34, h * 0.80);
+            tri.closeSubpath();
+            p.drawPath(tri);
+        }
+        return pix;
+    };
+    QIcon icon;
+    icon.addPixmap(makeVariant(QColor(QStringLiteral("#d8e4ef"))), QIcon::Normal, QIcon::Off);
+    icon.addPixmap(makeVariant(QColor(QStringLiteral("#f5fbff"))), QIcon::Active, QIcon::Off);
+    icon.addPixmap(makeVariant(QColor(QStringLiteral("#9ee5ff"))), QIcon::Selected, QIcon::Off);
+    icon.addPixmap(makeVariant(QColor(QStringLiteral("#6f8296"))), QIcon::Disabled, QIcon::Off);
+    return icon;
 }
 }
 
@@ -702,7 +736,7 @@ void EditorWindow::updateTransportLabels()
     }
     m_playButton->setText(QString());
     m_playButton->setToolTip(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
-    m_playButton->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause : QStyle::SP_MediaPlay));
+    m_playButton->setIcon(makePlayPauseIcon(playing));
     const bool muted = m_preview && m_preview->audioMuted();
     m_audioMuteButton->setText(QString());
     m_audioMuteButton->setToolTip(muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));

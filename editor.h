@@ -424,6 +424,7 @@ private:
     QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
     QSpinBox *m_audioSelectiveNormalizePassesSpin = nullptr;
+    QCheckBox *m_audioTranscriptNormalizeEnabledCheckBox = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;
     QCheckBox *m_audioLimiterEnabledCheckBox = nullptr;
