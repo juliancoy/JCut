@@ -699,6 +699,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("playbackLoopEnabled")] = playbackConfig.loopEnabled;
     root[QStringLiteral("previewViewMode")] = m_previewViewMode;
     root[QStringLiteral("render_backend")] = m_renderBackendPreference;
+    root[QStringLiteral("preview_vulkan_presenter")] = m_previewVulkanPresenterPreference;
     root[QStringLiteral("aiSelectedModel")] = m_aiSelectedModel;
     root[QStringLiteral("aiProxyBaseUrl")] = m_aiProxyBaseUrl;
     root[QStringLiteral("feature_ai_panel")] = m_featureAiPanel;

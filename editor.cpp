@@ -365,6 +365,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                                                 .toString(QStringLiteral("vulkan"))
                                                 .trimmed()
                                                 .toLower();
+    QString previewVulkanPresenterPreference =
+        root.value(QStringLiteral("preview_vulkan_presenter"))
+            .toString(qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER"))
+            .trimmed()
+            .toLower();
+    if (previewVulkanPresenterPreference != QStringLiteral("direct")) {
+        previewVulkanPresenterPreference = QStringLiteral("embedded");
+    }
     const QString lastRenderOutputPath = root.value(QStringLiteral("lastRenderOutputPath")).toString();
     const bool renderUseProxies = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     const bool previewHideOutsideOutput = root.value(QStringLiteral("previewHideOutsideOutput")).toBool(false);
@@ -469,7 +477,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     m_renderBackendPreference = renderBackendPreference.isEmpty()
                                     ? QStringLiteral("vulkan")
                                     : renderBackendPreference;
+    m_previewVulkanPresenterPreference = previewVulkanPresenterPreference;
     qputenv("JCUT_RENDER_BACKEND", m_renderBackendPreference.toUtf8());
+    qputenv("JCUT_VULKAN_PREVIEW_PRESENTER", m_previewVulkanPresenterPreference.toUtf8());
     const QString aiSelectedModel = root.value(QStringLiteral("aiSelectedModel")).toString(QStringLiteral("deepseek-chat"));
     const QString aiProxyBaseUrl = root.value(QStringLiteral("aiProxyBaseUrl")).toString();
     const QString aiAuthToken = root.value(QStringLiteral("aiAuthToken")).toString();
@@ -798,6 +808,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_previewShowSpeakerTrackPointsCheckBox) {
         QSignalBlocker block(m_previewShowSpeakerTrackPointsCheckBox);
         m_previewShowSpeakerTrackPointsCheckBox->setChecked(previewShowSpeakerTrackPoints);
+    }
+    if (m_previewVulkanPresenterCombo) {
+        QSignalBlocker block(m_previewVulkanPresenterCombo);
+        const int presenterIndex = m_previewVulkanPresenterCombo->findData(m_previewVulkanPresenterPreference);
+        if (presenterIndex >= 0) {
+            m_previewVulkanPresenterCombo->setCurrentIndex(presenterIndex);
+        }
     }
     if (m_speakerShowBoxStreamBoxesCheckBox) {
         QSignalBlocker block(m_speakerShowBoxStreamBoxesCheckBox);

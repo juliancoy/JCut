@@ -39,6 +39,7 @@ void EditorWindow::bindInspectorWidgets()
     m_trackCrossfadeButton = m_inspectorPane->trackCrossfadeButton();
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
+    m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
     m_speakerShowBoxStreamBoxesCheckBox = m_inspectorPane->speakerShowBoxStreamBoxesCheckBox();
     m_speakerBoxStreamOverlaySourceCombo = m_inspectorPane->speakerBoxStreamOverlaySourceCombo();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
@@ -574,6 +575,22 @@ void EditorWindow::setupPreviewControls()
                     }
                     m_renderBackendPreference = backend;
                     qputenv("JCUT_RENDER_BACKEND", m_renderBackendPreference.toUtf8());
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
+    }
+    if (m_previewVulkanPresenterCombo) {
+        connect(m_previewVulkanPresenterCombo,
+                &QComboBox::currentIndexChanged,
+                this,
+                [this](int index) {
+                    const QString presenterMode =
+                        m_previewVulkanPresenterCombo->itemData(index).toString().trimmed().toLower();
+                    if (presenterMode.isEmpty()) {
+                        return;
+                    }
+                    m_previewVulkanPresenterPreference = presenterMode;
+                    qputenv("JCUT_VULKAN_PREVIEW_PRESENTER", m_previewVulkanPresenterPreference.toUtf8());
                     scheduleSaveState();
                     pushHistorySnapshot();
                 });

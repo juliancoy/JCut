@@ -32,31 +32,51 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
 
     const bool preferVulkan = (configured == RenderBackend::Vulkan || configured == RenderBackend::Auto);
     if (preferVulkan) {
-        auto* surface = new VulkanPreviewSurface(parent);
-        if (surface->asWidget() && surface->isNativePresentationActive()) {
-            decision.effective = QStringLiteral("vulkan");
-            decision.fallbackApplied = false;
-            decision.reason = QStringLiteral("Using direct Vulkan swapchain preview presenter.");
+        const QString presenterMode =
+            qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER").trimmed().toLower();
+        const bool directVulkanPreviewEnabled =
+            (presenterMode == QStringLiteral("direct") ||
+             presenterMode == QStringLiteral("native") ||
+             presenterMode == QStringLiteral("swapchain") ||
+             qEnvironmentVariableIntValue("JCUT_DIRECT_VULKAN_PREVIEW") == 1);
+        if (directVulkanPreviewEnabled) {
+            auto* surface = new VulkanPreviewSurface(parent);
+            if (surface->asWidget() && surface->isNativePresentationActive()) {
+                decision.effective = QStringLiteral("vulkan");
+                decision.fallbackApplied = false;
+                decision.reason = QStringLiteral("Using direct Vulkan swapchain preview presenter (explicit mode).");
+                logDecision(decision);
+                if (decisionOut) {
+                    *decisionOut = decision;
+                }
+                return surface;
+            }
+            decision.effective = QStringLiteral("opengl");
+            decision.fallbackApplied = true;
+            const QString nativeReason = surface->nativeFailureReason().trimmed();
+            decision.reason = nativeReason.isEmpty()
+                ? QStringLiteral("Vulkan direct preview surface unavailable in explicit direct mode.")
+                : nativeReason;
             logDecision(decision);
             if (decisionOut) {
                 *decisionOut = decision;
             }
-            return surface;
+            delete surface;
+            auto* fallback = new PreviewWindow(parent);
+            fallback->setRenderBackendPreference(QStringLiteral("opengl"));
+            return fallback;
         }
+
+        auto* embedded = new PreviewWindow(parent);
+        embedded->setRenderBackendPreference(QStringLiteral("opengl"));
         decision.effective = QStringLiteral("opengl");
-        decision.fallbackApplied = true;
-        const QString nativeReason = surface->nativeFailureReason().trimmed();
-        decision.reason = nativeReason.isEmpty()
-            ? QStringLiteral("Vulkan preview surface unavailable.")
-            : nativeReason;
+        decision.fallbackApplied = false;
+        decision.reason = QStringLiteral("Using embedded preview widget renderer (OpenGL path, default mode).");
         logDecision(decision);
         if (decisionOut) {
             *decisionOut = decision;
         }
-        delete surface;
-        auto* fallback = new PreviewWindow(parent);
-        fallback->setRenderBackendPreference(QStringLiteral("opengl"));
-        return fallback;
+        return embedded;
     }
 
     if (configured == RenderBackend::OpenGL || configured == RenderBackend::Null) {

@@ -183,7 +183,7 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
                     const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
                     dragClipSize = QSizeF(compositeRect.width(), compositeRect.height());
                 }
-                const QSize safeOutputSize = m_outputSize.isValid() ? m_outputSize : QSize(1080, 1920);
+                const QSize safeOutputSize = m_interaction.outputSize.isValid() ? m_interaction.outputSize : QSize(1080, 1920);
                 const qreal previewScaleX = qMax<qreal>(0.0001,
                     dragClipSize.width() / qMax<qreal>(1.0, static_cast<qreal>(safeOutputSize.width())));
                 const qreal previewScaleY = qMax<qreal>(0.0001,

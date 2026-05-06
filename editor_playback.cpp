@@ -14,6 +14,7 @@ namespace editor {
 void EditorWindow::advanceFrame()
 {
     if (!m_timeline) return;
+    bool forceTimelineTimerFallback = false;
 
     if (shouldUseAudioMasterClock() && m_audioEngine && m_audioEngine->audioClockAvailable() &&
         m_audioEngine->hasPlayableAudio()) {
@@ -22,11 +23,17 @@ void EditorWindow::advanceFrame()
         const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
         const int64_t currentFrame = m_timeline->currentFrame();
         if (audioFrame + 2 < currentFrame) {
-            stopPlaybackWithReason(QStringLiteral("audio_clock_regression"));
-            return;
+            forceTimelineTimerFallback = true;
+            if (debugPlaybackWarnEnabled()) {
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] audio clock regressed from frame %1 to %2; "
+                                      "continuing with timeline timer fallback")
+                           .arg(currentFrame)
+                           .arg(audioFrame);
+            }
         }
 
-        if (audioFrame == currentFrame) {
+        if (!forceTimelineTimerFallback && audioFrame == currentFrame) {
             ++m_audioClockStallTicks;
             if (m_audioClockStallTicks <= m_audioClockStallThresholdTicks) {
                 if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
@@ -38,7 +45,8 @@ void EditorWindow::advanceFrame()
                            .arg(m_audioClockStallTicks)
                            .arg(audioFrame);
             }
-        } else {
+            forceTimelineTimerFallback = true;
+        } else if (!forceTimelineTimerFallback) {
             m_audioClockStallTicks = 0;
             if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
             if (m_preview) m_preview->preparePlaybackAdvanceSample(audioSample);
@@ -49,6 +57,11 @@ void EditorWindow::advanceFrame()
 
     m_audioClockStallTicks = 0;
     const qint64 tickNowMs = nowMs();
+    if (forceTimelineTimerFallback) {
+        // Preserve temporal continuity when abandoning audio clock for this tick.
+        m_lastTimelineAdvanceTickMs = tickNowMs;
+        m_timelineAdvanceCarrySamples = 0.0;
+    }
     if (m_lastTimelineAdvanceTickMs <= 0) {
         m_lastTimelineAdvanceTickMs = tickNowMs;
     }

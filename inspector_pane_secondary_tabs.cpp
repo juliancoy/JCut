@@ -207,6 +207,15 @@ QWidget *InspectorPane::buildPreviewTab()
     m_previewShowSpeakerTrackPointsCheckBox->setToolTip(
         QStringLiteral("Draw all speaker framing keyframe points on top of active clips."));
 
+    m_previewVulkanPresenterCombo = new QComboBox(page);
+    m_previewVulkanPresenterCombo->addItem(QStringLiteral("Embedded In Preview Pane"), QStringLiteral("embedded"));
+    m_previewVulkanPresenterCombo->addItem(QStringLiteral("Direct Native Swapchain Window"), QStringLiteral("direct"));
+    m_previewVulkanPresenterCombo->setToolTip(
+        QStringLiteral("How Vulkan preview is presented. Embedded keeps video inside the editor pane; "
+                       "Direct uses a separate native Vulkan window. Requires restart."));
+    auto *vulkanPresenterForm = new QFormLayout();
+    vulkanPresenterForm->addRow(QStringLiteral("Vulkan Presenter"), m_previewVulkanPresenterCombo);
+
     // Zoom control section
     auto *zoomSectionLabel = new QLabel(QStringLiteral("Zoom"), page);
     zoomSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
@@ -235,6 +244,7 @@ QWidget *InspectorPane::buildPreviewTab()
     layout->addWidget(summary);
     layout->addWidget(m_previewHideOutsideOutputCheckBox);
     layout->addWidget(m_previewShowSpeakerTrackPointsCheckBox);
+    layout->addLayout(vulkanPresenterForm);
     layout->addSpacing(12);
     layout->addWidget(zoomSectionLabel);
     layout->addLayout(zoomLayout);
