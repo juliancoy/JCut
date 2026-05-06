@@ -1,12 +1,11 @@
 #include "editor.h"
+#include "transport_icons.h"
 #include "titles.h"
 
 #include <QFile>
 #include <QFileInfo>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPainterPath>
-#include <QStyle>
+#include <QSignalBlocker>
 #include <QToolButton>
 
 using namespace editor;
@@ -16,37 +15,6 @@ bool clipSupportsTranscriptOverlay(const TimelineClip& clip) {
     return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
 }
 
-QIcon makePlayPauseIcon(bool playing, const QSize& size = QSize(16, 16))
-{
-    const auto makeVariant = [&](const QColor& fg) -> QPixmap {
-        QPixmap pix(size);
-        pix.fill(Qt::transparent);
-        QPainter p(&pix);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(Qt::NoPen);
-        p.setBrush(fg);
-        const qreal w = static_cast<qreal>(size.width());
-        const qreal h = static_cast<qreal>(size.height());
-        if (playing) {
-            p.drawRect(QRectF(w * 0.30, h * 0.20, w * 0.16, h * 0.60));
-            p.drawRect(QRectF(w * 0.54, h * 0.20, w * 0.16, h * 0.60));
-        } else {
-            QPainterPath tri;
-            tri.moveTo(w * 0.34, h * 0.20);
-            tri.lineTo(w * 0.72, h * 0.50);
-            tri.lineTo(w * 0.34, h * 0.80);
-            tri.closeSubpath();
-            p.drawPath(tri);
-        }
-        return pix;
-    };
-    QIcon icon;
-    icon.addPixmap(makeVariant(QColor(QStringLiteral("#d8e4ef"))), QIcon::Normal, QIcon::Off);
-    icon.addPixmap(makeVariant(QColor(QStringLiteral("#f5fbff"))), QIcon::Active, QIcon::Off);
-    icon.addPixmap(makeVariant(QColor(QStringLiteral("#9ee5ff"))), QIcon::Selected, QIcon::Off);
-    icon.addPixmap(makeVariant(QColor(QStringLiteral("#6f8296"))), QIcon::Disabled, QIcon::Off);
-    return icon;
-}
 }
 
 void EditorWindow::bindEditorPaneWidgets(EditorPane *pane)
@@ -64,6 +32,7 @@ void EditorWindow::bindEditorPaneWidgets(EditorPane *pane)
     }
     m_playbackSpeedCombo = pane->playbackSpeedCombo();
     m_previewModeCombo = pane->previewModeCombo();
+    m_playbackLoopButton = pane->playbackLoopButton();
     m_audioToolsButton = pane->audioToolsButton();
     m_audioMuteButton = pane->audioMuteButton();
     m_audioVolumeSlider = pane->audioVolumeSlider();
@@ -93,6 +62,11 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
     });
     connect(pane, &EditorPane::playbackSpeedChanged, this, [this](double speed) {
         setPlaybackSpeed(speed);
+    });
+    connect(pane, &EditorPane::playbackLoopToggled, this, [this](bool enabled) {
+        PlaybackRuntimeConfig config = playbackRuntimeConfig();
+        config.loopEnabled = enabled;
+        applyPlaybackRuntimeConfig(config);
     });
     connect(pane, &EditorPane::previewModeChanged, this, [this](const QString& mode) {
         applyPreviewViewMode(mode);
@@ -144,11 +118,15 @@ void EditorWindow::connectTimelineSignals()
         if (m_audioEngine) {
             m_audioEngine->setTimelineClips(m_timeline->clips());
             m_audioEngine->setExportRanges(effectivePlaybackRanges());
+            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         refreshClipInspector();
         m_inspectorPane->refresh();
@@ -736,11 +714,18 @@ void EditorWindow::updateTransportLabels()
     }
     m_playButton->setText(QString());
     m_playButton->setToolTip(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
-    m_playButton->setIcon(makePlayPauseIcon(playing));
+    m_playButton->setIcon(editor::playPauseTransportIcon(playing));
+    if (m_playbackLoopButton) {
+        QSignalBlocker blocker(m_playbackLoopButton);
+        m_playbackLoopButton->setChecked(m_playbackLoopEnabled);
+        m_playbackLoopButton->setToolTip(m_playbackLoopEnabled
+                                             ? QStringLiteral("Loop playback range (On)")
+                                             : QStringLiteral("Loop playback range (Off)"));
+    }
     const bool muted = m_preview && m_preview->audioMuted();
     m_audioMuteButton->setText(QString());
     m_audioMuteButton->setToolTip(muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
-    m_audioMuteButton->setIcon(style()->standardIcon(muted ? QStyle::SP_MediaVolumeMuted : QStyle::SP_MediaVolume));
+    m_audioMuteButton->setIcon(editor::volumeTransportIcon(muted));
     m_audioNowPlayingLabel->setText(activeAudio.isEmpty() ? QStringLiteral("Audio idle") : QStringLiteral("Audio  %1").arg(activeAudio));
 }
 

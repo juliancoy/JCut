@@ -68,6 +68,8 @@ void EditorWindow::bindInspectorWidgets()
     m_audioSelectiveNormalizeMinSecondsSpin = m_inspectorPane->audioSelectiveNormalizeMinSecondsSpin();
     m_audioSelectiveNormalizePeakDbSpin = m_inspectorPane->audioSelectiveNormalizePeakDbSpin();
     m_audioSelectiveNormalizePassesSpin = m_inspectorPane->audioSelectiveNormalizePassesSpin();
+    m_audioSelectiveNormalizeOverlayVisibleCheckBox =
+        m_inspectorPane->audioSelectiveNormalizeOverlayVisibleCheckBox();
     m_audioTranscriptNormalizeEnabledCheckBox = m_inspectorPane->audioTranscriptNormalizeEnabledCheckBox();
     m_audioPeakReductionEnabledCheckBox = m_inspectorPane->audioPeakReductionEnabledCheckBox();
     m_audioPeakThresholdDbSpin = m_inspectorPane->audioPeakThresholdDbSpin();
@@ -304,10 +306,14 @@ void EditorWindow::setupSpeechFilterControls()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         m_inspectorPane->refresh();
         scheduleSaveState();
@@ -477,7 +483,8 @@ void EditorWindow::setupPreviewControls()
         if (!m_audioAmplifyEnabledCheckBox || !m_audioAmplifyDbSpin ||
             !m_audioNormalizeEnabledCheckBox || !m_audioNormalizeTargetDbSpin ||
             !m_audioSelectiveNormalizeEnabledCheckBox || !m_audioSelectiveNormalizeMinSecondsSpin ||
-            !m_audioSelectiveNormalizePassesSpin || !m_audioTranscriptNormalizeEnabledCheckBox ||
+            !m_audioSelectiveNormalizePassesSpin || !m_audioSelectiveNormalizeOverlayVisibleCheckBox ||
+            !m_audioTranscriptNormalizeEnabledCheckBox ||
             !m_audioPeakReductionEnabledCheckBox || !m_audioPeakThresholdDbSpin ||
             !m_audioLimiterEnabledCheckBox || !m_audioLimiterThresholdDbSpin ||
             !m_audioCompressorEnabledCheckBox || !m_audioCompressorThresholdDbSpin ||
@@ -491,10 +498,12 @@ void EditorWindow::setupPreviewControls()
         m_previewAudioDynamics.selectiveNormalizeEnabled = m_audioSelectiveNormalizeEnabledCheckBox->isChecked();
         m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds =
             m_audioSelectiveNormalizeMinSecondsSpin->value();
-        // Selective normalization now always targets near-full speech volume.
-        m_previewAudioDynamics.selectiveNormalizePeakDb = -0.5;
+        m_previewAudioDynamics.selectiveNormalizePeakDb =
+            m_audioSelectiveNormalizePeakDbSpin ? m_audioSelectiveNormalizePeakDbSpin->value() : -12.0;
         m_previewAudioDynamics.selectiveNormalizePasses =
             m_audioSelectiveNormalizePassesSpin->value();
+        m_previewAudioDynamics.selectiveNormalizeOverlayVisible =
+            m_audioSelectiveNormalizeOverlayVisibleCheckBox->isChecked();
         m_previewAudioDynamics.transcriptNormalizeEnabled =
             m_audioTranscriptNormalizeEnabledCheckBox->isChecked();
         m_previewAudioDynamics.peakReductionEnabled = m_audioPeakReductionEnabledCheckBox->isChecked();
@@ -508,6 +517,11 @@ void EditorWindow::setupPreviewControls()
             m_audioWaveformPreviewProcessedCheckBox->isChecked();
         if (m_preview) {
             m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
+        }
+        if (m_audioEngine) {
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         scheduleSaveState();
     };
@@ -713,9 +727,17 @@ void EditorWindow::setupPreviewControls()
         connect(m_audioSelectiveNormalizeMinSecondsSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
     }
+    if (m_audioSelectiveNormalizePeakDbSpin) {
+        connect(m_audioSelectiveNormalizePeakDbSpin, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                [applyAudioDynamicsFromInspector](double) { applyAudioDynamicsFromInspector(); });
+    }
     if (m_audioSelectiveNormalizePassesSpin) {
         connect(m_audioSelectiveNormalizePassesSpin, qOverload<int>(&QSpinBox::valueChanged), this,
                 [applyAudioDynamicsFromInspector](int) { applyAudioDynamicsFromInspector(); });
+    }
+    if (m_audioSelectiveNormalizeOverlayVisibleCheckBox) {
+        connect(m_audioSelectiveNormalizeOverlayVisibleCheckBox, &QCheckBox::toggled, this,
+                [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
     }
     if (m_audioTranscriptNormalizeEnabledCheckBox) {
         connect(m_audioTranscriptNormalizeEnabledCheckBox, &QCheckBox::toggled, this,

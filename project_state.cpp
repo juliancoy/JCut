@@ -723,6 +723,8 @@ QJsonObject EditorWindow::buildStateJson() const
         m_previewAudioDynamics.selectiveNormalizeMinSegmentSeconds;
     root[QStringLiteral("audioSelectiveNormalizePeakDb")] = m_previewAudioDynamics.selectiveNormalizePeakDb;
     root[QStringLiteral("audioSelectiveNormalizePasses")] = m_previewAudioDynamics.selectiveNormalizePasses;
+    root[QStringLiteral("audioSelectiveNormalizeOverlayVisible")] =
+        m_previewAudioDynamics.selectiveNormalizeOverlayVisible;
     root[QStringLiteral("audioTranscriptNormalizeEnabled")] =
         m_previewAudioDynamics.transcriptNormalizeEnabled;
     root[QStringLiteral("audioWaveformPreviewPostProcessing")] =

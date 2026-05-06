@@ -29,8 +29,9 @@ public:
         qreal normalizeTargetDb = -1.0;
         bool selectiveNormalizeEnabled = false;
         qreal selectiveNormalizeMinSegmentSeconds = 0.5;
-        qreal selectiveNormalizePeakDb = -1.0;
+        qreal selectiveNormalizePeakDb = -12.0;
         int selectiveNormalizePasses = 1;
+        bool selectiveNormalizeOverlayVisible = true;
         bool transcriptNormalizeEnabled = false;
         bool peakReductionEnabled = false;
         qreal peakThresholdDb = -6.0;

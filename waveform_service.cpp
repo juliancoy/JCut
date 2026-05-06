@@ -344,12 +344,6 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         return {};
     }
 
-    float sourcePeak = 0.0f;
-    const WaveformLevel& baseLevel = sourceLevels.constFirst();
-    for (int i = 0; i < baseLevel.minValues.size(); ++i) {
-        sourcePeak = std::max(sourcePeak, std::abs(baseLevel.minValues[i]));
-        sourcePeak = std::max(sourcePeak, std::abs(baseLevel.maxValues[i]));
-    }
     const float amplifyGain = settings.amplifyEnabled ? dbToAmp(settings.amplifyDb) : 1.0f;
     const float normalizeTarget = dbToAmp(std::clamp(settings.normalizeTargetDb, -24.0f, 0.0f));
     // Selective normalization targets a consistent near-full speaking level.
@@ -363,14 +357,9 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
     const float compLinear = dbToAmp(std::clamp(settings.compressorThresholdDb, -30.0f, -1.0f));
     const float compRatio = std::clamp(settings.compressorRatio, 1.0f, 20.0f);
 
-    float normalizeGain = 1.0f;
-    if (settings.normalizeEnabled && sourcePeak > 0.000001f) {
-        normalizeGain = normalizeTarget / sourcePeak;
-    }
-
     auto processSignedSample = [&](float sample) -> float {
         const float sign = sample < 0.0f ? -1.0f : 1.0f;
-        float out = std::abs(sample) * amplifyGain * normalizeGain;
+        float out = std::abs(sample) * amplifyGain;
         if (settings.compressorEnabled && out > compLinear) {
             const float over = out - compLinear;
             out = compLinear + (over / compRatio);
@@ -391,48 +380,68 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         const float binSeconds =
             static_cast<float>(qMax(1, level->windowSamples)) / static_cast<float>(safeSampleRate);
         const int minBins = qMax(1, static_cast<int>(std::ceil(minSegmentSeconds / qMax(0.0001f, binSeconds))));
+        const float selectivePeakLinear =
+            dbToAmp(std::clamp(settings.selectiveNormalizePeakDb, -36.0f, 0.0f));
 
         for (int pass = 0; pass < selectivePasses; ++pass) {
-            int start = -1;
-            float segmentPeak = 0.0f;
-            auto flushSegment = [&](int endIndex) {
-                if (start < 0 || endIndex <= start) {
-                    start = -1;
-                    segmentPeak = 0.0f;
-                    return;
+            const int valueCount = level->minValues.size();
+            QVector<float> localPeaks(valueCount, 0.0f);
+            QVector<int> peakIndices;
+            peakIndices.reserve(valueCount / 4);
+            for (int i = 0; i < valueCount; ++i) {
+                localPeaks[i] = std::max(std::abs(level->minValues[i]), std::abs(level->maxValues[i]));
+            }
+            for (int i = 0; i < valueCount; ++i) {
+                const float v = localPeaks[i];
+                if (v < selectivePeakLinear) {
+                    continue;
                 }
-                const int len = endIndex - start;
-                if (len < minBins || segmentPeak <= 0.000001f) {
-                    start = -1;
-                    segmentPeak = 0.0f;
-                    return;
+                const float left = (i > 0) ? localPeaks[i - 1] : v;
+                const float right = (i + 1 < valueCount) ? localPeaks[i + 1] : v;
+                if (v >= left && v >= right) {
+                    peakIndices.push_back(i);
+                }
+            }
+            // Treat audio bounds as synthetic full peaks so segmenting spans the full clip.
+            if (valueCount >= 2) {
+                if (peakIndices.isEmpty() || peakIndices.first() != 0) {
+                    peakIndices.prepend(0);
+                }
+                if (peakIndices.last() != (valueCount - 1)) {
+                    peakIndices.push_back(valueCount - 1);
+                }
+            }
+            if (peakIndices.size() < 2) {
+                continue;
+            }
+
+            for (int p = 0; p + 1 < peakIndices.size(); ++p) {
+                const int start = peakIndices[p];
+                const int endExclusive = peakIndices[p + 1] + 1;
+                if (endExclusive <= start) {
+                    continue;
+                }
+                const int len = endExclusive - start;
+                float segmentPeak = 0.0f;
+                bool hasAboveThresholdSample = false;
+                for (int i = start; i < endExclusive; ++i) {
+                    segmentPeak = std::max(segmentPeak, localPeaks[i]);
+                    if (localPeaks[i] >= selectivePeakLinear) {
+                        hasAboveThresholdSample = true;
+                    }
+                }
+                if (len < minBins || !hasAboveThresholdSample || segmentPeak <= 0.000001f) {
+                    continue;
                 }
                 const float gain = kSelectiveTargetLinear / segmentPeak;
-                for (int i = start; i < endIndex; ++i) {
+                for (int i = start; i < endExclusive; ++i) {
                     level->minValues[i] = std::clamp(level->minValues[i] * gain, -1.0f, 1.0f);
                     level->maxValues[i] = std::clamp(level->maxValues[i] * gain, -1.0f, 1.0f);
                     if (level->minValues[i] > level->maxValues[i]) {
                         std::swap(level->minValues[i], level->maxValues[i]);
                     }
                 }
-                start = -1;
-                segmentPeak = 0.0f;
-            };
-
-            for (int i = 0; i < level->minValues.size(); ++i) {
-                const float localPeak = std::max(std::abs(level->minValues[i]), std::abs(level->maxValues[i]));
-                if (localPeak > 0.000001f) {
-                    if (start < 0) {
-                        start = i;
-                        segmentPeak = localPeak;
-                    } else {
-                        segmentPeak = std::max(segmentPeak, localPeak);
-                    }
-                } else {
-                    flushSegment(i);
-                }
             }
-            flushSegment(level->minValues.size());
         }
     };
 
@@ -458,6 +467,28 @@ QVector<WaveformService::WaveformLevel> WaveformService::buildProcessedLevels(
         applySelectiveNormalize(&dst);
         processed.push_back(std::move(dst));
     }
+
+    if (settings.normalizeEnabled && !processed.isEmpty()) {
+        float postProcessPeak = 0.0f;
+        const WaveformLevel& baseProcessedLevel = processed.constFirst();
+        for (int i = 0; i < baseProcessedLevel.minValues.size(); ++i) {
+            postProcessPeak = std::max(postProcessPeak, std::abs(baseProcessedLevel.minValues[i]));
+            postProcessPeak = std::max(postProcessPeak, std::abs(baseProcessedLevel.maxValues[i]));
+        }
+        if (postProcessPeak > 0.000001f) {
+            const float normalizeGain = normalizeTarget / postProcessPeak;
+            for (WaveformLevel& level : processed) {
+                for (int i = 0; i < level.minValues.size(); ++i) {
+                    level.minValues[i] = std::clamp(level.minValues[i] * normalizeGain, -1.0f, 1.0f);
+                    level.maxValues[i] = std::clamp(level.maxValues[i] * normalizeGain, -1.0f, 1.0f);
+                    if (level.minValues[i] > level.maxValues[i]) {
+                        std::swap(level.minValues[i], level.maxValues[i]);
+                    }
+                }
+            }
+        }
+    }
+
     return processed;
 }
 

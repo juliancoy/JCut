@@ -391,6 +391,9 @@ void EditorWindow::setupAudioEngine()
     m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
     m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
     m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+    m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
+    m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
+    m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
     // Pre-warm audio backend and decode workers off the startup event loop so
     // first playback doesn't pay full initialization/decode startup latency.
     QTimer::singleShot(0, this, [this]() {

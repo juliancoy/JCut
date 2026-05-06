@@ -1380,6 +1380,76 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
             painter->drawPath(bottomPath);
         }
 
+        if (m_audioDynamics.selectiveNormalizeEnabled &&
+            m_audioDynamics.selectiveNormalizeOverlayVisible) {
+            const qreal selectivePeakLinear = std::pow(
+                10.0, qBound<qreal>(-36.0, m_audioDynamics.selectiveNormalizePeakDb, 0.0) / 20.0);
+            const qreal framesPerBin = static_cast<qreal>(qMax<int64_t>(1, visibleSourceSpan)) /
+                                       static_cast<qreal>(qMax(1, totalDrawBins));
+            const qreal binSeconds = framesPerBin / kTimelineFps;
+            const int minBins = qMax(
+                1, static_cast<int>(std::ceil(
+                       m_audioDynamics.selectiveNormalizeMinSegmentSeconds / qMax<qreal>(0.0001, binSeconds))));
+
+            QVector<qreal> rowPeaks(rowBinCount, 0.0);
+            QVector<int> peakIndices;
+            peakIndices.reserve(rowBinCount / 4);
+            for (int i = 0; i < rowBinCount; ++i) {
+                rowPeaks[i] = qMax(qAbs(displayMin[i]), qAbs(displayMax[i]));
+            }
+            for (int i = 0; i < rowBinCount; ++i) {
+                const qreal v = rowPeaks[i];
+                if (v < selectivePeakLinear) {
+                    continue;
+                }
+                const qreal left = (i > 0) ? rowPeaks[i - 1] : v;
+                const qreal right = (i + 1 < rowBinCount) ? rowPeaks[i + 1] : v;
+                if (v >= left && v >= right) {
+                    peakIndices.push_back(i);
+                }
+            }
+            // Keep visual segmentation aligned with processing by treating row bounds as
+            // synthetic full peaks.
+            if (rowBinCount >= 2) {
+                if (peakIndices.isEmpty() || peakIndices.first() != 0) {
+                    peakIndices.prepend(0);
+                }
+                if (peakIndices.last() != (rowBinCount - 1)) {
+                    peakIndices.push_back(rowBinCount - 1);
+                }
+            }
+
+            if (peakIndices.size() >= 2) {
+                painter->save();
+                painter->setPen(Qt::NoPen);
+                painter->setBrush(QColor(124, 214, 171, 46));
+                for (int p = 0; p + 1 < peakIndices.size(); ++p) {
+                    const int start = peakIndices[p];
+                    const int endExclusive = peakIndices[p + 1] + 1;
+                    const int len = endExclusive - start;
+                    if (len < minBins) {
+                        continue;
+                    }
+                    bool hasAboveThresholdSample = false;
+                    for (int i = start; i < endExclusive; ++i) {
+                        if (rowPeaks[i] >= selectivePeakLinear) {
+                            hasAboveThresholdSample = true;
+                            break;
+                        }
+                    }
+                    if (!hasAboveThresholdSample) {
+                        continue;
+                    }
+                    const qreal x0 = rowRect.left() +
+                        (static_cast<qreal>(start) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+                    const qreal x1 = rowRect.left() +
+                        (static_cast<qreal>(endExclusive - 1) / qMax<qreal>(1.0, rowBinCount - 1)) * rowRect.width();
+                    painter->drawRect(QRectF(x0, rowRect.top(), qMax<qreal>(1.0, x1 - x0), rowRect.height()));
+                }
+                painter->restore();
+            }
+        }
+
         if (m_audioSpeakerHoverModalEnabled &&
             m_interaction.transient.lastMousePos.x() >= rowRect.left() && m_interaction.transient.lastMousePos.x() <= rowRect.right() &&
             m_interaction.transient.lastMousePos.y() >= rowRect.top() && m_interaction.transient.lastMousePos.y() <= rowRect.bottom()) {
@@ -1500,9 +1570,14 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     }
 
     painter->setPen(QColor(QStringLiteral("#9fb3c8")));
+    const QString selectiveLegend =
+        (m_audioDynamics.selectiveNormalizeEnabled && m_audioDynamics.selectiveNormalizeOverlayVisible)
+            ? QStringLiteral(" | Selective overlay: green bands = corrected segments")
+            : QStringLiteral("");
     painter->drawText(panel.adjusted(20, panel.height() - 36, -20, 6),
                       Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("Waveform: mono envelope, absolute full-scale display (1.0 = 0 dBFS), wrapped rows with speaker timeline tint | Zoom %1%")
-                          .arg(QString::number(zoom * 100.0, 'f', 0)));
+                      QStringLiteral("Waveform: mono envelope, absolute full-scale display (1.0 = 0 dBFS), wrapped rows with speaker timeline tint | Zoom %1%%2")
+                          .arg(QString::number(zoom * 100.0, 'f', 0))
+                          .arg(selectiveLegend));
     painter->restore();
 }

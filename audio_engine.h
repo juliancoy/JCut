@@ -2,6 +2,7 @@
 
 #include "editor_shared.h"
 #include "ffmpeg_compat.h"
+#include "preview_surface.h"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -140,6 +141,34 @@ public:
     void setPlaybackRate(qreal rate) {
         const qreal clampedRate = qBound<qreal>(0.1, rate, 3.0);
         m_playbackRate.store(clampedRate, std::memory_order_release);
+    }
+
+    void setTranscriptNormalizeEnabled(bool enabled) {
+        m_transcriptNormalizeEnabled.store(enabled, std::memory_order_release);
+    }
+
+    void setTranscriptNormalizeRanges(const QVector<ExportRangeSegment>& ranges) {
+        std::lock_guard<std::mutex> lock(m_transcriptNormalizeRangesMutex);
+        m_transcriptNormalizeRanges = ranges;
+    }
+
+    void setAudioDynamicsSettings(const PreviewSurface::AudioDynamicsSettings& settings) {
+        m_amplifyEnabled.store(settings.amplifyEnabled, std::memory_order_release);
+        m_amplifyDb.store(settings.amplifyDb, std::memory_order_release);
+        m_normalizeEnabled.store(settings.normalizeEnabled, std::memory_order_release);
+        m_normalizeTargetDb.store(settings.normalizeTargetDb, std::memory_order_release);
+        m_selectiveNormalizeEnabled.store(settings.selectiveNormalizeEnabled, std::memory_order_release);
+        m_selectiveNormalizeMinSegmentSeconds.store(
+            settings.selectiveNormalizeMinSegmentSeconds, std::memory_order_release);
+        m_selectiveNormalizePeakDb.store(settings.selectiveNormalizePeakDb, std::memory_order_release);
+        m_selectiveNormalizePasses.store(settings.selectiveNormalizePasses, std::memory_order_release);
+        m_peakReductionEnabled.store(settings.peakReductionEnabled, std::memory_order_release);
+        m_peakThresholdDb.store(settings.peakThresholdDb, std::memory_order_release);
+        m_limiterEnabled.store(settings.limiterEnabled, std::memory_order_release);
+        m_limiterThresholdDb.store(settings.limiterThresholdDb, std::memory_order_release);
+        m_compressorEnabled.store(settings.compressorEnabled, std::memory_order_release);
+        m_compressorThresholdDb.store(settings.compressorThresholdDb, std::memory_order_release);
+        m_compressorRatio.store(settings.compressorRatio, std::memory_order_release);
     }
 
     bool initialize() {
@@ -969,6 +998,11 @@ private:
         return m_exportRanges;
     }
 
+    QVector<ExportRangeSegment> transcriptNormalizeRangesCopy() const {
+        std::lock_guard<std::mutex> lock(m_transcriptNormalizeRangesMutex);
+        return m_transcriptNormalizeRanges;
+    }
+
     // --- Mix engine ---
 
     void mixChunk(const MixContext& context,
@@ -979,11 +1013,18 @@ private:
         std::fill(output, output + frames * m_channelCount, 0.0f);
         const qreal clampedRate = qBound<qreal>(0.1, playbackRate, 3.0);
         struct PreparedClipAudio {
+            struct TranscriptNormalizeSegment {
+                int64_t startSample = 0;
+                int64_t endSampleExclusive = 0;
+                float gain = 1.0f;
+            };
             const TimelineClip* clip = nullptr;
             AudioClipCacheEntry audio;
             int64_t clipStartSample = 0;
             int64_t clipEndSample = 0;
             int64_t sourceInSample = 0;
+            float transcriptNormalizeGain = 1.0f;
+            QVector<TranscriptNormalizeSegment> transcriptNormalizeSegments;
         };
         QVector<PreparedClipAudio> preparedClips;
         preparedClips.reserve(context.clips.size());
@@ -1016,6 +1057,139 @@ private:
             prepared.sourceInSample = sourceInSample;
             preparedClips.push_back(prepared);
         }
+
+        const bool transcriptNormalizeEnabled =
+            m_transcriptNormalizeEnabled.load(std::memory_order_acquire);
+        const QVector<ExportRangeSegment> transcriptNormalizeRanges = transcriptNormalizeRangesCopy();
+        if (transcriptNormalizeEnabled && !transcriptNormalizeRanges.isEmpty()) {
+            constexpr float kTranscriptNormalizeTargetLinear = 0.95f;
+            constexpr float kMaxTranscriptNormalizeGain = 2.5f;
+            for (PreparedClipAudio& prepared : preparedClips) {
+                for (const ExportRangeSegment& range : transcriptNormalizeRanges) {
+                    const int64_t rangeStartSample = timelineFrameToSamples(range.startFrame);
+                    const int64_t rangeEndSampleExclusive =
+                        timelineFrameToSamples(range.endFrame + 1);
+                    const int64_t overlapStart =
+                        qMax<int64_t>(prepared.clipStartSample, rangeStartSample);
+                    const int64_t overlapEndExclusive =
+                        qMin<int64_t>(prepared.clipEndSample, rangeEndSampleExclusive);
+                    if (overlapEndExclusive <= overlapStart) {
+                        continue;
+                    }
+
+                    const int64_t sourceStartSample = sourceSampleForClipAtTimelineSample(
+                        *prepared.clip, overlapStart, context.renderSyncMarkers);
+                    const int64_t sourceEndSampleExclusive = sourceSampleForClipAtTimelineSample(
+                        *prepared.clip, overlapEndExclusive - 1, context.renderSyncMarkers) + 1;
+                    const int64_t clipSampleCount =
+                        static_cast<int64_t>(prepared.audio.samples.size() / m_channelCount);
+                    const int64_t clampedStart = qBound<int64_t>(0, sourceStartSample, clipSampleCount);
+                    const int64_t clampedEndExclusive =
+                        qBound<int64_t>(clampedStart, sourceEndSampleExclusive, clipSampleCount);
+                    float transcriptPeak = 0.0f;
+                    for (int64_t sample = clampedStart; sample < clampedEndExclusive; ++sample) {
+                        const int index = static_cast<int>(sample * m_channelCount);
+                        transcriptPeak = qMax(transcriptPeak, std::abs(prepared.audio.samples[index]));
+                        transcriptPeak = qMax(transcriptPeak, std::abs(prepared.audio.samples[index + 1]));
+                    }
+                    if (transcriptPeak <= 0.000001f) {
+                        continue;
+                    }
+
+                    PreparedClipAudio::TranscriptNormalizeSegment segment;
+                    segment.startSample = overlapStart;
+                    segment.endSampleExclusive = overlapEndExclusive;
+                    segment.gain = qMin(
+                        kMaxTranscriptNormalizeGain,
+                        kTranscriptNormalizeTargetLinear / transcriptPeak);
+                    prepared.transcriptNormalizeSegments.push_back(segment);
+                }
+                if (!prepared.transcriptNormalizeSegments.isEmpty()) {
+                    std::sort(prepared.transcriptNormalizeSegments.begin(),
+                              prepared.transcriptNormalizeSegments.end(),
+                              [](const PreparedClipAudio::TranscriptNormalizeSegment& a,
+                                 const PreparedClipAudio::TranscriptNormalizeSegment& b) {
+                                  return a.startSample < b.startSample;
+                              });
+                }
+            }
+        }
+
+        auto transcriptNormalizeGainAtSample = [](const PreparedClipAudio& prepared,
+                                                  int64_t timelineSamplePos) -> float {
+            if (prepared.transcriptNormalizeSegments.isEmpty()) {
+                return 1.0f;
+            }
+            constexpr int64_t kTransitionSamples = 480; // 10 ms at 48 kHz
+            constexpr int64_t kInterWordBridgeSamples = 5760; // 120 ms at 48 kHz
+            const auto& segments = prepared.transcriptNormalizeSegments;
+            const auto it = std::upper_bound(
+                segments.begin(),
+                segments.end(),
+                timelineSamplePos,
+                [](int64_t sample, const PreparedClipAudio::TranscriptNormalizeSegment& segment) {
+                    return sample < segment.startSample;
+                });
+
+            int index = -1;
+            if (it != segments.begin()) {
+                const int candidateIndex = static_cast<int>(std::distance(segments.begin(), it - 1));
+                const auto& candidate = segments[static_cast<qsizetype>(candidateIndex)];
+                if (timelineSamplePos < candidate.endSampleExclusive) {
+                    index = candidateIndex;
+                }
+            }
+            if (index < 0) {
+                const int nextIndex = static_cast<int>(std::distance(segments.begin(), it));
+                const int prevIndex = nextIndex - 1;
+                if (prevIndex >= 0 && nextIndex < segments.size()) {
+                    const auto& prev = segments[static_cast<qsizetype>(prevIndex)];
+                    const auto& next = segments[static_cast<qsizetype>(nextIndex)];
+                    const int64_t gapStart = prev.endSampleExclusive;
+                    const int64_t gapEnd = next.startSample;
+                    const int64_t gapLen = gapEnd - gapStart;
+                    if (timelineSamplePos >= gapStart &&
+                        timelineSamplePos < gapEnd &&
+                        gapLen > 0 &&
+                        gapLen <= kInterWordBridgeSamples) {
+                        const float t = static_cast<float>(timelineSamplePos - gapStart) /
+                                        static_cast<float>(gapLen);
+                        return prev.gain + ((next.gain - prev.gain) * qBound(0.0f, t, 1.0f));
+                    }
+                }
+                return 1.0f;
+            }
+
+            const auto& current = segments[static_cast<qsizetype>(index)];
+            const float currentGain = current.gain;
+
+            float gain = currentGain;
+            const float previousGain =
+                index > 0 ? segments[static_cast<qsizetype>(index - 1)].gain : 1.0f;
+            const float nextGain =
+                (index + 1) < segments.size() ? segments[static_cast<qsizetype>(index + 1)].gain : 1.0f;
+
+            const int64_t startFadeLen = qMin<int64_t>(
+                kTransitionSamples, qMax<int64_t>(1, current.endSampleExclusive - current.startSample));
+            if (timelineSamplePos < current.startSample + startFadeLen) {
+                const float t = static_cast<float>(timelineSamplePos - current.startSample) /
+                                static_cast<float>(startFadeLen);
+                gain = previousGain + ((currentGain - previousGain) * qBound(0.0f, t, 1.0f));
+            }
+
+            const int64_t endFadeLen = qMin<int64_t>(
+                kTransitionSamples, qMax<int64_t>(1, current.endSampleExclusive - current.startSample));
+            if (timelineSamplePos >= current.endSampleExclusive - endFadeLen) {
+                const float t = static_cast<float>(timelineSamplePos - (current.endSampleExclusive - endFadeLen)) /
+                                static_cast<float>(endFadeLen);
+                const float endGain = currentGain + ((nextGain - currentGain) * qBound(0.0f, t, 1.0f));
+                gain = (timelineSamplePos < current.startSample + startFadeLen)
+                    ? (0.5f * (gain + endGain))
+                    : endGain;
+            }
+
+            return gain;
+        };
 
         for (int outFrame = 0; outFrame < frames; ++outFrame) {
             const int64_t timelineOffset =
@@ -1058,7 +1232,10 @@ private:
                     prepared.clipStartSample,
                     prepared.clipEndSample,
                     clip.fadeSamples > 0 ? clip.fadeSamples : m_defaultFadeSamples);
-                const float primaryGain = primarySpeechGain * primaryClipGain;
+                const float transcriptNormalizeGain =
+                    transcriptNormalizeGainAtSample(prepared, timelineSamplePos);
+                const float primaryGain =
+                    primarySpeechGain * primaryClipGain * transcriptNormalizeGain;
                 if (primaryGain > 0.0f) {
                     output[outIndex] += audio.samples[inIndex] * primaryGain;
                     output[outIndex + 1] += audio.samples[inIndex + 1] * primaryGain;
@@ -1076,10 +1253,160 @@ private:
                             prepared.clipStartSample,
                             prepared.clipEndSample,
                             clip.fadeSamples > 0 ? clip.fadeSamples : m_defaultFadeSamples);
-                        const float secondaryGain = secondarySpeechGain * secondaryClipGain;
+                        const float secondaryGain =
+                            secondarySpeechGain * secondaryClipGain * transcriptNormalizeGain;
                         output[outIndex] += audio.samples[secondaryInIndex] * secondaryGain;
                         output[outIndex + 1] += audio.samples[secondaryInIndex + 1] * secondaryGain;
                     }
+                }
+            }
+        }
+
+        const bool amplifyEnabled = m_amplifyEnabled.load(std::memory_order_acquire);
+        const qreal amplifyDb = m_amplifyDb.load(std::memory_order_acquire);
+        const bool normalizeEnabled = m_normalizeEnabled.load(std::memory_order_acquire);
+        const qreal normalizeTargetDb = m_normalizeTargetDb.load(std::memory_order_acquire);
+        const bool selectiveNormalizeEnabled =
+            m_selectiveNormalizeEnabled.load(std::memory_order_acquire);
+        const qreal selectiveNormalizeMinSegmentSeconds =
+            m_selectiveNormalizeMinSegmentSeconds.load(std::memory_order_acquire);
+        const qreal selectiveNormalizePeakDb =
+            m_selectiveNormalizePeakDb.load(std::memory_order_acquire);
+        const int selectiveNormalizePasses =
+            m_selectiveNormalizePasses.load(std::memory_order_acquire);
+        const bool peakReductionEnabled = m_peakReductionEnabled.load(std::memory_order_acquire);
+        const qreal peakThresholdDb = m_peakThresholdDb.load(std::memory_order_acquire);
+        const bool limiterEnabled = m_limiterEnabled.load(std::memory_order_acquire);
+        const qreal limiterThresholdDb = m_limiterThresholdDb.load(std::memory_order_acquire);
+        const bool compressorEnabled = m_compressorEnabled.load(std::memory_order_acquire);
+        const qreal compressorThresholdDb = m_compressorThresholdDb.load(std::memory_order_acquire);
+        const qreal compressorRatio = m_compressorRatio.load(std::memory_order_acquire);
+
+        auto dbToAmpLocal = [](float db) -> float {
+            return std::pow(10.0f, db / 20.0f);
+        };
+
+        const float amplifyGain = amplifyEnabled ? dbToAmpLocal(static_cast<float>(amplifyDb)) : 1.0f;
+        const float normalizeTargetLinear = dbToAmpLocal(
+            std::clamp(static_cast<float>(normalizeTargetDb), -24.0f, 0.0f));
+        const float selectiveThresholdLinear = dbToAmpLocal(
+            std::clamp(static_cast<float>(selectiveNormalizePeakDb), -36.0f, 0.0f));
+        const float peakLinear = dbToAmpLocal(std::clamp(static_cast<float>(peakThresholdDb), -24.0f, 0.0f));
+        const float limiterLinear = dbToAmpLocal(std::clamp(static_cast<float>(limiterThresholdDb), -12.0f, 0.0f));
+        const float compLinear = dbToAmpLocal(std::clamp(static_cast<float>(compressorThresholdDb), -30.0f, -1.0f));
+        const float compRatio = std::clamp(static_cast<float>(compressorRatio), 1.0f, 20.0f);
+        const int safeSelectivePasses = qBound(1, selectiveNormalizePasses, 8);
+        const float safeMinSegmentSeconds =
+            std::clamp(static_cast<float>(selectiveNormalizeMinSegmentSeconds), 0.1f, 30.0f);
+        constexpr float kSelectiveTargetLinear = 0.95f;
+
+        auto processSignedSample = [&](float sample) -> float {
+            const float sign = sample < 0.0f ? -1.0f : 1.0f;
+            float out = std::abs(sample) * amplifyGain;
+            if (compressorEnabled && out > compLinear) {
+                const float over = out - compLinear;
+                out = compLinear + (over / compRatio);
+            }
+            if (peakReductionEnabled && out > peakLinear) {
+                out = peakLinear + (out - peakLinear) * 0.35f;
+            }
+            if (limiterEnabled) {
+                out = std::min(out, limiterLinear);
+            }
+            return std::clamp(sign * out, -1.0f, 1.0f);
+        };
+
+        for (int i = 0; i < frames * m_channelCount; ++i) {
+            output[i] = processSignedSample(output[i]);
+        }
+
+        if (selectiveNormalizeEnabled && frames > 0) {
+            constexpr int kAnalysisWindowFrames = 256;
+            const int binCount = qMax(1, static_cast<int>(std::ceil(
+                                        static_cast<float>(frames) / static_cast<float>(kAnalysisWindowFrames))));
+            QVector<float> binPeaks(binCount, 0.0f);
+            auto rebuildBinPeaks = [&]() {
+                std::fill(binPeaks.begin(), binPeaks.end(), 0.0f);
+                for (int f = 0; f < frames; ++f) {
+                    const int idx = f * m_channelCount;
+                    const float peak = qMax(std::abs(output[idx]), std::abs(output[idx + 1]));
+                    const int bin = qMin(binCount - 1, f / kAnalysisWindowFrames);
+                    binPeaks[bin] = qMax(binPeaks[bin], peak);
+                }
+            };
+            rebuildBinPeaks();
+
+            const int minBins = qMax(
+                1, static_cast<int>(std::ceil(
+                       (safeMinSegmentSeconds * static_cast<float>(m_sampleRate)) /
+                       static_cast<float>(kAnalysisWindowFrames))));
+
+            for (int pass = 0; pass < safeSelectivePasses; ++pass) {
+                QVector<int> peaks;
+                peaks.reserve(binCount / 2);
+                for (int i = 0; i < binCount; ++i) {
+                    const float v = binPeaks[i];
+                    if (v < selectiveThresholdLinear) {
+                        continue;
+                    }
+                    const float left = (i > 0) ? binPeaks[i - 1] : v;
+                    const float right = (i + 1 < binCount) ? binPeaks[i + 1] : v;
+                    if (v >= left && v >= right) {
+                        peaks.push_back(i);
+                    }
+                }
+                if (binCount >= 2) {
+                    if (peaks.isEmpty() || peaks.first() != 0) {
+                        peaks.prepend(0);
+                    }
+                    if (peaks.last() != (binCount - 1)) {
+                        peaks.push_back(binCount - 1);
+                    }
+                }
+                if (peaks.size() < 2) {
+                    break;
+                }
+
+                for (int p = 0; p + 1 < peaks.size(); ++p) {
+                    const int startBin = peaks[p];
+                    const int endBinInclusive = peaks[p + 1];
+                    const int lenBins = (endBinInclusive - startBin + 1);
+                    if (lenBins < minBins) {
+                        continue;
+                    }
+                    float segmentPeak = 0.0f;
+                    bool hasAboveThreshold = false;
+                    for (int b = startBin; b <= endBinInclusive; ++b) {
+                        segmentPeak = qMax(segmentPeak, binPeaks[b]);
+                        if (binPeaks[b] >= selectiveThresholdLinear) {
+                            hasAboveThreshold = true;
+                        }
+                    }
+                    if (!hasAboveThreshold || segmentPeak <= 0.000001f) {
+                        continue;
+                    }
+                    const float gain = kSelectiveTargetLinear / segmentPeak;
+                    const int startFrame = startBin * kAnalysisWindowFrames;
+                    const int endFrameExclusive = qMin(frames, (endBinInclusive + 1) * kAnalysisWindowFrames);
+                    for (int f = startFrame; f < endFrameExclusive; ++f) {
+                        const int idx = f * m_channelCount;
+                        output[idx] = std::clamp(output[idx] * gain, -1.0f, 1.0f);
+                        output[idx + 1] = std::clamp(output[idx + 1] * gain, -1.0f, 1.0f);
+                    }
+                }
+                rebuildBinPeaks();
+            }
+        }
+
+        if (normalizeEnabled) {
+            float postPeak = 0.0f;
+            for (int i = 0; i < frames * m_channelCount; ++i) {
+                postPeak = qMax(postPeak, std::abs(output[i]));
+            }
+            if (postPeak > 0.000001f) {
+                const float normalizeGain = normalizeTargetLinear / postPeak;
+                for (int i = 0; i < frames * m_channelCount; ++i) {
+                    output[i] = std::clamp(output[i] * normalizeGain, -1.0f, 1.0f);
                 }
             }
         }
@@ -1205,6 +1532,7 @@ private:
 
     mutable std::mutex m_stateMutex;
     mutable std::mutex m_exportRangesMutex;
+    mutable std::mutex m_transcriptNormalizeRangesMutex;
     std::mutex m_mixMutex;
     std::condition_variable m_stateCondition;
     std::condition_variable m_decodeCondition;
@@ -1213,6 +1541,7 @@ private:
     QVector<TimelineClip> m_timelineClips;
     QVector<RenderSyncMarker> m_renderSyncMarkers;
     QVector<ExportRangeSegment> m_exportRanges;
+    QVector<ExportRangeSegment> m_transcriptNormalizeRanges;
     QHash<QString, AudioClipCacheEntry> m_audioCache;
     std::deque<DecodeTask> m_pendingDecodePaths;
     QSet<QString> m_pendingDecodeSet;
@@ -1251,6 +1580,22 @@ private:
     static constexpr qint64 kAudioInitWarningThrottleMs = 10000;
     std::atomic<int> m_speechFilterFadeSamples{m_defaultFadeSamples};
     std::atomic<bool> m_speechFilterRangeCrossfadeEnabled{false};
+    std::atomic<bool> m_transcriptNormalizeEnabled{false};
+    std::atomic<bool> m_amplifyEnabled{false};
+    std::atomic<qreal> m_amplifyDb{0.0};
+    std::atomic<bool> m_normalizeEnabled{false};
+    std::atomic<qreal> m_normalizeTargetDb{-1.0};
+    std::atomic<bool> m_selectiveNormalizeEnabled{false};
+    std::atomic<qreal> m_selectiveNormalizeMinSegmentSeconds{0.5};
+    std::atomic<qreal> m_selectiveNormalizePeakDb{-12.0};
+    std::atomic<int> m_selectiveNormalizePasses{1};
+    std::atomic<bool> m_peakReductionEnabled{false};
+    std::atomic<qreal> m_peakThresholdDb{-6.0};
+    std::atomic<bool> m_limiterEnabled{false};
+    std::atomic<qreal> m_limiterThresholdDb{-1.0};
+    std::atomic<bool> m_compressorEnabled{false};
+    std::atomic<qreal> m_compressorThresholdDb{-18.0};
+    std::atomic<qreal> m_compressorRatio{3.0};
     qint64 m_audioInitBackoffUntilMs = 0;
     qint64 m_lastAudioInitWarningMs = 0;
     qint64 m_lastKnownDeviceCount = 0;

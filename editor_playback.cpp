@@ -165,6 +165,22 @@ QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
     }
     return normalized;
 }
+
+QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() const
+{
+    if (!m_timeline) {
+        return {};
+    }
+    const int neighborWordRadius = speechFilterPlaybackEnabled() ? 10 : 0;
+    return m_transcriptEngine.transcriptWordExportRangesDiscrete(
+        m_timeline->exportRanges(),
+        m_timeline->clips(),
+        m_timeline->renderSyncMarkers(),
+        m_transcriptPrependMs,
+        m_transcriptPostpendMs,
+        neighborWordRadius);
+}
+
 int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const
 {
     if (!m_timeline) return 0;
@@ -521,6 +537,9 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
     if (m_audioEngine) {
         m_audioEngine->setPlaybackWarpMode(normalizedWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        m_audioEngine->setTranscriptNormalizeEnabled(
+            m_previewAudioDynamics.transcriptNormalizeEnabled);
+        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
     }
     updatePlaybackTimerInterval();
     reconcileActivePlaybackAudioState();
@@ -580,6 +599,9 @@ void EditorWindow::reconcileActivePlaybackAudioState()
     if (shouldRunAudio) {
         m_audioEngine->setPlaybackWarpMode(runtimeWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        m_audioEngine->setTranscriptNormalizeEnabled(
+            m_previewAudioDynamics.transcriptNormalizeEnabled);
+        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         if (!audioRunning) {
             m_audioEngine->start(m_timeline->currentFrame());
         }
@@ -643,11 +665,15 @@ void EditorWindow::setPlaybackActive(bool playing)
         const auto ranges = effectivePlaybackRanges();
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(
                 normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode));
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         const PlaybackAudioWarpMode runtimeWarpMode =
             normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);

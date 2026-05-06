@@ -1,0 +1,12 @@
+<RCC>
+  <qresource prefix="/icons/transport">
+    <file>assets/icons/transport/play.svg</file>
+    <file>assets/icons/transport/pause.svg</file>
+    <file>assets/icons/transport/step_back.svg</file>
+    <file>assets/icons/transport/step_forward.svg</file>
+    <file>assets/icons/transport/to_start.svg</file>
+    <file>assets/icons/transport/to_end.svg</file>
+    <file>assets/icons/transport/volume.svg</file>
+    <file>assets/icons/transport/volume_muted.svg</file>
+  </qresource>
+</RCC>

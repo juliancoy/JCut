@@ -184,6 +184,7 @@ private:
     bool speechFilterPlaybackEnabled() const;
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
+    QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
     int64_t nextPlaybackSample(int64_t currentSample,
                                int64_t deltaSamples,
@@ -321,6 +322,7 @@ private:
     QLabel *m_timecodeLabel = nullptr;
     QComboBox *m_playbackSpeedCombo = nullptr;
     QComboBox *m_previewModeCombo = nullptr;
+    QToolButton *m_playbackLoopButton = nullptr;
     QToolButton *m_audioToolsButton = nullptr;
     QLabel *m_aiStatusLabel = nullptr;
     QComboBox *m_aiModelCombo = nullptr;
@@ -425,6 +427,7 @@ private:
     QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
     QSpinBox *m_audioSelectiveNormalizePassesSpin = nullptr;
+    QCheckBox *m_audioSelectiveNormalizeOverlayVisibleCheckBox = nullptr;
     QCheckBox *m_audioTranscriptNormalizeEnabledCheckBox = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;

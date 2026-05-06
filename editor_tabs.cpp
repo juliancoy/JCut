@@ -148,10 +148,14 @@ void EditorWindow::createTranscriptTab()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         m_inspectorPane->refresh();
     });
@@ -167,10 +171,14 @@ void EditorWindow::createTranscriptTab()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         m_inspectorPane->refresh();
     });
@@ -283,10 +291,14 @@ void EditorWindow::createSpeakersTab()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         m_inspectorPane->refresh();
     });

@@ -255,6 +255,7 @@ public:
     QDoubleSpinBox *audioSelectiveNormalizeMinSecondsSpin() const { return m_audioSelectiveNormalizeMinSecondsSpin; }
     QDoubleSpinBox *audioSelectiveNormalizePeakDbSpin() const { return m_audioSelectiveNormalizePeakDbSpin; }
     QSpinBox *audioSelectiveNormalizePassesSpin() const { return m_audioSelectiveNormalizePassesSpin; }
+    QCheckBox *audioSelectiveNormalizeOverlayVisibleCheckBox() const { return m_audioSelectiveNormalizeOverlayVisibleCheckBox; }
     QCheckBox *audioTranscriptNormalizeEnabledCheckBox() const { return m_audioTranscriptNormalizeEnabledCheckBox; }
     QCheckBox *audioPeakReductionEnabledCheckBox() const { return m_audioPeakReductionEnabledCheckBox; }
     QDoubleSpinBox *audioPeakThresholdDbSpin() const { return m_audioPeakThresholdDbSpin; }
@@ -520,6 +521,7 @@ private:
     QDoubleSpinBox *m_audioSelectiveNormalizeMinSecondsSpin = nullptr;
     QDoubleSpinBox *m_audioSelectiveNormalizePeakDbSpin = nullptr;
     QSpinBox *m_audioSelectiveNormalizePassesSpin = nullptr;
+    QCheckBox *m_audioSelectiveNormalizeOverlayVisibleCheckBox = nullptr;
     QCheckBox *m_audioTranscriptNormalizeEnabledCheckBox = nullptr;
     QCheckBox *m_audioPeakReductionEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioPeakThresholdDbSpin = nullptr;

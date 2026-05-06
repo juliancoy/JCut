@@ -302,6 +302,7 @@ add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/opengl_preview.h
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui_icons.qrc
 )
 
 target_include_directories(editor_core

@@ -19,7 +19,7 @@ public:
         float normalizeTargetDb = -1.0f;
         bool selectiveNormalizeEnabled = false;
         float selectiveNormalizeMinSegmentSeconds = 0.5f;
-        float selectiveNormalizePeakDb = -1.0f;
+        float selectiveNormalizePeakDb = -12.0f;
         int selectiveNormalizePasses = 1;
         bool peakReductionEnabled = false;
         float peakThresholdDb = -6.0f;

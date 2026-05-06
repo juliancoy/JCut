@@ -25,6 +25,7 @@ public:
 
     QPushButton *playButton() const { return m_playButton; }
     QToolButton *audioMuteButton() const { return m_audioMuteButton; }
+    QToolButton *playbackLoopButton() const { return m_loopButton; }
     QSlider *seekSlider() const { return m_seekSlider; }
     QSlider *audioVolumeSlider() const { return m_audioVolumeSlider; }
     QLabel *timecodeLabel() const { return m_timecodeLabel; }
@@ -48,6 +49,7 @@ signals:
     void audioToolsClicked();
     void audioMuteClicked();
     void audioVolumeChanged(int value);
+    void playbackLoopToggled(bool enabled);
 
 private:
     void setupTransportControls();
@@ -65,6 +67,7 @@ private:
     QComboBox *m_playbackSpeedCombo = nullptr;
     QComboBox *m_previewModeCombo = nullptr;
     QToolButton *m_audioToolsButton = nullptr;
+    QToolButton *m_loopButton = nullptr;
     QToolButton *m_audioMuteButton = nullptr;
     QSlider *m_audioVolumeSlider = nullptr;
     QLabel *m_audioNowPlayingLabel = nullptr;

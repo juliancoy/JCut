@@ -804,11 +804,171 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
         return m_transcriptWordRangesMergedCache;
     }
 
+QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete(
+    const QVector<ExportRangeSegment> &baseRanges,
+    const QVector<TimelineClip> &clips,
+    const QVector<RenderSyncMarker> &markers,
+    int transcriptPrependMs,
+    int transcriptPostpendMs,
+    int neighborWordRadius) const
+{
+    const int safeNeighborWordRadius = qBound(0, neighborWordRadius, 10);
+    QString cacheSignature;
+    cacheSignature.reserve(256);
+    cacheSignature += QStringLiteral("discrete|pre=%1|post=%2|radius=%3|")
+                          .arg(transcriptPrependMs)
+                          .arg(transcriptPostpendMs)
+                          .arg(safeNeighborWordRadius);
+    for (const ExportRangeSegment &range : baseRanges) {
+        cacheSignature += QStringLiteral("base:%1-%2|").arg(range.startFrame).arg(range.endFrame);
+    }
+    for (const RenderSyncMarker &marker : markers) {
+        cacheSignature += QStringLiteral("marker:%1:%2:%3:%4|")
+                              .arg(marker.clipId)
+                              .arg(marker.frame)
+                              .arg(static_cast<int>(marker.action))
+                              .arg(marker.count);
+    }
+    for (const TimelineClip &clip : clips) {
+        const QFileInfo transcriptInfo(transcriptPathForClip(clip));
+        cacheSignature += QStringLiteral("clip:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10|")
+                              .arg(clip.id)
+                              .arg(clip.startFrame)
+                              .arg(clip.startSubframeSamples)
+                              .arg(clip.durationFrames)
+                              .arg(clip.sourceInFrame)
+                              .arg(clip.sourceInSubframeSamples)
+                              .arg(clip.sourceDurationFrames)
+                              .arg(clip.playbackRate, 0, 'g', 12)
+                              .arg(clip.filePath)
+                              .arg(transcriptInfo.exists()
+                                       ? transcriptInfo.lastModified().toMSecsSinceEpoch()
+                                       : -1);
+    }
+
+    if (m_transcriptWordRangesDiscreteCacheSignature == cacheSignature) {
+        return m_transcriptWordRangesDiscreteCache;
+    }
+
+    m_transcriptWordRangesDiscreteCacheSignature = cacheSignature;
+    m_transcriptWordRangesDiscreteCache.clear();
+
+    QVector<ExportRangeSegment> resolvedBaseRanges = baseRanges;
+    if (resolvedBaseRanges.isEmpty()) {
+        int64_t endFrame = -1;
+        for (const TimelineClip &clip : clips) {
+            if (clip.durationFrames <= 0) {
+                continue;
+            }
+            endFrame = qMax(endFrame, clip.startFrame + clip.durationFrames - 1);
+        }
+        if (endFrame < 0) {
+            return {};
+        }
+        resolvedBaseRanges.push_back(ExportRangeSegment{0, endFrame});
+    }
+
+    QVector<ExportRangeSegment> discreteRanges;
+
+    for (const TimelineClip &clip : clips) {
+        if ((clip.mediaType != ClipMediaType::Audio && !clip.hasAudio) || clip.durationFrames <= 0) {
+            continue;
+        }
+
+        QJsonDocument transcriptDoc;
+        if (!loadTranscriptJson(transcriptPathForClip(clip), &transcriptDoc)) {
+            continue;
+        }
+
+        QVector<ExportRangeSegment> sourceWordRanges;
+        const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
+        for (const QJsonValue &segmentValue : segments) {
+            const QJsonArray words = segmentValue.toObject().value(QStringLiteral("words")).toArray();
+            for (const QJsonValue &wordValue : words) {
+                const QJsonObject wordObj = wordValue.toObject();
+                if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                    continue;
+                }
+                if (wordObj.value(QStringLiteral("word")).toString().trimmed().isEmpty()) {
+                    continue;
+                }
+
+                double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+                const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
+                if (startSeconds < 0.0 || endSeconds < startSeconds) {
+                    continue;
+                }
+
+                const double prependSeconds = transcriptPrependMs / 1000.0;
+                const double postpendSeconds = transcriptPostpendMs / 1000.0;
+                startSeconds = qMax(0.0, startSeconds - prependSeconds);
+                const double adjustedEndSeconds = qMax(startSeconds, endSeconds + postpendSeconds);
+
+                const int64_t startFrame =
+                    qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+                const int64_t endFrame =
+                    qMax<int64_t>(startFrame,
+                                  static_cast<int64_t>(std::ceil(adjustedEndSeconds * kTimelineFps)) - 1);
+                sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
+            }
+        }
+
+        QVector<ExportRangeSegment> normalizeWordRanges = sourceWordRanges;
+        if (safeNeighborWordRadius > 0 && sourceWordRanges.size() > 1) {
+            normalizeWordRanges.resize(sourceWordRanges.size());
+            for (int i = 0; i < sourceWordRanges.size(); ++i) {
+                const int begin = qMax(0, i - safeNeighborWordRadius);
+                const int end = qMin(sourceWordRanges.size() - 1, i + safeNeighborWordRadius);
+                int64_t expandedStart = sourceWordRanges.at(i).startFrame;
+                int64_t expandedEnd = sourceWordRanges.at(i).endFrame;
+                for (int j = begin; j <= end; ++j) {
+                    expandedStart = qMin(expandedStart, sourceWordRanges.at(j).startFrame);
+                    expandedEnd = qMax(expandedEnd, sourceWordRanges.at(j).endFrame);
+                }
+                normalizeWordRanges[i] = ExportRangeSegment{expandedStart, expandedEnd};
+            }
+        }
+
+        for (const ExportRangeSegment& wordRange : std::as_const(normalizeWordRanges)) {
+            QVector<ExportRangeSegment> timelineRangesForWord;
+            for (const ExportRangeSegment &baseRange : resolvedBaseRanges) {
+                const int64_t clipStart = qMax<int64_t>(clip.startFrame, baseRange.startFrame);
+                const int64_t clipEnd =
+                    qMin<int64_t>(clip.startFrame + clip.durationFrames - 1, baseRange.endFrame);
+                if (clipEnd < clipStart) {
+                    continue;
+                }
+
+                for (int64_t timelineFrame = clipStart; timelineFrame <= clipEnd; ++timelineFrame) {
+                    const int64_t localTimelineFrame = timelineFrame - clip.startFrame;
+                    if (localTimelineFrame < 0 || localTimelineFrame >= clip.durationFrames) {
+                        continue;
+                    }
+                    const int64_t adjustedLocalFrame =
+                        adjustedLocalFrameForClip(clip, localTimelineFrame, markers);
+                    const int64_t sourceFrame = clip.sourceInFrame + adjustedLocalFrame;
+                    if (sourceFrame >= wordRange.startFrame && sourceFrame <= wordRange.endFrame) {
+                        appendMergedExportFrame(timelineRangesForWord, timelineFrame);
+                    }
+                }
+            }
+            if (!timelineRangesForWord.isEmpty()) {
+                discreteRanges += timelineRangesForWord;
+            }
+        }
+    }
+
+    m_transcriptWordRangesDiscreteCache = discreteRanges;
+    return m_transcriptWordRangesDiscreteCache;
+}
+
 void TranscriptEngine::invalidateCache()
 {
     m_transcriptWordRangesCache.clear();
     m_transcriptWordRangesCacheSignature.clear();
     m_transcriptWordRangesMergedCache.clear();
+    m_transcriptWordRangesDiscreteCacheSignature.clear();
+    m_transcriptWordRangesDiscreteCache.clear();
     QMutexLocker locker(&g_boxstreamDocCacheMutex);
     g_boxstreamDocCache.clear();
 }

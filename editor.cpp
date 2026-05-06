@@ -502,10 +502,21 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("audioSelectiveNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.selectiveNormalizeMinSegmentSeconds =
         root.value(QStringLiteral("audioSelectiveNormalizeMinSegmentSeconds")).toDouble(0.5);
+    const bool hasSelectivePeakDb =
+        root.contains(QStringLiteral("audioSelectiveNormalizePeakDb"));
     loadedAudioDynamics.selectiveNormalizePeakDb =
-        root.value(QStringLiteral("audioSelectiveNormalizePeakDb")).toDouble(-1.0);
+        root.value(QStringLiteral("audioSelectiveNormalizePeakDb")).toDouble(-12.0);
+    // Compatibility migration: older builds forced -0.5 dBFS, which is often too strict to
+    // trigger selective segments. Migrate legacy defaults to a practical threshold.
+    if (!hasSelectivePeakDb ||
+        (loadedAudioDynamics.selectiveNormalizePeakDb > -1.0 &&
+         loadedAudioDynamics.selectiveNormalizePeakDb <= 0.0)) {
+        loadedAudioDynamics.selectiveNormalizePeakDb = -12.0;
+    }
     loadedAudioDynamics.selectiveNormalizePasses =
         qBound(1, root.value(QStringLiteral("audioSelectiveNormalizePasses")).toInt(1), 8);
+    loadedAudioDynamics.selectiveNormalizeOverlayVisible =
+        root.value(QStringLiteral("audioSelectiveNormalizeOverlayVisible")).toBool(true);
     loadedAudioDynamics.transcriptNormalizeEnabled =
         root.value(QStringLiteral("audioTranscriptNormalizeEnabled")).toBool(false);
     loadedAudioDynamics.waveformPreviewPostProcessing =
@@ -1113,6 +1124,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_previewAudioDynamics.selectiveNormalizePasses);
         m_audioSelectiveNormalizePassesSpin->setEnabled(m_featureAudioDynamicsTools);
     }
+    if (m_audioSelectiveNormalizeOverlayVisibleCheckBox) {
+        QSignalBlocker block(m_audioSelectiveNormalizeOverlayVisibleCheckBox);
+        m_audioSelectiveNormalizeOverlayVisibleCheckBox->setChecked(
+            m_previewAudioDynamics.selectiveNormalizeOverlayVisible);
+        m_audioSelectiveNormalizeOverlayVisibleCheckBox->setEnabled(m_featureAudioDynamicsTools);
+    }
     if (m_audioTranscriptNormalizeEnabledCheckBox) {
         QSignalBlocker block(m_audioTranscriptNormalizeEnabledCheckBox);
         m_audioTranscriptNormalizeEnabledCheckBox->setChecked(
@@ -1238,11 +1255,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         markStartup(QStringLiteral("apply_state.audio_bind.begin"));
         m_audioEngine->setTimelineClips(m_timeline->clips());
         m_audioEngine->setExportRanges(playbackRanges);
+        m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
         m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
         m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
+        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         if (!startupMarking) {
             m_audioEngine->seek(currentFrame);
         }

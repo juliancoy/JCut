@@ -33,6 +33,12 @@ public:
                                                            const QVector<RenderSyncMarker> &markers,
                                                            int transcriptPrependMs,
                                                            int transcriptPostpendMs) const;
+    QVector<ExportRangeSegment> transcriptWordExportRangesDiscrete(const QVector<ExportRangeSegment> &baseRanges,
+                                                                   const QVector<TimelineClip> &clips,
+                                                                   const QVector<RenderSyncMarker> &markers,
+                                                                   int transcriptPrependMs,
+                                                                   int transcriptPostpendMs,
+                                                                   int neighborWordRadius = 0) const;
 
     void invalidateCache();
 
@@ -40,6 +46,8 @@ private:
     mutable QHash<QString, QVector<ExportRangeSegment>> m_transcriptWordRangesCache;
     mutable QString m_transcriptWordRangesCacheSignature;
     mutable QVector<ExportRangeSegment> m_transcriptWordRangesMergedCache;
+    mutable QString m_transcriptWordRangesDiscreteCacheSignature;
+    mutable QVector<ExportRangeSegment> m_transcriptWordRangesDiscreteCache;
 };
 
 } // namespace editor
