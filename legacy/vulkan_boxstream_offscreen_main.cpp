@@ -5,6 +5,8 @@
 #include "editor_shared.h"
 #include "frame_handle.h"
 #include "vulkan_res10_ncnn_face_detector.h"
+#include "vulkan_detector_frame_handoff.h"
+#include "vulkan_scrfd_ncnn_face_detector.h"
 #include "vulkan_zero_copy_face_detector.h"
 
 #include <QDir>
@@ -18,22 +20,34 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
+#include <QCheckBox>
+#include <QDebug>
+#include <QFormLayout>
+#include <QHBoxLayout>
 #include <QLocalSocket>
 #include <QPainter>
 #include <QPixmap>
+#include <QSlider>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
+#include <QVBoxLayout>
+#include <QWidget>
 
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <fcntl.h>
+#include <functional>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #if JCUT_HAVE_OPENCV
@@ -48,22 +62,79 @@ struct Options {
     QString videoPath = QStringLiteral("/mnt/Cancer/PanelVid2TikTok/Politics/YTDown.com_YouTube_Meet-the-Candidates-for-Baltimore-County_Media_Hho5MORgIj8_001_1080p.mp4");
     QString outputDir = QStringLiteral("testbench_assets/vulkan_boxstream_offscreen");
     int maxFrames = 0; // 0 => full video
+    int startFrame = 0;
     int stride = 1;
     int maxDetections = 256;
-    int maxFacesPerFrame = 0; // 0 => no post-cap
+    int maxFacesPerFrame = 32; // 0 => no post-cap
+    int scrfdTargetSize = 640;
     int previewFrames = 24;
     int previewStride = 12;
     float threshold = 0.45f;
+    float nmsIouThreshold = 0.35f;
+    float trackMatchIouThreshold = 0.22f;
+    float newTrackMinConfidence = 0.45f;
+    bool primaryFaceOnly = true;
+    bool smallFaceFallback = false;
     QString detector = QStringLiteral("jcut-dnn");
     QString res10ParamPath;
     QString res10BinPath;
+    QString scrfdParamPath;
+    QString scrfdBinPath;
     QString paramsFile;
     QString previewSocket;
     bool livePreview = false;
     bool writePreviewFiles = false;
     bool materializedGenerateBoxstream = false;
     bool heuristicZeroCopyDetector = false;
+    bool scrfdDetector = false;
+    bool requireHardwareVulkanFramePath = false;
+    bool allowCpuUploadFallback = false;
+    bool verbose = false;
+    int logInterval = 0; // 0 => summary only unless --verbose is set
     editor::DecodePreference decodePreference = editor::DecodePreference::HardwareZeroCopy;
+};
+
+class ScopedStderrSilencer {
+public:
+    explicit ScopedStderrSilencer(bool enabled)
+    {
+        if (!enabled) {
+            return;
+        }
+        fflush(stderr);
+        m_savedFd = dup(STDERR_FILENO);
+        if (m_savedFd < 0) {
+            return;
+        }
+        const int nullFd = open("/dev/null", O_WRONLY);
+        if (nullFd < 0) {
+            close(m_savedFd);
+            m_savedFd = -1;
+            return;
+        }
+        if (dup2(nullFd, STDERR_FILENO) < 0) {
+            close(nullFd);
+            close(m_savedFd);
+            m_savedFd = -1;
+            return;
+        }
+        close(nullFd);
+    }
+
+    ~ScopedStderrSilencer()
+    {
+        if (m_savedFd >= 0) {
+            fflush(stderr);
+            dup2(m_savedFd, STDERR_FILENO);
+            close(m_savedFd);
+        }
+    }
+
+    ScopedStderrSilencer(const ScopedStderrSilencer&) = delete;
+    ScopedStderrSilencer& operator=(const ScopedStderrSilencer&) = delete;
+
+private:
+    int m_savedFd = -1;
 };
 
 struct Detection {
@@ -81,17 +152,88 @@ struct Track {
 struct RuntimeTuning {
     int stride = 1;
     int maxDetections = 256;
-    int maxFacesPerFrame = 0;
+    int maxFacesPerFrame = 32;
     float threshold = 0.45f;
+    float nmsIouThreshold = 0.35f;
+    float trackMatchIouThreshold = 0.22f;
+    float newTrackMinConfidence = 0.45f;
+    bool primaryFaceOnly = true;
+    bool smallFaceFallback = false;
     float roiX1 = 0.0f;
     float roiY1 = 0.0f;
     float roiX2 = 1.0f;
     float roiY2 = 1.0f;
-    float minFaceAreaRatio = 0.0f;
+    float minFaceAreaRatio = 0.0005f;
     float maxFaceAreaRatio = 1.0f;
-    float minAspect = 0.0f;
-    float maxAspect = 100.0f;
+    float minAspect = 0.45f;
+    float maxAspect = 1.80f;
 };
+
+QString detectorSettingsPathForVideo(const QString& videoPath)
+{
+    const QFileInfo info(videoPath);
+    const QString baseName = info.completeBaseName().isEmpty()
+        ? info.fileName()
+        : info.completeBaseName();
+    return info.dir().absoluteFilePath(baseName + QStringLiteral("_detectorsettings.json"));
+}
+
+QJsonObject runtimeTuningToJson(const RuntimeTuning& tuning,
+                                const QString& detector,
+                                int scrfdTargetSize)
+{
+    return {
+        {QStringLiteral("detector"), detector},
+        {QStringLiteral("scrfd_target_size"), scrfdTargetSize},
+        {QStringLiteral("stride"), tuning.stride},
+        {QStringLiteral("max_detections"), tuning.maxDetections},
+        {QStringLiteral("max_faces_per_frame"), tuning.maxFacesPerFrame},
+        {QStringLiteral("threshold"), tuning.threshold},
+        {QStringLiteral("nms_iou_threshold"), tuning.nmsIouThreshold},
+        {QStringLiteral("track_match_iou_threshold"), tuning.trackMatchIouThreshold},
+        {QStringLiteral("new_track_min_confidence"), tuning.newTrackMinConfidence},
+        {QStringLiteral("primary_face_only"), tuning.primaryFaceOnly},
+        {QStringLiteral("small_face_fallback"), tuning.smallFaceFallback},
+        {QStringLiteral("roi_x1"), tuning.roiX1},
+        {QStringLiteral("roi_y1"), tuning.roiY1},
+        {QStringLiteral("roi_x2"), tuning.roiX2},
+        {QStringLiteral("roi_y2"), tuning.roiY2},
+        {QStringLiteral("min_face_area_ratio"), tuning.minFaceAreaRatio},
+        {QStringLiteral("max_face_area_ratio"), tuning.maxFaceAreaRatio},
+        {QStringLiteral("min_aspect"), tuning.minAspect},
+        {QStringLiteral("max_aspect"), tuning.maxAspect}
+    };
+}
+
+bool saveRuntimeTuningFile(const QString& path,
+                           const RuntimeTuning& tuning,
+                           const QString& detector,
+                           int scrfdTargetSize,
+                           QString* errorMessage = nullptr)
+{
+    if (path.isEmpty()) {
+        return false;
+    }
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("failed to write detector settings: %1").arg(path);
+        }
+        return false;
+    }
+    const QJsonDocument doc(runtimeTuningToJson(tuning, detector, scrfdTargetSize));
+    f.write(doc.toJson(QJsonDocument::Indented));
+    f.write("\n");
+    return true;
+}
+
+double iou(const QRectF& a, const QRectF& b)
+{
+    const QRectF ix = a.intersected(b);
+    const double inter = ix.width() * ix.height();
+    const double uni = a.width() * a.height() + b.width() * b.height() - inter;
+    return uni > 0.0 ? inter / uni : 0.0;
+}
 
 QVector<Detection> sanitizeDetections(const QVector<Detection>& raw,
                                       const QSize& frameSize,
@@ -109,6 +251,9 @@ QVector<Detection> sanitizeDetections(const QVector<Detection>& raw,
                          (tuning.roiY2 - tuning.roiY1) * frameSize.height());
     const double frameArea = static_cast<double>(frameSize.width()) * static_cast<double>(frameSize.height());
     for (const auto& d : raw) {
+        if (!std::isfinite(d.confidence) || d.confidence < 0.0f || d.confidence > 1.0f) {
+            continue;
+        }
         QRectF box = d.box.intersected(QRectF(0, 0, frameSize.width(), frameSize.height()));
         if (box.width() <= 1.0 || box.height() <= 1.0) {
             continue;
@@ -130,6 +275,24 @@ QVector<Detection> sanitizeDetections(const QVector<Detection>& raw,
     std::sort(out.begin(), out.end(), [](const Detection& a, const Detection& b) {
         return a.confidence > b.confidence;
     });
+    QVector<Detection> suppressed;
+    suppressed.reserve(out.size());
+    for (const Detection& candidate : out) {
+        bool keep = true;
+        for (const Detection& accepted : suppressed) {
+            if (iou(candidate.box, accepted.box) > tuning.nmsIouThreshold) {
+                keep = false;
+                break;
+            }
+        }
+        if (keep) {
+            suppressed.push_back(candidate);
+        }
+    }
+    out = suppressed;
+    if (tuning.primaryFaceOnly && out.size() > 1) {
+        out.resize(1);
+    }
     if (maxFacesPerFrame > 0 && out.size() > maxFacesPerFrame) {
         out.resize(maxFacesPerFrame);
     }
@@ -140,13 +303,21 @@ void usage(const char* argv0)
 {
     std::cerr << "Usage: " << argv0
               << " [video] [--out-dir DIR] [--max-frames N] [--stride N]"
+              << " [--start-frame N]"
               << " [--threshold F] [--preview-frames N] [--preview-stride N]"
               << " [--full-video] [--max-faces-per-frame N]"
+              << " [--primary-face-only] [--multi-face]"
+              << " [--small-face-fallback] [--no-small-face-fallback]"
+              << " [--nms-iou F] [--track-match-iou F] [--new-track-min-confidence F]"
               << " [--params-file PATH]"
-              << " [--detector jcut-dnn|jcut-heuristic-zero-copy]  # default: trained Vulkan DNN"
-              << " [--res10-param PATH] [--res10-bin PATH]"
+              << " [--detector jcut-dnn|scrfd-ncnn-vulkan|jcut-heuristic-zero-copy]"
+              << " [--res10-param PATH] [--res10-bin PATH] [--scrfd-param PATH] [--scrfd-bin PATH]"
+              << " [--scrfd-target-size N]"
               << " [--preview-window] [--no-preview-window] [--preview-files]"
               << " [--materialized-generate-boxstream]"
+              << " [--require-hardware-vulkan-frame-path]"
+              << " [--allow-cpu-upload-fallback]"
+              << " [--verbose] [--log-interval N]"
               << " [--decode software|hardware|auto|hardware_zero_copy]\n";
 }
 
@@ -173,6 +344,10 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--max-frames");
             if (!v) return false;
             options->maxFrames = std::max(0, std::atoi(v));
+        } else if (arg == "--start-frame") {
+            const char* v = next("--start-frame");
+            if (!v) return false;
+            options->startFrame = std::max(0, std::atoi(v));
         } else if (arg == "--stride") {
             const char* v = next("--stride");
             if (!v) return false;
@@ -183,6 +358,30 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--max-faces-per-frame");
             if (!v) return false;
             options->maxFacesPerFrame = std::max(0, std::atoi(v));
+        } else if (arg == "--scrfd-target-size") {
+            const char* v = next("--scrfd-target-size");
+            if (!v) return false;
+            options->scrfdTargetSize = std::max(320, std::atoi(v));
+        } else if (arg == "--primary-face-only") {
+            options->primaryFaceOnly = true;
+        } else if (arg == "--multi-face") {
+            options->primaryFaceOnly = false;
+        } else if (arg == "--small-face-fallback") {
+            options->smallFaceFallback = true;
+        } else if (arg == "--no-small-face-fallback") {
+            options->smallFaceFallback = false;
+        } else if (arg == "--nms-iou") {
+            const char* v = next("--nms-iou");
+            if (!v) return false;
+            options->nmsIouThreshold = std::clamp(static_cast<float>(std::atof(v)), 0.0f, 1.0f);
+        } else if (arg == "--track-match-iou") {
+            const char* v = next("--track-match-iou");
+            if (!v) return false;
+            options->trackMatchIouThreshold = std::clamp(static_cast<float>(std::atof(v)), 0.0f, 1.0f);
+        } else if (arg == "--new-track-min-confidence") {
+            const char* v = next("--new-track-min-confidence");
+            if (!v) return false;
+            options->newTrackMinConfidence = std::clamp(static_cast<float>(std::atof(v)), 0.0f, 1.0f);
         } else if (arg == "--threshold") {
             const char* v = next("--threshold");
             if (!v) return false;
@@ -202,17 +401,25 @@ bool parseArgs(int argc, char** argv, Options* options)
             if (detector == QStringLiteral("jcut-heuristic-zero-copy") ||
                 detector == QStringLiteral("vulkan-zero-copy-heuristic")) {
                 options->heuristicZeroCopyDetector = true;
+                options->scrfdDetector = false;
                 options->detector = QStringLiteral("jcut-heuristic-zero-copy");
+            } else if (detector == QStringLiteral("scrfd") ||
+                       detector == QStringLiteral("scrfd-ncnn") ||
+                       detector == QStringLiteral("scrfd-ncnn-vulkan")) {
+                options->heuristicZeroCopyDetector = false;
+                options->scrfdDetector = true;
+                options->detector = QStringLiteral("scrfd-ncnn-vulkan");
             } else if (detector != QStringLiteral("jcut-dnn") &&
                 detector != QStringLiteral("jcut-dnn-vulkan") &&
                 detector != QStringLiteral("res10-vulkan") &&
                 detector != QStringLiteral("native-jcut-dnn") &&
                 detector != QStringLiteral("native_vulkan_dnn")) {
                 std::cerr << "Unsupported --detector value: " << v
-                          << ". Use jcut-dnn or jcut-heuristic-zero-copy.\n";
+                          << ". Use jcut-dnn, scrfd-ncnn-vulkan, or jcut-heuristic-zero-copy.\n";
                 return false;
             } else {
                 options->heuristicZeroCopyDetector = false;
+                options->scrfdDetector = false;
                 options->detector = QStringLiteral("jcut-dnn");
             }
         } else if (arg == "--res10-param") {
@@ -223,6 +430,14 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--res10-bin");
             if (!v) return false;
             options->res10BinPath = QString::fromLocal8Bit(v);
+        } else if (arg == "--scrfd-param") {
+            const char* v = next("--scrfd-param");
+            if (!v) return false;
+            options->scrfdParamPath = QString::fromLocal8Bit(v);
+        } else if (arg == "--scrfd-bin") {
+            const char* v = next("--scrfd-bin");
+            if (!v) return false;
+            options->scrfdBinPath = QString::fromLocal8Bit(v);
         } else if (arg == "--params-file") {
             const char* v = next("--params-file");
             if (!v) return false;
@@ -241,6 +456,19 @@ bool parseArgs(int argc, char** argv, Options* options)
             options->writePreviewFiles = false;
         } else if (arg == "--materialized-generate-boxstream") {
             options->materializedGenerateBoxstream = true;
+        } else if (arg == "--require-hardware-vulkan-frame-path") {
+            options->requireHardwareVulkanFramePath = true;
+        } else if (arg == "--allow-cpu-upload-fallback") {
+            options->allowCpuUploadFallback = true;
+        } else if (arg == "--verbose") {
+            options->verbose = true;
+        } else if (arg == "--quiet") {
+            options->verbose = false;
+            options->logInterval = 0;
+        } else if (arg == "--log-interval") {
+            const char* v = next("--log-interval");
+            if (!v) return false;
+            options->logInterval = std::max(0, std::atoi(v));
         } else if (arg == "--decode") {
             const char* v = next("--decode");
             if (!v) return false;
@@ -300,6 +528,27 @@ bool applyRuntimeParamsFile(const QString& path,
                                        0.0f,
                                        1.0f);
     }
+    if (o.contains(QStringLiteral("nms_iou_threshold"))) {
+        tuning->nmsIouThreshold = std::clamp(static_cast<float>(o.value(QStringLiteral("nms_iou_threshold")).toDouble(tuning->nmsIouThreshold)),
+                                             0.0f,
+                                             1.0f);
+    }
+    if (o.contains(QStringLiteral("track_match_iou_threshold"))) {
+        tuning->trackMatchIouThreshold = std::clamp(static_cast<float>(o.value(QStringLiteral("track_match_iou_threshold")).toDouble(tuning->trackMatchIouThreshold)),
+                                                    0.0f,
+                                                    1.0f);
+    }
+    if (o.contains(QStringLiteral("new_track_min_confidence"))) {
+        tuning->newTrackMinConfidence = std::clamp(static_cast<float>(o.value(QStringLiteral("new_track_min_confidence")).toDouble(tuning->newTrackMinConfidence)),
+                                                   0.0f,
+                                                   1.0f);
+    }
+    if (o.contains(QStringLiteral("primary_face_only"))) {
+        tuning->primaryFaceOnly = o.value(QStringLiteral("primary_face_only")).toBool(tuning->primaryFaceOnly);
+    }
+    if (o.contains(QStringLiteral("small_face_fallback"))) {
+        tuning->smallFaceFallback = o.value(QStringLiteral("small_face_fallback")).toBool(tuning->smallFaceFallback);
+    }
     if (o.contains(QStringLiteral("roi_x1"))) tuning->roiX1 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_x1")).toDouble(tuning->roiX1)), 0.0f, 1.0f);
     if (o.contains(QStringLiteral("roi_y1"))) tuning->roiY1 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_y1")).toDouble(tuning->roiY1)), 0.0f, 1.0f);
     if (o.contains(QStringLiteral("roi_x2"))) tuning->roiX2 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_x2")).toDouble(tuning->roiX2)), 0.0f, 1.0f);
@@ -314,6 +563,196 @@ bool applyRuntimeParamsFile(const QString& path,
     if (tuning->maxAspect < tuning->minAspect) std::swap(tuning->minAspect, tuning->maxAspect);
     *lastAppliedMtime = mtime;
     return true;
+}
+
+struct DetectorControlPanel {
+    QWidget* window = nullptr;
+    QSlider* threshold = nullptr;
+    QLabel* thresholdValue = nullptr;
+    QSlider* nms = nullptr;
+    QLabel* nmsValue = nullptr;
+    QSlider* trackMatch = nullptr;
+    QLabel* trackMatchValue = nullptr;
+    QSlider* newTrack = nullptr;
+    QLabel* newTrackValue = nullptr;
+    QSlider* minArea = nullptr;
+    QLabel* minAreaValue = nullptr;
+    QSlider* maxFaces = nullptr;
+    QLabel* maxFacesValue = nullptr;
+    QCheckBox* primaryFaceOnly = nullptr;
+    QCheckBox* smallFaceFallback = nullptr;
+    QLabel* settingsPath = nullptr;
+    std::shared_ptr<bool> syncing = std::make_shared<bool>(false);
+};
+
+QString percentText(float value)
+{
+    return QStringLiteral("%1").arg(static_cast<double>(value), 0, 'f', 2);
+}
+
+QString areaRatioText(float value)
+{
+    return QStringLiteral("%1%").arg(static_cast<double>(value * 100.0f), 0, 'f', 3);
+}
+
+void syncDetectorControlPanel(DetectorControlPanel* panel, const RuntimeTuning& tuning)
+{
+    if (!panel || !panel->window) {
+        return;
+    }
+    *panel->syncing = true;
+    panel->threshold->setValue(qRound(tuning.threshold * 100.0f));
+    panel->thresholdValue->setText(percentText(tuning.threshold));
+    panel->nms->setValue(qRound(tuning.nmsIouThreshold * 100.0f));
+    panel->nmsValue->setText(percentText(tuning.nmsIouThreshold));
+    panel->trackMatch->setValue(qRound(tuning.trackMatchIouThreshold * 100.0f));
+    panel->trackMatchValue->setText(percentText(tuning.trackMatchIouThreshold));
+    panel->newTrack->setValue(qRound(tuning.newTrackMinConfidence * 100.0f));
+    panel->newTrackValue->setText(percentText(tuning.newTrackMinConfidence));
+    panel->minArea->setValue(qRound(tuning.minFaceAreaRatio * 100000.0f));
+    panel->minAreaValue->setText(areaRatioText(tuning.minFaceAreaRatio));
+    panel->maxFaces->setValue(tuning.maxFacesPerFrame);
+    panel->maxFacesValue->setText(tuning.maxFacesPerFrame == 0
+                                      ? QStringLiteral("unlimited")
+                                      : QString::number(tuning.maxFacesPerFrame));
+    panel->primaryFaceOnly->setChecked(tuning.primaryFaceOnly);
+    panel->smallFaceFallback->setChecked(tuning.smallFaceFallback);
+    *panel->syncing = false;
+}
+
+DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
+                                                const QString& detector,
+                                                int scrfdTargetSize,
+                                                const QString& settingsPath)
+{
+    DetectorControlPanel panel;
+    panel.window = new QWidget;
+    panel.window->setWindowTitle(QStringLiteral("JCut Detector Settings"));
+    panel.window->setMinimumWidth(420);
+    auto* root = new QVBoxLayout(panel.window);
+    auto* form = new QFormLayout;
+    root->addLayout(form);
+
+    auto persist = [tuning, detector, scrfdTargetSize, settingsPath]() {
+        QString error;
+        if (!saveRuntimeTuningFile(settingsPath, *tuning, detector, scrfdTargetSize, &error) &&
+            !error.isEmpty()) {
+            qWarning().noquote() << error;
+        }
+    };
+
+    auto addSlider = [&](const QString& name,
+                         const QString& tooltip,
+                         int minValue,
+                         int maxValue,
+                         int initialValue,
+                         QSlider** sliderOut,
+                         QLabel** labelOut,
+                         const std::function<QString(int)>& labelText,
+                         const std::function<void(int)>& applyValue) {
+        auto* row = new QWidget;
+        row->setToolTip(tooltip);
+        auto* layout = new QHBoxLayout(row);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto* slider = new QSlider(Qt::Horizontal);
+        slider->setRange(minValue, maxValue);
+        slider->setValue(initialValue);
+        slider->setToolTip(tooltip);
+        auto* valueLabel = new QLabel(labelText(initialValue));
+        valueLabel->setMinimumWidth(72);
+        valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        valueLabel->setToolTip(tooltip);
+        layout->addWidget(slider, 1);
+        layout->addWidget(valueLabel);
+        form->addRow(name, row);
+        const std::shared_ptr<bool> syncing = panel.syncing;
+        QObject::connect(slider, &QSlider::valueChanged, panel.window, [syncing, tuning, valueLabel, labelText, applyValue, persist](int value) {
+            valueLabel->setText(labelText(value));
+            if (*syncing || !tuning) {
+                return;
+            }
+            applyValue(value);
+            persist();
+        });
+        *sliderOut = slider;
+        *labelOut = valueLabel;
+    };
+
+    addSlider(QStringLiteral("Confidence threshold"),
+              QStringLiteral("Minimum detector confidence accepted as a face. Lower this to catch smaller or blurrier faces; raise it to reject false positives such as text, hands, or background shapes."),
+              1, 99, qRound(tuning->threshold * 100.0f),
+              &panel.threshold, &panel.thresholdValue,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) { tuning->threshold = v / 100.0f; });
+    addSlider(QStringLiteral("NMS IoU"),
+              QStringLiteral("Overlap threshold for merging duplicate face boxes. Lower values suppress nearby duplicate boxes more aggressively; higher values keep more overlapping detections."),
+              0, 100, qRound(tuning->nmsIouThreshold * 100.0f),
+              &panel.nms, &panel.nmsValue,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) { tuning->nmsIouThreshold = v / 100.0f; });
+    addSlider(QStringLiteral("Track match IoU"),
+              QStringLiteral("How much a new detection must overlap an existing track to continue it. Lower values tolerate camera/subject motion; higher values prevent unrelated faces from stealing a track."),
+              0, 100, qRound(tuning->trackMatchIouThreshold * 100.0f),
+              &panel.trackMatch, &panel.trackMatchValue,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) { tuning->trackMatchIouThreshold = v / 100.0f; });
+    addSlider(QStringLiteral("New track confidence"),
+              QStringLiteral("Minimum confidence required to create a brand-new track. Lower this when valid faces are not starting tracks; raise it if noisy detections create extra tracks."),
+              1, 99, qRound(tuning->newTrackMinConfidence * 100.0f),
+              &panel.newTrack, &panel.newTrackValue,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) { tuning->newTrackMinConfidence = v / 100.0f; });
+    addSlider(QStringLiteral("Min face area"),
+              QStringLiteral("Smallest accepted face box as a percent of frame area. Lower this for distant/small faces; raise it to reject tiny false positives."),
+              0, 2000, qRound(tuning->minFaceAreaRatio * 100000.0f),
+              &panel.minArea, &panel.minAreaValue,
+              [](int v) { return areaRatioText(v / 100000.0f); },
+              [tuning](int v) { tuning->minFaceAreaRatio = v / 100000.0f; });
+    addSlider(QStringLiteral("Max faces/frame"),
+              QStringLiteral("Maximum accepted faces per processed frame after filtering. 0 means unlimited. Use 1 or Primary mode for single-speaker videos; increase for panels or crowds."),
+              0, 64, tuning->maxFacesPerFrame,
+              &panel.maxFaces, &panel.maxFacesValue,
+              [](int v) { return v == 0 ? QStringLiteral("unlimited") : QString::number(v); },
+              [tuning](int v) { tuning->maxFacesPerFrame = v; });
+
+    panel.primaryFaceOnly = new QCheckBox(QStringLiteral("Keep only strongest face"));
+    panel.primaryFaceOnly->setToolTip(QStringLiteral("When enabled, only the strongest face detection is kept and only one track is allowed. Use this for single-subject clips to avoid track explosions."));
+    panel.primaryFaceOnly->setChecked(tuning->primaryFaceOnly);
+    form->addRow(QStringLiteral("Primary mode"), panel.primaryFaceOnly);
+    {
+        const std::shared_ptr<bool> syncing = panel.syncing;
+        QObject::connect(panel.primaryFaceOnly, &QCheckBox::toggled, panel.window, [syncing, tuning, persist](bool checked) {
+            if (*syncing || !tuning) {
+                return;
+            }
+            tuning->primaryFaceOnly = checked;
+            persist();
+        });
+    }
+
+    panel.smallFaceFallback = new QCheckBox(QStringLiteral("Enable Res10 tiled fallback"));
+    panel.smallFaceFallback->setToolTip(QStringLiteral("Runs extra cropped Res10 passes when the zero-copy Res10 detector misses. This can help some small faces but is slower and may produce false positives; SCRFD usually handles small faces better."));
+    panel.smallFaceFallback->setChecked(tuning->smallFaceFallback);
+    form->addRow(QStringLiteral("Small-face fallback"), panel.smallFaceFallback);
+    {
+        const std::shared_ptr<bool> syncing = panel.syncing;
+        QObject::connect(panel.smallFaceFallback, &QCheckBox::toggled, panel.window, [syncing, tuning, persist](bool checked) {
+            if (*syncing || !tuning) {
+                return;
+            }
+            tuning->smallFaceFallback = checked;
+            persist();
+        });
+    }
+
+    panel.settingsPath = new QLabel(settingsPath);
+    panel.settingsPath->setToolTip(QStringLiteral("Detector settings are saved here automatically and loaded the next time this video is opened."));
+    panel.settingsPath->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    panel.settingsPath->setWordWrap(true);
+    root->addWidget(panel.settingsPath);
+
+    syncDetectorControlPanel(&panel, *tuning);
+    return panel;
 }
 
 QString findRes10NcnnModelFile(const QString& explicitPath, const QString& fileName)
@@ -798,14 +1237,6 @@ public:
     int maxDetections = 256;
 };
 
-double iou(const QRectF& a, const QRectF& b)
-{
-    const QRectF ix = a.intersected(b);
-    const double inter = ix.width() * ix.height();
-    const double uni = a.width() * a.height() + b.width() * b.height() - inter;
-    return uni > 0.0 ? inter / uni : 0.0;
-}
-
 QVector<Detection> readDetections(VulkanHarnessContext& vk, int imageWidth, int imageHeight)
 {
     QVector<Detection> out;
@@ -900,6 +1331,8 @@ QVector<Detection> detectRes10VulkanFrame(jcut::vulkan_detector::VulkanZeroCopyF
                                           const QString& paramPath,
                                           const QString& binPath,
                                           float threshold,
+                                          bool smallFaceFallback,
+                                          bool suppressNcnnInfo,
                                           double* vulkanMs,
                                           QString* error)
 {
@@ -918,9 +1351,11 @@ QVector<Detection> detectRes10VulkanFrame(jcut::vulkan_detector::VulkanZeroCopyF
         !preprocessor->initialize(vk->detectorContext(), error)) {
         return out;
     }
-    if (!detector->isInitialized() &&
-        !detector->initialize(vk->detectorContext(), paramPath, binPath, error)) {
-        return out;
+    if (!detector->isInitialized()) {
+        ScopedStderrSilencer silence(suppressNcnnInfo);
+        if (!detector->initialize(vk->detectorContext(), paramPath, binPath, error)) {
+            return out;
+        }
     }
     if (!vk->ensureDetectorBuffers(preprocessor->tensorSpec().byteSize(), 1, error)) {
         return out;
@@ -928,29 +1363,118 @@ QVector<Detection> detectRes10VulkanFrame(jcut::vulkan_detector::VulkanZeroCopyF
 
     QElapsedTimer timer;
     timer.start();
-    const jcut::vulkan_detector::VulkanExternalImage source{
-        frame.imageView,
-        frame.imageLayout,
-        frame.size,
-        false
-    };
     const jcut::vulkan_detector::VulkanTensorBuffer tensor{
         vk->tensorBuffer,
         preprocessor->tensorSpec().byteSize()
     };
-    if (!preprocessor->preprocessToTensor(source, tensor, error)) {
+    auto runRoi = [&](const QRectF& roi, QVector<Detection>* dst) -> bool {
+        const QRectF bounded = roi.intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+        if (bounded.width() <= 0.01 || bounded.height() <= 0.01) {
+            return true;
+        }
+        const jcut::vulkan_detector::VulkanExternalImage source{
+            frame.imageView,
+            frame.imageLayout,
+            frame.size,
+            false,
+            static_cast<float>(bounded.x()),
+            static_cast<float>(bounded.y()),
+            static_cast<float>(bounded.width()),
+            static_cast<float>(bounded.height())
+        };
+        if (!preprocessor->preprocessToTensor(source, tensor, error)) {
+            return false;
+        }
+        const int roiWidth = qMax(1, qRound(frame.size.width() * bounded.width()));
+        const int roiHeight = qMax(1, qRound(frame.size.height() * bounded.height()));
+        const QVector<jcut::vulkan_detector::Res10Detection> raw =
+            detector->inferFromTensor(tensor, roiWidth, roiHeight, threshold, error);
+        dst->reserve(dst->size() + raw.size());
+        for (const auto& det : raw) {
+            QRectF box(bounded.x() * frame.size.width() + det.box.x(),
+                       bounded.y() * frame.size.height() + det.box.y(),
+                       det.box.width(),
+                       det.box.height());
+            dst->push_back({box, det.confidence});
+        }
+        return true;
+    };
+    if (!runRoi(QRectF(0.0, 0.0, 1.0, 1.0), &out)) {
         return out;
     }
-    const QVector<jcut::vulkan_detector::Res10Detection> raw =
-        detector->inferFromTensor(tensor, frame.size.width(), frame.size.height(), threshold, error);
-    out.reserve(raw.size());
-    for (const auto& det : raw) {
-        out.push_back({det.box, det.confidence});
+    if (out.isEmpty() && smallFaceFallback) {
+        static const QRectF rois[] = {
+            QRectF(0.0, 0.0, 0.50, 1.0),
+            QRectF(0.25, 0.0, 0.50, 1.0),
+            QRectF(0.50, 0.0, 0.50, 1.0),
+            QRectF(0.0, 0.0, 0.50, 0.65),
+            QRectF(0.25, 0.0, 0.50, 0.65),
+            QRectF(0.50, 0.0, 0.50, 0.65)
+        };
+        for (const QRectF& roi : rois) {
+            if (!runRoi(roi, &out)) {
+                return out;
+            }
+        }
     }
     if (vulkanMs) {
         *vulkanMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
     }
     return out;
+}
+
+QVector<Detection> detectRes10FromDecoderFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDetector* preprocessor,
+                                               jcut::vulkan_detector::VulkanRes10NcnnFaceDetector* detector,
+                                               VulkanHarnessContext* vk,
+                                               jcut::vulkan_detector::VulkanDetectorFrameHandoff* handoff,
+                                               const editor::FrameHandle& frame,
+                                               const QString& paramPath,
+                                               const QString& binPath,
+                                               float threshold,
+                                               bool allowCpuUploadFallback,
+                                               double* uploadMs,
+                                               double* vulkanMs,
+                                               bool* hardwareDirectUsed,
+                                               QString* error)
+{
+    QVector<Detection> out;
+    if (!preprocessor || !detector || !vk || !handoff || frame.isNull()) {
+        if (error) *error = QStringLiteral("Invalid decoder frame for Vulkan detector handoff.");
+        return out;
+    }
+    if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, error)) {
+        return out;
+    }
+    if (hardwareDirectUsed) {
+        *hardwareDirectUsed =
+            handoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::HardwareDirect;
+    }
+    const jcut::vulkan_detector::VulkanExternalImage source = handoff->externalImage();
+    if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+        if (error) *error = QStringLiteral("Frame handoff produced invalid external image.");
+        return out;
+    }
+    render_detail::OffscreenVulkanFrame detectorFrame;
+    detectorFrame.physicalDevice = vk->physicalDevice;
+    detectorFrame.device = vk->device;
+    detectorFrame.queue = vk->queue;
+    detectorFrame.queueFamilyIndex = vk->queueFamilyIndex;
+    detectorFrame.imageView = source.imageView;
+    detectorFrame.imageLayout = source.imageLayout;
+    detectorFrame.size = source.size;
+    detectorFrame.queueSupportsCompute = true;
+    detectorFrame.valid = true;
+    return detectRes10VulkanFrame(preprocessor,
+                                  detector,
+                                  vk,
+                                  detectorFrame,
+                                  paramPath,
+                                  binPath,
+                                  threshold,
+                                  false,
+                                  false,
+                                  vulkanMs,
+                                  error);
 }
 
 #if JCUT_HAVE_OPENCV
@@ -1048,7 +1572,8 @@ QVector<Detection> detectTrainedVulkanDnn(cv::dnn::Net* net,
 void updateTracks(QVector<Track>* tracks,
                   const QVector<Detection>& detections,
                   int frameNumber,
-                  const QSize& frameSize)
+                  const QSize& frameSize,
+                  const RuntimeTuning& tuning)
 {
     QVector<bool> used(tracks->size(), false);
     for (const Detection& det : detections) {
@@ -1064,7 +1589,15 @@ void updateTracks(QVector<Track>* tracks,
                 best = i;
             }
         }
-        if (best < 0 || bestIou < 0.12) {
+        const bool forcePrimaryTrack =
+            tuning.primaryFaceOnly && tracks->size() == 1 && best >= 0;
+        if (best < 0 || (!forcePrimaryTrack && bestIou < tuning.trackMatchIouThreshold)) {
+            if (det.confidence < tuning.newTrackMinConfidence) {
+                continue;
+            }
+            if (tuning.primaryFaceOnly && !tracks->isEmpty()) {
+                continue;
+            }
             Track track;
             track.id = tracks->size();
             track.box = det.box;
@@ -1150,6 +1683,7 @@ int main(int argc, char** argv)
         std::cerr << "Video not found: " << options.videoPath.toStdString() << "\n";
         return 2;
     }
+    qputenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE", "1");
     QDir().mkpath(options.outputDir);
     const bool platformIsOffscreen =
         QString::fromLocal8Bit(qgetenv("QT_QPA_PLATFORM")).compare(QStringLiteral("offscreen"),
@@ -1180,12 +1714,13 @@ int main(int argc, char** argv)
     sourceClip.videoEnabled = true;
     sourceClip.audioEnabled = false;
     sourceClip.hasAudio = false;
-    sourceClip.startFrame = 0;
-    sourceClip.sourceInFrame = 0;
+    sourceClip.startFrame = options.startFrame;
+    sourceClip.sourceInFrame = options.startFrame;
     const int64_t decoderDurationFrames = qMax<int64_t>(0, decoder.info().durationFrames);
+    const int64_t availableFrames = qMax<int64_t>(1, decoderDurationFrames - options.startFrame);
     const int64_t targetFrames = options.maxFrames > 0
-        ? static_cast<int64_t>(options.maxFrames)
-        : qMax<int64_t>(1, decoderDurationFrames);
+        ? qMin<int64_t>(static_cast<int64_t>(options.maxFrames), availableFrames)
+        : availableFrames;
     sourceClip.durationFrames = qMax<int64_t>(1, targetFrames);
     sourceClip.sourceDurationFrames = qMax<int64_t>(1, targetFrames);
     sourceClip.sourceFps = 30.0;
@@ -1231,12 +1766,20 @@ int main(int argc, char** argv)
         std::cerr << "OpenCV is not enabled in this build; materialized Generate FaceStream scan is unavailable.\n";
         return 2;
     }
+    if (options.scrfdDetector) {
+        std::cerr << "OpenCV is not enabled in this build; SCRFD materialized-input detector is unavailable.\n";
+        return 2;
+    }
 #endif
-    const bool zeroCopyVulkanDetector = !options.materializedGenerateBoxstream;
+    const bool zeroCopyVulkanDetector = !options.materializedGenerateBoxstream && !options.scrfdDetector;
     const QString res10ParamPath = findRes10NcnnModelFile(
         options.res10ParamPath, QStringLiteral("res10_300x300_ssd_ncnn.param"));
     const QString res10BinPath = findRes10NcnnModelFile(
         options.res10BinPath, QStringLiteral("res10_300x300_ssd_ncnn.bin"));
+    const QString scrfdParamPath = findRes10NcnnModelFile(
+        options.scrfdParamPath, QStringLiteral("scrfd_500m-opt2.param"));
+    const QString scrfdBinPath = findRes10NcnnModelFile(
+        options.scrfdBinPath, QStringLiteral("scrfd_500m-opt2.bin"));
     if (zeroCopyVulkanDetector && !options.heuristicZeroCopyDetector) {
         std::cout << "detector=res10_ssd_ncnn_vulkan_zero_copy_v1"
                   << " name=\"JCut DNN FaceStream Generator\""
@@ -1249,6 +1792,13 @@ int main(int argc, char** argv)
                   << " name=\"JCut DNN FaceStream Generator\""
                   << " decode=hardware_zero_copy"
                   << " qimage_materialized=0\n";
+    } else if (options.scrfdDetector) {
+        std::cout << "detector=scrfd_500m_ncnn_vulkan_materialized_input_v1"
+                  << " name=\"JCut SCRFD FaceStream Generator\""
+                  << " inference_backend=ncnn_vulkan"
+                  << " model_param=\"" << scrfdParamPath.toStdString() << "\""
+                  << " model_bin=\"" << scrfdBinPath.toStdString() << "\""
+                  << " qimage_materialized=1\n";
     }
 
     int decoded = 0;
@@ -1257,35 +1807,102 @@ int main(int argc, char** argv)
     int hardwareFrames = 0;
     int totalDetections = 0;
     int previewWritten = 0;
+    int decoderVulkanUploadFallbackFrames = 0;
+    int hardwareDirectHandoffFrames = 0;
+    int hardwareInteropProbeSupportedFrames = 0;
+    int hardwareInteropProbeFailedFrames = 0;
+    QString lastHardwareInteropProbeReason;
+    QString lastHardwareInteropProbePath;
+    QString lastHardwareDirectAttemptReason;
     double renderDecodeMsTotal = 0.0;
     double renderCompositeMsTotal = 0.0;
     double renderReadbackMsTotal = 0.0;
+    double decoderUploadMsTotal = 0.0;
     double vulkanDetectMsTotal = 0.0;
     QVector<Track> tracks;
     QJsonArray frameRows;
     bool printedAppVulkanFailure = false;
     VulkanHarnessContext detectorContext;
+    jcut::vulkan_detector::VulkanDetectorFrameHandoff decoderFrameHandoff;
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector zeroCopyDetector;
     jcut::vulkan_detector::VulkanRes10NcnnFaceDetector res10Detector;
+    jcut::vulkan_detector::VulkanScrfdNcnnFaceDetector scrfdDetector;
     RuntimeTuning tuning{
         options.stride,
         options.maxDetections,
         options.maxFacesPerFrame,
-        options.threshold
+        options.threshold,
+        options.nmsIouThreshold,
+        options.trackMatchIouThreshold,
+        options.newTrackMinConfidence,
+        options.primaryFaceOnly,
+        options.smallFaceFallback
     };
     QDateTime paramsMtime;
+    const QString detectorSettingsPath = detectorSettingsPathForVideo(options.videoPath);
+    QDateTime detectorSettingsMtime;
+    QFileInfo detectorSettingsInfo(detectorSettingsPath);
+    if (applyRuntimeParamsFile(detectorSettingsPath, detectorSettingsInfo, &tuning, &detectorSettingsMtime) &&
+        options.verbose) {
+        std::cout << "loaded_detector_settings=\"" << detectorSettingsPath.toStdString() << "\"\n";
+    }
+    DetectorControlPanel detectorControls;
+    if (previewWindowPtr) {
+        detectorControls = createDetectorControlPanel(&tuning,
+                                                      options.detector,
+                                                      options.scrfdTargetSize,
+                                                      detectorSettingsPath);
+        detectorControls.window->show();
+        QString saveError;
+        if (saveRuntimeTuningFile(detectorSettingsPath,
+                                  tuning,
+                                  options.detector,
+                                  options.scrfdTargetSize,
+                                  &saveError)) {
+            detectorSettingsMtime = QFileInfo(detectorSettingsPath).lastModified();
+        } else if (!saveError.isEmpty()) {
+            std::cerr << saveError.toStdString() << "\n";
+        }
+        app.processEvents();
+    }
 
     const auto wallStart = std::chrono::steady_clock::now();
     const int totalFrames = static_cast<int>(qMax<int64_t>(1, targetFrames));
-    for (int frameNumber = 0; frameNumber < totalFrames; ++frameNumber) {
+    for (int frameOffset = 0; frameOffset < totalFrames; ++frameOffset) {
+        const int frameNumber = options.startFrame + frameOffset;
+        if (previewWindowPtr || detectorControls.window) {
+            app.processEvents();
+            if (detectorControls.window && !detectorControls.window->isVisible()) {
+                detectorControls.window = nullptr;
+            }
+        }
         if (!options.paramsFile.isEmpty()) {
             QFileInfo paramsInfo(options.paramsFile);
             if (applyRuntimeParamsFile(options.paramsFile, paramsInfo, &tuning, &paramsMtime)) {
-                std::cout << "runtime_params"
-                          << " stride=" << tuning.stride
+                syncDetectorControlPanel(&detectorControls, tuning);
+                if (options.verbose) {
+                    std::cout << "runtime_params"
+                              << " stride=" << tuning.stride
+                              << " threshold=" << tuning.threshold
+                              << " max_detections=" << tuning.maxDetections
+                              << " max_faces_per_frame=" << tuning.maxFacesPerFrame
+                              << " nms_iou_threshold=" << tuning.nmsIouThreshold
+                              << " track_match_iou_threshold=" << tuning.trackMatchIouThreshold
+                              << " new_track_min_confidence=" << tuning.newTrackMinConfidence
+                              << " primary_face_only=" << (tuning.primaryFaceOnly ? 1 : 0)
+                              << " small_face_fallback=" << (tuning.smallFaceFallback ? 1 : 0)
+                              << "\n";
+                }
+            }
+        }
+        QFileInfo liveSettingsInfo(detectorSettingsPath);
+        if (applyRuntimeParamsFile(detectorSettingsPath, liveSettingsInfo, &tuning, &detectorSettingsMtime)) {
+            syncDetectorControlPanel(&detectorControls, tuning);
+            if (options.verbose) {
+                std::cout << "detector_settings"
                           << " threshold=" << tuning.threshold
-                          << " max_detections=" << tuning.maxDetections
                           << " max_faces_per_frame=" << tuning.maxFacesPerFrame
+                          << " primary_face_only=" << (tuning.primaryFaceOnly ? 1 : 0)
                           << "\n";
             }
         }
@@ -1298,9 +1915,156 @@ int main(int argc, char** argv)
         QVector<Detection> detections;
         QSize detectionFrameSize = renderSize;
         bool appVulkanFrame = false;
+        bool decoderVulkanUploadFallback = false;
+        bool hardwareDirectHandoff = false;
         double vulkanDetectMs = 0.0;
+        double decoderUploadMs = 0.0;
 
         if (zeroCopyVulkanDetector) {
+            auto emitPreview = [&](const QImage& image, const QString& titlePrefix) {
+                if (image.isNull()) {
+                    return;
+                }
+                const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
+                const bool needsPreviewFrame =
+                    previewFrameDue &&
+                    (previewWindowPtr ||
+                     previewSocketPtr ||
+                     (options.writePreviewFiles && previewWritten < options.previewFrames));
+                if (!needsPreviewFrame) {
+                    return;
+                }
+                const QImage preview = buildPreview(image, tracks, detections);
+                if (previewSocketPtr) {
+                    sendPreviewFrame(previewSocketPtr, preview);
+                }
+                if (previewWindowPtr && !preview.isNull()) {
+                    previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
+                        previewWindowPtr->size(),
+                        Qt::KeepAspectRatio,
+                        Qt::SmoothTransformation));
+                    previewWindowPtr->setWindowTitle(QStringLiteral("%1 - frame %2 tracks %3")
+                                                         .arg(titlePrefix)
+                                                         .arg(frameNumber)
+                                                         .arg(tracks.size()));
+                    app.processEvents();
+                    if (!previewWindowPtr->isVisible()) {
+                        options.livePreview = false;
+                        previewWindowPtr = nullptr;
+                    }
+                }
+                if (options.writePreviewFiles && previewWritten < options.previewFrames) {
+                    const QString previewPath = QDir(options.outputDir).filePath(
+                        QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
+                    preview.save(previewPath);
+                    ++previewWritten;
+                }
+            };
+
+            auto processDecoderFrameDirectly = [&]() -> bool {
+                editor::FrameHandle decodedFrame = decoder.decodeFrame(frameNumber);
+                if (decodedFrame.isNull()) {
+                    return false;
+                }
+                if (decodedFrame.hasHardwareFrame() || decodedFrame.hasGpuTexture()) {
+                    ++hardwareFrames;
+                }
+                if (decodedFrame.hasCpuImage()) {
+                    ++cpuFrames;
+                }
+                if (detectorContext.device == VK_NULL_HANDLE) {
+                    if (!detectorContext.initialize(&error)) {
+                        std::cerr << "Failed to initialize Vulkan detector context for decoder handoff at frame "
+                                  << frameNumber << ": " << error.toStdString() << "\n";
+                        return false;
+                    }
+                }
+                if (!decoderFrameHandoff.isInitialized()) {
+                    if (!decoderFrameHandoff.initialize(detectorContext.detectorContext(), &error)) {
+                        std::cerr << "Failed to initialize decoder frame handoff module at frame "
+                                  << frameNumber << ": " << error.toStdString() << "\n";
+                        return false;
+                    }
+                }
+                if (decodedFrame.hasHardwareFrame()) {
+                    const auto probe = decoderFrameHandoff.probeHardwareInterop(decodedFrame);
+                    lastHardwareInteropProbeReason = probe.reason;
+                    lastHardwareInteropProbePath = probe.path;
+                    if (probe.supported) {
+                        ++hardwareInteropProbeSupportedFrames;
+                    } else {
+                        ++hardwareInteropProbeFailedFrames;
+                    }
+                    if (options.requireHardwareVulkanFramePath && !probe.supported) {
+                        std::cerr << "Hardware direct Vulkan handoff probe failed at frame "
+                                  << frameNumber << ": " << probe.reason.toStdString() << "\n";
+                        return false;
+                    }
+                }
+                detectionFrameSize = decodedFrame.size().isValid() ? decodedFrame.size() : renderSize;
+                error.clear();
+                if (options.heuristicZeroCopyDetector) {
+                    error = QStringLiteral(
+                        "Decoder fallback handoff is implemented for the Res10 Vulkan path only.");
+                    detections.clear();
+                } else {
+                    detections = detectRes10FromDecoderFrame(&zeroCopyDetector,
+                                                             &res10Detector,
+                                                             &detectorContext,
+                                                             &decoderFrameHandoff,
+                                                             decodedFrame,
+                                                             res10ParamPath,
+                                                             res10BinPath,
+                                                             tuning.threshold,
+                                                             options.allowCpuUploadFallback,
+                                                             &decoderUploadMs,
+                                                             &vulkanDetectMs,
+                                                             &hardwareDirectHandoff,
+                                                             &error);
+                }
+                decoderVulkanUploadFallback = decoderFrameHandoff.usedCpuUpload();
+                if (decoderVulkanUploadFallback) {
+                    ++decoderVulkanUploadFallbackFrames;
+                }
+                if (!hardwareDirectHandoff && !options.allowCpuUploadFallback) {
+                    const QString reason = decoderFrameHandoff.lastHardwareDirectAttemptReason().isEmpty()
+                        ? (error.isEmpty()
+                               ? QStringLiteral("No supported hardware-direct decoder-to-Vulkan handoff path is available.")
+                               : error)
+                        : decoderFrameHandoff.lastHardwareDirectAttemptReason();
+                    lastHardwareDirectAttemptReason = reason;
+                    std::cerr << "CPU upload fallback requires explicit approval via --allow-cpu-upload-fallback. "
+                              << "Hardware-direct reason: "
+                              << reason.toStdString()
+                              << "\n";
+                    return false;
+                }
+                decoderUploadMsTotal += decoderUploadMs;
+                if (hardwareDirectHandoff) {
+                    ++hardwareDirectHandoffFrames;
+                }
+                if (options.requireHardwareVulkanFramePath && !hardwareDirectHandoff) {
+                    std::cerr << "Hardware Vulkan frame path required, but hardware-direct handoff was not achieved at frame "
+                              << frameNumber << ". Reason: "
+                              << decoderFrameHandoff.lastHardwareDirectAttemptReason().toStdString()
+                              << "\n";
+                    return false;
+                }
+                if (!error.isEmpty() && detections.isEmpty()) {
+                    lastHardwareDirectAttemptReason = decoderFrameHandoff.lastHardwareDirectAttemptReason();
+                    std::cerr << "Decoder Vulkan handoff detection failed at frame "
+                              << frameNumber << ": " << error.toStdString() << "\n";
+                    return false;
+                }
+                lastHardwareDirectAttemptReason = decoderFrameHandoff.lastHardwareDirectAttemptReason();
+                detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
+                if (decodedFrame.hasCpuImage()) {
+                    emitPreview(decodedFrame.cpuImage(),
+                                QStringLiteral("JCut DNN FaceStream Generator (Decoder Vulkan Upload Fallback)"));
+                }
+                return true;
+            };
+
             render_detail::OffscreenVulkanFrame vulkanFrame;
             error.clear();
             if (!jcut::boxstream::renderFrameToVulkan(&appFrameProvider,
@@ -1317,76 +2081,57 @@ int main(int argc, char** argv)
                               << error.toStdString() << "\n";
                     printedAppVulkanFailure = true;
                 }
-                continue;
-            }
-            appVulkanFrame = true;
-            ++hardwareFrames;
-            detectionFrameSize = vulkanFrame.size;
-            error.clear();
-            if (options.heuristicZeroCopyDetector) {
-                detections = detectVulkanFrame(&zeroCopyDetector,
-                                               &detectorContext,
-                                               vulkanFrame,
-                                               tuning.maxDetections,
-                                               tuning.threshold,
-                                               &vulkanDetectMs,
-                                               &error);
+                if (!processDecoderFrameDirectly()) {
+                    continue;
+                }
             } else {
-                detections = detectRes10VulkanFrame(&zeroCopyDetector,
-                                                    &res10Detector,
-                                                    &detectorContext,
-                                                    vulkanFrame,
-                                                    res10ParamPath,
-                                                    res10BinPath,
-                                                    tuning.threshold,
-                                                    &vulkanDetectMs,
-                                                    &error);
-            }
-            if (!error.isEmpty() && detections.isEmpty()) {
-                std::cerr << "Vulkan zero-copy detection failed at frame "
-                          << frameNumber << ": " << error.toStdString() << "\n";
-                continue;
-            }
-            detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
-            const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
-            const bool needsPreviewFrame =
-                previewFrameDue &&
-                (previewWindowPtr ||
-                 previewSocketPtr ||
-                 (options.writePreviewFiles && previewWritten < options.previewFrames));
-            if (needsPreviewFrame) {
-                QImage frameImage = jcut::boxstream::readLastRenderedVulkanFrameImage(&appFrameProvider,
-                                                                                       &renderStats,
-                                                                                       &error);
-                if (!frameImage.isNull()) {
-                    const QImage preview = buildPreview(frameImage, tracks, detections);
-                    if (previewSocketPtr) {
-                        sendPreviewFrame(previewSocketPtr, preview);
+                appVulkanFrame = true;
+                ++hardwareFrames;
+                detectionFrameSize = vulkanFrame.size;
+                error.clear();
+                if (options.heuristicZeroCopyDetector) {
+                    detections = detectVulkanFrame(&zeroCopyDetector,
+                                                   &detectorContext,
+                                                   vulkanFrame,
+                                                   tuning.maxDetections,
+                                                   tuning.threshold,
+                                                   &vulkanDetectMs,
+                                                   &error);
+                } else {
+                    detections = detectRes10VulkanFrame(&zeroCopyDetector,
+                                                        &res10Detector,
+                                                        &detectorContext,
+                                                        vulkanFrame,
+                                                        res10ParamPath,
+                                                        res10BinPath,
+                                                        tuning.threshold,
+                                                        tuning.smallFaceFallback,
+                                                        !options.verbose,
+                                                        &vulkanDetectMs,
+                                                        &error);
+                }
+                if (!error.isEmpty() && detections.isEmpty()) {
+                    std::cerr << "Vulkan zero-copy detection failed at frame "
+                              << frameNumber << ": " << error.toStdString() << "\n";
+                    continue;
+                }
+                detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
+                const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
+                const bool needsPreviewFrame =
+                    previewFrameDue &&
+                    (previewWindowPtr ||
+                     previewSocketPtr ||
+                     (options.writePreviewFiles && previewWritten < options.previewFrames));
+                if (needsPreviewFrame) {
+                    QImage frameImage = jcut::boxstream::readLastRenderedVulkanFrameImage(&appFrameProvider,
+                                                                                           &renderStats,
+                                                                                           &error);
+                    if (!frameImage.isNull()) {
+                        emitPreview(frameImage, QStringLiteral("JCut DNN FaceStream Generator"));
+                    } else if (!error.isEmpty() && !printedAppVulkanFailure) {
+                        std::cerr << "Preview readback unavailable: " << error.toStdString() << "\n";
+                        printedAppVulkanFailure = true;
                     }
-                    if (previewWindowPtr && !preview.isNull()) {
-                        previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
-                            previewWindowPtr->size(),
-                            Qt::KeepAspectRatio,
-                            Qt::SmoothTransformation));
-                        previewWindowPtr->setWindowTitle(QStringLiteral(
-                            "JCut DNN FaceStream Generator - frame %1 tracks %2")
-                            .arg(frameNumber)
-                            .arg(tracks.size()));
-                        app.processEvents();
-                        if (!previewWindowPtr->isVisible()) {
-                            options.livePreview = false;
-                            previewWindowPtr = nullptr;
-                        }
-                    }
-                    if (options.writePreviewFiles && previewWritten < options.previewFrames) {
-                        const QString previewPath = QDir(options.outputDir).filePath(
-                            QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
-                        preview.save(previewPath);
-                        ++previewWritten;
-                    }
-                } else if (!error.isEmpty() && !printedAppVulkanFailure) {
-                    std::cerr << "Preview readback unavailable: " << error.toStdString() << "\n";
-                    printedAppVulkanFailure = true;
                 }
             }
         } else {
@@ -1424,46 +2169,66 @@ int main(int argc, char** argv)
             detectionFrameSize = frameImage.size();
 
             const cv::Mat bgr = jcut::boxstream::qImageToBgrMat(frameImage);
-            cv::Mat gray;
-            cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
-            cv::equalizeHist(gray, gray);
-
-            const int minSide = qMax(1, qMin(frameImage.width(), frameImage.height()));
-            const double scaleFactor = 1.08;
-            const int baseNeighbors = 5;
-            const int minDivisor = 22;
-            const double minWeight = 0.2;
-            const cv::Size minFace(qMax(18, minSide / minDivisor), qMax(18, minSide / minDivisor));
-            const cv::Size maxFace(qMax(minFace.width + 1, (minSide * 3) / 4),
-                                   qMax(minFace.height + 1, (minSide * 3) / 4));
-            std::vector<jcut::boxstream::WeightedDetection> weightedDetections;
-            auto runCascade = [&](cv::CascadeClassifier& cascade, int minNeighbors, double weightBias) {
-                if (cascade.empty()) {
-                    return;
-                }
-                std::vector<cv::Rect> raw;
-                std::vector<int> rejectLevels;
-                std::vector<double> levelWeights;
-                cascade.detectMultiScale(
-                    gray, raw, rejectLevels, levelWeights,
-                    scaleFactor, minNeighbors, cv::CASCADE_SCALE_IMAGE, minFace, maxFace, true);
-                for (int i = 0; i < static_cast<int>(raw.size()); ++i) {
-                    const double weight = (i < static_cast<int>(levelWeights.size()) ? levelWeights[i] : 0.0) + weightBias;
-                    if (weight >= minWeight) {
-                        weightedDetections.push_back({raw[i], weight});
+            if (options.scrfdDetector) {
+                if (!scrfdDetector.isInitialized()) {
+                    ScopedStderrSilencer silence(!options.verbose);
+                    if (!scrfdDetector.initialize(scrfdParamPath, scrfdBinPath, true, &error)) {
+                        std::cerr << "Failed to initialize SCRFD ncnn detector: "
+                                  << error.toStdString() << "\n";
+                        continue;
                     }
                 }
-            };
-            runCascade(faceCascade, baseNeighbors, 0.0);
-            runCascade(faceCascadeAlt, qMax(2, baseNeighbors - 1), -0.05);
-            runCascade(faceCascadeProfile, qMax(2, baseNeighbors - 1), -0.10);
+                QElapsedTimer timer;
+                timer.start();
+                const QVector<jcut::vulkan_detector::ScrfdDetection> raw =
+                    scrfdDetector.inferFromBgr(bgr, tuning.threshold, options.scrfdTargetSize, &error);
+                vulkanDetectMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+                detections.reserve(raw.size());
+                for (const auto& det : raw) {
+                    detections.push_back({det.box, det.confidence});
+                }
+            } else {
+                cv::Mat gray;
+                cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
+                cv::equalizeHist(gray, gray);
 
-            const std::vector<jcut::boxstream::WeightedDetection> filtered =
-                jcut::boxstream::filterAndSuppressDetections(std::move(weightedDetections), frameImage.size());
-            detections.reserve(static_cast<int>(filtered.size()));
-            for (const jcut::boxstream::WeightedDetection& det : filtered) {
-                detections.push_back({QRectF(det.box.x, det.box.y, det.box.width, det.box.height),
-                                      static_cast<float>(det.weight)});
+                const int minSide = qMax(1, qMin(frameImage.width(), frameImage.height()));
+                const double scaleFactor = 1.08;
+                const int baseNeighbors = 5;
+                const int minDivisor = 22;
+                const double minWeight = 0.2;
+                const cv::Size minFace(qMax(18, minSide / minDivisor), qMax(18, minSide / minDivisor));
+                const cv::Size maxFace(qMax(minFace.width + 1, (minSide * 3) / 4),
+                                       qMax(minFace.height + 1, (minSide * 3) / 4));
+                std::vector<jcut::boxstream::WeightedDetection> weightedDetections;
+                auto runCascade = [&](cv::CascadeClassifier& cascade, int minNeighbors, double weightBias) {
+                    if (cascade.empty()) {
+                        return;
+                    }
+                    std::vector<cv::Rect> raw;
+                    std::vector<int> rejectLevels;
+                    std::vector<double> levelWeights;
+                    cascade.detectMultiScale(
+                        gray, raw, rejectLevels, levelWeights,
+                        scaleFactor, minNeighbors, cv::CASCADE_SCALE_IMAGE, minFace, maxFace, true);
+                    for (int i = 0; i < static_cast<int>(raw.size()); ++i) {
+                        const double weight = (i < static_cast<int>(levelWeights.size()) ? levelWeights[i] : 0.0) + weightBias;
+                        if (weight >= minWeight) {
+                            weightedDetections.push_back({raw[i], weight});
+                        }
+                    }
+                };
+                runCascade(faceCascade, baseNeighbors, 0.0);
+                runCascade(faceCascadeAlt, qMax(2, baseNeighbors - 1), -0.05);
+                runCascade(faceCascadeProfile, qMax(2, baseNeighbors - 1), -0.10);
+
+                const std::vector<jcut::boxstream::WeightedDetection> filtered =
+                    jcut::boxstream::filterAndSuppressDetections(std::move(weightedDetections), frameImage.size());
+                detections.reserve(static_cast<int>(filtered.size()));
+                for (const jcut::boxstream::WeightedDetection& det : filtered) {
+                    detections.push_back({QRectF(det.box.x, det.box.y, det.box.width, det.box.height),
+                                          static_cast<float>(det.weight)});
+                }
             }
             detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
 
@@ -1502,7 +2267,7 @@ int main(int argc, char** argv)
             }
 #endif
         }
-        updateTracks(&tracks, detections, frameNumber, detectionFrameSize);
+        updateTracks(&tracks, detections, frameNumber, detectionFrameSize, tuning);
 
         ++processed;
         totalDetections += detections.size();
@@ -1512,10 +2277,12 @@ int main(int argc, char** argv)
         vulkanDetectMsTotal += vulkanDetectMs;
         const QString detectorId = options.materializedGenerateBoxstream
             ? QStringLiteral("materialized_generate_facestream_opencv_cascade_v1")
-            : (options.heuristicZeroCopyDetector
-                   ? QStringLiteral("native_jcut_heuristic_zero_copy_v1")
-                   : QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1"));
-        const bool qimageMaterialized = options.materializedGenerateBoxstream;
+            : (options.scrfdDetector
+                   ? QStringLiteral("scrfd_500m_ncnn_vulkan_materialized_input_v1")
+                   : (options.heuristicZeroCopyDetector
+                          ? QStringLiteral("native_jcut_heuristic_zero_copy_v1")
+                          : QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1")));
+        const bool qimageMaterialized = options.materializedGenerateBoxstream || options.scrfdDetector;
         frameRows.append(QJsonObject{
             {QStringLiteral("frame"), frameNumber},
             {QStringLiteral("detector"), detectorId},
@@ -1527,20 +2294,33 @@ int main(int argc, char** argv)
             {QStringLiteral("app_render_composite_ms"), renderStats.compositeMs},
             {QStringLiteral("app_render_readback_ms"), renderStats.readbackMs},
             {QStringLiteral("vulkan_zero_copy_detection_ms"), vulkanDetectMs},
+            {QStringLiteral("decoder_vulkan_upload_ms"), decoderUploadMs},
+            {QStringLiteral("decoder_vulkan_upload_fallback"), decoderVulkanUploadFallback},
+            {QStringLiteral("hardware_direct_handoff"), hardwareDirectHandoff},
+            {QStringLiteral("hardware_direct_attempt_reason"), decoderFrameHandoff.lastHardwareDirectAttemptReason()},
             {QStringLiteral("qimage_materialized"), qimageMaterialized}
         });
-        std::cout << "frame=" << frameNumber
-                  << " detector=" << detectorId.toStdString()
-                  << " detections=" << detections.size()
-                  << " tracks=" << tracks.size()
-                  << " app_vulkan_frame_path=" << (appVulkanFrame ? 1 : 0)
-                  << " render_decode_ms=" << renderStats.decodeMs
-                  << " render_texture_ms=" << renderStats.textureMs
-                  << " render_composite_ms=" << renderStats.compositeMs
-                  << " render_readback_ms=" << renderStats.readbackMs
-                  << " vulkan_zero_copy_detection_ms=" << vulkanDetectMs
-                  << " qimage_materialized=" << (qimageMaterialized ? 1 : 0)
-                  << "\n";
+        const bool logThisFrame =
+            options.verbose ||
+            (options.logInterval > 0 && (processed % options.logInterval) == 0);
+        if (logThisFrame) {
+            std::cout << "frame=" << frameNumber
+                      << " detector=" << detectorId.toStdString()
+                      << " detections=" << detections.size()
+                      << " tracks=" << tracks.size()
+                      << " app_vulkan_frame_path=" << (appVulkanFrame ? 1 : 0)
+                      << " render_decode_ms=" << renderStats.decodeMs
+                      << " render_texture_ms=" << renderStats.textureMs
+                      << " render_composite_ms=" << renderStats.compositeMs
+                      << " render_readback_ms=" << renderStats.readbackMs
+                      << " vulkan_zero_copy_detection_ms=" << vulkanDetectMs
+                      << " decoder_vulkan_upload_ms=" << decoderUploadMs
+                      << " decoder_vulkan_upload_fallback=" << (decoderVulkanUploadFallback ? 1 : 0)
+                      << " hardware_direct_handoff=" << (hardwareDirectHandoff ? 1 : 0)
+                      << " hardware_direct_attempt_reason=\"" << decoderFrameHandoff.lastHardwareDirectAttemptReason().toStdString() << "\""
+                      << " qimage_materialized=" << (qimageMaterialized ? 1 : 0)
+                      << "\n";
+        }
     }
     const auto wallEnd = std::chrono::steady_clock::now();
     QJsonArray trackRows;
@@ -1554,9 +2334,11 @@ int main(int argc, char** argv)
     }
     const QString backend = options.materializedGenerateBoxstream
         ? QStringLiteral("materialized_generate_facestream_opencv_cascade_v1")
-        : (options.heuristicZeroCopyDetector
-               ? QStringLiteral("native_jcut_heuristic_zero_copy_v1")
-               : QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1"));
+        : (options.scrfdDetector
+               ? QStringLiteral("scrfd_500m_ncnn_vulkan_materialized_input_v1")
+               : (options.heuristicZeroCopyDetector
+                      ? QStringLiteral("native_jcut_heuristic_zero_copy_v1")
+                      : QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1")));
     writeJson(QDir(options.outputDir).filePath(QStringLiteral("tracks.json")), QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_boxstream_offscreen_tracks_v1")},
         {QStringLiteral("video"), options.videoPath},
@@ -1573,7 +2355,7 @@ int main(int argc, char** argv)
         QStringLiteral("offscreen"),
         false,
         0,
-        qMax(0, totalFrames - 1),
+        qMax(0, options.startFrame + totalFrames - 1),
         streams);
     writeJson(QDir(options.outputDir).filePath(QStringLiteral("continuity_boxstream.json")), QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_boxstream_v1")},
@@ -1582,7 +2364,12 @@ int main(int argc, char** argv)
         }}
     });
 
-    const bool decodeZeroCopy = false;
+    const bool decodeZeroCopy =
+        zeroCopyVulkanDetector &&
+        !options.materializedGenerateBoxstream &&
+        !options.scrfdDetector &&
+        decoderVulkanUploadFallbackFrames == 0 &&
+        processed > 0;
     const QJsonObject summary{
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("output_dir"), QDir(options.outputDir).absolutePath()},
@@ -1590,10 +2377,16 @@ int main(int argc, char** argv)
         {QStringLiteral("backend"), backend},
         {QStringLiteral("detector"), backend},
         {QStringLiteral("max_frames"), totalFrames},
+        {QStringLiteral("start_frame"), options.startFrame},
         {QStringLiteral("stride"), tuning.stride},
         {QStringLiteral("runtime_threshold"), tuning.threshold},
         {QStringLiteral("runtime_max_detections"), tuning.maxDetections},
         {QStringLiteral("runtime_max_faces_per_frame"), tuning.maxFacesPerFrame},
+        {QStringLiteral("runtime_nms_iou_threshold"), tuning.nmsIouThreshold},
+        {QStringLiteral("runtime_track_match_iou_threshold"), tuning.trackMatchIouThreshold},
+        {QStringLiteral("runtime_new_track_min_confidence"), tuning.newTrackMinConfidence},
+        {QStringLiteral("runtime_primary_face_only"), tuning.primaryFaceOnly},
+        {QStringLiteral("runtime_small_face_fallback"), tuning.smallFaceFallback},
         {QStringLiteral("runtime_roi_x1"), tuning.roiX1},
         {QStringLiteral("runtime_roi_y1"), tuning.roiY1},
         {QStringLiteral("runtime_roi_x2"), tuning.roiX2},
@@ -1603,6 +2396,11 @@ int main(int argc, char** argv)
         {QStringLiteral("runtime_min_aspect"), tuning.minAspect},
         {QStringLiteral("runtime_max_aspect"), tuning.maxAspect},
         {QStringLiteral("runtime_params_file"), options.paramsFile},
+        {QStringLiteral("detector_settings_file"), detectorSettingsPath},
+        {QStringLiteral("require_hardware_vulkan_frame_path"), options.requireHardwareVulkanFramePath},
+        {QStringLiteral("allow_cpu_upload_fallback"), options.allowCpuUploadFallback},
+        {QStringLiteral("require_hardware_vulkan_frame_path_satisfied"),
+         !options.requireHardwareVulkanFramePath || decoderVulkanUploadFallbackFrames == 0 || hardwareDirectHandoffFrames > 0},
         {QStringLiteral("decoded_frames"), decoded},
         {QStringLiteral("processed_frames"), processed},
         {QStringLiteral("sampling_note"), QStringLiteral("processed_frames increments only on frames where frame_number %% stride == 0")},
@@ -1611,6 +2409,13 @@ int main(int argc, char** argv)
         {QStringLiteral("app_vulkan_decode_path_frames"), hardwareFrames},
         {QStringLiteral("app_vulkan_frame_path_failed"), appFrameProvider.failed},
         {QStringLiteral("app_vulkan_frame_path_failure"), appFrameProvider.failureReason},
+        {QStringLiteral("decoder_vulkan_upload_fallback_frames"), decoderVulkanUploadFallbackFrames},
+        {QStringLiteral("hardware_direct_handoff_frames"), hardwareDirectHandoffFrames},
+        {QStringLiteral("hardware_interop_probe_supported_frames"), hardwareInteropProbeSupportedFrames},
+        {QStringLiteral("hardware_interop_probe_failed_frames"), hardwareInteropProbeFailedFrames},
+        {QStringLiteral("last_hardware_interop_probe_path"), lastHardwareInteropProbePath},
+        {QStringLiteral("last_hardware_interop_probe_reason"), lastHardwareInteropProbeReason},
+        {QStringLiteral("last_hardware_direct_attempt_reason"), lastHardwareDirectAttemptReason},
         {QStringLiteral("total_detections"), totalDetections},
         {QStringLiteral("track_count"), tracks.size()},
         {QStringLiteral("preview_frames_written"), previewWritten},
@@ -1618,15 +2423,23 @@ int main(int argc, char** argv)
         {QStringLiteral("avg_render_decode_ms"), processed ? renderDecodeMsTotal / processed : 0.0},
         {QStringLiteral("avg_render_composite_ms"), processed ? renderCompositeMsTotal / processed : 0.0},
         {QStringLiteral("avg_render_readback_ms"), processed ? renderReadbackMsTotal / processed : 0.0},
+        {QStringLiteral("avg_decoder_vulkan_upload_ms"), processed ? decoderUploadMsTotal / processed : 0.0},
         {QStringLiteral("avg_vulkan_zero_copy_detection_ms"), processed ? vulkanDetectMsTotal / processed : 0.0},
         {QStringLiteral("wall_sec"), std::chrono::duration<double>(wallEnd - wallStart).count()},
         {QStringLiteral("decode_zero_copy"), decodeZeroCopy},
-        {QStringLiteral("qimage_materialized"), options.materializedGenerateBoxstream},
+        {QStringLiteral("qimage_materialized"), options.materializedGenerateBoxstream || options.scrfdDetector},
         {QStringLiteral("vulkan_path_uses_qimage"), false},
-        {QStringLiteral("current_mode_uses_qimage"), options.materializedGenerateBoxstream},
-        {QStringLiteral("zero_copy_note"), options.materializedGenerateBoxstream
-            ? QStringLiteral("Materialized compatibility mode: frames are rendered by Vulkan, read back to QImage, and scanned by the legacy OpenCV continuity detector.")
-            : QStringLiteral("Res10 ncnn Vulkan path: frames remain as Vulkan images through preprocessing/inference; only compact detection metadata is read back. No QImage frame materialization is used.")}
+        {QStringLiteral("current_mode_uses_qimage"), options.materializedGenerateBoxstream || options.scrfdDetector},
+        {QStringLiteral("zero_copy_note"),
+         options.materializedGenerateBoxstream
+             ? QStringLiteral("Materialized compatibility mode: frames are rendered by Vulkan, read back to QImage, and scanned by the legacy OpenCV continuity detector.")
+             : (options.scrfdDetector
+                    ? QStringLiteral("SCRFD ncnn Vulkan inference mode: frame input is currently materialized to QImage/cv::Mat before ncnn inference; this improves small-face recall but is not detector zero-copy.")
+                    : (decoderVulkanUploadFallbackFrames > 0
+                    ? QStringLiteral("Partial fallback mode: some frames used decoder CPU-image upload into VkImage for detector input after app Vulkan frame path failures; this is not decode zero-copy.")
+                    : (processed == 0
+                           ? QStringLiteral("No frames were processed by the Vulkan detector path.")
+                           : QStringLiteral("Res10 ncnn Vulkan path: frames remain as Vulkan images through preprocessing/inference; only compact detection metadata is read back. No QImage frame materialization is used."))))}
     };
     writeJson(QDir(options.outputDir).filePath(QStringLiteral("summary.json")), summary);
     std::cout << "summary " << QJsonDocument(summary).toJson(QJsonDocument::Compact).constData() << "\n";

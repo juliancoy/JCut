@@ -20,6 +20,10 @@ struct VulkanExternalImage {
     VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     QSize size;
     bool sourceIsSrgb = false;
+    float sourceX = 0.0f;
+    float sourceY = 0.0f;
+    float sourceWidth = 1.0f;
+    float sourceHeight = 1.0f;
 };
 
 struct VulkanTensorBuffer {

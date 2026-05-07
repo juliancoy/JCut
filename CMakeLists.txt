@@ -458,7 +458,7 @@ endif()
 
 add_executable(jcut_vulkan_boxstream_preview
     ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_preview_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/legacy/vulkan_boxstream_preview_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_ai_integration.cpp
 )
 target_link_libraries(jcut_vulkan_boxstream_preview PRIVATE editor_core)
@@ -489,7 +489,7 @@ if(APPLE)
 endif()
 
 add_executable(jcut_vulkan_dnn_video_infer
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_dnn_video_infer_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/legacy/vulkan_dnn_video_infer_main.cpp
 )
 target_include_directories(jcut_vulkan_dnn_video_infer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -549,15 +549,17 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
 endif()
 
 add_executable(jcut_vulkan_boxstream_offscreen
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_offscreen_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/legacy/vulkan_boxstream_offscreen_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/boxstream_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_scrfd_ncnn_face_detector.cpp
 )
 target_include_directories(jcut_vulkan_boxstream_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -601,7 +603,7 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
 endif()
 
 add_executable(jcut_vulkan_boxstream_test_ui
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_test_ui_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/legacy/vulkan_boxstream_test_ui_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/boxstream_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp

@@ -18,6 +18,10 @@ struct FacePreprocessPushConstants {
     int dstHeight = 300;
     int sourceIsSrgb = 0;
     int reserved = 0;
+    float sourceX = 0.0f;
+    float sourceY = 0.0f;
+    float sourceWidth = 1.0f;
+    float sourceHeight = 1.0f;
 };
 
 struct FaceInferencePushConstants {
@@ -642,6 +646,10 @@ bool VulkanZeroCopyFaceDetector::submitPreprocess(VkDescriptorSet descriptorSet,
     push.dstWidth = m_tensorSpec.width;
     push.dstHeight = m_tensorSpec.height;
     push.sourceIsSrgb = source.sourceIsSrgb ? 1 : 0;
+    push.sourceX = qBound(0.0f, source.sourceX, 1.0f);
+    push.sourceY = qBound(0.0f, source.sourceY, 1.0f);
+    push.sourceWidth = qBound(0.001f, source.sourceWidth, 1.0f - push.sourceX);
+    push.sourceHeight = qBound(0.001f, source.sourceHeight, 1.0f - push.sourceY);
     vkCmdPushConstants(m_commandBuffer,
                        m_pipelineLayout,
                        VK_SHADER_STAGE_COMPUTE_BIT,

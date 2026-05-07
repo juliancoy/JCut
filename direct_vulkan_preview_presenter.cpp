@@ -1,4 +1,6 @@
 #include "direct_vulkan_preview_presenter.h"
+#include "vulkan_pipeline.h"
+#include "vulkan_resources.h"
 
 #include <QDebug>
 #include <QHash>
@@ -14,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -32,6 +35,8 @@ private:
     DirectVulkanPreviewWindow* m_owner = nullptr;
     QVulkanWindow* m_window = nullptr;
     QVulkanDeviceFunctions* m_devFuncs = nullptr;
+    std::unique_ptr<VulkanResources> m_resources;
+    std::unique_ptr<VulkanPipeline> m_pipeline;
 };
 
 int findGraphicsPresentDeviceIndex(QVulkanInstance* instance, QWindow* window)
@@ -82,14 +87,24 @@ bool clipActiveAtFrame(const TimelineClip& clip,
 
 VkClearRect clipRectForSwapchain(const TimelineClip& clip,
                                  int ordinal,
-                                 const QSize& swapSize)
+                                 const QSize& swapSize,
+                                 const QSize& frameSize)
 {
     const int width = std::max(1, swapSize.width());
     const int height = std::max(1, swapSize.height());
     const double scaleX = std::clamp(static_cast<double>(clip.baseScaleX), 0.08, 4.0);
     const double scaleY = std::clamp(static_cast<double>(clip.baseScaleY), 0.08, 4.0);
-    const int rectW = std::clamp(static_cast<int>(width * 0.34 * scaleX), 36, width);
-    const int rectH = std::clamp(static_cast<int>(height * 0.34 * scaleY), 36, height);
+    const double targetAspect = (frameSize.isValid() && frameSize.width() > 0 && frameSize.height() > 0)
+        ? (static_cast<double>(frameSize.width()) / static_cast<double>(frameSize.height()))
+        : (16.0 / 9.0);
+    const int maxRectW = std::clamp(static_cast<int>(width * 0.86), 36, width);
+    const int maxRectH = std::clamp(static_cast<int>(height * 0.86), 36, height);
+    int rectW = std::clamp(static_cast<int>(width * 0.34 * scaleX), 36, maxRectW);
+    int rectH = std::clamp(static_cast<int>(std::round(rectW / std::max(0.1, targetAspect))), 36, maxRectH);
+    if (rectH >= maxRectH) {
+        rectH = maxRectH;
+        rectW = std::clamp(static_cast<int>(std::round(rectH * targetAspect)), 36, maxRectW);
+    }
     const int trackOffset = std::max(0, clip.trackIndex) * 34;
     int cx = width / 2 + static_cast<int>(clip.baseTranslationX) + ((ordinal % 3) - 1) * (width / 10);
     int cy = height / 2 + static_cast<int>(clip.baseTranslationY) + trackOffset - (ordinal / 3) * 28;
@@ -102,6 +117,31 @@ VkClearRect clipRectForSwapchain(const TimelineClip& clip,
     clearRect.baseArrayLayer = 0;
     clearRect.layerCount = 1;
     return clearRect;
+}
+
+void mvpForRect(const VkClearRect& rect, const QSize& swapSize, float outMvp[16])
+{
+    const float fullW = static_cast<float>(std::max(1, swapSize.width()));
+    const float fullH = static_cast<float>(std::max(1, swapSize.height()));
+    const float rw = static_cast<float>(std::max(1u, rect.rect.extent.width));
+    const float rh = static_cast<float>(std::max(1u, rect.rect.extent.height));
+    const float rx = static_cast<float>(rect.rect.offset.x);
+    const float ry = static_cast<float>(rect.rect.offset.y);
+
+    const float sx = rw / fullW;
+    const float sy = rh / fullH;
+    const float cxPx = rx + (rw * 0.5f);
+    const float cyPx = ry + (rh * 0.5f);
+    const float tx = (cxPx / fullW) * 2.0f - 1.0f;
+    const float ty = 1.0f - (cyPx / fullH) * 2.0f;
+
+    const float m[16] = {
+        sx,   0.f, 0.f, 0.f,
+        0.f,  sy,  0.f, 0.f,
+        0.f,  0.f, 1.f, 0.f,
+        tx,   ty,  0.f, 1.f
+    };
+    std::copy(std::begin(m), std::end(m), outMvp);
 }
 
 VkClearValue clipColor(const TimelineClip& clip, int ordinal, bool selected)
@@ -295,6 +335,27 @@ void DirectVulkanPreviewRenderer::initResources()
                    .arg(QString::number(props->vendorID, 16))
                    .arg(static_cast<int>(props->deviceType));
     }
+    m_resources = std::make_unique<VulkanResources>();
+    if (!m_resources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
+        if (m_owner) {
+            m_owner->markFailure(QStringLiteral("Failed to initialize direct presenter Vulkan resources."));
+        }
+        return;
+    }
+    m_pipeline = std::make_unique<VulkanPipeline>();
+    QString error;
+    if (!m_pipeline->initialize(m_window->device(),
+                                m_devFuncs,
+                                m_window->defaultRenderPass(),
+                                m_resources->descriptorSetLayout(),
+                                &error)) {
+        if (m_owner) {
+            m_owner->markFailure(error.isEmpty()
+                                     ? QStringLiteral("Failed to initialize direct presenter Vulkan pipeline.")
+                                     : error);
+        }
+        return;
+    }
 }
 
 void DirectVulkanPreviewRenderer::startNextFrame()
@@ -335,6 +396,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     VkCommandBuffer cb = m_window->currentCommandBuffer();
     m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
     if (state) {
+        if (m_resources && m_pipeline && m_resources->isReady() && m_pipeline->isReady()) {
+            m_resources->ensureCheckerTextureUploaded(cb);
+        }
+        VkViewport viewport{};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(std::max(1, swapSize.width()));
+        viewport.height = static_cast<float>(std::max(1, swapSize.height()));
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
         int ordinal = 0;
         QHash<QString, VkClearRect> activeClipRects;
         for (const TimelineClip& clip : state->clips) {
@@ -347,8 +418,27 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             attachment.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             attachment.colorAttachment = 0;
             attachment.clearValue = clipColorForStatus(clip, ordinal, selected, status);
-            const VkClearRect rect = clipRectForSwapchain(clip, ordinal, swapSize);
-            m_devFuncs->vkCmdClearAttachments(cb, 1, &attachment, 1, &rect);
+            const QSize frameSize = (status && status->frameSize.isValid()) ? status->frameSize : QSize();
+            const VkClearRect rect = clipRectForSwapchain(clip, ordinal, swapSize, frameSize);
+            const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
+                                        m_pipeline->isReady() && m_resources->descriptorSet() != VK_NULL_HANDLE;
+            if (canDrawTexture) {
+                VulkanPipeline::Push push{};
+                mvpForRect(rect, swapSize, push.mvp);
+                push.opacity = static_cast<float>(std::clamp(static_cast<double>(clip.opacity), 0.0, 1.0));
+                if (status) {
+                    push.brightness = status->exact ? 0.03f : 0.0f;
+                    push.saturation = status->hardwareFrame || status->gpuTexture ? 1.12f : 0.85f;
+                    push.contrast = status->hasFrame ? 1.05f : 0.95f;
+                }
+                VkRect2D scissor{};
+                scissor.offset = {0, 0};
+                scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                                  static_cast<uint32_t>(std::max(1, swapSize.height()))};
+                m_pipeline->bindAndDraw(cb, viewport, scissor, m_resources->descriptorSet(), push);
+            } else {
+                m_devFuncs->vkCmdClearAttachments(cb, 1, &attachment, 1, &rect);
+            }
             activeClipRects.insert(clip.id, rect);
             ++ordinal;
         }
@@ -508,6 +598,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     int exactStatuses = 0;
     int hardwareStatuses = 0;
     int cpuStatuses = 0;
+    bool hasTimelineFrameGeometry = false;
+    const bool texturePipelineReady = m_active && m_window != nullptr;
     if (m_state) {
         for (const VulkanPreviewClipFrameStatus& status : m_state->vulkanFrameStatuses) {
             if (!status.active) {
@@ -518,12 +610,13 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
             exactStatuses += status.exact ? 1 : 0;
             hardwareStatuses += (status.hardwareFrame || status.gpuTexture) ? 1 : 0;
             cpuStatuses += status.cpuImage ? 1 : 0;
+            hasTimelineFrameGeometry = hasTimelineFrameGeometry || status.frameSize.isValid();
         }
     }
     return QJsonObject{
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
-        {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_commands_with_decode_status")},
+        {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
         {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
         {QStringLiteral("native_window_visible"), m_window ? m_window->isVisible() : false},
         {QStringLiteral("native_active"), m_active},
@@ -539,7 +632,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("hardware_decode_status_clips"), hardwareStatuses},
         {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
         {QStringLiteral("boxstream_overlay_boxes"), m_state ? m_state->boxstreamOverlays.size() : 0},
-        {QStringLiteral("timeline_texture_composition"), false},
+        {QStringLiteral("timeline_texture_composition"), hasTimelineFrameGeometry && readyStatuses > 0},
+        {QStringLiteral("timeline_texture_draw_pipeline"), texturePipelineReady},
         {QStringLiteral("presented_frames"), static_cast<double>(m_presentedFrames)},
         {QStringLiteral("failure_reason"), m_failureReason}
     };

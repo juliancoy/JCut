@@ -200,11 +200,11 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     }
 
     const QString scriptPath =
-        QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("speaker_face_candidates.py"));
+        QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("legacy/speaker_face_candidates.py"));
     if (!QFileInfo::exists(scriptPath)) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("speaker_face_candidates.py was not found in the project root."));
+                             QStringLiteral("legacy/speaker_face_candidates.py was not found."));
         return;
     }
 

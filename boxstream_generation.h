@@ -69,19 +69,22 @@ enum class BoxstreamDetectorPreset {
     NativeHybridCpu = 16,
     NativeHybridVulkan = 17,
     NativeVulkanDnn = 18,
-    NativeCudaDnn = 19
+    NativeCudaDnn = 19,
+    ScrfdNcnnVulkan = 20
 };
 
 inline bool isDnnBoxstreamPreset(BoxstreamDetectorPreset preset)
 {
     return preset == BoxstreamDetectorPreset::DnnAuto ||
            preset == BoxstreamDetectorPreset::NativeVulkanDnn ||
-           preset == BoxstreamDetectorPreset::NativeCudaDnn;
+           preset == BoxstreamDetectorPreset::NativeCudaDnn ||
+           preset == BoxstreamDetectorPreset::ScrfdNcnnVulkan;
 }
 
 inline bool isRelaxedDnnBoxstreamPreset(BoxstreamDetectorPreset preset)
 {
-    return preset == BoxstreamDetectorPreset::NativeVulkanDnn;
+    return preset == BoxstreamDetectorPreset::NativeVulkanDnn ||
+           preset == BoxstreamDetectorPreset::ScrfdNcnnVulkan;
 }
 
 inline QString formatEtaSeconds(double secondsRemaining)
@@ -448,7 +451,8 @@ public:
     bool detectCpuImage(const QImage& image,
                         QVector<DetectionCandidate>* detections,
                         double* inferenceMs,
-                        QString* error)
+                        QString* error,
+                        float confidenceThreshold = 0.28f)
     {
         if (!m_initialized && !initialize(error)) {
             return false;
@@ -529,11 +533,12 @@ public:
         }
 
         jcut::vulkan_detector::VulkanTensorBuffer detectionBuffer{m_detectionBuffer, m_detectionBytes};
-        if (!m_detector.inferFromTensor(tensor, detectionBuffer, m_maxDetections, 0.28f, error)) {
+        const float boundedThreshold = qBound(0.0f, confidenceThreshold, 1.0f);
+        if (!m_detector.inferFromTensor(tensor, detectionBuffer, m_maxDetections, boundedThreshold, error)) {
             return false;
         }
 
-        if (!readDetections(detections, error)) {
+        if (!readDetections(detections, boundedThreshold, error)) {
             return false;
         }
         if (inferenceMs) {
@@ -728,7 +733,7 @@ private:
         vkCmdPipelineBarrier(m_commandBuffer, src, dst, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    bool readDetections(QVector<DetectionCandidate>* detections, QString* error)
+    bool readDetections(QVector<DetectionCandidate>* detections, float confidenceThreshold, QString* error)
     {
         if (!detections) {
             return true;
@@ -749,7 +754,7 @@ private:
             const float h = det[i * 8 + 3];
             const float confidence = det[i * 8 + 4];
             if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
-                confidence < 0.28f || w <= 0.04f || h <= 0.04f) {
+                confidence < confidenceThreshold || w <= 0.04f || h <= 0.04f) {
                 continue;
             }
             DetectionCandidate candidate;

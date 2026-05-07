@@ -5,15 +5,46 @@
 
 extern "C" {
 #include <libavutil/error.h>
+#include <libavutil/log.h>
 #include <libavutil/pixdesc.h>
 }
 
+#include <atomic>
+#include <cstdarg>
+#include <cstring>
+
 namespace editor {
+
+namespace {
+
+void jcutFfmpegLogCallback(void* avcl, int level, const char* fmt, va_list vl)
+{
+    if (fmt) {
+        // FFmpeg emits this for some valid H.264 files with late SEI metadata.
+        // It is not actionable for frame decode and can flood realtime logs.
+        if (std::strstr(fmt, "Late SEI is not implemented") ||
+            std::strstr(fmt, "If you want to help, upload a sample of this file")) {
+            return;
+        }
+    }
+    av_log_default_callback(avcl, level, fmt, vl);
+}
+
+} // namespace
 
 QString avErrToString(int errnum) {
     char errbuf[AV_ERROR_MAX_STRING_SIZE];
     av_strerror(errnum, errbuf, AV_ERROR_MAX_STRING_SIZE);
     return QString::fromUtf8(errbuf);
+}
+
+void installFfmpegLogFilter()
+{
+    static std::atomic_bool installed{false};
+    bool expected = false;
+    if (installed.compare_exchange_strong(expected, true)) {
+        av_log_set_callback(jcutFfmpegLogCallback);
+    }
 }
 
 AVPixelFormat get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts) {

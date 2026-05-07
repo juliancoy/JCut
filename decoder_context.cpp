@@ -99,6 +99,8 @@ void DecoderContext::shutdown() {
 }
 
 bool DecoderContext::initialize() {
+    installFfmpegLogFilter();
+
     if (isImageSequencePath(m_path)) {
         if (!loadImageSequence()) {
             return false;
@@ -348,19 +350,21 @@ bool DecoderContext::initCodec() {
 
     const bool headlessOffscreen =
         qEnvironmentVariable("QT_QPA_PLATFORM") == QStringLiteral("offscreen");
+    const bool allowHeadlessHardwareDecode =
+        qEnvironmentVariableIntValue("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE") == 1;
     const DecodePreference decodePreference = debugDecodePreference();
     const bool zeroCopyPreferred =
         decodePreference == DecodePreference::Auto ||
         decodePreference == DecodePreference::HardwareZeroCopy;
     const bool zeroCopySupported =
         zeroCopyPreferred &&
-        !headlessOffscreen &&
+        (!headlessOffscreen || allowHeadlessHardwareDecode) &&
         !m_streamHasAlphaTag &&
         (decodePreference == DecodePreference::HardwareZeroCopy ||
          zeroCopyInteropSupportedForCurrentBuild());
     const bool allowHardware =
         decodePreference != DecodePreference::Software &&
-        !headlessOffscreen &&
+        (!headlessOffscreen || allowHeadlessHardwareDecode) &&
         !m_streamHasAlphaTag;
     const bool hardwareEnabled = allowHardware && initHardwareAccel(decoder);
     const bool deterministicPipeline = debugDeterministicPipelineEnabled();

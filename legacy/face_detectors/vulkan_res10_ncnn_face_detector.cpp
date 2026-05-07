@@ -122,6 +122,8 @@ bool VulkanRes10NcnnFaceDetector::initialize(const VulkanDeviceContext& context,
     }
     QByteArray paramBytes = paramFile.readAll();
     // Keep DetectionOutput permissive; runtime thresholding happens after extraction.
+    // The stock converted param uses 0.45, which prevents small/low-confidence faces
+    // from ever reaching the FaceStream post-filter.
     paramBytes.replace("1=4.500000e-01", "1=5.000000e-02");
     paramBytes.append('\0');
     if (m_impl->net.load_param_mem(paramBytes.constData()) != 0) {
@@ -212,18 +214,31 @@ QVector<Res10Detection> VulkanRes10NcnnFaceDetector::inferFromTensor(const Vulka
         return out;
     }
 
-    const int rows = detections.h > 0 ? detections.h : detections.total() / 7;
+    const int cols = detections.w >= 6 ? detections.w : 0;
+    if (cols != 6 && cols != 7) {
+        setError(errorMessage, QStringLiteral("Res10 ncnn detector produced unsupported detection row width: %1").arg(cols));
+        return out;
+    }
+    const int rows = detections.h > 0 ? detections.h : detections.total() / cols;
     const float* values = static_cast<const float*>(detections.data);
     for (int i = 0; i < rows; ++i) {
-        const float imageId = values[i * 7 + 0];
-        const float confidence = values[i * 7 + 2];
-        if (imageId < 0.0f || confidence < threshold) {
+        const float* row = values + (i * cols);
+        const float confidence = cols == 6 ? row[1] : row[2];
+        if (!std::isfinite(confidence) || confidence < threshold || confidence > 1.0f) {
             continue;
         }
-        const float x0 = std::clamp(values[i * 7 + 3], 0.0f, 1.0f) * imageWidth;
-        const float y0 = std::clamp(values[i * 7 + 4], 0.0f, 1.0f) * imageHeight;
-        const float x1 = std::clamp(values[i * 7 + 5], 0.0f, 1.0f) * imageWidth;
-        const float y1 = std::clamp(values[i * 7 + 6], 0.0f, 1.0f) * imageHeight;
+        const float nx0 = cols == 6 ? row[2] : row[3];
+        const float ny0 = cols == 6 ? row[3] : row[4];
+        const float nx1 = cols == 6 ? row[4] : row[5];
+        const float ny1 = cols == 6 ? row[5] : row[6];
+        if (!std::isfinite(nx0) || !std::isfinite(ny0) ||
+            !std::isfinite(nx1) || !std::isfinite(ny1)) {
+            continue;
+        }
+        const float x0 = std::clamp(nx0, 0.0f, 1.0f) * imageWidth;
+        const float y0 = std::clamp(ny0, 0.0f, 1.0f) * imageHeight;
+        const float x1 = std::clamp(nx1, 0.0f, 1.0f) * imageWidth;
+        const float y1 = std::clamp(ny1, 0.0f, 1.0f) * imageHeight;
         QRectF box(QPointF(x0, y0), QPointF(x1, y1));
         box = box.normalized().intersected(QRectF(0, 0, imageWidth, imageHeight));
         if (box.width() >= 8.0 && box.height() >= 8.0) {

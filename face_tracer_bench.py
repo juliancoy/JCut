@@ -321,7 +321,7 @@ def main() -> int:
             name="legacy_python_haar",
             cmd=[
                 sys.executable,
-                str(repo / "speaker_face_candidates.py"),
+                str(repo / "legacy/speaker_face_candidates.py"),
                 "--video",
                 str(video),
                 "--output-json",
@@ -355,7 +355,7 @@ def main() -> int:
                 name=f"docker_runner_{backend}",
                 cmd=[
                     sys.executable,
-                    str(repo / "docker_face_detector.py"),
+                    str(repo / "legacy/docker_face_detector.py"),
                     "--backend",
                     backend,
                     "--video",
@@ -444,7 +444,7 @@ def main() -> int:
             "-v",
             f"{out_root}:{out_mount}",
             "-v",
-            f"{repo / 'docker_face_detector.py'}:{runner_mount}/docker_face_detector.py:ro",
+            f"{repo / 'legacy/docker_face_detector.py'}:{runner_mount}/docker_face_detector.py:ro",
             "-v",
             f"{weights_dir}:{weights_mount}:ro",
             "-e",
