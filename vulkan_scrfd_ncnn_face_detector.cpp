@@ -3,6 +3,7 @@
 #include <QFileInfo>
 
 #if JCUT_HAVE_NCNN
+#include <command.h>
 #include <gpu.h>
 #include <mat.h>
 #include <net.h>
@@ -64,6 +65,25 @@ void nmsSortedBboxes(const std::vector<FaceObject>& faceobjects,
 }
 
 #if JCUT_HAVE_NCNN
+bool validContext(const VulkanDeviceContext& context)
+{
+    return context.physicalDevice != VK_NULL_HANDLE &&
+           context.device != VK_NULL_HANDLE &&
+           context.queue != VK_NULL_HANDLE;
+}
+
+int matchingNcnnDeviceIndex(VkPhysicalDevice physicalDevice)
+{
+    const int count = ncnn::get_gpu_count();
+    for (int i = 0; i < count; ++i) {
+        const ncnn::GpuInfo& info = ncnn::get_gpu_info(i);
+        if (info.physicalDevice() == physicalDevice) {
+            return i;
+        }
+    }
+    return ncnn::get_default_gpu_index();
+}
+
 ncnn::Mat generateAnchors(int baseSize, const ncnn::Mat& ratios, const ncnn::Mat& scales)
 {
     const int numRatio = ratios.w;
@@ -138,9 +158,13 @@ void generateProposals(const ncnn::Mat& anchors,
 
 struct VulkanScrfdNcnnFaceDetector::Impl {
 #if JCUT_HAVE_NCNN
+    std::unique_ptr<ncnn::VulkanDevice> vkdev;
     ncnn::Net net;
+    ncnn::VkBufferMemory inputMemory{};
 #endif
+    VulkanDeviceContext context;
     bool initialized = false;
+    bool zeroCopyInput = false;
 };
 
 VulkanScrfdNcnnFaceDetector::VulkanScrfdNcnnFaceDetector()
@@ -189,6 +213,66 @@ bool VulkanScrfdNcnnFaceDetector::initialize(const QString& paramPath,
         return false;
     }
     m_impl->initialized = true;
+    m_impl->zeroCopyInput = false;
+    return true;
+#endif
+}
+
+bool VulkanScrfdNcnnFaceDetector::initialize(const VulkanDeviceContext& context,
+                                             const QString& paramPath,
+                                             const QString& binPath,
+                                             QString* errorMessage)
+{
+    if (m_impl->initialized) {
+        return true;
+    }
+    if (!QFileInfo::exists(paramPath) || !QFileInfo::exists(binPath)) {
+        setError(errorMessage,
+                 QStringLiteral("missing SCRFD ncnn model artifacts: %1 and %2").arg(paramPath, binPath));
+        return false;
+    }
+#if !JCUT_HAVE_NCNN
+    Q_UNUSED(context);
+    Q_UNUSED(paramPath);
+    Q_UNUSED(binPath);
+    setError(errorMessage, QStringLiteral("JCut was built without ncnn; SCRFD detector is unavailable."));
+    return false;
+#else
+    if (!validContext(context)) {
+        setError(errorMessage, QStringLiteral("invalid Vulkan device context for SCRFD ncnn detector"));
+        return false;
+    }
+    ncnn::create_gpu_instance();
+    const int deviceIndex = matchingNcnnDeviceIndex(context.physicalDevice);
+    if (deviceIndex < 0) {
+        setError(errorMessage, QStringLiteral("ncnn did not find a Vulkan-capable device for SCRFD."));
+        return false;
+    }
+    m_impl->vkdev = std::make_unique<ncnn::VulkanDevice>(
+        deviceIndex, context.device, context.queue, context.queueFamilyIndex);
+    if (!m_impl->vkdev->is_valid()) {
+        setError(errorMessage, QStringLiteral("failed to wrap JCut Vulkan device for ncnn SCRFD inference"));
+        m_impl->vkdev.reset();
+        return false;
+    }
+    m_impl->net.opt.use_vulkan_compute = true;
+    m_impl->net.opt.use_fp16_packed = false;
+    m_impl->net.opt.use_fp16_storage = false;
+    m_impl->net.opt.use_fp16_arithmetic = false;
+    m_impl->net.set_vulkan_device(m_impl->vkdev.get());
+    if (m_impl->net.load_param(paramPath.toLocal8Bit().constData()) != 0) {
+        setError(errorMessage, QStringLiteral("failed to load SCRFD ncnn param file: %1").arg(paramPath));
+        release();
+        return false;
+    }
+    if (m_impl->net.load_model(binPath.toLocal8Bit().constData()) != 0) {
+        setError(errorMessage, QStringLiteral("failed to load SCRFD ncnn bin file: %1").arg(binPath));
+        release();
+        return false;
+    }
+    m_impl->context = context;
+    m_impl->initialized = true;
+    m_impl->zeroCopyInput = true;
     return true;
 #endif
 }
@@ -197,8 +281,12 @@ void VulkanScrfdNcnnFaceDetector::release()
 {
 #if JCUT_HAVE_NCNN
     m_impl->net.clear();
+    m_impl->vkdev.reset();
+    m_impl->inputMemory = {};
 #endif
+    m_impl->context = {};
     m_impl->initialized = false;
+    m_impl->zeroCopyInput = false;
 }
 
 bool VulkanScrfdNcnnFaceDetector::isInitialized() const
@@ -318,8 +406,116 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromBgr(const cv::Mat&
 }
 #endif
 
+QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const VulkanTensorBuffer& inputTensor,
+                                                                     const ScrfdTensorLayout& layout,
+                                                                     int imageWidth,
+                                                                     int imageHeight,
+                                                                     float threshold,
+                                                                     QString* errorMessage)
+{
+    QVector<ScrfdDetection> out;
+    if (!m_impl->initialized) {
+        setError(errorMessage, QStringLiteral("SCRFD ncnn detector is not initialized"));
+        return out;
+    }
+    if (inputTensor.buffer == VK_NULL_HANDLE || inputTensor.byteSize < layout.byteSize() ||
+        layout.inputWidth <= 0 || layout.inputHeight <= 0 || layout.scale <= 0.0f) {
+        setError(errorMessage, QStringLiteral("SCRFD zero-copy input tensor is missing or invalid"));
+        return out;
+    }
+
+#if !JCUT_HAVE_NCNN
+    Q_UNUSED(inputTensor);
+    Q_UNUSED(layout);
+    Q_UNUSED(imageWidth);
+    Q_UNUSED(imageHeight);
+    Q_UNUSED(threshold);
+    setError(errorMessage, QStringLiteral("JCut was built without ncnn; SCRFD detector is unavailable."));
+    return out;
+#else
+    m_impl->inputMemory.buffer = inputTensor.buffer;
+    m_impl->inputMemory.offset = 0;
+    m_impl->inputMemory.capacity = static_cast<size_t>(inputTensor.byteSize);
+    m_impl->inputMemory.memory = VK_NULL_HANDLE;
+    m_impl->inputMemory.mapped_ptr = nullptr;
+    m_impl->inputMemory.memory_type_index = 0;
+    m_impl->inputMemory.access_flags = VK_ACCESS_SHADER_WRITE_BIT;
+    m_impl->inputMemory.stage_flags = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    m_impl->inputMemory.refcount = 0;
+
+    ncnn::VkMat gpuInput(layout.inputWidth,
+                         layout.inputHeight,
+                         3,
+                         &m_impl->inputMemory,
+                         4u,
+                         m_impl->net.opt.blob_vkallocator);
+    ncnn::Extractor ex = m_impl->net.create_extractor();
+    ex.set_light_mode(false);
+    if (ex.input("input.1", gpuInput) != 0) {
+        setError(errorMessage, QStringLiteral("SCRFD model does not expose expected input blob 'input.1'"));
+        return out;
+    }
+
+    std::vector<FaceObject> proposals;
+    auto extractLevel = [&](const char* scoreName, const char* bboxName, int baseSize, int featStride) -> bool {
+        ncnn::Mat scoreBlob;
+        ncnn::Mat bboxBlob;
+        if (ex.extract(scoreName, scoreBlob) != 0 || ex.extract(bboxName, bboxBlob) != 0) {
+            setError(errorMessage,
+                     QStringLiteral("SCRFD model does not expose expected output blobs %1/%2")
+                         .arg(QString::fromLatin1(scoreName), QString::fromLatin1(bboxName)));
+            return false;
+        }
+        ncnn::Mat ratios(1);
+        ratios[0] = 1.0f;
+        ncnn::Mat scales(2);
+        scales[0] = 1.0f;
+        scales[1] = 2.0f;
+        const ncnn::Mat anchors = generateAnchors(baseSize, ratios, scales);
+        generateProposals(anchors, featStride, scoreBlob, bboxBlob, threshold, &proposals);
+        return true;
+    };
+    if (!extractLevel("412", "415", 16, 8) ||
+        !extractLevel("474", "477", 64, 16) ||
+        !extractLevel("536", "539", 256, 32)) {
+        return out;
+    }
+
+    std::sort(proposals.begin(), proposals.end(), [](const FaceObject& a, const FaceObject& b) {
+        return a.prob > b.prob;
+    });
+    std::vector<int> picked;
+    nmsSortedBboxes(proposals, &picked, 0.45f);
+    out.reserve(static_cast<int>(picked.size()));
+    for (int index : picked) {
+        const FaceObject obj = proposals[index];
+        const float x0 = std::clamp(static_cast<float>((obj.rect.x() - layout.padLeft) / layout.scale),
+                                    0.0f,
+                                    static_cast<float>(imageWidth - 1));
+        const float y0 = std::clamp(static_cast<float>((obj.rect.y() - layout.padTop) / layout.scale),
+                                    0.0f,
+                                    static_cast<float>(imageHeight - 1));
+        const float x1 = std::clamp(static_cast<float>((obj.rect.right() - layout.padLeft) / layout.scale),
+                                    0.0f,
+                                    static_cast<float>(imageWidth - 1));
+        const float y1 = std::clamp(static_cast<float>((obj.rect.bottom() - layout.padTop) / layout.scale),
+                                    0.0f,
+                                    static_cast<float>(imageHeight - 1));
+        QRectF box(QPointF(x0, y0), QPointF(x1, y1));
+        box = box.normalized().intersected(QRectF(0, 0, imageWidth, imageHeight));
+        if (box.width() >= 4.0 && box.height() >= 4.0) {
+            out.push_back({box, obj.prob});
+        }
+    }
+    return out;
+#endif
+}
+
 QString VulkanScrfdNcnnFaceDetector::backendId() const
 {
+    if (m_impl->zeroCopyInput) {
+        return QStringLiteral("scrfd_500m_ncnn_vulkan_zero_copy_v1");
+    }
     return QStringLiteral("scrfd_500m_ncnn_vulkan_materialized_input_v1");
 }
 

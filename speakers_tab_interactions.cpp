@@ -1136,8 +1136,10 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     QAction* disableTrackingAction = menu.addAction(QStringLiteral("Disable Subtitle Face Tracking"));
     QMenu* autoTrackMenu = menu.addMenu(QStringLiteral("FaceStream"));
     QAction* runAutoTrackAction = nullptr;
+    QAction* viewAutoTrackAction = nullptr;
     QAction* deleteAutoTrackAction = nullptr;
     runAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Generate FaceStream"));
+    viewAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("View FaceStream"));
     deleteAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Delete FaceStream"));
     menu.addSeparator();
     const QString exportLabel = selectedSpeakerIds.size() > 1
@@ -1151,6 +1153,9 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     disableTrackingAction->setEnabled(canMutate && trackingEnabled);
     if (runAutoTrackAction) {
         runAutoTrackAction->setEnabled(canMutate);
+    }
+    if (viewAutoTrackAction) {
+        viewAutoTrackAction->setEnabled(true);
     }
     if (deleteAutoTrackAction) {
         deleteAutoTrackAction->setEnabled(canMutate && hasTrackingModel);
@@ -1166,6 +1171,10 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
         if (m_speakerDeps.exportSpeakersVideo) {
             m_speakerDeps.exportSpeakersVideo(selectedSpeakerIds);
         }
+        return;
+    }
+    if (chosen == viewAutoTrackAction) {
+        onSpeakerViewFaceStreamClicked();
         return;
     }
     if (!activeCutMutable()) {

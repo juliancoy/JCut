@@ -24,6 +24,21 @@ struct FacePreprocessPushConstants {
     float sourceHeight = 1.0f;
 };
 
+struct ScrfdPreprocessPushConstants {
+    int inputWidth = 0;
+    int inputHeight = 0;
+    int resizedWidth = 0;
+    int resizedHeight = 0;
+    int padLeft = 0;
+    int padTop = 0;
+    int sourceIsSrgb = 0;
+    int reserved = 0;
+    float sourceX = 0.0f;
+    float sourceY = 0.0f;
+    float sourceWidth = 1.0f;
+    float sourceHeight = 1.0f;
+};
+
 struct FaceInferencePushConstants {
     int tensorWidth = 300;
     int tensorHeight = 300;
@@ -66,6 +81,14 @@ VkDeviceSize FaceDetectorTensorSpec::byteSize() const
            static_cast<VkDeviceSize>(sizeof(float));
 }
 
+VkDeviceSize ScrfdTensorLayout::byteSize() const
+{
+    return static_cast<VkDeviceSize>(qMax(0, inputWidth)) *
+           static_cast<VkDeviceSize>(qMax(0, inputHeight)) *
+           static_cast<VkDeviceSize>(3) *
+           static_cast<VkDeviceSize>(sizeof(float));
+}
+
 VulkanZeroCopyFaceDetector::VulkanZeroCopyFaceDetector() = default;
 
 VulkanZeroCopyFaceDetector::~VulkanZeroCopyFaceDetector()
@@ -86,6 +109,7 @@ bool VulkanZeroCopyFaceDetector::initialize(const VulkanDeviceContext& context, 
     m_context = context;
     if (!createDescriptorResources(errorMessage) ||
         !createPipeline(errorMessage) ||
+        !createScrfdPipeline(errorMessage) ||
         !createInferenceDescriptorResources(errorMessage) ||
         !createInferencePipeline(errorMessage) ||
         !createCommandResources(errorMessage) ||
@@ -114,11 +138,17 @@ void VulkanZeroCopyFaceDetector::release()
         if (m_pipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, m_pipeline, nullptr);
         }
+        if (m_scrfdPipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, m_scrfdPipeline, nullptr);
+        }
         if (m_inferencePipeline != VK_NULL_HANDLE) {
             vkDestroyPipeline(device, m_inferencePipeline, nullptr);
         }
         if (m_pipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, m_pipelineLayout, nullptr);
+        }
+        if (m_scrfdPipelineLayout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, m_scrfdPipelineLayout, nullptr);
         }
         if (m_inferencePipelineLayout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, m_inferencePipelineLayout, nullptr);
@@ -141,6 +171,8 @@ void VulkanZeroCopyFaceDetector::release()
     m_descriptorPool = VK_NULL_HANDLE;
     m_pipelineLayout = VK_NULL_HANDLE;
     m_pipeline = VK_NULL_HANDLE;
+    m_scrfdPipelineLayout = VK_NULL_HANDLE;
+    m_scrfdPipeline = VK_NULL_HANDLE;
     m_inferenceDescriptorSetLayout = VK_NULL_HANDLE;
     m_inferenceDescriptorPool = VK_NULL_HANDLE;
     m_inferencePipelineLayout = VK_NULL_HANDLE;
@@ -151,6 +183,95 @@ void VulkanZeroCopyFaceDetector::release()
     m_sampler = VK_NULL_HANDLE;
     m_context = {};
     m_initialized = false;
+}
+
+bool VulkanZeroCopyFaceDetector::preprocessScrfdToTensor(const VulkanExternalImage& source,
+                                                         const VulkanTensorBuffer& outputTensor,
+                                                         int targetSize,
+                                                         ScrfdTensorLayout* layout,
+                                                         QString* errorMessage)
+{
+    if (!m_initialized) {
+        setError(errorMessage, QStringLiteral("zero-copy Vulkan face detector is not initialized"));
+        return false;
+    }
+    if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+        setError(errorMessage, QStringLiteral("invalid source image for SCRFD zero-copy preprocessing"));
+        return false;
+    }
+    if (!layout) {
+        setError(errorMessage, QStringLiteral("SCRFD tensor layout output is required"));
+        return false;
+    }
+
+    const int width = source.size.width();
+    const int height = source.size.height();
+    targetSize = qMax(320, targetSize);
+    int resizedW = width;
+    int resizedH = height;
+    float scale = 1.0f;
+    if (resizedW > resizedH) {
+        scale = static_cast<float>(targetSize) / static_cast<float>(resizedW);
+        resizedW = targetSize;
+        resizedH = qMax(1, qRound(static_cast<float>(resizedH) * scale));
+    } else {
+        scale = static_cast<float>(targetSize) / static_cast<float>(resizedH);
+        resizedH = targetSize;
+        resizedW = qMax(1, qRound(static_cast<float>(resizedW) * scale));
+    }
+
+    layout->resizedWidth = resizedW;
+    layout->resizedHeight = resizedH;
+    layout->inputWidth = ((resizedW + 31) / 32) * 32;
+    layout->inputHeight = ((resizedH + 31) / 32) * 32;
+    layout->padLeft = (layout->inputWidth - resizedW) / 2;
+    layout->padTop = (layout->inputHeight - resizedH) / 2;
+    layout->scale = scale;
+
+    if (outputTensor.buffer == VK_NULL_HANDLE || outputTensor.byteSize < layout->byteSize()) {
+        setError(errorMessage, QStringLiteral("SCRFD output tensor buffer is missing or too small"));
+        return false;
+    }
+
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = m_descriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &m_descriptorSetLayout;
+    if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
+        setError(errorMessage, QStringLiteral("failed to allocate SCRFD preprocessing descriptor set"));
+        return false;
+    }
+
+    VkDescriptorImageInfo imageInfo{};
+    imageInfo.sampler = m_sampler;
+    imageInfo.imageView = source.imageView;
+    imageInfo.imageLayout = source.imageLayout;
+
+    VkDescriptorBufferInfo bufferInfo{};
+    bufferInfo.buffer = outputTensor.buffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = layout->byteSize();
+
+    std::array<VkWriteDescriptorSet, 2> writes{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &imageInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = descriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &bufferInfo;
+    vkUpdateDescriptorSets(m_context.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+
+    const bool ok = submitScrfdPreprocess(descriptorSet, source, *layout, errorMessage);
+    vkFreeDescriptorSets(m_context.device, m_descriptorPool, 1, &descriptorSet);
+    return ok;
 }
 
 bool VulkanZeroCopyFaceDetector::isInitialized() const
@@ -362,6 +483,50 @@ bool VulkanZeroCopyFaceDetector::createPipeline(QString* errorMessage)
     vkDestroyShaderModule(m_context.device, shader, nullptr);
     if (result != VK_SUCCESS) {
         setError(errorMessage, QStringLiteral("failed to create zero-copy detector preprocessing pipeline"));
+        return false;
+    }
+    return true;
+}
+
+bool VulkanZeroCopyFaceDetector::createScrfdPipeline(QString* errorMessage)
+{
+    const QByteArray spirv = readShader(QStringLiteral("scrfd_preprocess.comp.spv"));
+    VkShaderModule shader = createShaderModule(spirv, QStringLiteral("scrfd_preprocess.comp.spv"), errorMessage);
+    if (shader == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkPushConstantRange pushRange{};
+    pushRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushRange.offset = 0;
+    pushRange.size = sizeof(ScrfdPreprocessPushConstants);
+
+    VkPipelineLayoutCreateInfo layoutInfo{};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    layoutInfo.setLayoutCount = 1;
+    layoutInfo.pSetLayouts = &m_descriptorSetLayout;
+    layoutInfo.pushConstantRangeCount = 1;
+    layoutInfo.pPushConstantRanges = &pushRange;
+    if (vkCreatePipelineLayout(m_context.device, &layoutInfo, nullptr, &m_scrfdPipelineLayout) != VK_SUCCESS) {
+        vkDestroyShaderModule(m_context.device, shader, nullptr);
+        setError(errorMessage, QStringLiteral("failed to create SCRFD preprocessing pipeline layout"));
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = shader;
+    stage.pName = "main";
+
+    VkComputePipelineCreateInfo pipelineInfo{};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    pipelineInfo.stage = stage;
+    pipelineInfo.layout = m_scrfdPipelineLayout;
+    const VkResult result = vkCreateComputePipelines(m_context.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_scrfdPipeline);
+    vkDestroyShaderModule(m_context.device, shader, nullptr);
+    if (result != VK_SUCCESS) {
+        setError(errorMessage, QStringLiteral("failed to create SCRFD preprocessing pipeline"));
         return false;
     }
     return true;
@@ -691,6 +856,90 @@ bool VulkanZeroCopyFaceDetector::submitPreprocess(VkDescriptorSet descriptorSet,
     }
     if (vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
         setError(errorMessage, QStringLiteral("timed out waiting for zero-copy detector preprocessing"));
+        return false;
+    }
+    return true;
+}
+
+bool VulkanZeroCopyFaceDetector::submitScrfdPreprocess(VkDescriptorSet descriptorSet,
+                                                       const VulkanExternalImage& source,
+                                                       const ScrfdTensorLayout& layout,
+                                                       QString* errorMessage)
+{
+    vkResetFences(m_context.device, 1, &m_fence);
+    vkResetCommandBuffer(m_commandBuffer, 0);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(m_commandBuffer, &beginInfo) != VK_SUCCESS) {
+        setError(errorMessage, QStringLiteral("failed to begin SCRFD preprocessing command buffer"));
+        return false;
+    }
+
+    vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, m_scrfdPipeline);
+    vkCmdBindDescriptorSets(m_commandBuffer,
+                            VK_PIPELINE_BIND_POINT_COMPUTE,
+                            m_scrfdPipelineLayout,
+                            0,
+                            1,
+                            &descriptorSet,
+                            0,
+                            nullptr);
+
+    ScrfdPreprocessPushConstants push{};
+    push.inputWidth = layout.inputWidth;
+    push.inputHeight = layout.inputHeight;
+    push.resizedWidth = layout.resizedWidth;
+    push.resizedHeight = layout.resizedHeight;
+    push.padLeft = layout.padLeft;
+    push.padTop = layout.padTop;
+    push.sourceIsSrgb = source.sourceIsSrgb ? 1 : 0;
+    push.sourceX = qBound(0.0f, source.sourceX, 1.0f);
+    push.sourceY = qBound(0.0f, source.sourceY, 1.0f);
+    push.sourceWidth = qBound(0.001f, source.sourceWidth, 1.0f - push.sourceX);
+    push.sourceHeight = qBound(0.001f, source.sourceHeight, 1.0f - push.sourceY);
+    vkCmdPushConstants(m_commandBuffer,
+                       m_scrfdPipelineLayout,
+                       VK_SHADER_STAGE_COMPUTE_BIT,
+                       0,
+                       sizeof(push),
+                       &push);
+
+    const uint32_t groupsX = static_cast<uint32_t>((layout.inputWidth + 15) / 16);
+    const uint32_t groupsY = static_cast<uint32_t>((layout.inputHeight + 15) / 16);
+    vkCmdDispatch(m_commandBuffer, groupsX, groupsY, 1);
+
+    VkMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(m_commandBuffer,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         0,
+                         1,
+                         &barrier,
+                         0,
+                         nullptr,
+                         0,
+                         nullptr);
+
+    if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS) {
+        setError(errorMessage, QStringLiteral("failed to end SCRFD preprocessing command buffer"));
+        return false;
+    }
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &m_commandBuffer;
+    if (vkQueueSubmit(m_context.queue, 1, &submitInfo, m_fence) != VK_SUCCESS) {
+        setError(errorMessage, QStringLiteral("failed to submit SCRFD preprocessing work"));
+        return false;
+    }
+    if (vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
+        setError(errorMessage, QStringLiteral("timed out waiting for SCRFD preprocessing"));
         return false;
     }
     return true;

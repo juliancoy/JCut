@@ -51,6 +51,18 @@ private:
     bool tryHardwareDirect(const editor::FrameHandle& frame,
                            double* uploadMs,
                            QString* errorMessage);
+    bool createNv12ConversionPipeline(QString* errorMessage);
+    bool ensureCudaExportBuffer(VkDeviceSize bytes,
+                                VkBuffer& buffer,
+                                VkDeviceMemory& memory,
+                                VkDeviceSize& size,
+                                QString* errorMessage);
+    bool ensureNv12ConversionResources(QString* errorMessage);
+    bool convertNv12BuffersToImage(int width,
+                                   int height,
+                                   int yPitch,
+                                   int uvPitch,
+                                   QString* errorMessage);
     bool ensureImageResources(const QSize& size, QString* errorMessage);
     bool ensureStagingBuffer(VkDeviceSize bytes, QString* errorMessage);
     void transitionImage(VkImageLayout oldLayout, VkImageLayout newLayout);
@@ -77,9 +89,19 @@ private:
     VkBuffer m_cudaExportBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_cudaExportMemory = VK_NULL_HANDLE;
     VkDeviceSize m_cudaExportSize = 0;
+    VkBuffer m_cudaExportUvBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory m_cudaExportUvMemory = VK_NULL_HANDLE;
+    VkDeviceSize m_cudaExportUvSize = 0;
     void* m_cudaExternalMemory = nullptr;
+    void* m_cudaExternalUvMemory = nullptr;
     quint64 m_cudaExternalDevicePtr = 0;
+    quint64 m_cudaExternalUvDevicePtr = 0;
     void* m_cudaImportContext = nullptr;
+
+    VkDescriptorSetLayout m_nv12DescriptorSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool m_nv12DescriptorPool = VK_NULL_HANDLE;
+    VkPipelineLayout m_nv12PipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_nv12Pipeline = VK_NULL_HANDLE;
 
     FrameHandoffMode m_lastMode = FrameHandoffMode::Invalid;
     HardwareInteropProbeResult m_lastProbe;

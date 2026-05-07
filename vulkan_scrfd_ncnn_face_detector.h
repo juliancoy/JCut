@@ -1,5 +1,7 @@
 #pragma once
 
+#include "vulkan_zero_copy_face_detector.h"
+
 #include <QRectF>
 #include <QString>
 #include <QVector>
@@ -27,6 +29,10 @@ public:
                     const QString& binPath,
                     bool useVulkan,
                     QString* errorMessage = nullptr);
+    bool initialize(const VulkanDeviceContext& context,
+                    const QString& paramPath,
+                    const QString& binPath,
+                    QString* errorMessage = nullptr);
     void release();
 
     bool isInitialized() const;
@@ -37,6 +43,12 @@ public:
                                          int targetSize,
                                          QString* errorMessage = nullptr);
 #endif
+    QVector<ScrfdDetection> inferFromTensor(const VulkanTensorBuffer& inputTensor,
+                                            const ScrfdTensorLayout& layout,
+                                            int imageWidth,
+                                            int imageHeight,
+                                            float threshold,
+                                            QString* errorMessage = nullptr);
 
     QString backendId() const;
 

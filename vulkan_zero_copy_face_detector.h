@@ -47,6 +47,18 @@ struct VulkanFaceDetection {
     float confidence = 0.0f;
 };
 
+struct ScrfdTensorLayout {
+    int inputWidth = 0;
+    int inputHeight = 0;
+    int resizedWidth = 0;
+    int resizedHeight = 0;
+    int padLeft = 0;
+    int padTop = 0;
+    float scale = 1.0f;
+
+    VkDeviceSize byteSize() const;
+};
+
 class VulkanZeroCopyFaceDetector {
 public:
     VulkanZeroCopyFaceDetector();
@@ -67,6 +79,14 @@ public:
                             const VulkanTensorBuffer& outputTensor,
                             QString* errorMessage = nullptr);
 
+    // GPU-only SCRFD preprocessing: VkImageView -> padded NCHW RGB tensor,
+    // normalized as (rgb * 255 - 127.5) / 128.0.
+    bool preprocessScrfdToTensor(const VulkanExternalImage& source,
+                                 const VulkanTensorBuffer& outputTensor,
+                                 int targetSize,
+                                 ScrfdTensorLayout* layout,
+                                 QString* errorMessage = nullptr);
+
     bool inferFromTensor(const VulkanTensorBuffer& inputTensor,
                          const VulkanTensorBuffer& outputDetections,
                          int maxDetections,
@@ -78,6 +98,7 @@ public:
 private:
     bool createDescriptorResources(QString* errorMessage);
     bool createPipeline(QString* errorMessage);
+    bool createScrfdPipeline(QString* errorMessage);
     bool createInferenceDescriptorResources(QString* errorMessage);
     bool createInferencePipeline(QString* errorMessage);
     bool createCommandResources(QString* errorMessage);
@@ -86,6 +107,10 @@ private:
     bool submitPreprocess(VkDescriptorSet descriptorSet,
                           const VulkanExternalImage& source,
                           QString* errorMessage);
+    bool submitScrfdPreprocess(VkDescriptorSet descriptorSet,
+                               const VulkanExternalImage& source,
+                               const ScrfdTensorLayout& layout,
+                               QString* errorMessage);
     bool submitInference(VkDescriptorSet descriptorSet,
                          const VulkanTensorBuffer& outputDetections,
                          int maxDetections,
@@ -98,6 +123,8 @@ private:
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout m_pipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_pipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_scrfdPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline m_scrfdPipeline = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_inferenceDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_inferenceDescriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout m_inferencePipelineLayout = VK_NULL_HANDLE;

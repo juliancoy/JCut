@@ -106,6 +106,7 @@ public:
     QPushButton *speakerPickReference2Button() const { return m_speakerPickReference2Button; }
     QPushButton *speakerClearReferencesButton() const { return m_speakerClearReferencesButton; }
     QPushButton *speakerRunAutoTrackButton() const { return m_speakerRunAutoTrackButton; }
+    QPushButton *speakerViewBoxstreamButton() const { return m_speakerViewBoxstreamButton; }
     QPushButton *speakerBoxstreamSettingsButton() const { return m_speakerBoxstreamSettingsButton; }
     QPushButton *speakerEnableTrackingButton() const { return m_speakerEnableTrackingButton; }
     QPushButton *speakerDisableTrackingButton() const { return m_speakerDisableTrackingButton; }
@@ -595,6 +596,7 @@ private:
     QPushButton *m_speakerPickReference2Button = nullptr;
     QPushButton *m_speakerClearReferencesButton = nullptr;
     QPushButton *m_speakerRunAutoTrackButton = nullptr;
+    QPushButton *m_speakerViewBoxstreamButton = nullptr;
     QPushButton *m_speakerBoxstreamSettingsButton = nullptr;
     QPushButton *m_speakerEnableTrackingButton = nullptr;
     QPushButton *m_speakerDisableTrackingButton = nullptr;

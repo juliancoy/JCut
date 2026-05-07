@@ -2,6 +2,7 @@
 #include "speakers_tab_internal.h"
 
 #include "decoder_context.h"
+#include "speaker_flow_debug.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -164,6 +165,12 @@ void SpeakersTab::wire()
             QStringLiteral("Run the default JCut DNN FaceStream Generator for all face tracks."));
         connect(m_widgets.speakerRunAutoTrackButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerRunAutoTrackClicked);
+    }
+    if (m_widgets.speakerViewBoxstreamButton) {
+        m_widgets.speakerViewBoxstreamButton->setToolTip(
+            QStringLiteral("Open the selected FaceStream JSON and the latest generated artifact paths."));
+        connect(m_widgets.speakerViewBoxstreamButton, &QPushButton::clicked,
+                this, &SpeakersTab::onSpeakerViewFaceStreamClicked);
     }
     if (m_widgets.speakerBoxstreamSettingsButton) {
         m_widgets.speakerBoxstreamSettingsButton->setToolTip(
@@ -534,6 +541,110 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
     }
     refresh();
     return true;
+}
+
+void SpeakersTab::onSpeakerViewFaceStreamClicked()
+{
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        QMessageBox::information(nullptr, QStringLiteral("View FaceStream"), QStringLiteral("Select a clip first."));
+        return;
+    }
+
+    QString text;
+    text += QStringLiteral("Selected clip: %1\n").arg(clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
+    text += QStringLiteral("Transcript artifact: %1\n\n").arg(m_loadedTranscriptPath);
+
+    editor::TranscriptEngine transcriptEngine;
+    QJsonObject artifactRoot;
+    const bool loadedArtifact = transcriptEngine.loadBoxstreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    QJsonObject continuityRoot;
+    if (loadedArtifact) {
+        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+        continuityRoot = byClip.value(clip->id.trimmed()).toObject();
+    }
+    const QJsonArray streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    text += QStringLiteral("Imported streams: %1\n").arg(streams.size());
+    const QString importedArtifactDir = continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString();
+    if (!importedArtifactDir.isEmpty()) {
+        text += QStringLiteral("Imported artifact dir: %1\n").arg(importedArtifactDir);
+    }
+    const QString ndjsonPath = continuityRoot.value(QStringLiteral("facestream_ndjson")).toString();
+    if (!ndjsonPath.isEmpty()) {
+        const QFileInfo ndjsonInfo(ndjsonPath);
+        text += QStringLiteral("facestream.ndjson: %1 (%2 bytes)\n")
+                    .arg(ndjsonPath)
+                    .arg(ndjsonInfo.exists() ? ndjsonInfo.size() : -1);
+    }
+    const QString summaryPath = continuityRoot.value(QStringLiteral("summary_json")).toString();
+    if (!summaryPath.isEmpty()) {
+        text += QStringLiteral("summary.json: %1\n").arg(summaryPath);
+    }
+
+    const QString clipToken = speaker_flow_debug::sanitizeToken(
+        clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
+    const QString projectRoot = speaker_flow_debug::deriveProjectRootFromTranscriptPath(m_loadedTranscriptPath);
+    const QString debugRoot = QDir(projectRoot).absoluteFilePath(QStringLiteral("debug/speaker_flow/%1").arg(clipToken));
+    const QString latestRun = speaker_flow_debug::latestRunIdWithArtifact(debugRoot);
+    if (!latestRun.isEmpty()) {
+        const QString runDir = QDir(debugRoot).absoluteFilePath(latestRun);
+        const QString artifactDir = QDir(runDir).absoluteFilePath(QStringLiteral("facestream_artifact"));
+        text += QStringLiteral("\nLatest debug run: %1\n").arg(runDir);
+        text += QStringLiteral("Latest artifact dir: %1\n").arg(artifactDir);
+        const QStringList artifactFiles{
+            QStringLiteral("facestream.ndjson"),
+            QStringLiteral("tracks.json"),
+            QStringLiteral("continuity_boxstream.json"),
+            QStringLiteral("summary.json")
+        };
+        for (const QString& fileName : artifactFiles) {
+            const QString path = QDir(artifactDir).absoluteFilePath(fileName);
+            const QFileInfo info(path);
+            text += QStringLiteral("- %1: %2")
+                        .arg(fileName, info.exists() ? path : QStringLiteral("missing"));
+            if (info.exists()) {
+                text += QStringLiteral(" (%1 bytes)").arg(info.size());
+            }
+            text += QLatin1Char('\n');
+        }
+    } else {
+        text += QStringLiteral("\nLatest generated artifact: none found for this clip.\n");
+        if (QFileInfo::exists(debugRoot)) {
+            text += QStringLiteral("Debug root exists but contains no facestream_artifact files: %1\n").arg(debugRoot);
+        }
+    }
+
+    text += QStringLiteral("\n");
+    const int row = m_widgets.speakerBoxStreamTable ? m_widgets.speakerBoxStreamTable->currentRow() : -1;
+    if (row >= 0 && row < m_boxStreamPanelRows.size()) {
+        text += QStringLiteral("Selected stream:\n");
+        text += QString::fromUtf8(QJsonDocument(m_boxStreamPanelRows.at(row).toObject()).toJson(QJsonDocument::Indented));
+    } else if (!streams.isEmpty()) {
+        text += QStringLiteral("All imported streams:\n");
+        text += QString::fromUtf8(QJsonDocument(streams).toJson(QJsonDocument::Indented));
+    } else {
+        text += QStringLiteral("No imported FaceStream paths found for this clip.");
+    }
+
+    QDialog dialog;
+    dialog.setWindowTitle(QStringLiteral("View FaceStream"));
+    dialog.setWindowFlag(Qt::Window, true);
+    dialog.resize(900, 650);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* help = new QLabel(QStringLiteral("Generated artifact viewer. This shows imported continuity streams plus the latest resumable artifact file paths."), &dialog);
+    help->setWordWrap(true);
+    layout->addWidget(help);
+    auto* edit = new QPlainTextEdit(&dialog);
+    edit->setReadOnly(true);
+    edit->setPlainText(text);
+    layout->addWidget(edit, 1);
+    auto* buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto* closeButton = new QPushButton(QStringLiteral("Close"), &dialog);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    dialog.exec();
 }
 
 void SpeakersTab::requestRefreshBoxStreamPathsPanel()
@@ -1403,6 +1514,9 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit);
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE FACESTREAM"));
+    }
+    if (m_widgets.speakerViewBoxstreamButton) {
+        m_widgets.speakerViewBoxstreamButton->setEnabled(true);
     }
     if (m_widgets.speakerBoxstreamSettingsButton) {
         m_widgets.speakerBoxstreamSettingsButton->setEnabled(canEdit);

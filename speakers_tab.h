@@ -40,6 +40,7 @@ public:
         QPushButton* speakerPickReference2Button = nullptr;
         QPushButton* speakerClearReferencesButton = nullptr;
         QPushButton* speakerRunAutoTrackButton = nullptr;
+        QPushButton* speakerViewBoxstreamButton = nullptr;
         QPushButton* speakerBoxstreamSettingsButton = nullptr;
         QPushButton* speakerEnableTrackingButton = nullptr;
         QPushButton* speakerDisableTrackingButton = nullptr;
@@ -103,6 +104,7 @@ private slots:
     void onSpeakerRandomSentenceClicked();
     void onSpeakerClearReferencesClicked();
     void onSpeakerRunAutoTrackClicked();
+    void onSpeakerViewFaceStreamClicked();
     void onSpeakerBoxStreamSettingsClicked();
     void onSpeakerEnableTrackingClicked();
     void onSpeakerDisableTrackingClicked();

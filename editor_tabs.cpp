@@ -196,6 +196,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerPickReference2Button(),
             m_inspectorPane->speakerClearReferencesButton(),
             m_inspectorPane->speakerRunAutoTrackButton(),
+            m_inspectorPane->speakerViewBoxstreamButton(),
             m_inspectorPane->speakerBoxstreamSettingsButton(),
             m_inspectorPane->speakerEnableTrackingButton(),
             m_inspectorPane->speakerDisableTrackingButton(),

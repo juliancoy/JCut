@@ -1305,11 +1305,16 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerRunAutoTrackButton->setObjectName(QStringLiteral("speakers.generate_boxstream"));
     m_speakerRunAutoTrackButton->setMinimumHeight(32);
     m_speakerRunAutoTrackButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_speakerViewBoxstreamButton = new QPushButton(QStringLiteral("View FaceStream"), page);
+    m_speakerViewBoxstreamButton->setObjectName(QStringLiteral("speakers.view_boxstream"));
+    m_speakerViewBoxstreamButton->setMinimumHeight(32);
+    m_speakerViewBoxstreamButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     m_speakerBoxstreamSettingsButton = new QPushButton(QStringLiteral("FaceStream Settings"), page);
     m_speakerBoxstreamSettingsButton->setObjectName(QStringLiteral("speakers.boxstream_settings"));
     m_speakerBoxstreamSettingsButton->setMinimumHeight(32);
     m_speakerBoxstreamSettingsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     boxstreamActionRow->addWidget(m_speakerRunAutoTrackButton);
+    boxstreamActionRow->addWidget(m_speakerViewBoxstreamButton);
     boxstreamActionRow->addWidget(m_speakerBoxstreamSettingsButton);
 
     auto *speakerAiRow = new QHBoxLayout;
@@ -1566,37 +1571,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     overlaySourceRow->setSpacing(8);
     auto *overlaySourceLabel = new QLabel(QStringLiteral("Preview Tracker"), boxstreamPage);
     m_speakerBoxStreamOverlaySourceCombo = new QComboBox(boxstreamPage);
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("All Trackers"), QStringLiteral("all"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Haar (Balanced)"), QStringLiteral("opencv_haar_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Haar (Small Faces)"), QStringLiteral("opencv_haar_smallfaces_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Haar (Precision)"), QStringLiteral("opencv_haar_precision_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV LBP (Small Faces)"), QStringLiteral("opencv_lbp_smallfaces_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV DNN Auto"), QStringLiteral("opencv_dnn_auto_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Python-Compatible"), QStringLiteral("opencv_python_compatible_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Legacy Python Haar"), QStringLiteral("python_legacy_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Local Production Hybrid"), QStringLiteral("local_insightface_hybrid_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Native Production Hybrid (C++)"), QStringLiteral("native_hybrid_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker DNN Res10"), QStringLiteral("docker_dnn_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker InsightFace RetinaFace"), QStringLiteral("docker_insightface_retinaface_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker Production Hybrid"), QStringLiteral("docker_insightface_hybrid_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker YOLOv8 Face"), QStringLiteral("docker_yolov8_face_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker MTCNN"), QStringLiteral("docker_mtcnn_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("SAM3 Face"), QStringLiteral("sam3_face_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Contrib CSRT"), QStringLiteral("opencv_contrib_csrt_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Contrib KCF"), QStringLiteral("opencv_contrib_kcf_v1"));
-    const QColor dockerBg(QStringLiteral("#dff1ff"));
-    const QColor nativeBg(QStringLiteral("#e7f7e7"));
-    for (int i = 0; i < m_speakerBoxStreamOverlaySourceCombo->count(); ++i) {
-        const QString source = m_speakerBoxStreamOverlaySourceCombo->itemData(i).toString();
-        if (source.startsWith(QStringLiteral("docker_"))) {
-            m_speakerBoxStreamOverlaySourceCombo->setItemData(i, QBrush(dockerBg), Qt::BackgroundRole);
-        } else if (source.startsWith(QStringLiteral("native_"))) {
-            m_speakerBoxStreamOverlaySourceCombo->setItemData(i, QBrush(nativeBg), Qt::BackgroundRole);
-        }
-    }
+    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("All FaceStreams"), QStringLiteral("all"));
+    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("SCRFD ncnn Vulkan"), QStringLiteral("scrfd_500m_ncnn_vulkan_zero_copy_v1"));
     m_speakerBoxStreamOverlaySourceCombo->setCurrentIndex(0);
     m_speakerBoxStreamOverlaySourceCombo->setToolTip(
-        QStringLiteral("Choose which tracker output is superimposed in Preview for post comparison."));
+        QStringLiteral("Choose whether all generated SCRFD FaceStreams or only SCRFD-source paths are superimposed in Preview."));
     m_speakerBoxStreamOverlaySourceCombo->setStyleSheet(QStringLiteral(
         "QComboBox QAbstractItemView::item { padding: 3px 6px; }"));
     overlaySourceRow->addWidget(overlaySourceLabel);

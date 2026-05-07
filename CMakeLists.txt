@@ -275,7 +275,9 @@ set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_u.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p_v.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/yuv420p.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12_buffer_to_rgba.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_preprocess.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/scrfd_preprocess.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/face_infer_heuristic.comp
 )
 set(JCUT_VULKAN_SHADER_OUTPUTS "")
@@ -549,7 +551,7 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
 endif()
 
 add_executable(jcut_vulkan_boxstream_offscreen
-    ${CMAKE_CURRENT_SOURCE_DIR}/legacy/vulkan_boxstream_offscreen_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_boxstream_offscreen_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/boxstream_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
@@ -571,6 +573,12 @@ target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE
     Vulkan::Vulkan
     ${JCUT_OPENCV_LIBS}
 )
+if(CUDA_DRIVER_LIBRARY)
+    target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE ${CUDA_DRIVER_LIBRARY})
+    target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=1)
+else()
+    target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=0)
+endif()
 if(TARGET ncnn)
     target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE ncnn)
 endif()

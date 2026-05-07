@@ -26,6 +26,7 @@ QString sanitizeToken(const QString& raw);
 QString deriveProjectRootFromTranscriptPath(const QString& transcriptPath);
 QString makeRunId();
 QString latestRunId(const QString& clipDebugRoot);
+QString latestRunIdWithArtifact(const QString& clipDebugRoot);
 RunContext openLatestOrCreateRun(const QString& transcriptPath,
                                  const QString& clipId,
                                  const QString& videoStem);
@@ -55,4 +56,3 @@ void persistIndex(const QString& indexPath,
                   const QStringList& artefacts);
 
 } // namespace speaker_flow_debug
-

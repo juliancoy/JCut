@@ -10,7 +10,9 @@ extern "C" {
 }
 
 #include <atomic>
+#include <array>
 #include <cstdarg>
+#include <cstdio>
 #include <cstring>
 
 namespace editor {
@@ -19,13 +21,20 @@ namespace {
 
 void jcutFfmpegLogCallback(void* avcl, int level, const char* fmt, va_list vl)
 {
-    if (fmt) {
-        // FFmpeg emits this for some valid H.264 files with late SEI metadata.
-        // It is not actionable for frame decode and can flood realtime logs.
-        if (std::strstr(fmt, "Late SEI is not implemented") ||
-            std::strstr(fmt, "If you want to help, upload a sample of this file")) {
+    if (!fmt) {
+        return;
+    }
+
+    // FFmpeg emits this for some valid H.264 files with late SEI metadata.
+    // It is not actionable for frame decode and can flood realtime logs.
+    if (std::strstr(fmt, "Late SEI") ||
+        std::strstr(fmt, "Update your FFmpeg version to the newest one from Git") ||
+        std::strstr(fmt, "If the problem still occurs, it means that your file has a feature") ||
+        std::strstr(fmt, "If you want to help, upload a sample of this file")) {
             return;
-        }
+    }
+    if (level > av_log_get_level()) {
+        return;
     }
     av_log_default_callback(avcl, level, fmt, vl);
 }
