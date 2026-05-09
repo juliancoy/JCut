@@ -12,8 +12,6 @@ set(CMAKE_AUTOUIC ON)
 
 option(EDITOR_ASAN "Enable AddressSanitizer" OFF)
 option(EDITOR_BUILD_TESTS "Build editor tests" ON)
-option(JCUT_USE_OPENCV_CONTRIB "Enable OpenCV contrib modules (tracking backends)" ON)
-option(JCUT_ENABLE_OPENCV_CUDA "Build bundled OpenCV with CUDA DNN support when CUDA/cuDNN are available" OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -32,78 +30,43 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent OpenGLW
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_library(CUDA_DRIVER_LIBRARY cuda)
 
-set(JCUT_OPENCV_SOURCE "none")
-set(JCUT_OPENCV_LIBS "")
-set(JCUT_OPENCV_INCLUDES "")
-set(JCUT_HAVE_OPENCV_CONTRIB 0)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/CMakeLists.txt")
-    if(JCUT_USE_OPENCV_CONTRIB AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv_contrib/modules/tracking/CMakeLists.txt")
-        set(OPENCV_EXTRA_MODULES_PATH
-            "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv_contrib/modules"
-            CACHE PATH "" FORCE)
-        set(BUILD_LIST "core,imgproc,objdetect,dnn,video,tracking" CACHE STRING "" FORCE)
-        set(JCUT_HAVE_OPENCV_CONTRIB 1)
-    else()
-        set(BUILD_LIST "core,imgproc,objdetect,dnn" CACHE STRING "" FORCE)
+function(jcut_fix_qt_private_target target_name)
+    if(NOT TARGET "${target_name}")
+        return()
     endif()
-    set(BUILD_opencv_world OFF CACHE BOOL "" FORCE)
-    set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
-    set(BUILD_PERF_TESTS OFF CACHE BOOL "" FORCE)
-    set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-    set(INSTALL_CREATE_UNINSTALL_TARGET OFF CACHE BOOL "" FORCE)
-    set(WITH_IPP OFF CACHE BOOL "" FORCE)
-    set(WITH_VULKAN ON CACHE BOOL "" FORCE)
-    if(JCUT_ENABLE_OPENCV_CUDA)
-        set(WITH_CUDA ON CACHE BOOL "" FORCE)
-        set(WITH_CUBLAS ON CACHE BOOL "" FORCE)
-        set(WITH_CUDNN ON CACHE BOOL "" FORCE)
-        set(OPENCV_DNN_CUDA ON CACHE BOOL "" FORCE)
+
+    get_target_property(_qt_private_includes "${target_name}" INTERFACE_INCLUDE_DIRECTORIES)
+    if(NOT _qt_private_includes)
+        return()
     endif()
-    set(_saved_automoc "${CMAKE_AUTOMOC}")
-    set(_saved_autorcc "${CMAKE_AUTORCC}")
-    set(_saved_autouic "${CMAKE_AUTOUIC}")
-    set(CMAKE_AUTOMOC OFF)
-    set(CMAKE_AUTORCC OFF)
-    set(CMAKE_AUTOUIC OFF)
-    add_subdirectory(external/opencv EXCLUDE_FROM_ALL)
-    set(CMAKE_AUTOMOC "${_saved_automoc}")
-    set(CMAKE_AUTORCC "${_saved_autorcc}")
-    set(CMAKE_AUTOUIC "${_saved_autouic}")
-    set(JCUT_OPENCV_SOURCE "submodule")
-    set(JCUT_OPENCV_LIBS opencv_core opencv_imgproc opencv_objdetect opencv_dnn)
-    if(JCUT_HAVE_OPENCV_CONTRIB)
-        list(APPEND JCUT_OPENCV_LIBS opencv_video opencv_tracking)
-    endif()
-    set(JCUT_OPENCV_INCLUDES
-        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/core/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/dnn/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/imgproc/include"
-        "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/objdetect/include"
-        "${CMAKE_CURRENT_BINARY_DIR}/external/opencv"
-        "${CMAKE_CURRENT_BINARY_DIR}")
-    if(JCUT_HAVE_OPENCV_CONTRIB)
-        list(APPEND JCUT_OPENCV_INCLUDES
-            "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv/modules/video/include"
-            "${CMAKE_CURRENT_SOURCE_DIR}/external/opencv_contrib/modules/tracking/include")
-    endif()
-else()
-    if(JCUT_USE_OPENCV_CONTRIB)
-        find_package(OpenCV QUIET COMPONENTS core imgproc objdetect dnn video tracking)
-    else()
-        find_package(OpenCV QUIET COMPONENTS core imgproc objdetect dnn)
-    endif()
-    if(OpenCV_FOUND)
-        set(JCUT_OPENCV_SOURCE "system")
-        set(JCUT_OPENCV_LIBS ${OpenCV_LIBS})
-        set(JCUT_OPENCV_INCLUDES ${OpenCV_INCLUDE_DIRS})
-        if(JCUT_USE_OPENCV_CONTRIB)
-            list(FIND OpenCV_LIBS opencv_tracking _opencv_tracking_idx)
-            if(NOT _opencv_tracking_idx EQUAL -1)
-                set(JCUT_HAVE_OPENCV_CONTRIB 1)
-            endif()
+
+    set(_fixed_qt_private_includes "")
+    foreach(_include_dir IN LISTS _qt_private_includes)
+        if(EXISTS "${_include_dir}")
+            list(APPEND _fixed_qt_private_includes "${_include_dir}")
+            continue()
         endif()
-    endif()
-endif()
+
+        string(REPLACE
+            "/usr/include/x86_64-linux-gnu/qt6"
+            "${CMAKE_CURRENT_SOURCE_DIR}/.deps/qt6-base-private-dev/usr/include/x86_64-linux-gnu/qt6"
+            _local_include_dir
+            "${_include_dir}")
+        if(EXISTS "${_local_include_dir}")
+            list(APPEND _fixed_qt_private_includes "${_local_include_dir}")
+        else()
+            message(FATAL_ERROR
+                "${target_name} references missing Qt private include directory '${_include_dir}'. "
+                "Install qt6-base-private-dev or rerun ./build.sh to fetch a local copy.")
+        endif()
+    endforeach()
+
+    set_target_properties("${target_name}" PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${_fixed_qt_private_includes}")
+endfunction()
+
+jcut_fix_qt_private_target(Qt6::GuiPrivate)
+jcut_fix_qt_private_target(Qt6::CorePrivate)
 
 option(JCUT_USE_SYSTEM_FFMPEG
     "Use system FFmpeg libraries. Required when system FFmpeg provides encoders such as NVENC that the pinned build lacks."
@@ -246,7 +209,6 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/model_import_shared\\.cpp$"
     ".*/model_runtime\\.cpp$"
     ".*/backend_headless_compare_main\\.cpp$"
-    ".*/vulkan_dnn_video_infer_main\\.cpp$"
     ".*/vulkan_boxstream_offscreen_main\\.cpp$"
     ".*/vulkan_boxstream_preview_main\\.cpp$"
     ".*/vulkan_boxstream_test_ui_main\\.cpp$"
@@ -333,15 +295,10 @@ if(CUDA_DRIVER_LIBRARY)
 else()
     target_compile_definitions(editor_core PUBLIC JCUT_HAS_CUDA_DRIVER=0)
 endif()
-if(JCUT_OPENCV_LIBS)
-    target_link_libraries(editor_core PUBLIC ${JCUT_OPENCV_LIBS})
-    target_include_directories(editor_core PUBLIC ${JCUT_OPENCV_INCLUDES})
-    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV=1)
-    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB})
-else()
-    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV=0)
-    target_compile_definitions(editor_core PUBLIC JCUT_HAVE_OPENCV_CONTRIB=0)
-endif()
+target_compile_definitions(editor_core PUBLIC
+    JCUT_HAVE_OPENCV=0
+    JCUT_HAVE_OPENCV_CONTRIB=0
+)
 
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
     set_target_properties(editor_core PROPERTIES
@@ -420,11 +377,6 @@ target_link_libraries(editor_test_support
         PkgConfig::FFMPEG
         rtaudio
 )
-if(JCUT_OPENCV_LIBS)
-    target_link_libraries(editor_test_support PUBLIC ${JCUT_OPENCV_LIBS})
-    target_include_directories(editor_test_support PUBLIC ${JCUT_OPENCV_INCLUDES})
-endif()
-
 if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_test_support PUBLIC Qt6::GuiPrivate)
 endif()
@@ -489,33 +441,6 @@ if(APPLE)
     set_target_properties(editor PROPERTIES MACOSX_BUNDLE TRUE)
 endif()
 
-add_executable(jcut_vulkan_dnn_video_infer
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_dnn_video_infer_main.cpp
-)
-target_include_directories(jcut_vulkan_dnn_video_infer PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${JCUT_OPENCV_INCLUDES}
-)
-target_link_libraries(jcut_vulkan_dnn_video_infer PRIVATE
-    editor_test_support
-    ${JCUT_OPENCV_LIBS}
-    PkgConfig::FFMPEG
-)
-if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    target_link_libraries(jcut_vulkan_dnn_video_infer PRIVATE
-        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
-    target_link_options(jcut_vulkan_dnn_video_infer PRIVATE
-        "LINKER:--no-as-needed")
-endif()
-set_target_properties(jcut_vulkan_dnn_video_infer PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
-if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    set_target_properties(jcut_vulkan_dnn_video_infer PROPERTIES
-        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
-    )
-endif()
-
 add_executable(jcut_vulkan_zero_copy_video_preprocess
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_video_preprocess_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
@@ -563,12 +488,10 @@ add_executable(jcut_vulkan_boxstream_offscreen
 target_include_directories(jcut_vulkan_boxstream_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_BINARY_DIR}/generated
-    ${JCUT_OPENCV_INCLUDES}
 )
 target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE
     editor_test_support
     Vulkan::Vulkan
-    ${JCUT_OPENCV_LIBS}
 )
 if(TARGET ncnn)
     target_link_libraries(jcut_vulkan_boxstream_offscreen PRIVATE ncnn)
@@ -581,14 +504,10 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
 endif()
 target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE
     JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
-    JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB}
+    JCUT_HAVE_OPENCV_CONTRIB=0
     JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
+    JCUT_HAVE_OPENCV=0
 )
-if(JCUT_OPENCV_LIBS)
-    target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAVE_OPENCV=1)
-else()
-    target_compile_definitions(jcut_vulkan_boxstream_offscreen PRIVATE JCUT_HAVE_OPENCV=0)
-endif()
 set_target_properties(jcut_vulkan_boxstream_offscreen PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
@@ -620,14 +539,10 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
         "LINKER:--no-as-needed")
 endif()
 target_compile_definitions(jcut_vulkan_boxstream_test_ui PRIVATE
-    JCUT_HAVE_OPENCV_CONTRIB=${JCUT_HAVE_OPENCV_CONTRIB}
+    JCUT_HAVE_OPENCV_CONTRIB=0
     JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+    JCUT_HAVE_OPENCV=0
 )
-if(JCUT_OPENCV_LIBS)
-    target_compile_definitions(jcut_vulkan_boxstream_test_ui PRIVATE JCUT_HAVE_OPENCV=1)
-else()
-    target_compile_definitions(jcut_vulkan_boxstream_test_ui PRIVATE JCUT_HAVE_OPENCV=0)
-endif()
 set_target_properties(jcut_vulkan_boxstream_test_ui PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )

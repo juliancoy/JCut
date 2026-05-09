@@ -38,9 +38,20 @@ class HorizontalTextTabBar final : public QTabBar {
 public:
     using QTabBar::QTabBar;
 
+    QSize sizeHint() const override {
+        const int tabWidth = qBound(48, m_columnWidth, 72);
+        const int visibleRows = qBound(6, count(), 12);
+        return QSize(tabWidth, (visibleRows * 30) + 36);
+    }
+
+    QSize minimumSizeHint() const override {
+        const int tabWidth = qBound(48, m_columnWidth, 72);
+        return QSize(tabWidth, 220);
+    }
+
     QSize tabSizeHint(int index) const override {
         const QSize base = QTabBar::tabSizeHint(index);
-        const int tabWidth = qBound(120, m_columnWidth, 260);
+        const int tabWidth = qBound(48, m_columnWidth, 72);
         const int tabHeight = qBound(24, base.height() + 2, 36);
         return QSize(tabWidth, tabHeight);
     }
@@ -77,7 +88,7 @@ protected:
         if (m_resizing) {
             const int currentGlobalX = static_cast<int>(event->globalPosition().x());
             const int delta = m_resizeStartGlobalX - currentGlobalX;
-            const int newWidth = qBound(120, m_resizeStartWidth + delta, 260);
+            const int newWidth = qBound(48, m_resizeStartWidth + delta, 72);
             if (newWidth != m_columnWidth) {
                 m_columnWidth = newWidth;
                 updateGeometry();
@@ -117,7 +128,7 @@ private:
         return pos.x() >= 0 && pos.x() <= 8;
     }
 
-    int m_columnWidth = 180;
+    int m_columnWidth = 56;
     bool m_resizing = false;
     int m_resizeStartGlobalX = 0;
     int m_resizeStartWidth = 0;
@@ -228,6 +239,8 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingEditModeCombo->setVisible(false);
 
     auto *commonForm = new QFormLayout;
+    commonForm->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    commonForm->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     m_brightnessSpin = new QDoubleSpinBox(page);
     m_contrastSpin = new QDoubleSpinBox(page);
     m_saturationSpin = new QDoubleSpinBox(page);
@@ -245,6 +258,8 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingLevelsPanel = new QWidget(page);
     auto *levelsLayout = new QFormLayout(m_gradingLevelsPanel);
     levelsLayout->setContentsMargins(0, 0, 0, 0);
+    levelsLayout->setRowWrapPolicy(QFormLayout::WrapAllRows);
+    levelsLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     levelsLayout->addRow(QStringLiteral("Brightness"), m_brightnessSpin);
     levelsLayout->addRow(QStringLiteral("Contrast"), m_contrastSpin);
 
@@ -309,7 +324,9 @@ QWidget *InspectorPane::buildGradingTab()
     highlightsLayout->addWidget(m_highlightsBSpin);
 
     auto *curveChannelLayout = new QHBoxLayout;
-    curveChannelLayout->addWidget(new QLabel(QStringLiteral("Curve Channel"), m_gradingCurvesPanel));
+    auto* curveChannelLabel = new QLabel(QStringLiteral("Channel"), m_gradingCurvesPanel);
+    curveChannelLabel->setToolTip(QStringLiteral("Curve channel"));
+    curveChannelLayout->addWidget(curveChannelLabel);
     m_gradingCurveChannelTabs = new QTabWidget(m_gradingCurvesPanel);
     m_gradingCurveChannelTabs->addTab(new QWidget(m_gradingCurveChannelTabs), QStringLiteral("Red"));
     m_gradingCurveChannelTabs->addTab(new QWidget(m_gradingCurveChannelTabs), QStringLiteral("Green"));
@@ -351,14 +368,15 @@ QWidget *InspectorPane::buildGradingTab()
 
     auto *curveOptionsLayout = new QHBoxLayout;
     m_gradingCurveThreePointLockCheckBox =
-        new QCheckBox(QStringLiteral("Link Numbers + 3-Point Curve"), m_gradingCurvesPanel);
+        new QCheckBox(QStringLiteral("Link"), m_gradingCurvesPanel);
     m_gradingCurveThreePointLockCheckBox->setChecked(true);
     m_gradingCurveThreePointLockCheckBox->setToolTip(QStringLiteral(
         "When enabled, Shadows/Midtones/Highlights numbers and the 3-point curve stay linked "
         "and represent one grading control."));
     m_gradingCurveSmoothingCheckBox =
-        new QCheckBox(QStringLiteral("Curve Smoothing"), m_gradingCurvesPanel);
+        new QCheckBox(QStringLiteral("Smooth"), m_gradingCurvesPanel);
     m_gradingCurveSmoothingCheckBox->setChecked(true);
+    m_gradingCurveSmoothingCheckBox->setToolTip(QStringLiteral("Smooth curve interpolation"));
     curveOptionsLayout->addWidget(m_gradingCurveThreePointLockCheckBox);
     curveOptionsLayout->addWidget(m_gradingCurveSmoothingCheckBox);
     curveOptionsLayout->addStretch();
@@ -381,13 +399,13 @@ QWidget *InspectorPane::buildGradingTab()
     m_gradingCurvesPanel->setVisible(true);
 
     m_gradingAutoScrollCheckBox = new QCheckBox(QStringLiteral("Auto Scroll"), page);
-    m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current Keyframe"), page);
+    m_gradingFollowCurrentCheckBox = new QCheckBox(QStringLiteral("Follow Current"), page);
     m_gradingPreviewCheckBox = new QCheckBox(QStringLiteral("Preview"), page);
     m_gradingAutoScrollCheckBox->setChecked(true);
     m_gradingFollowCurrentCheckBox->setChecked(true);
     m_gradingPreviewCheckBox->setChecked(true);
     m_gradingKeyAtPlayheadButton = new QPushButton(QStringLiteral("Key At Playhead"), page);
-    m_gradingAutoOpposeButton = new QPushButton(QStringLiteral("Auto Oppose Grade Changes"), page);
+    m_gradingAutoOpposeButton = new QPushButton(QStringLiteral("Auto Oppose"), page);
     m_gradingAutoOpposeButton->setToolTip(QStringLiteral(
         "Analyze the selected clip and add grading keyframes that oppose major exposure/color shifts."));
     m_gradingFadeInButton = new QPushButton(QStringLiteral("Fade In From Playhead"), page);
@@ -1567,12 +1585,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *overlaySourceLabel = new QLabel(QStringLiteral("Preview Tracker"), boxstreamPage);
     m_speakerBoxStreamOverlaySourceCombo = new QComboBox(boxstreamPage);
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("All Trackers"), QStringLiteral("all"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Haar (Balanced)"), QStringLiteral("opencv_haar_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Haar (Small Faces)"), QStringLiteral("opencv_haar_smallfaces_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Haar (Precision)"), QStringLiteral("opencv_haar_precision_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV LBP (Small Faces)"), QStringLiteral("opencv_lbp_smallfaces_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV DNN Auto"), QStringLiteral("opencv_dnn_auto_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Python-Compatible"), QStringLiteral("opencv_python_compatible_v1"));
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Legacy Python Haar"), QStringLiteral("python_legacy_v1"));
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Local Production Hybrid"), QStringLiteral("local_insightface_hybrid_v1"));
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Native Production Hybrid (C++)"), QStringLiteral("native_hybrid_v1"));
@@ -1582,8 +1594,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker YOLOv8 Face"), QStringLiteral("docker_yolov8_face_v1"));
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("Docker MTCNN"), QStringLiteral("docker_mtcnn_v1"));
     m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("SAM3 Face"), QStringLiteral("sam3_face_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Contrib CSRT"), QStringLiteral("opencv_contrib_csrt_v1"));
-    m_speakerBoxStreamOverlaySourceCombo->addItem(QStringLiteral("OpenCV Contrib KCF"), QStringLiteral("opencv_contrib_kcf_v1"));
     const QColor dockerBg(QStringLiteral("#dff1ff"));
     const QColor nativeBg(QStringLiteral("#e7f7e7"));
     for (int i = 0; i < m_speakerBoxStreamOverlaySourceCombo->count(); ++i) {

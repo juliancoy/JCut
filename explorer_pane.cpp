@@ -37,6 +37,7 @@
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QStyle>
 
 extern "C"
 {
@@ -511,9 +512,12 @@ QWidget *ExplorerPane::buildUi()
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(8);
 
-    m_folderPickerButton = new QPushButton(QStringLiteral("Set Media Root…"), pane);
+    m_folderPickerButton = new QPushButton(QStringLiteral("Media Root..."), pane);
+    m_folderPickerButton->setToolTip(QStringLiteral("Set media root"));
     m_refreshExplorerButton = new QToolButton(pane);
-    m_refreshExplorerButton->setText(QStringLiteral("Refresh"));
+    m_refreshExplorerButton->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    m_refreshExplorerButton->setToolTip(QStringLiteral("Refresh media browser"));
+    m_refreshExplorerButton->setAutoRaise(false);
 
     toolbar->addWidget(m_folderPickerButton, 1);
     toolbar->addWidget(m_refreshExplorerButton);

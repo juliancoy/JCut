@@ -62,17 +62,17 @@ void InspectorPane::configureInspectorTabs()
 
     for (const TabSpec& spec : specs) {
         m_inspectorTabs->setTabIcon(spec.index, style()->standardIcon(spec.icon));
-        m_inspectorTabs->setTabText(spec.index, QString::fromUtf8(spec.label));
+        m_inspectorTabs->setTabText(spec.index, QString());
         bar->setTabToolTip(spec.index, QString::fromUtf8(spec.tooltip));
     }
-    bar->setElideMode(Qt::ElideNone);
+    bar->setElideMode(Qt::ElideRight);
 
     bar->setStyleSheet(QStringLiteral(
         "QTabBar::tab {"
-        " min-width: 120px;"
+        " min-width: 44px;"
         " min-height: 24px;"
         " margin: 0;"
-        " padding: 0 10px;"
+        " padding: 0 6px;"
         " text-align: left;"
         " color: #c9d1d9;"
         " }"

@@ -78,21 +78,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         auto* algoRow = new QHBoxLayout;
         auto* algoLabel = new QLabel(QStringLiteral("Detection algorithm"), &preflightDialog);
         auto* algoCombo = new QComboBox(&preflightDialog);
-        algoCombo->addItem(QStringLiteral("Haar Balanced"),
-                           static_cast<int>(BoxstreamDetectorPreset::HaarBalanced));
-        algoCombo->addItem(QStringLiteral("Haar Small Faces"),
-                           static_cast<int>(BoxstreamDetectorPreset::HaarSmallFaces));
-        algoCombo->addItem(QStringLiteral("Haar Precision"),
-                           static_cast<int>(BoxstreamDetectorPreset::HaarPrecision));
-        algoCombo->addItem(QStringLiteral("LBP Small Faces"),
-                           static_cast<int>(BoxstreamDetectorPreset::LbpSmallFaces));
-        algoCombo->addItem(QStringLiteral("Python Compatible"),
-                           static_cast<int>(BoxstreamDetectorPreset::PythonCompatible));
-        algoCombo->addItem(QStringLiteral("DNN Auto (CUDA/CPU)"),
-                           static_cast<int>(BoxstreamDetectorPreset::DnnAuto));
-        algoCombo->addItem(QStringLiteral("Native CUDA DNN Face Detector"),
-                           static_cast<int>(BoxstreamDetectorPreset::NativeCudaDnn));
-        const int cudaDnnIndex = algoCombo->count() - 1;
         algoCombo->addItem(QStringLiteral("JCut DNN FaceStream Generator (Default)"),
                            static_cast<int>(BoxstreamDetectorPreset::NativeVulkanDnn));
         const int jcutDnnIndex = algoCombo->count() - 1;
@@ -100,10 +85,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                            static_cast<int>(BoxstreamDetectorPreset::PythonLegacy));
         algoCombo->addItem(QStringLiteral("Local Production Hybrid (CPU, Non-Docker)"),
                            static_cast<int>(BoxstreamDetectorPreset::LocalHybrid));
-        algoCombo->addItem(QStringLiteral("Native Production Hybrid (C++, CPU)"),
-                           static_cast<int>(BoxstreamDetectorPreset::NativeHybridCpu));
-        algoCombo->addItem(QStringLiteral("Native Production Hybrid (Vulkan Decode Path)"),
-                           static_cast<int>(BoxstreamDetectorPreset::NativeHybridVulkan));
         algoCombo->addItem(QStringLiteral("Docker DNN Res10 (Volume Weights)"),
                            static_cast<int>(BoxstreamDetectorPreset::DockerDnn));
         const int dockerDnnIndex = algoCombo->count() - 1;
@@ -121,28 +102,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         const int dockerMtcnnIndex = algoCombo->count() - 1;
         algoCombo->addItem(QStringLiteral("SAM3 (prompt: face)"),
                            static_cast<int>(BoxstreamDetectorPreset::Sam3Face));
-        const int contribCsrtIndex = algoCombo->count();
-        algoCombo->addItem(QStringLiteral("OpenCV Contrib CSRT (Haar + Tracker)"),
-                           static_cast<int>(BoxstreamDetectorPreset::ContribCsrt));
-        const int contribKcfIndex = algoCombo->count();
-        algoCombo->addItem(QStringLiteral("OpenCV Contrib KCF (Haar + Tracker)"),
-                           static_cast<int>(BoxstreamDetectorPreset::ContribKcf));
         auto* comboModel = qobject_cast<QStandardItemModel*>(algoCombo->model());
         if (comboModel) {
-            bool cudaDnnAvailable = false;
-#if JCUT_HAVE_OPENCV
-            const std::vector<cv::dnn::Target> cudaTargets =
-                cv::dnn::getAvailableTargets(cv::dnn::DNN_BACKEND_CUDA);
-            cudaDnnAvailable =
-                std::find(cudaTargets.begin(), cudaTargets.end(), cv::dnn::DNN_TARGET_CUDA_FP16) != cudaTargets.end() ||
-                std::find(cudaTargets.begin(), cudaTargets.end(), cv::dnn::DNN_TARGET_CUDA) != cudaTargets.end();
-#endif
-            if (QStandardItem* item = comboModel->item(cudaDnnIndex)) {
-                item->setEnabled(cudaDnnAvailable);
-                if (!cudaDnnAvailable) {
-                    item->setText(QStringLiteral("Native CUDA DNN Face Detector (unavailable: rebuild OpenCV with CUDA/cuDNN)"));
-                }
-            }
             const QColor dockerBg(QStringLiteral("#cfe8ff"));
             for (const int idx : {dockerDnnIndex, dockerInsightFaceIndex, dockerHybridIndex, dockerYoloIndex, dockerMtcnnIndex}) {
                 if (QStandardItem* item = comboModel->item(idx)) {
@@ -161,18 +122,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         stepsLabel->setWordWrap(true);
         stepsLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
         layout->addWidget(stepsLabel);
-#if !JCUT_HAVE_OPENCV_CONTRIB
-        if (comboModel) {
-            if (QStandardItem* csrtItem = comboModel->item(contribCsrtIndex)) {
-                csrtItem->setEnabled(false);
-                csrtItem->setToolTip(QStringLiteral("Unavailable in this build."));
-            }
-            if (QStandardItem* kcfItem = comboModel->item(contribKcfIndex)) {
-                kcfItem->setEnabled(false);
-                kcfItem->setToolTip(QStringLiteral("Unavailable in this build."));
-            }
-        }
-#endif
         algoRow->addWidget(algoLabel);
         algoRow->addWidget(algoCombo, 1);
         layout->addLayout(algoRow);
@@ -287,10 +236,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         const bool finished = probe.waitForFinished(4000);
         localInsightfaceAvailable = finished && probe.exitStatus() == QProcess::NormalExit && probe.exitCode() == 0;
         if (!localInsightfaceAvailable) {
-            detectorPreset = BoxstreamDetectorPreset::NativeHybridCpu;
+            detectorPreset = BoxstreamDetectorPreset::NativeVulkanDnn;
             qWarning().noquote()
                 << "[boxstream] local_insightface_hybrid_v1 unavailable (insightface import failed); "
-                   "falling back to native_hybrid_v1 (C++ CPU).";
+                   "falling back to JCut DNN FaceStream Generator.";
         }
     }
 
@@ -1467,7 +1416,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                    ? QStringLiteral("JCut DNN FaceStream Generator")
                    : (detectorPreset == BoxstreamDetectorPreset::NativeHybridCpu
                           ? QStringLiteral("Native hybrid (C++ CPU)")
-                          : QStringLiteral("OpenCV Haar"))));
+                          : QStringLiteral("JCut DNN FaceStream Generator"))));
     processOutput = QStringLiteral(
         "%1 continuity scan complete. frames_with_detections=%2 detections=%3 tracks=%4 vulkan_frames=%5 cpu_fallback_frames=%6 native_vulkan_inference_frames=%7 native_vulkan_inference_failures=%8 native_vulkan_inference_avg_ms=%9 native_vulkan_inference=jcut_compute_heuristic_v1")
                         .arg(nativeLabel)
@@ -1495,7 +1444,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         }
         const QString noTracksMessage = detectorPreset == BoxstreamDetectorPreset::NativeVulkanDnn
             ? QStringLiteral("JCut DNN FaceStream Generator ran, but no stable FaceStream tracks passed filtering.")
-            : QStringLiteral("No face tracks detected by OpenCV continuity detector.");
+            : QStringLiteral("No face tracks were detected by the native continuity detector.");
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_boxstream"), QStringLiteral("error"),

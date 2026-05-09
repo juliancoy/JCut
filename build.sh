@@ -14,6 +14,11 @@ NVCODEC_SUBMODULE_PATH="nv-codec-headers"
 NVCODEC_SRC_DIR="${SCRIPT_DIR}/nv-codec-headers"
 NVCODEC_PKGCONFIG_FILE="${FFMPEG_PKGCONFIG_DIR}/ffnvcodec.pc"
 NVCODEC_VERSION_FILE="${FFMPEG_INSTALL_DIR}/.build-nvcodec-version"
+RTAUDIO_SUBMODULE_PATH="rtaudio"
+RTAUDIO_SRC_DIR="${SCRIPT_DIR}/rtaudio"
+CPPMONETIZE_SUBMODULE_PATH="external/CPPMonetize"
+CPPMONETIZE_SRC_DIR="${SCRIPT_DIR}/external/CPPMonetize"
+QT_PRIVATE_DEV_DIR="${SCRIPT_DIR}/.deps/qt6-base-private-dev"
 ASAN="OFF"
 FFMPEG_PROFILE="auto"
 BUILD_TARGET="editor"
@@ -21,7 +26,6 @@ RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
 FFMPEG_REBUILT="0"
 RUN_FACE_BENCH="no"
-JCUT_OPENCV_CUDA_MODE="${JCUT_OPENCV_CUDA:-auto}"
 
 ensure_submodule_checkout() {
     local submodule_path="$1"
@@ -283,6 +287,46 @@ EOF
     fi
 }
 
+ensure_qt_private_headers() {
+    local required_header="/usr/include/x86_64-linux-gnu/qt6/QtGui/6.4.2/QtGui/private/qrhi_p.h"
+    local local_required_header="${QT_PRIVATE_DEV_DIR}${required_header}"
+    if [[ -f "${required_header}" || -f "${local_required_header}" ]]; then
+        return 0
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1 || ! command -v dpkg-deb >/dev/null 2>&1; then
+        cat >&2 <<'EOF'
+Qt private development headers are required but missing.
+Install them with:
+  sudo apt-get install qt6-base-private-dev
+EOF
+        exit 1
+    fi
+
+    local package_name="qt6-base-private-dev"
+    local apt_dir="${SCRIPT_DIR}/.deps/apt"
+    mkdir -p "${apt_dir}" "${QT_PRIVATE_DEV_DIR}"
+
+    echo "Qt private headers missing; downloading ${package_name} into ${SCRIPT_DIR}/.deps..."
+    (
+        cd "${apt_dir}"
+        apt-get download "${package_name}"
+    )
+
+    local deb_file=""
+    deb_file="$(find "${apt_dir}" -maxdepth 1 -type f -name "${package_name}_*.deb" | sort | tail -n1)"
+    if [[ -z "${deb_file}" ]]; then
+        echo "Failed to download ${package_name}." >&2
+        exit 1
+    fi
+
+    dpkg-deb -x "${deb_file}" "${QT_PRIVATE_DEV_DIR}"
+    if [[ ! -f "${local_required_header}" ]]; then
+        echo "Extracted ${package_name}, but ${local_required_header} was not found." >&2
+        exit 1
+    fi
+}
+
 for arg in "$@"; do
     case "$arg" in
         --asan)
@@ -320,11 +364,14 @@ done
 resolve_ffmpeg_profile
 
 ensure_submodule_checkout "${FFMPEG_SUBMODULE_PATH}" "${FFMPEG_SRC_DIR}" "configure"
+ensure_submodule_checkout "${RTAUDIO_SUBMODULE_PATH}" "${RTAUDIO_SRC_DIR}" "CMakeLists.txt"
+ensure_submodule_checkout "${CPPMONETIZE_SUBMODULE_PATH}" "${CPPMONETIZE_SRC_DIR}" "CMakeLists.txt"
 if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
     ensure_submodule_checkout "${NVCODEC_SUBMODULE_PATH}" "${NVCODEC_SRC_DIR}" "Makefile"
 fi
 
 ensure_ffmpeg_installed
+ensure_qt_private_headers
 
 export PKG_CONFIG_PATH="${FFMPEG_PKGCONFIG_DIR}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 
@@ -368,42 +415,12 @@ if [[ "${FFMPEG_REBUILT}" == "1" ]]; then
     rm -rf "${BUILD_DIR}"
 fi
 
-opencv_cuda_args=(-DJCUT_ENABLE_OPENCV_CUDA=OFF)
-if [[ "${JCUT_OPENCV_CUDA_MODE}" != "off" ]]; then
-    has_nvcc="0"
-    has_cudnn="0"
-    if command -v nvcc >/dev/null 2>&1; then
-        has_nvcc="1"
-    fi
-    if { compgen -G "/usr/include/cudnn*.h" >/dev/null || compgen -G "/usr/local/cuda/include/cudnn*.h" >/dev/null; } &&
-       ldconfig -p 2>/dev/null | grep -q 'libcudnn'; then
-        has_cudnn="1"
-    fi
-    if [[ "${has_nvcc}" == "1" && "${has_cudnn}" == "1" ]]; then
-        opencv_cuda_args=(
-            -DJCUT_ENABLE_OPENCV_CUDA=ON
-            -DWITH_CUDA=ON
-            -DWITH_CUBLAS=ON
-            -DWITH_CUDNN=ON
-            -DOPENCV_DNN_CUDA=ON
-        )
-    elif [[ "${JCUT_OPENCV_CUDA_MODE}" == "on" ]]; then
-        echo "Requested JCUT_OPENCV_CUDA=on, but CUDA DNN prerequisites are incomplete (nvcc=${has_nvcc}, cudnn=${has_cudnn})." >&2
-        echo "Install CUDA Toolkit plus cuDNN development headers/libraries, then rerun the build." >&2
-        exit 1
-    else
-        echo "OpenCV CUDA DNN not enabled (nvcc=${has_nvcc}, cudnn=${has_cudnn}); CUDA detector preset will be available only after rebuilding with cuDNN."
-    fi
-fi
-
 cmake_configure_args=(
     -S "${SCRIPT_DIR}"
     -B "${BUILD_DIR}"
     -G "${CMAKE_GENERATOR}"
     -DJCUT_USE_SYSTEM_FFMPEG=OFF
-    -DJCUT_USE_OPENCV_CONTRIB=ON
     -DWITH_VULKAN=ON
-    "${opencv_cuda_args[@]}"
 )
 if [[ "${ASAN}" == "ON" ]]; then
     cmake_configure_args+=(

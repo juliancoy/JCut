@@ -9,6 +9,7 @@ editor_autogen
 generated
 ffmpeg-*
 .cache
+.deps
 # Local secrets
 hftoken.txt
 testbench_assets

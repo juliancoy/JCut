@@ -5,7 +5,9 @@
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QFont>
+#include <QGuiApplication>
 #include <QHBoxLayout>
+#include <QScreen>
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
@@ -16,7 +18,18 @@ using namespace editor;
 void EditorWindow::setupWindowChrome()
 {
     setWindowTitle(QStringLiteral("JCut"));
-    resize(1500, 900);
+    QScreen* targetScreen = screen();
+    if (!targetScreen) {
+        targetScreen = QGuiApplication::primaryScreen();
+    }
+    const QRect available = targetScreen ? targetScreen->availableGeometry()
+                                         : QRect(0, 0, 1280, 800);
+    const int maxWidth = qMax(640, available.width() - 80);
+    const int maxHeight = qMax(480, available.height() - 120);
+    const int width = qMin(1500, maxWidth);
+    const int height = qMin(860, maxHeight);
+    resize(width, height);
+    move(available.center() - rect().center());
 }
 
 void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
