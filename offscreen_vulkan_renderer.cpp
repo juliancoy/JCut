@@ -26,6 +26,48 @@ namespace render_detail {
 
 namespace {
 
+constexpr int kCurveLutWidth = TimelineClip::kGradingCurveLutSize;
+constexpr int kCurveLutHeight = 1;
+constexpr VkDeviceSize kCurveLutBytes = kCurveLutWidth * kCurveLutHeight * 4;
+
+QByteArray curveLutBytesForGrade(const TimelineClip::GradingKeyframe& grade)
+{
+    const QVector<quint8> lutR =
+        gradingCurveLut8(grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutG =
+        gradingCurveLut8(grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutB =
+        gradingCurveLut8(grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    const QVector<quint8> lutL =
+        gradingCurveLut8(grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
+    if (lutR.size() != TimelineClip::kGradingCurveLutSize ||
+        lutG.size() != TimelineClip::kGradingCurveLutSize ||
+        lutB.size() != TimelineClip::kGradingCurveLutSize ||
+        lutL.size() != TimelineClip::kGradingCurveLutSize) {
+        return {};
+    }
+
+    QByteArray rgba;
+    rgba.resize(static_cast<int>(kCurveLutBytes));
+    for (int i = 0; i < TimelineClip::kGradingCurveLutSize; ++i) {
+        rgba[i * 4 + 0] = static_cast<char>(lutR[i]);
+        rgba[i * 4 + 1] = static_cast<char>(lutG[i]);
+        rgba[i * 4 + 2] = static_cast<char>(lutB[i]);
+        rgba[i * 4 + 3] = static_cast<char>(lutL[i]);
+    }
+    return rgba;
+}
+
+QByteArray identityCurveLutBytes()
+{
+    TimelineClip::GradingKeyframe grade;
+    grade.curvePointsR = defaultGradingCurvePoints();
+    grade.curvePointsG = defaultGradingCurvePoints();
+    grade.curvePointsB = defaultGradingCurvePoints();
+    grade.curvePointsLuma = defaultGradingCurvePoints();
+    return curveLutBytesForGrade(grade);
+}
+
 struct SubtitlePixelCounts {
     int dark = 0;
     int bright = 0;
@@ -743,16 +785,20 @@ public:
             return false;
         }
 
-        VkDescriptorSetLayoutBinding textureBinding{};
-        textureBinding.binding = 0;
-        textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        textureBinding.descriptorCount = 1;
-        textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutBinding descriptorBindings[2]{};
+        descriptorBindings[0].binding = 0;
+        descriptorBindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorBindings[0].descriptorCount = 1;
+        descriptorBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        descriptorBindings[1].binding = 1;
+        descriptorBindings[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        descriptorBindings[1].descriptorCount = 1;
+        descriptorBindings[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
         VkDescriptorSetLayoutCreateInfo descriptorSetLayoutInfo{};
         descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        descriptorSetLayoutInfo.bindingCount = 1;
-        descriptorSetLayoutInfo.pBindings = &textureBinding;
+        descriptorSetLayoutInfo.bindingCount = 2;
+        descriptorSetLayoutInfo.pBindings = descriptorBindings;
 
         if (vkCreateDescriptorSetLayout(m_device,
                                         &descriptorSetLayoutInfo,
@@ -766,7 +812,7 @@ public:
 
         VkDescriptorPoolSize poolSize{};
         poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        poolSize.descriptorCount = 1 + kMaxLayerTextures;
+        poolSize.descriptorCount = (1 + kMaxLayerTextures) * 2;
 
         VkDescriptorPoolCreateInfo descriptorPoolInfo{};
         descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -794,55 +840,89 @@ public:
             return false;
         }
 
-        auto createLayerSlot = [&](QString* err) -> bool {
-            LayerTextureSlot slot;
-            VkImageCreateInfo layerImageInfo{};
-            layerImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-            layerImageInfo.imageType = VK_IMAGE_TYPE_2D;
-            layerImageInfo.extent.width = static_cast<uint32_t>(m_outputSize.width());
-            layerImageInfo.extent.height = static_cast<uint32_t>(m_outputSize.height());
-            layerImageInfo.extent.depth = 1;
-            layerImageInfo.mipLevels = 1;
-            layerImageInfo.arrayLayers = 1;
-            layerImageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-            layerImageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-            layerImageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-            layerImageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-            layerImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-            layerImageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-            if (vkCreateImage(m_device, &layerImageInfo, nullptr, &slot.image) != VK_SUCCESS) {
-                if (err) *err = QStringLiteral("Failed to create Vulkan layer image.");
-                return false;
-            }
-            VkMemoryRequirements req{};
-            vkGetImageMemoryRequirements(m_device, slot.image, &req);
-            const uint32_t memType = findMemoryType(
-                m_physicalDevice, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-            if (memType == UINT32_MAX) {
-                if (err) *err = QStringLiteral("No memory type for Vulkan layer image.");
-                return false;
-            }
-            VkMemoryAllocateInfo ai{};
-            ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-            ai.allocationSize = req.size;
-            ai.memoryTypeIndex = memType;
-            if (vkAllocateMemory(m_device, &ai, nullptr, &slot.memory) != VK_SUCCESS ||
-                vkBindImageMemory(m_device, slot.image, slot.memory, 0) != VK_SUCCESS) {
-                if (err) *err = QStringLiteral("Failed to allocate/bind Vulkan layer image memory.");
-                return false;
-            }
-            VkImageViewCreateInfo vi{};
-            vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-            vi.image = slot.image;
-            vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-            vi.format = VK_FORMAT_R8G8B8A8_UNORM;
-            vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            vi.subresourceRange.levelCount = 1;
-            vi.subresourceRange.layerCount = 1;
-            if (vkCreateImageView(m_device, &vi, nullptr, &slot.view) != VK_SUCCESS) {
-                if (err) *err = QStringLiteral("Failed to create Vulkan layer image view.");
-                return false;
-            }
+	        auto createDeviceImage = [&](uint32_t width,
+	                                     uint32_t height,
+	                                     VkFormat format,
+	                                     VkImageUsageFlags usage,
+	                                     VkImage* image,
+	                                     VkDeviceMemory* memory,
+	                                     VkImageView* view,
+	                                     const QString& failurePrefix,
+	                                     QString* err) -> bool {
+	            VkImageCreateInfo imageInfo{};
+	            imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+	            imageInfo.extent.width = width;
+	            imageInfo.extent.height = height;
+	            imageInfo.extent.depth = 1;
+	            imageInfo.mipLevels = 1;
+	            imageInfo.arrayLayers = 1;
+	            imageInfo.format = format;
+	            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+	            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	            imageInfo.usage = usage;
+	            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	            if (vkCreateImage(m_device, &imageInfo, nullptr, image) != VK_SUCCESS) {
+	                if (err) *err = failurePrefix + QStringLiteral(": create image failed.");
+	                return false;
+	            }
+	            VkMemoryRequirements req{};
+	            vkGetImageMemoryRequirements(m_device, *image, &req);
+	            const uint32_t memType = findMemoryType(
+	                m_physicalDevice, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	            if (memType == UINT32_MAX) {
+	                if (err) *err = failurePrefix + QStringLiteral(": no image memory type.");
+	                return false;
+	            }
+	            VkMemoryAllocateInfo ai{};
+	            ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	            ai.allocationSize = req.size;
+	            ai.memoryTypeIndex = memType;
+	            if (vkAllocateMemory(m_device, &ai, nullptr, memory) != VK_SUCCESS ||
+	                vkBindImageMemory(m_device, *image, *memory, 0) != VK_SUCCESS) {
+	                if (err) *err = failurePrefix + QStringLiteral(": allocate/bind image memory failed.");
+	                return false;
+	            }
+	            VkImageViewCreateInfo vi{};
+	            vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	            vi.image = *image;
+	            vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	            vi.format = format;
+	            vi.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	            vi.subresourceRange.levelCount = 1;
+	            vi.subresourceRange.layerCount = 1;
+	            if (vkCreateImageView(m_device, &vi, nullptr, view) != VK_SUCCESS) {
+	                if (err) *err = failurePrefix + QStringLiteral(": create image view failed.");
+	                return false;
+	            }
+	            return true;
+	        };
+
+	        auto createLayerSlot = [&](QString* err) -> bool {
+	            LayerTextureSlot slot;
+	            if (!createDeviceImage(static_cast<uint32_t>(m_outputSize.width()),
+	                                   static_cast<uint32_t>(m_outputSize.height()),
+	                                   VK_FORMAT_R8G8B8A8_UNORM,
+	                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+	                                   &slot.image,
+	                                   &slot.memory,
+	                                   &slot.view,
+	                                   QStringLiteral("Vulkan layer image"),
+	                                   err)) {
+	                return false;
+	            }
+	            if (!createDeviceImage(kCurveLutWidth,
+	                                   kCurveLutHeight,
+	                                   VK_FORMAT_R8G8B8A8_UNORM,
+	                                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+	                                   &slot.curveLutImage,
+	                                   &slot.curveLutMemory,
+	                                   &slot.curveLutView,
+	                                   QStringLiteral("Vulkan layer curve LUT"),
+	                                   err)) {
+	                return false;
+	            }
             VkDescriptorSetAllocateInfo dsi{};
             dsi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
             dsi.descriptorPool = m_descriptorPool;
@@ -852,21 +932,26 @@ public:
                 if (err) *err = QStringLiteral("Failed to allocate Vulkan layer descriptor set.");
                 return false;
             }
-            VkDescriptorImageInfo di{};
-            di.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            di.imageView = slot.view;
-            di.sampler = m_sampler;
-            VkWriteDescriptorSet w{};
-            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet = slot.descriptorSet;
-            w.dstBinding = 0;
-            w.descriptorCount = 1;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            w.pImageInfo = &di;
-            vkUpdateDescriptorSets(m_device, 1, &w, 0, nullptr);
-            m_layerSlots.push_back(slot);
-            return true;
-        };
+	            VkDescriptorImageInfo di[2]{};
+	            di[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	            di[0].imageView = slot.view;
+	            di[0].sampler = m_sampler;
+	            di[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	            di[1].imageView = slot.curveLutView;
+	            di[1].sampler = m_sampler;
+	            VkWriteDescriptorSet writes[2]{};
+	            for (uint32_t binding = 0; binding < 2; ++binding) {
+	                writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	                writes[binding].dstSet = slot.descriptorSet;
+	                writes[binding].dstBinding = binding;
+	                writes[binding].descriptorCount = 1;
+	                writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	                writes[binding].pImageInfo = &di[binding];
+	            }
+	            vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+	            m_layerSlots.push_back(slot);
+	            return true;
+	        };
         for (int i = 0; i < kMaxLayerTextures; ++i) {
             if (!createLayerSlot(errorMessage)) {
                 return false;
@@ -923,9 +1008,9 @@ public:
             return false;
         }
 
-        const VkDeviceSize layerStagingSize =
-            static_cast<VkDeviceSize>(m_outputSize.width()) *
-            static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
+	        const VkDeviceSize layerStagingSize =
+	            static_cast<VkDeviceSize>(m_outputSize.width()) *
+	            static_cast<VkDeviceSize>(m_outputSize.height()) * 4 + kCurveLutBytes;
         const VkDeviceSize stagingSize = layerStagingSize * kMaxLayerTextures;
         VkBufferCreateInfo stagingBufInfo{};
         stagingBufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -1344,18 +1429,23 @@ public:
             return false;
         }
 
-        VkDescriptorImageInfo imageInfoDesc{};
-        imageInfoDesc.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        imageInfoDesc.imageView = m_colorImageView;
-        imageInfoDesc.sampler = m_sampler;
-        VkWriteDescriptorSet write{};
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = m_descriptorSet;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = &imageInfoDesc;
-        vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+	        VkDescriptorImageInfo imageInfoDesc[2]{};
+	        imageInfoDesc[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	        imageInfoDesc[0].imageView = m_colorImageView;
+	        imageInfoDesc[0].sampler = m_sampler;
+	        imageInfoDesc[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	        imageInfoDesc[1].imageView = !m_layerSlots.isEmpty() ? m_layerSlots.first().curveLutView : VK_NULL_HANDLE;
+	        imageInfoDesc[1].sampler = m_sampler;
+	        VkWriteDescriptorSet writes[2]{};
+	        for (uint32_t binding = 0; binding < 2; ++binding) {
+	            writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	            writes[binding].dstSet = m_descriptorSet;
+	            writes[binding].dstBinding = binding;
+	            writes[binding].descriptorCount = 1;
+	            writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	            writes[binding].pImageInfo = &imageInfoDesc[binding];
+	        }
+	        vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
 
         auto createPipeline = [&](VkShaderModule vert,
                                   VkShaderModule frag,
@@ -1528,10 +1618,22 @@ public:
         m_stagingMapped = nullptr;
         m_submitFence = VK_NULL_HANDLE;
         m_cudaExportBuffersReady = false;
-        for (LayerTextureSlot& slot : m_layerSlots) {
-            if (slot.view != VK_NULL_HANDLE) {
-                vkDestroyImageView(m_device, slot.view, nullptr);
-                slot.view = VK_NULL_HANDLE;
+	        for (LayerTextureSlot& slot : m_layerSlots) {
+	            if (slot.curveLutView != VK_NULL_HANDLE) {
+	                vkDestroyImageView(m_device, slot.curveLutView, nullptr);
+	                slot.curveLutView = VK_NULL_HANDLE;
+	            }
+	            if (slot.curveLutImage != VK_NULL_HANDLE) {
+	                vkDestroyImage(m_device, slot.curveLutImage, nullptr);
+	                slot.curveLutImage = VK_NULL_HANDLE;
+	            }
+	            if (slot.curveLutMemory != VK_NULL_HANDLE) {
+	                vkFreeMemory(m_device, slot.curveLutMemory, nullptr);
+	                slot.curveLutMemory = VK_NULL_HANDLE;
+	            }
+	            if (slot.view != VK_NULL_HANDLE) {
+	                vkDestroyImageView(m_device, slot.view, nullptr);
+	                slot.view = VK_NULL_HANDLE;
             }
             if (slot.image != VK_NULL_HANDLE) {
                 vkDestroyImage(m_device, slot.image, nullptr);
@@ -1764,10 +1866,11 @@ public:
         m_colorImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
-    struct LayerInput {
-        QImage image;
-        QString cacheKey;
-        float brightness = 0.0f;
+	    struct LayerInput {
+	        QImage image;
+	        QString cacheKey;
+	        QByteArray curveLutRgba = identityCurveLutBytes();
+	        float brightness = 0.0f;
         float contrast = 1.0f;
         float saturation = 1.0f;
         float opacity = 1.0f;
@@ -1827,18 +1930,35 @@ public:
         return true;
     }
 
-    bool invalidateSlotForHostRead(FrameSlot& slot)
-    {
-        if (slot.stagingHostCoherent || slot.stagingMemory == VK_NULL_HANDLE) {
-            return true;
-        }
+	    bool invalidateSlotForHostRead(FrameSlot& slot)
+	    {
+	        if (slot.stagingHostCoherent || slot.stagingMemory == VK_NULL_HANDLE) {
+	            return true;
+	        }
         VkMappedMemoryRange range{};
         range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
         range.memory = slot.stagingMemory;
         range.offset = 0;
         range.size = slot.stagingAllocationSize;
-        return vkInvalidateMappedMemoryRanges(m_device, 1, &range) == VK_SUCCESS;
-    }
+	        return vkInvalidateMappedMemoryRanges(m_device, 1, &range) == VK_SUCCESS;
+	    }
+
+	    bool flushActiveStagingWrite(VkDeviceSize offset, VkDeviceSize size)
+	    {
+	        if (m_activeSlotIndex < 0 || m_activeSlotIndex >= m_frameSlots.size()) {
+	            return false;
+	        }
+	        FrameSlot& slot = m_frameSlots[m_activeSlotIndex];
+	        if (slot.stagingHostCoherent || slot.stagingMemory == VK_NULL_HANDLE || size == 0) {
+	            return true;
+	        }
+	        VkMappedMemoryRange range{};
+	        range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+	        range.memory = slot.stagingMemory;
+	        range.offset = offset;
+	        range.size = qMin(size, slot.stagingAllocationSize - offset);
+	        return vkFlushMappedMemoryRanges(m_device, 1, &range) == VK_SUCCESS;
+	    }
 
     void useSlot(int slotIndex)
     {
@@ -1882,16 +2002,16 @@ public:
             return QImage();
         }
 
-        struct Push {
-            float mvp[16];
-            float brightness;
-            float contrast;
-            float saturation;
-            float opacity;
-            float shadows[3];
-            float midtones[3];
-            float highlights[3];
-        } push{};
+	        struct Push {
+	            float mvp[16];
+	            float brightness;
+	            float contrast;
+	            float saturation;
+	            float opacity;
+	            float shadows[4];
+	            float midtones[4];
+	            float highlights[4];
+	        } push{};
         transitionImageLayout(m_commandBuffer,
                               m_colorImage,
                               m_colorImageLayout,
@@ -1947,11 +2067,13 @@ public:
         int layerIndex = 0;
         while (layerIndex < layers.size()) {
             const int batchCount = qMin(kMaxLayerTextures, layers.size() - layerIndex);
-            const VkDeviceSize layerStagingSize =
-                static_cast<VkDeviceSize>(m_outputSize.width()) *
-                static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
-            for (int i = 0; i < batchCount; ++i) {
-                const LayerInput& layer = layers.at(layerIndex + i);
+	            const VkDeviceSize layerImageBytes =
+	                static_cast<VkDeviceSize>(m_outputSize.width()) *
+	                static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
+	            const VkDeviceSize layerStagingSize = layerImageBytes + kCurveLutBytes;
+	            VkDeviceSize maxStagingWriteEnd = 0;
+	            for (int i = 0; i < batchCount; ++i) {
+	                const LayerInput& layer = layers.at(layerIndex + i);
                 if (layer.image.isNull()) {
                     continue;
                 }
@@ -1974,13 +2096,23 @@ public:
                 if (!m_stagingMapped) {
                     return QImage();
                 }
-                const size_t bytes = static_cast<size_t>(rgba.sizeInBytes());
-                const VkDeviceSize stagingOffset = layerStagingSize * i;
-                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset,
-                            rgba.constBits(),
-                            bytes);
+	                const size_t bytes = static_cast<size_t>(rgba.sizeInBytes());
+	                const VkDeviceSize stagingOffset = layerStagingSize * i;
+	                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset,
+	                            rgba.constBits(),
+	                            bytes);
+	                maxStagingWriteEnd = qMax(maxStagingWriteEnd, stagingOffset + static_cast<VkDeviceSize>(bytes));
 
-                LayerTextureSlot& slot = m_layerSlots[i];
+	                const QByteArray curveBytes = layer.curveLutRgba.size() == static_cast<int>(kCurveLutBytes)
+	                                                  ? layer.curveLutRgba
+	                                                  : identityCurveLutBytes();
+	                const VkDeviceSize curveStagingOffset = stagingOffset + layerImageBytes;
+	                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + curveStagingOffset,
+	                            curveBytes.constData(),
+	                            static_cast<size_t>(kCurveLutBytes));
+	                maxStagingWriteEnd = qMax(maxStagingWriteEnd, curveStagingOffset + kCurveLutBytes);
+
+	                LayerTextureSlot& slot = m_layerSlots[i];
                 transitionImageLayout(
                     m_commandBuffer,
                     slot.image,
@@ -2006,15 +2138,51 @@ public:
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     1,
                     &uploadRegion);
-                transitionImageLayout(
-                    m_commandBuffer,
-                    slot.image,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-                slot.uploaded = true;
-            }
+	                transitionImageLayout(
+	                    m_commandBuffer,
+	                    slot.image,
+	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+	                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	                slot.uploaded = true;
 
-            vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	                transitionImageLayout(
+	                    m_commandBuffer,
+	                    slot.curveLutImage,
+	                    slot.curveUploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+	                VkBufferImageCopy curveUploadRegion{};
+	                curveUploadRegion.bufferOffset = curveStagingOffset;
+	                curveUploadRegion.bufferRowLength = 0;
+	                curveUploadRegion.bufferImageHeight = 0;
+	                curveUploadRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	                curveUploadRegion.imageSubresource.mipLevel = 0;
+	                curveUploadRegion.imageSubresource.baseArrayLayer = 0;
+	                curveUploadRegion.imageSubresource.layerCount = 1;
+	                curveUploadRegion.imageExtent = {
+	                    static_cast<uint32_t>(kCurveLutWidth),
+	                    static_cast<uint32_t>(kCurveLutHeight),
+	                    1
+	                };
+	                vkCmdCopyBufferToImage(
+	                    m_commandBuffer,
+	                    m_stagingBuffer,
+	                    slot.curveLutImage,
+	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+	                    1,
+	                    &curveUploadRegion);
+	                transitionImageLayout(
+	                    m_commandBuffer,
+	                    slot.curveLutImage,
+	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+	                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+	                slot.curveUploaded = true;
+	            }
+	            if (!flushActiveStagingWrite(0, maxStagingWriteEnd)) {
+	                vkEndCommandBuffer(m_commandBuffer);
+	                return QImage();
+	            }
+
+	            vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_effectsPipeline);
             vkCmdSetViewport(m_commandBuffer, 0, 1, &fullViewport);
             vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
@@ -2035,11 +2203,20 @@ public:
                 std::memcpy(push.mvp, layer.mvp, sizeof(push.mvp));
                 push.brightness = layer.brightness;
                 push.contrast = layer.contrast;
-                push.saturation = layer.saturation;
-                push.opacity = qBound(0.0f, layer.opacity, 1.0f);
-                std::memcpy(push.shadows, layer.shadows, sizeof(push.shadows));
-                std::memcpy(push.midtones, layer.midtones, sizeof(push.midtones));
-                std::memcpy(push.highlights, layer.highlights, sizeof(push.highlights));
+	                push.saturation = layer.saturation;
+	                push.opacity = qBound(0.0f, layer.opacity, 1.0f);
+	                push.shadows[0] = layer.shadows[0];
+	                push.shadows[1] = layer.shadows[1];
+	                push.shadows[2] = layer.shadows[2];
+	                push.shadows[3] = 1.0f;
+	                push.midtones[0] = layer.midtones[0];
+	                push.midtones[1] = layer.midtones[1];
+	                push.midtones[2] = layer.midtones[2];
+	                push.midtones[3] = 0.0f;
+	                push.highlights[0] = layer.highlights[0];
+	                push.highlights[1] = layer.highlights[1];
+	                push.highlights[2] = layer.highlights[2];
+	                push.highlights[3] = 1.0f;
                 vkCmdPushConstants(m_commandBuffer,
                                    m_effectsPipelineLayout,
                                    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -2108,7 +2285,7 @@ public:
                                m_outputSize.height(),
                                m_outputSize.width() * 4,
                                QImage::Format_ARGB32);
-            out = readbackRgba.copy().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+	            out = readbackRgba.copy().convertToFormat(QImage::Format_ARGB32_Premultiplied).mirrored();
         }
         m_colorImagePrimed = true;
         return out;
@@ -3008,13 +3185,17 @@ private:
 
     VkRenderPass m_renderPass = VK_NULL_HANDLE;
     VkFramebuffer m_framebuffer = VK_NULL_HANDLE;
-    struct LayerTextureSlot {
-        VkImage image = VK_NULL_HANDLE;
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-        VkImageView view = VK_NULL_HANDLE;
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-        bool uploaded = false;
-    };
+	    struct LayerTextureSlot {
+	        VkImage image = VK_NULL_HANDLE;
+	        VkDeviceMemory memory = VK_NULL_HANDLE;
+	        VkImageView view = VK_NULL_HANDLE;
+	        VkImage curveLutImage = VK_NULL_HANDLE;
+	        VkDeviceMemory curveLutMemory = VK_NULL_HANDLE;
+	        VkImageView curveLutView = VK_NULL_HANDLE;
+	        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+	        bool uploaded = false;
+	        bool curveUploaded = false;
+	    };
     QVector<LayerTextureSlot> m_layerSlots;
     QHash<QString, QImage> m_preparedImageCache;
     QHash<QString, QVector<TranscriptSection>> m_transcriptCache;
@@ -3131,10 +3312,15 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         if ((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled) {
             hasTranscriptCandidate = true;
         }
-        const TimelineClip::GradingKeyframe grade =
-            request.bypassGrading
-                ? TimelineClip::GradingKeyframe{}
-                : evaluateClipGradingAtPosition(clip, static_cast<qreal>(timelineFrame));
+	        EffectiveVisualEffects effects =
+	            request.bypassGrading
+	                ? EffectiveVisualEffects{}
+	                : evaluateEffectiveVisualEffectsAtPosition(
+	                      clip, request.tracks, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
+	        if (!request.correctionsEnabled) {
+	            effects.correctionPolygons.clear();
+	        }
+	        const TimelineClip::GradingKeyframe& grade = effects.grading;
         if (grade.opacity <= 0.001) {
             continue;
         }
@@ -3203,24 +3389,32 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
             layer.midtones[0] = static_cast<float>(grade.midtonesR);
             layer.midtones[1] = static_cast<float>(grade.midtonesG);
             layer.midtones[2] = static_cast<float>(grade.midtonesB);
-            layer.highlights[0] = static_cast<float>(grade.highlightsR);
-            layer.highlights[1] = static_cast<float>(grade.highlightsG);
-            layer.highlights[2] = static_cast<float>(grade.highlightsB);
-            const TimelineClip::TransformKeyframe transform =
-                evaluateClipRenderTransformAtPosition(
-                    clip, static_cast<qreal>(timelineFrame), request.outputSize);
-            const QRect fitted = fitRect(layer.image.size(), request.outputSize);
-            const float fitScaleX = static_cast<float>(fitted.width()) / qMax(1, request.outputSize.width());
-            const float fitScaleY = static_cast<float>(fitted.height()) / qMax(1, request.outputSize.height());
-            QMatrix4x4 mvp;
-            mvp.setToIdentity();
-            const float tx = static_cast<float>((2.0 * transform.translationX) / qMax(1, request.outputSize.width()));
-            const float ty = static_cast<float>((-2.0 * transform.translationY) / qMax(1, request.outputSize.height()));
-            mvp.translate(tx, ty, 0.0f);
-            mvp.rotate(static_cast<float>(transform.rotation), 0.0f, 0.0f, 1.0f);
-            mvp.scale(fitScaleX * static_cast<float>(transform.scaleX),
-                      fitScaleY * static_cast<float>(transform.scaleY),
-                      1.0f);
+	            layer.highlights[0] = static_cast<float>(grade.highlightsR);
+	            layer.highlights[1] = static_cast<float>(grade.highlightsG);
+	            layer.highlights[2] = static_cast<float>(grade.highlightsB);
+	            layer.curveLutRgba = curveLutBytesForGrade(grade);
+	            const TimelineClip::TransformKeyframe transform =
+	                evaluateClipRenderTransformAtPosition(
+	                    clip, static_cast<qreal>(timelineFrame), request.outputSize);
+	            const QRect fitted = fitRect(layer.image.size(), request.outputSize);
+	            QMatrix4x4 projection;
+	            projection.ortho(0.0f,
+	                             static_cast<float>(request.outputSize.width()),
+	                             static_cast<float>(request.outputSize.height()),
+	                             0.0f,
+	                             -1.0f,
+	                             1.0f);
+	            QMatrix4x4 model;
+	            model.translate(static_cast<float>(fitted.center().x() + transform.translationX),
+	                            static_cast<float>(fitted.center().y() + transform.translationY),
+	                            0.0f);
+	            model.rotate(static_cast<float>(transform.rotation), 0.0f, 0.0f, 1.0f);
+	            model.scale(static_cast<float>(fitted.width() * transform.scaleX),
+	                        static_cast<float>(fitted.height() * transform.scaleY),
+	                        1.0f);
+	            QMatrix4x4 shaderQuadToOpenGlQuad;
+	            shaderQuadToOpenGlQuad.scale(0.5f, 0.5f, 1.0f);
+	            const QMatrix4x4 mvp = projection * model * shaderQuadToOpenGlQuad;
             const float* mvpData = mvp.constData();
             for (int i = 0; i < 16; ++i) {
                 layer.mvp[i] = mvpData[i];

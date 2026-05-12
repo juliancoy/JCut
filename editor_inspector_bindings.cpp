@@ -40,8 +40,8 @@ void EditorWindow::bindInspectorWidgets()
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
-    m_speakerShowBoxStreamBoxesCheckBox = m_inspectorPane->speakerShowBoxStreamBoxesCheckBox();
-    m_speakerBoxStreamOverlaySourceCombo = m_inspectorPane->speakerBoxStreamOverlaySourceCombo();
+    m_speakerShowFaceStreamBoxesCheckBox = m_inspectorPane->speakerShowFaceStreamBoxesCheckBox();
+    m_speakerFaceStreamOverlaySourceCombo = m_inspectorPane->speakerFaceStreamOverlaySourceCombo();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -315,7 +315,7 @@ void EditorWindow::setupSpeechFilterControls()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Transcript"));
         scheduleSaveState();
         if (pushHistory) pushHistorySnapshot();
     };
@@ -384,7 +384,7 @@ void EditorWindow::setupSpeechFilterControls()
         if (m_preview) {
             m_preview->setTimelineClips(m_timeline->clips());
         }
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Properties"));
         scheduleSaveState();
         pushHistorySnapshot();
     });
@@ -557,8 +557,8 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
     }
-    if (m_speakerShowBoxStreamBoxesCheckBox) {
-        connect(m_speakerShowBoxStreamBoxesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+    if (m_speakerShowFaceStreamBoxesCheckBox) {
+        connect(m_speakerShowFaceStreamBoxesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
             if (m_preview) {
                 m_preview->setShowSpeakerTrackBoxes(checked);
             }
@@ -566,14 +566,14 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
     }
-    if (m_speakerBoxStreamOverlaySourceCombo) {
-        connect(m_speakerBoxStreamOverlaySourceCombo,
+    if (m_speakerFaceStreamOverlaySourceCombo) {
+        connect(m_speakerFaceStreamOverlaySourceCombo,
                 &QComboBox::currentIndexChanged,
                 this,
                 [this](int index) {
-                    if (m_preview && m_speakerBoxStreamOverlaySourceCombo) {
-                        m_preview->setBoxstreamOverlaySource(
-                            m_speakerBoxStreamOverlaySourceCombo->itemData(index).toString());
+                    if (m_preview && m_speakerFaceStreamOverlaySourceCombo) {
+                        m_preview->setFacestreamOverlaySource(
+                            m_speakerFaceStreamOverlaySourceCombo->itemData(index).toString());
                     }
                     scheduleSaveState();
                 });

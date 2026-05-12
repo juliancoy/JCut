@@ -11,9 +11,21 @@
 #include <QShortcut>
 #include <QSignalBlocker>
 #include <QSplitter>
+#include <QToolTip>
 #include <QWidget>
 
 using namespace editor;
+
+namespace {
+bool restVulkanDiagnosticsModeEnabled()
+{
+    const QString value = qEnvironmentVariable("JCUT_REST_VULKAN_DIAGNOSTICS").trimmed().toLower();
+    return value == QStringLiteral("1") ||
+           value == QStringLiteral("true") ||
+           value == QStringLiteral("yes") ||
+           value == QStringLiteral("on");
+}
+}
 
 void EditorWindow::setupWindowChrome()
 {
@@ -34,6 +46,13 @@ void EditorWindow::setupWindowChrome()
 
 void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 {
+    if (restVulkanDiagnosticsModeEnabled()) {
+        qputenv("JCUT_PREVIEW_BACKEND", "vulkan");
+        qputenv("JCUT_VULKAN_PREVIEW_PRESENTER", "direct");
+        qputenv("JCUT_RENDER_BACKEND", "vulkan");
+        qDebug() << "[STARTUP] REST Vulkan diagnostics mode enabled; forcing Vulkan preview path";
+    }
+
     auto *central = new QWidget(this);
     auto *rootLayout = new QHBoxLayout(central);
     rootLayout->setContentsMargins(0, 0, 0, 0);
@@ -51,7 +70,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     qDebug() << "[STARTUP] Building explorer pane...";
     m_explorerPane = new ExplorerPane(this);
     m_explorerPane->setObjectName(QStringLiteral("column.explorer"));
-    m_explorerPane->setMinimumWidth(220);
+    m_explorerPane->setMinimumWidth(140);
     splitter->addWidget(m_explorerPane);
 
     connect(m_explorerPane, &ExplorerPane::fileActivated, this, [this](const QString& filePath) {
@@ -79,7 +98,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     QWidget* editorPane = buildEditorPane();
     if (editorPane) {
         editorPane->setObjectName(QStringLiteral("column.editor"));
-        editorPane->setMinimumWidth(520);
+        editorPane->setMinimumWidth(360);
     }
     splitter->addWidget(editorPane);
     m_explorerPane->setPreviewWindow(m_preview);
@@ -89,7 +108,7 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
 
     m_inspectorPane = new InspectorPane(this);
     m_inspectorPane->setObjectName(QStringLiteral("column.inspector"));
-    m_inspectorPane->setMinimumWidth(240);
+    m_inspectorPane->setMinimumWidth(180);
     splitter->addWidget(m_inspectorPane);
     m_inspectorTabs = m_inspectorPane->tabs();
     if (m_inspectorPane) {
@@ -216,7 +235,7 @@ void EditorWindow::setupShortcuts()
             return;
         }
         if (m_timeline && m_timeline->splitSelectedClipAtFrame(m_timeline->currentFrame())) {
-            m_inspectorPane->refresh();
+            refreshTimelineStructureInspectorViews();
         }
     });
 
@@ -244,7 +263,7 @@ void EditorWindow::setupShortcuts()
             return;
         }
         if (m_timeline && m_timeline->deleteSelectedClip()) {
-            m_inspectorPane->refresh();
+            refreshTimelineStructureInspectorViews();
         }
     });
 
@@ -275,6 +294,7 @@ void EditorWindow::setupShortcuts()
     auto bindGlobalFontShortcut = [this](const QKeySequence &sequence, int deltaPoints) {
         auto *shortcut = new QShortcut(sequence, this);
         shortcut->setContext(Qt::ApplicationShortcut);
+        shortcut->setAutoRepeat(true);
         connect(shortcut, &QShortcut::activated, this, [this, deltaPoints]() {
             adjustGlobalFontSize(deltaPoints);
         });
@@ -288,6 +308,8 @@ void EditorWindow::setupShortcuts()
     bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+-")), -1);
     bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+_")), -1);
     bindGlobalFontShortcut(QKeySequence(QStringLiteral("Ctrl+KP_Subtract")), -1);
+    bindGlobalFontShortcut(QKeySequence(Qt::CTRL | Qt::Key_Minus), -1);
+    bindGlobalFontShortcut(QKeySequence(Qt::CTRL | Qt::Key_Underscore), -1);
 }
 
 void EditorWindow::adjustGlobalFontSize(int deltaPoints)
@@ -300,9 +322,20 @@ void EditorWindow::adjustGlobalFontSize(int deltaPoints)
     if (pointSize <= 0) {
         pointSize = 10;
     }
-    pointSize = qBound(8, pointSize + deltaPoints, 36);
+    pointSize = qBound(8, pointSize + deltaPoints, 96);
     appFont.setPointSize(pointSize);
     QApplication::setFont(appFont);
+    QToolTip::setFont(appFont);
+    for (QWidget* widget : QApplication::allWidgets()) {
+        if (!widget) {
+            continue;
+        }
+        widget->setFont(appFont);
+        widget->style()->unpolish(widget);
+        widget->style()->polish(widget);
+        widget->updateGeometry();
+        widget->update();
+    }
 }
 
 void EditorWindow::setupHeartbeat()
@@ -409,11 +442,15 @@ void EditorWindow::setupAudioEngine()
     m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
     // Pre-warm audio backend and decode workers off the startup event loop so
     // first playback doesn't pay full initialization/decode startup latency.
-    QTimer::singleShot(0, this, [this]() {
-        if (m_audioEngine) {
-            m_audioEngine->initialize();
-        }
-    });
+    if (!restVulkanDiagnosticsModeEnabled()) {
+        QTimer::singleShot(0, this, [this]() {
+            if (m_audioEngine) {
+                m_audioEngine->initialize();
+            }
+        });
+    } else {
+        qDebug() << "[STARTUP] REST Vulkan diagnostics mode: skipping audio backend prewarm";
+    }
 }
 
 void EditorWindow::setupStartupLoad()
@@ -421,6 +458,21 @@ void EditorWindow::setupStartupLoad()
     startupProfileMark(QStringLiteral("startup_load.queue_posted"));
     QTimer::singleShot(0, this, [this]() {
         startupProfileMark(QStringLiteral("startup_load.begin"));
+        if (restVulkanDiagnosticsModeEnabled()) {
+            qDebug() << "[STARTUP] REST Vulkan diagnostics mode: skipping project/state startup load";
+            setupAutosaveTimer();
+            startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
+            refreshCurrentInspectorTab();
+            startupProfileMark(QStringLiteral("startup_load.inspector_refreshed"));
+            m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
+                ? m_startupProfileTimer.elapsed()
+                : 0;
+            startupProfileMark(QStringLiteral("startup_load.complete"),
+                               QJsonObject{{QStringLiteral("total_ms"), m_startupProfileCompletedMs},
+                                           {QStringLiteral("diagnostic_mode"), true}});
+            m_startupProfileCompleted = true;
+            return;
+        }
         loadProjectsFromFolders();
         startupProfileMark(QStringLiteral("startup_load.projects_loaded"));
         refreshProjectsList();
@@ -429,7 +481,7 @@ void EditorWindow::setupStartupLoad()
         startupProfileMark(QStringLiteral("startup_load.state_loaded"));
         setupAutosaveTimer();
         startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
-        m_inspectorPane->refresh();
+        refreshCurrentInspectorTab();
         startupProfileMark(QStringLiteral("startup_load.inspector_refreshed"));
         m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
             ? m_startupProfileTimer.elapsed()

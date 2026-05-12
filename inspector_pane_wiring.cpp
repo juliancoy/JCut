@@ -55,9 +55,10 @@ void InspectorPane::configureInspectorTabs()
         {15, "AI Assist", QStyle::SP_FileDialogDetailedView, "AI Assist: model, auth, and AI workflow actions"},
         {16, "Access", QStyle::SP_DialogYesButton, "Access: account subscriptions, purchases, and AI usage status"},
         {17, "Output", QStyle::SP_DialogSaveButton, "Output: render settings and export"},
-        {18, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
-        {19, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
-        {20, "Preferences", QStyle::SP_FileDialogContentsView, "Preferences: app-level behavior and feature flags"},
+        {18, "Pipeline", QStyle::SP_CommandLink, "Pipeline: live preview frame status and thumbnails"},
+        {19, "System", QStyle::SP_ComputerIcon, "System: playback, decoder, cache, and benchmark information"},
+        {20, "Projects", QStyle::SP_DirHomeIcon, "Projects: browse, create, rename, and switch projects"},
+        {21, "Preferences", QStyle::SP_FileDialogContentsView, "Preferences: app-level behavior and feature flags"},
     };
 
     for (const TabSpec& spec : specs) {

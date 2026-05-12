@@ -531,6 +531,38 @@ QString activeTranscriptPathForClipFile(const QString& filePath) {
     return transcriptWorkingPathForClipFile(filePath);
 }
 
+bool facestreamSidecarExistsForClipFile(const QString& filePath) {
+    const auto sidecarExistsForTranscriptPath = [](const QString& transcriptPath) {
+        if (transcriptPath.trimmed().isEmpty()) {
+            return false;
+        }
+        const QFileInfo info(transcriptPath);
+        const QString facestreamBinPath =
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+        if (QFileInfo::exists(facestreamBinPath)) {
+            return true;
+        }
+        const QString legacyFacestreamBinPath =
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+        if (QFileInfo::exists(legacyFacestreamBinPath)) {
+            return true;
+        }
+        const QString legacyFacestreamJsonPath =
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.json"));
+        return QFileInfo::exists(legacyFacestreamJsonPath);
+    };
+
+    const QString activePath = activeTranscriptPathForClipFile(filePath);
+    if (sidecarExistsForTranscriptPath(activePath)) {
+        return true;
+    }
+    const QString workingPath = transcriptWorkingPathForClipFile(filePath);
+    if (workingPath != activePath && sidecarExistsForTranscriptPath(workingPath)) {
+        return true;
+    }
+    return false;
+}
+
 void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath) {
     if (filePath.isEmpty()) {
         return;

@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "speakers_table.h"
 #include "keyframe_table_shared.h"
 #include "clip_serialization.h"
 #include "transform_skip_aware_timing.h"
@@ -48,6 +49,17 @@ using namespace editor;
 
 #include "playback_debug.h"
 
+namespace {
+bool restVulkanDiagnosticsModeEnabled()
+{
+    const QString value = qEnvironmentVariable("JCUT_REST_VULKAN_DIAGNOSTICS").trimmed().toLower();
+    return value == QStringLiteral("1") ||
+           value == QStringLiteral("true") ||
+           value == QStringLiteral("yes") ||
+           value == QStringLiteral("on");
+}
+}
+
 void EditorWindow::startupProfileMark(const QString& phase, const QJsonObject& extra)
 {
     if (m_startupProfileCompleted) {
@@ -83,6 +95,11 @@ EditorWindow::EditorWindow(quint16 controlPort)
     m_startupProfileLastMarkMs = 0;
     startupProfileMark(QStringLiteral("ctor.begin"),
                        QJsonObject{{QStringLiteral("control_port"), static_cast<int>(controlPort)}});
+    if (restVulkanDiagnosticsModeEnabled()) {
+        qApp->setQuitOnLastWindowClosed(false);
+        setAttribute(Qt::WA_DeleteOnClose, false);
+        qDebug() << "[STARTUP] REST Vulkan diagnostics mode: keepalive enabled";
+    }
 
     setupWindowChrome();
     startupProfileMark(QStringLiteral("setup.window_chrome.done"));
@@ -133,6 +150,12 @@ EditorWindow::~EditorWindow()
 
 void EditorWindow::closeEvent(QCloseEvent *event)
 {
+    if (restVulkanDiagnosticsModeEnabled() &&
+        qEnvironmentVariable("JCUT_ALLOW_DIAG_CLOSE").trimmed() != QStringLiteral("1")) {
+        qWarning() << "[STARTUP] REST Vulkan diagnostics mode: ignoring close event";
+        event->ignore();
+        return;
+    }
     m_playbackTimer.stop();
     m_fastPlaybackActive.store(false);
     if (m_preview) {
@@ -367,9 +390,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                                                 .toLower();
     QString previewVulkanPresenterPreference =
         root.value(QStringLiteral("preview_vulkan_presenter"))
-            .toString(qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER"))
+            .toString(qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER", QStringLiteral("direct")))
             .trimmed()
             .toLower();
+    if (renderBackendPreference == QStringLiteral("vulkan") && previewVulkanPresenterPreference.isEmpty()) {
+        previewVulkanPresenterPreference = QStringLiteral("direct");
+    }
+    if (renderBackendPreference == QStringLiteral("vulkan") &&
+        previewVulkanPresenterPreference == QStringLiteral("embedded") &&
+        qEnvironmentVariableIsEmpty("JCUT_VULKAN_PREVIEW_PRESENTER")) {
+        previewVulkanPresenterPreference = QStringLiteral("direct");
+    }
     if (previewVulkanPresenterPreference != QStringLiteral("direct")) {
         previewVulkanPresenterPreference = QStringLiteral("embedded");
     }
@@ -380,8 +411,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
-    const QString previewBoxstreamOverlaySource =
-        root.value(QStringLiteral("previewBoxstreamOverlaySource")).toString(QStringLiteral("all")).trimmed();
+    const QString previewFacestreamOverlaySource =
+        root.value(QStringLiteral("previewFacestreamOverlaySource")).toString(QStringLiteral("all")).trimmed();
     const int autosaveIntervalMinutes = qBound(
         1,
         root.value(QStringLiteral("autosaveIntervalMinutes"))
@@ -424,6 +455,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("debugDecodeMode"))
             .toString(editor::decodePreferenceToString(editor::debugDecodePreference()));
     editor::parseDecodePreference(debugDecodeModeText, &debugDecodePreference);
+    if (renderBackendPreference == QStringLiteral("vulkan")) {
+        debugDecodePreference = editor::DecodePreference::HardwareZeroCopy;
+    }
+    editor::setDebugDecodePreference(debugDecodePreference);
     editor::H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode =
         editor::debugH26xSoftwareThreadingMode();
     const QString debugH26xSoftwareThreadingModeText =
@@ -450,6 +485,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("transcriptActiveCutPath")).toString();
     const QJsonArray transcriptColumnHidden =
         root.value(QStringLiteral("transcriptColumnHidden")).toArray();
+    const QJsonArray speakersColumnHidden =
+        root.value(QStringLiteral("speakersColumnHidden")).toArray();
     const bool transcriptFollowCurrentWord = root.value(QStringLiteral("transcriptFollowCurrentWord")).toBool(true);
     const bool correctionsEnabled = root.value(QStringLiteral("correctionsEnabled")).toBool(true);
     const bool gradingFollowCurrent = root.value(QStringLiteral("gradingFollowCurrent")).toBool(true);
@@ -801,6 +838,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_renderUseProxiesCheckBox);
         m_renderUseProxiesCheckBox->setChecked(renderUseProxies);
     }
+    if (m_preview) {
+        m_preview->setUseProxyMedia(renderUseProxies);
+    }
     m_autosaveIntervalMinutes = autosaveIntervalMinutes;
     m_autosaveMaxBackups = autosaveMaxBackups;
     if (m_autosaveIntervalMinutesSpin) {
@@ -827,19 +867,19 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_previewVulkanPresenterCombo->setCurrentIndex(presenterIndex);
         }
     }
-    if (m_speakerShowBoxStreamBoxesCheckBox) {
-        QSignalBlocker block(m_speakerShowBoxStreamBoxesCheckBox);
-        m_speakerShowBoxStreamBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
+    if (m_speakerShowFaceStreamBoxesCheckBox) {
+        QSignalBlocker block(m_speakerShowFaceStreamBoxesCheckBox);
+        m_speakerShowFaceStreamBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
     }
-    if (m_speakerBoxStreamOverlaySourceCombo) {
-        QSignalBlocker block(m_speakerBoxStreamOverlaySourceCombo);
+    if (m_speakerFaceStreamOverlaySourceCombo) {
+        QSignalBlocker block(m_speakerFaceStreamOverlaySourceCombo);
         int sourceIndex =
-            m_speakerBoxStreamOverlaySourceCombo->findData(previewBoxstreamOverlaySource, Qt::MatchFixedString);
+            m_speakerFaceStreamOverlaySourceCombo->findData(previewFacestreamOverlaySource, Qt::MatchFixedString);
         if (sourceIndex < 0) {
-            sourceIndex = m_speakerBoxStreamOverlaySourceCombo->findData(QStringLiteral("all"), Qt::MatchFixedString);
+            sourceIndex = m_speakerFaceStreamOverlaySourceCombo->findData(QStringLiteral("all"), Qt::MatchFixedString);
         }
         if (sourceIndex >= 0) {
-            m_speakerBoxStreamOverlaySourceCombo->setCurrentIndex(sourceIndex);
+            m_speakerFaceStreamOverlaySourceCombo->setCurrentIndex(sourceIndex);
         }
     }
     if (m_previewPlaybackCacheFallbackCheckBox) {
@@ -976,6 +1016,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_transcriptTable->setColumnHidden(i, transcriptColumnHidden.at(i).toBool(false));
         }
     }
+    if (m_inspectorPane) {
+        if (SpeakersTable* speakersTable =
+                qobject_cast<SpeakersTable*>(m_inspectorPane->speakersTable());
+            speakersTable && !speakersColumnHidden.isEmpty()) {
+            speakersTable->applyHiddenColumns(speakersColumnHidden);
+        }
+    }
     
     if (m_transcriptFollowCurrentWordCheckBox) { QSignalBlocker block(m_transcriptFollowCurrentWordCheckBox); m_transcriptFollowCurrentWordCheckBox->setChecked(transcriptFollowCurrentWord); }
     if (m_gradingFollowCurrentCheckBox) { QSignalBlocker block(m_gradingFollowCurrentCheckBox); m_gradingFollowCurrentCheckBox->setChecked(gradingFollowCurrent); }
@@ -1031,7 +1078,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
-        m_preview->setBoxstreamOverlaySource(previewBoxstreamOverlaySource);
+        m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;
         m_preview->setAudioDynamicsSettings(m_previewAudioDynamics);
@@ -1306,10 +1353,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         if (m_explorerPane) {
             m_explorerPane->setInitialRootPath(mediaRoot);
         }
-        // Ensure projects root is set to match media root.
-        setRootDirPath(mediaRoot);
-        loadProjectsFromFolders();
-        refreshProjectsList();
-        m_inspectorPane->refresh();
+        refreshCurrentInspectorTab();
     });
 }

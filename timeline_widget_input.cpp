@@ -10,6 +10,8 @@
 #include <QCheckBox>
 #include <QDialogButtonBox>
 
+#include <limits>
+
 namespace {
 
 bool exportRangesEqual(const QVector<ExportRangeSegment>& a, const QVector<ExportRangeSegment>& b) {
@@ -184,7 +186,14 @@ int TimelineWidget::xFromFrame(int64_t frame) const {
 }
 
 int TimelineWidget::widthForFrames(int64_t frames) const {
-    return static_cast<int>(frames * m_pixelsPerFrame);
+    const qreal scaled = static_cast<qreal>(frames) * m_pixelsPerFrame;
+    if (scaled > static_cast<qreal>(std::numeric_limits<int>::max())) {
+        return std::numeric_limits<int>::max();
+    }
+    if (scaled < static_cast<qreal>(std::numeric_limits<int>::min())) {
+        return std::numeric_limits<int>::min();
+    }
+    return static_cast<int>(scaled);
 }
 
 QString TimelineWidget::timecodeForFrame(int64_t frame) const {
@@ -250,6 +259,7 @@ TimelineClip TimelineWidget::buildClipFromFile(const QString& filePath,
     clip.hasAudio = probe.hasAudio;
     clip.sourceFps = sourceFps;
     clip.sourceDurationFrames = probe.durationFrames;
+    clip.sourceFrameSize = probe.frameSize;
     clip.startFrame = startFrame;
     clip.durationFrames = timelineDurationFrames;
     clip.trackIndex = trackIndex;
@@ -600,18 +610,20 @@ void TimelineWidget::mouseMoveEvent(QMouseEvent* event) {
         const QString transcriptPath = transcriptWorkingPathForClipFile(hoveredClip.filePath);
         const bool transcriptAvailable =
             !transcriptPath.isEmpty() && QFileInfo::exists(transcriptPath);
+        const bool facestreamSidecarAvailable = facestreamSidecarExistsForClipFile(hoveredClip.filePath);
         const int64_t localTimelineFrame =
             qBound<int64_t>(0,
                             m_currentFrame - hoveredClip.startFrame,
                             qMax<int64_t>(0, hoveredClip.durationFrames - 1));
         const int64_t clipFrame =
             adjustedClipLocalFrameAtTimelineFrame(hoveredClip, localTimelineFrame, m_renderSyncMarkers);
-        setToolTip(QStringLiteral("%1\n%2\nFrame %3\nProxy Video: %4\nProxy Audio: %5\nTranscript: %6")
+        setToolTip(QStringLiteral("%1\n%2\nFrame %3\nProxy Video: %4\nProxy Audio: %5\nTranscript: %6\nFaceStream Sidecar: %7")
                        .arg(hoveredClip.label, typeLabel)
                        .arg(clipFrame)
                        .arg(proxyVideoAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
                        .arg(proxyAudioAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
-                       .arg(transcriptAvailable ? QStringLiteral("Yes") : QStringLiteral("No")));
+                       .arg(transcriptAvailable ? QStringLiteral("Yes") : QStringLiteral("No"))
+                       .arg(facestreamSidecarAvailable ? QStringLiteral("Yes") : QStringLiteral("No")));
     } else {
         setToolTip(QString());
     }

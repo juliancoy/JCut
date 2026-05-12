@@ -14,7 +14,7 @@
 
 #include <memory>
 
-namespace jcut::boxstream {
+namespace jcut::facestream {
 
 struct VulkanFrameStats {
     qint64 decodeMs = 0;
@@ -54,6 +54,10 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
                          VulkanFrameStats* stats = nullptr,
                          QString* errorMessage = nullptr);
 
+QImage readLastRenderedVulkanFrameImage(VulkanFrameProvider* provider,
+                                        VulkanFrameStats* stats = nullptr,
+                                        QString* errorMessage = nullptr);
+
 QImage buildScanPreview(const QImage& source, const QVector<QRect>& detections, int activeTracks);
 
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,
@@ -61,15 +65,40 @@ QJsonArray buildContinuityStreams(const QJsonArray& tracks,
                                   const QString& detectorMode,
                                   bool onlyDialogue);
 
+QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
+                                    const QJsonObject& transcriptRoot = QJsonObject{});
+
+bool continuityRootHasTracks(const QJsonObject& continuityRoot,
+                             const QJsonObject& transcriptRoot = QJsonObject{});
+bool continuityRootHasStoredPayload(const QJsonObject& continuityRoot);
+
+QJsonObject buildProcessedContinuityRoot(const QString& clipId,
+                                         const QJsonObject& rawContinuityRoot,
+                                         const QJsonObject& transcriptRoot,
+                                         const QString& rawArtifactPath = QString{});
+
+bool saveProcessedContinuityArtifact(const QString& transcriptPath,
+                                     const QString& clipId,
+                                     const QJsonObject& rawContinuityRoot,
+                                     const QJsonObject& transcriptRoot,
+                                     QJsonObject* artifactRootOut = nullptr);
+
 QJsonObject buildContinuityRoot(const QString& runId,
                                 bool onlyDialogue,
                                 int64_t scanStart,
                                 int64_t scanEnd,
-                                const QJsonArray& streams);
+                                const QJsonArray& streams = QJsonArray{},
+                                const QJsonArray& rawTracks = QJsonArray{},
+                                const QJsonArray& rawFrames = QJsonArray{},
+                                const QString& detectorMode = QString{});
+
+bool readBinaryJsonObject(const QString& path,
+                          QJsonObject* objectOut,
+                          QString* errorOut = nullptr);
 
 bool saveContinuityArtifact(const QString& transcriptPath,
                             const QString& clipId,
                             const QJsonObject& continuityRoot,
                             QJsonObject* artifactRootOut = nullptr);
 
-} // namespace jcut::boxstream
+} // namespace jcut::facestream

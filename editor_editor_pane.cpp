@@ -71,6 +71,18 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
     connect(pane, &EditorPane::previewModeChanged, this, [this](const QString& mode) {
         applyPreviewViewMode(mode);
     });
+    connect(pane, &EditorPane::zoomFitClicked, this, [this]() {
+        if (!m_preview) {
+            return;
+        }
+        m_preview->setPreviewZoom(1.0);
+        m_preview->resetPreviewPan();
+        if (m_previewZoomSpin) {
+            const QSignalBlocker block(m_previewZoomSpin);
+            m_previewZoomSpin->setValue(1.0);
+        }
+        scheduleSaveState();
+    });
     connect(pane, &EditorPane::audioToolsClicked, this, [this]() {
         if (m_inspectorTabs) {
             for (int i = 0; i < m_inspectorTabs->count(); ++i) {
@@ -86,13 +98,13 @@ void EditorWindow::connectTransportControls(EditorPane *pane)
         const bool nextMuted = !m_preview->audioMuted();
         m_preview->setAudioMuted(nextMuted);
         if (m_audioEngine) m_audioEngine->setMuted(nextMuted);
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Audio"));
         scheduleSaveState();
     });
     connect(pane, &EditorPane::audioVolumeChanged, this, [this](int value) {
         m_preview->setAudioVolume(value / 100.0);
         if (m_audioEngine) m_audioEngine->setVolume(value / 100.0);
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Audio"));
     });
     connect(pane->razorButton(), &QToolButton::toggled, this, [this](bool checked) {
         if (m_timeline)
@@ -129,7 +141,7 @@ void EditorWindow::connectTimelineSignals()
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
         refreshClipInspector();
-        m_inspectorPane->refresh();
+        refreshTimelineStructureInspectorViews();
         scheduleSaveState();
         pushHistorySnapshot();
     };
@@ -154,13 +166,7 @@ void EditorWindow::connectTimelineSignals()
                 }
             }
         }
-        m_outputTab->refresh();
-        m_profileTab->refresh();
-        m_gradingTab->refresh();
-        m_effectsTab->refresh();
-        m_titlesTab->refresh();
-        m_videoKeyframeTab->refresh();
-        m_inspectorPane->refresh();
+        refreshTimelineSelectionInspectorViews();
     };
     m_timeline->renderSyncMarkersChanged = [this]() {
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
@@ -168,19 +174,19 @@ void EditorWindow::connectTimelineSignals()
             m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         }
         refreshSyncInspector();
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Sync"));
         scheduleSaveState();
         pushHistorySnapshot();
     };
     m_timeline->exportRangeChanged = [this]() {
         m_outputTab->refresh();
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Output"));
         scheduleSaveState();
         pushHistorySnapshot();
     };
     m_timeline->gradingRequested = [this]() {
         focusGradingTab();
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Grade"));
     };
     m_timeline->transcribeRequested = [this](const QString &filePath, const QString &label) {
         openTranscriptionWindow(filePath, label);
@@ -214,7 +220,7 @@ void EditorWindow::connectTimelineSignals()
             m_outputTab->refresh();
         }
         if (m_inspectorPane) {
-            m_inspectorPane->refresh();
+            m_inspectorPane->refreshTab(QStringLiteral("Transcript"));
         }
         scheduleSaveState();
         pushHistorySnapshot();
@@ -234,26 +240,26 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->createProxyRequested = [this](const QString &clipId) { createProxyForClip(clipId); };
     m_timeline->continueProxyRequested = [this](const QString &clipId) { continueProxyForClip(clipId); };
     m_timeline->deleteProxyRequested = [this](const QString &clipId) { deleteProxyForClip(clipId); };
-    m_timeline->generateBoxStreamRequested = [this](const QString& clipId) {
+    m_timeline->generateFaceStreamRequested = [this](const QString& clipId) {
         if (!m_timeline || !m_speakersTab) {
             return;
         }
         m_timeline->setSelectedClipId(clipId);
         m_speakersTab->refresh();
-        m_speakersTab->generateBoxStreamForSelectedClip();
+        m_speakersTab->generateFaceStreamForSelectedClip();
         if (m_inspectorPane) {
-            m_inspectorPane->refresh();
+            m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
         }
     };
-    m_timeline->deleteBoxStreamRequested = [this](const QString& clipId) {
+    m_timeline->deleteFaceStreamRequested = [this](const QString& clipId) {
         if (!m_timeline || !m_speakersTab) {
             return;
         }
         m_timeline->setSelectedClipId(clipId);
         m_speakersTab->refresh();
-        m_speakersTab->deleteBoxStreamForSelectedClip(true);
+        m_speakersTab->deleteFaceStreamForSelectedClip(true);
         if (m_inspectorPane) {
-            m_inspectorPane->refresh();
+            m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
         }
     };
     m_timeline->scaleToFillRequested = [this](const QString &clipId) {
@@ -284,7 +290,7 @@ void EditorWindow::connectTimelineSignals()
         });
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Keyframes"));
         scheduleSaveState();
         pushHistorySnapshot();
     };
@@ -317,6 +323,18 @@ void EditorWindow::connectPreviewSignals()
                                             qreal boxSizeNorm) {
         if (m_speakersTab) {
             m_speakersTab->handlePreviewBox(clipId, xNorm, yNorm, boxSizeNorm);
+        }
+    };
+    m_preview->faceStreamBoxRequested = [this](const QString& clipId,
+                                               int trackId,
+                                               const QString& streamId,
+                                               int64_t sourceFrame,
+                                               qreal xNorm,
+                                               qreal yNorm,
+                                               qreal boxSizeNorm) {
+        if (m_speakersTab) {
+            m_speakersTab->handlePreviewFaceStreamBox(
+                clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
         }
     };
     m_preview->createKeyframeRequested = [this](const QString &clipId) {
@@ -423,7 +441,7 @@ void EditorWindow::connectPreviewSignals()
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
-        m_inspectorPane->refresh();
+        refreshPreviewTransformInspectorViews();
         scheduleSaveState();
         pushHistorySnapshot();
     };
@@ -517,7 +535,7 @@ void EditorWindow::connectPreviewSignals()
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
-        m_inspectorPane->refresh();
+        refreshPreviewTransformInspectorViews();
         scheduleSaveState();
         if (finalize) pushHistorySnapshot();
     };
@@ -659,7 +677,7 @@ void EditorWindow::connectPreviewSignals()
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
         m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
-        m_inspectorPane->refresh();
+        refreshPreviewTransformInspectorViews();
         scheduleSaveState();
         if (finalize) pushHistorySnapshot();
     };

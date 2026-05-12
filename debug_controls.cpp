@@ -424,7 +424,9 @@ RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
         if (hasVaapiRenderNode) {
             defaults.decodePreference = DecodePreference::HardwareZeroCopy;
         } else if (hasNvidiaDriver) {
-            defaults.decodePreference = DecodePreference::Hardware;
+            // Prefer the hardware zero-copy path on NVIDIA as well.
+            // Runtime already falls back when interop cannot be sustained.
+            defaults.decodePreference = DecodePreference::HardwareZeroCopy;
         }
     }
 #elif defined(Q_OS_MACOS) || defined(Q_OS_WIN)

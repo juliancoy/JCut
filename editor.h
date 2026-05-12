@@ -13,6 +13,7 @@
 #include "inspector_pane.h"
 #include "output_tab.h"
 #include "profile_tab.h"
+#include "pipeline_tab.h"
 #include "projects.h"
 #include "transcript_tab.h"
 #include "grading_tab.h"
@@ -80,10 +81,12 @@ public:
     ~EditorWindow() override;
 
     void addFileToTimeline(const QString &filePath, int64_t startFrame = -1);
-    bool prepareVulkanBoxStreamPreviewRun(const QString& filePath,
+    bool prepareVulkanFaceStreamPreviewRun(const QString& filePath,
                                           bool createHarnessTranscript,
                                           QString* errorOut = nullptr);
-    bool triggerGenerateBoxStreamForSelectedClip(QString* errorOut = nullptr);
+    bool triggerGenerateFaceStreamForSelectedClip(QString* errorOut = nullptr);
+    bool triggerDeleteFaceStreamForSelectedClip(bool confirmDialog = false,
+                                                QString* errorOut = nullptr);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -284,6 +287,13 @@ private:
     void connectTransportControls(EditorPane* pane);
     void connectTimelineSignals();
     void connectPreviewSignals();
+    void refreshCurrentInspectorTab();
+    void refreshInspectorTabByName(const QString& tabName);
+    void refreshTimelineStructureInspectorViews();
+    void refreshTimelineSelectionInspectorViews();
+    void refreshPreviewTransformInspectorViews();
+    void refreshTranscriptDerivedInspectorViews(bool includeHistoryTab);
+    void refreshSpeechFilterInspectorViews();
     bool handleTranscriptTableDelete(QObject* watched, QEvent* event);
     bool handleVideoKeyframeTableDelete(QObject* watched, QEvent* event);
     bool handleGradingKeyframeTableDelete(QObject* watched, QEvent* event);
@@ -292,6 +302,7 @@ private:
 
     // Tab creation methods (editor_tabs.cpp)
     void createOutputTab();
+    void createPipelineTab();
     void createProfileTab();
     void createProjectsTab();
     void createTranscriptTab();
@@ -402,8 +413,8 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
-    QCheckBox *m_speakerShowBoxStreamBoxesCheckBox = nullptr;
-    QComboBox *m_speakerBoxStreamOverlaySourceCombo = nullptr;
+    QCheckBox *m_speakerShowFaceStreamBoxesCheckBox = nullptr;
+    QComboBox *m_speakerFaceStreamOverlaySourceCombo = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;
@@ -552,6 +563,7 @@ private:
     std::unique_ptr<TitlesTab> m_titlesTab;
     std::unique_ptr<VideoKeyframeTab> m_videoKeyframeTab;
     std::unique_ptr<OutputTab> m_outputTab;
+    std::unique_ptr<PipelineTab> m_pipelineTab;
     std::unique_ptr<ProfileTab> m_profileTab;
     std::unique_ptr<ProjectsTab> m_projectsTab;
     std::unique_ptr<ClipsTab> m_clipsTab;

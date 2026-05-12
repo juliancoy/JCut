@@ -4,6 +4,7 @@
 
 #include "gl_frame_texture_shared.h"
 #include "opengl_preview_debug.h"
+#include "preview_view_transform.h"
 
 #include <QCryptographicHash>
 #include <QOpenGLShaderProgram>
@@ -269,10 +270,10 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
         PreviewOverlayInfo info;
         info.kind = PreviewOverlayKind::TranscriptOverlay;
         info.bounds = bounds;
-        constexpr qreal kHandleSize = 12.0;
-        info.rightHandle = QRectF(bounds.right() - kHandleSize, bounds.center().y() - kHandleSize, kHandleSize, kHandleSize * 2.0);
-        info.bottomHandle = QRectF(bounds.center().x() - kHandleSize, bounds.bottom() - kHandleSize, kHandleSize * 2.0, kHandleSize);
-        info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5, bounds.bottom() - kHandleSize * 1.5, kHandleSize * 1.5, kHandleSize * 1.5);
+        const PreviewResizeHandles handles = PreviewViewTransform::resizeHandlesForBounds(bounds);
+        info.rightHandle = handles.right;
+        info.bottomHandle = handles.bottom;
+        info.cornerHandle = handles.corner;
         m_overlayModel.overlays.insert(clip.id, info);
         m_overlayModel.paintOrder.push_back(clip.id);
     }

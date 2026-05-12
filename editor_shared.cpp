@@ -1,8 +1,7 @@
 #include "editor_shared.h"
+#include "preview_view_transform.h"
 
 #include <Qt>
-
-#include <algorithm>
 
 // Definitions formerly in this file were split into:
 // - editor_shared_media.cpp
@@ -18,32 +17,49 @@
 QRect previewCanvasBaseRectForWidget(const QRect& widgetRect,
                                      const QSize& outputSize,
                                      int marginPx) {
-    const QRect available = widgetRect.adjusted(marginPx, marginPx, -marginPx, -marginPx);
-    if (!available.isValid()) {
-        return available;
-    }
-    QSize fitted = outputSize.isValid() ? outputSize : QSize(1080, 1920);
-    fitted.scale(available.size(), Qt::KeepAspectRatio);
-    const QPoint topLeft(available.center().x() - (fitted.width() / 2),
-                         available.center().y() - (fitted.height() / 2));
-    return QRect(topLeft, fitted);
+    return previewCanvasBaseRectForWidgetF(QRectF(widgetRect), outputSize, marginPx).toAlignedRect();
+}
+
+QRectF previewCanvasBaseRectForWidgetF(const QRectF& widgetRect,
+                                       const QSize& outputSize,
+                                       qreal marginPx) {
+    return PreviewViewTransform::baseRectForWidget(widgetRect, outputSize, marginPx);
 }
 
 QRect scaledPreviewCanvasRect(const QRect& baseRect,
                               qreal previewZoom,
                               const QPointF& previewPanOffset) {
-    const QSize scaledSize(std::max(1, qRound(baseRect.width() * previewZoom)),
-                           std::max(1, qRound(baseRect.height() * previewZoom)));
-    const QPoint center = baseRect.center();
-    return QRect(qRound(center.x() - (scaledSize.width() / 2.0) + previewPanOffset.x()),
-                 qRound(center.y() - (scaledSize.height() / 2.0) + previewPanOffset.y()),
-                 scaledSize.width(),
-                 scaledSize.height());
+    const QRectF rect = scaledPreviewCanvasRectF(QRectF(baseRect), previewZoom, previewPanOffset);
+    return QRect(qRound(rect.x()), qRound(rect.y()), qRound(rect.width()), qRound(rect.height()));
+}
+
+QRectF scaledPreviewCanvasRectF(const QRectF& baseRect,
+                                qreal previewZoom,
+                                const QPointF& previewPanOffset) {
+    return PreviewViewTransform::scaledRect(baseRect, previewZoom, previewPanOffset);
+}
+
+QPointF clampedPreviewPanOffset(const QRectF& baseRect,
+                                qreal previewZoom,
+                                const QPointF& previewPanOffset) {
+    return PreviewViewTransform::clampedPanOffset(baseRect, previewZoom, previewPanOffset);
 }
 
 QPointF previewCanvasScaleForTargetRect(const QRect& targetRect,
                                         const QSize& outputSize) {
-    const QSize output = outputSize.isValid() ? outputSize : QSize(1080, 1920);
-    return QPointF(targetRect.width() / qMax<qreal>(1.0, output.width()),
-                   targetRect.height() / qMax<qreal>(1.0, output.height()));
+    return previewCanvasScaleForTargetRectF(QRectF(targetRect), outputSize);
+}
+
+QPointF previewCanvasScaleForTargetRectF(const QRectF& targetRect,
+                                         const QSize& outputSize) {
+    return PreviewViewTransform::scaleForTargetRect(targetRect, outputSize);
+}
+
+QRect previewFitRectToBounds(const QSize& source, const QRect& bounds) {
+    const QRectF rect = previewFitRectToBoundsF(source, QRectF(bounds));
+    return QRect(qRound(rect.x()), qRound(rect.y()), qRound(rect.width()), qRound(rect.height()));
+}
+
+QRectF previewFitRectToBoundsF(const QSize& source, const QRectF& bounds) {
+    return PreviewViewTransform::fitRectToBounds(source, bounds);
 }

@@ -2,15 +2,59 @@
 
 #include "preview_interaction_state.h"
 
+#include <functional>
+#include <QImage>
 #include <QJsonObject>
 #include <QPointer>
+#include <QRectF>
 #include <QVulkanInstance>
 
 #include <memory>
 
 class QWidget;
+class QLabel;
+class QStackedLayout;
 class QVulkanWindow;
 class DirectVulkanPreviewWindow;
+
+struct DirectVulkanPreviewStats {
+    int64_t handoffAttempts = 0;
+    int64_t handoffSuccesses = 0;
+    int64_t handoffFailures = 0;
+    int64_t sampledImageReady = 0;
+    int64_t textureDraws = 0;
+    int64_t checkerDraws = 0;
+    int64_t clearFallbackDraws = 0;
+    int64_t explicitFailureDraws = 0;
+    int64_t activeClipDraws = 0;
+    double lastUploadMs = 0.0;
+    QString lastHandoffMode;
+    QString lastHandoffError;
+    QString lastProbePath;
+    QString lastProbeReason;
+    QString lastHardwareSwFormat;
+    QString lastVulkanImageFormat;
+    QString lastDiagnosticReadbackFormat;
+    QString lastDecoderDiagnosticReadbackFormat;
+    QSize lastExternalImageSize;
+    QSize lastDecoderDiagnosticReadbackSize;
+    QSize lastDiagnosticReadbackSize;
+    QString lastEffectsPath;
+    QString lastUnsupportedEffect;
+    QRectF lastTargetRect;
+    QRectF lastFittedRect;
+    double lastAppliedBrightness = 0.0;
+    double lastAppliedContrast = 1.0;
+    double lastAppliedSaturation = 1.0;
+    double lastAppliedOpacity = 1.0;
+    double lastAppliedRotation = 0.0;
+    double lastAppliedScaleX = 1.0;
+    double lastAppliedScaleY = 1.0;
+    bool lastCurveLutApplied = false;
+    int64_t diagnosticReadbackRequests = 0;
+    int64_t diagnosticReadbackCopies = 0;
+    int64_t decoderDiagnosticReadbackCopies = 0;
+};
 
 class DirectVulkanPreviewPresenter final {
 public:
@@ -24,6 +68,18 @@ public:
     bool isActive() const;
     QString failureReason() const;
     QString backendName() const;
+    void requestPipelineThumbnailReadback();
+    QImage latestDecoderDiagnosticImage() const;
+    QImage latestVulkanReadbackImage() const;
+    void setInteractionCallbacks(
+        std::function<void(const QString&)> selectionRequested,
+        std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
+        std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+        std::function<void(const QString&, qreal, qreal)> correctionPointRequested = {},
+        std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
+        std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested = {},
+        std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested = {},
+        std::function<void(const QString&)> createKeyframeRequested = {});
 
     void requestUpdate();
     void updateTitle();
@@ -31,11 +87,21 @@ public:
     void resetProfilingStats();
 
 private:
+    void showFailure(const QString& reason);
+    void updateDiagnosticChrome();
+    void updateReadbackMirror(const QImage& image);
+
     std::unique_ptr<QVulkanInstance> m_instance;
     std::unique_ptr<QWidget> m_placeholder;
+    QPointer<QWidget> m_windowContainer;
+    QPointer<QLabel> m_statusLabel;
+    QPointer<QLabel> m_errorLabel;
+    QPointer<QLabel> m_readbackMirror;
+    QPointer<QStackedLayout> m_stack;
     DirectVulkanPreviewWindow* m_window = nullptr;
     PreviewInteractionState* m_state = nullptr;
     QString m_failureReason;
     bool m_active = false;
     int64_t m_presentedFrames = 0;
+    DirectVulkanPreviewStats m_stats;
 };

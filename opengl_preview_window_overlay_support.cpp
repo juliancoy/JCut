@@ -200,15 +200,7 @@ void PreviewWindow::drawSpeakerPickOverlay(QPainter* painter) const {
 }
 
 QRect PreviewWindow::fitRect(const QSize& source, const QRect& bounds) const {
-    if (source.isEmpty() || bounds.isEmpty()) {
-        return bounds;
-    }
-    
-    QSize scaled = source;
-    scaled.scale(bounds.size(), Qt::KeepAspectRatio);
-    const QPoint topLeft(bounds.center().x() - scaled.width() / 2,
-                         bounds.center().y() - scaled.height() / 2);
-    return QRect(topLeft, scaled);
+    return previewFitRectToBounds(source, bounds);
 }
 void PreviewWindow::drawPreviewChrome(QPainter* painter, const QRect& safeRect, int activeClipCount) const {
     Q_UNUSED(painter)

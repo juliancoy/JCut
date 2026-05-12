@@ -5,6 +5,8 @@
 
 #include "frame_handle.h"
 #include "gl_frame_texture_shared.h"
+#include "preview_frame_selection.h"
+#include "preview_view_transform.h"
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
 #include "editor_shared.h"
@@ -24,8 +26,6 @@
 using namespace editor;
 
 namespace {
-constexpr int64_t kMaxHeldPresentationFrameDelta = 8;
-
 const char* overlayVertexShaderSource() {
     return R"(
         attribute vec2 a_position;
@@ -277,12 +277,20 @@ PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect& targetRect,
     }
     const editor::GlTextureCacheEntry entry = m_textureCache.value(cacheKey);
 
-    const QRect fitted = fitRect(frame.size(), targetRect);
+    const QRectF fitted = PreviewViewTransform::fittedClipRect(
+        clip.sourceFrameSize,
+        frame.size(),
+        QRectF(targetRect),
+        m_interaction.outputSize);
     const TimelineClip::TransformKeyframe transform =
         evaluateClipRenderTransformAtPosition(clip, m_interaction.currentFramePosition, m_interaction.outputSize);
     const QPointF previewScale = previewCanvasScale(targetRect);
-    const QPointF center(fitted.center().x() + (transform.translationX * previewScale.x()),
-                         fitted.center().y() + (transform.translationY * previewScale.y()));
+    const PreviewClipGeometry geometry = PreviewViewTransform::clipGeometry(
+        QRectF(fitted),
+        previewScale,
+        QPointF(transform.translationX, transform.translationY),
+        transform.rotation,
+        QPointF(transform.scaleX, transform.scaleY));
 
     QMatrix4x4 projection;
     projection.ortho(0.0f, static_cast<float>(width()),
@@ -290,7 +298,7 @@ PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect& targetRect,
                      -1.0f, 1.0f);
 
     QMatrix4x4 model;
-    model.translate(center.x(), center.y());
+    model.translate(geometry.clipToScreen.dx(), geometry.clipToScreen.dy());
     model.rotate(transform.rotation, 0.0f, 0.0f, 1.0f);
     model.scale(fitted.width() * transform.scaleX, fitted.height() * transform.scaleY, 1.0f);
 
@@ -427,16 +435,9 @@ PreviewOverlayInfo PreviewWindow::renderFrameLayerGL(const QRect& targetRect,
         glDisable(GL_STENCIL_TEST);
     }
 
-    QTransform overlayTransform;
-    overlayTransform.translate(center.x(), center.y());
-    overlayTransform.rotate(transform.rotation);
-    overlayTransform.scale(transform.scaleX, transform.scaleY);
-    overlayInfo.bounds = overlayTransform.mapRect(QRectF(-fitted.width() / 2.0,
-                                                         -fitted.height() / 2.0,
-                                                         fitted.width(),
-                                                         fitted.height()));
-    overlayInfo.clipTransform = overlayTransform;
-    overlayInfo.clipPixelSize = QSizeF(fitted.width(), fitted.height());
+    overlayInfo.bounds = geometry.bounds;
+    overlayInfo.clipTransform = geometry.clipToScreen;
+    overlayInfo.clipPixelSize = geometry.clipPixelSize;
     return overlayInfo;
 }
 
@@ -499,85 +500,50 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             m_interaction.playing &&
             (usePlaybackPipeline || !m_cache ||
              m_cache->shouldAllowApproximatePreviewFrame(clip.id, localFrame, nowMs()));
-        QString selection = QStringLiteral("none");
-        const FrameHandle exactFrame = usePlaybackPipeline
-                                           ? m_playbackPipeline->getFrame(clip.id, localFrame)
-                                           : (m_cache ? m_cache->getCachedFrame(clip.id, localFrame) : FrameHandle());
-        FrameHandle frame;
-        if (usePlaybackPipeline) {
+        const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
+            editor::PreviewFrameSelectionRequest{
+                clip.id,
+                localFrame,
+                m_interaction.playing,
+                usePlaybackPipeline,
+                false,
+                allowApproximateFrame,
+                false,
+                editor::debugPlaybackCacheFallbackEnabled(),
+                editor::kPreviewMaxHeldPresentationFrameDelta,
+            },
+            m_cache.get(),
+            m_playbackPipeline.get(),
+            usePlaybackPipeline ? m_lastPresentedFrames.value(clip.id) : FrameHandle(),
+            [this, &clip, localFrame](const FrameHandle& candidate) {
+                return isFrameTooStaleForPlayback(clip, localFrame, candidate);
+            });
+        const FrameHandle exactFrame = frameSelection.exactFrame;
+        FrameHandle frame = frameSelection.frame;
+        QString selection = frameSelection.selection;
+        if (frameSelection.usedPlaybackPipeline) {
             ++usedPlaybackPipelineCount;
-            frame = m_playbackPipeline->getPresentationFrame(clip.id, localFrame);
-            if (!frame.isNull()) {
-                ++presentationCount;
-                selection = QStringLiteral("presentation");
-            }
-        } else {
-            frame = exactFrame;
-            if (frame.isNull() && m_cache && allowApproximateFrame) {
-                frame = m_interaction.playing ? m_cache->getLatestCachedFrame(clip.id, localFrame)
-                                  : m_cache->getBestCachedFrame(clip.id, localFrame);
-                if (frame.isNull() && editor::debugPlaybackCacheFallbackEnabled()) {
-                    frame = m_cache->getBestCachedFrame(clip.id, localFrame);
-                }
-            }
-            if (!frame.isNull()) {
-                if (!exactFrame.isNull() && frame == exactFrame) {
-                    ++exactCount;
-                    selection = QStringLiteral("exact");
-                } else {
-                    ++bestCount;
-                    selection = m_interaction.playing ? QStringLiteral("latest") : QStringLiteral("best");
-                }
-            }
         }
-        if (usePlaybackPipeline && frame.isNull()) {
-            frame = !exactFrame.isNull() ? exactFrame
-                                         : m_playbackPipeline->getBestFrame(clip.id, localFrame);
-            if (!frame.isNull()) {
-                if (!exactFrame.isNull() && frame == exactFrame) {
-                    ++exactCount;
-                    selection = QStringLiteral("exact");
-                } else {
-                    ++bestCount;
-                    selection = QStringLiteral("best");
-                }
-            }
+        if (frameSelection.selectedPresentation) {
+            ++presentationCount;
         }
-        if (usePlaybackPipeline && frame.isNull() && m_cache) {
-            const FrameHandle cacheExact = m_cache->getCachedFrame(clip.id, localFrame);
-            frame = !cacheExact.isNull()
-                        ? cacheExact
-                        : (m_interaction.playing
-                               ? m_cache->getLatestCachedFrame(clip.id, localFrame)
-                               : m_cache->getBestCachedFrame(clip.id, localFrame));
-            if (!frame.isNull()) {
-                if (!cacheExact.isNull() && frame == cacheExact) {
-                    ++exactCount;
-                    selection = QStringLiteral("exact");
-                } else {
-                    ++bestCount;
-                    selection = m_interaction.playing ? QStringLiteral("latest") : QStringLiteral("best");
-                }
-            }
+        if (frameSelection.selectedExact) {
+            ++exactCount;
+        }
+        if (frameSelection.selectedApproximate) {
+            ++bestCount;
+        }
+        if (frameSelection.selectedHeld) {
+            ++heldCount;
         }
         if (usePlaybackPipeline) {
-            if (!frame.isNull()) {
+            if (!frame.isNull() && !frameSelection.selectedHeld) {
                 m_lastPresentedFrames.insert(clip.id, frame);
-            } else {
-                const FrameHandle heldFrame = m_lastPresentedFrames.value(clip.id);
-                if (!heldFrame.isNull() &&
-                    qAbs(heldFrame.frameNumber() - localFrame) <= kMaxHeldPresentationFrameDelta) {
-                    frame = heldFrame;
-                    ++heldCount;
-                    selection = QStringLiteral("held");
-                } else {
-                    m_lastPresentedFrames.remove(clip.id);
-                }
+            } else if (frame.isNull()) {
+                m_lastPresentedFrames.remove(clip.id);
             }
         }
-        if (isFrameTooStaleForPlayback(clip, localFrame, frame)) {
-            frame = FrameHandle();
-            selection = QStringLiteral("stale");
+        if (frameSelection.rejectedStale) {
             ++staleRejectedCount;
             m_lastPresentedFrames.remove(clip.id);
         }
@@ -665,19 +631,10 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
         PreviewOverlayInfo info = renderFrameLayerGL(compositeRect, clip, frame);
         if (!info.bounds.isEmpty()) {
             const QRectF bounds = info.bounds;
-            constexpr qreal kHandleSize = 12.0;
-            info.rightHandle = QRectF(bounds.right() - kHandleSize,
-                                      bounds.center().y() - kHandleSize,
-                                      kHandleSize,
-                                      kHandleSize * 2.0);
-            info.bottomHandle = QRectF(bounds.center().x() - kHandleSize,
-                                       bounds.bottom() - kHandleSize,
-                                       kHandleSize * 2.0,
-                                       kHandleSize);
-            info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5,
-                                       bounds.bottom() - kHandleSize * 1.5,
-                                       kHandleSize * 1.5,
-                                       kHandleSize * 1.5);
+            const PreviewResizeHandles handles = PreviewViewTransform::resizeHandlesForBounds(bounds);
+            info.rightHandle = handles.right;
+            info.bottomHandle = handles.bottom;
+            info.cornerHandle = handles.corner;
             m_overlayModel.overlays.insert(clip.id, info);
             m_overlayModel.paintOrder.push_back(clip.id);
         }

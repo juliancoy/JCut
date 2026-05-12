@@ -21,6 +21,7 @@
 #include "frame_handle.h"
 #include "gl_frame_texture_shared.h"
 #include "editor_shared.h"
+#include "facestream_time_mapping.h"
 #include "timeline_widget.h"
 #include "async_decoder.h"
 #include "timeline_cache.h"
@@ -52,6 +53,7 @@ public:
     void setTimelineTracks(const QVector<TimelineTrack>& tracks);
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers);
     void setExportRanges(const QVector<ExportRangeSegment>& ranges);
+    void setUseProxyMedia(bool useProxyMedia) override;
     void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString());
     void beginBulkUpdate();
     void endBulkUpdate();
@@ -69,7 +71,7 @@ public:
     void setPreviewZoom(qreal zoom);
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
-    void setBoxstreamOverlaySource(const QString& source);
+    void setFacestreamOverlaySource(const QString& source);
     void setAudioSpeakerHoverModalEnabled(bool enabled);
     void setAudioWaveformVisible(bool visible);
     bool audioSpeakerHoverModalEnabled() const { return m_audioSpeakerHoverModalEnabled; }
@@ -80,6 +82,7 @@ public:
     AudioDynamicsSettings audioDynamicsSettings() const { return m_audioDynamics; }
     void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setTitleOverlayInteractionOnly(bool enabled);
+    void setFaceStreamAssignmentInteractionEnabled(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
         if (m_interaction.correctionDrawMode == enabled) {
             return;
@@ -94,6 +97,7 @@ public:
     bool correctionDrawMode() const { return m_interaction.correctionDrawMode; }
     bool transcriptOverlayInteractionEnabled() const { return m_interaction.transcriptOverlayInteractionEnabled; }
     bool titleOverlayInteractionOnly() const { return m_interaction.titleOverlayInteractionOnly; }
+    bool faceStreamAssignmentInteractionEnabled() const { return m_interaction.faceStreamAssignmentInteractionEnabled; }
     void setCorrectionDraftPoints(const QVector<QPointF>& points) { m_interaction.transient.correctionDraftPoints = points; update(); }
     qreal previewZoom() const { return m_interaction.previewZoom; }
     void resetPreviewPan() { m_interaction.previewPanOffset = QPointF(); }
@@ -107,6 +111,7 @@ public:
     bool preparePlaybackAdvanceSample(int64_t targetSample);
     bool warmPlaybackLookahead(int futureFrames, int timeoutMs);
     QImage latestPresentedFrameImageForClip(const QString& clipId) const;
+    QVector<PipelineStageSnapshot> livePipelineSnapshots() const override;
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
     bool selectedOverlayIsTranscript() const {
@@ -136,6 +141,7 @@ private:
     bool clipShowsTranscriptOverlay(const TimelineClip& clip) const;
     struct SpeakerTrackPoint {
         int64_t frame = 0;
+        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
         qreal x = 0.5;
         qreal y = 0.5;
         qreal boxSizeNorm = -1.0;
@@ -145,13 +151,20 @@ private:
         qreal boxRight = 0.0;
         qreal boxBottom = 0.0;
         QString speakerId;
+        QString streamId;
+        int trackId = -1;
+        int64_t sourceFrame = -1;
     };
     struct SpeakerTrackPointCacheEntry {
-        qint64 mtimeMs = -1;
+        qint64 transcriptMtimeMs = -1;
+        qint64 artifactMtimeMs = -1;
         QVector<SpeakerTrackPoint> points;
     };
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
+    bool dispatchFaceStreamBoxAtPosition(const QPointF& position);
+    bool updateHoveredFaceStreamBox(const QPointF& position);
+    void clearHoveredFaceStreamBox();
     void drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
     void drawSpeakerFramingTargetOverlay(QPainter* painter,
                                          const QList<TimelineClip>& activeClips,
@@ -267,7 +280,7 @@ private:
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
-    QString m_boxstreamOverlaySource = QStringLiteral("all");
+    QString m_facestreamOverlaySource = QStringLiteral("all");
         PreviewOverlayModel m_overlayModel;
     mutable QHash<QString, qreal> m_audioDisplayPeakCache;
     mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;

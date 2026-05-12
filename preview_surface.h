@@ -43,6 +43,17 @@ public:
         bool waveformPreviewPostProcessing = true;
     };
 
+    struct PipelineStageSnapshot {
+        QString label;
+        QString detail;
+        QImage image;
+        QString kind;
+        bool exact = false;
+        bool active = false;
+        QString state;
+        QJsonObject facts;
+    };
+
     virtual ~PreviewSurface() = default;
     virtual QWidget* asWidget() = 0;
     virtual const QWidget* asWidget() const = 0;
@@ -56,6 +67,7 @@ public:
     virtual void setTimelineTracks(const QVector<TimelineTrack>& tracks) = 0;
     virtual void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) = 0;
     virtual void setExportRanges(const QVector<ExportRangeSegment>& ranges) = 0;
+    virtual void setUseProxyMedia(bool useProxyMedia) = 0;
     virtual void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString()) = 0;
     virtual void beginBulkUpdate() = 0;
     virtual void endBulkUpdate() = 0;
@@ -73,7 +85,7 @@ public:
     virtual void setPreviewZoom(qreal zoom) = 0;
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;
-    virtual void setBoxstreamOverlaySource(const QString& source) = 0;
+    virtual void setFacestreamOverlaySource(const QString& source) = 0;
     virtual void setAudioSpeakerHoverModalEnabled(bool enabled) = 0;
     virtual void setAudioWaveformVisible(bool visible) = 0;
     virtual bool audioSpeakerHoverModalEnabled() const = 0;
@@ -84,10 +96,12 @@ public:
     virtual AudioDynamicsSettings audioDynamicsSettings() const = 0;
     virtual void setTranscriptOverlayInteractionEnabled(bool enabled) = 0;
     virtual void setTitleOverlayInteractionOnly(bool enabled) = 0;
+    virtual void setFaceStreamAssignmentInteractionEnabled(bool enabled) = 0;
     virtual void setCorrectionDrawMode(bool enabled) = 0;
     virtual bool correctionDrawMode() const = 0;
     virtual bool transcriptOverlayInteractionEnabled() const = 0;
     virtual bool titleOverlayInteractionOnly() const = 0;
+    virtual bool faceStreamAssignmentInteractionEnabled() const = 0;
     virtual void setCorrectionDraftPoints(const QVector<QPointF>& points) = 0;
     virtual qreal previewZoom() const = 0;
     virtual void resetPreviewPan() = 0;
@@ -101,6 +115,7 @@ public:
     virtual bool preparePlaybackAdvanceSample(int64_t targetSample) = 0;
     virtual bool warmPlaybackLookahead(int futureFrames, int timeoutMs) = 0;
     virtual QImage latestPresentedFrameImageForClip(const QString& clipId) const = 0;
+    virtual QVector<PipelineStageSnapshot> livePipelineSnapshots() const = 0;
     virtual QJsonObject profilingSnapshot() const = 0;
     virtual void resetProfilingStats() = 0;
     virtual bool selectedOverlayIsTranscript() const = 0;
@@ -112,4 +127,5 @@ public:
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;
+    std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested;
 };

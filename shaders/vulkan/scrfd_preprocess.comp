@@ -1,0 +1,59 @@
+#version 450
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(binding = 0) uniform sampler2D inputImage;
+layout(std430, binding = 1) buffer TensorBuffer {
+    float data[];
+} tensor;
+
+layout(push_constant) uniform PushConstants {
+    int inputWidth;
+    int inputHeight;
+    int resizedWidth;
+    int resizedHeight;
+    int padLeft;
+    int padTop;
+    int sourceIsSrgb;
+    int reserved;
+    float sourceX;
+    float sourceY;
+    float sourceWidth;
+    float sourceHeight;
+} pc;
+
+vec3 srgbToLinear(vec3 c)
+{
+    bvec3 cutoff = lessThanEqual(c, vec3(0.04045));
+    vec3 lower = c / 12.92;
+    vec3 higher = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(higher, lower, cutoff);
+}
+
+void main()
+{
+    uvec2 gid = gl_GlobalInvocationID.xy;
+    if (gid.x >= uint(pc.inputWidth) || gid.y >= uint(pc.inputHeight)) {
+        return;
+    }
+
+    uint pixel = gid.y * uint(pc.inputWidth) + gid.x;
+    uint plane = uint(pc.inputWidth) * uint(pc.inputHeight);
+
+    ivec2 resizedCoord = ivec2(gid) - ivec2(pc.padLeft, pc.padTop);
+    vec3 rgb = vec3(0.0);
+    if (resizedCoord.x >= 0 && resizedCoord.y >= 0 &&
+        resizedCoord.x < pc.resizedWidth && resizedCoord.y < pc.resizedHeight) {
+        vec2 localUv = (vec2(resizedCoord) + vec2(0.5)) / vec2(pc.resizedWidth, pc.resizedHeight);
+        vec2 uv = vec2(pc.sourceX, pc.sourceY) + localUv * vec2(pc.sourceWidth, pc.sourceHeight);
+        rgb = texture(inputImage, uv).rgb;
+        if (pc.sourceIsSrgb != 0) {
+            rgb = srgbToLinear(rgb);
+        }
+    }
+
+    // Match SCRFD preprocessing: RGB, border value 0, then (pixel - 127.5) / 128.
+    tensor.data[pixel] = (rgb.r * 255.0 - 127.5) / 128.0;
+    tensor.data[plane + pixel] = (rgb.g * 255.0 - 127.5) / 128.0;
+    tensor.data[(2u * plane) + pixel] = (rgb.b * 255.0 - 127.5) / 128.0;
+}

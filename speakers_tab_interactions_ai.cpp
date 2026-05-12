@@ -1,34 +1,50 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
 
+#include "facestream_assignment_services.h"
+#include "facestream_runtime.h"
 #include "facefind_window.h"
+#include "identity_resolution.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
+#include <QEventLoop>
+#include <QGridLayout>
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
-#include <QProcess>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QSaveFile>
 #include <QSet>
-#include <QStandardPaths>
+#include <QScopedPointer>
 #include <QTableWidget>
+#include <QTimer>
+#include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
 
+#include <algorithm>
+#include <functional>
+#include <random>
+#include <vector>
 #include <cmath>
 
 namespace {
@@ -104,6 +120,301 @@ bool confirmAiProposals(QWidget* parent,
     QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     return dialog.exec() == QDialog::Accepted;
 }
+
+bool confirmClusteringPreflight(QWidget* parent,
+                                const QVector<facefind::Candidate>& candidates,
+                                const QString& modelLabel,
+                                const QString& summary)
+{
+    if (candidates.isEmpty()) {
+        return false;
+    }
+
+    QVector<int> validIndexes;
+    validIndexes.reserve(candidates.size());
+    for (int i = 0; i < candidates.size(); ++i) {
+        const facefind::Candidate& candidate = candidates.at(i);
+        if (!candidate.cropPath.trimmed().isEmpty()) {
+            validIndexes.push_back(i);
+        }
+    }
+    if (validIndexes.isEmpty()) {
+        return false;
+    }
+
+    std::mt19937 rng(std::random_device{}());
+    constexpr int kSampleTileCount = 8;
+    QVector<int> currentSampleIndexes;
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral("FaceStream Clustering Preflight"));
+    dialog.setModal(true);
+    dialog.resize(760, 520);
+    auto* root = new QVBoxLayout(&dialog);
+    root->setContentsMargins(12, 12, 12, 12);
+    root->setSpacing(8);
+
+    auto* intro = new QLabel(
+        QStringLiteral("Review a random representative sample of cropped FaceStreams before identity clustering runs."),
+        &dialog);
+    intro->setWordWrap(true);
+    root->addWidget(intro);
+
+    auto* details = new QLabel(
+        QStringLiteral("%1\nModel: %2\nSample: %3 of %4 crop(s) (high-confidence biased)")
+            .arg(summary.trimmed().isEmpty() ? QStringLiteral("Ready to cluster FaceStream tracks.") : summary.trimmed())
+            .arg(modelLabel)
+            .arg(qMin(kSampleTileCount, validIndexes.size()))
+            .arg(validIndexes.size()),
+        &dialog);
+    details->setWordWrap(true);
+    details->setStyleSheet(QStringLiteral(
+        "QLabel { background: #142234; border: 1px solid #314459; border-radius: 8px; color: #d8e6f5; padding: 8px; }"));
+    root->addWidget(details);
+
+    auto* gridWidget = new QWidget(&dialog);
+    auto* grid = new QGridLayout(gridWidget);
+    grid->setContentsMargins(0, 0, 0, 0);
+    grid->setSpacing(8);
+
+    const auto rebuildSample = [&]() {
+        QVector<int> pool = validIndexes;
+        std::sort(pool.begin(), pool.end(), [&](int lhs, int rhs) {
+            return candidates.at(lhs).score > candidates.at(rhs).score;
+        });
+
+        const int preferredPoolSize = qMax(1, static_cast<int>(std::ceil(static_cast<double>(pool.size()) * 0.60)));
+        pool.resize(preferredPoolSize);
+        std::shuffle(pool.begin(), pool.end(), rng);
+        pool.resize(qMin(kSampleTileCount, pool.size()));
+        currentSampleIndexes = pool;
+    };
+
+    const auto redrawTiles = [&]() {
+        while (QLayoutItem* item = grid->takeAt(0)) {
+            if (QWidget* widget = item->widget()) {
+                widget->deleteLater();
+            }
+            delete item;
+        }
+
+        for (int sampleIndex = 0; sampleIndex < currentSampleIndexes.size(); ++sampleIndex) {
+            const facefind::Candidate& c = candidates.at(currentSampleIndexes.at(sampleIndex));
+            auto* tile = new QWidget(gridWidget);
+            auto* tileLayout = new QVBoxLayout(tile);
+            tileLayout->setContentsMargins(6, 6, 6, 6);
+            tileLayout->setSpacing(4);
+            tile->setStyleSheet(QStringLiteral(
+                "QWidget { background: #101c2b; border: 1px solid #2f4358; border-radius: 8px; }"));
+
+            auto* imageLabel = new QLabel(tile);
+            imageLabel->setMinimumSize(140, 120);
+            imageLabel->setAlignment(Qt::AlignCenter);
+            QPixmap crop(c.cropPath);
+            if (!crop.isNull()) {
+                imageLabel->setPixmap(crop.scaled(140, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            } else {
+                imageLabel->setText(QStringLiteral("missing crop"));
+            }
+            tileLayout->addWidget(imageLabel);
+
+            auto* caption = new QLabel(
+                QStringLiteral("T%1 | frame %2 | score %3")
+                    .arg(c.trackId)
+                    .arg(c.frame)
+                    .arg(c.score, 0, 'f', 2),
+                tile);
+            caption->setAlignment(Qt::AlignCenter);
+            caption->setStyleSheet(
+                QStringLiteral("QLabel { color: #b8c7d8; border: none; background: transparent; font-size: 11px; }"));
+            tileLayout->addWidget(caption);
+
+            grid->addWidget(tile, sampleIndex / 4, sampleIndex % 4);
+        }
+    };
+
+    rebuildSample();
+    redrawTiles();
+    root->addWidget(gridWidget, 1);
+
+    auto* actions = new QHBoxLayout;
+    auto* randomizeButton = new QPushButton(QStringLiteral("Randomize"), &dialog);
+    actions->addWidget(randomizeButton);
+    actions->addStretch(1);
+    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
+    auto* proceedButton = new QPushButton(QStringLiteral("Proceed With Clustering"), &dialog);
+    actions->addWidget(cancelButton);
+    actions->addWidget(proceedButton);
+    root->addLayout(actions);
+    QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    QObject::connect(proceedButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    QObject::connect(randomizeButton, &QPushButton::clicked, &dialog, [&]() {
+        rebuildSample();
+        redrawTiles();
+    });
+    return dialog.exec() == QDialog::Accepted;
+}
+
+bool downloadFileBlocking(QWidget* parent,
+                          QNetworkAccessManager& network,
+                          const QUrl& url,
+                          const QString& outputPath,
+                          const QByteArray& expectedSha256Hex,
+                          QString* error)
+{
+    Q_UNUSED(parent);
+    if (!url.isValid() || url.isEmpty()) {
+        if (error) *error = QStringLiteral("Invalid download URL: %1").arg(url.toString());
+        return false;
+    }
+    const QFileInfo outputInfo(outputPath);
+    if (!QDir().mkpath(outputInfo.absolutePath())) {
+        if (error) *error = QStringLiteral("Could not create model directory: %1").arg(outputInfo.absolutePath());
+        return false;
+    }
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+    QNetworkReply* reply = network.get(request);
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    QObject::connect(&timeout, &QTimer::timeout, reply, &QNetworkReply::abort);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(120000);
+    loop.exec();
+
+    const QScopedPointer<QNetworkReply, QScopedPointerDeleteLater> replyGuard(reply);
+    if (!timeout.isActive()) {
+        if (error) *error = QStringLiteral("Timed out downloading %1").arg(url.toString());
+        return false;
+    }
+    timeout.stop();
+    if (reply->error() != QNetworkReply::NoError) {
+        if (error) *error = QStringLiteral("Failed to download %1: %2").arg(url.toString(), reply->errorString());
+        return false;
+    }
+    const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (httpStatus >= 400) {
+        if (error) *error = QStringLiteral("Failed to download %1: HTTP %2").arg(url.toString()).arg(httpStatus);
+        return false;
+    }
+    const QByteArray payload = reply->readAll();
+    if (payload.isEmpty()) {
+        if (error) *error = QStringLiteral("Downloaded model file is empty: %1").arg(url.toString());
+        return false;
+    }
+    const QByteArray actualSha256 =
+        QCryptographicHash::hash(payload, QCryptographicHash::Sha256).toHex();
+    if (!expectedSha256Hex.isEmpty() && actualSha256 != expectedSha256Hex) {
+        if (error) {
+            *error = QStringLiteral("Downloaded model checksum mismatch for %1\nExpected: %2\nActual: %3")
+                         .arg(url.toString(),
+                              QString::fromLatin1(expectedSha256Hex),
+                              QString::fromLatin1(actualSha256));
+        }
+        return false;
+    }
+
+    QSaveFile output(outputPath);
+    if (!output.open(QIODevice::WriteOnly)) {
+        if (error) *error = QStringLiteral("Could not write model file %1: %2").arg(outputPath, output.errorString());
+        return false;
+    }
+    if (output.write(payload) != payload.size()) {
+        if (error) *error = QStringLiteral("Short write while saving model file: %1").arg(outputPath);
+        return false;
+    }
+    if (!output.commit()) {
+        if (error) *error = QStringLiteral("Could not commit model file %1: %2").arg(outputPath, output.errorString());
+        return false;
+    }
+    return true;
+}
+
+bool downloadArcFaceModelFiles(QWidget* parent,
+                               const QString& paramPath,
+                               const QString& binPath,
+                               QString* error)
+{
+    QProgressDialog progress(parent);
+    progress.setWindowTitle(QStringLiteral("Download ArcFace NCNN Model"));
+    progress.setLabelText(QStringLiteral("Downloading ArcFace MobileFaceNet NCNN model..."));
+    progress.setCancelButton(nullptr);
+    progress.setRange(0, 2);
+    progress.setValue(0);
+    progress.setWindowModality(Qt::ApplicationModal);
+    progress.show();
+    QApplication::processEvents();
+
+    QNetworkAccessManager network;
+    static constexpr const char* kSourceRevision = "43631161ecef7567b9871bc711b9fb848629e9bc";
+    static constexpr const char* kParamSha256 = "dfea20c1a5c2adef2126296f42771ecf33bfa9a50cbe0f7ca8864c7bd1a4bbeb";
+    static constexpr const char* kBinSha256 = "9638dcfee63785b87a5ab0b0ed9f9dffe93e4b3718e5ea1b537dd5243a661b87";
+    const QString sourceBase = QStringLiteral(
+        "https://raw.githubusercontent.com/liguiyuan/mobilefacenet-ncnn/%1/models").arg(QString::fromLatin1(kSourceRevision));
+    const QUrl paramUrl(sourceBase + QStringLiteral("/mobilefacenet.param"));
+    const QUrl binUrl(sourceBase + QStringLiteral("/mobilefacenet.bin"));
+
+    progress.setLabelText(QStringLiteral("Downloading arcface_mobilefacenet.param..."));
+    if (!downloadFileBlocking(parent, network, paramUrl, paramPath, QByteArray(kParamSha256), error)) {
+        return false;
+    }
+    progress.setValue(1);
+    QApplication::processEvents();
+
+    progress.setLabelText(QStringLiteral("Downloading arcface_mobilefacenet.bin..."));
+    if (!downloadFileBlocking(parent, network, binUrl, binPath, QByteArray(kBinSha256), error)) {
+        return false;
+    }
+    progress.setValue(2);
+    QApplication::processEvents();
+    return true;
+}
+
+void showArcFaceModelRequiredDialog(QWidget* parent,
+                                    int trackCount,
+                                    const QString& reason,
+                                    const QString& paramPath,
+                                    const QString& binPath)
+{
+    QMessageBox dialog(parent);
+    dialog.setIcon(QMessageBox::Warning);
+    dialog.setWindowTitle(QStringLiteral("Assign FaceStreams"));
+    dialog.setText(QStringLiteral("Identity clustering requires ArcFace NCNN before reviewing this many FaceStream tracks."));
+    QString details = QStringLiteral("Tracks: %1\n\nExpected files:\n%2\n%3")
+        .arg(trackCount)
+        .arg(paramPath, binPath);
+    if (!reason.trimmed().isEmpty()) {
+        details += QStringLiteral("\n\nReason:\n%1").arg(reason.trimmed());
+    }
+    dialog.setInformativeText(
+        QStringLiteral("Download the model files now, then run Assign FaceStreams again.\n\n"
+                       "Source: liguiyuan/mobilefacenet-ncnn at revision 43631161ecef7567b9871bc711b9fb848629e9bc."));
+    dialog.setDetailedText(details);
+    auto* downloadButton = dialog.addButton(QStringLiteral("Download Model"), QMessageBox::AcceptRole);
+    dialog.addButton(QStringLiteral("Cancel"), QMessageBox::RejectRole);
+    dialog.setDefaultButton(qobject_cast<QPushButton*>(downloadButton));
+    dialog.exec();
+
+    if (dialog.clickedButton() != downloadButton) {
+        return;
+    }
+
+    QString error;
+    if (downloadArcFaceModelFiles(parent, paramPath, binPath, &error)) {
+        QMessageBox::information(parent,
+                                 QStringLiteral("Assign FaceStreams"),
+                                 QStringLiteral("ArcFace NCNN model files were downloaded.\n\nRun Assign FaceStreams again."));
+        return;
+    }
+    QMessageBox::warning(parent,
+                         QStringLiteral("Assign FaceStreams"),
+                         QStringLiteral("Failed to download ArcFace NCNN model files.\n\n%1").arg(error));
+}
+
 } // namespace
 
 void SpeakersTab::onSpeakerEnableTrackingClicked()
@@ -188,26 +499,6 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         return;
     }
 
-    const QString pythonPath =
-        QStandardPaths::findExecutable(QStringLiteral("python3")).isEmpty()
-            ? QStandardPaths::findExecutable(QStringLiteral("python"))
-            : QStandardPaths::findExecutable(QStringLiteral("python3"));
-    if (pythonPath.isEmpty()) {
-        QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("Python was not found in PATH (python3/python)."));
-        return;
-    }
-
-    const QString scriptPath =
-        QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("speaker_face_candidates.py"));
-    if (!QFileInfo::exists(scriptPath)) {
-        QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("speaker_face_candidates.py was not found in the project root."));
-        return;
-    }
-
     auto resolveMediaPath = [&](const TimelineClip& currentClip) {
         QString candidate = interactivePreviewMediaPathForClip(currentClip);
         const QFileInfo candidateInfo(candidate);
@@ -236,7 +527,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     const QString mediaPath = resolveMediaPath(*clip);
     if (mediaPath.isEmpty()) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
+                             QStringLiteral("Assign FaceStreams"),
                              QStringLiteral("No playable media was found for this clip."));
         return;
     }
@@ -354,39 +645,6 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             file.close();
         }
     };
-    const auto writeStageErrorArtefacts = [&](DebugRun& run,
-                                              const QString& stage,
-                                              const QString& message,
-                                              const QString& details,
-                                              const QString& processOutput) {
-        const QString stageSlug = stage;
-        const QString jsonPath = QDir(run.runDir).absoluteFilePath(
-            QStringLiteral("%1_error_%2.json").arg(run.videoStem, stageSlug));
-        const QString txtPath = QDir(run.runDir).absoluteFilePath(
-            QStringLiteral("%1_error_%2.txt").arg(run.videoStem, stageSlug));
-        QJsonObject root;
-        root[QStringLiteral("run_id")] = run.runId;
-        root[QStringLiteral("stage")] = stage;
-        root[QStringLiteral("error_code")] = QStringLiteral("stage_failure");
-        root[QStringLiteral("message")] = message;
-        root[QStringLiteral("details")] = details;
-        root[QStringLiteral("stack_or_process_output")] = processOutput;
-        root[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        QFile jf(jsonPath);
-        if (jf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            jf.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-            jf.close();
-            addArtefact(run, jsonPath);
-        }
-        QFile tf(txtPath);
-        if (tf.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            tf.write(QStringLiteral("%1\n%2\n\n%3")
-                         .arg(message, details, processOutput)
-                         .toUtf8());
-            tf.close();
-            addArtefact(run, txtPath);
-        }
-    };
     const auto recordOverwriteDecision = [&](const DebugRun& run,
                                              const QString& stage,
                                              const QStringList& files,
@@ -493,355 +751,156 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         return true;
     };
 
-    const int64_t startFrame = qMax<int64_t>(0, clip->sourceInFrame);
-    const int64_t endFrame = qMax<int64_t>(startFrame, clip->sourceInFrame + qMax<int64_t>(0, clip->durationFrames - 1));
-    const double sourceFps = clip->sourceFps > 0.0 ? clip->sourceFps : 30.0;
-    const int stepFrames = 45;
-    const int maxCandidates = 24;
-    const QString debugRootDir = QFileInfo(debugRun.runDir).dir().absolutePath();
-    const QString cacheDir = QDir(debugRootDir).absoluteFilePath(QStringLiteral("cache"));
-    const QString cacheCropsDir = QDir(cacheDir).absoluteFilePath(QStringLiteral("face_crops"));
-    const QString cacheJsonPath = QDir(cacheDir).absoluteFilePath(QStringLiteral("face_candidate_index.json"));
-    QDir().mkpath(cacheCropsDir);
-
-    const QFileInfo mediaInfo(mediaPath);
-    const qint64 mediaLastModifiedMs = mediaInfo.lastModified().toMSecsSinceEpoch();
-    const qint64 mediaSizeBytes = mediaInfo.exists() ? mediaInfo.size() : -1;
-
-    QString cropsDir;
-    QString outputJsonPath;
-    QString requestPath;
-    QString logPath;
+    const int stepFrames = 0;
+    int maxCandidates = 0;
     QVector<facefind::Candidate> candidates;
-    bool loadedCandidatesFromCache = false;
-
-    const auto tryLoadCachedCandidates = [&]() -> bool {
-        QFile cacheFile(cacheJsonPath);
-        if (!cacheFile.exists() || !cacheFile.open(QIODevice::ReadOnly)) {
-            return false;
+    editor::TranscriptEngine transcriptEngine;
+    QJsonObject artifactRoot;
+    QJsonArray streams;
+    QString importedArtifactDir;
+    QString facestreamPath;
+    if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+        const QJsonObject continuityRoot = byClip.value(clip->id.trimmed()).toObject();
+        streams = jcut::facestream::continuityStreamsForRoot(
+            continuityRoot,
+            m_loadedTranscriptDoc.object());
+        importedArtifactDir = continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString();
+        facestreamPath = continuityRoot.value(QStringLiteral("facestream_part")).toString();
+        if (facestreamPath.isEmpty()) {
+            facestreamPath = continuityRoot.value(QStringLiteral("facestream_bin")).toString();
         }
-        QJsonParseError parseError;
-        const QJsonDocument cacheDoc = QJsonDocument::fromJson(cacheFile.readAll(), &parseError);
-        cacheFile.close();
-        if (parseError.error != QJsonParseError::NoError || !cacheDoc.isObject()) {
-            return false;
-        }
-        const QJsonObject root = cacheDoc.object();
-        const QJsonObject scan = root.value(QStringLiteral("scan")).toObject();
-        if (scan.value(QStringLiteral("media_path")).toString() != mediaPath ||
-            scan.value(QStringLiteral("media_last_modified_ms")).toVariant().toLongLong() != mediaLastModifiedMs ||
-            scan.value(QStringLiteral("media_size_bytes")).toVariant().toLongLong() != mediaSizeBytes ||
-            scan.value(QStringLiteral("start_frame")).toVariant().toLongLong() != startFrame ||
-            scan.value(QStringLiteral("end_frame")).toVariant().toLongLong() != endFrame ||
-            scan.value(QStringLiteral("step")).toInt() != stepFrames ||
-            scan.value(QStringLiteral("max_candidates")).toInt() != maxCandidates) {
-            return false;
-        }
-        const QJsonArray items = root.value(QStringLiteral("candidates")).toArray();
-        if (items.isEmpty()) {
-            return false;
-        }
-        QVector<facefind::Candidate> loaded;
-        loaded.reserve(items.size());
-        for (const QJsonValue& value : items) {
-            const QJsonObject obj = value.toObject();
-            facefind::Candidate candidate;
-            candidate.frame = qMax<int64_t>(0, obj.value(QStringLiteral("frame")).toVariant().toLongLong());
-            candidate.x = qBound<qreal>(0.0, obj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-            candidate.y = qBound<qreal>(0.0, obj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-            candidate.box = qBound<qreal>(0.01, obj.value(QStringLiteral("box")).toDouble(0.20), 1.0);
-            candidate.score = qBound<qreal>(0.0, obj.value(QStringLiteral("score")).toDouble(0.0), 1.0);
-            candidate.trackId = obj.value(QStringLiteral("track_id")).toInt(-1);
-            candidate.cropPath = obj.value(QStringLiteral("crop_path")).toString().trimmed();
-            if (candidate.cropPath.isEmpty() || !QFileInfo::exists(candidate.cropPath)) {
-                return false;
-            }
-            loaded.push_back(candidate);
-        }
-        candidates = loaded;
-        return !candidates.isEmpty();
-    };
-
-    const auto writeCandidateCache = [&](const QVector<facefind::Candidate>& values) {
-        if (values.isEmpty()) {
-            return;
-        }
-        QJsonObject scan;
-        scan[QStringLiteral("media_path")] = mediaPath;
-        scan[QStringLiteral("media_last_modified_ms")] = mediaLastModifiedMs;
-        scan[QStringLiteral("media_size_bytes")] = mediaSizeBytes;
-        scan[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
-        scan[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
-        scan[QStringLiteral("step")] = stepFrames;
-        scan[QStringLiteral("max_candidates")] = maxCandidates;
-        scan[QStringLiteral("source_fps")] = sourceFps;
-
-        QJsonArray rows;
-        for (const facefind::Candidate& c : values) {
-            QJsonObject row;
-            row[QStringLiteral("frame")] = static_cast<qint64>(c.frame);
-            row[QStringLiteral("x")] = c.x;
-            row[QStringLiteral("y")] = c.y;
-            row[QStringLiteral("box")] = c.box;
-            row[QStringLiteral("score")] = c.score;
-            row[QStringLiteral("track_id")] = c.trackId;
-            row[QStringLiteral("crop_path")] = c.cropPath;
-            rows.push_back(row);
-        }
-        QJsonObject root;
-        root[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-        root[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        root[QStringLiteral("scan")] = scan;
-        root[QStringLiteral("candidates")] = rows;
-        QFile cacheFile(cacheJsonPath);
-        if (cacheFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            cacheFile.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-            cacheFile.close();
-        }
-    };
-
-    loadedCandidatesFromCache = tryLoadCachedCandidates();
-    if (loadedCandidatesFromCache) {
-        addArtefact(debugRun, cacheJsonPath);
-        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("ok"),
-                       QStringLiteral("Loaded face candidates from cache."));
-        persistIndex(debugRun);
+    }
+    if (streams.isEmpty()) {
+        const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
+        const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_facestreams")).toObject();
+        streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    }
+    if (streams.isEmpty()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Assign FaceStreams"),
+                                 QStringLiteral("No generated FaceStream tracks were found for this clip. Generate FaceStream first."));
+        return;
+    }
+    const int maxManualSingletonReviewRows = 200;
+    const QString kStageCrop = QStringLiteral("stage_3_facestream_crop");
+    const QString kStageCropReview = QStringLiteral("stage_4_facestream_crop");
+    const QString kStageClustering = QStringLiteral("stage_5_identity_clustering");
+    const QString kStageAssignment = QStringLiteral("stage_6_assignment");
+    const QString kStatusSkipped = QStringLiteral("skipped");
+    const QString kMsgCanceledCropExtraction = QStringLiteral("User canceled FaceStream crop extraction.");
+    const QString kMsgCanceledClusteringPreflight = QStringLiteral("User canceled clustering preflight.");
+    const QString kMsgCanceledAssignmentDialog = QStringLiteral("User canceled assignment dialog.");
+    const QString arcfaceParamPath =
+        jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.param"));
+    const QString arcfaceBinPath =
+        jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.bin"));
+    if (streams.size() > maxManualSingletonReviewRows &&
+        (!QFileInfo::exists(arcfaceParamPath) || !QFileInfo::exists(arcfaceBinPath))) {
+        showArcFaceModelRequiredDialog(nullptr,
+                                       streams.size(),
+                                       QString(),
+                                       arcfaceParamPath,
+                                       arcfaceBinPath);
+        return;
     }
 
-    if (!loadedCandidatesFromCache) {
-    while (true) {
-        cropsDir = QDir(debugRun.runDir).absoluteFilePath(
-            QStringLiteral("%1_face_crops").arg(debugRun.videoStem));
-        outputJsonPath = QDir(debugRun.runDir).absoluteFilePath(
-            QStringLiteral("%1_face_detection_output.json").arg(debugRun.videoStem));
-        requestPath = QDir(debugRun.runDir).absoluteFilePath(
-            QStringLiteral("%1_face_detection_request.json").arg(debugRun.videoStem));
-        logPath = QDir(debugRun.runDir).absoluteFilePath(
-            QStringLiteral("%1_face_detection_log.txt").arg(debugRun.videoStem));
-
-        bool createNewRun = false;
-        if (!ensureWritableArtefacts(
-                QStringLiteral("stage_3_face_detection"),
-                QStringList{requestPath, outputJsonPath, logPath, cropsDir},
-                true,
-                &createNewRun)) {
-            if (createNewRun) {
-                debugRun = makeDebugRun(QString());
-                continue;
-            }
-            setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("skipped"),
+    QString cropsDir = QDir(debugRun.runDir).absoluteFilePath(
+        QStringLiteral("%1_facestream_track_crops").arg(debugRun.videoStem));
+    QString outputJsonPath = QDir(debugRun.runDir).absoluteFilePath(
+        QStringLiteral("%1_facestream_track_candidates.json").arg(debugRun.videoStem));
+    bool createNewRun = false;
+    if (!ensureWritableArtefacts(
+            kStageCrop,
+            QStringList{outputJsonPath, cropsDir},
+            true,
+            &createNewRun)) {
+        if (createNewRun) {
+            debugRun = makeDebugRun(QString());
+            cropsDir = QDir(debugRun.runDir).absoluteFilePath(
+                QStringLiteral("%1_facestream_track_crops").arg(debugRun.videoStem));
+            outputJsonPath = QDir(debugRun.runDir).absoluteFilePath(
+                QStringLiteral("%1_facestream_track_candidates.json").arg(debugRun.videoStem));
+        } else {
+            setStageStatus(debugRun, kStageCrop, kStatusSkipped,
                            QStringLiteral("Canceled due to overwrite prompt."));
             persistIndex(debugRun);
             return;
         }
-        break;
     }
-
     QDir().mkpath(cropsDir);
-    {
-        QJsonObject request;
-        request[QStringLiteral("video")] = mediaPath;
-        request[QStringLiteral("start_frame")] = static_cast<qint64>(startFrame);
-        request[QStringLiteral("end_frame")] = static_cast<qint64>(endFrame);
-        request[QStringLiteral("step")] = stepFrames;
-        request[QStringLiteral("source_fps")] = sourceFps;
-        request[QStringLiteral("max_candidates")] = maxCandidates;
-        request[QStringLiteral("run_id")] = debugRun.runId;
-        QFile f(requestPath);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            f.write(QJsonDocument(request).toJson(QJsonDocument::Indented));
-            f.close();
-        }
-    }
-
-    QStringList args;
-    args << scriptPath
-         << QStringLiteral("--video") << mediaPath
-         << QStringLiteral("--output-json") << outputJsonPath
-         << QStringLiteral("--output-dir") << cropsDir
-         << QStringLiteral("--crop-prefix") << QStringLiteral("%1_face_crop").arg(debugRun.videoStem)
-         << QStringLiteral("--start-frame") << QString::number(startFrame)
-         << QStringLiteral("--end-frame") << QString::number(endFrame)
-         << QStringLiteral("--step") << QString::number(stepFrames)
-         << QStringLiteral("--source-fps") << QString::number(sourceFps, 'f', 6)
-         << QStringLiteral("--max-candidates") << QString::number(maxCandidates);
-
-    QProcess process;
-    process.setProcessChannelMode(QProcess::MergedChannels);
-    process.start(pythonPath, args);
-    if (!process.waitForStarted(5000)) {
-        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
-                       QStringLiteral("Failed to start face candidate detector process."));
-        writeStageErrorArtefacts(
-            debugRun,
-            QStringLiteral("stage_3_face_detection"),
-            QStringLiteral("Failed to start face candidate detector process."),
-            QStringLiteral("QProcess failed to start within timeout."),
-            QString());
-        persistIndex(debugRun);
-        QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("Failed to start face candidate detector."));
-        return;
-    }
 
     QProgressDialog progressDialog(
-        QStringLiteral("Scanning frames for potential faces..."),
+        QStringLiteral("Preparing FaceStream assignment..."),
         QStringLiteral("Cancel"),
         0,
-        0,
+        qMax(1, streams.size() + 3),
         nullptr);
-    progressDialog.setWindowTitle(QStringLiteral("Pre-crop Faces"));
+    progressDialog.setWindowTitle(QStringLiteral("Assign FaceStreams"));
     progressDialog.setWindowModality(Qt::ApplicationModal);
     progressDialog.setMinimumDuration(0);
     progressDialog.setAutoClose(false);
     progressDialog.setAutoReset(false);
+    progressDialog.setValue(0);
     progressDialog.show();
+    QApplication::processEvents(QEventLoop::AllEvents, 50);
+    bool assignmentCanceled = false;
+    auto updateProgress = [&](int value, const QString& message) {
+        progressDialog.setLabelText(message);
+        progressDialog.setValue(qBound(0, value, progressDialog.maximum()));
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+        assignmentCanceled = assignmentCanceled || progressDialog.wasCanceled();
+        return !assignmentCanceled;
+    };
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
 
-    QString processLog;
-    bool canceled = false;
-    bool finished = false;
-    while (!finished) {
-        finished = process.waitForFinished(120);
-        const QString liveOutput = QString::fromUtf8(process.readAllStandardOutput());
-        if (!liveOutput.isEmpty()) {
-            processLog += liveOutput;
-            const QStringList lines = liveOutput.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-            if (!lines.isEmpty()) {
-                progressDialog.setLabelText(
-                    QStringLiteral("Scanning frames for potential faces...\n%1")
-                        .arg(lines.constLast().left(140)));
-            }
+    const auto cropResult = jcut::facestream_assignment::extractRepresentativeCrops(
+        jcut::facestream_assignment::CropExtractionRequest{
+            *clip, renderSyncMarkers, mediaPath, cropsDir, debugRun.videoStem, streams},
+        updateProgress);
+    if (!cropResult.ok) {
+        progressDialog.close();
+        if (cropResult.canceled) {
+            setStageStatus(debugRun, kStageCrop, kStatusSkipped, kMsgCanceledCropExtraction);
+            persistIndex(debugRun);
+            return;
         }
-        QApplication::processEvents();
-        if (progressDialog.wasCanceled()) {
-            canceled = true;
-            process.kill();
-            process.waitForFinished(3000);
-            break;
-        }
-    }
-    progressDialog.close();
-
-    const QString tailOutput = QString::fromUtf8(process.readAllStandardOutput());
-    if (!tailOutput.isEmpty()) {
-        processLog += tailOutput;
-    }
-    QFile logFile(logPath);
-    if (logFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        logFile.write(processLog.toUtf8());
-        logFile.close();
-    }
-
-    if (canceled) {
-        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("skipped"),
-                       QStringLiteral("User canceled face candidate scan."));
-        addArtefact(debugRun, requestPath);
-        addArtefact(debugRun, logPath);
-        persistIndex(debugRun);
-        QMessageBox::information(nullptr,
-                                 QStringLiteral("Pre-crop Faces"),
-                                 QStringLiteral("Face candidate scan canceled."));
+        QMessageBox::warning(nullptr, QStringLiteral("Assign FaceStreams"), cropResult.errorMessage);
         return;
     }
-
-    const QString processOutput = processLog.trimmed();
-    if (!finished || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
-                       QStringLiteral("Face candidate detection script failed."));
-        writeStageErrorArtefacts(
-            debugRun,
-            QStringLiteral("stage_3_face_detection"),
-            QStringLiteral("Face candidate detection script failed."),
-            QStringLiteral("speaker_face_candidates.py returned non-zero exit status."),
-            processOutput);
-        addArtefact(debugRun, requestPath);
-        addArtefact(debugRun, logPath);
-        persistIndex(debugRun);
-        QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("Face candidate detection failed.\n\n%1")
-                                 .arg(processOutput.isEmpty() ? QStringLiteral("(no output)") : processOutput));
-        return;
-    }
-
-    QFile outputFile(outputJsonPath);
-    if (!outputFile.open(QIODevice::ReadOnly)) {
-        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
-                       QStringLiteral("Detector did not produce output JSON."));
-        addArtefact(debugRun, requestPath);
-        addArtefact(debugRun, logPath);
-        persistIndex(debugRun);
-        QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("Detector did not produce candidate output JSON."));
-        return;
-    }
-    QJsonParseError parseError;
-    const QJsonDocument outputDoc = QJsonDocument::fromJson(outputFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !outputDoc.isObject()) {
-        setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("error"),
-                       QStringLiteral("Invalid face candidate output JSON."));
-        writeStageErrorArtefacts(
-            debugRun,
-            QStringLiteral("stage_3_face_detection"),
-            QStringLiteral("Invalid face candidate output JSON."),
-            QStringLiteral("Detector output JSON was missing or malformed."),
-            QString());
-        addArtefact(debugRun, requestPath);
+    QJsonArray candidateRows = cropResult.candidateRows;
+    candidates = cropResult.candidates;
+    maxCandidates = candidates.size();
+    QJsonObject candidateRoot;
+    candidateRoot[QStringLiteral("schema_version")] = QStringLiteral("1.0");
+    candidateRoot[QStringLiteral("source")] = QStringLiteral("generated_facestream_tracks");
+    candidateRoot[QStringLiteral("media_path")] = mediaPath;
+    candidateRoot[QStringLiteral("imported_artifact_dir")] = importedArtifactDir;
+    candidateRoot[QStringLiteral("facestream_part")] = facestreamPath;
+    candidateRoot[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    candidateRoot[QStringLiteral("candidates")] = candidateRows;
+    QFile candidateFile(outputJsonPath);
+    if (candidateFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        candidateFile.write(QJsonDocument(candidateRoot).toJson(QJsonDocument::Indented));
+        candidateFile.close();
         addArtefact(debugRun, outputJsonPath);
-        addArtefact(debugRun, logPath);
-        persistIndex(debugRun);
-        QMessageBox::warning(nullptr,
-                             QStringLiteral("Pre-crop Faces"),
-                             QStringLiteral("Invalid candidate output JSON."));
-        return;
     }
-    addArtefact(debugRun, requestPath);
-    addArtefact(debugRun, outputJsonPath);
-    addArtefact(debugRun, logPath);
     addArtefact(debugRun, cropsDir);
-    setStageStatus(debugRun, QStringLiteral("stage_3_face_detection"), QStringLiteral("ok"),
-                   QStringLiteral("Face candidate detection completed."));
+    setStageStatus(debugRun, kStageCrop, QStringLiteral("ok"),
+                   QStringLiteral("Extracted one representative crop for each generated FaceStream track."));
     persistIndex(debugRun);
-    const QJsonArray candidateArray = outputDoc.object().value(QStringLiteral("candidates")).toArray();
-    candidates.reserve(candidateArray.size());
-    for (const QJsonValue& value : candidateArray) {
-        const QJsonObject obj = value.toObject();
-        facefind::Candidate candidate;
-        candidate.frame = qMax<int64_t>(0, obj.value(QStringLiteral("frame")).toVariant().toLongLong());
-        candidate.x = qBound<qreal>(0.0, obj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-        candidate.y = qBound<qreal>(0.0, obj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-        candidate.box = qBound<qreal>(0.01, obj.value(QStringLiteral("box")).toDouble(0.20), 1.0);
-        candidate.score = qBound<qreal>(0.0, obj.value(QStringLiteral("score")).toDouble(0.0), 1.0);
-        candidate.trackId = obj.value(QStringLiteral("track_id")).toInt(-1);
-        candidate.cropPath = obj.value(QStringLiteral("crop_path")).toString();
-        if (!candidate.cropPath.trimmed().isEmpty()) {
-            QFileInfo cropInfo(candidate.cropPath);
-            candidate.cropPath = cropInfo.isRelative()
-                ? QDir(cropsDir).absoluteFilePath(candidate.cropPath)
-                : cropInfo.absoluteFilePath();
-        }
-        if (!candidate.cropPath.isEmpty()) {
-            const QString cachedCropPath =
-                QDir(cacheCropsDir).absoluteFilePath(
-                    QStringLiteral("%1_%2.png").arg(debugRun.videoStem).arg(candidates.size(), 3, 10, QLatin1Char('0')));
-            if (!QFileInfo::exists(cachedCropPath)) {
-                QFile::copy(candidate.cropPath, cachedCropPath);
-            }
-            candidate.cropPath = cachedCropPath;
-        }
-        candidates.push_back(candidate);
-    }
-    writeCandidateCache(candidates);
-    }
     if (candidates.isEmpty()) {
-        setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("warn"),
+        progressDialog.close();
+        setStageStatus(debugRun, kStageCropReview, QStringLiteral("warn"),
                        QStringLiteral("No candidates produced."));
         persistIndex(debugRun);
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Pre-crop Faces"),
-                                 QStringLiteral("No face candidates were found on sampled frames."));
+                                 QStringLiteral("Assign FaceStreams"),
+                                 QStringLiteral("No usable FaceStream comparison crops could be extracted."));
         return;
     }
 
@@ -872,13 +931,13 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     });
     if (speakerIds.isEmpty()) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Pre-crop Faces"),
-                                 QStringLiteral("No transcript speaker IDs were available to assign candidates."));
+                                 QStringLiteral("Assign FaceStreams"),
+                                 QStringLiteral("No transcript speaker IDs were available to assign FaceStream tracks."));
         return;
     }
 
-    auto suggestedSpeakerForFrame = [&](int64_t frame30) -> QString {
-        const double timeSeconds = static_cast<double>(qMax<int64_t>(0, frame30)) / 30.0;
+    auto suggestedSpeakerForFrame = [&](int64_t timelineFrame) -> QString {
+        const double timeSeconds = static_cast<double>(timelineFrameToSeconds(timelineFrame));
         const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
         QString nearestSpeaker;
         double nearestDistance = std::numeric_limits<double>::max();
@@ -937,26 +996,6 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         }
     }
 
-    QStringList autoSuggestedSpeakerIds;
-    autoSuggestedSpeakerIds.reserve(candidates.size());
-    for (const facefind::Candidate& candidate : std::as_const(candidates)) {
-        autoSuggestedSpeakerIds.push_back(suggestedSpeakerForFrame(candidate.frame));
-    }
-
-    QStringList suggestedSpeakerIds;
-    suggestedSpeakerIds.reserve(candidates.size());
-    QStringList defaultSourceLabels;
-    defaultSourceLabels.reserve(candidates.size());
-    for (const facefind::Candidate& candidate : std::as_const(candidates)) {
-        const QString persistedIdentity = persistedIdentityByTrackId.value(candidate.trackId).trimmed();
-        if (!persistedIdentity.isEmpty()) {
-            suggestedSpeakerIds.push_back(persistedIdentity);
-            defaultSourceLabels.push_back(QStringLiteral("Persisted (Human)"));
-            continue;
-        }
-        suggestedSpeakerIds.push_back(suggestedSpeakerForFrame(candidate.frame));
-        defaultSourceLabels.push_back(QStringLiteral("Auto (Timing)"));
-    }
     auto persistSpeakerFlowSnapshot = [&](const QJsonObject& machinePayload,
                                           const QJsonObject& humanPayload,
                                           const QJsonObject& resolvedPayload) {
@@ -987,10 +1026,11 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         clipsRoot[clipFlowId] = clipRoot;
         speakerFlow[QStringLiteral("clips")] = clipsRoot;
         transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
-        m_loadedTranscriptDoc.setObject(transcriptRoot);
-
-        editor::TranscriptEngine engine;
-        engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+        updateLoadedTranscriptDocument([&](QJsonObject& root) {
+            root = transcriptRoot;
+            return true;
+        });
+        saveLoadedTranscriptDocument();
     };
 
     {
@@ -1012,22 +1052,182 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             QJsonObject s;
             s[QStringLiteral("candidate_index")] = i;
             s[QStringLiteral("track_id")] = c.trackId;
-            s[QStringLiteral("suggested_identity_id")] =
-                (i < suggestedSpeakerIds.size() ? suggestedSpeakerIds.at(i) : QString());
+            s[QStringLiteral("suggested_identity_id")] = suggestedSpeakerForFrame(c.frame);
             s[QStringLiteral("source")] = QStringLiteral("timing_nearest");
             machineSuggestions.push_back(s);
         }
         QJsonObject machinePayload;
         machinePayload[QStringLiteral("run_id")] = debugRun.runId;
         machinePayload[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        machinePayload[QStringLiteral("detection_source")] =
-            loadedCandidatesFromCache ? QStringLiteral("cache") : QStringLiteral("scan");
+        machinePayload[QStringLiteral("detection_source")] = QStringLiteral("generated_facestream_tracks");
         machinePayload[QStringLiteral("candidates")] = machineCandidates;
         machinePayload[QStringLiteral("suggestions")] = machineSuggestions;
         machinePayload[QStringLiteral("candidate_count")] = candidates.size();
         machinePayload[QStringLiteral("max_candidates")] = maxCandidates;
         machinePayload[QStringLiteral("step_frames")] = stepFrames;
         persistSpeakerFlowSnapshot(machinePayload, QJsonObject(), QJsonObject());
+    }
+
+    const QVector<facefind::Candidate> trackCandidates = candidates;
+    progressDialog.close();
+    if (!confirmClusteringPreflight(
+            nullptr,
+            trackCandidates,
+            QStringLiteral("ArcFace MobileFaceNet NCNN"),
+            QStringLiteral("%1 FaceStream representative crop(s) extracted from %2 generated track(s).")
+                .arg(trackCandidates.size())
+                .arg(streams.size()))) {
+        setStageStatus(debugRun, kStageClustering, kStatusSkipped, kMsgCanceledClusteringPreflight);
+        persistIndex(debugRun);
+        return;
+    }
+    progressDialog.setLabelText(QStringLiteral("Preparing FaceStream identity clustering..."));
+    progressDialog.setValue(qMin(progressDialog.maximum(), streams.size()));
+    progressDialog.show();
+    QApplication::processEvents(QEventLoop::AllEvents, 50);
+
+    QVector<facefind::Candidate> clusterCandidates;
+    QJsonArray clusterRows;
+    QJsonArray clusterDiagnosticsRows;
+    QString clusterSummaryText;
+    bool embeddingReadyForDialog = false;
+    QString embeddingErrorForDialog;
+    {
+        const auto clusterResult = jcut::facestream_assignment::clusterFaceTracks(
+            jcut::facestream_assignment::ClusterRequest{trackCandidates, arcfaceParamPath, arcfaceBinPath},
+            [&](int value, const QString& message) {
+                return updateProgress(streams.size() + value, message);
+            });
+
+        if (!clusterResult.ok) {
+            setStageStatus(debugRun, kStageClustering, kStatusSkipped,
+                           clusterResult.cancelStageMessage);
+            persistIndex(debugRun);
+            progressDialog.close();
+            return;
+        }
+
+        clusterCandidates = clusterResult.clusterCandidates;
+        clusterRows = clusterResult.clusterRows;
+        clusterDiagnosticsRows = clusterResult.clusterDiagnosticsRows;
+        embeddingReadyForDialog = clusterResult.embeddingReady;
+        embeddingErrorForDialog = clusterResult.embeddingError;
+
+        const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_loadedTranscriptPath);
+        QJsonObject identityRoot;
+        transcriptEngine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
+        QJsonObject clustersRoot;
+        clustersRoot[QStringLiteral("run_id")] = debugRun.runId;
+        clustersRoot[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        clustersRoot[QStringLiteral("source")] = QStringLiteral("generated_facestream_track_crops");
+        clustersRoot[QStringLiteral("sidecar_path")] = identitySidecarPath;
+        clustersRoot[QStringLiteral("facestream_part")] = facestreamPath;
+        clustersRoot[QStringLiteral("embedding_model")] = QStringLiteral("arcface_mobilefacenet_ncnn");
+        clustersRoot[QStringLiteral("embedding_available")] = clusterResult.embeddingReady;
+        clustersRoot[QStringLiteral("embedding_error")] =
+            clusterResult.embeddingReady ? QString() : clusterResult.embeddingError;
+        clustersRoot[QStringLiteral("track_count")] = trackCandidates.size();
+        clustersRoot[QStringLiteral("embedded_track_count")] = clusterResult.embeddedTrackCount;
+        clustersRoot[QStringLiteral("cluster_count")] = clusterCandidates.size();
+        clustersRoot[QStringLiteral("auto_cluster_pair_count")] = clusterResult.autoClusterPairCount;
+        clustersRoot[QStringLiteral("review_pair_count")] = clusterResult.reviewPairCount;
+        clustersRoot[QStringLiteral("auto_cluster_threshold")] = clusterResult.autoClusterThreshold;
+        clustersRoot[QStringLiteral("review_threshold")] = clusterResult.reviewThreshold;
+        clustersRoot[QStringLiteral("clusters")] = clusterRows;
+
+        QJsonObject diagnosticsRoot;
+        diagnosticsRoot[QStringLiteral("run_id")] = debugRun.runId;
+        diagnosticsRoot[QStringLiteral("pairs")] = clusterDiagnosticsRows;
+        clustersRoot[QStringLiteral("diagnostics")] = diagnosticsRoot;
+
+        QJsonObject clustersByClip = identityRoot.value(QStringLiteral("identity_clusters_by_clip")).toObject();
+        clustersByClip[clipFlowId] = clustersRoot;
+        identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
+        identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        identityRoot[QStringLiteral("identity_clusters_by_clip")] = clustersByClip;
+        if (transcriptEngine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot)) {
+            addArtefact(debugRun, identitySidecarPath);
+        } else {
+            setStageStatus(debugRun,
+                           kStageClustering,
+                           QStringLiteral("error"),
+                           QStringLiteral("Failed to write identity sidecar: %1").arg(identitySidecarPath));
+            persistIndex(debugRun);
+            return;
+        }
+        setStageStatus(debugRun,
+                       kStageClustering,
+                       clusterResult.embeddingReady ? QStringLiteral("ok") : QStringLiteral("warn"),
+                       clusterResult.embeddingReady
+                           ? QStringLiteral("Auto-cluster ran: %1 tracks -> %2 identity clusters; %3 auto-merge pair(s), %4 review pair(s).")
+                                 .arg(trackCandidates.size())
+                                 .arg(clusterCandidates.size())
+                                 .arg(clusterResult.autoClusterPairCount)
+                                 .arg(clusterResult.reviewPairCount)
+                           : QStringLiteral("Auto-cluster fallback: ArcFace unavailable; %1 tracks -> %2 singleton cluster(s).")
+                                 .arg(trackCandidates.size())
+                                 .arg(clusterCandidates.size()));
+        persistIndex(debugRun);
+        updateProgress(streams.size() + 3, QStringLiteral("FaceStream identity preparation complete."));
+        clusterSummaryText = clusterResult.embeddingReady
+            ? QStringLiteral("Auto-cluster ran: %1 FaceStream track(s) -> %2 identity cluster(s) using ArcFace NCNN. Auto-merge pairs: %3. Review pairs: %4. Thresholds: auto >= %5, review >= %6.")
+                  .arg(trackCandidates.size())
+                  .arg(clusterCandidates.size())
+                  .arg(clusterResult.autoClusterPairCount)
+                  .arg(clusterResult.reviewPairCount)
+                  .arg(clusterResult.autoClusterThreshold, 0, 'f', 2)
+                  .arg(clusterResult.reviewThreshold, 0, 'f', 2)
+            : QStringLiteral("Auto-cluster fallback: ArcFace NCNN unavailable (%1). %2 FaceStream track(s) are shown as %3 singleton cluster(s).")
+                  .arg(clusterResult.embeddingError.trimmed().isEmpty() ? QStringLiteral("unknown error")
+                                                                        : clusterResult.embeddingError)
+                  .arg(trackCandidates.size())
+                  .arg(clusterCandidates.size());
+    }
+    if (!clusterCandidates.isEmpty()) {
+        candidates = clusterCandidates;
+    }
+    progressDialog.close();
+
+    if (!embeddingReadyForDialog && trackCandidates.size() > maxManualSingletonReviewRows) {
+        showArcFaceModelRequiredDialog(
+            nullptr,
+            trackCandidates.size(),
+            embeddingErrorForDialog.trimmed().isEmpty() ? QStringLiteral("unknown error") : embeddingErrorForDialog,
+            jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.param")),
+            jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.bin")));
+        refresh();
+        return;
+    }
+
+    QStringList autoSuggestedSpeakerIds;
+    autoSuggestedSpeakerIds.reserve(candidates.size());
+    for (const facefind::Candidate& candidate : std::as_const(candidates)) {
+        autoSuggestedSpeakerIds.push_back(suggestedSpeakerForFrame(candidate.frame));
+    }
+
+    QStringList suggestedSpeakerIds;
+    suggestedSpeakerIds.reserve(candidates.size());
+    QStringList defaultSourceLabels;
+    defaultSourceLabels.reserve(candidates.size());
+    for (const facefind::Candidate& candidate : std::as_const(candidates)) {
+        QString persistedIdentity;
+        const QVector<int> memberTracks = candidate.clusterTrackIds.isEmpty()
+            ? QVector<int>{candidate.trackId}
+            : candidate.clusterTrackIds;
+        for (int trackId : memberTracks) {
+            const QString candidatePersisted = persistedIdentityByTrackId.value(trackId).trimmed();
+            if (!candidatePersisted.isEmpty()) {
+                persistedIdentity = candidatePersisted;
+                break;
+            }
+        }
+        if (!persistedIdentity.isEmpty()) {
+            suggestedSpeakerIds.push_back(persistedIdentity);
+            defaultSourceLabels.push_back(QStringLiteral("Persisted (Human)"));
+            continue;
+        }
+        suggestedSpeakerIds.push_back(suggestedSpeakerForFrame(candidate.frame));
+        defaultSourceLabels.push_back(QStringLiteral("Auto (Timing)"));
     }
 
     QHash<QString, QString> speakerLabels;
@@ -1048,10 +1248,10 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             speakerLabels,
             suggestedSpeakerIds,
             autoSuggestedSpeakerIds,
-            defaultSourceLabels);
+            defaultSourceLabels,
+            clusterSummaryText);
     if (!dialogResult.accepted) {
-        setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("skipped"),
-                       QStringLiteral("User canceled assignment dialog."));
+        setStageStatus(debugRun, kStageAssignment, kStatusSkipped, kMsgCanceledAssignmentDialog);
         persistIndex(debugRun);
         return;
     }
@@ -1064,7 +1264,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         QJsonArray auditLog;
         QJsonArray resolvedMap;
         QHash<int, facefind::Candidate> candidateByTrackId;
-        for (const facefind::Candidate& c : std::as_const(candidates)) {
+        for (const facefind::Candidate& c : std::as_const(trackCandidates)) {
             if (c.trackId < 0) {
                 continue;
             }
@@ -1077,8 +1277,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         for (const QJsonValue& value : assignmentTableRows) {
             const QJsonObject row = value.toObject();
             const QString decision = row.value(QStringLiteral("decision")).toString();
-            const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
-            if (trackId < 0 || decision != QStringLiteral("accepted")) {
+            if (decision != QStringLiteral("accepted")) {
                 continue;
             }
             const QString resolvedSpeaker = row.value(QStringLiteral("resolved_speaker_id")).toString().trimmed();
@@ -1086,31 +1285,47 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                 continue;
             }
             const QString manualOverride = row.value(QStringLiteral("manual_override")).toString().trimmed();
-            QJsonObject overrideRow;
-            overrideRow[QStringLiteral("track_id")] = trackId;
-            overrideRow[QStringLiteral("identity_id")] = resolvedSpeaker;
-            overrideRow[QStringLiteral("source")] =
-                manualOverride.isEmpty() ? QStringLiteral("auto_selected") : QStringLiteral("human_override");
-            overrideRow[QStringLiteral("manual_override")] = !manualOverride.isEmpty();
-            overrides.push_back(overrideRow);
+            QJsonArray trackIds = row.value(QStringLiteral("track_ids")).toArray();
+            if (trackIds.isEmpty()) {
+                const int fallbackTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
+                if (fallbackTrackId >= 0) {
+                    trackIds.push_back(fallbackTrackId);
+                }
+            }
+            for (const QJsonValue& trackValue : trackIds) {
+                const int trackId = trackValue.toInt(-1);
+                if (trackId < 0) {
+                    continue;
+                }
+                QJsonObject overrideRow;
+                overrideRow[QStringLiteral("track_id")] = trackId;
+                overrideRow[QStringLiteral("cluster_id")] = row.value(QStringLiteral("cluster_id")).toString();
+                overrideRow[QStringLiteral("identity_id")] = resolvedSpeaker;
+                overrideRow[QStringLiteral("source")] =
+                    manualOverride.isEmpty() ? QStringLiteral("auto_selected") : QStringLiteral("human_override");
+                overrideRow[QStringLiteral("manual_override")] = !manualOverride.isEmpty();
+                overrides.push_back(overrideRow);
 
-            QJsonObject auditRow;
-            auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            auditRow[QStringLiteral("action")] = QStringLiteral("track_identity_set");
-            auditRow[QStringLiteral("track_id")] = trackId;
-            auditRow[QStringLiteral("identity_id")] = resolvedSpeaker;
-            auditRow[QStringLiteral("source")] = overrideRow.value(QStringLiteral("source")).toString();
-            auditLog.push_back(auditRow);
+                QJsonObject auditRow;
+                auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+                auditRow[QStringLiteral("action")] = QStringLiteral("track_identity_set");
+                auditRow[QStringLiteral("track_id")] = trackId;
+                auditRow[QStringLiteral("cluster_id")] = row.value(QStringLiteral("cluster_id")).toString();
+                auditRow[QStringLiteral("identity_id")] = resolvedSpeaker;
+                auditRow[QStringLiteral("source")] = overrideRow.value(QStringLiteral("source")).toString();
+                auditLog.push_back(auditRow);
 
-            QJsonObject resolvedRow;
-            resolvedRow[QStringLiteral("track_id")] = trackId;
-            resolvedRow[QStringLiteral("identity_id")] = resolvedSpeaker;
-            resolvedRow[QStringLiteral("resolution_source")] = overrideRow.value(QStringLiteral("source")).toString();
-            resolvedMap.push_back(resolvedRow);
+                QJsonObject resolvedRow;
+                resolvedRow[QStringLiteral("track_id")] = trackId;
+                resolvedRow[QStringLiteral("identity_id")] = resolvedSpeaker;
+                resolvedRow[QStringLiteral("cluster_id")] = row.value(QStringLiteral("cluster_id")).toString();
+                resolvedRow[QStringLiteral("resolution_source")] = overrideRow.value(QStringLiteral("source")).toString();
+                resolvedMap.push_back(resolvedRow);
 
-            const auto trackIt = candidateByTrackId.constFind(trackId);
-            if (trackIt != candidateByTrackId.constEnd()) {
-                assignmentsBySpeaker[resolvedSpeaker].push_back(trackIt.value());
+                const auto trackIt = candidateByTrackId.constFind(trackId);
+                if (trackIt != candidateByTrackId.constEnd()) {
+                    assignmentsBySpeaker[resolvedSpeaker].push_back(trackIt.value());
+                }
             }
         }
         QJsonObject humanPayload;
@@ -1124,11 +1339,27 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         resolvedPayload[QStringLiteral("run_id")] = debugRun.runId;
         resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         resolvedPayload[QStringLiteral("track_identity_map")] = resolvedMap;
+        QJsonObject identityRoot;
+        transcriptEngine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
+        QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
+        QJsonObject assignmentRoot;
+        assignmentRoot[QStringLiteral("run_id")] = debugRun.runId;
+        assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        assignmentRoot[QStringLiteral("assignment_table_rows")] = assignmentTableRows;
+        assignmentRoot[QStringLiteral("track_identity_overrides")] = overrides;
+        assignmentRoot[QStringLiteral("track_identity_map")] = resolvedMap;
+        assignmentsByClip[clipFlowId] = assignmentRoot;
+        identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
+        identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
+        if (transcriptEngine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot)) {
+            addArtefact(debugRun, transcriptEngine.identityArtifactPath(m_loadedTranscriptPath));
+        }
         persistSpeakerFlowSnapshot(QJsonObject(), humanPayload, resolvedPayload);
     }
 
     if (assignmentsBySpeaker.isEmpty()) {
-        setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("warn"),
+        setStageStatus(debugRun, QStringLiteral("stage_6_assignment"), QStringLiteral("warn"),
                        QStringLiteral("No assignments accepted."));
         persistIndex(debugRun);
         return;
@@ -1140,11 +1371,11 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         QStringLiteral("%1_assignment_decisions.json").arg(debugRun.videoStem));
     bool unusedCreateNewRun = false;
     if (!ensureWritableArtefacts(
-            QStringLiteral("stage_4_assignment"),
+            QStringLiteral("stage_6_assignment"),
             QStringList{assignmentTablePath, assignmentDecisionsPath},
             false,
             &unusedCreateNewRun)) {
-        setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("skipped"),
+        setStageStatus(debugRun, QStringLiteral("stage_6_assignment"), QStringLiteral("skipped"),
                        QStringLiteral("Canceled due to overwrite prompt."));
         persistIndex(debugRun);
         return;
@@ -1174,6 +1405,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                 row[QStringLiteral("y")] = c.y;
                 row[QStringLiteral("box")] = c.box;
                 row[QStringLiteral("score")] = c.score;
+                row[QStringLiteral("track_id")] = c.trackId;
                 assigned.push_back(row);
             }
             d[QStringLiteral("candidates")] = assigned;
@@ -1188,132 +1420,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     }
     addArtefact(debugRun, assignmentTablePath);
     addArtefact(debugRun, assignmentDecisionsPath);
-    setStageStatus(debugRun, QStringLiteral("stage_4_assignment"), QStringLiteral("ok"),
-                   QStringLiteral("Candidate assignment completed."));
+    setStageStatus(debugRun, QStringLiteral("stage_6_assignment"), QStringLiteral("ok"),
+                   QStringLiteral("Cluster assignment completed."));
     persistIndex(debugRun);
-
-    int savedReferenceCount = 0;
-    int blockedSpeakers = 0;
-    QJsonArray referenceWritePlan;
-    QJsonArray referenceWriteResult;
-    for (auto it = assignmentsBySpeaker.begin(); it != assignmentsBySpeaker.end(); ++it) {
-        const QString speakerId = it.key();
-        QVector<facefind::Candidate> assigned = it.value();
-        std::sort(assigned.begin(), assigned.end(), [](const facefind::Candidate& a, const facefind::Candidate& b) {
-            if (!qFuzzyCompare(a.score + 1.0, b.score + 1.0)) {
-                return a.score > b.score;
-            }
-            return a.frame < b.frame;
-        });
-
-        const QJsonObject currentProfiles =
-            m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-        const QJsonObject currentProfile = currentProfiles.value(speakerId).toObject();
-        const QJsonObject tracking = speakerFramingObject(currentProfile);
-        bool hasRef1 = false;
-        bool hasRef2 = false;
-        transcriptTrackingReferencePoint(tracking, kTranscriptSpeakerTrackingRef1Key, &hasRef1);
-        transcriptTrackingReferencePoint(tracking, kTranscriptSpeakerTrackingRef2Key, &hasRef2);
-        QVector<int> freeSlots;
-        if (!hasRef1) {
-            freeSlots.push_back(1);
-        }
-        if (!hasRef2) {
-            freeSlots.push_back(2);
-        }
-        QJsonObject planRow;
-        planRow[QStringLiteral("speaker_id")] = speakerId;
-        QJsonArray freeSlotsJson;
-        for (int slot : freeSlots) {
-            freeSlotsJson.push_back(slot);
-        }
-        planRow[QStringLiteral("free_slots")] = freeSlotsJson;
-        planRow[QStringLiteral("candidate_count")] = assigned.size();
-        referenceWritePlan.push_back(planRow);
-
-        if (freeSlots.isEmpty()) {
-            ++blockedSpeakers;
-            QJsonObject resultRow;
-            resultRow[QStringLiteral("speaker_id")] = speakerId;
-            resultRow[QStringLiteral("status")] = QStringLiteral("blocked");
-            resultRow[QStringLiteral("reason")] = QStringLiteral("both_refs_already_set");
-            referenceWriteResult.push_back(resultRow);
-            continue;
-        }
-
-        const int assignCount = qMin(freeSlots.size(), assigned.size());
-        for (int i = 0; i < assignCount; ++i) {
-            const facefind::Candidate& candidate = assigned.at(i);
-            const bool ok = saveSpeakerTrackingReferenceAt(
-                    speakerId,
-                    freeSlots.at(i),
-                    candidate.frame,
-                    candidate.x,
-                    candidate.y,
-                    candidate.box);
-            QJsonObject resultRow;
-            resultRow[QStringLiteral("speaker_id")] = speakerId;
-            resultRow[QStringLiteral("slot")] = freeSlots.at(i);
-            resultRow[QStringLiteral("frame")] = static_cast<qint64>(candidate.frame);
-            resultRow[QStringLiteral("status")] = ok ? QStringLiteral("ok") : QStringLiteral("error");
-            referenceWriteResult.push_back(resultRow);
-            if (ok) {
-                ++savedReferenceCount;
-            }
-        }
-    }
-
-    const QString referenceWritePlanPath = QDir(debugRun.runDir).absoluteFilePath(
-        QStringLiteral("%1_reference_write_plan.json").arg(debugRun.videoStem));
-    const QString referenceWriteResultPath = QDir(debugRun.runDir).absoluteFilePath(
-        QStringLiteral("%1_reference_write_result.json").arg(debugRun.videoStem));
-    bool unusedCreateNewRun2 = false;
-    if (!ensureWritableArtefacts(
-            QStringLiteral("stage_5_reference_write"),
-            QStringList{referenceWritePlanPath, referenceWriteResultPath},
-            false,
-            &unusedCreateNewRun2)) {
-        setStageStatus(debugRun, QStringLiteral("stage_5_reference_write"), QStringLiteral("skipped"),
-                       QStringLiteral("Canceled due to overwrite prompt."));
-        persistIndex(debugRun);
-        return;
-    }
-    {
-        QJsonObject planRoot;
-        planRoot[QStringLiteral("run_id")] = debugRun.runId;
-        planRoot[QStringLiteral("plan")] = referenceWritePlan;
-        QFile f(referenceWritePlanPath);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            f.write(QJsonDocument(planRoot).toJson(QJsonDocument::Indented));
-            f.close();
-        }
-    }
-    {
-        QJsonObject resultRoot;
-        resultRoot[QStringLiteral("run_id")] = debugRun.runId;
-        resultRoot[QStringLiteral("saved_reference_count")] = savedReferenceCount;
-        resultRoot[QStringLiteral("blocked_speakers")] = blockedSpeakers;
-        resultRoot[QStringLiteral("result")] = referenceWriteResult;
-        QFile f(referenceWriteResultPath);
-        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            f.write(QJsonDocument(resultRoot).toJson(QJsonDocument::Indented));
-            f.close();
-        }
-    }
-    addArtefact(debugRun, referenceWritePlanPath);
-    addArtefact(debugRun, referenceWriteResultPath);
-
-    if (savedReferenceCount == 0) {
-        setStageStatus(debugRun, QStringLiteral("stage_5_reference_write"), QStringLiteral("warn"),
-                       QStringLiteral("No references written."));
-        persistIndex(debugRun);
-        QString message = QStringLiteral("No references were written.");
-        if (blockedSpeakers > 0) {
-            message += QStringLiteral("\n\nSome speakers already had both Ref1 and Ref2 set.");
-        }
-        QMessageBox::information(nullptr, QStringLiteral("Pre-crop Faces"), message);
-        return;
-    }
 
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) {
@@ -1322,8 +1431,6 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
     }
-    setStageStatus(debugRun, QStringLiteral("stage_5_reference_write"), QStringLiteral("ok"),
-                   QStringLiteral("Reference write completed."));
     persistIndex(debugRun);
     refresh();
 }

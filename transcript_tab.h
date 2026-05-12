@@ -116,6 +116,8 @@ private slots:
     void onTranscriptDeleteVersion();
 
 private:
+    bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
+    bool saveLoadedTranscriptDocument();
     void requestRefresh(int delayMs = 35);
     struct TranscriptRow
     {
@@ -204,6 +206,7 @@ private:
     QElapsedTimer m_manualSelectionTimer;
     int64_t m_lastSyncAbsolutePlaybackSample = -1;
     int64_t m_lastSyncSourceFrame = -1;
+    int m_lastSyncRow = -1;
     QVector<FollowRange> m_followRanges;
     bool m_suppressSelectionSideEffects = false;
     QString m_persistedSelectedClipId;

@@ -1,13 +1,144 @@
 #include "editor.h"
 #include "history_tab.h"
 #include "playback_debug.h"
+#include "speakers_table.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QColorDialog>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QTabWidget>
 
 using namespace editor;
+
+void EditorWindow::refreshInspectorTabByName(const QString& tabName)
+{
+    const QString normalized = tabName.trimmed();
+    if (normalized.compare(QStringLiteral("Grade"), Qt::CaseInsensitive) == 0) {
+        if (m_gradingTab) m_gradingTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Opacity"), Qt::CaseInsensitive) == 0) {
+        if (m_opacityTab) m_opacityTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Effects"), Qt::CaseInsensitive) == 0) {
+        if (m_effectsTab) m_effectsTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0) {
+        if (m_correctionsTab) m_correctionsTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0) {
+        if (m_titlesTab) m_titlesTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Sync"), Qt::CaseInsensitive) == 0) {
+        if (m_syncTab) m_syncTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Keyframes"), Qt::CaseInsensitive) == 0) {
+        if (m_videoKeyframeTab) m_videoKeyframeTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Transcript"), Qt::CaseInsensitive) == 0) {
+        if (m_transcriptTab) m_transcriptTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0) {
+        if (m_speakersTab) m_speakersTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Properties"), Qt::CaseInsensitive) == 0) {
+        if (m_propertiesTab) m_propertiesTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Clips"), Qt::CaseInsensitive) == 0) {
+        if (m_clipsTab) m_clipsTab->refresh();
+    } else if (normalized.compare(QStringLiteral("History"), Qt::CaseInsensitive) == 0) {
+        if (m_historyTab) m_historyTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Tracks"), Qt::CaseInsensitive) == 0) {
+        if (m_tracksTab) m_tracksTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Output"), Qt::CaseInsensitive) == 0) {
+        if (m_outputTab) m_outputTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Pipeline"), Qt::CaseInsensitive) == 0) {
+        if (m_pipelineTab) m_pipelineTab->refresh();
+    } else if (normalized.compare(QStringLiteral("System"), Qt::CaseInsensitive) == 0) {
+        if (m_profileTab) m_profileTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Projects"), Qt::CaseInsensitive) == 0) {
+        if (m_projectsTab) m_projectsTab->refresh();
+    }
+}
+
+void EditorWindow::refreshCurrentInspectorTab()
+{
+    if (!m_inspectorPane || !m_inspectorPane->tabs()) {
+        return;
+    }
+    const int index = m_inspectorPane->tabs()->currentIndex();
+    if (index < 0) {
+        return;
+    }
+    refreshInspectorTabByName(m_inspectorPane->tabs()->tabText(index));
+}
+
+void EditorWindow::refreshTimelineStructureInspectorViews()
+{
+    if (m_clipsTab) {
+        m_clipsTab->refresh();
+    }
+    if (m_propertiesTab) {
+        m_propertiesTab->refresh();
+    }
+    if (m_tracksTab) {
+        m_tracksTab->refresh();
+    }
+    if (m_historyTab) {
+        m_historyTab->refresh();
+    }
+    refreshCurrentInspectorTab();
+}
+
+void EditorWindow::refreshTimelineSelectionInspectorViews()
+{
+    if (m_transcriptTab) {
+        m_transcriptTab->refresh();
+    }
+    if (m_outputTab) {
+        m_outputTab->refresh();
+    }
+    if (m_profileTab) {
+        m_profileTab->refresh();
+    }
+    if (m_gradingTab) {
+        m_gradingTab->refresh();
+    }
+    if (m_effectsTab) {
+        m_effectsTab->refresh();
+    }
+    if (m_titlesTab) {
+        m_titlesTab->refresh();
+    }
+    if (m_videoKeyframeTab) {
+        m_videoKeyframeTab->refresh();
+    }
+    refreshCurrentInspectorTab();
+}
+
+void EditorWindow::refreshPreviewTransformInspectorViews()
+{
+    if (m_videoKeyframeTab) {
+        m_videoKeyframeTab->refresh();
+    }
+    if (m_titlesTab) {
+        m_titlesTab->refresh();
+    }
+    if (m_transcriptTab) {
+        m_transcriptTab->refresh();
+    }
+    refreshCurrentInspectorTab();
+}
+
+void EditorWindow::refreshTranscriptDerivedInspectorViews(bool includeHistoryTab)
+{
+    if (m_transcriptTab) {
+        m_transcriptTab->refresh();
+    }
+    if (m_speakersTab) {
+        m_speakersTab->refresh();
+    }
+    if (includeHistoryTab && m_historyTab) {
+        m_historyTab->refresh();
+    }
+}
+
+void EditorWindow::refreshSpeechFilterInspectorViews()
+{
+    if (m_transcriptTab) {
+        m_transcriptTab->refresh();
+    }
+}
 
 void EditorWindow::createOutputTab()
 {
@@ -55,6 +186,16 @@ void EditorWindow::createOutputTab()
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); }});
     m_outputTab->wire();
+    if (m_renderUseProxiesCheckBox) {
+        connect(m_renderUseProxiesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setUseProxyMedia(checked);
+                if (m_timeline) {
+                    m_preview->setTimelineClips(m_timeline->clips());
+                }
+            }
+        });
+    }
 }
 
 void EditorWindow::createProfileTab()
@@ -68,9 +209,21 @@ void EditorWindow::createProfileTab()
             [this]() { return profilingSnapshot(); },
             [this](TimelineClip* clipOut) { return profileBenchmarkClip(clipOut); },
             [this](const TimelineClip& clip) { return playbackMediaPathForClip(clip); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("System")); },
             [this]() { scheduleSaveState(); }});
     m_profileTab->wire();
+}
+
+void EditorWindow::createPipelineTab()
+{
+    m_pipelineTab = std::make_unique<PipelineTab>(
+        PipelineTab::Widgets{
+            m_inspectorPane ? m_inspectorPane->pipelineStageList() : nullptr},
+        PipelineTab::Dependencies{
+            [this]() {
+                return m_preview ? m_preview->livePipelineSnapshots()
+                                 : QVector<PreviewSurface::PipelineStageSnapshot>{};
+            }});
 }
 
 void EditorWindow::createProjectsTab()
@@ -126,7 +279,7 @@ void EditorWindow::createTranscriptTab()
             },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Transcript")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { return effectivePlaybackRanges(); },
             [this](int64_t frame) { setCurrentFrame(frame); }});
@@ -157,7 +310,7 @@ void EditorWindow::createTranscriptTab()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
-        m_inspectorPane->refresh();
+        refreshTranscriptDerivedInspectorViews(true);
     });
 
     connect(m_transcriptTab.get(), &TranscriptTab::speechFilterParametersChanged, this, [this]() {
@@ -180,7 +333,7 @@ void EditorWindow::createTranscriptTab()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
-        m_inspectorPane->refresh();
+        refreshSpeechFilterInspectorViews();
     });
 }
 
@@ -192,6 +345,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakersInspectorDetailsLabel(),
             m_inspectorPane->speakersTable(),
             m_inspectorPane->selectedSpeakerIdLabel(),
+            m_inspectorPane->selectedSpeakerFaceStreamsList(),
             m_inspectorPane->selectedSpeakerRef1ImageLabel(),
             m_inspectorPane->selectedSpeakerRef2ImageLabel(),
             m_inspectorPane->selectedSpeakerPreviousSentenceButton(),
@@ -204,7 +358,8 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerPickReference2Button(),
             m_inspectorPane->speakerClearReferencesButton(),
             m_inspectorPane->speakerRunAutoTrackButton(),
-            m_inspectorPane->speakerBoxstreamSettingsButton(),
+            m_inspectorPane->speakerViewFacestreamButton(),
+            m_inspectorPane->speakerFacestreamSettingsButton(),
             m_inspectorPane->speakerEnableTrackingButton(),
             m_inspectorPane->speakerDisableTrackingButton(),
             m_inspectorPane->speakerDeletePointstreamButton(),
@@ -224,13 +379,13 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerPointstreamChipLabel(),
             m_inspectorPane->speakerTrackingChipButton(),
             m_inspectorPane->speakerStabilizeChipButton(),
-            m_inspectorPane->speakerBoxStreamTable(),
-            m_inspectorPane->speakerBoxStreamDetailsEdit()},
+            m_inspectorPane->speakerFaceStreamTable(),
+            m_inspectorPane->speakerFaceStreamDetailsEdit()},
         SpeakersTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Speakers")); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this](int64_t frame) { setCurrentFrame(frame); },
             [this]() -> QVector<RenderSyncMarker> {
@@ -275,6 +430,38 @@ void EditorWindow::createSpeakersTab()
                 exportVideoForSpeakersOnSelectedClip(speakerIds);
             }});
     m_speakersTab->wire();
+    if (m_inspectorPane) {
+        if (SpeakersTable* speakersTable =
+                qobject_cast<SpeakersTable*>(m_inspectorPane->speakersTable())) {
+            connect(speakersTable, &SpeakersTable::columnVisibilityChanged, this, [this]() {
+                scheduleSaveState();
+            });
+        }
+    }
+
+    auto syncFaceStreamAssignmentMode = [this]() {
+        if (!m_preview || !m_inspectorPane || !m_inspectorPane->tabs() || !m_inspectorPane->speakersSubtabs()) {
+            return;
+        }
+        QTabWidget* inspectorTabs = m_inspectorPane->tabs();
+        QTabWidget* speakersSubtabs = m_inspectorPane->speakersSubtabs();
+        const bool speakersTabSelected =
+            inspectorTabs->tabText(inspectorTabs->currentIndex())
+                .compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
+        const bool speakersSubtabSelected =
+            speakersSubtabs->tabText(speakersSubtabs->currentIndex())
+                .compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
+        m_preview->setFaceStreamAssignmentInteractionEnabled(speakersTabSelected && speakersSubtabSelected);
+    };
+    if (m_inspectorPane && m_inspectorPane->tabs()) {
+        connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,
+                [syncFaceStreamAssignmentMode](int) { syncFaceStreamAssignmentMode(); });
+    }
+    if (m_inspectorPane && m_inspectorPane->speakersSubtabs()) {
+        connect(m_inspectorPane->speakersSubtabs(), &QTabWidget::currentChanged, this,
+                [syncFaceStreamAssignmentMode](int) { syncFaceStreamAssignmentMode(); });
+    }
+    syncFaceStreamAssignmentMode();
 
     connect(m_speakersTab.get(), &SpeakersTab::transcriptDocumentChanged, this, [this]() {
         m_transcriptEngine.invalidateCache();
@@ -300,7 +487,7 @@ void EditorWindow::createSpeakersTab()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
-        m_inspectorPane->refresh();
+        refreshTranscriptDerivedInspectorViews(true);
     });
 }
 
@@ -332,7 +519,7 @@ void EditorWindow::createGradingTab()
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Grade")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
@@ -379,7 +566,7 @@ void EditorWindow::createOpacityTab()
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Opacity")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
@@ -406,7 +593,7 @@ void EditorWindow::createEffectsTab()
                 return m_timeline->updateClipById(id, updater);
             },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Effects")); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
@@ -440,7 +627,7 @@ void EditorWindow::createCorrectionsTab()
                     m_preview->setTimelineClips(m_timeline->clips());
                 }
             },
-            [this]() { if (m_inspectorPane) m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Corrections")); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
@@ -517,7 +704,7 @@ void EditorWindow::createTitlesTab()
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Titles")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
@@ -550,7 +737,7 @@ void EditorWindow::createVideoKeyframeTab()
             [this](const TimelineClip& clip) { return clipHasVisuals(clip); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); },
-            [this]() { m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Keyframes")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() -> int64_t { return m_timeline ? m_timeline->currentFrame() : 0; },
             [this]() -> int64_t { return m_timeline && m_timeline->selectedClip() ? m_timeline->selectedClip()->startFrame : 0; },
@@ -640,7 +827,7 @@ void EditorWindow::createTracksTab()
             [this](int trackIndex) -> bool { return m_timeline ? m_timeline->trackAudioEnabled(trackIndex) : false; },
             [this](int trackIndex, TrackVisualMode mode) -> bool { return m_timeline ? m_timeline->updateTrackVisualMode(trackIndex, mode) : false; },
             [this](int trackIndex, bool enabled) -> bool { return m_timeline ? m_timeline->updateTrackAudioEnabled(trackIndex, enabled) : false; },
-            [this]() { if (m_inspectorPane) m_inspectorPane->refresh(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Tracks")); },
             [this]() { scheduleSaveState(); },
             [this]() { pushHistorySnapshot(); }});
     m_tracksTab->wire();
@@ -679,6 +866,7 @@ void EditorWindow::createPropertiesTab()
 void EditorWindow::setupTabs()
 {
     createOutputTab();
+    createPipelineTab();
     createProfileTab();
     createProjectsTab();
     createTranscriptTab();
@@ -699,8 +887,8 @@ void EditorWindow::setupTabs()
     if (m_inspectorPane && m_inspectorPane->tabs()) {
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,
                 [this](int index) {
+            const QString tabName = m_inspectorPane->tabs()->tabText(index);
             if (m_preview) {
-                const QString tabName = m_inspectorPane->tabs()->tabText(index);
                 const bool isCorrectionsTab = tabName.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0;
                 const bool isTitlesTab = tabName.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0;
                 const bool isAudioTab = tabName.compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0;
@@ -727,6 +915,21 @@ void EditorWindow::setupTabs()
                         m_previewModeCombo->setCurrentIndex(modeIndex);
                     }
                 }
+
+            }
+
+            refreshInspectorTabByName(tabName);
+        });
+    }
+    if (m_inspectorPane && m_inspectorPane->speakersSubtabs()) {
+        connect(m_inspectorPane->speakersSubtabs(), &QTabWidget::currentChanged, this,
+                [this](int) {
+            if (!m_inspectorPane || !m_inspectorPane->tabs()) {
+                return;
+            }
+            const QString tabName = m_inspectorPane->tabs()->tabText(m_inspectorPane->tabs()->currentIndex());
+            if (tabName.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0 && m_speakersTab) {
+                m_speakersTab->refresh();
             }
         });
     }
@@ -734,25 +937,34 @@ void EditorWindow::setupTabs()
 
 void EditorWindow::setupInspectorRefreshRouting()
 {
-    connect(m_inspectorPane, &InspectorPane::refreshRequested, this, [this]() {
+    connect(m_inspectorPane, &InspectorPane::refreshCurrentTabRequested, this, [this]() {
         QElapsedTimer refreshTimer;
         refreshTimer.start();
-        m_gradingTab->refresh();
-        if (m_opacityTab) m_opacityTab->refresh();
-        m_effectsTab->refresh();
-        if (m_correctionsTab) m_correctionsTab->refresh();
-        m_titlesTab->refresh();
-        if (m_syncTab) m_syncTab->refresh();
-        m_transcriptTab->refresh();
-        if (m_speakersTab) m_speakersTab->refresh();
-        if (m_propertiesTab) m_propertiesTab->refresh();
-        m_videoKeyframeTab->refresh();
-        m_outputTab->refresh();
-        m_profileTab->refresh();
-        m_projectsTab->refresh();
-        if (m_clipsTab) m_clipsTab->refresh();
-        if (m_historyTab) m_historyTab->refresh();
-        if (m_tracksTab) m_tracksTab->refresh();
+        refreshCurrentInspectorTab();
+
+        const qint64 elapsedMs = refreshTimer.elapsed();
+        m_lastInspectorRefreshDurationMs.store(elapsedMs);
+        qint64 maxDuration = m_maxInspectorRefreshDurationMs.load();
+        while (elapsedMs > maxDuration &&
+               !m_maxInspectorRefreshDurationMs.compare_exchange_weak(maxDuration, elapsedMs)) {
+        }
+        constexpr qint64 kSlowInspectorRefreshThresholdMs = 30;
+        if (elapsedMs >= kSlowInspectorRefreshThresholdMs) {
+            m_inspectorRefreshSlowCount.fetch_add(1);
+            if (debugPlaybackWarnEnabled()) {
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] slow inspector refresh: %1 ms")
+                           .arg(elapsedMs);
+            }
+        } else if (debugPlaybackVerboseEnabled()) {
+            playbackTrace(QStringLiteral("EditorWindow::setupInspectorRefreshRouting.refresh"),
+                          QStringLiteral("elapsed_ms=%1").arg(elapsedMs));
+        }
+    });
+    connect(m_inspectorPane, &InspectorPane::refreshTabRequested, this, [this](const QString& tabName) {
+        QElapsedTimer refreshTimer;
+        refreshTimer.start();
+        refreshInspectorTabByName(tabName);
 
         const qint64 elapsedMs = refreshTimer.elapsed();
         m_lastInspectorRefreshDurationMs.store(elapsedMs);

@@ -8,6 +8,37 @@
 
 using namespace editor;
 
+namespace {
+
+QJsonArray pipelineStagesToJson(const QVector<PreviewSurface::PipelineStageSnapshot>& stages)
+{
+    QJsonArray array;
+    for (int i = 0; i < stages.size(); ++i) {
+        const PreviewSurface::PipelineStageSnapshot& stage = stages.at(i);
+        array.push_back(QJsonObject{
+            {QStringLiteral("index"), i},
+            {QStringLiteral("label"), stage.label},
+            {QStringLiteral("detail"), stage.detail},
+            {QStringLiteral("kind"), stage.kind},
+            {QStringLiteral("exact"), stage.exact},
+            {QStringLiteral("active"), stage.active},
+            {QStringLiteral("state"), stage.state.isEmpty()
+                 ? (stage.active
+                        ? (stage.exact ? QStringLiteral("ready") : QStringLiteral("approximate"))
+                        : QStringLiteral("waiting"))
+                 : stage.state},
+            {QStringLiteral("has_image"), !stage.image.isNull()},
+            {QStringLiteral("image_size"), stage.image.isNull()
+                 ? QString()
+                 : QStringLiteral("%1x%2").arg(stage.image.width()).arg(stage.image.height())},
+            {QStringLiteral("facts"), stage.facts}
+        });
+    }
+    return array;
+}
+
+} // namespace
+
 QJsonObject EditorWindow::startupProfileSnapshot() const
 {
     const qint64 elapsedMs =
@@ -74,7 +105,10 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("last_playback_stop_reason"), m_lastPlaybackStopReason}};
 
     if (m_preview) {
-        snapshot[QStringLiteral("preview")] = m_preview->profilingSnapshot();
+        QJsonObject preview = m_preview->profilingSnapshot();
+        preview.insert(QStringLiteral("pipeline_stages"),
+                       pipelineStagesToJson(m_preview->livePipelineSnapshots()));
+        snapshot[QStringLiteral("preview")] = preview;
     }
 
     if (m_audioEngine) {

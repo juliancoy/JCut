@@ -141,15 +141,40 @@ ClipCache::FrameMemoryUse ClipCache::frameMemoryUse(const FrameHandle& frame) co
 }
 
 void ClipCache::insert(int64_t frameNumber, const FrameHandle& frame) {
+    if (frame.isNull()) {
+        return;
+    }
+
     FrameMemoryUse replacedUse;
-    FrameMemoryUse insertedUse;
+    FrameMemoryUse insertedUse = frameMemoryUse(frame);
+    bool hasExisting = false;
 
-    QMutexLocker lock(&m_mutex);
+    {
+        QMutexLocker lock(&m_mutex);
+        auto it = m_frames.find(frameNumber);
+        if (it != m_frames.end()) {
+            replacedUse = frameMemoryUse(it.value().frame);
+            hasExisting = true;
+        }
+    }
 
-    auto it = m_frames.find(frameNumber);
-    if (it != m_frames.end()) {
-        replacedUse = frameMemoryUse(it.value().frame);
-        m_memoryUsage -= (replacedUse.cpuBytes + replacedUse.gpuBytes);
+    const size_t cpuDeltaUp = insertedUse.cpuBytes > replacedUse.cpuBytes
+        ? insertedUse.cpuBytes - replacedUse.cpuBytes : 0;
+    const size_t gpuDeltaUp = insertedUse.gpuBytes > replacedUse.gpuBytes
+        ? insertedUse.gpuBytes - replacedUse.gpuBytes : 0;
+
+    if (m_budget) {
+        if (cpuDeltaUp > 0 &&
+            !m_budget->allocateCpu(cpuDeltaUp, MemoryBudget::Priority::Normal)) {
+            return;
+        }
+        if (gpuDeltaUp > 0 &&
+            !m_budget->allocateGpu(gpuDeltaUp, MemoryBudget::Priority::Normal)) {
+            if (cpuDeltaUp > 0) {
+                m_budget->deallocateCpu(cpuDeltaUp);
+            }
+            return;
+        }
     }
 
     CachedFrame cf;
@@ -157,22 +182,22 @@ void ClipCache::insert(int64_t frameNumber, const FrameHandle& frame) {
     cf.lastAccessTime = QDateTime::currentMSecsSinceEpoch();
     cf.accessCount = 1;
 
-    m_frames[frameNumber] = cf;
-    insertedUse = frameMemoryUse(frame);
-    m_memoryUsage += (insertedUse.cpuBytes + insertedUse.gpuBytes);
-    lock.unlock();
+    {
+        QMutexLocker lock(&m_mutex);
+        if (hasExisting) {
+            m_memoryUsage -= (replacedUse.cpuBytes + replacedUse.gpuBytes);
+        }
+        m_frames[frameNumber] = cf;
+        m_memoryUsage += (insertedUse.cpuBytes + insertedUse.gpuBytes);
+    }
 
-    if (m_budget && replacedUse.cpuBytes > 0) {
-        m_budget->deallocateCpu(replacedUse.cpuBytes);
-    }
-    if (m_budget && replacedUse.gpuBytes > 0) {
-        m_budget->deallocateGpu(replacedUse.gpuBytes);
-    }
-    if (m_budget && insertedUse.cpuBytes > 0) {
-        m_budget->allocateCpu(insertedUse.cpuBytes, MemoryBudget::Priority::Normal);
-    }
-    if (m_budget && insertedUse.gpuBytes > 0) {
-        m_budget->allocateGpu(insertedUse.gpuBytes, MemoryBudget::Priority::Normal);
+    if (m_budget) {
+        if (insertedUse.cpuBytes < replacedUse.cpuBytes) {
+            m_budget->deallocateCpu(replacedUse.cpuBytes - insertedUse.cpuBytes);
+        }
+        if (insertedUse.gpuBytes < replacedUse.gpuBytes) {
+            m_budget->deallocateGpu(replacedUse.gpuBytes - insertedUse.gpuBytes);
+        }
     }
 }
 
@@ -346,9 +371,30 @@ QList<CacheEntryInfo> ClipCache::entries() const {
     QList<CacheEntryInfo> result;
     result.reserve(m_frames.size());
     for (auto it = m_frames.cbegin(); it != m_frames.cend(); ++it) {
-        result.append({it.key(), it.value().lastAccessTime, it.value().frame.memoryUsage()});
+        const FrameHandle& frame = it.value().frame;
+        result.append({it.key(),
+                       it.value().lastAccessTime,
+                       frame.cpuMemoryUsage() + frame.gpuMemoryUsage()});
     }
     return result;
+}
+
+ClipCache::ResidencyStats ClipCache::residencyStats() const {
+    ResidencyStats stats;
+    QMutexLocker lock(&m_mutex);
+    for (auto it = m_frames.cbegin(); it != m_frames.cend(); ++it) {
+        const FrameHandle& frame = it.value().frame;
+        if (frame.isNull()) {
+            continue;
+        }
+        ++stats.totalFrames;
+        stats.hardwareFrames += frame.hasHardwareFrame() ? 1 : 0;
+        stats.cpuBackedFrames += frame.hasCpuImage() ? 1 : 0;
+        stats.gpuTextureFrames += frame.hasGpuTexture() ? 1 : 0;
+        stats.cpuBytes += frame.cpuMemoryUsage();
+        stats.gpuBytes += frame.gpuMemoryUsage();
+    }
+    return stats;
 }
 
 } // namespace editor

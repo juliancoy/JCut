@@ -114,5 +114,15 @@ QWidget *InspectorPane::buildTracksTab()
 
 void InspectorPane::refresh()
 {
-    emit refreshRequested();
+    refreshCurrentTab();
+}
+
+void InspectorPane::refreshCurrentTab()
+{
+    emit refreshCurrentTabRequested();
+}
+
+void InspectorPane::refreshTab(const QString& tabName)
+{
+    emit refreshTabRequested(tabName);
 }

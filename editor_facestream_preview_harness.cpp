@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "transcript_engine.h"
+#include "facestream_runtime.h"
 
 #include <QComboBox>
 #include <QDir>
@@ -26,7 +27,7 @@ QJsonDocument buildHarnessTranscript(double durationSeconds)
     const double boundedDuration = qMax(1.0, durationSeconds);
 
     QJsonObject word{
-        {QStringLiteral("word"), QStringLiteral("boxstream")},
+        {QStringLiteral("word"), QStringLiteral("facestream")},
         {QStringLiteral("start"), 0.0},
         {QStringLiteral("end"), boundedDuration},
         {QStringLiteral("speaker"), QStringLiteral("SPEAKER_00")}
@@ -36,7 +37,7 @@ QJsonDocument buildHarnessTranscript(double durationSeconds)
         {QStringLiteral("start"), 0.0},
         {QStringLiteral("end"), boundedDuration},
         {QStringLiteral("speaker"), QStringLiteral("SPEAKER_00")},
-        {QStringLiteral("text"), QStringLiteral("boxstream")},
+        {QStringLiteral("text"), QStringLiteral("facestream")},
         {QStringLiteral("words"), QJsonArray{word}}
     };
 
@@ -97,18 +98,18 @@ bool ensureEditableTranscriptForHarness(const TimelineClip& clip,
     return true;
 }
 
-int64_t firstBoxstreamFrameForClip(const QString& transcriptPath, const QString& clipId)
+int64_t firstFacestreamFrameForClip(const QString& transcriptPath, const QString& clipId)
 {
     TranscriptEngine engine;
     QJsonObject artifactRoot;
-    if (!engine.loadBoxstreamArtifact(transcriptPath, &artifactRoot)) {
+    if (!engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
         return -1;
     }
 
     int64_t firstFrame = std::numeric_limits<int64_t>::max();
-    const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+    const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
     const QJsonObject continuityRoot = byClip.value(clipId.trimmed()).toObject();
-    const QJsonArray streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject stream = streamValue.toObject();
         const QJsonArray keyframes = stream.value(QStringLiteral("keyframes")).toArray();
@@ -126,7 +127,7 @@ int64_t firstBoxstreamFrameForClip(const QString& transcriptPath, const QString&
 
 } // namespace
 
-bool EditorWindow::prepareVulkanBoxStreamPreviewRun(const QString& filePath,
+bool EditorWindow::prepareVulkanFaceStreamPreviewRun(const QString& filePath,
                                                     bool createHarnessTranscript,
                                                     QString* errorOut)
 {
@@ -165,7 +166,7 @@ bool EditorWindow::prepareVulkanBoxStreamPreviewRun(const QString& filePath,
     m_preview->setTimelineClips(m_timeline->clips());
     m_preview->setSelectedClipId(clip.id);
     m_preview->setShowSpeakerTrackBoxes(true);
-    m_preview->setBoxstreamOverlaySource(QStringLiteral("all"));
+    m_preview->setFacestreamOverlaySource(QStringLiteral("all"));
     m_preview->endBulkUpdate();
 
     if (!ensureEditableTranscriptForHarness(clip, createHarnessTranscript, errorOut)) {
@@ -173,9 +174,9 @@ bool EditorWindow::prepareVulkanBoxStreamPreviewRun(const QString& filePath,
     }
 
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-    const int64_t firstBoxstreamFrame = firstBoxstreamFrameForClip(transcriptPath, clip.id);
-    if (firstBoxstreamFrame >= 0) {
-        setCurrentFrame(clip.startFrame + firstBoxstreamFrame, false);
+    const int64_t firstFacestreamFrame = firstFacestreamFrameForClip(transcriptPath, clip.id);
+    if (firstFacestreamFrame >= 0) {
+        setCurrentFrame(clip.startFrame + firstFacestreamFrame, false);
     } else {
         setCurrentFrame(clip.startFrame, false);
     }
@@ -194,7 +195,7 @@ bool EditorWindow::prepareVulkanBoxStreamPreviewRun(const QString& filePath,
     return true;
 }
 
-bool EditorWindow::triggerGenerateBoxStreamForSelectedClip(QString* errorOut)
+bool EditorWindow::triggerGenerateFaceStreamForSelectedClip(QString* errorOut)
 {
     if (!m_timeline || !m_speakersTab || !m_timeline->selectedClip()) {
         setError(errorOut, QStringLiteral("No selected clip is available for Generate FaceStream."));
@@ -202,7 +203,7 @@ bool EditorWindow::triggerGenerateBoxStreamForSelectedClip(QString* errorOut)
     }
 
     m_speakersTab->refresh();
-    const bool started = m_speakersTab->generateBoxStreamForSelectedClip();
+    const bool started = m_speakersTab->generateFaceStreamForSelectedClip();
     if (!started) {
         setError(errorOut, QStringLiteral("Generate FaceStream did not start."));
         return false;
@@ -210,16 +211,44 @@ bool EditorWindow::triggerGenerateBoxStreamForSelectedClip(QString* errorOut)
     if (m_preview && m_timeline->selectedClip()) {
         m_preview->invalidateTranscriptOverlayCache(m_timeline->selectedClip()->filePath);
         m_preview->setShowSpeakerTrackBoxes(true);
-        m_preview->setBoxstreamOverlaySource(QStringLiteral("all"));
-        const int64_t firstBoxstreamFrame =
-            firstBoxstreamFrameForClip(activeTranscriptPathForClipFile(m_timeline->selectedClip()->filePath),
+        m_preview->setFacestreamOverlaySource(QStringLiteral("all"));
+        const int64_t firstFacestreamFrame =
+            firstFacestreamFrameForClip(activeTranscriptPathForClipFile(m_timeline->selectedClip()->filePath),
                                        m_timeline->selectedClip()->id);
-        if (firstBoxstreamFrame >= 0) {
-            setCurrentFrame(m_timeline->selectedClip()->startFrame + firstBoxstreamFrame, false);
+        if (firstFacestreamFrame >= 0) {
+            setCurrentFrame(m_timeline->selectedClip()->startFrame + firstFacestreamFrame, false);
         }
     }
     if (m_inspectorPane) {
-        m_inspectorPane->refresh();
+        m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
     }
+    return true;
+}
+
+bool EditorWindow::triggerDeleteFaceStreamForSelectedClip(bool confirmDialog, QString* errorOut)
+{
+    if (!m_timeline || !m_speakersTab || !m_timeline->selectedClip()) {
+        setError(errorOut, QStringLiteral("No selected clip is available for Delete FaceStream."));
+        return false;
+    }
+
+    m_speakersTab->refresh();
+    const editor::ActionResult result =
+        m_speakersTab->deleteFaceStreamForSelectedClipResult(confirmDialog, false);
+    if (!result.ok) {
+        setError(errorOut,
+                 result.message.trimmed().isEmpty()
+                     ? QStringLiteral("Delete FaceStream did not complete.")
+                     : result.message);
+        return false;
+    }
+    if (m_preview && m_timeline->selectedClip()) {
+        m_preview->invalidateTranscriptOverlayCache(m_timeline->selectedClip()->filePath);
+    }
+    if (m_inspectorPane) {
+        m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
+    }
+    refreshClipInspector();
+    updateTransportLabels();
     return true;
 }

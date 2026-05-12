@@ -1,240 +1,18 @@
 #pragma once
 
-#include <QColor>
+#include "editor_action_result.h"
+#include "editor_playback_types.h"
+#include "editor_timeline_types.h"
+
 #include <QImage>
-#include <QJsonObject>
 #include <QPointF>
 #include <QRect>
 #include <QRectF>
 #include <QSize>
-#include <QStringList>
 #include <QString>
-#include <QVector>
+#include <QStringList>
 
 #include <cstdint>
-
-enum class ClipMediaType {
-    Unknown,
-    Image,
-    Video,
-    Audio,
-    Title,
-};
-
-enum class ProxyFormat {
-    ImageSequence,  // JPEG frames in a directory (default — best compatibility)
-    H264,           // H.264 in MOV/MP4 (small files, needs sequential decode)
-    MJPEG,          // Motion JPEG in MOV (intra-frame, Linux only)
-};
-
-enum class MediaSourceKind {
-    File,
-    ImageSequence,
-};
-
-enum class TrackVisualMode {
-    Enabled,
-    ForceOpaque,
-    Hidden,
-};
-
-struct TimelineClip {
-    static constexpr int kGradingCurveLutSize = 256;
-
-    struct TransformKeyframe {
-        int64_t frame = 0;
-        qreal translationX = 0.0;
-        qreal translationY = 0.0;
-        qreal rotation = 0.0;
-        qreal scaleX = 1.0;
-        qreal scaleY = 1.0;
-        bool linearInterpolation = true;
-    };
-
-    struct GradingKeyframe {
-        int64_t frame = 0;
-        // Basic grading
-        qreal brightness = 0.0;
-        qreal contrast = 1.0;
-        qreal saturation = 1.0;
-        // Derived during evaluation; serialized opacity lives in opacityKeyframes.
-        qreal opacity = 1.0;
-        // Shadows/Midtones/Highlights (Lift/Gamma/Gain style)
-        qreal shadowsR = 0.0, shadowsG = 0.0, shadowsB = 0.0;
-        qreal midtonesR = 0.0, midtonesG = 0.0, midtonesB = 0.0;
-        qreal highlightsR = 0.0, highlightsG = 0.0, highlightsB = 0.0;
-        // Per-channel tone curve control points in normalized space [0,1]x[0,1].
-        // Endpoints are always enforced to (0,0) and (1,1).
-        QVector<QPointF> curvePointsR;
-        QVector<QPointF> curvePointsG;
-        QVector<QPointF> curvePointsB;
-        QVector<QPointF> curvePointsLuma;
-        bool curveThreePointLock = false;
-        bool curveSmoothingEnabled = true;
-        bool linearInterpolation = true;
-    };
-
-    struct TitleKeyframe {
-        int64_t frame = 0;
-        QString text;
-        qreal translationX = 0.0;
-        qreal translationY = 0.0;
-        qreal fontSize = 48.0;
-        qreal opacity = 1.0;
-        #ifdef __APPLE__
-        QString fontFamily = QStringLiteral("Helvetica Neue");
-#else
-        QString fontFamily = QStringLiteral("DejaVu Sans");
-#endif
-        bool bold = true;
-        bool italic = false;
-        QColor color = QColor(QStringLiteral("#ffffff"));
-        bool dropShadowEnabled = true;
-        QColor dropShadowColor = QColor(QStringLiteral("#000000"));
-        qreal dropShadowOpacity = 0.6;
-        qreal dropShadowOffsetX = 2.0;
-        qreal dropShadowOffsetY = 2.0;
-        bool windowEnabled = false;
-        QColor windowColor = QColor(QStringLiteral("#000000"));
-        qreal windowOpacity = 0.35;
-        qreal windowPadding = 16.0;
-        bool windowFrameEnabled = false;
-        QColor windowFrameColor = QColor(QStringLiteral("#ffffffff"));
-        qreal windowFrameOpacity = 1.0;
-        qreal windowFrameWidth = 2.0;
-        qreal windowFrameGap = 4.0;
-        bool linearInterpolation = true;
-    };
-
-    struct TranscriptOverlaySettings {
-        bool enabled = false;
-        bool showBackground = true;
-        bool showShadow = true;
-        bool showSpeakerTitle = false;
-        bool autoScroll = false;
-        bool useManualPlacement = false;
-        qreal translationX = 0.0;
-        qreal translationY = 0.0;
-        qreal boxWidth = 900.0;
-        qreal boxHeight = 220.0;
-        int maxLines = 2;
-        int maxCharsPerLine = 28;
-        #ifdef __APPLE__
-        QString fontFamily = QStringLiteral("Helvetica Neue");
-#else
-        QString fontFamily = QStringLiteral("DejaVu Sans");
-#endif
-        int fontPointSize = 42;
-        bool bold = true;
-        bool italic = false;
-        QColor textColor = QColor(QStringLiteral("#ffffff"));
-    };
-
-    struct OpacityKeyframe {
-        int64_t frame = 0;
-        qreal opacity = 1.0;
-        bool linearInterpolation = true;
-    };
-
-    struct CorrectionPolygon {
-        QVector<QPointF> pointsNormalized;
-        bool enabled = true;
-        int64_t startFrame = 0; // Clip-local frame (inclusive)
-        int64_t endFrame = -1;  // Clip-local frame (inclusive), -1 means until clip end
-    };
-
-    QString id;
-    QString filePath;
-    QString proxyPath;
-    bool useProxy = true;
-    QString label;
-    ClipMediaType mediaType = ClipMediaType::Unknown;
-    MediaSourceKind sourceKind = MediaSourceKind::File;
-    bool hasAudio = false;
-    QString audioSourceMode = QStringLiteral("embedded");
-    QString audioSourcePath;
-    QString audioSourceOriginalPath;
-    QString audioSourceStatus = QStringLiteral("unknown");
-    qint64 audioSourceLastVerifiedMs = 0;
-    qreal sourceFps = 30.0;
-    int64_t sourceDurationFrames = 0;
-    int64_t sourceInFrame = 0;
-    int64_t sourceInSubframeSamples = 0;
-    int64_t startFrame = 0;
-    int64_t startSubframeSamples = 0;
-    int64_t durationFrames = 90;
-    int trackIndex = 0;
-    qreal playbackRate = 1.0;
-    bool videoEnabled = true;
-    bool audioEnabled = true;
-    QColor color;
-    qreal brightness = 0.0;
-    qreal contrast = 1.0;
-    qreal saturation = 1.0;
-    qreal opacity = 1.0;
-    qreal baseTranslationX = 0.0;
-    qreal baseTranslationY = 0.0;
-    qreal baseRotation = 0.0;
-    qreal baseScaleX = 1.0;
-    qreal baseScaleY = 1.0;
-    bool speakerFramingEnabled = false;
-    QString speakerFramingSpeakerId;
-    qreal speakerFramingTargetXNorm = 0.5;
-    qreal speakerFramingTargetYNorm = 0.35;
-    qreal speakerFramingTargetBoxNorm = -1.0;
-    qreal speakerFramingBakedTargetXNorm = 0.5;
-    qreal speakerFramingBakedTargetYNorm = 0.35;
-    qreal speakerFramingBakedTargetBoxNorm = -1.0;
-    qreal speakerFramingMinConfidence = 0.08;
-    bool transformSkipAwareTiming = true;
-    QVector<TransformKeyframe> transformKeyframes;
-    QVector<TransformKeyframe> speakerFramingKeyframes;
-    QVector<GradingKeyframe> gradingKeyframes;
-    QVector<OpacityKeyframe> opacityKeyframes;
-    QVector<TitleKeyframe> titleKeyframes;
-    TranscriptOverlaySettings transcriptOverlay;
-    int fadeSamples = 250;  // Crossfade with previous audio clip (0 = no fade)
-    bool locked = false;    // When true, prevents temporal adjustments
-    qreal maskFeather = 0.0; // Mask feathering radius in pixels (0 = disabled, only applies to clips with alpha)
-    qreal maskFeatherGamma = 1.0; // Feather curve power (1.0 = linear, <1.0 = sharper edges, >1.0 = softer edges)
-    QVector<CorrectionPolygon> correctionPolygons; // Erase polygons in normalized source coordinates.
-};
-
-struct TimelineTrack {
-    QString name;
-    int height = 44;
-    TrackVisualMode visualMode = TrackVisualMode::Enabled;
-    bool audioEnabled = true;
-};
-
-struct ExportRangeSegment {
-    int64_t startFrame = 0;
-    int64_t endFrame = 0;
-};
-
-enum class RenderSyncAction {
-    DuplicateFrame,
-    SkipFrame,
-};
-
-enum class PlaybackClockSource {
-    Auto,
-    Audio,
-    Timeline,
-};
-
-enum class PlaybackAudioWarpMode {
-    Disabled,
-    Varispeed,
-    TimeStretch,
-};
-
-struct RenderSyncMarker {
-    QString clipId;
-    int64_t frame = 0;
-    RenderSyncAction action = RenderSyncAction::DuplicateFrame;
-    int count = 1;
-};
 
 struct MediaProbeResult {
     ClipMediaType mediaType = ClipMediaType::Unknown;
@@ -347,12 +125,27 @@ qreal samplesToFramePosition(int64_t samples);
 QRect previewCanvasBaseRectForWidget(const QRect& widgetRect,
                                      const QSize& outputSize,
                                      int marginPx = 36);
+QRectF previewCanvasBaseRectForWidgetF(const QRectF& widgetRect,
+                                       const QSize& outputSize,
+                                       qreal marginPx = 36.0);
 QRect scaledPreviewCanvasRect(const QRect& baseRect,
                               qreal previewZoom,
                               const QPointF& previewPanOffset = QPointF());
+QRectF scaledPreviewCanvasRectF(const QRectF& baseRect,
+                                qreal previewZoom,
+                                const QPointF& previewPanOffset = QPointF());
+QPointF clampedPreviewPanOffset(const QRectF& baseRect,
+                                qreal previewZoom,
+                                const QPointF& previewPanOffset);
 QPointF previewCanvasScaleForTargetRect(const QRect& targetRect,
                                         const QSize& outputSize);
+QPointF previewCanvasScaleForTargetRectF(const QRectF& targetRect,
+                                         const QSize& outputSize);
+QRect previewFitRectToBounds(const QSize& source, const QRect& bounds);
+QRectF previewFitRectToBoundsF(const QSize& source, const QRectF& bounds);
 qreal resolvedSourceFps(const TimelineClip& clip);
+qreal timelineFrameToSeconds(int64_t timelineFrame);
+QRectF normalizedCenterBoxRect(qreal xNorm, qreal yNorm, qreal boxSizeNorm, const QSizeF& frameSizePx);
 int64_t sourceFramesToSamples(const TimelineClip& clip, qreal sourceFrames);
 int64_t clipTimelineStartSamples(const TimelineClip& clip);
 int64_t clipSourceInSamples(const TimelineClip& clip);
@@ -458,6 +251,7 @@ QString transcriptEditablePathForClipFile(const QString& filePath);
 QString transcriptWorkingPathForClipFile(const QString& filePath);
 QStringList transcriptCutPathsForClipFile(const QString& filePath);
 QString activeTranscriptPathForClipFile(const QString& filePath);
+bool facestreamSidecarExistsForClipFile(const QString& filePath);
 void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath);
 void clearActiveTranscriptPathForClipFile(const QString& filePath);
 void clearAllActiveTranscriptPaths();

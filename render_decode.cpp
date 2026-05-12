@@ -186,15 +186,7 @@ QString avErrToString(int errnum) {
 }
 
 QRect fitRect(const QSize& source, const QSize& bounds) {
-    if (source.isEmpty() || bounds.isEmpty()) {
-        return QRect(QPoint(0, 0), bounds);
-    }
-
-    QSize scaled = source;
-    scaled.scale(bounds, Qt::KeepAspectRatio);
-    const QPoint topLeft((bounds.width() - scaled.width()) / 2,
-                         (bounds.height() - scaled.height()) / 2);
-    return QRect(topLeft, scaled);
+    return previewFitRectToBounds(source, QRect(QPoint(0, 0), bounds));
 }
 
 QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {

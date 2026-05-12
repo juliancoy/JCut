@@ -600,7 +600,8 @@ void AsyncDecoder::runLane(LaneState* lane) {
 
         const bool cancelled =
             request.generation != state->generation.load() ||
-            request.frameNumber < state->cancelBeforeFrame.load();
+            (request.kind != DecodeRequestKind::Visible &&
+             request.frameNumber < state->cancelBeforeFrame.load());
 
         if (!request.isExpired() && !cancelled) {
             if (!state->context) {
@@ -637,9 +638,12 @@ void AsyncDecoder::runLane(LaneState* lane) {
             }
         }
 
-        if (request.isExpired() ||
+        const bool staleAfterDecode = request.frameNumber < state->cancelBeforeFrame.load();
+        const bool discardAfterDecode =
+            request.isExpired() ||
             request.generation != state->generation.load() ||
-            request.frameNumber < state->cancelBeforeFrame.load()) {
+            (staleAfterDecode && frame.isNull());
+        if (discardAfterDecode) {
             frame = FrameHandle();
             decodedFrames.clear();
         }
@@ -799,12 +803,18 @@ void AsyncDecoder::initSharedHwDevices() {
 
         AVBufferRef* hwCtx = nullptr;
         const int ret = av_hwdevice_ctx_create(&hwCtx, type, deviceName, nullptr, 0);
+        const char* typeName = av_hwdevice_get_type_name(type);
+        const QString typeLabel = typeName
+            ? QString::fromLatin1(typeName)
+            : QStringLiteral("unknown");
         if (ret >= 0 && hwCtx) {
             m_sharedHwDevices.insert(static_cast<int>(type), hwCtx);
-            qDebug() << "AsyncDecoder: shared hw device created for type" << type;
+            qDebug() << "AsyncDecoder: shared hw device created for type" << type
+                     << "(" << typeLabel << ")";
         } else {
             qDebug() << "AsyncDecoder: shared hw device unavailable for type" << type
-                     << "— worker threads will use software decode";
+                     << "(" << typeLabel << ")"
+                     << "— decoders requiring this type will fall back";
         }
     }
 }

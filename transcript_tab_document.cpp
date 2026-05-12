@@ -81,6 +81,16 @@ QString transcriptFollowStateLabel(bool enabled)
     return enabled ? QStringLiteral("Follow Playback: On") : QStringLiteral("Follow Playback: Off");
 }
 
+bool saveTranscriptDocumentToPath(editor::TranscriptEngine* engine,
+                                  const QString& path,
+                                  const QJsonObject& root)
+{
+    if (!engine || path.trimmed().isEmpty()) {
+        return false;
+    }
+    return engine->saveTranscriptJson(path, QJsonDocument(root));
+}
+
 bool shouldSkipTranscriptDeleteConfirmation()
 {
     if (qEnvironmentVariableIntValue("JCUT_AUTOCONFIRM_TRANSCRIPT_DELETE") == 1) {
@@ -94,8 +104,6 @@ bool shouldSkipTranscriptDeleteConfirmation()
 
 void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
 {
-    m_loadedClipFilePath = clip.filePath;
-
     QString baseEditablePath;
     if (!ensureEditableTranscriptForClipFile(clip.filePath, &baseEditablePath)) {
         baseEditablePath = transcriptWorkingPathForClipFile(clip.filePath);
@@ -112,41 +120,49 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
     refreshScriptVersionSelector(clip.filePath, transcriptPath);
     setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
 
-    QFile transcriptFile(transcriptPath);
-    if (!transcriptFile.open(QIODevice::ReadOnly)) {
-        if (transcriptPath != baseEditablePath) {
-            transcriptPath = baseEditablePath;
-            refreshScriptVersionSelector(clip.filePath, transcriptPath);
-            setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
-            transcriptFile.setFileName(transcriptPath);
-            if (transcriptFile.open(QIODevice::ReadOnly)) {
-                // continue with fallback file
+    const bool canReuseLoadedDoc =
+        m_loadedTranscriptDoc.isObject() &&
+        m_loadedClipFilePath == clip.filePath &&
+        m_loadedTranscriptPath == transcriptPath;
+
+    if (!canReuseLoadedDoc) {
+        QFile transcriptFile(transcriptPath);
+        if (!transcriptFile.open(QIODevice::ReadOnly)) {
+            if (transcriptPath != baseEditablePath) {
+                transcriptPath = baseEditablePath;
+                refreshScriptVersionSelector(clip.filePath, transcriptPath);
+                setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
+                transcriptFile.setFileName(transcriptPath);
+                if (transcriptFile.open(QIODevice::ReadOnly)) {
+                    // continue with fallback file
+                } else {
+                    if (m_widgets.transcriptInspectorDetailsLabel) {
+                        m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("No transcript file found."));
+                    }
+                    return;
+                }
             } else {
                 if (m_widgets.transcriptInspectorDetailsLabel) {
                     m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("No transcript file found."));
                 }
                 return;
             }
-        } else {
-        if (m_widgets.transcriptInspectorDetailsLabel) {
-            m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("No transcript file found."));
         }
-        return;
+
+        QJsonDocument transcriptDoc;
+        if (!m_transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+            if (m_widgets.transcriptInspectorDetailsLabel) {
+                m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
+            }
+            return;
         }
+
+        m_loadedClipFilePath = clip.filePath;
+        m_loadedTranscriptPath = transcriptPath;
+        m_loadedTranscriptDoc = transcriptDoc;
     }
 
-    QJsonDocument transcriptDoc;
-    if (!m_transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
-        if (m_widgets.transcriptInspectorDetailsLabel) {
-            m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
-        }
-        return;
-    }
-
-    m_loadedTranscriptPath = transcriptPath;
-    m_loadedTranscriptDoc = transcriptDoc;
-
-    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
+    const QJsonArray segments = m_loadedTranscriptDoc.object().value(QStringLiteral("segments")).toArray();
     int totalWords = 0;
     int editedWords = 0;
     for (const QJsonValue& segValue : segments) {
@@ -158,7 +174,8 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
             }
         }
     }
-    const int deletedEdits = transcriptDoc.object().value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
+    const int deletedEdits =
+        m_loadedTranscriptDoc.object().value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
     const bool mutableCut = activeCutMutable();
     const QString activeCutName =
         m_widgets.transcriptScriptVersionCombo
@@ -947,10 +964,11 @@ void TranscriptTab::persistRenderOrderFromTable()
         segmentObj[QStringLiteral("words")] = words;
         segments.replace(key.first, segmentObj);
     }
-    root[QStringLiteral("segments")] = segments;
-    m_loadedTranscriptDoc.setObject(root);
-
-    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    const bool updated = updateLoadedTranscriptDocument([&segments](QJsonObject& loadedRoot) {
+        loadedRoot[QStringLiteral("segments")] = segments;
+        return true;
+    });
+    if (!updated || !saveLoadedTranscriptDocument()) {
         refresh();
         return;
     }
@@ -1048,7 +1066,7 @@ void TranscriptTab::onTranscriptCreateVersion()
                 segments.replace(segmentIndex, segmentObj);
             }
             root[QStringLiteral("segments")] = segments;
-            m_transcriptEngine.saveTranscriptJson(nextPath, QJsonDocument(root));
+            saveTranscriptDocumentToPath(&m_transcriptEngine, nextPath, root);
         }
     }
 
@@ -1090,7 +1108,10 @@ void TranscriptTab::onTranscriptCutLabelEdited()
         if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
             QJsonObject root = doc.object();
             root[QStringLiteral("cut_label")] = newLabel;
-            m_transcriptEngine.saveTranscriptJson(selectedPath, QJsonDocument(root));
+            if (saveTranscriptDocumentToPath(&m_transcriptEngine, selectedPath, root) &&
+                selectedPath == m_loadedTranscriptPath) {
+                m_loadedTranscriptDoc.setObject(root);
+            }
         }
     }
 

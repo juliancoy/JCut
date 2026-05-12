@@ -85,9 +85,15 @@ void TimelineCache::requestFrame(const QString& clipId,
     const qint64 requestedAtWallMs = QDateTime::currentMSecsSinceEpoch();
     const int64_t normalizedFrame = normalizeFrameNumber(clipId, frameNumber);
 
-    FrameHandle cached = m_state.load() == PlaybackState::Playing
-                             ? getPlaybackFrame(clipId, normalizedFrame)
-                             : getCachedFrame(clipId, normalizedFrame);
+    FrameHandle cached;
+    if (m_state.load() == PlaybackState::Playing) {
+        cached = getPlaybackFrame(clipId, normalizedFrame);
+        if (cached.isNull()) {
+            cached = getCachedFrame(clipId, normalizedFrame);
+        }
+    } else {
+        cached = getCachedFrame(clipId, normalizedFrame);
+    }
     if (!cached.isNull()) {
         m_hits++;
         cacheTrace(QStringLiteral("TimelineCache::requestFrame.hit"),
@@ -224,7 +230,6 @@ void TimelineCache::requestFrame(const QString& clipId,
                     FrameHandle deliveredFrame = frame;
 
                     int64_t latestVisibleTarget = canonicalFrame;
-                    bool obsoleteVisibleCompletion = false;
                     bool obsoleteVisibleRequest = false;
                     {
                         QMutexLocker pendingLock(&self->m_pendingMutex);
@@ -232,20 +237,6 @@ void TimelineCache::requestFrame(const QString& clipId,
                         obsoleteVisibleRequest =
                             self->m_state.load() == PlaybackState::Playing &&
                             canonicalFrame + kObsoleteVisibleFrameSlack < latestVisibleTarget;
-                        obsoleteVisibleCompletion =
-                            obsoleteVisibleRequest &&
-                            !deliveredFrame.isNull() &&
-                            canonicalFrame + kObsoleteVisibleFrameSlack < latestVisibleTarget;
-                    }
-
-                    if (obsoleteVisibleCompletion) {
-                        cacheTrace(QStringLiteral("TimelineCache::requestFrame.obsolete-complete"),
-                                   QStringLiteral("clip=%1 frame=%2 latest=%3 waitMs=%4")
-                                       .arg(clipId)
-                                       .arg(canonicalFrame)
-                                       .arg(latestVisibleTarget)
-                                       .arg(cacheTraceMs() - requestedAtTraceMs));
-                        deliveredFrame = FrameHandle();
                     }
 
                     if (!deliveredFrame.isNull()) {
@@ -263,6 +254,9 @@ void TimelineCache::requestFrame(const QString& clipId,
                         }
                         if (auto* cache = self->getOrCreateClipCache(clipId)) {
                             cache->insert(canonicalFrame, deliveredFrame);
+                        }
+                        if (deliveredFrame.hasHardwareFrame()) {
+                            self->enforceHardwareFrameResidencyPolicy();
                         }
                     }
 
@@ -297,8 +291,8 @@ void TimelineCache::requestFrame(const QString& clipId,
 
                     const qint64 waitMs = cacheTraceMs() - requestedAtTraceMs;
                     if (debugCacheWarnOnlyEnabled()) {
-                        if (deliveredFrame.isNull() && obsoleteVisibleRequest) {
-                            cacheWarnTrace(QStringLiteral("TimelineCache::visible-cancelled"),
+                        if (obsoleteVisibleRequest && !deliveredFrame.isNull()) {
+                            cacheWarnTrace(QStringLiteral("TimelineCache::visible-late-kept"),
                                            QStringLiteral("clip=%1 frame=%2 latest=%3 waitMs=%4 listeners=%5")
                                                .arg(clipId)
                                                .arg(canonicalFrame)
@@ -431,7 +425,7 @@ bool TimelineCache::shouldForceVisibleRequestRetry(const QString& clipId,
                                                    qint64 staleAfterMs) const {
     frameNumber = normalizeFrameNumber(clipId, frameNumber);
     const QString key = requestKey(clipId, frameNumber);
-    const qint64 now = cacheTraceMs();
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
     QMutexLocker pendingLock(&m_pendingMutex);
     const auto it = m_pendingVisibleRequests.constFind(key);
     if (it == m_pendingVisibleRequests.constEnd()) {

@@ -34,7 +34,6 @@ RenderBackend desiredRenderBackendFromEnvironment()
 {
     const QString configured = qEnvironmentVariable("JCUT_RENDER_BACKEND").trimmed();
     if (configured.isEmpty()) {
-        // Default to Vulkan unless explicitly overridden.
         return RenderBackend::Vulkan;
     }
     return parseRenderBackend(configured);
@@ -44,7 +43,6 @@ RenderBackend desiredPreviewBackendFromEnvironment()
 {
     const QString configured = qEnvironmentVariable("JCUT_PREVIEW_BACKEND").trimmed();
     if (configured.isEmpty()) {
-        // Default preview to Vulkan unless explicitly overridden.
         return RenderBackend::Vulkan;
     }
     return parseRenderBackend(configured);

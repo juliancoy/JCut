@@ -1,5 +1,6 @@
 #include "vulkan_res10_ncnn_face_detector.h"
 
+#include <QFile>
 #include <QFileInfo>
 
 #if JCUT_HAVE_NCNN
@@ -10,6 +11,7 @@
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 
 namespace jcut::vulkan_detector {
@@ -112,7 +114,17 @@ bool VulkanRes10NcnnFaceDetector::initialize(const VulkanDeviceContext& context,
     m_impl->net.opt.use_fp16_arithmetic = false;
     m_impl->net.set_vulkan_device(m_impl->vkdev.get());
 
-    if (m_impl->net.load_param(paramPath.toLocal8Bit().constData()) != 0) {
+    QFile paramFile(paramPath);
+    if (!paramFile.open(QIODevice::ReadOnly)) {
+        setError(errorMessage, QStringLiteral("failed to open Res10 ncnn param file: %1").arg(paramPath));
+        release();
+        return false;
+    }
+    QByteArray paramBytes = paramFile.readAll();
+    // Keep DetectionOutput permissive; runtime thresholding happens after extraction.
+    paramBytes.replace("1=4.500000e-01", "1=5.000000e-02");
+    paramBytes.append('\0');
+    if (m_impl->net.load_param_mem(paramBytes.constData()) != 0) {
         setError(errorMessage, QStringLiteral("failed to load Res10 ncnn param file: %1").arg(paramPath));
         release();
         return false;

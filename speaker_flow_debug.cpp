@@ -64,6 +64,27 @@ QString latestRunId(const QString& clipDebugRoot)
     return runs.isEmpty() ? QString() : runs.constFirst();
 }
 
+QString latestRunIdWithArtifact(const QString& clipDebugRoot)
+{
+    const QDir dir(clipDebugRoot);
+    const QStringList runs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
+    for (const QString& runId : runs) {
+        const QString artifactDir = dir.absoluteFilePath(runId + QStringLiteral("/facestream_artifact"));
+        const QDir artifact(artifactDir);
+        if (QFileInfo::exists(artifact.filePath(QStringLiteral("facestream.part"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("facestream.bin"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("facestream.ndjson"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.json"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.bin"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facestream.bin"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facestream.json"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("summary.json")))) {
+            return runId;
+        }
+    }
+    return {};
+}
+
 RunContext openLatestOrCreateRun(const QString& transcriptPath,
                                  const QString& clipId,
                                  const QString& videoStem)
@@ -247,4 +268,3 @@ void persistIndex(const QString& indexPath,
 }
 
 } // namespace speaker_flow_debug
-

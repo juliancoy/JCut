@@ -1,6 +1,7 @@
 #pragma once
 
-#include "editor_shared.h"
+#include "editor_playback_types.h"
+#include "editor_timeline_types.h"
 
 #include <QContextMenuEvent>
 #include <QDir>
@@ -123,8 +124,8 @@ public:
     std::function<void(const QString&)> createProxyRequested;
     std::function<void(const QString&)> continueProxyRequested;
     std::function<void(const QString&)> deleteProxyRequested;
-    std::function<void(const QString&)> generateBoxStreamRequested;
-    std::function<void(const QString&)> deleteBoxStreamRequested;
+    std::function<void(const QString&)> generateFaceStreamRequested;
+    std::function<void(const QString&)> deleteFaceStreamRequested;
     std::function<void(const QSet<QString>&)> syncRequested;
     std::function<void()> exportRangeChanged;
     std::function<void()> toolModeChanged;

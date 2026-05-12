@@ -30,6 +30,9 @@ constexpr qint64 kVisiblePendingRetryMs = 250;
 constexpr qint64 kSeekResyncWindowMs = 400;
 constexpr qint64 kCancelBeforeMinIntervalMs = 45;
 constexpr int64_t kCancelBeforeMinFrameAdvance = 6;
+constexpr double kHardwareFrameTargetGpuFraction = 0.60;
+constexpr size_t kHardwareFrameMinCap = 12;
+constexpr size_t kHardwareFrameMaxCap = 240;
 
 QElapsedTimer& cacheTraceTimer() {
     static QElapsedTimer timer = []() {
@@ -469,6 +472,39 @@ double TimelineCache::cacheHitRate() const {
     return static_cast<double>(m_hits.load()) / req;
 }
 
+QJsonObject TimelineCache::cacheResidencySnapshot() const {
+    size_t totalFrames = 0;
+    size_t hardwareFrames = 0;
+    size_t cpuBackedFrames = 0;
+    size_t gpuTextureFrames = 0;
+    size_t totalCpuBytes = 0;
+    size_t totalGpuBytes = 0;
+
+    QMutexLocker lock(&m_clipsMutex);
+    for (auto cacheIt = m_caches.cbegin(); cacheIt != m_caches.cend(); ++cacheIt) {
+        ClipCache* cache = cacheIt.value();
+        if (!cache) {
+            continue;
+        }
+        const ClipCache::ResidencyStats stats = cache->residencyStats();
+        totalFrames += stats.totalFrames;
+        hardwareFrames += stats.hardwareFrames;
+        cpuBackedFrames += stats.cpuBackedFrames;
+        gpuTextureFrames += stats.gpuTextureFrames;
+        totalCpuBytes += stats.cpuBytes;
+        totalGpuBytes += stats.gpuBytes;
+    }
+
+    return QJsonObject{
+        {QStringLiteral("total_cached_frames"), static_cast<qint64>(totalFrames)},
+        {QStringLiteral("hardware_frames"), static_cast<qint64>(hardwareFrames)},
+        {QStringLiteral("cpu_backed_frames"), static_cast<qint64>(cpuBackedFrames)},
+        {QStringLiteral("gpu_texture_frames"), static_cast<qint64>(gpuTextureFrames)},
+        {QStringLiteral("cpu_bytes"), static_cast<qint64>(totalCpuBytes)},
+        {QStringLiteral("gpu_bytes"), static_cast<qint64>(totalGpuBytes)}
+    };
+}
+
 void TimelineCache::clearCache() {
     QMutexLocker lock(&m_clipsMutex);
 
@@ -491,8 +527,10 @@ void TimelineCache::trimCache() {
         return;
     }
 
-    const size_t targetMemory =
-        m_budget ? static_cast<size_t>(m_budget->maxCpuMemory() * 0.7) : (192 * 1024 * 1024);
+    const size_t targetMemory = m_budget
+        ? std::min(static_cast<size_t>(m_budget->maxCpuMemory() * 0.7),
+                   static_cast<size_t>(m_budget->maxGpuMemory() * 0.7))
+        : (192 * 1024 * 1024);
     evictOldestFrames(targetMemory);
     m_trimInProgress.store(false);
 }
@@ -586,6 +624,10 @@ void TimelineCache::onFrameDecoded(FrameHandle frame) {
             cache->insert(target.second, frame);
         }
         emit frameLoaded(target.first, target.second, frame);
+    }
+
+    if (frame.hasHardwareFrame()) {
+        enforceHardwareFrameResidencyPolicy();
     }
 }
 
@@ -941,10 +983,11 @@ void TimelineCache::schedulePredictiveLoads() {
         return;
     }
 
-    const int lookahead = qBound(6,
+    const int lookaheadCap = qMax(1, qMin(m_lookaheadFrames, pendingVisible > 0 ? 12 : 20));
+    const int lookahead = qBound(1,
                                  static_cast<int>(std::ceil(qMax(1.0, speed) *
                                                             (pendingVisible > 0 ? 6.0 : 10.0))),
-                                 qMin(m_lookaheadFrames, pendingVisible > 0 ? 12 : 20));
+                                 lookaheadCap);
     int scheduledThisTick = 0;
 
     QVector<ExportRangeSegment> exportRanges;
@@ -1329,6 +1372,39 @@ void TimelineCache::evictOldestFrames(size_t targetMemory) {
         current = (current > entry.memory) ? (current - entry.memory) : 0;
         emit frameEvicted(entry.clipId, entry.frameNumber);
     }
+}
+
+void TimelineCache::enforceHardwareFrameResidencyPolicy() {
+    if (!m_budget) {
+        return;
+    }
+
+    const QJsonObject residency = cacheResidencySnapshot();
+    const size_t hardwareFrames = static_cast<size_t>(
+        qMax<qint64>(0, residency.value(QStringLiteral("hardware_frames")).toVariant().toLongLong()));
+    const size_t gpuBytes = static_cast<size_t>(
+        qMax<qint64>(0, residency.value(QStringLiteral("gpu_bytes")).toVariant().toLongLong()));
+    if (hardwareFrames == 0 || gpuBytes == 0) {
+        return;
+    }
+
+    const size_t avgGpuBytesPerHardwareFrame = qMax<size_t>(1, gpuBytes / hardwareFrames);
+    const size_t gpuTargetBytes = static_cast<size_t>(
+        static_cast<double>(m_budget->maxGpuMemory()) * kHardwareFrameTargetGpuFraction);
+    const size_t capByBytes = qMax<size_t>(1, gpuTargetBytes / avgGpuBytesPerHardwareFrame);
+    const size_t hardwareFrameCap = qBound(kHardwareFrameMinCap, capByBytes, kHardwareFrameMaxCap);
+
+    const bool overCap = hardwareFrames > hardwareFrameCap;
+    const bool pressureTrim = m_budget->gpuPressure() > 0.85;
+    if (!overCap && !pressureTrim) {
+        return;
+    }
+
+    const size_t overCount = overCap ? (hardwareFrames - hardwareFrameCap) : 0;
+    const size_t bytesToShed = overCount * avgGpuBytesPerHardwareFrame;
+    const size_t currentMemory = totalMemoryUsage();
+    const size_t targetMemory = bytesToShed >= currentMemory ? 0 : (currentMemory - bytesToShed);
+    evictOldestFrames(targetMemory);
 }
 
 } // namespace editor

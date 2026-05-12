@@ -1138,6 +1138,9 @@ QString interactivePreviewMediaPathForClip(const TimelineClip& clip) {
         if (path.isEmpty()) {
             return false;
         }
+        if (isImageSequencePath(path)) {
+            return true;
+        }
         const MediaProbeResult probe = probeMediaFile(path, durationFrames / kTimelineFps);
         const QString suffix = QFileInfo(path).suffix().toLower();
         const bool disallowAlphaProresMov =

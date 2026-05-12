@@ -9,15 +9,19 @@
 #include <QStringList>
 #include <functional>
 
-#include "editor_shared.h"
+#include "editor_action_result.h"
+#include "editor_playback_types.h"
+#include "editor_timeline_types.h"
 #include "table_tab_base.h"
 
 class QLabel;
+class QListWidget;
 class QPushButton;
 class QDoubleSpinBox;
 class QCheckBox;
 class QPlainTextEdit;
 class QTimer;
+class SpeakersTable;
 
 class SpeakersTab : public TableTabBase {
     Q_OBJECT
@@ -28,6 +32,7 @@ public:
         QLabel* speakersInspectorDetailsLabel = nullptr;
         QTableWidget* speakersTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
+        QListWidget* selectedSpeakerFaceStreamsList = nullptr;
         QLabel* selectedSpeakerRef1ImageLabel = nullptr;
         QLabel* selectedSpeakerRef2ImageLabel = nullptr;
         QPushButton* selectedSpeakerPreviousSentenceButton = nullptr;
@@ -40,7 +45,8 @@ public:
         QPushButton* speakerPickReference2Button = nullptr;
         QPushButton* speakerClearReferencesButton = nullptr;
         QPushButton* speakerRunAutoTrackButton = nullptr;
-        QPushButton* speakerBoxstreamSettingsButton = nullptr;
+        QPushButton* speakerViewFacestreamButton = nullptr;
+        QPushButton* speakerFacestreamSettingsButton = nullptr;
         QPushButton* speakerEnableTrackingButton = nullptr;
         QPushButton* speakerDisableTrackingButton = nullptr;
         QPushButton* speakerDeletePointstreamButton = nullptr;
@@ -60,8 +66,8 @@ public:
         QLabel* speakerPointstreamChipLabel = nullptr;
         QPushButton* speakerTrackingChipButton = nullptr;
         QPushButton* speakerStabilizeChipButton = nullptr;
-        QTableWidget* speakerBoxStreamTable = nullptr;
-        QPlainTextEdit* speakerBoxStreamDetailsEdit = nullptr;
+        QTableWidget* speakerFaceStreamTable = nullptr;
+        QPlainTextEdit* speakerFaceStreamDetailsEdit = nullptr;
     };
 
     struct Dependencies : public TableTabBase::Dependencies {
@@ -78,13 +84,24 @@ public:
 
     void wire();
     void refresh();
-    bool generateBoxStreamForSelectedClip();
-    bool deleteBoxStreamForSelectedClip(bool confirmDialog = true);
+    bool generateFaceStreamForSelectedClip();
+    bool deleteFaceStreamForSelectedClip(bool confirmDialog = true,
+                                         QString* errorOut = nullptr);
+    editor::ActionResult deleteFaceStreamForSelectedClipResult(bool confirmDialog = true,
+                                                               bool interactive = true);
     bool handlePreviewPoint(const QString& clipId, qreal xNorm, qreal yNorm);
     bool handlePreviewBox(const QString& clipId, qreal xNorm, qreal yNorm, qreal boxSizeNorm);
+    bool handlePreviewFaceStreamBox(const QString& clipId,
+                                    int trackId,
+                                    const QString& streamId,
+                                    int64_t sourceFrame,
+                                    qreal xNorm,
+                                    qreal yNorm,
+                                    qreal boxSizeNorm);
     bool runAiFindSpeakerNames();
     bool runAiFindOrganizations();
     bool runAiCleanSpuriousAssignments();
+    bool rebuildProcessedFaceStreamForSelectedClip(bool interactive = true);
 
 signals:
     void transcriptDocumentChanged();
@@ -103,7 +120,8 @@ private slots:
     void onSpeakerRandomSentenceClicked();
     void onSpeakerClearReferencesClicked();
     void onSpeakerRunAutoTrackClicked();
-    void onSpeakerBoxStreamSettingsClicked();
+    void onSpeakerViewFaceStreamClicked();
+    void onSpeakerFaceStreamSettingsClicked();
     void onSpeakerEnableTrackingClicked();
     void onSpeakerDisableTrackingClicked();
     void onSpeakerDeletePointstreamClicked();
@@ -116,7 +134,9 @@ private slots:
     void onSpeakerApplyFramingToClipChanged(bool checked);
 
 private:
-    void requestRefreshBoxStreamPathsPanel();
+    bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
+    bool saveLoadedTranscriptDocument();
+    void requestRefreshFaceStreamPathsPanel();
     enum class SentenceNavAction {
         Previous,
         Next,
@@ -124,12 +144,32 @@ private:
     };
 
     bool eventFilter(QObject* watched, QEvent* event) override;
-    void refreshBoxStreamPathsPanel();
+    void refreshFaceStreamPathsPanel();
     bool openReferencePreviewWindow(int referenceIndex);
     QPixmap referenceFullFramePreview(const TimelineClip& clip,
                                       const QString& speakerId,
                                       const QJsonObject& refObj,
                                       QSize targetSize = QSize(960, 540));
+    QPixmap faceStreamPreviewAvatar(const TimelineClip& clip,
+                                    const QString& speakerId,
+                                    const QJsonObject& keyframeObj,
+                                    int size = 72) const;
+    QVector<QPixmap> assignedFaceStreamPreviewPixmaps(const TimelineClip& clip,
+                                                      const QString& speakerId) const;
+    QString assignedFaceStreamPreviewTooltipHtml(const TimelineClip& clip,
+                                                 const QString& speakerId) const;
+    QJsonArray continuityStreamsForClip(const TimelineClip& clip) const;
+    QJsonObject resolveFaceStreamAssignmentRow(const TimelineClip& clip,
+                                               const QJsonArray& streams,
+                                               const QJsonObject& row) const;
+    QHash<int, QString> resolvedIdentityByTrackId(const TimelineClip& clip,
+                                                  const QJsonArray& streams) const;
+    QVector<int> resolvedAssignedTrackIdsForSpeaker(const TimelineClip& clip,
+                                                    const QJsonArray& streams,
+                                                    const QString& speakerId) const;
+    void showSpeakerAvatarHoverPreview(const QString& speakerId, const QPoint& globalPos);
+    void hideSpeakerAvatarHoverPreview();
+    bool selectedClipHasFaceStreamSidecars() const;
     bool clipSupportsTranscript(const TimelineClip& clip) const;
     bool activeCutMutable() const;
     QString originalTranscriptPathForClip(const QString& clipFilePath) const;
@@ -192,7 +232,7 @@ private:
     QString m_loadedTranscriptPath;
     QString m_loadedClipFilePath;
     QJsonDocument m_loadedTranscriptDoc;
-    QHash<QString, QPixmap> m_avatarCache;
+    mutable QHash<QString, QPixmap> m_avatarCache;
     int m_pendingReferencePick = 0;
     bool m_selectedAvatarDragActive = false;
     int m_selectedAvatarDragReferenceIndex = 0;
@@ -204,9 +244,10 @@ private:
     bool m_updatingSpeakerFramingTargetControls = false;
     QString m_lastSelectionSeekSpeakerId;
     QString m_lastSelectionSeekClipId;
-    bool m_refreshingBoxStreamPathsPanel = false;
+    bool m_refreshingFaceStreamPathsPanel = false;
     bool m_boxStreamPanelRefreshQueued = false;
     QTimer* m_boxStreamPanelRefreshTimer = nullptr;
     QString m_boxStreamPanelRefreshSignature;
     QJsonArray m_boxStreamPanelRows;
+    mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
 };

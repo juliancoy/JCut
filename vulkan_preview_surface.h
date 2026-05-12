@@ -2,6 +2,7 @@
 
 #include "preview_interaction_state.h"
 #include "preview_surface.h"
+#include "facestream_time_mapping.h"
 #include "debug_controls.h"
 
 #include <QJsonObject>
@@ -39,6 +40,7 @@ public:
     void setTimelineTracks(const QVector<TimelineTrack>& tracks) override;
     void setRenderSyncMarkers(const QVector<RenderSyncMarker>& markers) override;
     void setExportRanges(const QVector<ExportRangeSegment>& ranges) override;
+    void setUseProxyMedia(bool useProxyMedia) override;
     void invalidateTranscriptOverlayCache(const QString& clipFilePath = QString()) override;
     void beginBulkUpdate() override;
     void endBulkUpdate() override;
@@ -56,7 +58,7 @@ public:
     void setPreviewZoom(qreal zoom) override;
     void setShowSpeakerTrackPoints(bool show) override;
     void setShowSpeakerTrackBoxes(bool show) override;
-    void setBoxstreamOverlaySource(const QString& source) override;
+    void setFacestreamOverlaySource(const QString& source) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
     void setAudioWaveformVisible(bool visible) override;
     bool audioSpeakerHoverModalEnabled() const override;
@@ -67,10 +69,12 @@ public:
     AudioDynamicsSettings audioDynamicsSettings() const override;
     void setTranscriptOverlayInteractionEnabled(bool enabled) override;
     void setTitleOverlayInteractionOnly(bool enabled) override;
+    void setFaceStreamAssignmentInteractionEnabled(bool enabled) override;
     void setCorrectionDrawMode(bool enabled) override;
     bool correctionDrawMode() const override;
     bool transcriptOverlayInteractionEnabled() const override;
     bool titleOverlayInteractionOnly() const override;
+    bool faceStreamAssignmentInteractionEnabled() const override;
     void setCorrectionDraftPoints(const QVector<QPointF>& points) override;
     qreal previewZoom() const override;
     void resetPreviewPan() override;
@@ -84,26 +88,32 @@ public:
     bool preparePlaybackAdvanceSample(int64_t targetSample) override;
     bool warmPlaybackLookahead(int futureFrames, int timeoutMs) override;
     QImage latestPresentedFrameImageForClip(const QString& clipId) const override;
+    QVector<PipelineStageSnapshot> livePipelineSnapshots() const override;
     QJsonObject profilingSnapshot() const override;
     void resetProfilingStats() override;
     bool selectedOverlayIsTranscript() const override;
 
 private:
-    struct BoxstreamKeyframe {
+    struct FacestreamKeyframe {
         int64_t frame = -1;
         QRectF boxNorm;
+        qreal xNorm = 0.5;
+        qreal yNorm = 0.5;
+        qreal boxSizeNorm = -1.0;
+        bool hasCenterBox = false;
         qreal confidence = 0.0;
         QString source;
     };
-    struct BoxstreamTrack {
+    struct FacestreamTrack {
         QString streamId;
         QString source;
         int trackId = -1;
-        QVector<BoxstreamKeyframe> keyframes;
+        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+        QVector<FacestreamKeyframe> keyframes;
     };
-    struct BoxstreamOverlayCacheEntry {
+    struct FacestreamOverlayCacheEntry {
         QString signature;
-        QVector<BoxstreamTrack> tracks;
+        QVector<FacestreamTrack> tracks;
     };
 
     void requestNativeUpdate();
@@ -112,9 +122,9 @@ private:
     void registerVisibleClips();
     void requestFramesForCurrentPosition();
     void refreshVulkanFrameStatuses();
-    void refreshBoxstreamOverlays();
-    QVector<BoxstreamTrack> loadBoxstreamTracksForClip(const TimelineClip& clip);
-    QVector<BoxstreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
+    void refreshFacestreamOverlays();
+    QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip);
+    QVector<FacestreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
                                                          const QJsonObject& artifactRoot) const;
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
@@ -124,11 +134,11 @@ private:
     std::unique_ptr<editor::AsyncDecoder> m_decoder;
     std::unique_ptr<editor::TimelineCache> m_cache;
     QSet<QString> m_registeredClips;
-    QHash<QString, BoxstreamOverlayCacheEntry> m_boxstreamOverlayCache;
+    QHash<QString, FacestreamOverlayCacheEntry> m_facestreamOverlayCache;
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
     QString m_failureReason;
-    QString m_boxstreamOverlaySource;
+    QString m_facestreamOverlaySource;
     QString m_activeAudioClipLabel;
     bool m_hideOutsideOutputWindow = true;
     bool m_bypassGrading = false;
@@ -138,7 +148,8 @@ private:
     bool m_showSpeakerTrackBoxes = true;
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
-    bool m_forcedZeroCopyDecodePreference = false;
+    bool m_useProxyMedia = false;
+    bool m_forcedPreviewDecodePreference = false;
     editor::DecodePreference m_previousDecodePreference = editor::DecodePreference::Hardware;
     bool m_bulkUpdating = false;
     int m_bulkDepth = 0;
@@ -148,4 +159,18 @@ private:
     int m_frameStatusMissingCount = 0;
     int m_frameStatusHardwareCount = 0;
     int m_frameStatusCpuCount = 0;
+    int64_t m_lastVisibleRequestFrame = -1;
+    QString m_lastVisibleRequestClipId;
+    QString m_lastVisibleRequestDecision;
+    QString m_lastVisibleRequestBlockReason;
+    bool m_lastVisibleRequestCached = false;
+    bool m_lastVisibleRequestPending = false;
+    bool m_lastVisibleRequestForceRetry = false;
+    int m_lastVisibleRequestBacklog = 0;
+    int64_t m_visibleRequestAttempts = 0;
+    int64_t m_visibleRequestDispatched = 0;
+    int64_t m_visibleRequestBlocked = 0;
+    int64_t m_visibleRequestCallbacks = 0;
+    int64_t m_visibleRequestNullCallbacks = 0;
+    QString m_lastVisibleRequestCallbackPayload;
 };

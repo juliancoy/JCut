@@ -27,7 +27,8 @@ AssignmentDialogResult showFaceFindWindow(
     const QHash<QString, QString>& speakerLabels,
     const QStringList& suggestedSpeakerIds,
     const QStringList& autoSuggestedSpeakerIds,
-    const QStringList& defaultSourceLabels)
+    const QStringList& defaultSourceLabels,
+    const QString& clusterSummaryText)
 {
     AssignmentDialogResult result;
     if (candidates.isEmpty() || speakerIds.isEmpty()) {
@@ -35,32 +36,47 @@ AssignmentDialogResult showFaceFindWindow(
     }
 
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("FaceFind: Assign Pre-cropped Face Candidates"));
-    dialog.resize(920, 560);
+    dialog.setWindowTitle(QStringLiteral("FaceFind: Assign FaceStream Clusters"));
+    dialog.resize(1040, 600);
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
     auto* intro = new QLabel(
-        QStringLiteral("Review sampled face crops, then assign each crop to a transcript speaker. "
-                       "Auto suggestions are preselected from transcript timing; manual speaker ID override is optional. "
-                       "On apply, assignments fill only empty Ref1/Ref2 slots."),
+        QStringLiteral("Review same-person FaceStream clusters, then assign each cluster to a transcript speaker. "
+                       "Auto suggestions are preselected from transcript timing and persisted mappings; manual speaker ID override is optional. "
+                       "On apply, cluster members are expanded into the final track-to-speaker map."),
         &dialog);
     intro->setWordWrap(true);
     layout->addWidget(intro);
+    if (!clusterSummaryText.trimmed().isEmpty()) {
+        auto* clusterSummary = new QLabel(clusterSummaryText.trimmed(), &dialog);
+        clusterSummary->setWordWrap(true);
+        clusterSummary->setStyleSheet(
+            QStringLiteral("QLabel {"
+                           " background: #1f2a33;"
+                           " border: 1px solid #3f5363;"
+                           " border-radius: 6px;"
+                           " color: #d7e7f3;"
+                           " padding: 8px;"
+                           "}"));
+        layout->addWidget(clusterSummary);
+    }
 
     auto* table = new QTableWidget(&dialog);
-    table->setColumnCount(9);
+    table->setColumnCount(11);
     table->setHorizontalHeaderLabels(
         QStringList{
             QStringLiteral("Crop"),
+            QStringLiteral("Cluster"),
+            QStringLiteral("Tracks"),
             QStringLiteral("Frame"),
-            QStringLiteral("Track"),
             QStringLiteral("X"),
             QStringLiteral("Y"),
             QStringLiteral("Box"),
             QStringLiteral("Default Source"),
             QStringLiteral("Assign To (Auto)"),
-            QStringLiteral("Manual Speaker ID (Override)")});
+            QStringLiteral("Manual Speaker ID (Override)"),
+            QStringLiteral("Cluster Status")});
     table->setRowCount(candidates.size());
     table->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -73,9 +89,10 @@ AssignmentDialogResult showFaceFindWindow(
     table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
     table->horizontalHeader()->setSectionResizeMode(7, QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setSectionResizeMode(8, QHeaderView::Stretch);
+    table->horizontalHeader()->setSectionResizeMode(8, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(9, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(10, QHeaderView::Stretch);
 
     auto* allowNewSpeakerIdsCheck = new QCheckBox(
         QStringLiteral("Allow creating new speaker IDs from manual override"),
@@ -98,12 +115,22 @@ AssignmentDialogResult showFaceFindWindow(
         cropItem->setToolTip(QStringLiteral("score=%1").arg(QString::number(candidate.score, 'f', 3)));
         cropItem->setSizeHint(QSize(88, 88));
         table->setItem(row, 0, cropItem);
-        table->setItem(row, 1, new QTableWidgetItem(QString::number(candidate.frame)));
-        table->setItem(row, 2, new QTableWidgetItem(
-            candidate.trackId >= 0 ? QStringLiteral("T%1").arg(candidate.trackId) : QStringLiteral("-")));
-        table->setItem(row, 3, new QTableWidgetItem(QString::number(candidate.x, 'f', 3)));
-        table->setItem(row, 4, new QTableWidgetItem(QString::number(candidate.y, 'f', 3)));
-        table->setItem(row, 5, new QTableWidgetItem(QString::number(candidate.box, 'f', 3)));
+        table->setItem(row, 1, new QTableWidgetItem(
+            candidate.clusterId.isEmpty() ? QStringLiteral("person_%1").arg(row + 1, 3, 10, QLatin1Char('0')) : candidate.clusterId));
+        QStringList trackLabels;
+        const QVector<int> memberTracks = candidate.clusterTrackIds.isEmpty()
+            ? QVector<int>{candidate.trackId}
+            : candidate.clusterTrackIds;
+        for (int trackId : memberTracks) {
+            if (trackId >= 0) {
+                trackLabels.push_back(QStringLiteral("T%1").arg(trackId));
+            }
+        }
+        table->setItem(row, 2, new QTableWidgetItem(trackLabels.isEmpty() ? QStringLiteral("-") : trackLabels.join(QStringLiteral(", "))));
+        table->setItem(row, 3, new QTableWidgetItem(QString::number(candidate.frame)));
+        table->setItem(row, 4, new QTableWidgetItem(QString::number(candidate.x, 'f', 3)));
+        table->setItem(row, 5, new QTableWidgetItem(QString::number(candidate.y, 'f', 3)));
+        table->setItem(row, 6, new QTableWidgetItem(QString::number(candidate.box, 'f', 3)));
 
         const QString defaultSource =
             (row < defaultSourceLabels.size())
@@ -113,14 +140,14 @@ AssignmentDialogResult showFaceFindWindow(
         sourceItem->setFlags(sourceItem->flags() & ~Qt::ItemIsEditable);
         sourceItem->setToolTip(
             QStringLiteral("Shows how the default assignment was selected."));
-        table->setItem(row, 6, sourceItem);
+        table->setItem(row, 7, sourceItem);
 
         auto* assignCombo = new QComboBox(table);
         assignCombo->addItem(QStringLiteral("Skip"), QString());
         for (const QString& speakerId : speakerIds) {
             assignCombo->addItem(speakerLabels.value(speakerId, speakerId), speakerId);
         }
-        table->setCellWidget(row, 7, assignCombo);
+        table->setCellWidget(row, 8, assignCombo);
         if (row < suggestedSpeakerIds.size()) {
             const int suggestedIndex = assignCombo->findData(suggestedSpeakerIds.at(row));
             if (suggestedIndex >= 0) {
@@ -130,7 +157,14 @@ AssignmentDialogResult showFaceFindWindow(
 
         auto* manualIdEdit = new QLineEdit(table);
         manualIdEdit->setPlaceholderText(QStringLiteral("Optional: type speaker ID"));
-        table->setCellWidget(row, 8, manualIdEdit);
+        table->setCellWidget(row, 9, manualIdEdit);
+        auto* statusItem = new QTableWidgetItem(
+            candidate.clusterStatus.isEmpty()
+                ? QStringLiteral("%1").arg(QString::number(candidate.clusterConfidence, 'f', 2))
+                : QStringLiteral("%1 (%2)").arg(candidate.clusterStatus, QString::number(candidate.clusterConfidence, 'f', 2)));
+        statusItem->setFlags(statusItem->flags() & ~Qt::ItemIsEditable);
+        statusItem->setToolTip(QStringLiteral("Cluster confidence/status. Use diagnostics artifact for pairwise details."));
+        table->setItem(row, 10, statusItem);
         table->setRowHeight(row, 92);
     }
     layout->addWidget(table, 1);
@@ -148,8 +182,8 @@ AssignmentDialogResult showFaceFindWindow(
 
     auto applyDefaults = [&](const QStringList& suggestedIds, const QString& sourceLabel) {
         for (int row = 0; row < table->rowCount(); ++row) {
-            auto* combo = qobject_cast<QComboBox*>(table->cellWidget(row, 7));
-            auto* sourceItem = table->item(row, 6);
+            auto* combo = qobject_cast<QComboBox*>(table->cellWidget(row, 8));
+            auto* sourceItem = table->item(row, 7);
             if (!combo) {
                 continue;
             }
@@ -196,8 +230,8 @@ AssignmentDialogResult showFaceFindWindow(
         QStringList unknownIds;
 
         for (int row = 0; row < table->rowCount(); ++row) {
-            auto* combo = qobject_cast<QComboBox*>(table->cellWidget(row, 7));
-            auto* manualIdEdit = qobject_cast<QLineEdit*>(table->cellWidget(row, 8));
+            auto* combo = qobject_cast<QComboBox*>(table->cellWidget(row, 8));
+            auto* manualIdEdit = qobject_cast<QLineEdit*>(table->cellWidget(row, 9));
             if (!combo || !manualIdEdit) {
                 continue;
             }
@@ -214,10 +248,19 @@ AssignmentDialogResult showFaceFindWindow(
                 {QStringLiteral("box"), c.box},
                 {QStringLiteral("score"), c.score},
                 {QStringLiteral("track_id"), c.trackId},
+                {QStringLiteral("cluster_id"), c.clusterId},
                 {QStringLiteral("auto_selected"), combo->currentData().toString().trimmed()},
                 {QStringLiteral("manual_override"), manualSpeakerId},
                 {QStringLiteral("resolved_speaker_id"), speakerId}
             };
+            QJsonArray memberTrackIds;
+            const QVector<int> trackIds = c.clusterTrackIds.isEmpty() ? QVector<int>{c.trackId} : c.clusterTrackIds;
+            for (int trackId : trackIds) {
+                if (trackId >= 0) {
+                    memberTrackIds.push_back(trackId);
+                }
+            }
+            assignmentRow[QStringLiteral("track_ids")] = memberTrackIds;
             if (speakerId.isEmpty()) {
                 assignmentRow[QStringLiteral("decision")] = QStringLiteral("skipped");
                 result.assignmentTableRows.push_back(assignmentRow);

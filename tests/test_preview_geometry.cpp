@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "../editor_shared.h"
+#include "../preview_view_transform.h"
 
 namespace {
 
@@ -51,6 +52,14 @@ private slots:
     void testTranscriptOverlayRectScalesProportionallyWithZoom();
     void testTranscriptOverlayRectMapsToTargetCenterAtZeroTranslation();
     void testBaseCanvasScaleIsZoomInvariantForTextMetrics();
+    void testViewTransformAllowsBoundedZoomedOutMouseAnchor();
+    void testViewTransformAnchoredZoomPreservesMouseOutputPoint();
+    void testViewTransformRoundTripsOutputAndScreenPoints();
+    void testAnchoredResizeTranslationKeepsLeftEdgeFixed();
+    void testAnchoredResizeTranslationKeepsTopLeftCornerFixed();
+    void testClipGeometryMapsNormalizedPointToBounds();
+    void testFittedClipRectUsesStableSourceSizeBeforePayloadSize();
+    void testWheelZoomHelperPreservesAnchorPoint();
 };
 
 void TestPreviewGeometry::testPreviewCanvasBaseRectKeepsOutputAspect() {
@@ -142,6 +151,171 @@ void TestPreviewGeometry::testBaseCanvasScaleIsZoomInvariantForTextMetrics() {
     QVERIFY(std::abs(baseScale.y() - previewCanvasScaleForTargetRect(zoom1Rect, outputSize).y()) < 0.0001);
     QVERIFY(zoomedScale.x() > baseScale.x());
     QVERIFY(zoomedScale.y() > baseScale.y());
+}
+
+void TestPreviewGeometry::testViewTransformAllowsBoundedZoomedOutMouseAnchor() {
+    const QRectF widgetRect(0, 0, 1280, 720);
+    const QSize outputSize(1080, 1920);
+    const PreviewViewTransform transform(widgetRect, outputSize, 36.0, 0.5, QPointF(-500.0, 250.0));
+
+    QVERIFY(transform.clampedPan().x() < 0.0);
+    QVERIFY(transform.clampedPan().y() > 0.0);
+    QVERIFY(transform.targetRect().left() >= transform.baseRect().left() - 0.0001);
+    QVERIFY(transform.targetRect().right() <= transform.baseRect().right() + 0.0001);
+    QVERIFY(transform.targetRect().top() >= transform.baseRect().top() - 0.0001);
+    QVERIFY(transform.targetRect().bottom() <= transform.baseRect().bottom() + 0.0001);
+}
+
+void TestPreviewGeometry::testViewTransformAnchoredZoomPreservesMouseOutputPoint() {
+    const QRectF widgetRect(0, 0, 1280, 720);
+    const QSize outputSize(1080, 1920);
+    const PreviewViewTransform oldTransform(widgetRect, outputSize, 36.0, 1.2, QPointF(40.0, -20.0));
+    const QPointF mousePoint(700.0, 250.0);
+    const QPointF outputUnderMouse = oldTransform.screenToOutput(mousePoint);
+    const qreal nextZoom = 1.8;
+    const QPointF nextPan = PreviewViewTransform::panForAnchoredZoom(
+        oldTransform.baseRect(),
+        oldTransform.targetRect(),
+        mousePoint,
+        nextZoom);
+    const PreviewViewTransform nextTransform(widgetRect, outputSize, 36.0, nextZoom, nextPan);
+    const QPointF nextScreenPoint = nextTransform.outputToScreen(outputUnderMouse);
+
+    QVERIFY(std::abs(nextScreenPoint.x() - mousePoint.x()) < 0.0001);
+    QVERIFY(std::abs(nextScreenPoint.y() - mousePoint.y()) < 0.0001);
+}
+
+void TestPreviewGeometry::testViewTransformRoundTripsOutputAndScreenPoints() {
+    const QRectF widgetRect(0, 0, 1280, 720);
+    const QSize outputSize(1080, 1920);
+    const PreviewViewTransform transform(widgetRect, outputSize, 36.0, 2.0, QPointF(80.0, -40.0));
+    const QPointF outputPoint(270.0, 1440.0);
+    const QPointF screenPoint = transform.outputToScreen(outputPoint);
+    const QPointF roundTrip = transform.screenToOutput(screenPoint);
+
+    QVERIFY(std::abs(roundTrip.x() - outputPoint.x()) < 0.0001);
+    QVERIFY(std::abs(roundTrip.y() - outputPoint.y()) < 0.0001);
+}
+
+void TestPreviewGeometry::testAnchoredResizeTranslationKeepsLeftEdgeFixed() {
+    const QRectF originBounds(200.0, 120.0, 320.0, 180.0);
+    const QPointF originTranslation(40.0, -20.0);
+    const QPointF originScale(1.0, 1.0);
+    const QPointF nextScale(1.5, 1.0);
+    const QPointF previewScale(0.2, 0.2);
+
+    const QPointF nextTranslation = PreviewViewTransform::translationForAnchoredResize(
+        originTranslation,
+        originScale,
+        nextScale,
+        originBounds,
+        PreviewResizeAnchor::Left,
+        previewScale);
+
+    const qreal scaleXFactor = nextScale.x() / originScale.x();
+    const qreal centerShiftX = (nextTranslation.x() - originTranslation.x()) * previewScale.x();
+    const qreal newCenterX = originBounds.center().x() + centerShiftX;
+    const qreal oldLeft = originBounds.left();
+    const qreal newLeft = newCenterX - (originBounds.width() * scaleXFactor * 0.5);
+
+    QVERIFY(std::abs(newLeft - oldLeft) < 0.0001);
+    QVERIFY(std::abs(nextTranslation.y() - originTranslation.y()) < 0.0001);
+}
+
+void TestPreviewGeometry::testAnchoredResizeTranslationKeepsTopLeftCornerFixed() {
+    const QRectF originBounds(200.0, 120.0, 320.0, 180.0);
+    const QPointF originTranslation(40.0, -20.0);
+    const QPointF originScale(1.0, 1.0);
+    const QPointF nextScale(1.25, 1.5);
+    const QPointF previewScale(0.2, 0.2);
+
+    const QPointF nextTranslation = PreviewViewTransform::translationForAnchoredResize(
+        originTranslation,
+        originScale,
+        nextScale,
+        originBounds,
+        PreviewResizeAnchor::TopLeft,
+        previewScale);
+
+    const qreal scaleXFactor = nextScale.x() / originScale.x();
+    const qreal scaleYFactor = nextScale.y() / originScale.y();
+    const QPointF centerShift((nextTranslation.x() - originTranslation.x()) * previewScale.x(),
+                              (nextTranslation.y() - originTranslation.y()) * previewScale.y());
+    const QPointF newCenter = originBounds.center() + centerShift;
+    const QPointF oldTopLeft = originBounds.topLeft();
+    const QPointF newTopLeft(newCenter.x() - (originBounds.width() * scaleXFactor * 0.5),
+                             newCenter.y() - (originBounds.height() * scaleYFactor * 0.5));
+
+    QVERIFY(std::abs(newTopLeft.x() - oldTopLeft.x()) < 0.0001);
+    QVERIFY(std::abs(newTopLeft.y() - oldTopLeft.y()) < 0.0001);
+}
+
+void TestPreviewGeometry::testClipGeometryMapsNormalizedPointToBounds() {
+    const QRectF fitted(100.0, 50.0, 320.0, 180.0);
+    const QPointF previewScale(0.2, 0.2);
+    const PreviewClipGeometry geometry = PreviewViewTransform::clipGeometry(
+        fitted,
+        previewScale,
+        QPointF(50.0, -25.0),
+        0.0,
+        QPointF(1.5, 0.5));
+
+    const QPointF localCenter =
+        PreviewViewTransform::localPointForNormalizedPoint(QPointF(0.5, 0.5), geometry.localRect);
+    const QPointF mappedCenter = geometry.clipToScreen.map(localCenter);
+
+    QVERIFY(std::abs(mappedCenter.x() - (fitted.center().x() + 10.0)) < 0.0001);
+    QVERIFY(std::abs(mappedCenter.y() - (fitted.center().y() - 5.0)) < 0.0001);
+    QVERIFY(std::abs(geometry.bounds.width() - (fitted.width() * 1.5)) < 0.0001);
+    QVERIFY(std::abs(geometry.bounds.height() - (fitted.height() * 0.5)) < 0.0001);
+}
+
+void TestPreviewGeometry::testFittedClipRectUsesStableSourceSizeBeforePayloadSize() {
+    const QRectF targetRect(10.0, 20.0, 400.0, 800.0);
+    const QSize outputSize(1080, 1920);
+    const QSize sourceSize(1920, 1080);
+    const QSize payloadSize(1080, 1920);
+
+    const QRectF fromSource = PreviewViewTransform::fittedClipRect(
+        sourceSize,
+        payloadSize,
+        targetRect,
+        outputSize);
+    const QRectF fromPayloadOnly = PreviewViewTransform::fittedClipRect(
+        QSize(),
+        payloadSize,
+        targetRect,
+        outputSize);
+
+    QVERIFY(fromSource.isValid());
+    QVERIFY(fromPayloadOnly.isValid());
+    QVERIFY(fromSource.width() > fromSource.height());
+    QVERIFY(fromPayloadOnly.height() > fromPayloadOnly.width());
+    QVERIFY(std::abs((fromSource.width() / fromSource.height()) - (16.0 / 9.0)) < 0.001);
+}
+
+void TestPreviewGeometry::testWheelZoomHelperPreservesAnchorPoint() {
+    const QRectF widgetRect(0, 0, 1280, 720);
+    const QSize outputSize(1080, 1920);
+    const PreviewViewTransform oldTransform(widgetRect, outputSize, 36.0, 1.0, QPointF());
+    const QPointF anchor(700.0, 250.0);
+    const QPointF outputUnderAnchor = oldTransform.screenToOutput(anchor);
+
+    const PreviewZoomResult zoom = PreviewViewTransform::zoomForWheel(
+        widgetRect,
+        outputSize,
+        36.0,
+        1.0,
+        QPointF(),
+        anchor,
+        120);
+    const PreviewViewTransform nextTransform(widgetRect, outputSize, 36.0, zoom.zoom, zoom.panOffset);
+    const QPointF nextAnchor = nextTransform.outputToScreen(outputUnderAnchor);
+
+    QVERIFY(zoom.changed);
+    QVERIFY(zoom.zoom > 1.0);
+    QVERIFY(std::abs(nextAnchor.x() - anchor.x()) < 0.0001);
+    QVERIFY(std::abs(nextAnchor.y() - anchor.y()) < 0.0001);
 }
 
 QTEST_MAIN(TestPreviewGeometry)

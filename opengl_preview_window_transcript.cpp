@@ -1,5 +1,9 @@
 #include "opengl_preview.h"
+#include "facestream_artifact_utils.h"
+#include "facestream_runtime.h"
+#include "facestream_time_mapping.h"
 #include "gl_frame_texture_shared.h"
+#include "preview_view_transform.h"
 #include "transcript_engine.h"
 
 #include <cmath>
@@ -10,6 +14,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPainter>
+#include <QPainterPath>
 
 #include <algorithm>
 #include <cstdlib>
@@ -64,6 +69,7 @@ QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
                " color:%1;\">%2</div>")
         .arg(color.name(QColor::HexRgb), safeTitle);
 }
+
 }
 
 bool PreviewWindow::clipShowsTranscriptOverlay(const TimelineClip& clip) const {
@@ -81,7 +87,17 @@ void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath
         m_transcriptTextureCache.clear();
     } else {
         m_transcriptSectionsCache.remove(clipFilePath);
-        m_speakerTrackPointsCache.remove(activeTranscriptPathForClipFile(clipFilePath));
+        const QString transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+        if (!transcriptPath.isEmpty()) {
+            const QString keyPrefix = transcriptPath + QLatin1Char('|');
+            for (auto it = m_speakerTrackPointsCache.begin(); it != m_speakerTrackPointsCache.end();) {
+                if (it.key() == transcriptPath || it.key().startsWith(keyPrefix)) {
+                    it = m_speakerTrackPointsCache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
         invalidateTranscriptSpeakerProfileCache(activeTranscriptPathForClipFile(clipFilePath));
         // Textures are content/style keyed; clear all to avoid keeping stale overlay textures.
         for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
@@ -115,98 +131,64 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
     if (!info.exists() || !info.isFile()) {
         return kEmpty;
     }
-    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
-    auto it = m_speakerTrackPointsCache.find(transcriptPath);
-    if (it != m_speakerTrackPointsCache.end() && it->mtimeMs == mtimeMs) {
+    const qint64 transcriptMtimeMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 artifactMtimeMs = facestreamArtifactRevisionMsForTranscript(transcriptPath);
+    const QString trackPointsCacheKey = QStringLiteral("%1|%2")
+        .arg(transcriptPath, clip.id.trimmed());
+    auto it = m_speakerTrackPointsCache.find(trackPointsCacheKey);
+    if (it != m_speakerTrackPointsCache.end() &&
+        it->transcriptMtimeMs == transcriptMtimeMs &&
+        it->artifactMtimeMs == artifactMtimeMs) {
         return it->points;
     }
 
     SpeakerTrackPointCacheEntry entry;
-    entry.mtimeMs = mtimeMs;
+    entry.transcriptMtimeMs = transcriptMtimeMs;
+    entry.artifactMtimeMs = artifactMtimeMs;
     QFile file(transcriptPath);
     if (!file.open(QIODevice::ReadOnly)) {
-        it = m_speakerTrackPointsCache.insert(transcriptPath, entry);
+        it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
         return it->points;
     }
     QJsonParseError parseError;
     const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        it = m_speakerTrackPointsCache.insert(transcriptPath, entry);
+        it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
         return it->points;
     }
 
-    const QJsonObject transcriptRoot = doc.object();
-    const QJsonObject profiles = transcriptRoot.value(QStringLiteral("speaker_profiles")).toObject();
-    for (auto profileIt = profiles.constBegin(); profileIt != profiles.constEnd(); ++profileIt) {
-        const QString speakerId = profileIt.key().trimmed();
-        if (speakerId.isEmpty()) {
-            continue;
-        }
-        const QJsonObject profile = profileIt.value().toObject();
-        QJsonObject tracking = profile.value(QStringLiteral("framing")).toObject();
-        if (tracking.isEmpty()) {
-            tracking = profile.value(QStringLiteral("tracking")).toObject();
-        }
-        const QJsonArray keyframes = tracking.value(QStringLiteral("keyframes")).toArray();
-        for (const QJsonValue& value : keyframes) {
-            const QJsonObject obj = value.toObject();
-            if (obj.isEmpty()) {
-                continue;
-            }
-            const int64_t frame = obj.value(QStringLiteral("frame")).toVariant().toLongLong();
-            const qreal rawX = obj.value(QStringLiteral("x")).toDouble(-1.0);
-            const qreal rawY = obj.value(QStringLiteral("y")).toDouble(-1.0);
-            if (frame < 0 || rawX < 0.0 || rawX > 1.0 || rawY < 0.0 || rawY > 1.0) {
-                continue;
-            }
-            SpeakerTrackPoint p;
-            p.frame = frame;
-            p.x = rawX;
-            p.y = rawY;
-            const qreal boxSize = obj.value(QStringLiteral("box_size")).toDouble(-1.0);
-            if (boxSize > 0.0) {
-                p.boxSizeNorm = qBound<qreal>(0.01, boxSize, 1.0);
-            }
-            const qreal boxLeft = obj.value(QStringLiteral("box_left")).toDouble(-1.0);
-            const qreal boxTop = obj.value(QStringLiteral("box_top")).toDouble(-1.0);
-            const qreal boxRight = obj.value(QStringLiteral("box_right")).toDouble(-1.0);
-            const qreal boxBottom = obj.value(QStringLiteral("box_bottom")).toDouble(-1.0);
-            if (boxLeft >= 0.0 && boxTop >= 0.0 && boxRight > boxLeft && boxBottom > boxTop &&
-                boxRight <= 1.0 && boxBottom <= 1.0) {
-                p.hasBox = true;
-                p.boxLeft = boxLeft;
-                p.boxTop = boxTop;
-                p.boxRight = boxRight;
-                p.boxBottom = boxBottom;
-            } else {
-                if (p.boxSizeNorm > 0.0) {
-                    const qreal side = p.boxSizeNorm;
-                    const qreal half = side * 0.5;
-                    p.hasBox = true;
-                    p.boxLeft = qBound<qreal>(0.0, rawX - half, 1.0);
-                    p.boxTop = qBound<qreal>(0.0, rawY - half, 1.0);
-                    p.boxRight = qBound<qreal>(0.0, rawX + half, 1.0);
-                    p.boxBottom = qBound<qreal>(0.0, rawY + half, 1.0);
-                }
-            }
-            p.speakerId = speakerId;
-            entry.points.push_back(p);
-        }
-    }
-
-    // Add identity-agnostic continuity FaceStream tracks so post users can compare detector outputs.
+    // Canonical runtime source: continuity FaceStream tracks from artifact sidecar.
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
-    if (engine.loadBoxstreamArtifact(transcriptPath, &artifactRoot)) {
+    if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
         const QJsonObject continuityByClip =
-            artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+            artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
         const QJsonObject continuityRoot = continuityByClip.value(clip.id).toObject();
-        const QJsonArray streams = continuityRoot.value(QStringLiteral("streams")).toArray();
-        const QString sourceFilter = m_boxstreamOverlaySource.trimmed().toLower();
+        const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
+            continuityRoot,
+            doc.object());
+        const QString sourceFilter = m_facestreamOverlaySource.trimmed().toLower();
         for (const QJsonValue& streamValue : streams) {
             const QJsonObject streamObj = streamValue.toObject();
             const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
+            const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
             const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+            int64_t streamFrameMin = std::numeric_limits<int64_t>::max();
+            int64_t streamFrameMax = -1;
+            for (const QJsonValue& keyValue : keyframes) {
+                const QJsonObject obj = keyValue.toObject();
+                if (obj.isEmpty()) {
+                    continue;
+                }
+                const int64_t frame = obj.value(QStringLiteral("frame")).toVariant().toLongLong();
+                if (frame < 0) {
+                    continue;
+                }
+                streamFrameMin = qMin<int64_t>(streamFrameMin, frame);
+                streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
+            }
+            const FacestreamFrameDomain streamFrameDomain =
+                inferFacestreamFrameDomain(clip, streamFrameMin, streamFrameMax);
             for (const QJsonValue& keyValue : keyframes) {
                 const QJsonObject obj = keyValue.toObject();
                 if (obj.isEmpty()) {
@@ -226,9 +208,12 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
                 }
                 SpeakerTrackPoint p;
                 p.frame = frame;
+                p.frameDomain = streamFrameDomain;
                 p.x = rawX;
                 p.y = rawY;
                 p.speakerId = streamId.isEmpty() ? QStringLiteral("track") : streamId;
+                p.streamId = streamId;
+                p.trackId = trackId;
                 const qreal boxSize = obj.value(QStringLiteral("box_size")).toDouble(
                     obj.value(QStringLiteral("box")).toDouble(-1.0));
                 if (boxSize > 0.0) {
@@ -264,7 +249,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         }
         return a.speakerId < b.speakerId;
     });
-    it = m_speakerTrackPointsCache.insert(transcriptPath, entry);
+    it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
     return it->points;
 }
 
@@ -311,9 +296,9 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         }
         if (!drewLegend && (m_showSpeakerTrackBoxes || m_showSpeakerTrackPoints)) {
             const QString legendText = QStringLiteral("Tracker: %1")
-                .arg(prettyTrackerLabel(m_boxstreamOverlaySource));
+                .arg(prettyTrackerLabel(m_facestreamOverlaySource));
             const QRectF legendRect(12.0, 12.0, 300.0, 24.0);
-            const bool dockerSource = m_boxstreamOverlaySource.trimmed().toLower().startsWith(QStringLiteral("docker_"));
+            const bool dockerSource = m_facestreamOverlaySource.trimmed().toLower().startsWith(QStringLiteral("docker_"));
             const QColor chipBg = dockerSource ? QColor(QStringLiteral("#dff1ff")) : QColor(0, 0, 0, 165);
             const QColor chipFg = dockerSource ? QColor(QStringLiteral("#16384f")) : QColor(235, 245, 255, 240);
             painter->setPen(Qt::NoPen);
@@ -324,9 +309,10 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
             drewLegend = true;
         }
         const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
-        const int64_t sourceEnd = sourceStart + qMax<int64_t>(0, clip.durationFrames - 1);
+        const int64_t sourceEnd =
+            sourceStart + qMax<int64_t>(0, clip.sourceDurationFrames - 1);
         const int64_t currentSourceFrame =
-            transcriptFrameForClipAtTimelineSample(clip, m_interaction.currentSample, m_interaction.renderSyncMarkers);
+            sourceFrameForSample(clip, m_interaction.currentSample);
         int64_t nearestDistance = std::numeric_limits<int64_t>::max();
         struct OverlayCandidate {
             SpeakerTrackPoint point;
@@ -338,13 +324,15 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         candidates.reserve(points.size());
 
         for (const SpeakerTrackPoint& p : points) {
-            if (p.frame < sourceStart || p.frame > sourceEnd) {
+            const int64_t pointSourceFrame = mapFacestreamFrameToSourceFrame(
+                clip, p.frame, p.frameDomain, m_interaction.renderSyncMarkers);
+            if (pointSourceFrame < sourceStart || pointSourceFrame > sourceEnd) {
                 continue;
             }
             const uint hueHash = qHash(p.speakerId);
             const QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 180, 245, 190);
             const QPointF screenPoint = mapNormalizedClipPointToScreen(info, QPointF(p.x, p.y));
-            const int64_t distance = std::llabs(p.frame - currentSourceFrame);
+            const int64_t distance = std::llabs(pointSourceFrame - currentSourceFrame);
             if (m_showSpeakerTrackPoints) {
                 painter->setPen(Qt::NoPen);
                 painter->setBrush(color);
@@ -374,7 +362,8 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
                 painter->setBrush(candidate.color);
                 painter->drawEllipse(candidate.screenPoint, 4.4, 4.4);
             }
-            if (!m_showSpeakerTrackBoxes || !candidate.point.hasBox) {
+            if ((!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled) ||
+                !candidate.point.hasBox) {
                 continue;
             }
             qreal leftNorm = candidate.point.boxLeft;
@@ -384,14 +373,17 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
             if (candidate.point.boxSizeNorm > 0.0 &&
                 info.clipPixelSize.width() > 1.0 &&
                 info.clipPixelSize.height() > 1.0) {
-                const qreal minSidePx = qMin(info.clipPixelSize.width(), info.clipPixelSize.height());
-                const qreal sidePx = candidate.point.boxSizeNorm * minSidePx;
-                const qreal halfXNorm = 0.5 * (sidePx / info.clipPixelSize.width());
-                const qreal halfYNorm = 0.5 * (sidePx / info.clipPixelSize.height());
-                leftNorm = qBound<qreal>(0.0, candidate.point.x - halfXNorm, 1.0);
-                topNorm = qBound<qreal>(0.0, candidate.point.y - halfYNorm, 1.0);
-                rightNorm = qBound<qreal>(0.0, candidate.point.x + halfXNorm, 1.0);
-                bottomNorm = qBound<qreal>(0.0, candidate.point.y + halfYNorm, 1.0);
+                const QRectF centerBoxNorm = normalizedCenterBoxRect(
+                    candidate.point.x,
+                    candidate.point.y,
+                    candidate.point.boxSizeNorm,
+                    info.clipPixelSize);
+                if (centerBoxNorm.isValid() && !centerBoxNorm.isEmpty()) {
+                    leftNorm = centerBoxNorm.left();
+                    topNorm = centerBoxNorm.top();
+                    rightNorm = centerBoxNorm.right();
+                    bottomNorm = centerBoxNorm.bottom();
+                }
             }
             const QPointF p1 = mapNormalizedClipPointToScreen(info, QPointF(leftNorm, topNorm));
             const QPointF p2 = mapNormalizedClipPointToScreen(info, QPointF(rightNorm, topNorm));
@@ -403,8 +395,18 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
             boxPath.lineTo(p3);
             boxPath.lineTo(p4);
             boxPath.closeSubpath();
-            const QColor boxStroke(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 235);
-            const QColor boxFill(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 42);
+            const bool hovered =
+                m_interaction.faceStreamAssignmentInteractionEnabled &&
+                candidate.point.trackId >= 0 &&
+                candidate.point.trackId == m_interaction.transient.hoveredFaceStreamTrackId &&
+                candidate.point.streamId == m_interaction.transient.hoveredFaceStreamId &&
+                clip.id == m_interaction.transient.hoveredFaceStreamClipId;
+            const QColor boxStroke = hovered
+                ? QColor(QStringLiteral("#ffd54a"))
+                : QColor(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 235);
+            const QColor boxFill = hovered
+                ? QColor(255, 213, 74, 54)
+                : QColor(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 42);
             painter->setPen(QPen(boxStroke, 2.0));
             painter->setBrush(boxFill);
             painter->drawPath(boxPath);
@@ -412,6 +414,199 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
     }
 
     painter->restore();
+}
+
+bool PreviewWindow::dispatchFaceStreamBoxAtPosition(const QPointF& position)
+{
+    if (!faceStreamBoxRequested ||
+        (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled)) {
+        return false;
+    }
+    const QList<TimelineClip> activeClips = getActiveClips();
+    for (auto clipIt = activeClips.crbegin(); clipIt != activeClips.crend(); ++clipIt) {
+        const TimelineClip& clip = *clipIt;
+        if (!clipSupportsTranscript(clip)) {
+            continue;
+        }
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
+        if (!info.bounds.isValid()) {
+            continue;
+        }
+        const QVector<SpeakerTrackPoint>& points = speakerTrackPointsForClip(clip);
+        if (points.isEmpty()) {
+            continue;
+        }
+
+        const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
+        const int64_t sourceEnd =
+            sourceStart + qMax<int64_t>(0, clip.sourceDurationFrames - 1);
+        const int64_t currentSourceFrame =
+            sourceFrameForSample(clip, m_interaction.currentSample);
+
+        struct HitCandidate {
+            SpeakerTrackPoint point;
+            QRectF boxNorm;
+            int64_t distance = std::numeric_limits<int64_t>::max();
+        };
+        QVector<HitCandidate> candidates;
+        int64_t nearestDistance = std::numeric_limits<int64_t>::max();
+        for (SpeakerTrackPoint p : points) {
+            const int64_t pointSourceFrame = mapFacestreamFrameToSourceFrame(
+                clip, p.frame, p.frameDomain, m_interaction.renderSyncMarkers);
+            if (pointSourceFrame < sourceStart || pointSourceFrame > sourceEnd || !p.hasBox) {
+                continue;
+            }
+            p.sourceFrame = pointSourceFrame;
+            qreal leftNorm = p.boxLeft;
+            qreal topNorm = p.boxTop;
+            qreal rightNorm = p.boxRight;
+            qreal bottomNorm = p.boxBottom;
+            if (p.boxSizeNorm > 0.0 &&
+                info.clipPixelSize.width() > 1.0 &&
+                info.clipPixelSize.height() > 1.0) {
+                const QRectF centerBoxNorm = normalizedCenterBoxRect(
+                    p.x,
+                    p.y,
+                    p.boxSizeNorm,
+                    info.clipPixelSize);
+                if (centerBoxNorm.isValid() && !centerBoxNorm.isEmpty()) {
+                    leftNorm = centerBoxNorm.left();
+                    topNorm = centerBoxNorm.top();
+                    rightNorm = centerBoxNorm.right();
+                    bottomNorm = centerBoxNorm.bottom();
+                }
+            }
+            const QRectF boxNorm(QPointF(leftNorm, topNorm), QPointF(rightNorm, bottomNorm));
+            if (!boxNorm.isValid() || boxNorm.isEmpty()) {
+                continue;
+            }
+            const int64_t distance = std::llabs(pointSourceFrame - currentSourceFrame);
+            nearestDistance = qMin(nearestDistance, distance);
+            candidates.push_back(HitCandidate{p, boxNorm, distance});
+        }
+
+        for (const HitCandidate& candidate : std::as_const(candidates)) {
+            if (candidate.distance != nearestDistance) {
+                continue;
+            }
+            const QPointF p1 = mapNormalizedClipPointToScreen(info, candidate.boxNorm.topLeft());
+            const QPointF p2 = mapNormalizedClipPointToScreen(info, candidate.boxNorm.topRight());
+            const QPointF p3 = mapNormalizedClipPointToScreen(info, candidate.boxNorm.bottomRight());
+            const QPointF p4 = mapNormalizedClipPointToScreen(info, candidate.boxNorm.bottomLeft());
+            QPainterPath boxPath;
+            boxPath.moveTo(p1);
+            boxPath.lineTo(p2);
+            boxPath.lineTo(p3);
+            boxPath.lineTo(p4);
+            boxPath.closeSubpath();
+            if (!boxPath.contains(position)) {
+                continue;
+            }
+            const QPointF center = candidate.boxNorm.center();
+            const qreal side =
+                qBound<qreal>(0.01, qMax(candidate.boxNorm.width(), candidate.boxNorm.height()), 1.0);
+            faceStreamBoxRequested(clip.id,
+                                   candidate.point.trackId,
+                                   candidate.point.streamId,
+                                   candidate.point.sourceFrame,
+                                   center.x(),
+                                   center.y(),
+                                   side);
+            return true;
+        }
+    }
+    return false;
+}
+
+bool PreviewWindow::updateHoveredFaceStreamBox(const QPointF& position)
+{
+    if (!m_interaction.faceStreamAssignmentInteractionEnabled) {
+        return false;
+    }
+
+    const QList<TimelineClip> activeClips = getActiveClips();
+    QString hoveredClipId;
+    QString hoveredStreamId;
+    int hoveredTrackId = -1;
+    for (auto clipIt = activeClips.crbegin(); clipIt != activeClips.crend(); ++clipIt) {
+        const TimelineClip& clip = *clipIt;
+        if (!clipSupportsTranscript(clip)) {
+            continue;
+        }
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
+        if (!info.bounds.isValid()) {
+            continue;
+        }
+        const QVector<SpeakerTrackPoint>& points = speakerTrackPointsForClip(clip);
+        if (points.isEmpty()) {
+            continue;
+        }
+
+        const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
+        const int64_t sourceEnd =
+            sourceStart + qMax<int64_t>(0, clip.sourceDurationFrames - 1);
+        const int64_t currentSourceFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        int64_t nearestDistance = std::numeric_limits<int64_t>::max();
+        for (SpeakerTrackPoint p : points) {
+            const int64_t pointSourceFrame = mapFacestreamFrameToSourceFrame(
+                clip, p.frame, p.frameDomain, m_interaction.renderSyncMarkers);
+            if (pointSourceFrame < sourceStart || pointSourceFrame > sourceEnd || !p.hasBox) {
+                continue;
+            }
+            qreal leftNorm = p.boxLeft;
+            qreal topNorm = p.boxTop;
+            qreal rightNorm = p.boxRight;
+            qreal bottomNorm = p.boxBottom;
+            if (p.boxSizeNorm > 0.0 &&
+                info.clipPixelSize.width() > 1.0 &&
+                info.clipPixelSize.height() > 1.0) {
+                const QRectF centerBoxNorm = normalizedCenterBoxRect(
+                    p.x,
+                    p.y,
+                    p.boxSizeNorm,
+                    info.clipPixelSize);
+                if (centerBoxNorm.isValid() && !centerBoxNorm.isEmpty()) {
+                    leftNorm = centerBoxNorm.left();
+                    topNorm = centerBoxNorm.top();
+                    rightNorm = centerBoxNorm.right();
+                    bottomNorm = centerBoxNorm.bottom();
+                }
+            }
+            QPainterPath boxPath;
+            boxPath.moveTo(mapNormalizedClipPointToScreen(info, QPointF(leftNorm, topNorm)));
+            boxPath.lineTo(mapNormalizedClipPointToScreen(info, QPointF(rightNorm, topNorm)));
+            boxPath.lineTo(mapNormalizedClipPointToScreen(info, QPointF(rightNorm, bottomNorm)));
+            boxPath.lineTo(mapNormalizedClipPointToScreen(info, QPointF(leftNorm, bottomNorm)));
+            boxPath.closeSubpath();
+            if (!boxPath.contains(position)) {
+                continue;
+            }
+            const int64_t distance = std::llabs(pointSourceFrame - currentSourceFrame);
+            if (distance > nearestDistance) {
+                continue;
+            }
+            nearestDistance = distance;
+            hoveredClipId = clip.id;
+            hoveredStreamId = p.streamId;
+            hoveredTrackId = p.trackId;
+        }
+        if (hoveredTrackId >= 0) {
+            break;
+        }
+    }
+
+    PreviewInteractionTransientState& transient = m_interaction.transient;
+    const bool changed =
+        transient.hoveredFaceStreamTrackId != hoveredTrackId ||
+        transient.hoveredFaceStreamClipId != hoveredClipId ||
+        transient.hoveredFaceStreamId != hoveredStreamId;
+    if (changed) {
+        transient.hoveredFaceStreamTrackId = hoveredTrackId;
+        transient.hoveredFaceStreamClipId = hoveredClipId;
+        transient.hoveredFaceStreamId = hoveredStreamId;
+        scheduleRepaint();
+    }
+    return hoveredTrackId >= 0;
 }
 
 void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
@@ -582,10 +777,10 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
         PreviewOverlayInfo info;
         info.kind = PreviewOverlayKind::TranscriptOverlay;
         info.bounds = bounds;
-        constexpr qreal kHandleSize = 12.0;
-        info.rightHandle = QRectF(bounds.right() - kHandleSize, bounds.center().y() - kHandleSize, kHandleSize, kHandleSize * 2.0);
-        info.bottomHandle = QRectF(bounds.center().x() - kHandleSize, bounds.bottom() - kHandleSize, kHandleSize * 2.0, kHandleSize);
-        info.cornerHandle = QRectF(bounds.right() - kHandleSize * 1.5, bounds.bottom() - kHandleSize * 1.5, kHandleSize * 1.5, kHandleSize * 1.5);
+        const PreviewResizeHandles handles = PreviewViewTransform::resizeHandlesForBounds(bounds);
+        info.rightHandle = handles.right;
+        info.bottomHandle = handles.bottom;
+        info.cornerHandle = handles.corner;
         m_overlayModel.overlays.insert(clip.id, info);
         m_overlayModel.paintOrder.push_back(clip.id);
     }

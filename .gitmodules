@@ -14,4 +14,5 @@
 	url = https://github.com/juliancoy/CPPMonetize.git
 [submodule "external/ncnn"]
 	path = external/ncnn
-	url = https://github.com/Tencent/ncnn.git
+	url = https://github.com/juliancoy/ncnn.git
+	branch = jcut/external-vulkan-device

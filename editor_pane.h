@@ -33,6 +33,7 @@ public:
     QComboBox *playbackSpeedCombo() const { return m_playbackSpeedCombo; }
     QComboBox *previewModeCombo() const { return m_previewModeCombo; }
     QToolButton *audioToolsButton() const { return m_audioToolsButton; }
+    QPushButton *zoomFitButton() const { return m_zoomFitButton; }
     QLabel *statusBadge() const { return m_statusBadge; }
     QLabel *previewInfo() const { return m_previewInfo; }
     QToolButton *razorButton() const { return m_razorButton; }
@@ -46,6 +47,7 @@ signals:
     void seekValueChanged(int value);
     void playbackSpeedChanged(double speed);
     void previewModeChanged(const QString& mode);
+    void zoomFitClicked();
     void audioToolsClicked();
     void audioMuteClicked();
     void audioVolumeChanged(int value);
@@ -67,6 +69,7 @@ private:
     QComboBox *m_playbackSpeedCombo = nullptr;
     QComboBox *m_previewModeCombo = nullptr;
     QToolButton *m_audioToolsButton = nullptr;
+    QPushButton *m_zoomFitButton = nullptr;
     QToolButton *m_loopButton = nullptr;
     QToolButton *m_audioMuteButton = nullptr;
     QSlider *m_audioVolumeSlider = nullptr;

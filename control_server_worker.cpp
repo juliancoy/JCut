@@ -139,7 +139,8 @@ void ControlServerWorker::refreshBackgroundCaches() {
     const bool uiResponsive = uiThreadResponsive(snapshot);
     const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
 
-    if (playbackActive) {
+    const bool profileInDemand = (now - m_lastProfileDemandMs) <= m_profileDemandWindowMs;
+    if (playbackActive && !profileInDemand) {
         m_cacheRefreshPausedForPlayback = true;
         return;
     }
@@ -150,7 +151,6 @@ void ControlServerWorker::refreshBackgroundCaches() {
         return;
     }
 
-    const bool profileInDemand = (now - m_lastProfileDemandMs) <= m_profileDemandWindowMs;
     const bool stateInDemand =
         m_lastStateSnapshot.isEmpty() || (now - m_lastStateDemandMs) <= m_snapshotDemandWindowMs;
     const bool projectInDemand =

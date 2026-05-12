@@ -1,9 +1,15 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
+#include "speakers_table.h"
 
+#include "facestream_runtime.h"
+#include "facestream_time_mapping.h"
+#include "facestream_artifact_utils.h"
 #include "decoder_context.h"
+#include "speaker_flow_debug.h"
 #include "transcript_engine.h"
 
+#include <QBuffer>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -37,6 +43,7 @@
 #include <QTemporaryDir>
 #include <QTextCursor>
 #include <QTimer>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 
@@ -53,6 +60,31 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
 {
 }
 
+bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
+{
+    if (!m_loadedTranscriptDoc.isObject() || !mutator) {
+        return false;
+    }
+
+    QJsonObject root = m_loadedTranscriptDoc.object();
+    if (!mutator(root)) {
+        return false;
+    }
+
+    m_loadedTranscriptDoc.setObject(root);
+    return true;
+}
+
+bool SpeakersTab::saveLoadedTranscriptDocument()
+{
+    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    return engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+}
+
 void SpeakersTab::wire()
 {
     if (!m_boxStreamPanelRefreshTimer) {
@@ -61,7 +93,7 @@ void SpeakersTab::wire()
         m_boxStreamPanelRefreshTimer->setInterval(40);
         connect(m_boxStreamPanelRefreshTimer, &QTimer::timeout, this, [this]() {
             m_boxStreamPanelRefreshQueued = false;
-            refreshBoxStreamPathsPanel();
+            refreshFaceStreamPathsPanel();
         });
     }
     if (m_widgets.speakersTable) {
@@ -77,19 +109,28 @@ void SpeakersTab::wire()
                 this, &SpeakersTab::onSpeakersSelectionChanged);
         connect(m_widgets.speakersTable, &QWidget::customContextMenuRequested,
                 this, &SpeakersTab::onSpeakersTableContextMenuRequested);
+        if (SpeakersTable* speakersTable =
+                qobject_cast<SpeakersTable*>(m_widgets.speakersTable)) {
+            connect(speakersTable, &SpeakersTable::avatarHoverRequested, this,
+                    [this](const QString& speakerId, const QPoint& globalPos) {
+                        showSpeakerAvatarHoverPreview(speakerId, globalPos);
+                    });
+            connect(speakersTable, &SpeakersTable::avatarHoverCleared, this,
+                    [this]() { hideSpeakerAvatarHoverPreview(); });
+        }
     }
-    if (m_widgets.speakerBoxStreamTable) {
-        connect(m_widgets.speakerBoxStreamTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-            if (!m_widgets.speakerBoxStreamTable || !m_widgets.speakerBoxStreamDetailsEdit) {
+    if (m_widgets.speakerFaceStreamTable) {
+        connect(m_widgets.speakerFaceStreamTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+            if (!m_widgets.speakerFaceStreamTable || !m_widgets.speakerFaceStreamDetailsEdit) {
                 return;
             }
-            const int row = m_widgets.speakerBoxStreamTable->currentRow();
+            const int row = m_widgets.speakerFaceStreamTable->currentRow();
             if (row < 0) {
-                m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+                m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
                     QStringLiteral("Select a FaceStream path row to inspect full JSON."));
                 return;
             }
-            QTableWidgetItem* streamItem = m_widgets.speakerBoxStreamTable->item(row, 0);
+            QTableWidgetItem* streamItem = m_widgets.speakerFaceStreamTable->item(row, 0);
             const int64_t frame30 = streamItem
                 ? streamItem->data(Qt::UserRole + 2).toLongLong()
                 : -1;
@@ -113,7 +154,7 @@ void SpeakersTab::wire()
                     streamJson = QString::fromUtf8(QJsonDocument(streamObj).toJson(QJsonDocument::Indented));
                 }
             }
-            m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+            m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
                 streamJson.isEmpty()
                     ? QStringLiteral("No stream payload available.")
                     : streamJson);
@@ -165,11 +206,17 @@ void SpeakersTab::wire()
         connect(m_widgets.speakerRunAutoTrackButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerRunAutoTrackClicked);
     }
-    if (m_widgets.speakerBoxstreamSettingsButton) {
-        m_widgets.speakerBoxstreamSettingsButton->setToolTip(
+    if (m_widgets.speakerViewFacestreamButton) {
+        m_widgets.speakerViewFacestreamButton->setToolTip(
+            QStringLiteral("Open the selected FaceStream JSON and the latest generated artifact paths."));
+        connect(m_widgets.speakerViewFacestreamButton, &QPushButton::clicked,
+                this, &SpeakersTab::onSpeakerViewFaceStreamClicked);
+    }
+    if (m_widgets.speakerFacestreamSettingsButton) {
+        m_widgets.speakerFacestreamSettingsButton->setToolTip(
             QStringLiteral("Open FaceStream-specific runtime smoothing options."));
-        connect(m_widgets.speakerBoxstreamSettingsButton, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerBoxStreamSettingsClicked);
+        connect(m_widgets.speakerFacestreamSettingsButton, &QPushButton::clicked,
+                this, &SpeakersTab::onSpeakerFaceStreamSettingsClicked);
     }
     if (m_widgets.speakerTrackingChipButton) {
         m_widgets.speakerTrackingChipButton->setToolTip(
@@ -191,9 +238,11 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerPrecropFacesButton) {
         m_widgets.speakerPrecropFacesButton->setToolTip(
-            QStringLiteral("Scan this clip for potential faces and assign crops to transcript speakers."));
-        connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerPrecropFacesClicked);
+            QStringLiteral("Extract one comparison crop per generated FaceStream track and assign tracks to transcript speakers."));
+        connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked, this, [this]() {
+            // Keep REST/UI click handlers from blocking while the assignment preflight starts.
+            QTimer::singleShot(0, this, &SpeakersTab::onSpeakerPrecropFacesClicked);
+        });
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(
@@ -345,6 +394,463 @@ bool SpeakersTab::clipSupportsTranscript(const TimelineClip& clip) const
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
 }
 
+QPixmap SpeakersTab::faceStreamPreviewAvatar(const TimelineClip& clip,
+                                             const QString& speakerId,
+                                             const QJsonObject& keyframeObj,
+                                             int size) const
+{
+    if (keyframeObj.isEmpty()) {
+        return placeholderSpeakerAvatar(speakerId);
+    }
+
+    const int avatarSize = qMax(24, size);
+    const int64_t sourceFrame30 = qMax<int64_t>(
+        0, keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong());
+    const qreal locX = qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+    const qreal locY = qBound<qreal>(0.0, keyframeObj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+    const qreal boxSizeNorm = qBound<qreal>(
+        -1.0,
+        keyframeObj.value(QStringLiteral("box_size")).toDouble(
+            keyframeObj.value(QStringLiteral("box")).toDouble(-1.0)),
+        1.0);
+    const qreal boxLeft = keyframeObj.value(QStringLiteral("box_left")).toDouble(-1.0);
+    const qreal boxTop = keyframeObj.value(QStringLiteral("box_top")).toDouble(-1.0);
+    const qreal boxRight = keyframeObj.value(QStringLiteral("box_right")).toDouble(-1.0);
+    const qreal boxBottom = keyframeObj.value(QStringLiteral("box_bottom")).toDouble(-1.0);
+    const QString cacheKey = QStringLiteral("facestream|%1|%2|%3|%4|%5|%6|%7|%8|%9")
+        .arg(m_loadedTranscriptPath)
+        .arg(clip.id)
+        .arg(speakerId)
+        .arg(sourceFrame30)
+        .arg(static_cast<int>(std::round(locX * 1000.0)))
+        .arg(static_cast<int>(std::round(locY * 1000.0)))
+        .arg(static_cast<int>(std::round(qMax<qreal>(0.0, boxSizeNorm) * 1000.0)))
+        .arg(static_cast<int>(std::round(qMax<qreal>(0.0, boxLeft) * 1000.0)))
+        .arg(avatarSize);
+    const auto cached = m_avatarCache.constFind(cacheKey);
+    if (cached != m_avatarCache.cend()) {
+        return cached.value();
+    }
+
+    const qreal sourceFps = resolvedSourceFps(clip);
+    const int64_t decodeFrame = qMax<int64_t>(
+        0, static_cast<int64_t>(std::floor((static_cast<qreal>(sourceFrame30) / kTimelineFps) * sourceFps)));
+    const QString mediaPath = interactivePreviewMediaPathForClip(clip);
+    editor::DecoderContext ctx(mediaPath);
+    QPixmap avatar = placeholderSpeakerAvatar(speakerId);
+    if (ctx.initialize()) {
+        const editor::FrameHandle frame = ctx.decodeFrame(decodeFrame);
+        const QImage image = frame.hasCpuImage() ? frame.cpuImage() : QImage();
+        if (!image.isNull() && image.width() > 0 && image.height() > 0) {
+            const int width = image.width();
+            const int height = image.height();
+            const int minSide = qMax(1, qMin(width, height));
+            QRect cropRect;
+            if (boxLeft >= 0.0 && boxTop >= 0.0 && boxRight > boxLeft && boxBottom > boxTop &&
+                boxRight <= 1.0 && boxBottom <= 1.0) {
+                const int left = qBound(0, static_cast<int>(std::floor(boxLeft * width)), qMax(0, width - 1));
+                const int top = qBound(0, static_cast<int>(std::floor(boxTop * height)), qMax(0, height - 1));
+                const int right = qBound(left + 1, static_cast<int>(std::ceil(boxRight * width)), width);
+                const int bottom = qBound(top + 1, static_cast<int>(std::ceil(boxBottom * height)), height);
+                cropRect = QRect(left, top, right - left, bottom - top);
+            }
+            if (!cropRect.isValid() || cropRect.isEmpty()) {
+                int side = qMax(40, minSide / 3);
+                if (boxSizeNorm > 0.0) {
+                    side = qBound(40, static_cast<int>(std::round(boxSizeNorm * minSide)), minSide);
+                }
+                const int cx = static_cast<int>(std::round(locX * static_cast<qreal>(width)));
+                const int cy = static_cast<int>(std::round(locY * static_cast<qreal>(height)));
+                const int left = qBound(0, cx - (side / 2), qMax(0, width - side));
+                const int top = qBound(0, cy - (side / 2), qMax(0, height - side));
+                cropRect = QRect(left, top, qMin(side, width - left), qMin(side, height - top));
+            }
+            QImage crop = image.copy(cropRect)
+                              .scaled(avatarSize, avatarSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation)
+                              .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            if (!crop.isNull()) {
+                QImage rounded(avatarSize, avatarSize, QImage::Format_ARGB32_Premultiplied);
+                rounded.fill(Qt::transparent);
+                QPainter painter(&rounded);
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                QPainterPath path;
+                path.addRoundedRect(QRectF(1.0, 1.0, avatarSize - 2.0, avatarSize - 2.0), 8.0, 8.0);
+                painter.setClipPath(path);
+                painter.drawImage(QRect(0, 0, avatarSize, avatarSize), crop);
+                painter.setClipping(false);
+                painter.setPen(QPen(QColor(QStringLiteral("#f4d35e")), 1.5));
+                painter.setBrush(Qt::NoBrush);
+                painter.drawRoundedRect(QRectF(1.0, 1.0, avatarSize - 2.0, avatarSize - 2.0), 8.0, 8.0);
+                avatar = QPixmap::fromImage(rounded);
+            }
+        }
+    }
+
+    m_avatarCache.insert(cacheKey, avatar);
+    return avatar;
+}
+
+QVector<QPixmap> SpeakersTab::assignedFaceStreamPreviewPixmaps(const TimelineClip& clip,
+                                                               const QString& speakerId) const
+{
+    QVector<QPixmap> pixmaps;
+    if (!m_loadedTranscriptDoc.isObject() || speakerId.isEmpty()) {
+        return pixmaps;
+    }
+
+    const QJsonObject profiles =
+        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+    const QJsonArray faceRefs = speakerFaceRefs(profiles.value(speakerId).toObject());
+    for (const QJsonValue& faceRefValue : faceRefs) {
+        const QJsonObject previewKeyframe = previewKeyframeFromSpeakerFaceRef(faceRefValue.toObject());
+        if (!previewKeyframe.isEmpty()) {
+            pixmaps.push_back(faceStreamPreviewAvatar(clip, speakerId, previewKeyframe));
+        }
+    }
+    if (!pixmaps.isEmpty()) {
+        return pixmaps;
+    }
+
+    const QJsonArray streams = continuityStreamsForClip(clip);
+    const QVector<int> assignedTrackIdList =
+        resolvedAssignedTrackIdsForSpeaker(clip, streams, speakerId);
+    QSet<int> assignedTrackIds;
+    for (int trackId : assignedTrackIdList) {
+        assignedTrackIds.insert(trackId);
+    }
+    if (assignedTrackIds.isEmpty()) {
+        return pixmaps;
+    }
+    for (const QJsonValue& streamValue : streams) {
+        const QJsonObject streamObj = streamValue.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        if (!assignedTrackIds.contains(trackId)) {
+            continue;
+        }
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+        if (keyframes.isEmpty()) {
+            continue;
+        }
+        const QJsonObject keyframeObj = keyframes.first().toObject();
+        if (keyframeObj.isEmpty()) {
+            continue;
+        }
+        pixmaps.push_back(faceStreamPreviewAvatar(clip, speakerId, keyframeObj));
+    }
+    return pixmaps;
+}
+
+QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
+{
+    editor::TranscriptEngine transcriptEngine;
+    QJsonObject artifactRoot;
+    if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+        const QJsonObject continuityRoot = byClip.value(clip.id.trimmed()).toObject();
+        const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
+            continuityRoot,
+            m_loadedTranscriptDoc.object());
+        if (!streams.isEmpty()) {
+            return streams;
+        }
+    }
+    const QJsonObject root = m_loadedTranscriptDoc.object();
+    const QJsonObject speakerFlow = root.value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
+    const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_facestreams")).toObject();
+    return continuityRoot.value(QStringLiteral("streams")).toArray();
+}
+
+bool SpeakersTab::rebuildProcessedFaceStreamForSelectedClip(bool interactive)
+{
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        if (interactive) {
+            QMessageBox::information(nullptr,
+                                     QStringLiteral("Rebuild Processed FaceStream"),
+                                     QStringLiteral("Select a clip first."));
+        }
+        return false;
+    }
+    if (m_loadedTranscriptPath.trimmed().isEmpty()) {
+        if (interactive) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Rebuild Processed FaceStream"),
+                                 QStringLiteral("No active transcript is loaded for this clip."));
+        }
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    QJsonObject rawArtifactRoot;
+    if (!engine.loadFacestreamArtifact(m_loadedTranscriptPath, &rawArtifactRoot)) {
+        if (interactive) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Rebuild Processed FaceStream"),
+                                 QStringLiteral("No raw FaceStream artifact was found for this transcript."));
+        }
+        return false;
+    }
+
+    const QString clipId = clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id.trimmed();
+    QJsonObject byClip = rawArtifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+    QJsonObject continuityRoot = byClip.value(clipId).toObject();
+    if (continuityRoot.isEmpty()) {
+        if (interactive) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Rebuild Processed FaceStream"),
+                                 QStringLiteral("No raw FaceStream payload was found for the selected clip."));
+        }
+        return false;
+    }
+
+    continuityRoot[QStringLiteral("clip_id")] = clipId;
+    continuityRoot[QStringLiteral("processed_artifact_path")] =
+        engine.facestreamProcessedArtifactPath(m_loadedTranscriptPath);
+    byClip[clipId] = continuityRoot;
+    rawArtifactRoot[QStringLiteral("continuity_facestreams_by_clip")] = byClip;
+    if (!engine.saveFacestreamArtifact(m_loadedTranscriptPath, rawArtifactRoot)) {
+        if (interactive) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Rebuild Processed FaceStream"),
+                                 QStringLiteral("Failed to update raw FaceStream artifact metadata."));
+        }
+        return false;
+    }
+
+    if (!jcut::facestream::saveProcessedContinuityArtifact(
+            m_loadedTranscriptPath,
+            clipId,
+            continuityRoot,
+            m_loadedTranscriptDoc.object(),
+            nullptr)) {
+        if (interactive) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Rebuild Processed FaceStream"),
+                                 QStringLiteral("Failed to rebuild processed FaceStream sidecar."));
+        }
+        return false;
+    }
+
+    if (interactive) {
+        const QFileInfo processedInfo(engine.facestreamProcessedArtifactPath(m_loadedTranscriptPath));
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Rebuild Processed FaceStream"),
+            QStringLiteral("Rebuilt processed FaceStream sidecar.\n\n%1")
+                .arg(processedInfo.absoluteFilePath()));
+    }
+    requestRefreshFaceStreamPathsPanel();
+    if (m_speakerDeps.refreshPreview) {
+        m_speakerDeps.refreshPreview();
+    }
+    return true;
+}
+
+QJsonObject SpeakersTab::resolveFaceStreamAssignmentRow(const TimelineClip& clip,
+                                                        const QJsonArray& streams,
+                                                        const QJsonObject& row) const
+{
+    const QString identityId = row.value(QStringLiteral("identity_id")).toString().trimmed();
+    if (identityId.isEmpty() || streams.isEmpty()) {
+        return {};
+    }
+
+    const int storedTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
+    const QString storedStreamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
+    const bool hasAnchor =
+        row.contains(QString(kSpeakerFlowAnchorSourceFrameKey)) &&
+        row.contains(QString(kSpeakerFlowAnchorXKey)) &&
+        row.contains(QString(kSpeakerFlowAnchorYKey)) &&
+        row.contains(QString(kSpeakerFlowAnchorBoxSizeKey));
+    const int64_t anchorSourceFrame =
+        row.value(QString(kSpeakerFlowAnchorSourceFrameKey)).toVariant().toLongLong();
+    const qreal anchorX = qBound<qreal>(0.0, row.value(QString(kSpeakerFlowAnchorXKey)).toDouble(0.5), 1.0);
+    const qreal anchorY = qBound<qreal>(0.0, row.value(QString(kSpeakerFlowAnchorYKey)).toDouble(0.5), 1.0);
+    const qreal anchorBox = qBound<qreal>(0.01, row.value(QString(kSpeakerFlowAnchorBoxSizeKey)).toDouble(0.2), 1.0);
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+
+    QJsonObject bestResolved;
+    double bestScore = std::numeric_limits<double>::max();
+    for (const QJsonValue& streamValue : streams) {
+        const QJsonObject streamObj = streamValue.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+        if (trackId < 0 || keyframes.isEmpty()) {
+            continue;
+        }
+
+        if (!hasAnchor) {
+            if ((storedTrackId >= 0 && trackId == storedTrackId) ||
+                (!storedStreamId.isEmpty() && streamId == storedStreamId)) {
+                QJsonObject resolved = row;
+                resolved[QStringLiteral("track_id")] = trackId;
+                resolved[QStringLiteral("stream_id")] = streamId;
+                return resolved;
+            }
+            continue;
+        }
+
+        int64_t streamFrameMin = std::numeric_limits<int64_t>::max();
+        int64_t streamFrameMax = -1;
+        for (const QJsonValue& keyframeValue : keyframes) {
+            const QJsonObject keyframeObj = keyframeValue.toObject();
+            const int64_t frame =
+                keyframeObj.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong();
+            streamFrameMin = qMin<int64_t>(streamFrameMin, frame);
+            streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
+        }
+        const FacestreamFrameDomain frameDomain =
+            inferFacestreamFrameDomain(clip, streamFrameMin, streamFrameMax);
+
+        for (const QJsonValue& keyframeValue : keyframes) {
+            const QJsonObject keyframeObj = keyframeValue.toObject();
+            const int64_t frame =
+                keyframeObj.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong();
+            const int64_t sourceFrame =
+                mapFacestreamFrameToSourceFrame(clip, frame, frameDomain, renderSyncMarkers);
+            const qreal x =
+                qBound<qreal>(0.0, keyframeObj.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0);
+            const qreal y =
+                qBound<qreal>(0.0, keyframeObj.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.5), 1.0);
+            const qreal box =
+                qBound<qreal>(0.01, keyframeObj.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(0.2), 1.0);
+            const qreal posDist = std::hypot(x - anchorX, y - anchorY);
+            const qreal boxDist = std::abs(box - anchorBox);
+            const qreal frameDist =
+                static_cast<qreal>(std::llabs(sourceFrame - anchorSourceFrame));
+            const double score = (frameDist / 12.0) + (posDist * 6.0) + (boxDist * 3.0);
+            if (score < bestScore) {
+                bestScore = score;
+                bestResolved = row;
+                bestResolved[QStringLiteral("track_id")] = trackId;
+                bestResolved[QStringLiteral("stream_id")] = streamId;
+            }
+        }
+    }
+
+    if (!bestResolved.isEmpty()) {
+        return bestResolved;
+    }
+
+    if (storedTrackId >= 0 || !storedStreamId.isEmpty()) {
+        QJsonObject fallback = row;
+        return fallback;
+    }
+    return {};
+}
+
+QHash<int, QString> SpeakersTab::resolvedIdentityByTrackId(const TimelineClip& clip,
+                                                           const QJsonArray& streams) const
+{
+    QHash<int, QString> identityByTrackId;
+    const QJsonObject speakerFlow = m_loadedTranscriptDoc.object().value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
+    const QJsonObject resolvedCurrent = clipFlow.value(QStringLiteral("resolved_current")).toObject();
+    const QJsonArray resolvedMap = resolvedCurrent.value(QStringLiteral("track_identity_map")).toArray();
+    for (const QJsonValue& value : resolvedMap) {
+        const QJsonObject resolved = resolveFaceStreamAssignmentRow(clip, streams, value.toObject());
+        const int trackId = resolved.value(QStringLiteral("track_id")).toInt(-1);
+        const QString identityId = resolved.value(QStringLiteral("identity_id")).toString().trimmed();
+        if (trackId >= 0 && !identityId.isEmpty()) {
+            identityByTrackId.insert(trackId, identityId);
+        }
+    }
+    return identityByTrackId;
+}
+
+QVector<int> SpeakersTab::resolvedAssignedTrackIdsForSpeaker(const TimelineClip& clip,
+                                                             const QJsonArray& streams,
+                                                             const QString& speakerId) const
+{
+    QVector<int> trackIds;
+    const QJsonObject speakerFlow = m_loadedTranscriptDoc.object().value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
+    const QJsonObject resolvedCurrent = clipFlow.value(QStringLiteral("resolved_current")).toObject();
+    const QJsonArray resolvedMap = resolvedCurrent.value(QStringLiteral("track_identity_map")).toArray();
+    for (const QJsonValue& value : resolvedMap) {
+        const QJsonObject resolved = resolveFaceStreamAssignmentRow(clip, streams, value.toObject());
+        if (resolved.value(QStringLiteral("identity_id")).toString().trimmed() != speakerId) {
+            continue;
+        }
+        const int trackId = resolved.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0 && !trackIds.contains(trackId)) {
+            trackIds.push_back(trackId);
+        }
+    }
+    return trackIds;
+}
+
+QString SpeakersTab::assignedFaceStreamPreviewTooltipHtml(const TimelineClip& clip,
+                                                          const QString& speakerId) const
+{
+    const QFileInfo transcriptInfo(m_loadedTranscriptPath);
+    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_loadedTranscriptPath);
+    const QString cacheKey = QStringLiteral("%1|%2|%3|%4")
+        .arg(clip.id)
+        .arg(speakerId)
+        .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0)
+        .arg(artifactRevisionMs);
+    const auto cached = m_avatarHoverTooltipHtmlCache.constFind(cacheKey);
+    if (cached != m_avatarHoverTooltipHtmlCache.cend()) {
+        return cached.value();
+    }
+
+    const QVector<QPixmap> previews = assignedFaceStreamPreviewPixmaps(clip, speakerId);
+    if (previews.isEmpty()) {
+        return QString();
+    }
+
+    QString html = QStringLiteral("<div style='white-space:nowrap;'>");
+    int count = 0;
+    for (const QPixmap& pixmap : previews) {
+        if (pixmap.isNull()) {
+            continue;
+        }
+        QByteArray bytes;
+        QBuffer buffer(&bytes);
+        buffer.open(QIODevice::WriteOnly);
+        pixmap.save(&buffer, "PNG");
+        html += QStringLiteral("<img width='72' height='72' style='margin:2px;border:1px solid #f4d35e;border-radius:6px;' src='data:image/png;base64,%1' />")
+                    .arg(QString::fromLatin1(bytes.toBase64()));
+        ++count;
+        if (count >= 12) {
+            break;
+        }
+    }
+    html += QStringLiteral("</div>");
+    if (count == 0) {
+        return QString();
+    }
+    m_avatarHoverTooltipHtmlCache.insert(cacheKey, html);
+    return html;
+}
+
+void SpeakersTab::showSpeakerAvatarHoverPreview(const QString& speakerId, const QPoint& globalPos)
+{
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip || speakerId.isEmpty()) {
+        QToolTip::hideText();
+        return;
+    }
+    const QString html = assignedFaceStreamPreviewTooltipHtml(*clip, speakerId);
+    if (html.isEmpty()) {
+        QToolTip::hideText();
+        return;
+    }
+    QToolTip::showText(globalPos, html, m_widgets.speakersTable);
+}
+
+void SpeakersTab::hideSpeakerAvatarHoverPreview()
+{
+    QToolTip::hideText();
+}
+
 QString SpeakersTab::originalTranscriptPathForClip(const QString& clipFilePath) const
 {
     return transcriptPathForClipFile(clipFilePath);
@@ -361,6 +867,7 @@ bool SpeakersTab::activeCutMutable() const
 void SpeakersTab::refresh()
 {
     m_updating = true;
+    hideSpeakerAvatarHoverPreview();
     const QString selectedSpeakerBeforeClear = selectedSpeakerId();
     const QString preferredSpeakerId =
         selectedSpeakerBeforeClear.isEmpty() ? m_lastSelectedSpeakerIdHint : selectedSpeakerBeforeClear;
@@ -368,9 +875,6 @@ void SpeakersTab::refresh()
     const QString previousClipFilePath = m_loadedClipFilePath;
     m_lastSelectionSeekSpeakerId.clear();
     m_lastSelectionSeekClipId.clear();
-    m_loadedTranscriptPath.clear();
-    m_loadedClipFilePath.clear();
-    m_loadedTranscriptDoc = QJsonDocument();
     m_pendingReferencePick = 0;
 
     if (m_widgets.speakersTable) {
@@ -379,10 +883,13 @@ void SpeakersTab::refresh()
         m_widgets.speakersTable->setEnabled(false);
         m_widgets.speakersTable->setIconSize(QSize(28, 28));
     }
-    requestRefreshBoxStreamPathsPanel();
+    requestRefreshFaceStreamPathsPanel();
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !clipSupportsTranscript(*clip)) {
+        m_loadedTranscriptPath.clear();
+        m_loadedClipFilePath.clear();
+        m_loadedTranscriptDoc = QJsonDocument();
         if (m_widgets.speakersInspectorClipLabel) {
             m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("No transcript cut selected"));
         }
@@ -396,40 +903,51 @@ void SpeakersTab::refresh()
         return;
     }
 
-    m_loadedClipFilePath = clip->filePath;
     const QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
-    m_loadedTranscriptPath = transcriptPath;
-    if (previousTranscriptPath != m_loadedTranscriptPath ||
-        previousClipFilePath != m_loadedClipFilePath) {
+    const bool transcriptChanged =
+        previousTranscriptPath != transcriptPath || previousClipFilePath != clip->filePath;
+    if (transcriptChanged) {
         m_avatarCache.clear();
+        m_avatarHoverTooltipHtmlCache.clear();
     }
 
-    editor::TranscriptEngine transcriptEngine;
-    QJsonDocument transcriptDoc;
-    if (!transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
-        if (m_widgets.speakersInspectorClipLabel) {
-            m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
+    const bool canReuseLoadedDoc =
+        m_loadedTranscriptDoc.isObject() &&
+        m_loadedTranscriptPath == transcriptPath &&
+        m_loadedClipFilePath == clip->filePath;
+    if (!canReuseLoadedDoc) {
+        editor::TranscriptEngine transcriptEngine;
+        QJsonDocument transcriptDoc;
+        if (!transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+            if (m_widgets.speakersInspectorClipLabel) {
+                m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
+            }
+            if (m_widgets.speakersInspectorDetailsLabel) {
+                m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Unable to load transcript JSON file."));
+            }
+            m_updating = false;
+            updateSelectedSpeakerPanel();
+            updateSpeakerTrackingStatusLabel();
+            return;
         }
-        if (m_widgets.speakersInspectorDetailsLabel) {
-            m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Unable to load transcript JSON file."));
-        }
-        m_updating = false;
-        updateSelectedSpeakerPanel();
-        updateSpeakerTrackingStatusLabel();
-        return;
+        m_loadedTranscriptPath = transcriptPath;
+        m_loadedClipFilePath = clip->filePath;
+        m_loadedTranscriptDoc = transcriptDoc;
     }
-
-    m_loadedTranscriptDoc = transcriptDoc;
 
     if (m_widgets.speakersInspectorClipLabel) {
         m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
     }
     if (m_widgets.speakersInspectorDetailsLabel) {
-        m_widgets.speakersInspectorDetailsLabel->setText(QString());
+        m_widgets.speakersInspectorDetailsLabel->setText(
+            QStringLiteral("FaceStream sidecar: %1")
+                .arg(facestreamSidecarExistsForClipFile(clip->filePath)
+                         ? QStringLiteral("Present")
+                         : QStringLiteral("Missing")));
     }
 
-    refreshSpeakersTable(transcriptDoc.object(), preferredSpeakerId);
-    requestRefreshBoxStreamPathsPanel();
+    refreshSpeakersTable(m_loadedTranscriptDoc.object(), preferredSpeakerId);
+    requestRefreshFaceStreamPathsPanel();
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->setEnabled(activeCutMutable());
     }
@@ -439,7 +957,7 @@ void SpeakersTab::refresh()
     updateSpeakerTrackingStatusLabel();
 }
 
-bool SpeakersTab::generateBoxStreamForSelectedClip()
+bool SpeakersTab::generateFaceStreamForSelectedClip()
 {
     if (!activeCutMutable()) {
         QMessageBox::information(
@@ -452,34 +970,62 @@ bool SpeakersTab::generateBoxStreamForSelectedClip()
     return true;
 }
 
-bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
+editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool confirmDialog,
+                                                                        bool interactive)
 {
+    auto maybeShow = [interactive](auto dialogFn, const QString& message) {
+        if (interactive) {
+            dialogFn(message);
+        }
+    };
+    auto fail = [&maybeShow](const QString& code,
+                             const QString& message,
+                             auto dialogFn,
+                             const QJsonObject& details = QJsonObject{}) -> editor::ActionResult {
+        maybeShow(dialogFn, message);
+        return editor::ActionResult::failure(code, message, details);
+    };
+
     if (!activeCutMutable()) {
-        QMessageBox::information(
-            nullptr,
-            QStringLiteral("Delete FaceStream"),
-            QStringLiteral("FaceStream actions are editable only on derived cuts (not Original)."));
-        return false;
+        return fail(
+            QStringLiteral("immutable_cut"),
+            QStringLiteral("FaceStream actions are editable only on derived cuts (not Original)."),
+            [](const QString& message) {
+                QMessageBox::information(
+                    nullptr,
+                    QStringLiteral("Delete FaceStream"),
+                    message);
+            });
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip) {
-        return false;
+        return editor::ActionResult::failure(
+            QStringLiteral("no_selected_clip"),
+            QStringLiteral("No clip is selected."));
     }
 
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
-    engine.loadBoxstreamArtifact(m_loadedTranscriptPath, &artifactRoot);
-    QJsonObject continuityByClip = artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+    engine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    QJsonObject continuityByClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
     const QString clipId = clip->id.trimmed();
     const QJsonObject continuityRoot = continuityByClip.value(clipId).toObject();
-    const QJsonArray streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
+        continuityRoot,
+        m_loadedTranscriptDoc.object());
+    const bool hasStoredPayload =
+        jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
 
-    if (streams.isEmpty()) {
-        QMessageBox::information(
-            nullptr,
-            QStringLiteral("Delete FaceStream"),
-            QStringLiteral("No FaceStream paths were found for this clip."));
-        return false;
+    if (streams.isEmpty() && !hasStoredPayload) {
+        return fail(
+            QStringLiteral("no_facestream_paths"),
+            QStringLiteral("No FaceStream paths were found for this clip."),
+            [](const QString& message) {
+                QMessageBox::information(
+                    nullptr,
+                    QStringLiteral("Delete FaceStream"),
+                    message);
+            });
     }
 
     if (confirmDialog) {
@@ -490,19 +1036,36 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
             QMessageBox::Yes | QMessageBox::Cancel,
             QMessageBox::Cancel);
         if (confirmation != QMessageBox::Yes) {
-            return false;
+            return editor::ActionResult::failure(
+                QStringLiteral("canceled"),
+                QStringLiteral("Delete FaceStream was canceled."));
         }
     }
 
     continuityByClip.remove(clipId);
-    artifactRoot[QStringLiteral("continuity_boxstreams_by_clip")] = continuityByClip;
-    const bool savedArtifact = engine.saveBoxstreamArtifact(m_loadedTranscriptPath, artifactRoot);
+    artifactRoot[QStringLiteral("continuity_facestreams_by_clip")] = continuityByClip;
+    const bool savedArtifact = engine.saveFacestreamArtifact(m_loadedTranscriptPath, artifactRoot);
     if (!savedArtifact) {
-        QMessageBox::warning(
-            nullptr,
-            QStringLiteral("Delete FaceStream"),
-            QStringLiteral("Failed to save FaceStream artifact after deletion."));
-        return false;
+        return fail(
+            QStringLiteral("save_failed"),
+            QStringLiteral("Failed to save FaceStream artifact after deletion."),
+            [](const QString& message) {
+                QMessageBox::warning(
+                    nullptr,
+                    QStringLiteral("Delete FaceStream"),
+                    message);
+            });
+    }
+
+    QJsonObject processedArtifactRoot;
+    if (engine.loadFacestreamProcessedArtifact(m_loadedTranscriptPath, &processedArtifactRoot)) {
+        QJsonObject processedByClip =
+            processedArtifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+        if (processedByClip.contains(clipId)) {
+            processedByClip.remove(clipId);
+            processedArtifactRoot[QStringLiteral("continuity_facestreams_by_clip")] = processedByClip;
+            engine.saveFacestreamProcessedArtifact(m_loadedTranscriptPath, processedArtifactRoot);
+        }
     }
 
     // Keep legacy transcript-side continuity fallback in sync if present.
@@ -512,8 +1075,8 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
     QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     if (clipsRoot.contains(clipId)) {
         QJsonObject clipFlow = clipsRoot.value(clipId).toObject();
-        if (clipFlow.contains(QStringLiteral("continuity_boxstreams"))) {
-            clipFlow.remove(QStringLiteral("continuity_boxstreams"));
+        if (clipFlow.contains(QStringLiteral("continuity_facestreams"))) {
+            clipFlow.remove(QStringLiteral("continuity_facestreams"));
             clipsRoot[clipId] = clipFlow;
             speakerFlow[QStringLiteral("clips")] = clipsRoot;
             transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
@@ -521,8 +1084,11 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
         }
     }
     if (transcriptChanged) {
-        m_loadedTranscriptDoc.setObject(transcriptRoot);
-        engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+        updateLoadedTranscriptDocument([&](QJsonObject& root) {
+            root = transcriptRoot;
+            return true;
+        });
+        saveLoadedTranscriptDocument();
     }
 
     emit transcriptDocumentChanged();
@@ -533,38 +1099,224 @@ bool SpeakersTab::deleteBoxStreamForSelectedClip(bool confirmDialog)
         m_deps.pushHistorySnapshot();
     }
     refresh();
-    return true;
+    return editor::ActionResult::success();
 }
 
-void SpeakersTab::requestRefreshBoxStreamPathsPanel()
+bool SpeakersTab::deleteFaceStreamForSelectedClip(bool confirmDialog, QString* errorOut)
+{
+    const editor::ActionResult result =
+        deleteFaceStreamForSelectedClipResult(confirmDialog, true);
+    if (!result.ok && errorOut) {
+        *errorOut = result.message;
+    }
+    return result.ok;
+}
+
+bool SpeakersTab::selectedClipHasFaceStreamSidecars() const
+{
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip || m_loadedTranscriptPath.trimmed().isEmpty()) {
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    QJsonObject artifactRoot;
+    if (engine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+        const QJsonObject byClip =
+            artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+        const QJsonObject continuityRoot = byClip.value(clip->id.trimmed()).toObject();
+        if (jcut::facestream::continuityRootHasStoredPayload(continuityRoot)) {
+            return true;
+        }
+    }
+
+    QJsonObject processedArtifactRoot;
+    if (engine.loadFacestreamProcessedArtifact(m_loadedTranscriptPath, &processedArtifactRoot)) {
+        const QJsonObject processedByClip =
+            processedArtifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+        if (jcut::facestream::continuityRootHasStoredPayload(
+                processedByClip.value(clip->id.trimmed()).toObject())) {
+            return true;
+        }
+    }
+
+    const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+    const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
+    return !clipFlow.value(QStringLiteral("continuity_facestreams")).toArray().isEmpty();
+}
+
+void SpeakersTab::onSpeakerViewFaceStreamClicked()
+{
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        QMessageBox::information(nullptr, QStringLiteral("View FaceStream"), QStringLiteral("Select a clip first."));
+        return;
+    }
+
+    QString text;
+    text += QStringLiteral("Selected clip: %1\n").arg(clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
+    text += QStringLiteral("Transcript artifact: %1\n\n").arg(m_loadedTranscriptPath);
+
+    editor::TranscriptEngine transcriptEngine;
+    QJsonObject artifactRoot;
+    const bool loadedArtifact = transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    QJsonObject continuityRoot;
+    if (loadedArtifact) {
+        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+        continuityRoot = byClip.value(clip->id.trimmed()).toObject();
+    }
+    const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
+        continuityRoot,
+        m_loadedTranscriptDoc.object());
+    text += QStringLiteral("Imported streams: %1\n").arg(streams.size());
+    text += QStringLiteral("Raw tracks: %1\n")
+                .arg(continuityRoot.value(QStringLiteral("raw_tracks")).toArray().size());
+    const QString importedArtifactDir = continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString();
+    if (!importedArtifactDir.isEmpty()) {
+        text += QStringLiteral("Imported artifact dir: %1\n").arg(importedArtifactDir);
+    }
+    QString facestreamPath = continuityRoot.value(QStringLiteral("facestream_part")).toString();
+    if (facestreamPath.isEmpty()) {
+        facestreamPath = continuityRoot.value(QStringLiteral("facestream_bin")).toString();
+    }
+    if (facestreamPath.isEmpty()) {
+        facestreamPath = continuityRoot.value(QStringLiteral("facestream_ndjson")).toString();
+    }
+    if (!facestreamPath.isEmpty()) {
+        const QFileInfo streamInfo(facestreamPath);
+        text += QStringLiteral("facestream checkpoint: %1 (%2 bytes)\n")
+                    .arg(facestreamPath)
+                    .arg(streamInfo.exists() ? streamInfo.size() : -1);
+    }
+    const QString processedPath = transcriptEngine.facestreamProcessedArtifactPath(m_loadedTranscriptPath);
+    if (!processedPath.isEmpty()) {
+        const QFileInfo processedInfo(processedPath);
+        text += QStringLiteral("processed sidecar: %1 (%2 bytes)\n")
+                    .arg(processedPath)
+                    .arg(processedInfo.exists() ? processedInfo.size() : -1);
+    }
+    const QString summaryPath = continuityRoot.value(QStringLiteral("summary_json")).toString();
+    if (!summaryPath.isEmpty()) {
+        text += QStringLiteral("summary.json: %1\n").arg(summaryPath);
+    }
+    const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_loadedTranscriptPath);
+    if (!identitySidecarPath.isEmpty()) {
+        const QFileInfo identityInfo(identitySidecarPath);
+        text += QStringLiteral("identity sidecar: %1")
+                    .arg(identityInfo.exists() ? identitySidecarPath : QStringLiteral("missing"));
+        if (identityInfo.exists()) {
+            text += QStringLiteral(" (%1 bytes)").arg(identityInfo.size());
+        }
+        text += QLatin1Char('\n');
+    }
+
+    const QString clipToken = speaker_flow_debug::sanitizeToken(
+        clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
+    const QString projectRoot = speaker_flow_debug::deriveProjectRootFromTranscriptPath(m_loadedTranscriptPath);
+    const QString debugRoot = QDir(projectRoot).absoluteFilePath(QStringLiteral("debug/speaker_flow/%1").arg(clipToken));
+    const QString latestRun = speaker_flow_debug::latestRunIdWithArtifact(debugRoot);
+    if (!latestRun.isEmpty()) {
+        const QString runDir = QDir(debugRoot).absoluteFilePath(latestRun);
+        const QString artifactDir = QDir(runDir).absoluteFilePath(QStringLiteral("facestream_artifact"));
+        text += QStringLiteral("\nLatest debug run: %1\n").arg(runDir);
+        text += QStringLiteral("Latest artifact dir: %1\n").arg(artifactDir);
+        const QStringList artifactFiles{
+            QStringLiteral("facestream.part"),
+            QStringLiteral("tracks.bin"),
+            QStringLiteral("continuity_facestream.bin"),
+            QStringLiteral("summary.json")
+        };
+        for (const QString& fileName : artifactFiles) {
+            const QString path = QDir(artifactDir).absoluteFilePath(fileName);
+            const QFileInfo info(path);
+            text += QStringLiteral("- %1: %2")
+                        .arg(fileName, info.exists() ? path : QStringLiteral("missing"));
+            if (info.exists()) {
+                text += QStringLiteral(" (%1 bytes)").arg(info.size());
+            }
+            text += QLatin1Char('\n');
+        }
+    } else {
+        text += QStringLiteral("\nLatest generated artifact: none found for this clip.\n");
+        if (QFileInfo::exists(debugRoot)) {
+            text += QStringLiteral("Debug root exists but contains no facestream_artifact files: %1\n").arg(debugRoot);
+        }
+    }
+
+    text += QStringLiteral("\n");
+    const int row = m_widgets.speakerFaceStreamTable ? m_widgets.speakerFaceStreamTable->currentRow() : -1;
+    if (row >= 0 && row < m_boxStreamPanelRows.size()) {
+        text += QStringLiteral("Selected stream:\n");
+        text += QString::fromUtf8(QJsonDocument(m_boxStreamPanelRows.at(row).toObject()).toJson(QJsonDocument::Indented));
+    } else if (!streams.isEmpty()) {
+        text += QStringLiteral("All imported streams:\n");
+        text += QString::fromUtf8(QJsonDocument(streams).toJson(QJsonDocument::Indented));
+    } else {
+        text += QStringLiteral("No imported FaceStream paths found for this clip.");
+    }
+
+    QDialog dialog;
+    dialog.setWindowTitle(QStringLiteral("View FaceStream"));
+    dialog.setWindowFlag(Qt::Window, true);
+    dialog.resize(900, 650);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* help = new QLabel(QStringLiteral("Generated artifact viewer. This shows imported continuity streams plus the latest resumable artifact file paths."), &dialog);
+    help->setWordWrap(true);
+    layout->addWidget(help);
+    auto* edit = new QPlainTextEdit(&dialog);
+    edit->setReadOnly(true);
+    edit->setPlainText(text);
+    layout->addWidget(edit, 1);
+    auto* buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto* closeButton = new QPushButton(QStringLiteral("Close"), &dialog);
+    buttons->addWidget(closeButton);
+    layout->addLayout(buttons);
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    dialog.exec();
+}
+
+void SpeakersTab::requestRefreshFaceStreamPathsPanel()
 {
     if (!m_boxStreamPanelRefreshTimer) {
-        refreshBoxStreamPathsPanel();
+        refreshFaceStreamPathsPanel();
         return;
     }
     m_boxStreamPanelRefreshQueued = true;
     m_boxStreamPanelRefreshTimer->start();
 }
 
-void SpeakersTab::refreshBoxStreamPathsPanel()
+void SpeakersTab::refreshFaceStreamPathsPanel()
 {
-    if (!m_widgets.speakerBoxStreamTable || m_refreshingBoxStreamPathsPanel) {
+    if (!m_widgets.speakerFaceStreamTable || m_refreshingFaceStreamPathsPanel) {
         return;
     }
-    m_refreshingBoxStreamPathsPanel = true;
+    m_refreshingFaceStreamPathsPanel = true;
     struct RefreshGuard {
         bool& flag;
         ~RefreshGuard() { flag = false; }
-    } guard{m_refreshingBoxStreamPathsPanel};
+    } guard{m_refreshingFaceStreamPathsPanel};
 
-    QSignalBlocker tableBlocker(m_widgets.speakerBoxStreamTable);
+    QSignalBlocker tableBlocker(m_widgets.speakerFaceStreamTable);
     QSignalBlocker selectionBlocker(
-        m_widgets.speakerBoxStreamTable->selectionModel());
-    m_widgets.speakerBoxStreamTable->clearContents();
-    m_widgets.speakerBoxStreamTable->setRowCount(0);
+        m_widgets.speakerFaceStreamTable->selectionModel());
+    m_widgets.speakerFaceStreamTable->clearContents();
+    m_widgets.speakerFaceStreamTable->setRowCount(0);
+    if (m_widgets.speakerFaceStreamTable->columnCount() >= 5) {
+        m_widgets.speakerFaceStreamTable->setHorizontalHeaderLabels(
+            QStringList{
+                QStringLiteral("Stream"),
+                QStringLiteral("Track"),
+                QStringLiteral("Assignment"),
+                QStringLiteral("Range"),
+                QStringLiteral("Source")
+            });
+    }
     m_boxStreamPanelRows = QJsonArray();
-    if (m_widgets.speakerBoxStreamDetailsEdit) {
-        m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+    if (m_widgets.speakerFaceStreamDetailsEdit) {
+        m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
             QStringLiteral("Select a FaceStream path row to inspect full JSON."));
     }
     if (!m_loadedTranscriptDoc.isObject()) {
@@ -576,35 +1328,32 @@ void SpeakersTab::refreshBoxStreamPathsPanel()
     }
 
     const QFileInfo transcriptInfo(m_loadedTranscriptPath);
+    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_loadedTranscriptPath);
     const QString refreshSignature =
         clip->id + QLatin1Char('|') +
         m_loadedTranscriptPath + QLatin1Char('|') +
-        QString::number(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0);
+        QString::number(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0) +
+        QLatin1Char('|') +
+        QString::number(artifactRevisionMs);
     if (refreshSignature == m_boxStreamPanelRefreshSignature) {
         return;
     }
 
-    editor::TranscriptEngine transcriptEngine;
-    QJsonObject artifactRoot;
-    const bool loadedArtifact = transcriptEngine.loadBoxstreamArtifact(m_loadedTranscriptPath, &artifactRoot);
-    QJsonArray streams;
-    if (loadedArtifact) {
-        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
-        const QJsonObject continuityRoot = byClip.value(clip->id.trimmed()).toObject();
-        streams = continuityRoot.value(QStringLiteral("streams")).toArray();
-    }
-    if (streams.isEmpty()) {
-        // Legacy fallback: older transcripts stored continuity under speaker_flow in transcript JSON.
-        const QJsonObject root = m_loadedTranscriptDoc.object();
-        const QJsonObject speakerFlow = root.value(QStringLiteral("speaker_flow")).toObject();
-        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
-        const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
-        const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_boxstreams")).toObject();
-        streams = continuityRoot.value(QStringLiteral("streams")).toArray();
-    }
+    const QJsonArray streams = continuityStreamsForClip(*clip);
     m_boxStreamPanelRefreshSignature = refreshSignature;
-    m_boxStreamPanelRows = streams;
-    m_widgets.speakerBoxStreamTable->setRowCount(streams.size());
+    const QHash<int, QString> identityByTrackId = resolvedIdentityByTrackId(*clip, streams);
+
+    struct StreamRow {
+        QJsonObject streamObj;
+        int trackId = -1;
+        QString identityId;
+        int64_t minFrame = -1;
+        int64_t maxFrame = -1;
+        QString sourceTag;
+        int keyframeCount = 0;
+    };
+    QVector<StreamRow> panelRows;
+    panelRows.reserve(streams.size());
     for (int row = 0; row < streams.size(); ++row) {
         const QJsonObject streamObj = streams.at(row).toObject();
         const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
@@ -622,28 +1371,94 @@ void SpeakersTab::refreshBoxStreamPathsPanel()
                 sourceTag = keyframe.value(QString(kTranscriptSpeakerTrackingSourceKey)).toString().trimmed();
             }
         }
+        StreamRow panelRow;
+        panelRow.streamObj = streamObj;
+        panelRow.trackId = trackId;
+        panelRow.identityId = identityByTrackId.value(trackId).trimmed();
+        panelRow.minFrame = keyframes.isEmpty() ? -1 : minFrame;
+        panelRow.maxFrame = keyframes.isEmpty() ? -1 : maxFrame;
+        panelRow.sourceTag = sourceTag;
+        panelRow.keyframeCount = keyframes.size();
+        panelRows.push_back(panelRow);
+        Q_UNUSED(streamId)
+    }
+    std::sort(panelRows.begin(), panelRows.end(), [](const StreamRow& a, const StreamRow& b) {
+        const bool aAssigned = !a.identityId.isEmpty();
+        const bool bAssigned = !b.identityId.isEmpty();
+        if (aAssigned != bAssigned) {
+            return aAssigned && !bAssigned;
+        }
+        if (aAssigned && bAssigned && a.identityId != b.identityId) {
+            return a.identityId.localeAwareCompare(b.identityId) < 0;
+        }
+        return a.trackId < b.trackId;
+    });
+
+    int assignedCount = 0;
+    int unassignedCount = 0;
+    for (const StreamRow& row : std::as_const(panelRows)) {
+        if (row.identityId.isEmpty()) {
+            ++unassignedCount;
+        } else {
+            ++assignedCount;
+        }
+        m_boxStreamPanelRows.push_back(row.streamObj);
+    }
+
+    m_widgets.speakerFaceStreamTable->setRowCount(panelRows.size());
+    for (int row = 0; row < panelRows.size(); ++row) {
+        const StreamRow& panelRow = panelRows.at(row);
+        const QJsonObject streamObj = panelRow.streamObj;
+        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
+        const int trackId = panelRow.trackId;
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
         const QString rangeText = keyframes.isEmpty()
             ? QStringLiteral("-")
-            : QStringLiteral("%1..%2").arg(minFrame).arg(maxFrame);
+            : QStringLiteral("%1..%2").arg(panelRow.minFrame).arg(panelRow.maxFrame);
         auto* streamItem = new QTableWidgetItem(streamId.isEmpty() ? QStringLiteral("—") : streamId);
         streamItem->setData(Qt::UserRole + 1, row);
-        const qlonglong seekFrame = keyframes.isEmpty() ? static_cast<qlonglong>(-1) : static_cast<qlonglong>(minFrame);
+        const qlonglong seekFrame = keyframes.isEmpty()
+            ? static_cast<qlonglong>(-1)
+            : static_cast<qlonglong>(panelRow.minFrame);
         streamItem->setData(Qt::UserRole + 2, QVariant(seekFrame));
         auto* trackItem = new QTableWidgetItem(trackId >= 0 ? QString::number(trackId) : QStringLiteral("—"));
-        auto* countItem = new QTableWidgetItem(QString::number(keyframes.size()));
+        const bool assigned = !panelRow.identityId.isEmpty();
+        auto* countItem = new QTableWidgetItem(
+            assigned ? panelRow.identityId : QStringLiteral("Unassigned"));
         auto* rangeItem = new QTableWidgetItem(rangeText);
-        auto* sourceItem = new QTableWidgetItem(sourceTag.isEmpty() ? QStringLiteral("continuity_track_v1") : sourceTag);
-        m_widgets.speakerBoxStreamTable->setItem(row, 0, streamItem);
-        m_widgets.speakerBoxStreamTable->setItem(row, 1, trackItem);
-        m_widgets.speakerBoxStreamTable->setItem(row, 2, countItem);
-        m_widgets.speakerBoxStreamTable->setItem(row, 3, rangeItem);
-        m_widgets.speakerBoxStreamTable->setItem(row, 4, sourceItem);
+        auto* sourceItem = new QTableWidgetItem(
+            panelRow.sourceTag.isEmpty() ? QStringLiteral("continuity_track_v1") : panelRow.sourceTag);
+        countItem->setToolTip(
+            assigned
+                ? QStringLiteral("Assigned to speaker identity: %1").arg(panelRow.identityId)
+                : QStringLiteral("No speaker identity assignment yet."));
+        rangeItem->setToolTip(QStringLiteral("Keyframes: %1").arg(panelRow.keyframeCount));
+        if (!assigned) {
+            const QColor bg(QStringLiteral("#3a2a2a"));
+            streamItem->setBackground(bg);
+            trackItem->setBackground(bg);
+            countItem->setBackground(bg);
+            rangeItem->setBackground(bg);
+            sourceItem->setBackground(bg);
+        }
+        m_widgets.speakerFaceStreamTable->setItem(row, 0, streamItem);
+        m_widgets.speakerFaceStreamTable->setItem(row, 1, trackItem);
+        m_widgets.speakerFaceStreamTable->setItem(row, 2, countItem);
+        m_widgets.speakerFaceStreamTable->setItem(row, 3, rangeItem);
+        m_widgets.speakerFaceStreamTable->setItem(row, 4, sourceItem);
     }
-    if (streams.isEmpty() && m_widgets.speakerBoxStreamDetailsEdit) {
-        m_widgets.speakerBoxStreamDetailsEdit->setPlainText(
+    if (streams.isEmpty() && m_widgets.speakerFaceStreamDetailsEdit) {
+        m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
             QStringLiteral("No FaceStream paths found for this clip. Run JCut DNN FaceStream Generator first."));
     } else if (!streams.isEmpty()) {
-        m_widgets.speakerBoxStreamTable->setCurrentCell(0, 0);
+        if (m_widgets.speakerFaceStreamDetailsEdit) {
+            m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
+                QStringLiteral("Track assignment summary\n\nAssigned: %1\nUnassigned: %2\nTotal: %3\n\nSelect a row to inspect full JSON.")
+                    .arg(assignedCount)
+                    .arg(unassignedCount)
+                    .arg(panelRows.size()));
+        }
+        m_widgets.speakerFaceStreamTable->setCurrentCell(0, 0);
     }
 }
 
@@ -703,33 +1518,6 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         const int keyframeCount =
             tracking.value(QString(kTranscriptSpeakerTrackingKeyframesKey)).toArray().size();
 
-        const auto formatReference = [](const QJsonObject& refObj) -> QString {
-            if (refObj.isEmpty()) {
-                return QStringLiteral("—");
-            }
-            const int64_t frame = refObj.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong();
-            const double rx = refObj.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.0);
-            const double ry = refObj.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.0);
-            const double boxSize =
-                refObj.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(-1.0);
-            if (boxSize > 0.0) {
-                return QStringLiteral("F%1 (%2, %3) s=%4")
-                    .arg(frame)
-                    .arg(QString::number(rx, 'f', 3))
-                    .arg(QString::number(ry, 'f', 3))
-                    .arg(QString::number(boxSize, 'f', 3));
-            }
-            return QStringLiteral("F%1 (%2, %3)")
-                .arg(frame)
-                .arg(QString::number(rx, 'f', 3))
-                .arg(QString::number(ry, 'f', 3));
-        };
-
-        const QJsonObject ref1Obj = tracking.value(QString(kTranscriptSpeakerTrackingRef1Key)).toObject();
-        const QJsonObject ref2Obj = tracking.value(QString(kTranscriptSpeakerTrackingRef2Key)).toObject();
-        const QString ref1Summary = formatReference(ref1Obj);
-        const QString ref2Summary = formatReference(ref2Obj);
-
         auto* avatarItem = new QTableWidgetItem();
         avatarItem->setFlags(avatarItem->flags() & ~Qt::ItemIsEditable);
         avatarItem->setData(Qt::UserRole, id);
@@ -762,36 +1550,12 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
                 : trackingMode);
         trackingModeItem->setFlags(trackingModeItem->flags() & ~Qt::ItemIsEditable);
         trackingModeItem->setData(Qt::UserRole, id);
-        auto* ref1Item = new QTableWidgetItem();
-        ref1Item->setFlags(ref1Item->flags() & ~Qt::ItemIsEditable);
-        ref1Item->setData(Qt::UserRole, id);
-        ref1Item->setData(Qt::UserRole + 1, 1);
-        ref1Item->setIcon(QIcon(speakerReferenceAvatar(*clip, id, ref1Obj)));
-        ref1Item->setToolTip(ref1Summary == QStringLiteral("—")
-                                 ? QStringLiteral("Ref 1: not set. Click to arm square-select, then Shift+drag in Preview.")
-                                 : QStringLiteral("Ref 1: %1\nClick to re-arm square-select and overwrite.").arg(ref1Summary));
-        ref1Item->setTextAlignment(Qt::AlignCenter);
-        ref1Item->setSizeHint(QSize(30, 30));
-
-        auto* ref2Item = new QTableWidgetItem();
-        ref2Item->setFlags(ref2Item->flags() & ~Qt::ItemIsEditable);
-        ref2Item->setData(Qt::UserRole, id);
-        ref2Item->setData(Qt::UserRole + 1, 2);
-        ref2Item->setIcon(QIcon(speakerReferenceAvatar(*clip, id, ref2Obj)));
-        ref2Item->setToolTip(ref2Summary == QStringLiteral("—")
-                                 ? QStringLiteral("Ref 2: not set. Click to arm square-select, then Shift+drag in Preview.")
-                                 : QStringLiteral("Ref 2: %1\nClick to re-arm square-select and overwrite.").arg(ref2Summary));
-        ref2Item->setTextAlignment(Qt::AlignCenter);
-        ref2Item->setSizeHint(QSize(30, 30));
-
         m_widgets.speakersTable->setItem(row, 0, avatarItem);
         m_widgets.speakersTable->setItem(row, 1, idItem);
         m_widgets.speakersTable->setItem(row, 2, nameItem);
         m_widgets.speakersTable->setItem(row, 3, xItem);
         m_widgets.speakersTable->setItem(row, 4, yItem);
         m_widgets.speakersTable->setItem(row, 5, trackingModeItem);
-        m_widgets.speakersTable->setItem(row, 6, ref1Item);
-        m_widgets.speakersTable->setItem(row, 7, ref2Item);
         m_widgets.speakersTable->setRowHeight(row, 34);
     }
 
@@ -932,95 +1696,29 @@ QPixmap SpeakersTab::speakerAvatarForRow(const TimelineClip& clip,
                                          const QJsonObject& profile,
                                          const QString& speakerId)
 {
-    Q_UNUSED(transcriptRoot);
-    const QJsonObject tracking = speakerFramingObject(profile);
-    const QJsonObject ref1Obj = tracking.value(QString(kTranscriptSpeakerTrackingRef1Key)).toObject();
-    const QJsonObject ref2Obj = tracking.value(QString(kTranscriptSpeakerTrackingRef2Key)).toObject();
-    if (!ref1Obj.isEmpty()) {
-        return speakerReferenceAvatar(clip, speakerId, ref1Obj);
-    }
-    if (!ref2Obj.isEmpty()) {
-        return speakerReferenceAvatar(clip, speakerId, ref2Obj);
-    }
-    return unsetSpeakerAvatar(32);
-
-#if 0
-    const int64_t sourceFrame30 = firstSourceFrameForSpeaker(transcriptRoot, speakerId);
-    if (sourceFrame30 < 0) {
-        return placeholderSpeakerAvatar(speakerId);
-    }
-
-    const QJsonObject locationObj = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
-    qreal locX = qBound<qreal>(0.0, locationObj.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0);
-    qreal locY = qBound<qreal>(0.0, locationObj.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85), 1.0);
-    const QString cacheKey = QStringLiteral("%1|%2|%3|%4|%5")
-        .arg(m_loadedTranscriptPath)
-        .arg(speakerId)
-        .arg(sourceFrame30)
-        .arg(static_cast<int>(std::round(locX * 1000.0)))
-        .arg(static_cast<int>(std::round(locY * 1000.0)));
-    const auto cached = m_avatarCache.constFind(cacheKey);
-    if (cached != m_avatarCache.cend()) {
-        return cached.value();
-    }
-
-    const qreal sourceFps = resolvedSourceFps(clip);
-    const int64_t decodeFrame =
-        qMax<int64_t>(0, static_cast<int64_t>(std::floor((static_cast<qreal>(sourceFrame30) / kTimelineFps) * sourceFps)));
-    const QString mediaPath = interactivePreviewMediaPathForClip(clip);
-
-    editor::DecoderContext ctx(mediaPath);
-    QPixmap avatar = placeholderSpeakerAvatar(speakerId);
-    if (ctx.initialize()) {
-        const editor::FrameHandle frame = ctx.decodeFrame(decodeFrame);
-        const QImage image = frame.hasCpuImage() ? frame.cpuImage() : QImage();
-        if (!image.isNull()) {
-            const bool hasSections = QFileInfo::exists(m_loadedTranscriptPath);
-            if (hasSections) {
-                const QVector<TranscriptSection> sections = loadTranscriptSections(m_loadedTranscriptPath);
-                bool resolved = false;
-                const QPointF tracked = transcriptSpeakerLocationForSourceFrame(
-                    m_loadedTranscriptPath, sections, sourceFrame30, &resolved);
-                if (resolved) {
-                    locX = qBound<qreal>(0.0, tracked.x(), 1.0);
-                    locY = qBound<qreal>(0.0, tracked.y(), 1.0);
-                }
-            }
-
-            const int width = image.width();
-            const int height = image.height();
-            if (width > 0 && height > 0) {
-                const int side = qMax(48, qMin(width, height) / 3);
-                int cx = static_cast<int>(std::round(locX * static_cast<qreal>(width)));
-                int cy = static_cast<int>(std::round(locY * static_cast<qreal>(height)));
-                int left = qBound(0, cx - (side / 2), qMax(0, width - side));
-                int top = qBound(0, cy - (side / 2), qMax(0, height - side));
-                QImage crop = image.copy(QRect(left, top, qMin(side, width), qMin(side, height)))
-                                  .scaled(32, 32,
-                                          Qt::KeepAspectRatioByExpanding,
-                                          Qt::SmoothTransformation)
-                                  .convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                if (!crop.isNull()) {
-                    QImage rounded(32, 32, QImage::Format_ARGB32_Premultiplied);
-                    rounded.fill(Qt::transparent);
-                    QPainter painter(&rounded);
-                    painter.setRenderHint(QPainter::Antialiasing, true);
-                    QPainterPath path;
-                    path.addEllipse(1.0, 1.0, 30.0, 30.0);
-                    painter.setClipPath(path);
-                    painter.drawImage(QRect(0, 0, 32, 32), crop);
-                    painter.setClipping(false);
-                    painter.setPen(QPen(QColor(QStringLiteral("#5e89b3")), 1.0));
-                    painter.setBrush(Qt::NoBrush);
-                    painter.drawEllipse(QRectF(1.0, 1.0, 30.0, 30.0));
-                    avatar = QPixmap::fromImage(rounded);
-                }
-            }
+    const QJsonArray faceRefs = speakerFaceRefs(profile);
+    for (int i = faceRefs.size() - 1; i >= 0; --i) {
+        const QJsonObject previewKeyframe = previewKeyframeFromSpeakerFaceRef(faceRefs.at(i).toObject());
+        if (!previewKeyframe.isEmpty()) {
+            return faceStreamPreviewAvatar(clip, speakerId, previewKeyframe, 32);
         }
     }
-    m_avatarCache.insert(cacheKey, avatar);
-    return avatar;
-#endif
+    const QJsonArray streams = continuityStreamsForClip(clip);
+    const QVector<int> assignedTrackIds =
+        resolvedAssignedTrackIdsForSpeaker(clip, streams, speakerId);
+    for (const QJsonValue& streamValue : streams) {
+        const QJsonObject streamObj = streamValue.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        if (!assignedTrackIds.contains(trackId)) {
+            continue;
+        }
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+        if (keyframes.isEmpty()) {
+            continue;
+        }
+        return faceStreamPreviewAvatar(clip, speakerId, keyframes.first().toObject(), 32);
+    }
+    return unsetSpeakerAvatar(32);
 }
 
 QPixmap SpeakersTab::speakerReferenceAvatar(const TimelineClip& clip,
@@ -1300,39 +1998,15 @@ QString SpeakersTab::speakerTrackingSummary(const QJsonObject& profile) const
 {
     const QJsonObject tracking = speakerFramingObject(profile);
     if (tracking.isEmpty()) {
-        return QStringLiteral("Subtitle Face Tracking: Off (no references)");
+        return QStringLiteral("Subtitle Face Tracking: Off");
     }
-    const auto refSummary = [](const QJsonObject& refObj) -> QString {
-        if (refObj.isEmpty()) {
-            return QStringLiteral("unset");
-        }
-        const int64_t frame = refObj.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong();
-        const double x = refObj.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.0);
-        const double y = refObj.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.0);
-        const double boxSize =
-            refObj.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(-1.0);
-        if (boxSize > 0.0) {
-            return QStringLiteral("F%1 (%2, %3) s=%4")
-                .arg(frame)
-                .arg(QString::number(x, 'f', 3))
-                .arg(QString::number(y, 'f', 3))
-                .arg(QString::number(boxSize, 'f', 3));
-        }
-        return QStringLiteral("F%1 (%2, %3)")
-            .arg(frame)
-            .arg(QString::number(x, 'f', 3))
-            .arg(QString::number(y, 'f', 3));
-    };
-
     const QString mode = tracking.value(QString(kTranscriptSpeakerTrackingModeKey)).toString(QStringLiteral("Manual"));
     const bool enabled = transcriptTrackingEnabled(tracking);
     const QString autoState = tracking.value(QString(kTranscriptSpeakerTrackingAutoStateKey)).toString();
     const int keyframeCount = tracking.value(QString(kTranscriptSpeakerTrackingKeyframesKey)).toArray().size();
-    QString summary = QStringLiteral("Subtitle Face Tracking: %1 (%2) | Ref1=%3 | Ref2=%4")
+    QString summary = QStringLiteral("Subtitle Face Tracking: %1 (%2)")
         .arg(enabled ? QStringLiteral("On") : QStringLiteral("Off"))
-        .arg(mode)
-        .arg(refSummary(tracking.value(QString(kTranscriptSpeakerTrackingRef1Key)).toObject()))
-        .arg(refSummary(tracking.value(QString(kTranscriptSpeakerTrackingRef2Key)).toObject()));
+        .arg(mode);
     if (keyframeCount > 0) {
         summary += QStringLiteral(" | Keys=%1").arg(keyframeCount);
     }
@@ -1372,10 +2046,8 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     const bool canEdit = mutableCut && !speakerId.isEmpty();
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     const bool canEditClipFraming = mutableCut && m_speakerDeps.updateClipById && selectedClip;
-    bool hasRef1 = false;
-    bool hasRef2 = false;
     if (m_widgets.speakerRefsChipLabel) {
-        m_widgets.speakerRefsChipLabel->setText(QStringLiteral("Refs: 0/2"));
+        m_widgets.speakerRefsChipLabel->setText(QStringLiteral("FaceStreams: 0"));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
         m_widgets.speakerPointstreamChipLabel->setText(QStringLiteral("FaceStream: None"));
@@ -1404,8 +2076,11 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerRunAutoTrackButton->setEnabled(canEdit);
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE FACESTREAM"));
     }
-    if (m_widgets.speakerBoxstreamSettingsButton) {
-        m_widgets.speakerBoxstreamSettingsButton->setEnabled(canEdit);
+    if (m_widgets.speakerViewFacestreamButton) {
+        m_widgets.speakerViewFacestreamButton->setEnabled(true);
+    }
+    if (m_widgets.speakerFacestreamSettingsButton) {
+        m_widgets.speakerFacestreamSettingsButton->setEnabled(canEdit);
     }
     if (m_widgets.speakerGuideButton) {
         m_widgets.speakerGuideButton->setEnabled(true);
@@ -1465,7 +2140,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
                 : QStringLiteral("Pick Ref 2 (Shift+Drag)"));
     }
 
-    const bool hasClipWideBoxStream =
+    const bool hasClipWideFaceStream =
         selectedClip &&
         (!selectedClip->speakerFramingKeyframes.isEmpty() ||
          !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty());
@@ -1475,7 +2150,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         return;
     }
     if (speakerId.isEmpty()) {
-        if (!hasClipWideBoxStream && m_loadedTranscriptDoc.isObject()) {
+        if (!hasClipWideFaceStream && m_loadedTranscriptDoc.isObject()) {
             m_widgets.speakerTrackingStatusLabel->setText(
                 QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created."));
         } else {
@@ -1493,16 +2168,17 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QJsonObject tracking = speakerFramingObject(profile);
-    transcriptTrackingReferencePoint(tracking, kTranscriptSpeakerTrackingRef1Key, &hasRef1);
-    transcriptTrackingReferencePoint(tracking, kTranscriptSpeakerTrackingRef2Key, &hasRef2);
     const bool trackingEnabled = transcriptTrackingEnabled(tracking);
     const bool hasPointstream = transcriptTrackingHasPointstream(tracking);
-    const int refCount = static_cast<int>(hasRef1) + static_cast<int>(hasRef2);
+    const QJsonArray streams = selectedClip ? continuityStreamsForClip(*selectedClip) : QJsonArray{};
+    const int assignedFaceStreamCount =
+        selectedClip ? resolvedAssignedTrackIdsForSpeaker(*selectedClip, streams, speakerId).size() : 0;
     if (m_widgets.speakerRefsChipLabel) {
-        m_widgets.speakerRefsChipLabel->setText(QStringLiteral("Refs: %1/2").arg(refCount));
+        m_widgets.speakerRefsChipLabel->setText(
+            QStringLiteral("FaceStreams: %1").arg(assignedFaceStreamCount));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
-        if (!hasClipWideBoxStream) {
+        if (!hasClipWideFaceStream) {
             m_widgets.speakerPointstreamChipLabel->setText(
                 QStringLiteral("FaceStream: MISSING (All Speakers)"));
         } else {
@@ -1514,7 +2190,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerTrackingChipButton->setText(
             trackingEnabled ? QStringLiteral("Tracking: ON") : QStringLiteral("Tracking: OFF"));
         m_widgets.speakerTrackingChipButton->setChecked(trackingEnabled);
-        m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasClipWideBoxStream);
+        m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasClipWideFaceStream);
     }
     if (selectedClip) {
         const bool hasRuntimeBinding = !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty();
@@ -1572,13 +2248,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE FACESTREAM (CONTINUITY)"));
     }
 
-    if (m_pendingReferencePick == 1 || m_pendingReferencePick == 2) {
-        m_widgets.speakerTrackingStatusLabel->setText(
-            QStringLiteral("[ARMED] Ref %1").arg(m_pendingReferencePick));
-        return;
-    }
-
-    if (!hasClipWideBoxStream) {
+    if (!hasClipWideFaceStream) {
         m_widgets.speakerTrackingStatusLabel->setText(
             QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created. "
                            "Run JCut DNN FaceStream Generator to create it."));
@@ -1586,8 +2256,8 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
 
     m_widgets.speakerTrackingStatusLabel->setText(
-        QStringLiteral("Refs: %1/2 | FaceStream: %2 | Tracking: %3 | Face Stabilize: %4")
-            .arg(refCount)
+        QStringLiteral("Assigned FaceStreams: %1 | FaceStream: %2 | Tracking: %3 | Face Stabilize: %4")
+            .arg(assignedFaceStreamCount)
             .arg(QStringLiteral("ClipWide Ready"))
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
             .arg((selectedClip && selectedClip->speakerFramingEnabled) ? QStringLiteral("ON") : QStringLiteral("OFF")));

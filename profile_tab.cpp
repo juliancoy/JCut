@@ -16,6 +16,7 @@
 #include <QDir>
 #include <QCoreApplication>
 #include <QSignalBlocker>
+#include <QGuiApplication>
 
 extern "C"
 {
@@ -73,13 +74,14 @@ void ProfileTab::refresh()
     }
     if (!m_widgets.profileSummaryTable) return;
 
-    const QJsonObject previewProfile = m_deps.profilingSnapshot();
+    const QJsonObject runtimeProfile = m_deps.profilingSnapshot();
+    const QJsonObject previewProfile = runtimeProfile.value(QStringLiteral("preview")).toObject();
     const QJsonObject decoderProfile = previewProfile.value(QStringLiteral("decoder")).toObject();
     const QJsonObject cacheProfile = previewProfile.value(QStringLiteral("cache")).toObject();
     const QJsonObject playbackPipelineProfile = previewProfile.value(QStringLiteral("playback_pipeline")).toObject();
     const QJsonObject memoryBudgetProfile = previewProfile.value(QStringLiteral("memory_budget")).toObject();
 
-    updateProfileTable(previewProfile, decoderProfile, cacheProfile,
+    updateProfileTable(runtimeProfile, decoderProfile, cacheProfile,
                        playbackPipelineProfile, memoryBudgetProfile);
 }
 
@@ -161,7 +163,7 @@ void ProfileTab::onBenchmarkClicked()
     runDecodeBenchmark();
 }
 
-void ProfileTab::updateProfileTable(const QJsonObject& previewProfile,
+void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
                                     const QJsonObject& decoderProfile,
                                     const QJsonObject& cacheProfile,
                                     const QJsonObject& playbackPipelineProfile,
@@ -193,14 +195,40 @@ void ProfileTab::updateProfileTable(const QJsonObject& previewProfile,
             .arg(QString::number(perFrame, 'f', 2));
     };
 
-    addRow(QStringLiteral("Preview Backend"),
-           previewProfile.value(QStringLiteral("backend_name")).toString(QStringLiteral("unknown")));
+    const QJsonObject previewProfile = runtimeProfile.value(QStringLiteral("preview")).toObject();
+    const QJsonObject renderBackendProfile = previewProfile.value(QStringLiteral("render_backend")).toObject();
+    const QJsonObject debugProfile = runtimeProfile.value(QStringLiteral("debug")).toObject();
+    const QString platform = QGuiApplication::platformName().trimmed();
+    QString displayPath = platform.isEmpty() ? QStringLiteral("unknown") : platform;
+    if (!qEnvironmentVariableIsEmpty("WAYLAND_DISPLAY")) {
+        displayPath += QStringLiteral(" (wayland)");
+    } else if (!qEnvironmentVariableIsEmpty("DISPLAY")) {
+        displayPath += QStringLiteral(" (x11)");
+    }
+
+    const QString requestedBackend =
+        renderBackendProfile.value(QStringLiteral("requested")).toString().trimmed();
+    const QString effectiveBackend =
+        renderBackendProfile.value(QStringLiteral("effective")).toString().trimmed();
+    const QString backendSummary =
+        requestedBackend.isEmpty() && effectiveBackend.isEmpty()
+            ? previewProfile.value(QStringLiteral("backend")).toString(QStringLiteral("unknown"))
+            : QStringLiteral("%1 -> %2")
+                  .arg(requestedBackend.isEmpty() ? QStringLiteral("unknown") : requestedBackend,
+                       effectiveBackend.isEmpty() ? QStringLiteral("unknown") : effectiveBackend);
+
+    addRow(QStringLiteral("Render Backend"), backendSummary);
+    addRow(QStringLiteral("Presenter Path"),
+           previewProfile.value(QStringLiteral("presenter")).toString(QStringLiteral("unknown")));
+    addRow(QStringLiteral("Display Path"), displayPath);
+    addRow(QStringLiteral("Decode Mode"),
+           debugProfile.value(QStringLiteral("decode_mode")).toString(QStringLiteral("auto")));
     addRow(QStringLiteral("Playback Active"),
-           previewProfile.value(QStringLiteral("playback_active")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
+           runtimeProfile.value(QStringLiteral("playback_active")).toBool() ? QStringLiteral("Yes") : QStringLiteral("No"));
     addRow(QStringLiteral("Current Timeline Frame"),
-           QString::number(previewProfile.value(QStringLiteral("current_frame")).toVariant().toLongLong()));
+           QString::number(runtimeProfile.value(QStringLiteral("current_frame")).toVariant().toLongLong()));
     addRow(QStringLiteral("Timeline Clips"),
-           QString::number(previewProfile.value(QStringLiteral("timeline_clip_count")).toInt()));
+           QString::number(runtimeProfile.value(QStringLiteral("timeline_clip_count")).toInt()));
     addRow(QStringLiteral("Decoder Workers"),
            QString::number(decoderProfile.value(QStringLiteral("worker_count")).toInt()));
     addRow(QStringLiteral("Pending Decode Requests"),
@@ -219,6 +247,16 @@ void ProfileTab::updateProfileTable(const QJsonObject& previewProfile,
     addRow(QStringLiteral("GPU Memory Usage"),
            QStringLiteral("%1 / %2").arg(memoryBudgetProfile.value(QStringLiteral("gpu_usage")).toVariant().toLongLong())
                                     .arg(memoryBudgetProfile.value(QStringLiteral("gpu_max")).toVariant().toLongLong()));
+    addRow(QStringLiteral("Cache CPU Bytes"),
+           QString::number(cacheProfile.value(QStringLiteral("cpu_bytes")).toVariant().toLongLong()));
+    addRow(QStringLiteral("Cache GPU Bytes"),
+           QString::number(cacheProfile.value(QStringLiteral("gpu_bytes")).toVariant().toLongLong()));
+    addRow(QStringLiteral("Cached Hardware Frames"),
+           QString::number(cacheProfile.value(QStringLiteral("hardware_frames")).toInt()));
+    addRow(QStringLiteral("Cached CPU-backed Frames"),
+           QString::number(cacheProfile.value(QStringLiteral("cpu_backed_frames")).toInt()));
+    addRow(QStringLiteral("Cached GPU-texture Frames"),
+           QString::number(cacheProfile.value(QStringLiteral("gpu_texture_frames")).toInt()));
     addRow(QStringLiteral("FFmpeg HW Device Types"),
            availableHardwareDeviceTypes().isEmpty()
                ? QStringLiteral("none")
@@ -232,7 +270,32 @@ void ProfileTab::updateProfileTable(const QJsonObject& previewProfile,
     addRow(QStringLiteral("Export Encode Policy"),
            QStringLiteral("Prefer hardware H.264 for MP4, fallback to software"));
 
-    const QJsonObject activeExport = previewProfile.value(QStringLiteral("export")).toObject();
+    const QJsonArray decodeDetails = previewProfile.value(QStringLiteral("decode_status_details")).toArray();
+    int decodeGpuTexture = 0;
+    int decodeHardwareFrame = 0;
+    int decodeCpuImage = 0;
+    int decodeMissing = 0;
+    for (const QJsonValue& value : decodeDetails) {
+        const QJsonObject detail = value.toObject();
+        if (!detail.value(QStringLiteral("active")).toBool()) {
+            continue;
+        }
+        const bool hasFrame = detail.value(QStringLiteral("has_frame")).toBool();
+        decodeGpuTexture += detail.value(QStringLiteral("gpu_texture")).toBool() ? 1 : 0;
+        decodeHardwareFrame += detail.value(QStringLiteral("hardware_frame")).toBool() ? 1 : 0;
+        decodeCpuImage += detail.value(QStringLiteral("cpu_image")).toBool() ? 1 : 0;
+        decodeMissing += hasFrame ? 0 : 1;
+    }
+    addRow(QStringLiteral("Decode Active Clips"),
+           QString::number(previewProfile.value(QStringLiteral("active_decode_status_clips")).toInt(decodeDetails.size())));
+    addRow(QStringLiteral("Decode Path Summary"),
+           QStringLiteral("gpu_texture:%1 hw_frame:%2 cpu_upload:%3 missing:%4")
+               .arg(decodeGpuTexture)
+               .arg(decodeHardwareFrame)
+               .arg(decodeCpuImage)
+               .arg(decodeMissing));
+
+    const QJsonObject activeExport = runtimeProfile.value(QStringLiteral("export")).toObject();
     const QJsonObject exportStats = activeExport.value(QStringLiteral("live")).toObject();
     if (exportStats.isEmpty()) {
         addRow(QStringLiteral("Export Status"), QStringLiteral("Idle"));

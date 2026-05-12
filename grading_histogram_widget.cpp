@@ -480,11 +480,13 @@ void GradingHistogramWidget::mouseMoveEvent(QMouseEvent* event)
             pointNorm.setX(0.5);
             pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
         } else if (m_activePoint == 0) {
-            pointNorm.setX(0.0);
-            pointNorm.setY(0.0);
+            const qreal nextX = m_points.size() > 1 ? (m_points.at(1).x() - 0.001) : 1.0;
+            pointNorm.setX(qBound<qreal>(0.0, pointNorm.x(), qMax<qreal>(0.0, nextX)));
+            pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
         } else if (m_activePoint == m_points.size() - 1) {
-            pointNorm.setX(1.0);
-            pointNorm.setY(1.0);
+            const qreal prevX = m_points.size() > 1 ? (m_points.at(m_points.size() - 2).x() + 0.001) : 0.0;
+            pointNorm.setX(qBound<qreal>(qMin<qreal>(1.0, prevX), pointNorm.x(), 1.0));
+            pointNorm.setY(qBound<qreal>(0.0, pointNorm.y(), 1.0));
         } else {
             const qreal prevX = m_points.at(m_activePoint - 1).x() + 0.001;
             const qreal nextX = m_points.at(m_activePoint + 1).x() - 0.001;

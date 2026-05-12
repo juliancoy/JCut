@@ -125,6 +125,29 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
     });
 }
 
+bool TranscriptTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
+{
+    if (!m_loadedTranscriptDoc.isObject() || !mutator) {
+        return false;
+    }
+
+    QJsonObject root = m_loadedTranscriptDoc.object();
+    if (!mutator(root)) {
+        return false;
+    }
+
+    m_loadedTranscriptDoc.setObject(root);
+    return true;
+}
+
+bool TranscriptTab::saveLoadedTranscriptDocument()
+{
+    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+        return false;
+    }
+    return m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+}
+
 void TranscriptTab::requestRefresh(int delayMs)
 {
     const int safeDelayMs = qBound(0, delayMs, 500);
@@ -332,9 +355,6 @@ void TranscriptTab::wire()
 
 void TranscriptTab::refresh()
 {
-    // (Removed early return to ensure the UI updates to reflect truth when a row is modified)
-
-
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     m_updating = true;
     m_manualSelectionTimer.invalidate();
@@ -344,10 +364,8 @@ void TranscriptTab::refresh()
         m_widgets.transcriptTable->clearContents();
         m_widgets.transcriptTable->setRowCount(0);
     }
-    m_loadedTranscriptPath.clear();
-    m_loadedClipFilePath.clear();
-    m_loadedTranscriptDoc = QJsonDocument();
     m_followRanges.clear();
+    m_lastSyncRow = -1;
     if (m_widgets.transcriptPrependMsSpin) {
         m_transcriptPrependMs = qMax(0, m_widgets.transcriptPrependMsSpin->value());
     }
@@ -363,6 +381,9 @@ void TranscriptTab::refresh()
 
     if (!clip || !clipSupportsTranscript(*clip)) {
         clearActiveTranscriptPathForClipFile(previousClipFilePath);
+        m_loadedTranscriptPath.clear();
+        m_loadedClipFilePath.clear();
+        m_loadedTranscriptDoc = QJsonDocument();
         m_persistedSelectedClipId.clear();
         m_persistedSelectedSegmentIndex = -1;
         m_persistedSelectedWordIndex = -1;
@@ -499,11 +520,13 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !clipSupportsTranscript(*clip) || m_loadedTranscriptPath.isEmpty()) {
         m_widgets.transcriptTable->clearSelection();
+        m_lastSyncRow = -1;
         return;
     }
 
     if (m_followRanges.isEmpty()) {
         m_widgets.transcriptTable->clearSelection();
+        m_lastSyncRow = -1;
         return;
     }
 
@@ -524,6 +547,7 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
             currentSourceFrame >= startFrame &&
             currentSourceFrame <= endFrame) {
             m_widgets.transcriptTable->clearSelection();
+            m_lastSyncRow = -1;
             return;
         }
     }
@@ -648,6 +672,13 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
 
     if (matchingRow < 0) {
         m_widgets.transcriptTable->clearSelection();
+        m_lastSyncRow = -1;
+        return;
+    }
+
+    if (matchingRow == m_lastSyncRow &&
+        m_widgets.transcriptTable->selectionModel() &&
+        m_widgets.transcriptTable->selectionModel()->isRowSelected(matchingRow, QModelIndex())) {
         return;
     }
 
@@ -657,6 +688,7 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
         m_widgets.transcriptTable->selectRow(matchingRow);
         m_suppressSelectionSideEffects = false;
     }
+    m_lastSyncRow = matchingRow;
 
     if (m_widgets.transcriptTable->item(matchingRow, 0)) {
         QTableWidgetItem* item = m_widgets.transcriptTable->item(matchingRow, 0);
@@ -722,9 +754,10 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
     segmentObj[QStringLiteral("words")] = words;
     segments.replace(segmentIndex, segmentObj);
     root[QStringLiteral("segments")] = segments;
-    m_loadedTranscriptDoc.setObject(root);
-
-    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         refresh();
         return;
     }
@@ -788,8 +821,10 @@ void TranscriptTab::deleteSelectedRows()
         const int previousDeletedEdits = root.value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
         root[QString(kTranscriptDeletedEditsCountKey)] = previousDeletedEdits + deletedCount;
     }
-    m_loadedTranscriptDoc.setObject(root);
-    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         refresh();
         return;
     }
@@ -869,8 +904,10 @@ void TranscriptTab::setSelectedRowsSkipped(bool skipped)
     }
 
     root[QStringLiteral("segments")] = segments;
-    m_loadedTranscriptDoc.setObject(root);
-    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         refresh();
         return;
     }
@@ -1436,9 +1473,10 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         segmentObj[QStringLiteral("words")] = words;
         segments.replace(targetSegmentIndex, segmentObj);
         root[QStringLiteral("segments")] = segments;
-        m_loadedTranscriptDoc.setObject(root);
-
-        if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+        if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+                loadedRoot = root;
+                return true;
+            }) || !saveLoadedTranscriptDocument()) {
             refresh();
             return;
         }
@@ -1525,9 +1563,10 @@ void TranscriptTab::expandSelectedRow(int row)
     segmentObj[QStringLiteral("words")] = words;
     segments.replace(segmentIndex, segmentObj);
     root[QStringLiteral("segments")] = segments;
-    m_loadedTranscriptDoc.setObject(root);
-
-    if (!m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         refresh();
         return;
     }

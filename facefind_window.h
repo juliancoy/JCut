@@ -18,6 +18,10 @@ struct Candidate {
     qreal score = 0.0;
     int trackId = -1;
     QString cropPath;
+    QString clusterId;
+    QVector<int> clusterTrackIds;
+    qreal clusterConfidence = 1.0;
+    QString clusterStatus;
 };
 
 struct AssignmentDialogResult {
@@ -33,6 +37,7 @@ AssignmentDialogResult showFaceFindWindow(
     const QHash<QString, QString>& speakerLabels,
     const QStringList& suggestedSpeakerIds,
     const QStringList& autoSuggestedSpeakerIds,
-    const QStringList& defaultSourceLabels);
+    const QStringList& defaultSourceLabels,
+    const QString& clusterSummaryText = QString());
 
 } // namespace facefind

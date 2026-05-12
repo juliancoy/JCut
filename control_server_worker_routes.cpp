@@ -127,7 +127,8 @@ void ControlServerWorker::noteDemand(const Request& request) {
         markHistoryDemand();
     }
     if (request.method == QStringLiteral("GET") &&
-        (path == QStringLiteral("/ui") || path == QStringLiteral("/ui/"))) {
+        (path == QStringLiteral("/ui") || path == QStringLiteral("/ui/") ||
+         path == QStringLiteral("/menu"))) {
         markUiTreeDemand();
     }
 }
@@ -140,7 +141,12 @@ bool ControlServerWorker::handleUiBoundRouteGuard(QTcpSocket* socket, const Requ
         (request.method == QStringLiteral("POST") &&
          (path == QStringLiteral("/ui") ||
           path == QStringLiteral("/ui/") ||
+          path == QStringLiteral("/ui/context-action") ||
+          path == QStringLiteral("/facestream/delete-selected") ||
+          path == QStringLiteral("/speakers/subtab") ||
           path == QStringLiteral("/ui/table/context-action"))) ||
+        (request.method == QStringLiteral("GET") &&
+         path == QStringLiteral("/speakers/subtab")) ||
         (request.method == QStringLiteral("GET") &&
          (path == QStringLiteral("/windows") ||
           path == QStringLiteral("/screenshot") || path == QStringLiteral("/menu"))) ||
@@ -229,6 +235,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /project</strong> - Project information</div>
         <div class="endpoint"><strong>GET /history</strong> - History snapshot</div>
         <div class="endpoint"><strong>GET /ui</strong> - UI hierarchy</div>
+        <div class="endpoint"><strong>GET /menu</strong> - Active popup menu snapshot, including submenus</div>
         <div class="endpoint"><strong>GET /throttles</strong> - Current throttle configuration</div>
         <div class="endpoint"><strong>GET /playback</strong> - Current playback policy configuration</div>
         <div class="endpoint"><strong>GET /paradigms</strong> - Architecture organizational paradigms and file positioning</div>
@@ -236,6 +243,9 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <h2>Controls:</h2>
         <div class="endpoint"><strong>POST /playhead</strong> - Set playhead position</div>
         <div class="endpoint"><strong>POST /ui</strong> - Mutate UI widgets/tables by id or selector</div>
+        <div class="endpoint"><strong>POST /ui/context-action</strong> - Right-click a widget and trigger a nested context-menu path</div>
+        <div class="endpoint"><strong>POST /facestream/delete-selected</strong> - Delete FaceStream for the currently selected clip</div>
+        <div class="endpoint"><strong>POST /menu</strong> - Trigger an active popup menu action by text or submenu path</div>
         <div class="endpoint"><strong>POST /profile/reset</strong> - Reset profiling stats</div>
         <div class="endpoint"><strong>POST /throttles</strong> - Patch throttle configuration</div>
         <div class="endpoint"><strong>POST /playback</strong> - Patch playback policy configuration</div>
@@ -324,8 +334,8 @@ bool ControlServerWorker::handleParadigms(QTcpSocket* socket, const Request& req
                 <tr><td><code>transcript_tab_document.cpp</code></td><td>🟩 Transcript document</td><td>🟩 Satellite</td><td>🟫 Load/parse/version/persist</td><td>🟩 Extracted to cap</td></tr>
                 <tr><td><code>speakers_tab.cpp</code></td><td>🟦 Speakers core</td><td>🟦 Facade</td><td>🟧 Wiring/refresh/model summary</td><td>🟩 Below cap</td></tr>
                 <tr><td><code>speakers_tab_interactions.cpp</code></td><td>🟩 Speakers interactions</td><td>🟩 Satellite</td><td>🟨 Selection/reference/context actions</td><td>🟩 Extracted to cap</td></tr>
-                <tr><td><code>speakers_tab_boxstream_engines.cpp</code></td><td>🟩 FaceStream engines</td><td>🟩 Satellite</td><td>🟥 Native/docker engine execution</td><td>🟩 Extracted to cap</td></tr>
-                <tr><td><code>speakers_tab_boxstream_actions.cpp</code></td><td>🟩 FaceStream actions</td><td>🟩 Satellite</td><td>🟧 Workflow orchestration + preview framing</td><td>🟩 Extracted to cap</td></tr>
+                <tr><td><code>speakers_tab_facestream_engines.cpp</code></td><td>🟩 FaceStream engines</td><td>🟩 Satellite</td><td>🟥 Native/docker engine execution</td><td>🟩 Extracted to cap</td></tr>
+                <tr><td><code>speakers_tab_facestream_actions.cpp</code></td><td>🟩 FaceStream actions</td><td>🟩 Satellite</td><td>🟧 Workflow orchestration + preview framing</td><td>🟩 Extracted to cap</td></tr>
                 <tr><td><code>speakers_tab_internal.h</code></td><td>🟪 Shared helper slice</td><td>🟪 Helper module</td><td>🟪 Internal constants/utilities</td><td>🟩 Prevents duplication</td></tr>
             </tbody>
         </table>
@@ -760,6 +770,39 @@ bool ControlServerWorker::handleHistoryRoutes(QTcpSocket* socket, const Request&
 }
 
 bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/pipeline")) {
+        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+        const QUrlQuery query(request.url);
+        const bool refresh = queryBool(query, QStringLiteral("refresh"));
+        QString liveError;
+        if ((refresh || m_lastProfileSnapshot.isEmpty()) &&
+            !refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &liveError)) {
+            m_lastProfileRefreshError = liveError;
+        }
+
+        if (m_lastProfileSnapshot.isEmpty()) {
+            const QString error = m_lastProfileRefreshError.isEmpty()
+                ? QStringLiteral("pipeline snapshot unavailable; profile cache warming")
+                : m_lastProfileRefreshError;
+            writeError(socket, 503, error);
+            return true;
+        }
+
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const QJsonObject preview = m_lastProfileSnapshot.value(QStringLiteral("preview")).toObject();
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("live"), m_lastProfileSnapshotMs > 0 &&
+                 (now - m_lastProfileSnapshotMs) <= m_profileCacheFreshMs},
+            {QStringLiteral("snapshot_age_ms"),
+             m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1},
+            {QStringLiteral("backend"), preview.value(QStringLiteral("backend")).toString()},
+            {QStringLiteral("pipeline"), preview.value(QStringLiteral("pipeline_stages")).toArray()},
+            {QStringLiteral("preview"), preview}
+        });
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/profile")) {
         m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
         const QJsonObject snapshot = fastSnapshot();
@@ -767,6 +810,21 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
             m_uiHeartbeatStaleMs;
         if (m_lastProfileSnapshot.isEmpty()) {
+            QString liveError;
+            if (refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &liveError)) {
+                writeJson(socket, 200, QJsonObject{
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("live"), true},
+                    {QStringLiteral("ui_thread_responsive"), uiResponsive},
+                    {QStringLiteral("ui_error"), QString()},
+                    {QStringLiteral("profile"), m_lastProfileSnapshot},
+                    {QStringLiteral("served_cached"), false},
+                    {QStringLiteral("cache"), profileCacheMeta()},
+                    {QStringLiteral("fast_snapshot"), snapshot}
+                });
+                return true;
+            }
+            m_lastProfileRefreshError = liveError;
             const QString error = m_lastProfileRefreshError.isEmpty()
                 ? QStringLiteral("profile snapshot unavailable; cache warming")
                 : m_lastProfileRefreshError;

@@ -1,4 +1,5 @@
 #include "opengl_preview.h"
+#include "preview_view_transform.h"
 #include "titles.h"
 
 #include <QContextMenuEvent>
@@ -94,6 +95,16 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
                 return;
             }
         }
+    }
+
+    if (dispatchFaceStreamBoxAtPosition(event->position())) {
+        update();
+        event->accept();
+        return;
+    }
+    if (m_interaction.faceStreamAssignmentInteractionEnabled) {
+        event->accept();
+        return;
     }
 
     const PreviewOverlayInfo selectedInfo = m_overlayModel.overlays.value(m_interaction.selectedClipId);
@@ -249,16 +260,18 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
         }
         
         if (m_interaction.transient.dragMode == PreviewDragMode::ResizeX || m_interaction.transient.dragMode == PreviewDragMode::ResizeBoth) {
+            const qreal scaleXFactor =
+                (m_interaction.transient.dragOriginBounds.width() + (event->position().x() - m_interaction.transient.dragOriginPos.x())) /
+                m_interaction.transient.dragOriginBounds.width();
             scaleX = sanitizeScaleValue(
-                m_interaction.transient.dragOriginTransform.scaleX *
-                ((m_interaction.transient.dragOriginBounds.width() + (event->position().x() - m_interaction.transient.dragOriginPos.x())) /
-                 m_interaction.transient.dragOriginBounds.width()));
+                m_interaction.transient.dragOriginTransform.scaleX * scaleXFactor);
         }
         if (m_interaction.transient.dragMode == PreviewDragMode::ResizeY || m_interaction.transient.dragMode == PreviewDragMode::ResizeBoth) {
+            const qreal scaleYFactor =
+                (m_interaction.transient.dragOriginBounds.height() + (event->position().y() - m_interaction.transient.dragOriginPos.y())) /
+                m_interaction.transient.dragOriginBounds.height();
             scaleY = sanitizeScaleValue(
-                m_interaction.transient.dragOriginTransform.scaleY *
-                ((m_interaction.transient.dragOriginBounds.height() + (event->position().y() - m_interaction.transient.dragOriginPos.y())) /
-                 m_interaction.transient.dragOriginBounds.height()));
+                m_interaction.transient.dragOriginTransform.scaleY * scaleYFactor);
         }
         if (m_interaction.transient.dragMode == PreviewDragMode::ResizeBoth) {
             const qreal factorX =
@@ -274,6 +287,28 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
         if (resizeRequested) {
             resizeRequested(m_interaction.selectedClipId, scaleX, scaleY, false);
         }
+        if (moveRequested) {
+            const QRect compositeRect = scaledCanvasRect(previewCanvasBaseRect());
+            const QPointF previewScale = previewCanvasScale(compositeRect);
+            PreviewResizeAnchor anchor = PreviewResizeAnchor::Center;
+            if (m_interaction.transient.dragMode == PreviewDragMode::ResizeX) {
+                anchor = PreviewResizeAnchor::Left;
+            } else if (m_interaction.transient.dragMode == PreviewDragMode::ResizeY) {
+                anchor = PreviewResizeAnchor::Top;
+            } else if (m_interaction.transient.dragMode == PreviewDragMode::ResizeBoth) {
+                anchor = PreviewResizeAnchor::TopLeft;
+            }
+            const QPointF translation = PreviewViewTransform::translationForAnchoredResize(
+                QPointF(m_interaction.transient.dragOriginTransform.translationX,
+                        m_interaction.transient.dragOriginTransform.translationY),
+                QPointF(m_interaction.transient.dragOriginTransform.scaleX,
+                        m_interaction.transient.dragOriginTransform.scaleY),
+                QPointF(scaleX, scaleY),
+                m_interaction.transient.dragOriginBounds,
+                anchor,
+                previewScale);
+            moveRequested(m_interaction.selectedClipId, translation.x(), translation.y(), false);
+        }
         event->accept();
         return;
     }
@@ -287,6 +322,7 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
 
 void PreviewWindow::leaveEvent(QEvent* event) {
     m_interaction.transient.lastMousePos = QPointF(-10000.0, -10000.0);
+    clearHoveredFaceStreamBox();
     if (m_interaction.viewMode == ViewMode::Audio) {
         scheduleRepaint();
     }
@@ -478,25 +514,20 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
         event->accept();
         return;
     }
-    const QRect baseRect = previewCanvasBaseRect();
-    const QRect oldRect = scaledCanvasRect(baseRect);
-    const qreal factor = event->angleDelta().y() > 0 ? 1.1 : (1.0 / 1.1);
-    // Extended zoom range: 0.1x to 20.0x
-    const qreal oldZoom = qBound<qreal>(0.1, m_interaction.previewZoom, 20.0);
-    const qreal nextZoom = qBound<qreal>(0.1, oldZoom * factor, 20.0);
-    if (qAbs(nextZoom - oldZoom) < 0.000001) {
+    const PreviewZoomResult zoom = PreviewViewTransform::zoomForWheel(
+        QRectF(rect()),
+        m_interaction.outputSize,
+        36.0,
+        m_interaction.previewZoom,
+        m_interaction.previewPanOffset,
+        event->position(),
+        event->angleDelta().y());
+    if (!zoom.changed) {
         event->accept();
         return;
     }
-    const QPointF anchor = QPointF((event->position().x() - oldRect.left()) / qMax(1.0, static_cast<qreal>(oldRect.width())),
-                                   (event->position().y() - oldRect.top()) / qMax(1.0, static_cast<qreal>(oldRect.height())));
-    m_interaction.previewZoom = nextZoom;
-    const QSizeF newSize(baseRect.width() * m_interaction.previewZoom, baseRect.height() * m_interaction.previewZoom);
-    const QPointF centeredTopLeft(baseRect.center().x() - (newSize.width() / 2.0),
-                                  baseRect.center().y() - (newSize.height() / 2.0));
-    const QPointF anchoredTopLeft(event->position().x() - (anchor.x() * newSize.width()),
-                                  event->position().y() - (anchor.y() * newSize.height()));
-    m_interaction.previewPanOffset = anchoredTopLeft - centeredTopLeft;
+    m_interaction.previewZoom = zoom.zoom;
+    m_interaction.previewPanOffset = zoom.panOffset;
     scheduleRepaint();
     event->accept();
 }
@@ -590,6 +621,16 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
         return;
     }
 
+    if (m_interaction.faceStreamAssignmentInteractionEnabled) {
+        if (updateHoveredFaceStreamBox(position)) {
+            setCursor(Qt::PointingHandCursor);
+        } else {
+            clearHoveredFaceStreamBox();
+            setCursor(Qt::ArrowCursor);
+        }
+        return;
+    }
+
     const PreviewOverlayInfo info = m_overlayModel.overlays.value(m_interaction.selectedClipId);
     if (m_interaction.titleOverlayInteractionOnly && !clipIdIsTitle(m_interaction.selectedClipId)) {
         unsetCursor();
@@ -619,4 +660,18 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
         }
     }
     unsetCursor();
+}
+
+void PreviewWindow::clearHoveredFaceStreamBox()
+{
+    PreviewInteractionTransientState& transient = m_interaction.transient;
+    if (transient.hoveredFaceStreamTrackId < 0 &&
+        transient.hoveredFaceStreamClipId.isEmpty() &&
+        transient.hoveredFaceStreamId.isEmpty()) {
+        return;
+    }
+    transient.hoveredFaceStreamTrackId = -1;
+    transient.hoveredFaceStreamClipId.clear();
+    transient.hoveredFaceStreamId.clear();
+    scheduleRepaint();
 }

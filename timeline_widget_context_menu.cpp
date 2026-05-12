@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "facestream_runtime.h"
 #include "transcript_engine.h"
 #include "titles.h"
 
@@ -65,8 +66,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* createProxyAction = nullptr;
     QAction* continueProxyAction = nullptr;
     QAction* deleteProxyAction = nullptr;
-    QAction* generateBoxStreamAction = nullptr;
-    QAction* deleteBoxStreamAction = nullptr;
+    QAction* generateFaceStreamAction = nullptr;
+    QAction* deleteFaceStreamAction = nullptr;
 
     QSet<QString> contextSelection = selectedClipIds();
     if (clipIndex >= 0 && !clickedClipId.isEmpty() && !contextSelection.contains(clickedClipId)) {
@@ -174,27 +175,28 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             deleteProxyAction = proxyMenu->addAction(QStringLiteral("Delete Proxy"));
             deleteProxyAction->setEnabled(canProxy);
         }
-        const bool canBoxStream =
+        const bool canFaceStream =
             m_clips[clipIndex].mediaType == ClipMediaType::Audio || m_clips[clipIndex].hasAudio;
-        bool hasBoxStream = false;
+        bool hasFaceStream = false;
         const QString transcriptPath = activeTranscriptPathForClipFile(m_clips[clipIndex].filePath);
         if (!transcriptPath.trimmed().isEmpty()) {
             editor::TranscriptEngine transcriptEngine;
             QJsonObject artifactRoot;
-            if (transcriptEngine.loadBoxstreamArtifact(transcriptPath, &artifactRoot)) {
+            if (transcriptEngine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
                 const QJsonObject byClip =
-                    artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
+                    artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
                 const QJsonObject continuityRoot =
                     byClip.value(m_clips[clipIndex].id.trimmed()).toObject();
-                hasBoxStream =
-                    !continuityRoot.value(QStringLiteral("streams")).toArray().isEmpty();
+                hasFaceStream =
+                    jcut::facestream::continuityRootHasTracks(continuityRoot) ||
+                    jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
             }
         }
         QMenu* boxStreamMenu = menu.addMenu(QStringLiteral("FaceStream"));
-        generateBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Generate FaceStream..."));
-        generateBoxStreamAction->setEnabled(canBoxStream);
-        deleteBoxStreamAction = boxStreamMenu->addAction(QStringLiteral("Delete FaceStream..."));
-        deleteBoxStreamAction->setEnabled(canBoxStream && hasBoxStream);
+        generateFaceStreamAction = boxStreamMenu->addAction(QStringLiteral("Generate FaceStream..."));
+        generateFaceStreamAction->setEnabled(canFaceStream);
+        deleteFaceStreamAction = boxStreamMenu->addAction(QStringLiteral("Delete FaceStream..."));
+        deleteFaceStreamAction->setEnabled(canFaceStream && hasFaceStream);
         propertiesAction = menu.addAction(QStringLiteral("Properties"));
         menu.addSeparator();
     }
@@ -526,16 +528,16 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         return;
     }
 
-    if (selected == generateBoxStreamAction) {
-        if (generateBoxStreamRequested && clipIndex >= 0) {
-            generateBoxStreamRequested(m_clips[clipIndex].id);
+    if (selected == generateFaceStreamAction) {
+        if (generateFaceStreamRequested && clipIndex >= 0) {
+            generateFaceStreamRequested(m_clips[clipIndex].id);
         }
         return;
     }
 
-    if (selected == deleteBoxStreamAction) {
-        if (deleteBoxStreamRequested && clipIndex >= 0) {
-            deleteBoxStreamRequested(m_clips[clipIndex].id);
+    if (selected == deleteFaceStreamAction) {
+        if (deleteFaceStreamRequested && clipIndex >= 0) {
+            deleteFaceStreamRequested(m_clips[clipIndex].id);
         }
         return;
     }

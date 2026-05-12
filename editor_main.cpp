@@ -88,6 +88,9 @@ int main(int argc, char **argv)
     QCommandLineOption noRestOption(
         QStringList{QStringLiteral("no-rest")},
         QStringLiteral("Disable the local REST/control server."));
+    QCommandLineOption restVulkanDiagnosticsOption(
+        QStringList{QStringLiteral("rest-vulkan-diagnostics")},
+        QStringLiteral("Force Vulkan preview and skip startup project/state loading for REST screenshot diagnostics."));
     QCommandLineOption speakerHarnessOption(
         QStringList{QStringLiteral("speaker-export-harness")},
         QStringLiteral("Run speaker export harness without showing the main window."));
@@ -131,6 +134,7 @@ int main(int argc, char **argv)
     parser.addOption(debugAllOption);
     parser.addOption(controlPortOption);
     parser.addOption(noRestOption);
+    parser.addOption(restVulkanDiagnosticsOption);
     parser.addOption(speakerHarnessOption);
     parser.addOption(stateOption);
     parser.addOption(outputOption);
@@ -142,6 +146,13 @@ int main(int argc, char **argv)
     parser.addOption(useProxyOption);
     parser.addOption(noProxyOption);
     parser.process(app);
+
+    if (parser.isSet(restVulkanDiagnosticsOption)) {
+        qputenv("JCUT_REST_VULKAN_DIAGNOSTICS", "1");
+        qputenv("JCUT_PREVIEW_BACKEND", "vulkan");
+        qputenv("JCUT_VULKAN_PREVIEW_PRESENTER", "direct");
+        qputenv("JCUT_RENDER_BACKEND", "vulkan");
+    }
 
     if (parser.isSet(debugAllOption)) {
         editor::setDebugPlaybackEnabled(true);

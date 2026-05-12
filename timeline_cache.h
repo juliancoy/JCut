@@ -15,6 +15,7 @@
 #include <QSet>
 #include <QVector>
 #include <QJsonArray>
+#include <QJsonObject>
 #include <memory>
 #include <functional>
 
@@ -46,6 +47,15 @@ struct PlaybackFrameInfo {
 // ============================================================================
 class ClipCache {
 public:
+    struct ResidencyStats {
+        size_t totalFrames = 0;
+        size_t hardwareFrames = 0;
+        size_t cpuBackedFrames = 0;
+        size_t gpuTextureFrames = 0;
+        size_t cpuBytes = 0;
+        size_t gpuBytes = 0;
+    };
+
     ClipCache(const QString& path, int64_t duration, MemoryBudget* budget);
     ~ClipCache();
     
@@ -65,6 +75,7 @@ public:
     // Get all cached frame numbers (for debugging)
     QList<int64_t> cachedFrames() const;
     QList<CacheEntryInfo> entries() const;
+    ResidencyStats residencyStats() const;
     
     QString path() const { return m_path; }
     int64_t duration() const { return m_duration; }
@@ -160,6 +171,7 @@ public:
     int totalCachedFrames() const;
     size_t totalMemoryUsage() const;
     double cacheHitRate() const;
+    QJsonObject cacheResidencySnapshot() const;
     int pendingVisibleRequestCount() const;
     bool isVisibleRequestPending(const QString& clipId, int64_t frameNumber) const;
     bool shouldForceVisibleRequestRetry(const QString& clipId,
@@ -222,6 +234,7 @@ private:
     void cancelDecoderBeforeThrottled(const QString& decodePath,
                                       int64_t keepFromFrame,
                                       qint64 nowMs = -1);
+    void enforceHardwareFrameResidencyPolicy();
     void dropStaleRequestsForPlayhead(int64_t playheadFrame);
     void beginSeekResyncForPlayhead(int64_t playheadFrame);
     void scheduleImmediateLeadPrefetch(const ClipInfo& info, int64_t canonicalFrame);

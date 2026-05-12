@@ -1,6 +1,6 @@
 #pragma once
 
-#include "boxstream_runtime.h"
+#include "facestream_runtime.h"
 #include "decoder_context.h"
 #include "editor_shared.h"
 #include "frame_handle.h"
@@ -37,19 +37,19 @@
 #include <vulkan/vulkan.h>
 #endif
 
-namespace jcut::boxstream {
-struct BoxstreamSmoothingSettings {
+namespace jcut::facestream {
+struct FacestreamSmoothingSettings {
     bool smoothTranslation = false;
     bool smoothScale = false;
 };
-inline BoxstreamSmoothingSettings g_boxstreamSmoothingSettings;
-struct BoxstreamContribTrackingSettings {
+inline FacestreamSmoothingSettings g_facestreamSmoothingSettings;
+struct FacestreamContribTrackingSettings {
     int redetectStrideSamples = 5;
     bool allowTrackerOnlyPropagation = true;
 };
-inline BoxstreamContribTrackingSettings g_boxstreamContribTrackingSettings;
+inline FacestreamContribTrackingSettings g_facestreamContribTrackingSettings;
 
-enum class BoxstreamDetectorPreset {
+enum class FacestreamDetectorPreset {
     HaarBalanced = 0,
     HaarSmallFaces = 1,
     HaarPrecision = 2,
@@ -69,19 +69,22 @@ enum class BoxstreamDetectorPreset {
     NativeHybridCpu = 16,
     NativeHybridVulkan = 17,
     NativeVulkanDnn = 18,
-    NativeCudaDnn = 19
+    NativeCudaDnn = 19,
+    ScrfdNcnnVulkan = 20
 };
 
-inline bool isDnnBoxstreamPreset(BoxstreamDetectorPreset preset)
+inline bool isDnnFacestreamPreset(FacestreamDetectorPreset preset)
 {
-    return preset == BoxstreamDetectorPreset::DnnAuto ||
-           preset == BoxstreamDetectorPreset::NativeVulkanDnn ||
-           preset == BoxstreamDetectorPreset::NativeCudaDnn;
+    return preset == FacestreamDetectorPreset::DnnAuto ||
+           preset == FacestreamDetectorPreset::NativeVulkanDnn ||
+           preset == FacestreamDetectorPreset::NativeCudaDnn ||
+           preset == FacestreamDetectorPreset::ScrfdNcnnVulkan;
 }
 
-inline bool isRelaxedDnnBoxstreamPreset(BoxstreamDetectorPreset preset)
+inline bool isRelaxedDnnFacestreamPreset(FacestreamDetectorPreset preset)
 {
-    return preset == BoxstreamDetectorPreset::NativeVulkanDnn;
+    return preset == FacestreamDetectorPreset::NativeVulkanDnn ||
+           preset == FacestreamDetectorPreset::ScrfdNcnnVulkan;
 }
 
 inline QString formatEtaSeconds(double secondsRemaining)
@@ -114,7 +117,7 @@ inline QString findCascadeFile(const QString& name)
 }
 
 #if JCUT_HAVE_OPENCV
-struct VulkanBoxstreamFrameProvider {
+struct VulkanFacestreamFrameProvider {
     std::unique_ptr<render_detail::OffscreenVulkanRenderer> renderer;
     QHash<QString, editor::DecoderContext*> decoders;
     QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncFrameCache;
@@ -123,7 +126,7 @@ struct VulkanBoxstreamFrameProvider {
     bool failed = false;
     QString failureReason;
 
-    ~VulkanBoxstreamFrameProvider()
+    ~VulkanFacestreamFrameProvider()
     {
         qDeleteAll(decoders);
         decoders.clear();
@@ -157,7 +160,7 @@ struct VulkanBoxstreamFrameProvider {
     }
 };
 
-inline QImage renderBoxstreamFrameWithVulkan(VulkanBoxstreamFrameProvider* provider,
+inline QImage renderFacestreamFrameWithVulkan(VulkanFacestreamFrameProvider* provider,
                                       const TimelineClip& sourceClip,
                                       const QString& mediaPath,
                                       int64_t timelineFrame,
@@ -170,7 +173,7 @@ inline QImage renderBoxstreamFrameWithVulkan(VulkanBoxstreamFrameProvider* provi
 
     TimelineClip clip = sourceClip;
     clip.id = sourceClip.id.trimmed().isEmpty()
-        ? QStringLiteral("boxstream-vulkan-source")
+        ? QStringLiteral("facestream-vulkan-source")
         : sourceClip.id;
     clip.filePath = mediaPath;
     clip.proxyPath.clear();
@@ -206,8 +209,8 @@ inline QImage renderBoxstreamFrameWithVulkan(VulkanBoxstreamFrameProvider* provi
     clip.correctionPolygons.clear();
 
     RenderRequest request;
-    request.outputPath = QStringLiteral("boxstream://vulkan");
-    request.outputFormat = QStringLiteral("boxstream-preview");
+    request.outputPath = QStringLiteral("facestream://vulkan");
+    request.outputFormat = QStringLiteral("facestream-preview");
     request.outputSize = outputSize;
     request.bypassGrading = true;
     request.correctionsEnabled = false;
@@ -448,7 +451,8 @@ public:
     bool detectCpuImage(const QImage& image,
                         QVector<DetectionCandidate>* detections,
                         double* inferenceMs,
-                        QString* error)
+                        QString* error,
+                        float confidenceThreshold = 0.28f)
     {
         if (!m_initialized && !initialize(error)) {
             return false;
@@ -529,11 +533,12 @@ public:
         }
 
         jcut::vulkan_detector::VulkanTensorBuffer detectionBuffer{m_detectionBuffer, m_detectionBytes};
-        if (!m_detector.inferFromTensor(tensor, detectionBuffer, m_maxDetections, 0.28f, error)) {
+        const float boundedThreshold = qBound(0.0f, confidenceThreshold, 1.0f);
+        if (!m_detector.inferFromTensor(tensor, detectionBuffer, m_maxDetections, boundedThreshold, error)) {
             return false;
         }
 
-        if (!readDetections(detections, error)) {
+        if (!readDetections(detections, boundedThreshold, error)) {
             return false;
         }
         if (inferenceMs) {
@@ -728,7 +733,7 @@ private:
         vkCmdPipelineBarrier(m_commandBuffer, src, dst, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     }
 
-    bool readDetections(QVector<DetectionCandidate>* detections, QString* error)
+    bool readDetections(QVector<DetectionCandidate>* detections, float confidenceThreshold, QString* error)
     {
         if (!detections) {
             return true;
@@ -749,7 +754,7 @@ private:
             const float h = det[i * 8 + 3];
             const float confidence = det[i * 8 + 4];
             if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(w) || !std::isfinite(h) ||
-                confidence < 0.28f || w <= 0.04f || h <= 0.04f) {
+                confidence < confidenceThreshold || w <= 0.04f || h <= 0.04f) {
                 continue;
             }
             DetectionCandidate candidate;
@@ -829,7 +834,7 @@ inline QImage buildScanPreview(const QImage& source, const std::vector<cv::Rect>
     for (const cv::Rect& det : detections) {
         boxes.push_back(QRect(det.x, det.y, det.width, det.height));
     }
-    return jcut::boxstream::buildScanPreview(source, boxes, activeTracks);
+    return jcut::facestream::buildScanPreview(source, boxes, activeTracks);
 }
 
 inline std::vector<WeightedDetection> filterAndSuppressDetections(std::vector<WeightedDetection> detections,
@@ -959,16 +964,16 @@ inline std::vector<cv::Rect> runDnnFaceDetect(DnnFaceDetectorRuntime* runtime, c
 }
 
 #if JCUT_HAVE_OPENCV_CONTRIB
-inline cv::Ptr<cv::legacy::Tracker> createContribTracker(BoxstreamDetectorPreset preset)
+inline cv::Ptr<cv::legacy::Tracker> createContribTracker(FacestreamDetectorPreset preset)
 {
-    if (preset == BoxstreamDetectorPreset::ContribCsrt) {
+    if (preset == FacestreamDetectorPreset::ContribCsrt) {
         return cv::legacy::TrackerCSRT::create();
     }
-    if (preset == BoxstreamDetectorPreset::ContribKcf) {
+    if (preset == FacestreamDetectorPreset::ContribKcf) {
         return cv::legacy::TrackerKCF::create();
     }
     return {};
 }
 #endif
 #endif
-} // namespace jcut::boxstream
+} // namespace jcut::facestream

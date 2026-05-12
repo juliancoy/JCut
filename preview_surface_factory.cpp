@@ -6,6 +6,8 @@
 #include "vulkan_preview_surface.h"
 
 #include <QDebug>
+#include <QCoreApplication>
+#include <QMessageBox>
 #include <QtGlobal>
 
 namespace {
@@ -21,6 +23,34 @@ void logDecision(const PreviewBackendDecision& decision)
         << QStringLiteral("[render-backend-selection] requested=%1 effective=%2 reason=\"%3\"")
                .arg(decision.requested, decision.effective, decision.reason);
 }
+
+bool userApprovesOpenGlFallback(QWidget* parent, const QString& reason)
+{
+    if (qEnvironmentVariable("QT_QPA_PLATFORM").contains("offscreen", Qt::CaseInsensitive)) {
+        return true;
+    }
+    const QString prompt = QStringLiteral(
+        "Vulkan preview is unavailable:\n\n%1\n\nAllow fallback to OpenGL preview?")
+                               .arg(reason.trimmed().isEmpty()
+                                        ? QStringLiteral("Unknown Vulkan initialization failure.")
+                                        : reason.trimmed());
+    return QMessageBox::question(parent,
+                                 QStringLiteral("Confirm OpenGL Fallback"),
+                                 prompt,
+                                 QMessageBox::Yes | QMessageBox::No,
+                                 QMessageBox::No) == QMessageBox::Yes;
+}
+
+PreviewSurface* exitAfterFallbackRefusal(const PreviewBackendDecision& decision,
+                                         PreviewBackendDecision* decisionOut)
+{
+    logDecision(decision);
+    if (decisionOut) {
+        *decisionOut = decision;
+    }
+    QCoreApplication::exit(2);
+    return nullptr;
+}
 } // namespace
 
 PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
@@ -33,7 +63,9 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
     const bool preferVulkan = (configured == RenderBackend::Vulkan || configured == RenderBackend::Auto);
     if (preferVulkan) {
         const QString presenterMode =
-            qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER").trimmed().toLower();
+            qEnvironmentVariable("JCUT_VULKAN_PREVIEW_PRESENTER", QStringLiteral("direct"))
+                .trimmed()
+                .toLower();
         const bool directVulkanPreviewEnabled =
             (presenterMode == QStringLiteral("direct") ||
              presenterMode == QStringLiteral("native") ||
@@ -57,21 +89,36 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
             decision.reason = nativeReason.isEmpty()
                 ? QStringLiteral("Vulkan direct preview surface unavailable in explicit direct mode.")
                 : nativeReason;
+            const bool allowFallback = userApprovesOpenGlFallback(parent, decision.reason);
+            delete surface;
+            if (!allowFallback) {
+                decision.effective = QStringLiteral("vulkan");
+                decision.fallbackApplied = false;
+                decision.reason = QStringLiteral("User declined OpenGL fallback after Vulkan preview failure.");
+                return exitAfterFallbackRefusal(decision, decisionOut);
+            }
             logDecision(decision);
             if (decisionOut) {
                 *decisionOut = decision;
             }
-            delete surface;
             auto* fallback = new PreviewWindow(parent);
             fallback->setRenderBackendPreference(QStringLiteral("opengl"));
             return fallback;
         }
 
+        const QString noDirectReason =
+            QStringLiteral("Direct Vulkan presenter is not enabled; embedded mode uses OpenGL.");
+        if (!userApprovesOpenGlFallback(parent, noDirectReason)) {
+            decision.effective = QStringLiteral("vulkan");
+            decision.fallbackApplied = false;
+            decision.reason = QStringLiteral("User declined OpenGL fallback in embedded preview mode.");
+            return exitAfterFallbackRefusal(decision, decisionOut);
+        }
         auto* embedded = new PreviewWindow(parent);
         embedded->setRenderBackendPreference(QStringLiteral("opengl"));
         decision.effective = QStringLiteral("opengl");
-        decision.fallbackApplied = false;
-        decision.reason = QStringLiteral("Using embedded preview widget renderer (OpenGL path, default mode).");
+        decision.fallbackApplied = true;
+        decision.reason = noDirectReason;
         logDecision(decision);
         if (decisionOut) {
             *decisionOut = decision;

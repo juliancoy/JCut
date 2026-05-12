@@ -1081,134 +1081,28 @@ bool GradingTab::hasRemovableKeyframeSelection(const TimelineClip& clip) const
 GradingTab::GradingKeyframeDisplay GradingTab::evaluateDisplayedGrading(const TimelineClip& clip, int64_t localFrame) const
 {
     GradingKeyframeDisplay result;
-    result.brightness = 0.0;
-    result.contrast = 1.0;
-    result.saturation = 1.0;
-    result.shadowsR = 0.0; result.shadowsG = 0.0; result.shadowsB = 0.0;
-    result.midtonesR = 0.0; result.midtonesG = 0.0; result.midtonesB = 0.0;
-    result.highlightsR = 0.0; result.highlightsG = 0.0; result.highlightsB = 0.0;
-    result.curvePointsR = defaultGradingCurvePoints();
-    result.curvePointsG = defaultGradingCurvePoints();
-    result.curvePointsB = defaultGradingCurvePoints();
-    result.curvePointsLuma = defaultGradingCurvePoints();
-    result.curveThreePointLock = true;
-    result.curveSmoothingEnabled = true;
-    result.linearInterpolation = true;
-
-    if (clip.gradingKeyframes.isEmpty()) {
-        return result;
-    }
-
-    // Find the keyframe at or before localFrame
-    int beforeIndex = -1;
-    for (int i = clip.gradingKeyframes.size() - 1; i >= 0; --i) {
-        if (clip.gradingKeyframes[i].frame <= localFrame) {
-            beforeIndex = i;
-            break;
-        }
-    }
-
-    if (beforeIndex < 0) {
-        // Use first keyframe
-        const auto& kf = clip.gradingKeyframes[0];
-        result.brightness = kf.brightness;
-        result.contrast = kf.contrast;
-        result.saturation = kf.saturation;
-        result.shadowsR = kf.shadowsR; result.shadowsG = kf.shadowsG; result.shadowsB = kf.shadowsB;
-        result.midtonesR = kf.midtonesR; result.midtonesG = kf.midtonesG; result.midtonesB = kf.midtonesB;
-        result.highlightsR = kf.highlightsR; result.highlightsG = kf.highlightsG; result.highlightsB = kf.highlightsB;
-        result.curvePointsR = kf.curvePointsR;
-        result.curvePointsG = kf.curvePointsG;
-        result.curvePointsB = kf.curvePointsB;
-        result.curvePointsLuma = kf.curvePointsLuma;
-        result.curveThreePointLock = kf.curveThreePointLock;
-        result.curveSmoothingEnabled = kf.curveSmoothingEnabled;
-        result.linearInterpolation = kf.linearInterpolation;
-        return result;
-    }
-
-    const auto& before = clip.gradingKeyframes[beforeIndex];
-    
-    // If this is the last keyframe or we're exactly at it
-    if (beforeIndex == clip.gradingKeyframes.size() - 1 || before.frame == localFrame) {
-        result.brightness = before.brightness;
-        result.contrast = before.contrast;
-        result.saturation = before.saturation;
-        result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
-        result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
-        result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
-        result.curvePointsR = before.curvePointsR;
-        result.curvePointsG = before.curvePointsG;
-        result.curvePointsB = before.curvePointsB;
-        result.curvePointsLuma = before.curvePointsLuma;
-        result.curveThreePointLock = before.curveThreePointLock;
-        result.curveSmoothingEnabled = before.curveSmoothingEnabled;
-        result.linearInterpolation = before.linearInterpolation;
-        return result;
-    }
-
-    // Find the next keyframe
-    int afterIndex = beforeIndex + 1;
-    const auto& after = clip.gradingKeyframes[afterIndex];
-
-    // If not interpolating, just use the before keyframe
-    if (!before.linearInterpolation) {
-        result.brightness = before.brightness;
-        result.contrast = before.contrast;
-        result.saturation = before.saturation;
-        result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
-        result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
-        result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
-        result.curvePointsR = before.curvePointsR;
-        result.curvePointsG = before.curvePointsG;
-        result.curvePointsB = before.curvePointsB;
-        result.curvePointsLuma = before.curvePointsLuma;
-        result.curveThreePointLock = before.curveThreePointLock;
-        result.curveSmoothingEnabled = before.curveSmoothingEnabled;
-        result.linearInterpolation = before.linearInterpolation;
-        return result;
-    }
-
-    // Interpolate
-    const int64_t range = after.frame - before.frame;
-    if (range <= 0) {
-        result.brightness = before.brightness;
-        result.contrast = before.contrast;
-        result.saturation = before.saturation;
-        result.shadowsR = before.shadowsR; result.shadowsG = before.shadowsG; result.shadowsB = before.shadowsB;
-        result.midtonesR = before.midtonesR; result.midtonesG = before.midtonesG; result.midtonesB = before.midtonesB;
-        result.highlightsR = before.highlightsR; result.highlightsG = before.highlightsG; result.highlightsB = before.highlightsB;
-        result.curvePointsR = before.curvePointsR;
-        result.curvePointsG = before.curvePointsG;
-        result.curvePointsB = before.curvePointsB;
-        result.curvePointsLuma = before.curvePointsLuma;
-        result.curveThreePointLock = before.curveThreePointLock;
-        result.curveSmoothingEnabled = before.curveSmoothingEnabled;
-        return result;
-    }
-
-    const double t = static_cast<double>(localFrame - before.frame) / static_cast<double>(range);
-    result.brightness = before.brightness + (after.brightness - before.brightness) * t;
-    result.contrast = before.contrast + (after.contrast - before.contrast) * t;
-    result.saturation = before.saturation + (after.saturation - before.saturation) * t;
-    result.shadowsR = before.shadowsR + (after.shadowsR - before.shadowsR) * t;
-    result.shadowsG = before.shadowsG + (after.shadowsG - before.shadowsG) * t;
-    result.shadowsB = before.shadowsB + (after.shadowsB - before.shadowsB) * t;
-    result.midtonesR = before.midtonesR + (after.midtonesR - before.midtonesR) * t;
-    result.midtonesG = before.midtonesG + (after.midtonesG - before.midtonesG) * t;
-    result.midtonesB = before.midtonesB + (after.midtonesB - before.midtonesB) * t;
-    result.highlightsR = before.highlightsR + (after.highlightsR - before.highlightsR) * t;
-    result.highlightsG = before.highlightsG + (after.highlightsG - before.highlightsG) * t;
-    result.highlightsB = before.highlightsB + (after.highlightsB - before.highlightsB) * t;
-    // Keep curve data keyframe-agnostic for now (hold previous curve between keys).
-    result.curvePointsR = before.curvePointsR;
-    result.curvePointsG = before.curvePointsG;
-    result.curvePointsB = before.curvePointsB;
-    result.curvePointsLuma = before.curvePointsLuma;
-    result.curveThreePointLock = before.curveThreePointLock;
-    result.curveSmoothingEnabled = before.curveSmoothingEnabled;
-    result.linearInterpolation = after.linearInterpolation;
-
+    const TimelineClip::GradingKeyframe evaluated =
+        evaluateClipGradingAtFrame(clip, clip.startFrame + localFrame);
+    result.frame = evaluated.frame;
+    result.brightness = evaluated.brightness;
+    result.contrast = evaluated.contrast;
+    result.saturation = evaluated.saturation;
+    result.shadowsR = evaluated.shadowsR;
+    result.shadowsG = evaluated.shadowsG;
+    result.shadowsB = evaluated.shadowsB;
+    result.midtonesR = evaluated.midtonesR;
+    result.midtonesG = evaluated.midtonesG;
+    result.midtonesB = evaluated.midtonesB;
+    result.highlightsR = evaluated.highlightsR;
+    result.highlightsG = evaluated.highlightsG;
+    result.highlightsB = evaluated.highlightsB;
+    result.curvePointsR = evaluated.curvePointsR;
+    result.curvePointsG = evaluated.curvePointsG;
+    result.curvePointsB = evaluated.curvePointsB;
+    result.curvePointsLuma = evaluated.curvePointsLuma;
+    result.curveThreePointLock = evaluated.curveThreePointLock;
+    result.curveSmoothingEnabled = evaluated.curveSmoothingEnabled;
+    result.linearInterpolation = evaluated.linearInterpolation;
     return result;
 }
 

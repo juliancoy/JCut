@@ -1,5 +1,6 @@
 // project_state.cpp
 #include "editor.h"
+#include "speakers_table.h"
 #include "clip_serialization.h"
 #include "debug_controls.h"
 
@@ -408,7 +409,7 @@ void EditorWindow::switchToProject(const QString &projectId)
     saveCurrentProjectMarker();
     loadState();
     refreshProjectsList();
-    m_inspectorPane->refresh();
+    refreshCurrentInspectorTab();
 }
 
 void EditorWindow::createProject()
@@ -613,10 +614,10 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
-        m_speakerShowBoxStreamBoxesCheckBox ? m_speakerShowBoxStreamBoxesCheckBox->isChecked() : false;
-    root[QStringLiteral("previewBoxstreamOverlaySource")] =
-        m_speakerBoxStreamOverlaySourceCombo
-            ? m_speakerBoxStreamOverlaySourceCombo->currentData().toString()
+        m_speakerShowFaceStreamBoxesCheckBox ? m_speakerShowFaceStreamBoxesCheckBox->isChecked() : false;
+    root[QStringLiteral("previewFacestreamOverlaySource")] =
+        m_speakerFaceStreamOverlaySourceCombo
+            ? m_speakerFaceStreamOverlaySourceCombo->currentData().toString()
             : QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
@@ -669,6 +670,14 @@ QJsonObject EditorWindow::buildStateJson() const
         }
     }
     root[QStringLiteral("transcriptColumnHidden")] = transcriptColumnHidden;
+    QJsonArray speakersColumnHidden;
+    if (m_inspectorPane) {
+        if (const SpeakersTable* speakersTable =
+                qobject_cast<SpeakersTable*>(m_inspectorPane->speakersTable())) {
+            speakersColumnHidden = speakersTable->hiddenColumnsState();
+        }
+    }
+    root[QStringLiteral("speakersColumnHidden")] = speakersColumnHidden;
     root[QStringLiteral("transcriptFollowCurrentWord")] =
         m_transcriptFollowCurrentWordCheckBox
             ? m_transcriptFollowCurrentWordCheckBox->isChecked()
@@ -767,7 +776,7 @@ QJsonObject EditorWindow::buildStateJson() const
         for (const TimelineClip &clip : m_timeline->clips())
         {
             QJsonObject clipObj = clipToJson(clip);
-            // Keep project state lightweight: dense facial tracking keyframes live in transcript boxstream sidecars.
+            // Keep project state lightweight: dense facial tracking keyframes live in transcript facestream sidecars.
             clipObj.remove(QStringLiteral("speakerFramingKeyframes"));
             timeline.push_back(clipObj);
             if (!selectedClipId.isEmpty() && clip.id == selectedClipId)

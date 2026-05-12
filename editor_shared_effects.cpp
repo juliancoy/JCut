@@ -69,21 +69,20 @@ QVector<QPointF> sanitizeGradingCurvePoints(const QVector<QPointF>& points) {
         }
     }
 
-    if (deduped.isEmpty() || deduped.constFirst().x() > 0.0 + 0.000001) {
-        deduped.push_front(QPointF(0.0, 0.0));
-    } else {
-        deduped.first().setX(0.0);
-        deduped.first().setY(qBound<qreal>(0.0, deduped.first().y(), 1.0));
+    if (deduped.isEmpty()) {
+        deduped = defaultGradingCurvePoints();
+    } else if (deduped.size() == 1) {
+        const qreal x = deduped.constFirst().x();
+        const qreal y = deduped.constFirst().y();
+        const qreal extraX = x < 0.5 ? 1.0 : 0.0;
+        deduped.push_back(QPointF(extraX, y));
+        std::sort(deduped.begin(), deduped.end(), [](const QPointF& a, const QPointF& b) {
+            if (qFuzzyCompare(a.x() + 1.0, b.x() + 1.0)) {
+                return a.y() < b.y();
+            }
+            return a.x() < b.x();
+        });
     }
-    if (deduped.constLast().x() < 1.0 - 0.000001) {
-        deduped.push_back(QPointF(1.0, 1.0));
-    } else {
-        deduped.last().setX(1.0);
-        deduped.last().setY(qBound<qreal>(0.0, deduped.last().y(), 1.0));
-    }
-    // Enforce a stable no-op baseline endpoint behavior.
-    deduped.first().setY(0.0);
-    deduped.last().setY(1.0);
     return deduped;
 }
 

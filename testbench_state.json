@@ -18,7 +18,7 @@
   "previewHideOutsideOutput": true,
   "previewShowSpeakerTrackPoints": true,
   "previewShowSpeakerTrackBoxes": true,
-  "previewBoxstreamOverlaySource": "all",
+  "previewFacestreamOverlaySource": "all",
   "previewPlaybackCacheFallback": true,
   "previewLeadPrefetchEnabled": true,
   "previewLeadPrefetchCount": 6,

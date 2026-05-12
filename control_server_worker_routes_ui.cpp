@@ -1,21 +1,28 @@
 #include "control_server_worker.h"
 
 #include "control_server_ui_utils.h"
+#include "editor.h"
 
 #include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QBuffer>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
+#include <QEventLoop>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QScreen>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTableWidget>
+#include <QTabWidget>
 #include <QTcpSocket>
 #include <QUrlQuery>
 
@@ -72,8 +79,7 @@ QWidget* resolveWidgetTarget(QWidget* root, const QJsonObject& target) {
 
     const QString className = selector.value(QStringLiteral("class")).toString().trimmed();
     const QString text = selector.value(QStringLiteral("text")).toString().trimmed();
-    const QString headersContains =
-        selector.value(QStringLiteral("headersContains")).toString().trimmed();
+    const QString headersContains = selector.value(QStringLiteral("headersContains")).toString().trimmed();
     const bool visibleOnly = selector.value(QStringLiteral("visibleOnly")).toBool(false);
     const int index = qMax(0, selector.value(QStringLiteral("index")).toInt(0));
 
@@ -132,6 +138,24 @@ QWidget* resolveWidgetTarget(QWidget* root, const QJsonObject& target) {
     return nullptr;
 }
 
+QWidget* resolveScreenshotSource(QWidget* rootWindow, const QUrlQuery& query) {
+    if (!rootWindow) {
+        return nullptr;
+    }
+    const QString source = query.queryItemValue(QStringLiteral("source")).trimmed().toLower();
+    if (source.isEmpty() || source == QStringLiteral("window") || source == QStringLiteral("main")) {
+        return rootWindow;
+    }
+    if (source == QStringLiteral("preview") ||
+        source == QStringLiteral("vulkan") ||
+        source == QStringLiteral("vulkan-preview") ||
+        source == QStringLiteral("preview.window")) {
+        QWidget* preview = findWidgetByObjectName(rootWindow, QStringLiteral("preview.window"));
+        return preview ? preview : rootWindow;
+    }
+    return rootWindow;
+}
+
 int resolveTableColumn(const QTableWidget* table, const QJsonObject& rowMatch) {
     if (!table) {
         return -1;
@@ -174,15 +198,147 @@ bool tableRowMatches(const QTableWidget* table, int row, int column, const QJson
     return QString::compare(cellText, text, cs) == 0;
 }
 
-QString normalizedActionText(const QString& text) {
-    QString normalized = text;
-    normalized.remove('&');
-    return normalized.trimmed();
-}
-
 } // namespace
 
 bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("POST") &&
+        request.url.path() == QStringLiteral("/facestream/delete-selected")) {
+        QString error;
+        const QJsonObject body = parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+
+        QJsonObject response;
+        const int facestreamDeleteTimeoutMs = qMax(m_uiInvokeTimeoutMs, 5000);
+        if (!invokeOnUiThread(m_window, facestreamDeleteTimeoutMs, &response, [this, body]() {
+                auto* editorWindow = qobject_cast<editor::EditorWindow*>(m_window.data());
+                if (!editorWindow) {
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), QStringLiteral("main window is not an EditorWindow")}
+                    };
+                }
+
+                QJsonObject stateObj;
+                if (m_stateSnapshotCallback) {
+                    stateObj = m_stateSnapshotCallback().value(QStringLiteral("state")).toObject();
+                }
+                const QJsonObject selectedResolution = resolveSelectedClipState(stateObj);
+                const QString selectedClipId =
+                    selectedResolution.value(QStringLiteral("selectedClipId")).toString().trimmed();
+                const bool confirmDialog = body.value(QStringLiteral("confirm")).toBool(false);
+
+                QString operationError;
+                const bool deleted =
+                    editorWindow->triggerDeleteFaceStreamForSelectedClip(confirmDialog, &operationError);
+                return QJsonObject{
+                    {QStringLiteral("ok"), deleted},
+                    {QStringLiteral("selectedClipId"), selectedClipId},
+                    {QStringLiteral("confirm"), confirmDialog},
+                    {QStringLiteral("error"), operationError}
+                };
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out deleting selected FaceStream"));
+            return true;
+        }
+
+        writeJson(socket, response.value(QStringLiteral("ok")).toBool() ? 200 : 400, response);
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/speakers/subtab")) {
+        QJsonObject response;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this]() {
+                auto* tabs = findWidgetByObjectName(m_window, QStringLiteral("speakers.subtabs"));
+                auto* subtabs = qobject_cast<QTabWidget*>(tabs);
+                if (!subtabs) {
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), QStringLiteral("speakers subtab widget not found")}
+                    };
+                }
+                QJsonArray labels;
+                for (int i = 0; i < subtabs->count(); ++i) {
+                    labels.push_back(subtabs->tabText(i));
+                }
+                return QJsonObject{
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("current_index"), subtabs->currentIndex()},
+                    {QStringLiteral("current_label"), subtabs->tabText(qMax(0, subtabs->currentIndex()))},
+                    {QStringLiteral("labels"), labels}
+                };
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out reading speakers subtab"));
+            return true;
+        }
+        writeJson(socket, response.value(QStringLiteral("ok")).toBool() ? 200 : 404, response);
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") &&
+        request.url.path() == QStringLiteral("/speakers/subtab")) {
+        QString error;
+        const QJsonObject body = parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+        QJsonObject response;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this, body]() {
+                auto* tabs = findWidgetByObjectName(m_window, QStringLiteral("speakers.subtabs"));
+                auto* subtabs = qobject_cast<QTabWidget*>(tabs);
+                if (!subtabs) {
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), QStringLiteral("speakers subtab widget not found")}
+                    };
+                }
+                int targetIndex = -1;
+                if (body.contains(QStringLiteral("index"))) {
+                    targetIndex = body.value(QStringLiteral("index")).toInt(-1);
+                } else {
+                    const QString label = body.value(QStringLiteral("label")).toString().trimmed();
+                    for (int i = 0; i < subtabs->count(); ++i) {
+                        if (subtabs->tabText(i).compare(label, Qt::CaseInsensitive) == 0) {
+                            targetIndex = i;
+                            break;
+                        }
+                    }
+                }
+                if (targetIndex < 0 || targetIndex >= subtabs->count()) {
+                    QJsonArray labels;
+                    for (int i = 0; i < subtabs->count(); ++i) {
+                        labels.push_back(subtabs->tabText(i));
+                    }
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), QStringLiteral("invalid subtab target")},
+                        {QStringLiteral("labels"), labels}
+                    };
+                }
+                subtabs->setCurrentIndex(targetIndex);
+                const QJsonObject tree = widgetSnapshot(m_window);
+                m_lastUiTreeSnapshot = tree;
+                m_lastUiTreeSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+                ++m_uiTreeSnapshotSuccessCount;
+                return QJsonObject{
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("current_index"), subtabs->currentIndex()},
+                    {QStringLiteral("current_label"), subtabs->tabText(subtabs->currentIndex())},
+                    {QStringLiteral("ui"), tree},
+                    {QStringLiteral("window"), tree}
+                };
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out switching speakers subtab"));
+            return true;
+        }
+        writeJson(socket, response.value(QStringLiteral("ok")).toBool() ? 200 : 400, response);
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") &&
         (request.url.path() == QStringLiteral("/ui") || request.url.path() == QStringLiteral("/ui/"))) {
         if (m_lastUiTreeSnapshot.isEmpty()) {
@@ -203,6 +359,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
     if (request.method == QStringLiteral("POST") &&
         (request.url.path() == QStringLiteral("/ui") ||
          request.url.path() == QStringLiteral("/ui/") ||
+         request.url.path() == QStringLiteral("/ui/context-action") ||
          request.url.path() == QStringLiteral("/ui/table/context-action"))) {
         QString error;
         const QJsonObject body = parseJsonObject(request.body, &error);
@@ -214,6 +371,10 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
         if (request.url.path() == QStringLiteral("/ui/table/context-action")) {
             if (!effectiveBody.contains(QStringLiteral("op"))) {
                 effectiveBody.insert(QStringLiteral("op"), QStringLiteral("table_context_action"));
+            }
+        } else if (request.url.path() == QStringLiteral("/ui/context-action")) {
+            if (!effectiveBody.contains(QStringLiteral("op"))) {
+                effectiveBody.insert(QStringLiteral("op"), QStringLiteral("context_action"));
             }
         }
 
@@ -328,30 +489,106 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                         }
                     }
                     if (effectiveBody.contains(QStringLiteral("currentIndex"))) {
-                        auto* combo = qobject_cast<QComboBox*>(target);
-                        if (!combo) {
+                        if (auto* combo = qobject_cast<QComboBox*>(target)) {
+                            combo->setCurrentIndex(effectiveBody.value(QStringLiteral("currentIndex")).toInt(combo->currentIndex()));
+                        } else if (auto* tabs = qobject_cast<QTabWidget*>(target)) {
+                            tabs->setCurrentIndex(effectiveBody.value(QStringLiteral("currentIndex")).toInt(tabs->currentIndex()));
+                        } else {
                             if (errorOut) {
-                                *errorOut = QStringLiteral("target is not a combo box");
+                                *errorOut = QStringLiteral("target is not a combo box or tab widget");
                             }
                             return false;
                         }
-                        combo->setCurrentIndex(effectiveBody.value(QStringLiteral("currentIndex")).toInt(combo->currentIndex()));
                     }
                     if (effectiveBody.contains(QStringLiteral("currentText"))) {
-                        auto* combo = qobject_cast<QComboBox*>(target);
-                        if (!combo) {
+                        if (auto* combo = qobject_cast<QComboBox*>(target)) {
+                            combo->setCurrentText(effectiveBody.value(QStringLiteral("currentText")).toString(combo->currentText()));
+                        } else if (auto* tabs = qobject_cast<QTabWidget*>(target)) {
+                            const QString label = effectiveBody.value(QStringLiteral("currentText")).toString().trimmed();
+                            int idx = -1;
+                            for (int i = 0; i < tabs->count(); ++i) {
+                                if (tabs->tabText(i).compare(label, Qt::CaseInsensitive) == 0) {
+                                    idx = i;
+                                    break;
+                                }
+                            }
+                            if (idx < 0) {
+                                if (errorOut) {
+                                    *errorOut = QStringLiteral("tab label not found");
+                                }
+                                return false;
+                            }
+                            tabs->setCurrentIndex(idx);
+                        } else {
                             if (errorOut) {
-                                *errorOut = QStringLiteral("target is not a combo box");
+                                *errorOut = QStringLiteral("target is not a combo box or tab widget");
                             }
                             return false;
                         }
-                        combo->setCurrentText(effectiveBody.value(QStringLiteral("currentText")).toString(combo->currentText()));
+                    }
+                    return true;
+                };
+
+                auto invokeContextMenuAction = [this, &effectiveBody](QWidget* target,
+                                                                      const QPoint& windowPos,
+                                                                      QString* errorOut,
+                                                                      QJsonObject* menuOut = nullptr) -> bool {
+                    if (!target) {
+                        if (errorOut) {
+                            *errorOut = QStringLiteral("null target");
+                        }
+                        return false;
+                    }
+
+                    const bool clickOk = sendSyntheticClick(m_window, windowPos, Qt::RightButton);
+                    QMenu* menu = activePopupMenu();
+                    if (!menu) {
+                        if (errorOut) {
+                            *errorOut = clickOk
+                                ? QStringLiteral("context menu did not open")
+                                : QStringLiteral("failed to synthesize context-click");
+                        }
+                        return false;
+                    }
+
+                    if (menuOut) {
+                        *menuOut = menuSnapshot(menu);
+                    }
+
+                    const QStringList actionPath =
+                        menuActionPathFromJson(effectiveBody,
+                                               QStringLiteral("actionText"),
+                                               QStringLiteral("actionPath"));
+                    if (actionPath.isEmpty()) {
+                        return true;
+                    }
+
+                    QString menuError;
+                    QMenu* owningMenu = nullptr;
+                    QAction* matchedAction =
+                        findMenuActionByPath(menu, actionPath, &menuError, &owningMenu);
+                    if (!matchedAction) {
+                        if (errorOut) {
+                            *errorOut = menuError;
+                        }
+                        return false;
+                    }
+                    if (!matchedAction->isEnabled()) {
+                        if (errorOut) {
+                            *errorOut = QStringLiteral("context menu action is disabled");
+                        }
+                        return false;
+                    }
+                    matchedAction->trigger();
+                    if (menuOut && owningMenu) {
+                        *menuOut = menuSnapshot(owningMenu);
                     }
                     return true;
                 };
 
                 QString operationError;
                 bool ok = false;
+                QJsonObject contextMenuResult;
                 if (op == QStringLiteral("click")) {
                     if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
                         if (!button->isEnabled()) {
@@ -464,53 +701,29 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                 itemRect.isValid() ? itemRect.center() : QPoint(8, 8);
                             const QPoint windowPos =
                                 table->viewport()->mapTo(m_window, viewportCenter);
-                            const bool clickOk =
-                                sendSyntheticClick(m_window, windowPos, Qt::RightButton);
-                            QMenu* menu = activePopupMenu();
-                            if (!menu) {
-                                operationError =
-                                    clickOk
-                                        ? QStringLiteral("context menu did not open")
-                                        : QStringLiteral("failed to synthesize context-click");
-                            } else {
-                                const QString actionText =
-                                    effectiveBody.value(QStringLiteral("actionText")).toString().trimmed();
-                                if (actionText.isEmpty()) {
-                                    operationError = QStringLiteral("actionText is required");
-                                } else {
-                                    const bool actionContains =
-                                        effectiveBody.value(QStringLiteral("actionContains")).toBool(true);
-                                    const bool caseSensitive =
-                                        effectiveBody.value(QStringLiteral("actionCaseSensitive")).toBool(false);
-                                    const Qt::CaseSensitivity cs =
-                                        caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
-                                    QAction* matchedAction = nullptr;
-                                    const QString wanted = normalizedActionText(actionText);
-                                    for (QAction* action : menu->actions()) {
-                                        if (!action || action->isSeparator()) {
-                                            continue;
-                                        }
-                                        const QString candidate =
-                                            normalizedActionText(action->text());
-                                        const bool matched = actionContains
-                                            ? candidate.contains(wanted, cs)
-                                            : QString::compare(candidate, wanted, cs) == 0;
-                                        if (matched) {
-                                            matchedAction = action;
-                                            break;
-                                        }
-                                    }
-                                    if (!matchedAction) {
-                                        operationError = QStringLiteral("context menu action not found");
-                                    } else if (!matchedAction->isEnabled()) {
-                                        operationError = QStringLiteral("context menu action is disabled");
-                                    } else {
-                                        matchedAction->trigger();
-                                        ok = true;
-                                    }
-                                }
+                            QJsonObject menuObject;
+                            ok = invokeContextMenuAction(table->viewport(),
+                                                         windowPos,
+                                                         &operationError,
+                                                         &menuObject);
+                            if (!menuObject.isEmpty()) {
+                                contextMenuResult = menuObject;
                             }
                         }
+                    }
+                } else if (op == QStringLiteral("context_action")) {
+                    QPoint localPos = widget->rect().center();
+                    if (effectiveBody.contains(QStringLiteral("x")) ||
+                        effectiveBody.contains(QStringLiteral("y"))) {
+                        const int x = effectiveBody.value(QStringLiteral("x")).toInt(localPos.x());
+                        const int y = effectiveBody.value(QStringLiteral("y")).toInt(localPos.y());
+                        localPos = QPoint(x, y);
+                    }
+                    const QPoint windowPos = widget->mapTo(m_window, localPos);
+                    QJsonObject menuObject;
+                    ok = invokeContextMenuAction(widget, windowPos, &operationError, &menuObject);
+                    if (!menuObject.isEmpty()) {
+                        contextMenuResult = menuObject;
                     }
                 } else {
                     operationError = QStringLiteral("unsupported op: %1").arg(op);
@@ -524,7 +737,8 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     {QStringLiteral("target_id"), widget->objectName()},
                     {QStringLiteral("target_class"), QString::fromLatin1(widget->metaObject()->className())},
                     {QStringLiteral("before"), before},
-                    {QStringLiteral("after"), after}
+                    {QStringLiteral("after"), after},
+                    {QStringLiteral("menu"), contextMenuResult}
                 };
             })) {
             writeError(socket, 503, QStringLiteral("timed out waiting for UI mutation"));
@@ -559,15 +773,132 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             return true;
         }
         m_lastScreenshotRequestMs = now;
-        QByteArray pngBytes;
-        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &pngBytes, [this]() {
+        const QUrlQuery query(request.url);
+        const bool includeSteps = queryBool(query, QStringLiteral("include_steps")) ||
+                                  queryBool(query, QStringLiteral("debug")) ||
+                                  queryBool(query, QStringLiteral("trace"));
+        QJsonObject capture;
+        const int screenshotInvokeTimeoutMs = qMax(m_uiInvokeTimeoutMs, 5000);
+        if (!invokeOnUiThread(m_window, screenshotInvokeTimeoutMs, &capture, [this, query]() {
+                QElapsedTimer timer;
+                timer.start();
+                QJsonArray steps;
                 QByteArray bytes;
+                QWidget* sourceWidget = resolveScreenshotSource(m_window, query);
+                if (!sourceWidget) {
+                    steps.push_back(QJsonObject{
+                        {QStringLiteral("name"), QStringLiteral("resolve_source")},
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("detail"), QStringLiteral("no source widget")}
+                    });
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("source_effective"), QStringLiteral("none")},
+                        {QStringLiteral("steps"), steps},
+                        {QStringLiteral("elapsed_ms"), timer.elapsed()},
+                        {QStringLiteral("png_base64"), QString()}
+                    };
+                }
+                steps.push_back(QJsonObject{
+                    {QStringLiteral("name"), QStringLiteral("resolve_source")},
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("detail"),
+                     QStringLiteral("%1 (%2)")
+                         .arg(sourceWidget->objectName().isEmpty()
+                                  ? QString::fromLatin1(sourceWidget->metaObject()->className())
+                                  : sourceWidget->objectName(),
+                              QString::fromLatin1(sourceWidget->metaObject()->className()))}
+                });
+                // Give renderer paths (including Vulkan presenter containers) a paint tick before capture.
+                sourceWidget->update();
+                sourceWidget->repaint();
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
+                steps.push_back(QJsonObject{
+                    {QStringLiteral("name"), QStringLiteral("prepare_paint")},
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("detail"), QStringLiteral("update+repaint+processEvents")}
+                });
                 QBuffer buffer(&bytes);
                 buffer.open(QIODevice::WriteOnly);
-                m_window->grab().save(&buffer, "PNG");
-                return bytes;
+                const bool sourceSaved = sourceWidget->grab().save(&buffer, "PNG");
+                steps.push_back(QJsonObject{
+                    {QStringLiteral("name"), QStringLiteral("capture_source")},
+                    {QStringLiteral("ok"), sourceSaved},
+                    {QStringLiteral("bytes"), static_cast<qint64>(bytes.size())}
+                });
+
+                if (bytes.isEmpty() && sourceWidget->winId() != 0) {
+                    QScreen* screen = sourceWidget->screen();
+                    if (!screen) {
+                        screen = QGuiApplication::primaryScreen();
+                    }
+                    if (screen) {
+                        const QPixmap nativePixmap = screen->grabWindow(sourceWidget->winId());
+                        QByteArray nativeBytes;
+                        QBuffer nativeBuffer(&nativeBytes);
+                        nativeBuffer.open(QIODevice::WriteOnly);
+                        const bool nativeSaved = !nativePixmap.isNull() && nativePixmap.save(&nativeBuffer, "PNG");
+                        steps.push_back(QJsonObject{
+                            {QStringLiteral("name"), QStringLiteral("capture_native_winid")},
+                            {QStringLiteral("ok"), nativeSaved},
+                            {QStringLiteral("bytes"), static_cast<qint64>(nativeBytes.size())}
+                        });
+                        if (!nativeBytes.isEmpty()) {
+                            bytes = nativeBytes;
+                        }
+                    } else {
+                        steps.push_back(QJsonObject{
+                            {QStringLiteral("name"), QStringLiteral("capture_native_winid")},
+                            {QStringLiteral("ok"), false},
+                            {QStringLiteral("detail"), QStringLiteral("no screen available")}
+                        });
+                    }
+                }
+
+                if (bytes.isEmpty() && sourceWidget != m_window) {
+                    QByteArray fallbackBytes;
+                    QBuffer fallbackBuffer(&fallbackBytes);
+                    fallbackBuffer.open(QIODevice::WriteOnly);
+                    const bool fallbackSaved = m_window->grab().save(&fallbackBuffer, "PNG");
+                    steps.push_back(QJsonObject{
+                        {QStringLiteral("name"), QStringLiteral("capture_fallback_window")},
+                        {QStringLiteral("ok"), fallbackSaved},
+                        {QStringLiteral("bytes"), static_cast<qint64>(fallbackBytes.size())}
+                    });
+                    if (!fallbackBytes.isEmpty()) {
+                        bytes = fallbackBytes;
+                    }
+                }
+                return QJsonObject{
+                    {QStringLiteral("ok"), !bytes.isEmpty()},
+                    {QStringLiteral("source_effective"),
+                     sourceWidget->objectName().isEmpty() ? QStringLiteral("window")
+                                                          : sourceWidget->objectName()},
+                    {QStringLiteral("steps"), steps},
+                    {QStringLiteral("elapsed_ms"), timer.elapsed()},
+                    {QStringLiteral("png_base64"), QString::fromLatin1(bytes.toBase64())}
+                };
             })) {
             writeError(socket, 503, QStringLiteral("timed out waiting for screenshot"));
+            return true;
+        }
+        const QByteArray pngBytes =
+            QByteArray::fromBase64(capture.value(QStringLiteral("png_base64")).toString().toLatin1());
+        if (pngBytes.isEmpty()) {
+            writeError(socket, 500, QStringLiteral("failed to capture screenshot"));
+            return true;
+        }
+        if (includeSteps) {
+            writeJson(socket, 200, QJsonObject{
+                {QStringLiteral("ok"), true},
+                {QStringLiteral("source_requested"),
+                 query.queryItemValue(QStringLiteral("source"), QUrl::FullyDecoded)},
+                {QStringLiteral("source_effective"), capture.value(QStringLiteral("source_effective")).toString()},
+                {QStringLiteral("elapsed_ms"), capture.value(QStringLiteral("elapsed_ms")).toInteger(0)},
+                {QStringLiteral("steps"), capture.value(QStringLiteral("steps")).toArray()},
+                {QStringLiteral("profile_cached"), m_lastProfileSnapshot},
+                {QStringLiteral("png_base64"), QString::fromLatin1(pngBytes.toBase64())}
+            });
             return true;
         }
         writeResponse(socket, 200, pngBytes, "image/png");
@@ -629,14 +960,14 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             writeError(socket, 400, error);
             return true;
         }
-        const QString text = body.value(QStringLiteral("text")).toString();
-        if (text.isEmpty()) {
-            writeError(socket, 400, QStringLiteral("missing text"));
+        const QStringList actionPath = menuActionPathFromJson(body);
+        if (actionPath.isEmpty()) {
+            writeError(socket, 400, QStringLiteral("missing text/path"));
             return true;
         }
 
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [text]() {
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [actionPath]() {
                 QMenu* menu = activePopupMenu();
                 if (!menu) {
                     return QJsonObject{
@@ -644,29 +975,28 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                         {QStringLiteral("error"), QStringLiteral("no active popup menu")}
                     };
                 }
-
-                for (QAction* action : menu->actions()) {
-                    if (!action || action->isSeparator()) {
-                        continue;
-                    }
-                    if (action->text() == text) {
-                        const bool enabled = action->isEnabled();
-                        if (enabled) {
-                            action->trigger();
-                        }
-                        return QJsonObject{
-                            {QStringLiteral("ok"), enabled},
-                            {QStringLiteral("text"), text},
-                            {QStringLiteral("enabled"), enabled}
-                        };
-                    }
+                QString menuError;
+                QMenu* owningMenu = nullptr;
+                QAction* action =
+                    findMenuActionByPath(menu, actionPath, &menuError, &owningMenu);
+                if (!action) {
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), menuError},
+                        {QStringLiteral("path"), QJsonArray::fromStringList(actionPath)},
+                        {QStringLiteral("menu"), menuSnapshot(menu)}
+                    };
                 }
-
+                const bool enabled = action->isEnabled();
+                if (enabled) {
+                    action->trigger();
+                }
                 return QJsonObject{
-                    {QStringLiteral("ok"), false},
-                    {QStringLiteral("error"), QStringLiteral("menu action not found")},
-                    {QStringLiteral("text"), text},
-                    {QStringLiteral("menu"), menuSnapshot(menu)}
+                    {QStringLiteral("ok"), enabled},
+                    {QStringLiteral("text"), action->text()},
+                    {QStringLiteral("path"), QJsonArray::fromStringList(actionPath)},
+                    {QStringLiteral("enabled"), enabled},
+                    {QStringLiteral("menu"), menuSnapshot(owningMenu ? owningMenu : menu)}
                 };
             })) {
             writeError(socket, 503, QStringLiteral("timed out waiting for menu action"));

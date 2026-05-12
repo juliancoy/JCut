@@ -321,7 +321,7 @@ def main() -> int:
             name="legacy_python_haar",
             cmd=[
                 sys.executable,
-                str(repo / "speaker_face_candidates.py"),
+                str(repo / "legacy/speaker_face_candidates.py"),
                 "--video",
                 str(video),
                 "--output-json",
@@ -355,7 +355,7 @@ def main() -> int:
                 name=f"docker_runner_{backend}",
                 cmd=[
                     sys.executable,
-                    str(repo / "docker_face_detector.py"),
+                    str(repo / "legacy/docker_face_detector.py"),
                     "--backend",
                     backend,
                     "--video",
@@ -385,10 +385,10 @@ def main() -> int:
 
     # Dockerized backends to avoid host dependency failures.
     docker_backends = [
-        ("opencv_dnn", os.environ.get("JCUT_BOXSTREAM_IMAGE_OPENCV_DNN", "python:3.11-slim")),
-        ("yolov8_face", os.environ.get("JCUT_BOXSTREAM_IMAGE_YOLOFACE", "ultralytics/ultralytics:latest")),
-        ("insightface_retinaface", os.environ.get("JCUT_BOXSTREAM_IMAGE_INSIGHTFACE", "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime")),
-        ("mtcnn", os.environ.get("JCUT_BOXSTREAM_IMAGE_MTCNN", "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime")),
+        ("opencv_dnn", os.environ.get("JCUT_FACESTREAM_IMAGE_OPENCV_DNN", "python:3.11-slim")),
+        ("yolov8_face", os.environ.get("JCUT_FACESTREAM_IMAGE_YOLOFACE", "ultralytics/ultralytics:latest")),
+        ("insightface_retinaface", os.environ.get("JCUT_FACESTREAM_IMAGE_INSIGHTFACE", "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime")),
+        ("mtcnn", os.environ.get("JCUT_FACESTREAM_IMAGE_MTCNN", "pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime")),
     ]
     for backend, image in docker_backends:
         out_json = out_root / f"docker_runner_{backend}.json"
@@ -438,13 +438,13 @@ def main() -> int:
             "run",
             "--rm",
             "--gpus",
-            os.environ.get("JCUT_BOXSTREAM_DOCKER_GPUS", "all"),
+            os.environ.get("JCUT_FACESTREAM_DOCKER_GPUS", "all"),
             "-v",
             f"{video.parent}:{media_mount}:ro",
             "-v",
             f"{out_root}:{out_mount}",
             "-v",
-            f"{repo / 'docker_face_detector.py'}:{runner_mount}/docker_face_detector.py:ro",
+            f"{repo / 'legacy/docker_face_detector.py'}:{runner_mount}/docker_face_detector.py:ro",
             "-v",
             f"{weights_dir}:{weights_mount}:ro",
             "-e",

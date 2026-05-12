@@ -49,6 +49,10 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("audioSourceLastVerifiedMs")] = static_cast<qint64>(clip.audioSourceLastVerifiedMs);
         obj[QStringLiteral("sourceFps")] = clip.sourceFps;
         obj[QStringLiteral("sourceDurationFrames")] = static_cast<qint64>(clip.sourceDurationFrames);
+        if (!clip.sourceFrameSize.isEmpty()) {
+            obj[QStringLiteral("sourceFrameWidth")] = clip.sourceFrameSize.width();
+            obj[QStringLiteral("sourceFrameHeight")] = clip.sourceFrameSize.height();
+        }
         obj[QStringLiteral("sourceInFrame")] = static_cast<qint64>(clip.sourceInFrame);
         obj[QStringLiteral("sourceInSubframeSamples")] = static_cast<qint64>(clip.sourceInSubframeSamples);
         obj[QStringLiteral("startFrame")] = static_cast<qint64>(clip.startFrame);
@@ -255,6 +259,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             obj.value(QStringLiteral("audioSourceLastVerifiedMs")).toVariant().toLongLong();
         clip.sourceFps = obj.value(QStringLiteral("sourceFps")).toDouble(30.0);
         clip.sourceDurationFrames = obj.value(QStringLiteral("sourceDurationFrames")).toVariant().toLongLong();
+        const QSize storedSourceFrameSize(obj.value(QStringLiteral("sourceFrameWidth")).toInt(),
+                                          obj.value(QStringLiteral("sourceFrameHeight")).toInt());
+        clip.sourceFrameSize = storedSourceFrameSize.isEmpty() ? QSize() : storedSourceFrameSize;
         clip.sourceInFrame = obj.value(QStringLiteral("sourceInFrame")).toVariant().toLongLong();
         clip.sourceInSubframeSamples = obj.value(QStringLiteral("sourceInSubframeSamples")).toVariant().toLongLong();
         clip.startFrame = obj.value(QStringLiteral("startFrame")).toVariant().toLongLong();
@@ -273,6 +280,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.sourceKind = probe.sourceKind;
             clip.hasAudio = probe.hasAudio;
             clip.sourceFps = probe.fps;
+            clip.sourceFrameSize = probe.frameSize;
             const qreal sourceFps = probe.fps > 0.001 ? probe.fps : static_cast<qreal>(kTimelineFps);
             clip.durationFrames = qMax<int64_t>(
                 1,
@@ -284,6 +292,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
             if (probe.fps > 0.001) {
                 clip.sourceFps = probe.fps;
+            }
+            if (probe.frameSize.isValid()) {
+                clip.sourceFrameSize = probe.frameSize;
             }
         }
         if (!clip.filePath.isEmpty() &&
@@ -304,6 +315,9 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                  qAbs(probe.durationFrames - clip.sourceDurationFrames) > 1)) {
                 clip.sourceDurationFrames = probe.durationFrames;
             }
+            if (probe.frameSize.isValid()) {
+                clip.sourceFrameSize = probe.frameSize;
+            }
             if (lookedLikeFullSourceDuration && clip.sourceDurationFrames > 0) {
                 clip.durationFrames =
                     timelineFramesFromSourceFrames(clip.sourceDurationFrames, clip.sourceFps);
@@ -318,6 +332,15 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                     1,
                     qRound64((static_cast<qreal>(clip.sourceDurationFrames) / clip.sourceFps) *
                              static_cast<qreal>(kTimelineFps)));
+            }
+        }
+        if (!clip.sourceFrameSize.isValid() &&
+            !clip.filePath.isEmpty() &&
+            clip.mediaType != ClipMediaType::Audio &&
+            clip.mediaType != ClipMediaType::Title) {
+            const MediaProbeResult probe = probeMediaFile(clip.filePath, clip.durationFrames / kTimelineFps);
+            if (probe.frameSize.isValid()) {
+                clip.sourceFrameSize = probe.frameSize;
             }
         }
         if (clip.sourceDurationFrames <= 0)

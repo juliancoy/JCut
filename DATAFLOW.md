@@ -1,231 +1,381 @@
-# DATAFLOW Plan
+# JCut Dataflow
 
 ## Purpose
-Define a single, enforceable dataflow architecture for JCut so UI responsiveness and correctness are stable under heavy state churn.
+This document describes the current dataflow in JCut. It is a working
+architecture note, not a target-state plan.
 
-## Scope
-- Editor startup and project load
-- Transcript/speaker/boxstream runtime updates
-- Persistence (`state.json`, `history.json`, boxstream sidecars)
-- UI rendering and event routing
-- Background workers and external detector pipelines
+JCut currently uses a pragmatic Qt-centered dataflow:
 
-## Current Risks
-1. Refresh re-entrancy
-- UI repaint functions mutate selection state (`setCurrentCell`, `clearContents`) and emit signals that trigger more refresh calls.
-- Result: recursive loops, runaway CPU/memory, apparent startup hangs.
+`UI event -> domain mutation -> cache/runtime sync -> persistence schedule -> inspector refresh`
 
-2. Mixed responsibilities
-- State mutation, persistence, and UI rendering are interleaved in the same execution paths.
-- Hard to reason about ordering and side effects.
+Some subsystems are already guarded and deferred, but the codebase is not yet a
+pure reducer/store architecture. Treat `EditorWindow`, `TimelineWidget`,
+`InspectorPane`, and tab controllers as the active integration layer.
 
-3. Hot-path heavy work
-- JSON parsing/serialization and table repopulation occur in immediate signal handlers.
-- Frame/playhead updates can repeatedly trigger expensive work.
+## Canonical State
 
-4. Unbounded history growth risk
-- History snapshots can grow large if not bounded, deduplicated, or aggressively sanitized.
+### Project State
+Project folders live under:
 
----
+`rootDirPath()/projects/<project-id>/`
 
-## Target Architecture (Single Direction)
+The active project id is stored in:
 
-`Input/Event -> Intent -> State Reducer -> Effects -> Store Commit -> UI Render`
+`rootDirPath()/projects/.current_project`
 
-### Layer contract
-1. Input/Event layer
-- Qt signals, user actions, timer ticks, worker callbacks.
-- Must not mutate domain state directly.
+Project state is persisted to:
 
-2. Intent layer
-- Converts low-level UI events to explicit intents (e.g., `SelectSpeaker`, `RefreshFaceStreamPanel`).
+`projects/<project-id>/state.json`
 
-3. State reducer
-- Pure-ish deterministic state transition functions.
-- No Qt widget calls, no file I/O.
+`EditorWindow::buildStateJson()` is the canonical serializer. It captures:
 
-4. Effects layer
-- Async/sync side effects: file I/O, detector subprocess calls, network, decoder work.
-- Produces result intents back into reducer.
+- media root/gallery and explorer expansion state
+- timeline clips, tracks, export ranges, render sync markers, selection, zoom,
+  scroll, and current frame
+- output/render/preview settings
+- transcript, speakers, grading, keyframe, AI, audio, and autosave UI settings
+- selected inspector tab
 
-5. Store commit
-- Writes updated model snapshot to in-memory store and schedules persistence.
+Dense generated tracking data is intentionally excluded from project state.
+`speakerFramingKeyframes` is stripped from timeline clips before state/history
+serialization.
 
-6. UI render layer
-- Reads store state and renders widgets.
-- Rendering must be idempotent and signal-guarded.
-- No business logic branching that mutates store.
+### History State
+Undo/redo history is persisted to:
 
----
+`projects/<project-id>/history.json`
 
-## Canonical Data Objects
-1. Project State
-- `state.json` as canonical editable project runtime state.
-- Keep compact. Heavy/generated artifacts excluded.
+The structure is:
 
-2. History State
-- `history.json` structure: `{ entries: [...], index: N }`.
-- Strict max entries and dedupe policy.
+```json
+{ "entries": [ ...state snapshots... ], "index": 0 }
+```
 
-3. Boxstream Artifact
-- Sidecar storage for dense continuity tracks.
-- Never duplicated into core state history snapshots.
+`pushHistorySnapshot()` builds a state snapshot, strips heavy fields, dedupes
+against the current history entry, truncates redo entries, appends the new
+snapshot, and caps the list at 200 entries.
 
-4. ViewModel Cache
-- Derived display-only rows (speaker table, boxstream table).
-- Recomputed from canonical state, never persisted.
+History writes are delayed through `m_historySaveTimer`. `undoHistory()`,
+`redoHistory()`, and `restoreToHistoryIndex()` apply snapshots with
+`m_restoringHistory` set so the restore itself does not create a new snapshot.
 
----
+### Transcript State
+Transcript data is stored outside `state.json` in the active transcript JSON for
+the selected clip. `TranscriptEngine` is the read/write boundary for transcript
+documents and companion files.
 
-## Immediate Stabilization Plan
+Tabs keep loaded transcript state in memory while selected:
 
-### Phase 0: Hotfix guards (done/required baseline)
-1. Add per-panel reentrancy guards (`m_refreshing*`).
-2. Block table/selection signals while repopulating widgets.
-3. Avoid unconditional `setCurrentCell`; only set when selection truly absent.
+- `TranscriptTab::m_loadedTranscriptDoc`
+- `SpeakersTab::m_loadedTranscriptDoc`
+- `m_loadedTranscriptPath`
+- `m_loadedClipFilePath`
 
-Exit criteria:
-- No recursive refresh stack traces.
-- Idle CPU stable after startup.
+Edits to transcript or speaker metadata commonly write the transcript JSON
+directly, then emit `transcriptDocumentChanged()`, schedule project state save,
+push history if appropriate, and refresh affected views.
 
-### Phase 1: Event routing cleanup
-1. Introduce explicit intent methods in `SpeakersTab` and related tabs.
-2. Convert direct cross-calls (`refresh()` chains) into queued intents where needed.
-3. Debounce frequent playhead-triggered UI refreshes (e.g., 16–50ms).
+### FaceStream Artifacts
+FaceStream continuity data is stored as transcript sidecars, not inside
+`state.json` or history snapshots.
 
-Exit criteria:
-- No direct UI signal -> heavy work path without debounce/guard.
+Primary helpers are in `facestream_runtime.cpp` and `TranscriptEngine`:
 
-### Phase 2: State/render separation
-1. Split each major tab function into:
-- `compute*Model(...)`
-- `render*Model(...)`
-2. Ban persistence writes inside render methods.
-3. Add lint/checklist rule: render methods cannot call `save*` or subprocess launchers.
+- raw artifact schema: `jcut_facestream_v1`
+- processed artifact schema: `jcut_facestream_processed_v1`
+- top-level map: `continuity_facestreams_by_clip`
 
-Exit criteria:
-- UI render code becomes pure projection from store/viewmodel.
+The raw artifact stores generated continuity roots by clip id. The processed
+artifact stores derived `streams` by clip id. Readers prefer stored streams,
+then processed sidecar streams, then derived streams from raw tracks. A legacy
+fallback still reads transcript-side `speaker_flow.clips[*].continuity_facestreams`
+when needed.
 
-### Phase 3: Persistence hardening
-1. Add history cap (count + byte budget).
-2. Snapshot dedupe (hash previous snapshot; skip if unchanged).
-3. Maintain heavy-field stripping before history write.
-4. Add periodic cleanup policy for debug artifacts.
+## Runtime State
 
-Exit criteria:
-- `history.json` bounded.
-- Project folder growth predictable.
+These objects are operational state, not canonical persisted state:
 
-### Phase 4: Worker isolation
-1. Move detector and decode-heavy orchestration off UI thread with explicit progress intents.
-2. Normalize worker outputs into strict schemas before reducer ingestion.
-3. Add timeout/cancel/error taxonomy for each backend.
+- `TimelineWidget` live clip/track/selection bindings
+- preview surface state and preview-only toggles
+- `TimelineCache` visible/prefetch caches
+- `PlaybackFramePipeline` playback buffers
+- `AsyncDecoder` in-flight decode requests and ready frames
+- tab-local loaded documents such as `m_loadedTranscriptDoc`
+- audio engine playback position/runtime configuration
 
-Exit criteria:
-- UI remains responsive during long-running detection/tracking tasks.
+The rule is simple: runtime state may be rebuilt from canonical persisted state
+plus current media files. It should not become a second source of truth.
 
----
+## Startup Flow
 
-## Startup Dataflow (Target)
-1. Boot
-- Load config -> resolve project root -> pick current project id.
+1. `EditorWindow::loadState()` loads projects from folders and selects the
+   active project id.
+2. It reads `history.json`. If valid entries exist, it uses the selected history
+   entry as the startup root. Heavy fields are sanitized in memory and the
+   history file is rewritten if needed.
+3. If no history snapshot is available, it reads `state.json`.
+4. `applyStateJson()` parses scalar settings, timeline clips/tracks/export
+   ranges/render sync markers, selected clip, output settings, debug settings,
+   feature flags, and tab preferences.
+5. During apply:
+   - `m_loadingState` suppresses saves and history snapshots.
+   - widget value restores use `QSignalBlocker` where signals would otherwise
+     cause feedback.
+   - timeline callbacks are temporarily detached while clips/tracks are rebound.
+   - preview, audio engine, timeline cache inputs, and playback ranges are
+     synchronized from the loaded timeline.
+6. On initial startup, seek/audio positioning is deferred through
+   `QTimer::singleShot(0, ...)` so first render setup can complete.
+7. The deferred startup callback sets the media root, reloads projects, refreshes
+   the project list, and refreshes the inspector.
+8. `loadState()` ensures transcript `.txt` companions exist for known transcript
+   paths, creates an initial history snapshot if none exists, then schedules a
+   state save.
 
-2. Load
-- Read `history.json`; if valid and non-empty, select index snapshot.
-- Else read `state.json`.
+Startup profiling checkpoints are emitted with `startupProfileMark()` around
+project load, history read, state apply, timeline binding, preview binding, audio
+binding, and seek.
 
-3. Sanitize
-- Strip heavy/transient fields from history snapshots in memory.
-- If sanitized, schedule non-blocking history rewrite.
+## Save Flow
 
-4. Commit
-- Commit selected snapshot to store.
+State saves are timer/debounce based:
 
-5. Render
-- Build derived viewmodels.
-- Render all tabs under signal-blocked repaint sections.
+- `scheduleSaveState()` exits during load or if the timeline is missing.
+- While playback is active it sets `m_pendingSaveAfterPlayback` and avoids JSON
+  serialization on the playback path.
+- Otherwise it starts `m_stateSaveTimer`.
+- `saveStateNow()` serializes `buildStateJson()`, skips writing if the payload is
+  unchanged from `m_lastSavedState`, and writes with `QSaveFile`.
 
-6. Activate
-- Enable timers, media polling, and background workers only after first full render completes.
+Project switching and "Save Project As" force `saveStateNow()` and
+`saveHistoryNow()` before changing project folders.
 
----
+Autosave writes timestamped `state_backup_*.json` files and keeps only the most
+recent `m_autosaveMaxBackups` files.
 
-## Speakers/FaceStream Dataflow (Target)
-1. Intent: `IdentifyUniqueFaces(clipId, options)`
-2. Effect: run candidate detection/tracking and populate identity-resolution table.
-3. Reducer: persist resolved unique-face mapping for all distinct faces.
-4. Intent: `GenerateFaceStream(clipId, preset, options)` (allowed only after unique-face pass is resolved).
-5. Reducer: mark job state `running`.
-6. Effect: run selected backend (native/docker/python/sam3).
-7. Effect result intent: `FaceStreamGenerated(payload)` or `FaceStreamFailed(error)`.
-8. Reducer:
-- validate schema
-- update boxstream sidecar refs
-- update speaker tracking metadata
-9. Store commit + persistence schedule.
-10. UI render:
-- update table from derived viewmodel only
-- preserve selection if possible, else pick first row once
+## Inspector Refresh Flow
 
----
+`InspectorPane::refreshRequested` is routed by
+`EditorWindow::setupInspectorRefreshRouting()` to each tab refresh method:
 
-## Engineering Rules
-1. No state mutation inside widget selection-change handlers except dispatching intents.
-2. Every refresh function must be:
-- idempotent
-- reentrancy-guarded
-- signal-guarded during bulk widget changes
-3. Heavy operations must not run inline on UI event handlers.
-4. Persistence writes are effect-layer responsibilities only.
-5. Debug artifacts must be opt-in retention with cleanup tooling.
+- grading, opacity, effects, corrections, titles, sync
+- transcript and speakers
+- properties, video keyframes, output, pipeline, profile, projects
+- clips, history, tracks
 
----
+The refresh router records the last and max refresh durations and increments a
+slow-refresh counter for refreshes over 30 ms.
 
-## Observability and Regression Checks
-1. Add counters/timers
-- refresh call counts per panel
-- reentrancy guard hit count
-- render duration percentiles
-- history size and entry count
+Refresh methods are still responsible for guarding themselves. Current patterns:
 
-2. Add startup profile checkpoints
-- project load time
-- history parse time
-- first render completion time
+- `TableTabBase::m_updating` suppresses handlers while a table is being rebuilt.
+- Tabs use `QSignalBlocker` for control restores and selected bulk updates.
+- `SpeakersTab` preserves the selected speaker id where possible.
+- `SpeakersTab` queues the FaceStream paths panel refresh through a single-shot
+  40 ms timer to collapse bursts.
+- `TranscriptTab` tracks manual-selection state so playhead follow does not fight
+  user table selection.
 
-3. Add watchdog assertions (debug builds)
-- detect nested render depth > 1 where prohibited
-- detect repeated same-intent flood in short window
+Do not assume refresh is pure. Some current tab refresh paths load transcript
+JSON, clear/repopulate tables, refresh preview-related controls, and update local
+document caches.
 
-4. Add tests
-- unit: reducer determinism and schema validation
-- integration: startup with large history + boxstream artifacts
-- UI smoke: table repopulation does not recurse
+### Refresh Invariants
 
----
+Use these as code review checks for any new or modified `refresh()` path:
 
-## Rollout Plan
-1. Week 1
-- Land Phase 0 globally across heavy panels.
-- Add telemetry counters.
+1. `refresh()` may rebuild widget state and reload local documents needed for
+   display.
+2. `refresh()` must not write `state.json`, `history.json`, transcript JSON, or
+   FaceStream artifacts.
+3. `refresh()` should preserve the current logical selection when the selected
+   object still exists.
+4. Bulk widget rebuilds must run under `m_updating`, `QSignalBlocker`, or an
+   equivalent guard when connected handlers can mutate state.
+5. Expensive repeated refresh triggers should be collapsed with a timer or other
+   debounce when they originate from playhead movement, worker bursts, or
+   selection churn.
 
-2. Week 2
-- Implement Phase 1 intent routing + debouncing for speakers/transcript paths.
+## Edit Flow
 
-3. Week 3
-- Implement Phase 2 split (`compute*Model`/`render*Model`) for SpeakersTab.
+Timeline mutations generally follow this pattern:
 
-4. Week 4
-- Implement Phase 3 history caps/dedupe + cleanup automation.
+1. User action mutates `TimelineWidget` clips/tracks/selection.
+2. Editor callbacks synchronize preview/audio/cache state.
+3. Inspector tabs refresh if selection or clip properties changed.
+4. `scheduleSaveState()` persists the new project state.
+5. `pushHistorySnapshot()` records an undo snapshot for finalized edits.
 
-5. Week 5
-- Implement Phase 4 worker isolation and schema normalization for detector backends.
+When adding new edit actions, be explicit about the persistence boundary:
 
----
+- if the action changes project-visible timeline/editor state, it belongs in
+  `state.json`
+- if the action must participate in undo/redo, it must define when
+  `pushHistorySnapshot()` happens
+- if the action changes transcript semantics, it must go through
+  `TranscriptEngine`
+- if the action produces dense/generated tracking output, it belongs in a
+  sidecar, not project state/history
 
-## Definition of Done
-- Startup reaches first interactive frame without CPU runaway.
-- No recursive refresh traces under normal workflows.
-- `history.json` size remains bounded over extended editing sessions.
-- Heavy tracking pipelines do not block UI thread.
-- Dataflow rules documented and enforced in code review.
+## Playback Flow
+
+Playback-sensitive paths avoid heavy synchronous work:
+
+- `scheduleSaveState()` defers saves while playback is active.
+- `TimelineCache` and `PlaybackFramePipeline` receive clip lists, export ranges,
+  render sync markers, playback state, and playhead frame updates.
+- Both cache layers drop stale visible requests as the playhead advances.
+- Decode and prefetch work is async through `AsyncDecoder`; UI code consumes
+  ready `FrameHandle` objects and cached presentation frames.
+- Inspector refresh duration is monitored so playback warnings can identify UI
+  churn.
+
+Playback hot-path rule: do not add JSON serialization, transcript writes,
+history writes, broad inspector refreshes, or blocking file I/O to code that
+runs because the playhead advanced.
+
+## Transcript and Speakers Flow
+
+`TranscriptTab::refresh()`:
+
+1. Clears the table and local transcript state under `m_updating`.
+2. Resolves the selected clip.
+3. Loads the active transcript JSON for audio-capable clips.
+4. Updates overlay controls from the selected clip.
+5. Rebuilds table rows and follow ranges from the transcript document.
+
+Transcript edits write the transcript JSON through `TranscriptEngine`, refresh
+the table, schedule project state save, and push history for undoable actions.
+
+`SpeakersTab::refresh()`:
+
+1. Clears local speaker/transcript state under `m_updating`.
+2. Resolves the selected clip and active transcript path.
+3. Clears avatar caches when the transcript/clip changes.
+4. Loads the transcript JSON.
+5. Rebuilds the speaker table and selected speaker panel.
+6. Queues the FaceStream paths panel refresh.
+
+Speaker profile, reference, tracking, AI cleanup, and FaceStream assignment
+actions mutate the transcript document and/or sidecar artifacts, then schedule
+save/history and refresh the affected UI.
+
+## FaceStream Generation and Assignment Flow
+
+FaceStream actions are editable only for mutable derived cuts. The selected clip
+and active transcript are the input boundary.
+
+Generation/processing flow:
+
+1. UI action starts from `SpeakersTab`.
+2. Runtime helpers render/decode frames using preview media paths and the Vulkan
+   offscreen renderer where applicable.
+3. Detections/tracks are converted into continuity roots with frame, normalized
+   location, box size, confidence, detector mode, and scan range metadata.
+4. Raw continuity roots are saved to the raw FaceStream artifact by clip id.
+5. Processed continuity roots are derived and saved to the processed artifact by
+   clip id.
+6. Speaker assignment metadata in the transcript may reference stream/track
+   identities.
+7. UI refresh reads streams through `continuityStreamsForRoot()` so it can use
+   processed streams, raw-derived streams, or legacy transcript fallback.
+
+Deletion removes the clip entry from both raw and processed artifacts and also
+removes legacy transcript-side continuity fallback if present.
+
+## Current Guardrails
+
+Follow these rules when changing dataflow-sensitive code:
+
+1. Do not serialize project state or history on the playback hot path.
+2. Keep dense/generated artifacts out of `state.json` and history snapshots.
+3. Use `m_loadingState`, `m_restoringHistory`, and tab-level `m_updating` guards
+   when applying state or rebuilding UI.
+4. Use `QSignalBlocker` when restoring widget values or repopulating tables that
+   have mutation handlers connected.
+5. Preserve selection across refresh when the selected object still exists.
+6. Collapse bursty refresh work with a timer instead of running repeated table or
+   JSON rebuilds inline.
+7. Write files through `QSaveFile` or existing `TranscriptEngine` helpers.
+8. For undoable user edits, call `scheduleSaveState()` and `pushHistorySnapshot()`
+   after the mutation is complete.
+9. For non-undoable runtime/generated artifacts, update sidecars and schedule a
+   project save only when project-visible metadata changed.
+10. Keep render/preview/cache sync explicit after timeline mutations.
+
+### Review Checks
+
+These are the questions a reviewer should be able to answer from the patch:
+
+1. If a new field is persisted, does it clearly belong in `state.json`,
+   `history.json`, transcript JSON, or a sidecar?
+2. If transcript JSON is mutated, is the history behavior intentional and
+   stated by the call site?
+3. If a widget rebuild path was added, does it guard against signal feedback and
+   selection loss?
+4. If a timer or debounce was added, is the trigger source and owner clear?
+5. If a new path runs during playback or playhead-follow, does it avoid blocking
+   I/O and broad UI churn?
+
+## Known Gaps
+
+These are architectural constraints, not bugs by themselves:
+
+- There is no central reducer or immutable store. Many UI handlers still mutate
+  timeline clips, transcript JSON, sidecar artifacts, and widgets directly.
+  Why this matters: ordering bugs are easier to introduce because mutation,
+  persistence, and refresh are often adjacent.
+- Refresh methods are not pure render functions.
+  Why this matters: refresh-trigger loops and hidden document reload costs are
+  harder to see during review.
+- Persistence, transcript mutation, and UI refresh are still coupled in several
+  tab action handlers.
+  Why this matters: interaction paths can accidentally pick up file I/O or broad
+  repaint costs.
+- `history.json` is count-bounded but not byte-budgeted.
+  Why this matters: a small number of large snapshots can still grow project
+  storage unexpectedly.
+- Worker result schemas are normalized locally by subsystem, not by a single
+  shared reducer boundary.
+  Why this matters: result ingestion rules are duplicated and can drift.
+
+When adding new features, prefer moving code toward explicit phases:
+
+`read inputs -> mutate domain state/artifact -> sync runtime caches -> schedule persistence/history -> render UI`
+
+## Change Checklist
+
+Before merging a dataflow-sensitive change, check:
+
+- did I introduce a new source of truth instead of reusing existing canonical
+  state?
+- did I put generated/heavy data into project state or history by accident?
+- did I define whether the action is undoable and where the history snapshot
+  happens?
+- did I add file I/O to a refresh, selection-change, or playback-driven path?
+- did I protect widget rebuilds from signal feedback?
+- did I keep preview/audio/cache synchronization explicit after domain mutation?
+
+## Regression Checks
+
+Relevant tests and smoke checks live under `tests/` and target the pieces most
+likely to regress dataflow:
+
+- `tests/test_timeline_cache.cpp`
+- `tests/test_async_decoder.cpp`
+- `tests/test_playback_policy.cpp`
+- `tests/test_transform_skip_aware_timing.cpp`
+- `tests/test_transcript_logic.cpp`
+- `tests/test_transcript_tab_follow.cpp`
+- `tests/test_waveform_service.cpp`
+- `tests/test_memory_budget.cpp`
+
+Manual checks after dataflow changes:
+
+- startup reaches an interactive first frame
+- inspector refreshes do not recurse or peg CPU
+- undo/redo restores selected timeline state and refreshes tabs
+- playback does not trigger repeated state writes
+- FaceStream generation/deletion updates sidecars without bloating project state
+- transcript/speaker edits persist to the active transcript and remain visible
+  after project reload

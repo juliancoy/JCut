@@ -11,6 +11,29 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Transcript frame domain (`30 fps` transcript clock): transcript words/sections and follow/highlight matching.
 - Filtered timeline domain (speech ranges only): sparse timeline intervals from transcript words.
 
+## Facestream Frame-Domain Classes (Time-Relative)
+- `FacestreamFrameDomain::ClipTimeline30Fps`
+  - `keyframe.frame` is clip-local timeline frame at 30 fps.
+  - Source mapping: `clip.startFrame + keyframe.frame` -> `sourceFrameForClipAtTimelinePosition(...)`.
+  - Lookup basis while previewing: current clip-local timeline frame.
+- `FacestreamFrameDomain::SourceRelative`
+  - `keyframe.frame` is source frame relative to `clip.sourceInFrame` (local source offset).
+  - Source mapping: `clip.sourceInFrame + keyframe.frame`.
+  - Lookup basis while previewing: current local source frame (`currentSourceFrame - clip.sourceInFrame`).
+- `FacestreamFrameDomain::SourceAbsolute`
+  - `keyframe.frame` is absolute source frame index in media decode space.
+  - Source mapping: direct `sourceFrame = keyframe.frame`.
+  - Lookup basis while previewing: current absolute source frame.
+
+## Facestream Domain Inference Rules
+- Inference entry point: `inferFacestreamFrameDomain(...)`.
+- Preferred classification order:
+  - `SourceAbsolute` when keyframe frame range falls inside clip source absolute range (`clip.sourceInFrame .. clip.sourceInFrame + clip.sourceDurationFrames`, tolerant bounds).
+  - `ClipTimeline30Fps` when keyframe frame range fits clip timeline duration (`0 .. clip.durationFrames`, tolerant bounds).
+  - Else fallback to `SourceRelative`.
+- Important implication:
+  - A wrong domain classification creates deterministic time drift even if box geometry is correct.
+
 ## Core Conversion Paths
 - Timeline sample -> timeline frame:
   - `samplesToFramePosition(...)`

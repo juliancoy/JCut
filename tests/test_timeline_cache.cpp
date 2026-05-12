@@ -1,4 +1,7 @@
 #include <QtTest/QtTest>
+#include <QDateTime>
+#include <QJsonArray>
+#include <QJsonObject>
 #include "../timeline_cache.h"
 #include "../async_decoder.h"
 #include "../memory_budget.h"
@@ -15,6 +18,7 @@ private slots:
     void testCacheHitMiss();
     void testPlaybackState();
     void testStaticImageCaching();
+    void testVisibleRequestRetryUsesWallClockAge();
 };
 
 void TestTimelineCache::testInitialization() {
@@ -127,6 +131,37 @@ void TestTimelineCache::testStaticImageCaching() {
     // to prevent flickering in the UI
     
     qDebug() << "Static image caching test completed - actual caching is async";
+}
+
+void TestTimelineCache::testVisibleRequestRetryUsesWallClockAge() {
+    MemoryBudget budget;
+    TimelineCache cache(nullptr, &budget);
+
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip1");
+    clip.filePath = QStringLiteral("/tmp/test-visible-retry.mp4");
+    clip.mediaType = ClipMediaType::Video;
+    clip.sourceKind = MediaSourceKind::File;
+    clip.startFrame = 0;
+    clip.durationFrames = 100;
+    clip.sourceDurationFrames = 100;
+    cache.registerClip(clip);
+
+    bool callbackCalled = false;
+    cache.requestFrame("clip1", 12, [&callbackCalled](FrameHandle) {
+        callbackCalled = true;
+    });
+
+    QVERIFY(!callbackCalled);
+    QVERIFY(cache.isVisibleRequestPending("clip1", 12));
+    QVERIFY(!cache.shouldForceVisibleRequestRetry("clip1", 12, 100));
+
+    QTest::qWait(140);
+    QVERIFY(cache.shouldForceVisibleRequestRetry("clip1", 12, 100));
+
+    const QJsonArray pending = cache.pendingVisibleDebugSnapshot(QDateTime::currentMSecsSinceEpoch(), 1);
+    QCOMPARE(pending.size(), 1);
+    QVERIFY(pending.at(0).toObject().value(QStringLiteral("age_ms")).toInteger() >= 100);
 }
 
 QTEST_MAIN(TestTimelineCache)

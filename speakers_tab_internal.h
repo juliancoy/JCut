@@ -18,6 +18,7 @@ const QLatin1String kTranscriptSpeakerNameKey("name");
 const QLatin1String kTranscriptSpeakerLocationKey("location");
 const QLatin1String kTranscriptSpeakerLocationXKey("x");
 const QLatin1String kTranscriptSpeakerLocationYKey("y");
+const QLatin1String kTranscriptSpeakerFaceRefsKey("face_refs");
 const QLatin1String kTranscriptSpeakerFramingKey("framing");
 const QLatin1String kTranscriptSpeakerTrackingKey("tracking");
 const QLatin1String kTranscriptSpeakerTrackingModeKey("mode");
@@ -34,6 +35,10 @@ const QLatin1String kTranscriptSpeakerTrackingBoxBottomKey("box_bottom");
 const QLatin1String kTranscriptSpeakerTrackingKeyframesKey("keyframes");
 const QLatin1String kTranscriptSpeakerTrackingConfidenceKey("confidence");
 const QLatin1String kTranscriptSpeakerTrackingSourceKey("source");
+const QLatin1String kSpeakerFlowAnchorSourceFrameKey("anchor_source_frame");
+const QLatin1String kSpeakerFlowAnchorXKey("anchor_x");
+const QLatin1String kSpeakerFlowAnchorYKey("anchor_y");
+const QLatin1String kSpeakerFlowAnchorBoxSizeKey("anchor_box_size");
 
 QJsonObject transcriptTrackingReferencePoint(const QJsonObject& tracking,
                                              const QLatin1String& key,
@@ -81,6 +86,29 @@ bool transcriptTrackingHasPointstream(const QJsonObject& tracking)
 QJsonObject speakerFramingObject(const QJsonObject& profile)
 {
     return profile.value(QString(kTranscriptSpeakerFramingKey)).toObject();
+}
+
+QJsonArray speakerFaceRefs(const QJsonObject& profile)
+{
+    return profile.value(QString(kTranscriptSpeakerFaceRefsKey)).toArray();
+}
+
+QJsonObject previewKeyframeFromSpeakerFaceRef(const QJsonObject& faceRef)
+{
+    if (faceRef.isEmpty()) {
+        return {};
+    }
+    QJsonObject keyframeObj;
+    keyframeObj[QString(kTranscriptSpeakerTrackingFrameKey)] =
+        static_cast<qint64>(qMax<int64_t>(
+            0, faceRef.value(QString(kSpeakerFlowAnchorSourceFrameKey)).toVariant().toLongLong()));
+    keyframeObj[QString(kTranscriptSpeakerLocationXKey)] =
+        qBound<qreal>(0.0, faceRef.value(QString(kSpeakerFlowAnchorXKey)).toDouble(0.5), 1.0);
+    keyframeObj[QString(kTranscriptSpeakerLocationYKey)] =
+        qBound<qreal>(0.0, faceRef.value(QString(kSpeakerFlowAnchorYKey)).toDouble(0.5), 1.0);
+    keyframeObj[QString(kTranscriptSpeakerTrackingBoxSizeKey)] =
+        qBound<qreal>(0.01, faceRef.value(QString(kSpeakerFlowAnchorBoxSizeKey)).toDouble(0.2), 1.0);
+    return keyframeObj;
 }
 
 void setSpeakerFramingObject(QJsonObject& profile, const QJsonObject& framing)

@@ -19,3 +19,9 @@ nasreen.mp4
 heaptrack.*.zst
 debug
 third_party
+# Downloaded ArcFace identity-clustering models
+assets/models/arcface_mobilefacenet.param
+assets/models/arcface_mobilefacenet.bin
+# Downloaded SCRFD detector models
+assets/models/scrfd_500m-opt2.param
+assets/models/scrfd_500m-opt2.bin

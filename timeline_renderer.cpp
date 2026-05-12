@@ -6,6 +6,7 @@
 
 #include <QFileInfo>
 #include <algorithm>
+#include <cmath>
 
 TimelineRenderer::TimelineRenderer(TimelineWidget* widget)
     : m_widget(widget) {
@@ -72,10 +73,25 @@ void TimelineRenderer::paint(QPainter* painter) {
     const int64_t rulerStartFrame = qMax<int64_t>(0, (visibleStartFrame / 30) * 30);
     const int64_t rulerEndFrame = qMin<int64_t>(m_widget->totalFrames(), visibleEndFrame + 30);
 
+    int64_t rulerStepFrames = 30;
+    if (m_widget->m_pixelsPerFrame > 0.0) {
+        // Keep ruler painting bounded even when zoom is extremely far out.
+        const qreal targetSpacingPx = 10.0;
+        const int64_t minFramesForSpacing =
+            static_cast<int64_t>(std::ceil(targetSpacingPx / m_widget->m_pixelsPerFrame));
+        if (minFramesForSpacing > 30) {
+            const int64_t snapped = ((minFramesForSpacing + 29) / 30) * 30;
+            rulerStepFrames = qMax<int64_t>(30, snapped);
+        }
+    }
+    const int kMaxRulerTicks = 4000;
+    const int64_t maxRulerSpan = static_cast<int64_t>(kMaxRulerTicks) * rulerStepFrames;
+    const int64_t boundedRulerEnd = qMin<int64_t>(rulerEndFrame, rulerStartFrame + maxRulerSpan);
+
     painter->setPen(QColor(QStringLiteral("#6d7887")));
-    for (int64_t frame = rulerStartFrame; frame <= rulerEndFrame; frame += 30) {
+    for (int64_t frame = rulerStartFrame; frame <= boundedRulerEnd; frame += rulerStepFrames) {
         const int x = m_widget->xFromFrame(frame);
-        const bool major = (frame % 150) == 0;
+        const bool major = (frame % qMax<int64_t>(150, rulerStepFrames * 5)) == 0;
         painter->setPen(major ? QColor(QStringLiteral("#8fa0b5")) : QColor(QStringLiteral("#53606e")));
         painter->drawLine(x, ruler.bottom() - (major ? 18 : 10), x, tracks.bottom() - 8);
 
@@ -269,6 +285,18 @@ void TimelineRenderer::paint(QPainter* painter) {
             painter->setPen(Qt::NoPen);
             painter->setBrush(QColor(QStringLiteral("#3d8bff")));
             painter->drawRoundedRect(transcriptBarRect, 2, 2);
+            barBottom -= (barHeight + 1);
+        }
+
+        const bool facestreamSidecarExists = facestreamSidecarExistsForClipFile(clip.filePath);
+        if (facestreamSidecarExists) {
+            const QRect facestreamBarRect(visibleClipRect.left() + 2,
+                                          barBottom - barHeight + 1,
+                                          qMax(1, visibleClipRect.width() - 4),
+                                          barHeight);
+            painter->setPen(Qt::NoPen);
+            painter->setBrush(QColor(QStringLiteral("#c35cff")));
+            painter->drawRoundedRect(facestreamBarRect, 2, 2);
             barBottom -= (barHeight + 1);
         }
 

@@ -428,15 +428,15 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     
     updateTransportLabels();
     if (duringPlayback) {
-        syncTranscriptTableToPlayhead();
         if ((tickNowMs - m_lastPlaybackUiSyncMs) >= m_playbackUiSyncMinIntervalMs) {
+            syncTranscriptTableToPlayhead();
             syncKeyframeTableToPlayhead();
             syncGradingTableToPlayhead();
             m_titlesTab->syncTableToPlayhead();
             m_lastPlaybackUiSyncMs = tickNowMs;
         }
     } else {
-        m_inspectorPane->refresh();
+        refreshCurrentInspectorTab();
         syncTranscriptTableToPlayhead();
         syncKeyframeTableToPlayhead();
         syncGradingTableToPlayhead();
@@ -701,7 +701,7 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_preview->setPlaybackState(false);
     }
     updateTransportLabels();
-    m_inspectorPane->refresh();
+    refreshCurrentInspectorTab();
     scheduleSaveState();
 }
 

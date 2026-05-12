@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListView>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
@@ -622,6 +623,26 @@ QWidget *InspectorPane::buildProfileTab()
     layout->addWidget(m_profileSummaryTable, 1);
     layout->addWidget(m_profileBenchmarkButton);
     layout->addWidget(m_restartDecodersButton);
+    return page;
+}
+
+QWidget *InspectorPane::buildPipelineTab()
+{
+    auto *page = new QWidget;
+    auto *layout = createTabLayout(page);
+    layout->addWidget(createTabHeading(QStringLiteral("Pipeline"), page));
+
+    m_pipelineStageList = new QListWidget(page);
+    m_pipelineStageList->setViewMode(QListView::ListMode);
+    m_pipelineStageList->setResizeMode(QListView::Adjust);
+    m_pipelineStageList->setMovement(QListView::Static);
+    m_pipelineStageList->setWrapping(false);
+    m_pipelineStageList->setSpacing(4);
+    m_pipelineStageList->setIconSize(QSize(96, 54));
+    m_pipelineStageList->setWordWrap(true);
+    m_pipelineStageList->setSelectionMode(QAbstractItemView::NoSelection);
+    layout->addWidget(m_pipelineStageList, 1);
+
     return page;
 }
 

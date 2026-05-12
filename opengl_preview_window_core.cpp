@@ -1,4 +1,5 @@
 #include "opengl_preview.h"
+#include "preview_view_transform.h"
 #include "opengl_preview_debug.h"
 
 #include "frame_handle.h"
@@ -12,11 +13,13 @@
 #include "render_internal.h"
 
 #include <QElapsedTimer>
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QOpenGLWidget>
 #include <QPointer>
+#include <QStringList>
 #include <QThread>
 #include <QTimer>
 
@@ -286,6 +289,10 @@ void PreviewWindow::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
     if (m_cache) m_cache->setExportRanges(ranges);
 }
 
+void PreviewWindow::setUseProxyMedia(bool useProxyMedia) {
+    Q_UNUSED(useProxyMedia);
+}
+
 QString PreviewWindow::backendName() const {
     if (usingCpuFallback()) {
         if (m_vulkanPreviewActive) {
@@ -373,6 +380,7 @@ bool PreviewWindow::ensureVulkanPreviewRenderer(bool promptOnFallback)
         m_forceCpuPreviewForVulkan = true;
         m_vulkanPreviewActive = false;
         m_effectiveRenderBackend = QStringLiteral("vulkan");
+        QCoreApplication::exit(2);
     } else if (!suppressBridgeFallbackLogs()) {
         qWarning().noquote()
             << "[render-backend-fallback] requested=vulkan effective=opengl reason=\""
@@ -396,6 +404,12 @@ void PreviewWindow::setBackgroundColor(const QColor& color) {
 void PreviewWindow::setPreviewZoom(qreal zoom) {
     // Keep a wide global bound for REST/UI control; interaction paths clamp per mode.
     m_interaction.previewZoom = qBound<qreal>(0.1, zoom, 100000.0);
+    if (m_interaction.viewMode == ViewMode::Video) {
+        m_interaction.previewPanOffset = PreviewViewTransform::clampedPanOffset(
+            QRectF(previewCanvasBaseRect()),
+            qBound<qreal>(0.1, m_interaction.previewZoom, 20.0),
+            m_interaction.previewPanOffset);
+    }
     scheduleRepaint();
 }
 
@@ -415,14 +429,14 @@ void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
     scheduleRepaint();
 }
 
-void PreviewWindow::setBoxstreamOverlaySource(const QString& source) {
+void PreviewWindow::setFacestreamOverlaySource(const QString& source) {
     const QString normalized = source.trimmed().isEmpty()
         ? QStringLiteral("all")
         : source.trimmed().toLower();
-    if (m_boxstreamOverlaySource == normalized) {
+    if (m_facestreamOverlaySource == normalized) {
         return;
     }
-    m_boxstreamOverlaySource = normalized;
+    m_facestreamOverlaySource = normalized;
     m_speakerTrackPointsCache.clear();
     scheduleRepaint();
 }
@@ -487,6 +501,20 @@ void PreviewWindow::setTitleOverlayInteractionOnly(bool enabled) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setFaceStreamAssignmentInteractionEnabled(bool enabled) {
+    if (m_interaction.faceStreamAssignmentInteractionEnabled == enabled) {
+        return;
+    }
+    m_interaction.faceStreamAssignmentInteractionEnabled = enabled;
+    clearHoveredFaceStreamBox();
+    if (m_interaction.faceStreamAssignmentInteractionEnabled) {
+        m_interaction.transient.dragMode = PreviewDragMode::None;
+        m_interaction.transient.dragOriginBounds = QRectF();
+        unsetCursor();
+    }
+    scheduleRepaint();
+}
+
 void PreviewWindow::setBypassGrading(bool bypass) {
     if (m_bypassGrading == bypass) return;
     m_bypassGrading = bypass;
@@ -545,6 +573,206 @@ QImage PreviewWindow::latestPresentedFrameImageForClip(const QString& clipId) co
     }
 
     return QImage();
+}
+
+QVector<PreviewSurface::PipelineStageSnapshot> PreviewWindow::livePipelineSnapshots() const
+{
+    QVector<PipelineStageSnapshot> snapshots;
+    QImage previewImage;
+    if (m_glInitialized && isValid()) {
+        previewImage = const_cast<PreviewWindow*>(this)->grabFramebuffer();
+    }
+    auto addStage = [&snapshots](const QString& label,
+                                 const QString& detail,
+                                 const QImage& image,
+                                 const QString& kind,
+                                 bool exact,
+                                 bool active) {
+        snapshots.push_back(PipelineStageSnapshot{label, detail, image, kind, exact, active});
+    };
+
+    addStage(QStringLiteral("00 Preview State"),
+             QStringLiteral("%1 | timeline frame %2 | sample %3 | clips %4")
+                 .arg(backendName())
+                 .arg(m_interaction.currentFrame)
+                 .arg(m_interaction.currentSample)
+                 .arg(m_interaction.clipCount),
+             previewImage,
+             QStringLiteral("surface"),
+             true,
+             true);
+
+    QHash<QString, QJsonObject> selectionByClip;
+    const QJsonArray selections = m_lastFrameSelectionStats.value(QStringLiteral("clips")).toArray();
+    for (const QJsonValue& value : selections) {
+        const QJsonObject object = value.toObject();
+        const QString id = object.value(QStringLiteral("id")).toString();
+        if (!id.isEmpty()) {
+            selectionByClip.insert(id, object);
+        }
+    }
+
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||
+            clip.mediaType == ClipMediaType::Title ||
+            !isSampleWithinClip(clip, m_interaction.currentSample)) {
+            continue;
+        }
+
+        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const bool usePlaybackPipeline =
+            m_interaction.playing &&
+            clip.sourceKind == MediaSourceKind::ImageSequence &&
+            clip.mediaType != ClipMediaType::Image;
+        FrameHandle frame = m_lastPresentedFrames.value(clip.id);
+        if ((frame.isNull() || !frame.hasCpuImage()) && m_cache) {
+            const FrameHandle exact = m_cache->getCachedFrame(clip.id, localFrame);
+            if (!exact.isNull()) {
+                frame = exact;
+            } else {
+                frame = m_interaction.playing ? m_cache->getLatestCachedFrame(clip.id, localFrame)
+                                              : m_cache->getBestCachedFrame(clip.id, localFrame);
+            }
+        }
+
+        const QJsonObject selection = selectionByClip.value(clip.id);
+        const QString selectionText =
+            selection.value(QStringLiteral("selection")).toString(frame.isNull() ? QStringLiteral("missing")
+                                                                                 : QStringLiteral("live"));
+        const QString storageText =
+            frame.hasHardwareFrame() ? QStringLiteral("hardware")
+                                     : (frame.hasGpuTexture() ? QStringLiteral("gpu")
+                                                              : (frame.hasCpuImage() ? QStringLiteral("cpu")
+                                                                                     : QStringLiteral("none")));
+        const QString clipLabel = clip.label.isEmpty() ? clip.id : clip.label;
+        const EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
+            clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
+        const TimelineClip::GradingKeyframe grade =
+            m_bypassGrading ? TimelineClip::GradingKeyframe{} : effects.grading;
+        const TimelineClip::TransformKeyframe transform =
+            evaluateClipRenderTransformAtPosition(clip, m_interaction.currentFramePosition, m_interaction.outputSize);
+        const QVector<QPointF> identityCurve = defaultGradingCurvePoints();
+        const bool curveLutActive =
+            effects.grading.curvePointsR != identityCurve ||
+            effects.grading.curvePointsG != identityCurve ||
+            effects.grading.curvePointsB != identityCurve ||
+            effects.grading.curvePointsLuma != identityCurve;
+
+        addStage(QStringLiteral("01 Timeline Input"),
+                 QStringLiteral("%1 | %2 | %3 | timeline %4-%5")
+                     .arg(clipLabel,
+                          clipMediaTypeLabel(clip.mediaType),
+                          mediaSourceKindLabel(clip.sourceKind))
+                     .arg(clip.startFrame)
+                     .arg(clip.startFrame + qMax<int64_t>(0, clip.durationFrames - 1)),
+                 QImage(),
+                 QStringLiteral("timeline"),
+                 true,
+                 true);
+        addStage(QStringLiteral("02 Source Mapping"),
+                 QStringLiteral("sample %1 -> source frame %2 | source in %3 | playback pipeline %4")
+                     .arg(m_interaction.currentSample)
+                     .arg(localFrame)
+                     .arg(clip.sourceInFrame)
+                     .arg(usePlaybackPipeline ? QStringLiteral("yes") : QStringLiteral("no")),
+                 QImage(),
+                 QStringLiteral("mapping"),
+                 true,
+                 true);
+        addStage(QStringLiteral("03 Decoder Output"),
+                 QStringLiteral("presented frame %1 | storage %2 | size %3x%4")
+                     .arg(frame.frameNumber())
+                     .arg(storageText)
+                     .arg(frame.size().width())
+                     .arg(frame.size().height()),
+                 frame.hasCpuImage() ? frame.cpuImage() : QImage(),
+                 QStringLiteral("decoder"),
+                 !frame.isNull() && frame.frameNumber() == localFrame,
+                 !frame.isNull());
+        addStage(QStringLiteral("04 Frame Selection"),
+                 QStringLiteral("%1 | exact %2 | stale rejected %3")
+                     .arg(selectionText)
+                     .arg(!frame.isNull() && frame.frameNumber() == localFrame ? QStringLiteral("yes") : QStringLiteral("no"))
+                     .arg(isFrameTooStaleForPlayback(clip, localFrame, frame) ? QStringLiteral("yes") : QStringLiteral("no")),
+                 frame.hasCpuImage() ? frame.cpuImage() : QImage(),
+                 QStringLiteral("selection"),
+                 !frame.isNull() && frame.frameNumber() == localFrame,
+                 !frame.isNull());
+        addStage(QStringLiteral("05 Corrections / Mask"),
+                 QStringLiteral("polygons %1 | enabled %2 | mask feather %3 gamma %4")
+                     .arg(effects.correctionPolygons.size())
+                     .arg(m_correctionsEnabled ? QStringLiteral("yes") : QStringLiteral("no"))
+                     .arg(effects.maskFeather)
+                     .arg(effects.maskFeatherGamma),
+                 QImage(),
+                 QStringLiteral("mask"),
+                 true,
+                 true);
+        addStage(QStringLiteral("06 Effects Evaluation"),
+                 QStringLiteral("opacity %1 | bypass grading %2 | curve LUT %3")
+                     .arg(grade.opacity)
+                     .arg(m_bypassGrading ? QStringLiteral("yes") : QStringLiteral("no"))
+                     .arg(curveLutActive ? QStringLiteral("yes") : QStringLiteral("no")),
+                 QImage(),
+                 QStringLiteral("effects"),
+                 true,
+                 true);
+        addStage(QStringLiteral("07 Grading Shader Output"),
+                 QStringLiteral("brightness %1 | contrast %2 | saturation %3 | H/M/S %4,%5,%6")
+                     .arg(grade.brightness)
+                     .arg(grade.contrast)
+                     .arg(grade.saturation)
+                     .arg(grade.highlightsR)
+                     .arg(grade.midtonesR)
+                     .arg(grade.shadowsR),
+                 previewImage,
+                 QStringLiteral("shader"),
+                 !frame.isNull() && frame.frameNumber() == localFrame,
+                 !frame.isNull());
+        addStage(QStringLiteral("08 Transform"),
+                 QStringLiteral("translate %1,%2 | scale %3,%4 | rotate %5")
+                     .arg(transform.translationX)
+                     .arg(transform.translationY)
+                     .arg(transform.scaleX)
+                     .arg(transform.scaleY)
+                     .arg(transform.rotation),
+                 QImage(),
+                 QStringLiteral("transform"),
+                 true,
+                 true);
+        addStage(QStringLiteral("09 Composite Layer"),
+                 QStringLiteral("OpenGL visual shader | output %1x%2 | selection %3")
+                     .arg(m_interaction.outputSize.width())
+                     .arg(m_interaction.outputSize.height())
+                     .arg(selectionText),
+                 previewImage,
+                 QStringLiteral("composite"),
+                 !frame.isNull() && frame.frameNumber() == localFrame,
+                 !frame.isNull());
+    }
+
+    if (snapshots.size() == 1 && !m_interaction.selectedClipId.isEmpty()) {
+        const QImage selectedImage = latestPresentedFrameImageForClip(m_interaction.selectedClipId);
+        snapshots.push_back(PipelineStageSnapshot{
+            QStringLiteral("Selected Clip"),
+            selectedImage.isNull() ? QStringLiteral("No CPU image in the live preview cache")
+                                   : QStringLiteral("Latest live CPU image for selected clip"),
+            selectedImage,
+            QStringLiteral("decoder"),
+            false,
+            !selectedImage.isNull()});
+    }
+
+    addStage(QStringLiteral("10 Presented Surface"),
+             QStringLiteral("widget %1x%2 | final preview surface")
+                 .arg(width())
+                 .arg(height()),
+             previewImage,
+             QStringLiteral("surface"),
+             true,
+             !previewImage.isNull());
+
+    return snapshots;
 }
 
 bool PreviewWindow::clipIdIsTitle(const QString& clipId) const {
@@ -648,11 +876,16 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
     }
 
     if (m_cache) {
-        snapshot[QStringLiteral("cache")] = QJsonObject{{QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
-                                                         {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
-                                                         {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
-                                                         {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
-                                                         {QStringLiteral("pending_visible_debug"), m_cache->pendingVisibleDebugSnapshot(now)}};
+        QJsonObject cacheSnapshot{{QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
+                                  {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
+                                  {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
+                                  {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
+                                  {QStringLiteral("pending_visible_debug"), m_cache->pendingVisibleDebugSnapshot(now)}};
+        const QJsonObject residency = m_cache->cacheResidencySnapshot();
+        for (auto it = residency.begin(); it != residency.end(); ++it) {
+            cacheSnapshot.insert(it.key(), it.value());
+        }
+        snapshot[QStringLiteral("cache")] = cacheSnapshot;
     }
 
     if (m_playbackPipeline) {

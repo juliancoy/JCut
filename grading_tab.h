@@ -161,7 +161,7 @@ private:
     QVector<QPointF> m_curvePointsG;
     QVector<QPointF> m_curvePointsB;
     QVector<QPointF> m_curvePointsLuma;
-    bool m_curveThreePointLock = true;
+    bool m_curveThreePointLock = false;
     bool m_curveSmoothingEnabled = true;
     AutoOpposeSettings m_autoOpposeSettings;
 };

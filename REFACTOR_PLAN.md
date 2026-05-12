@@ -348,7 +348,7 @@ Exit checks:
 
 Source files:
 
-1. `speakers_tab_boxstream_actions.cpp`
+1. `speakers_tab_facestream_actions.cpp`
 2. `docker_face_detector.py`
 3. `speaker_face_candidates.py`
 4. `sam3.sh`

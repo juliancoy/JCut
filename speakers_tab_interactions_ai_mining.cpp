@@ -202,9 +202,10 @@ bool SpeakersTab::runAiFindSpeakerNames()
         profiles[proposal.targetId] = profile;
     }
     root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    m_loadedTranscriptDoc.setObject(root);
-    editor::TranscriptEngine engine;
-    if (!engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Speaker Names"),
                              QStringLiteral("Failed to save transcript after AI speaker-name pass."));
@@ -322,9 +323,10 @@ bool SpeakersTab::runAiFindOrganizations()
         profiles[proposal.targetId] = profile;
     }
     root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    m_loadedTranscriptDoc.setObject(root);
-    editor::TranscriptEngine engine;
-    if (!engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Organizations"),
                              QStringLiteral("Failed to save transcript after organization pass."));
@@ -480,9 +482,10 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
     }
 
     root[QStringLiteral("segments")] = segments;
-    m_loadedTranscriptDoc.setObject(root);
-    editor::TranscriptEngine engine;
-    if (!engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc)) {
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            loadedRoot = root;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Clean Assignments"),
                              QStringLiteral("Failed to save transcript after assignment cleanup."));

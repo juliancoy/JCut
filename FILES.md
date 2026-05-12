@@ -144,8 +144,8 @@ All files above are Position: `L4` with `L3` rendering internals.
 
 - `editor_ai_integration.cpp` — AI feature orchestration in main app. Position: `L1/L5`.
 - `editor_ai_helpers.h/.cpp` — Utility wrappers for AI flows. Position: `L5`.
-- `speaker_boxstream.py`, `speaker_face_candidates.py`, `sync_detector.py`, `docker_face_detector.py` — External ML/analysis helper scripts. Position: `L5`.
-- `speaker_boxstream.dockerfile`, `syncnet.dockerfile` — Containerized toolchain definitions. Position: `L5`.
+- `speaker_facestream.py`, `speaker_face_candidates.py`, `sync_detector.py`, `docker_face_detector.py` — External ML/analysis helper scripts. Position: `L5`.
+- `speaker_facestream.dockerfile`, `syncnet.dockerfile` — Containerized toolchain definitions. Position: `L5`.
 
 ## 14) Test and Benchmark Harnesses
 

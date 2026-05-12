@@ -151,7 +151,7 @@ EditorPane::EditorPane(QWidget *parent)
     layout->addWidget(verticalSplitter, 1);
 
     auto *previewFrame = new QFrame;
-    previewFrame->setMinimumHeight(240);
+    previewFrame->setMinimumHeight(160);
     previewFrame->setFrameShape(QFrame::NoFrame);
     previewFrame->setStyleSheet(QStringLiteral(
         "QFrame { background: #05080c; border: 1px solid #202934; border-radius: 14px; }"));
@@ -206,7 +206,7 @@ EditorPane::EditorPane(QWidget *parent)
 
     // TimelineContainer with 2x2 grid layout
     m_timelineContainer = new TimelineContainer;
-    m_timelineContainer->setMinimumHeight(220);
+    m_timelineContainer->setMinimumHeight(160);
     
     // Create transport controls and add to TimelineContainer's transport area
     setupTransportControls();
@@ -370,6 +370,13 @@ void EditorPane::setupTransportControls()
     m_audioNowPlayingLabel->setMaximumWidth(80);
     m_audioNowPlayingLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
+    m_zoomFitButton = new QPushButton(QStringLiteral("Zoom Fit"));
+    m_zoomFitButton->setObjectName(QStringLiteral("transport.zoom_fit"));
+    m_zoomFitButton->setToolTip(QStringLiteral("Fit preview to canvas and recenter"));
+    m_zoomFitButton->setMinimumWidth(64);
+    m_zoomFitButton->setMaximumWidth(88);
+    m_zoomFitButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+
     // Common transport order: first, previous frame, play/pause, next frame, last.
     transportLayout->addWidget(m_startButton);
     transportLayout->addWidget(m_prevFrameButton);
@@ -387,6 +394,7 @@ void EditorPane::setupTransportControls()
     transportLayout->addWidget(m_audioMuteButton);
     transportLayout->addWidget(m_audioVolumeSlider);
     transportLayout->addWidget(m_audioNowPlayingLabel);
+    transportLayout->addWidget(m_zoomFitButton);
 
     // Connect signals
     connect(m_playButton, &QPushButton::clicked, this, &EditorPane::playClicked);
@@ -402,6 +410,7 @@ void EditorPane::setupTransportControls()
     connect(m_previewModeCombo, &QComboBox::currentIndexChanged, this, [this](int index) {
         emit previewModeChanged(m_previewModeCombo->itemData(index).toString());
     });
+    connect(m_zoomFitButton, &QPushButton::clicked, this, &EditorPane::zoomFitClicked);
     connect(m_audioToolsButton, &QToolButton::clicked, this, &EditorPane::audioToolsClicked);
     connect(m_loopButton, &QToolButton::toggled, this, &EditorPane::playbackLoopToggled);
     connect(m_audioMuteButton, &QToolButton::clicked, this, &EditorPane::audioMuteClicked);
@@ -416,7 +425,8 @@ void EditorPane::setupTransportControls()
                                  static_cast<QAbstractButton*>(m_audioToolsButton),
                                  static_cast<QAbstractButton*>(m_loopButton),
                                  static_cast<QAbstractButton*>(m_audioMuteButton),
-                                 static_cast<QAbstractButton*>(m_razorButton)}) {
+                                 static_cast<QAbstractButton*>(m_razorButton),
+                                 static_cast<QAbstractButton*>(m_zoomFitButton)}) {
         if (btn) {
             btn->setAttribute(Qt::WA_Hover, true);
             btn->installEventFilter(glowFilter);

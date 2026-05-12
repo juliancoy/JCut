@@ -1,12 +1,15 @@
 #pragma once
 
+#include "frame_handle.h"
 #include "preview_surface.h"
 #include "editor_shared.h"
 
 #include <QColor>
 #include <QPointF>
+#include <QRect>
 #include <QRectF>
 #include <QSize>
+#include <QSizeF>
 #include <QString>
 #include <QVector>
 
@@ -24,18 +27,29 @@ struct PreviewInteractionTransientState {
     QRectF dragOriginBounds;
     TimelineClip::TransformKeyframe dragOriginTransform;
     QPointF dragOriginTranscriptTranslation;
+    bool transformOverrideActive = false;
+    QString transformOverrideClipId;
+    TimelineClip::TransformKeyframe transformOverride;
+    bool transcriptOverrideActive = false;
+    QString transcriptOverrideClipId;
+    QPointF transcriptTranslationOverride;
+    QSizeF transcriptSizeOverride;
     QVector<QPointF> correctionDraftPoints;
     bool speakerPickDragActive = false;
     QString speakerPickClipId;
     QPointF speakerPickStartPos;
     QPointF speakerPickCurrentPos;
     QString speakerPickHintClipId;
+    QString hoveredFaceStreamClipId;
+    QString hoveredFaceStreamId;
+    int hoveredFaceStreamTrackId = -1;
     QPointF lastMousePos = QPointF(-10000.0, -10000.0);
 };
 
 struct VulkanPreviewClipFrameStatus {
     QString clipId;
     QString label;
+    QString decodePath;
     int64_t requestedSourceFrame = -1;
     int64_t presentedSourceFrame = -1;
     QSize frameSize;
@@ -45,9 +59,29 @@ struct VulkanPreviewClipFrameStatus {
     bool hardwareFrame = false;
     bool gpuTexture = false;
     bool cpuImage = false;
+    bool exactFrameAvailable = false;
+    bool selectedFrameAvailable = false;
+    bool drawSuppressed = false;
+    bool gradingBypassed = false;
+    bool correctionsEnabled = true;
+    bool correctionsApplied = false;
+    bool correctionsSupported = false;
+    bool curveLutApplied = false;
+    bool curveLutSupported = false;
+    bool gradingShaderActive = false;
+    int correctionPolygonCount = 0;
+    qreal maskFeather = 0.0;
+    qreal maskFeatherGamma = 1.0;
+    QRect targetRect;
+    QRect fittedRect;
+    TimelineClip::TransformKeyframe transform;
+    TimelineClip::GradingKeyframe grading;
+    QString missingReason;
+    QString effectsPath;
+    editor::FrameHandle frame;
 };
 
-struct VulkanPreviewBoxstreamOverlay {
+struct VulkanPreviewFacestreamOverlay {
     QString clipId;
     QString streamId;
     QString source;
@@ -70,7 +104,7 @@ struct PreviewInteractionState {
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<VulkanPreviewClipFrameStatus> vulkanFrameStatuses;
-    QVector<VulkanPreviewBoxstreamOverlay> boxstreamOverlays;
+    QVector<VulkanPreviewFacestreamOverlay> facestreamOverlays;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;
     QString selectedClipId;
@@ -80,5 +114,6 @@ struct PreviewInteractionState {
     bool correctionDrawMode = false;
     bool transcriptOverlayInteractionEnabled = false;
     bool titleOverlayInteractionOnly = false;
+    bool faceStreamAssignmentInteractionEnabled = false;
     PreviewInteractionTransientState transient;
 };

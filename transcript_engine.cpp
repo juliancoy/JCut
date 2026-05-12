@@ -1,5 +1,7 @@
 #include "transcript_engine.h"
 
+#include "editor_shared.h"
+
 #include <QFile>
 #include <QFileInfo>
 #include <QDir>
@@ -19,25 +21,43 @@
 namespace editor
 {
 namespace {
-struct BoxstreamDocCacheEntry {
+struct FacestreamDocCacheEntry {
     qint64 modifiedMs = 0;
     qint64 fileSize = 0;
     QJsonDocument doc;
 };
 
-QMutex g_boxstreamDocCacheMutex;
-QHash<QString, BoxstreamDocCacheEntry> g_boxstreamDocCache;
+QMutex g_facestreamDocCacheMutex;
+QHash<QString, FacestreamDocCacheEntry> g_facestreamDocCache;
 
-QString boxstreamPathForTranscriptPath(const QString& transcriptPath)
+QString facestreamPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_boxstream.bin"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
 }
 
-QString legacyJsonBoxstreamPathForTranscriptPath(const QString& transcriptPath)
+QString facestreamProcessedPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_boxstream.json"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream_processed.bin"));
+}
+
+QString legacyFacestreamPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+}
+
+QString identityPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin"));
+}
+
+QString legacyJsonFacestreamPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.json"));
 }
 
 QString transcriptTextCompanionPath(const QString& transcriptPath)
@@ -175,12 +195,12 @@ bool saveTranscriptTextCompanion(const QString& transcriptPath, const QJsonObjec
     return file.commit();
 }
 
-QByteArray boxstreamMagic()
+QByteArray facestreamMagic()
 {
     return QByteArrayLiteral("JCUTBOX1");
 }
 
-bool loadBoxstreamDocFromFile(const QString& path, QJsonDocument* outDoc)
+bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
 {
     if (!outDoc) {
         return false;
@@ -192,9 +212,9 @@ bool loadBoxstreamDocFromFile(const QString& path, QJsonDocument* outDoc)
     const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
     {
-        QMutexLocker locker(&g_boxstreamDocCacheMutex);
-        const auto cached = g_boxstreamDocCache.constFind(path);
-        if (cached != g_boxstreamDocCache.constEnd() &&
+        QMutexLocker locker(&g_facestreamDocCacheMutex);
+        const auto cached = g_facestreamDocCache.constFind(path);
+        if (cached != g_facestreamDocCache.constEnd() &&
             cached->modifiedMs == modifiedMs &&
             cached->fileSize == fileSize &&
             cached->doc.isObject()) {
@@ -208,13 +228,13 @@ bool loadBoxstreamDocFromFile(const QString& path, QJsonDocument* outDoc)
         return false;
     }
     const QByteArray payload = file.readAll();
-    if (payload.size() < boxstreamMagic().size() + static_cast<int>(sizeof(quint32) * 2)) {
+    if (payload.size() < facestreamMagic().size() + static_cast<int>(sizeof(quint32) * 2)) {
         return false;
     }
-    if (!payload.startsWith(boxstreamMagic())) {
+    if (!payload.startsWith(facestreamMagic())) {
         return false;
     }
-    const char* raw = payload.constData() + boxstreamMagic().size();
+    const char* raw = payload.constData() + facestreamMagic().size();
     const quint32 version = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
     raw += sizeof(quint32);
     const quint32 jsonSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
@@ -222,7 +242,7 @@ bool loadBoxstreamDocFromFile(const QString& path, QJsonDocument* outDoc)
     if (version != 1) {
         return false;
     }
-    const int headerSize = boxstreamMagic().size() + static_cast<int>(sizeof(quint32) * 2);
+    const int headerSize = facestreamMagic().size() + static_cast<int>(sizeof(quint32) * 2);
     if (jsonSize > static_cast<quint32>(payload.size() - headerSize)) {
         return false;
     }
@@ -233,14 +253,14 @@ bool loadBoxstreamDocFromFile(const QString& path, QJsonDocument* outDoc)
         return false;
     }
     {
-        QMutexLocker locker(&g_boxstreamDocCacheMutex);
-        g_boxstreamDocCache.insert(path, BoxstreamDocCacheEntry{modifiedMs, fileSize, doc});
+        QMutexLocker locker(&g_facestreamDocCacheMutex);
+        g_facestreamDocCache.insert(path, FacestreamDocCacheEntry{modifiedMs, fileSize, doc});
     }
     *outDoc = doc;
     return true;
 }
 
-bool saveBoxstreamDocToFile(const QString& path, const QJsonDocument& doc)
+bool saveFacestreamDocToFile(const QString& path, const QJsonDocument& doc)
 {
     if (!doc.isObject()) {
         return false;
@@ -250,8 +270,8 @@ bool saveBoxstreamDocToFile(const QString& path, const QJsonDocument& doc)
         return false;
     }
     QByteArray payload;
-    payload.reserve(boxstreamMagic().size() + static_cast<int>(sizeof(quint32) * 2) + jsonBytes.size());
-    payload.append(boxstreamMagic());
+    payload.reserve(facestreamMagic().size() + static_cast<int>(sizeof(quint32) * 2) + jsonBytes.size());
+    payload.append(facestreamMagic());
     quint32 version = qToLittleEndian<quint32>(1);
     quint32 jsonSize = qToLittleEndian<quint32>(static_cast<quint32>(jsonBytes.size()));
     payload.append(reinterpret_cast<const char*>(&version), sizeof(quint32));
@@ -270,41 +290,42 @@ bool saveBoxstreamDocToFile(const QString& path, const QJsonDocument& doc)
         return false;
     }
     const QFileInfo info(path);
-    QMutexLocker locker(&g_boxstreamDocCacheMutex);
-    g_boxstreamDocCache.insert(path, BoxstreamDocCacheEntry{
+    QMutexLocker locker(&g_facestreamDocCacheMutex);
+    g_facestreamDocCache.insert(path, FacestreamDocCacheEntry{
         info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0,
         info.exists() ? info.size() : 0,
         doc});
     return true;
 }
 
-bool mergeBoxstreamSpeakerProfiles(const QString& transcriptPath, QJsonObject* root)
+bool mergeFacestreamSpeakerProfiles(const QString& transcriptPath, QJsonObject* root)
 {
     if (!root) {
         return false;
     }
-    QJsonDocument boxstreamDoc;
-    if (!loadBoxstreamDocFromFile(boxstreamPathForTranscriptPath(transcriptPath), &boxstreamDoc)) {
-        QFile legacyFile(legacyJsonBoxstreamPathForTranscriptPath(transcriptPath));
+    QJsonDocument facestreamDoc;
+    if (!loadFacestreamDocFromFile(facestreamPathForTranscriptPath(transcriptPath), &facestreamDoc) &&
+        !loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facestreamDoc)) {
+        QFile legacyFile(legacyJsonFacestreamPathForTranscriptPath(transcriptPath));
         if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
             return false;
         }
         QJsonParseError parseError;
-        boxstreamDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !boxstreamDoc.isObject()) {
+        facestreamDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !facestreamDoc.isObject()) {
             return false;
         }
     }
-    if (!boxstreamDoc.isObject()) {
+    if (!facestreamDoc.isObject()) {
         return false;
     }
-    const QJsonObject boxstreamRoot = boxstreamDoc.object();
-    const QJsonObject boxstreamProfiles = boxstreamRoot.value(QStringLiteral("speaker_profiles")).toObject();
-    if (boxstreamProfiles.isEmpty()) {
+    const QJsonObject facestreamRoot = facestreamDoc.object();
+    const QJsonObject facestreamProfiles = facestreamRoot.value(QStringLiteral("speaker_profiles")).toObject();
+    if (facestreamProfiles.isEmpty()) {
         return false;
     }
     QJsonObject transcriptProfiles = root->value(QStringLiteral("speaker_profiles")).toObject();
-    for (auto it = boxstreamProfiles.constBegin(); it != boxstreamProfiles.constEnd(); ++it) {
+    for (auto it = facestreamProfiles.constBegin(); it != facestreamProfiles.constEnd(); ++it) {
         const QString speakerId = it.key().trimmed();
         if (speakerId.isEmpty()) {
             continue;
@@ -472,23 +493,24 @@ bool TranscriptEngine::loadTranscriptJson(const QString &path,
             return false;
         }
         QJsonObject root = transcriptDoc.object();
-        mergeBoxstreamSpeakerProfiles(path, &root);
+        mergeFacestreamSpeakerProfiles(path, &root);
         *docOut = QJsonDocument(root);
         return true;
     }
 
-bool TranscriptEngine::loadBoxstreamArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
+bool TranscriptEngine::loadFacestreamArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
     {
         if (!rootOut) {
             return false;
         }
-        QJsonDocument boxstreamDoc;
-        if (loadBoxstreamDocFromFile(boxstreamPathForTranscriptPath(transcriptPath), &boxstreamDoc) &&
-            boxstreamDoc.isObject()) {
-            *rootOut = boxstreamDoc.object();
+        QJsonDocument facestreamDoc;
+        if ((loadFacestreamDocFromFile(facestreamPathForTranscriptPath(transcriptPath), &facestreamDoc) ||
+             loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facestreamDoc)) &&
+            facestreamDoc.isObject()) {
+            *rootOut = facestreamDoc.object();
             return true;
         }
-        QFile legacyFile(legacyJsonBoxstreamPathForTranscriptPath(transcriptPath));
+        QFile legacyFile(legacyJsonFacestreamPathForTranscriptPath(transcriptPath));
         if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
             return false;
         }
@@ -501,9 +523,62 @@ bool TranscriptEngine::loadBoxstreamArtifact(const QString &transcriptPath, QJso
         return true;
     }
 
-bool TranscriptEngine::saveBoxstreamArtifact(const QString &transcriptPath, const QJsonObject &root) const
+QString TranscriptEngine::facestreamArtifactPath(const QString &transcriptPath) const
     {
-        return saveBoxstreamDocToFile(boxstreamPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+        return facestreamPathForTranscriptPath(transcriptPath);
+    }
+
+bool TranscriptEngine::saveFacestreamArtifact(const QString &transcriptPath, const QJsonObject &root) const
+    {
+        return saveFacestreamDocToFile(facestreamPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+    }
+
+QString TranscriptEngine::facestreamProcessedArtifactPath(const QString &transcriptPath) const
+    {
+        return facestreamProcessedPathForTranscriptPath(transcriptPath);
+    }
+
+bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
+    {
+        if (!rootOut) {
+            return false;
+        }
+        QJsonDocument processedDoc;
+        if (loadFacestreamDocFromFile(facestreamProcessedPathForTranscriptPath(transcriptPath), &processedDoc) &&
+            processedDoc.isObject()) {
+            *rootOut = processedDoc.object();
+            return true;
+        }
+        return false;
+    }
+
+bool TranscriptEngine::saveFacestreamProcessedArtifact(const QString &transcriptPath, const QJsonObject &root) const
+    {
+        return saveFacestreamDocToFile(facestreamProcessedPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+    }
+
+QString TranscriptEngine::identityArtifactPath(const QString &transcriptPath) const
+    {
+        return identityPathForTranscriptPath(transcriptPath);
+    }
+
+bool TranscriptEngine::loadIdentityArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
+    {
+        if (!rootOut) {
+            return false;
+        }
+        QJsonDocument identityDoc;
+        if (loadFacestreamDocFromFile(identityPathForTranscriptPath(transcriptPath), &identityDoc) &&
+            identityDoc.isObject()) {
+            *rootOut = identityDoc.object();
+            return true;
+        }
+        return false;
+    }
+
+bool TranscriptEngine::saveIdentityArtifact(const QString &transcriptPath, const QJsonObject &root) const
+    {
+        return saveFacestreamDocToFile(identityPathForTranscriptPath(transcriptPath), QJsonDocument(root));
     }
 
 bool TranscriptEngine::saveTranscriptJson(const QString &path, const QJsonDocument &doc) const
@@ -513,26 +588,26 @@ bool TranscriptEngine::saveTranscriptJson(const QString &path, const QJsonDocume
         }
         QJsonObject root = doc.object();
         QJsonObject transcriptProfiles = root.value(QStringLiteral("speaker_profiles")).toObject();
-        QJsonObject boxstreamProfiles;
+        QJsonObject facestreamProfiles;
         for (auto it = transcriptProfiles.begin(); it != transcriptProfiles.end(); ++it) {
             QJsonObject profileObj = it.value().toObject();
             const QJsonObject framingObj = profileObj.value(QStringLiteral("framing")).toObject();
             if (!framingObj.isEmpty()) {
                 QJsonObject outProfile;
                 outProfile[QStringLiteral("framing")] = framingObj;
-                boxstreamProfiles[it.key()] = outProfile;
+                facestreamProfiles[it.key()] = outProfile;
                 profileObj.remove(QStringLiteral("framing"));
                 it.value() = profileObj;
             }
         }
         root[QStringLiteral("speaker_profiles")] = transcriptProfiles;
 
-        if (!boxstreamProfiles.isEmpty()) {
-            QJsonObject boxstreamRoot;
-            loadBoxstreamArtifact(path, &boxstreamRoot);
-            boxstreamRoot[QStringLiteral("schema")] = QStringLiteral("jcut_boxstream_v1");
-            boxstreamRoot[QStringLiteral("speaker_profiles")] = boxstreamProfiles;
-            if (!saveBoxstreamArtifact(path, boxstreamRoot)) {
+        if (!facestreamProfiles.isEmpty()) {
+            QJsonObject facestreamRoot;
+            loadFacestreamArtifact(path, &facestreamRoot);
+            facestreamRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facestream_v1");
+            facestreamRoot[QStringLiteral("speaker_profiles")] = facestreamProfiles;
+            if (!saveFacestreamArtifact(path, facestreamRoot)) {
                 return false;
             }
         }
@@ -621,6 +696,91 @@ void TranscriptEngine::appendMergedExportFrame(QVector<ExportRangeSegment> &rang
         ranges.last().endFrame = qMax(ranges.last().endFrame, frame);
     }
 
+bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
+                                                  int transcriptPrependMs,
+                                                  int transcriptPostpendMs,
+                                                  QVector<ExportRangeSegment>* rangesOut) const
+{
+    if (!rangesOut || transcriptPath.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const QFileInfo transcriptInfo(transcriptPath);
+    if (!transcriptInfo.exists() || !transcriptInfo.isFile()) {
+        return false;
+    }
+
+    const qint64 modifiedMs = transcriptInfo.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = transcriptInfo.size();
+    auto cacheIt = m_transcriptSourceWordRangesCache.constFind(transcriptPath);
+    if (cacheIt != m_transcriptSourceWordRangesCache.constEnd() &&
+        cacheIt->valid &&
+        cacheIt->modifiedMs == modifiedMs &&
+        cacheIt->fileSize == fileSize &&
+        cacheIt->prependMs == transcriptPrependMs &&
+        cacheIt->postpendMs == transcriptPostpendMs) {
+        *rangesOut = cacheIt->sourceWordRanges;
+        return true;
+    }
+
+    QFile transcriptFile(transcriptPath);
+    if (!transcriptFile.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
+        return false;
+    }
+
+    QVector<ExportRangeSegment> sourceWordRanges;
+    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segmentValue : segments) {
+        const QJsonArray words = segmentValue.toObject().value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            if (transcriptTokenText(wordObj).trimmed().isEmpty()) {
+                continue;
+            }
+
+            double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
+            if (startSeconds < 0.0 || endSeconds < startSeconds) {
+                continue;
+            }
+
+            const double prependSeconds = transcriptPrependMs / 1000.0;
+            const double postpendSeconds = transcriptPostpendMs / 1000.0;
+            startSeconds = qMax(0.0, startSeconds - prependSeconds);
+            const double adjustedEndSeconds = qMax(startSeconds, endSeconds + postpendSeconds);
+
+            const int64_t startFrame =
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+            const int64_t endFrame =
+                qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(adjustedEndSeconds * kTimelineFps)) - 1);
+            sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
+        }
+    }
+
+    sourceWordRanges = mergeRanges(sourceWordRanges);
+
+    TranscriptSourceWordRangeCacheEntry entry;
+    entry.modifiedMs = modifiedMs;
+    entry.fileSize = fileSize;
+    entry.prependMs = transcriptPrependMs;
+    entry.postpendMs = transcriptPostpendMs;
+    entry.sourceWordRanges = sourceWordRanges;
+    entry.valid = true;
+    m_transcriptSourceWordRangesCache.insert(transcriptPath, entry);
+
+    *rangesOut = sourceWordRanges;
+    return true;
+}
+
 QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const QVector<ExportRangeSegment> &baseRanges,
                                                            const QVector<TimelineClip> &clips,
                                                            const QVector<RenderSyncMarker> &markers,
@@ -694,8 +854,11 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
                 continue;
             }
 
-            QJsonDocument transcriptDoc;
-            if (!loadTranscriptJson(transcriptPathForClip(clip), &transcriptDoc))
+            QVector<ExportRangeSegment> mergedSourceWordRanges;
+            if (!transcriptSourceWordRanges(transcriptPathForClip(clip),
+                                            transcriptPrependMs,
+                                            transcriptPostpendMs,
+                                            &mergedSourceWordRanges))
             {
                 continue;
             }
@@ -705,85 +868,69 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRanges(const Q
                 clip.startFrame + clip.durationFrames - 1,
             });
 
-            // Build source word ranges from transcript
-            QVector<ExportRangeSegment> sourceWordRanges;
-            const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
-            for (const QJsonValue &segmentValue : segments)
-            {
-                const QJsonArray words = segmentValue.toObject().value(QStringLiteral("words")).toArray();
-                for (const QJsonValue &wordValue : words)
-                {
-                    const QJsonObject wordObj = wordValue.toObject();
-                    if (wordObj.value(QStringLiteral("skipped")).toBool(false))
-                    {
-                        continue;
-                    }
-                    if (wordObj.value(QStringLiteral("word")).toString().trimmed().isEmpty())
-                    {
-                        continue;
-                    }
-
-                    double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-                    const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
-                    if (startSeconds < 0.0 || endSeconds < startSeconds)
-                    {
-                        continue;
-                    }
-
-                    const double prependSeconds = transcriptPrependMs / 1000.0;
-                    const double postpendSeconds = transcriptPostpendMs / 1000.0;
-                    startSeconds = qMax(0.0, startSeconds - prependSeconds);
-                    const double adjustedEndSeconds = qMax(startSeconds, endSeconds + postpendSeconds);
-
-                    const int64_t startFrame =
-                        qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
-                    const int64_t endFrame =
-                        qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(adjustedEndSeconds * kTimelineFps)) - 1);
-                    sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
-                }
-            }
-
-            if (sourceWordRanges.isEmpty())
+            if (mergedSourceWordRanges.isEmpty())
             {
                 continue;
             }
 
-            // Sort and merge overlapping word ranges at source level
-            const QVector<ExportRangeSegment> mergedSourceWordRanges = mergeRanges(sourceWordRanges);
-
             QVector<ExportRangeSegment> clipTimelineRanges;
 
-            for (const ExportRangeSegment &baseRange : resolvedBaseRanges)
+            if (markers.isEmpty())
             {
-                const int64_t clipStart = qMax<int64_t>(clip.startFrame, baseRange.startFrame);
-                const int64_t clipEnd =
-                    qMin<int64_t>(clip.startFrame + clip.durationFrames - 1, baseRange.endFrame);
-                if (clipEnd < clipStart)
+                for (const ExportRangeSegment& wordRange : std::as_const(mergedSourceWordRanges))
                 {
-                    continue;
-                }
+                    const int64_t localStart = qMax<int64_t>(0, wordRange.startFrame - clip.sourceInFrame);
+                    const int64_t localEnd = qMin<int64_t>(
+                        clip.durationFrames - 1, wordRange.endFrame - clip.sourceInFrame);
+                    if (localEnd < localStart) {
+                        continue;
+                    }
 
-                for (int64_t timelineFrame = clipStart; timelineFrame <= clipEnd; ++timelineFrame)
+                    const int64_t wordTimelineStart = clip.startFrame + localStart;
+                    const int64_t wordTimelineEnd = clip.startFrame + localEnd;
+                    for (const ExportRangeSegment& baseRange : resolvedBaseRanges)
+                    {
+                        const int64_t start = qMax<int64_t>(wordTimelineStart, baseRange.startFrame);
+                        const int64_t end = qMin<int64_t>(wordTimelineEnd, baseRange.endFrame);
+                        if (end >= start) {
+                            clipTimelineRanges.push_back(ExportRangeSegment{start, end});
+                        }
+                    }
+                }
+                clipTimelineRanges = mergeRanges(clipTimelineRanges);
+            }
+            else
+            {
+                for (const ExportRangeSegment &baseRange : resolvedBaseRanges)
                 {
-                    const int64_t localTimelineFrame = timelineFrame - clip.startFrame;
-                    if (localTimelineFrame < 0 || localTimelineFrame >= clip.durationFrames)
+                    const int64_t clipStart = qMax<int64_t>(clip.startFrame, baseRange.startFrame);
+                    const int64_t clipEnd =
+                        qMin<int64_t>(clip.startFrame + clip.durationFrames - 1, baseRange.endFrame);
+                    if (clipEnd < clipStart)
                     {
                         continue;
                     }
-                    const int64_t adjustedLocalFrame = adjustedLocalFrameForClip(clip, localTimelineFrame, markers);
-                    const int64_t sourceFrame = clip.sourceInFrame + adjustedLocalFrame;
-                    bool inWord = false;
-                    for (const ExportRangeSegment &wordRange : std::as_const(mergedSourceWordRanges))
+
+                    int wordRangeIndex = 0;
+                    for (int64_t timelineFrame = clipStart; timelineFrame <= clipEnd; ++timelineFrame)
                     {
-                        if (sourceFrame >= wordRange.startFrame && sourceFrame <= wordRange.endFrame)
+                        const int64_t localTimelineFrame = timelineFrame - clip.startFrame;
+                        if (localTimelineFrame < 0 || localTimelineFrame >= clip.durationFrames)
                         {
-                            inWord = true;
-                            break;
+                            continue;
                         }
-                    }
-                    if (inWord)
-                    {
-                        appendMergedExportFrame(clipTimelineRanges, timelineFrame);
+                        const int64_t adjustedLocalFrame = adjustedLocalFrameForClip(clip, localTimelineFrame, markers);
+                        const int64_t sourceFrame = clip.sourceInFrame + adjustedLocalFrame;
+                        while (wordRangeIndex < mergedSourceWordRanges.size() &&
+                               mergedSourceWordRanges.at(wordRangeIndex).endFrame < sourceFrame) {
+                            ++wordRangeIndex;
+                        }
+                        if (wordRangeIndex < mergedSourceWordRanges.size() &&
+                            sourceFrame >= mergedSourceWordRanges.at(wordRangeIndex).startFrame &&
+                            sourceFrame <= mergedSourceWordRanges.at(wordRangeIndex).endFrame)
+                        {
+                            appendMergedExportFrame(clipTimelineRanges, timelineFrame);
+                        }
                     }
                 }
             }
@@ -969,8 +1116,8 @@ void TranscriptEngine::invalidateCache()
     m_transcriptWordRangesMergedCache.clear();
     m_transcriptWordRangesDiscreteCacheSignature.clear();
     m_transcriptWordRangesDiscreteCache.clear();
-    QMutexLocker locker(&g_boxstreamDocCacheMutex);
-    g_boxstreamDocCache.clear();
+    QMutexLocker locker(&g_facestreamDocCacheMutex);
+    g_facestreamDocCache.clear();
 }
 
 } // namespace editor

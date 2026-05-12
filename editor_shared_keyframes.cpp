@@ -12,6 +12,8 @@
 #include <cmath>
 
 namespace {
+constexpr qreal kGradingEpsilon = 0.000001;
+
 QRect fitRectForSourceInOutput(const QSize& source, const QSize& output) {
     const QSize safeOutput = output.isValid() ? output : QSize(1080, 1920);
     if (!source.isValid()) {
@@ -46,6 +48,94 @@ QSize sourceSizeForClipCached(const TimelineClip& clip, const QSize& outputSize)
         cacheByPath[path] = resolved;
     }
     return resolved;
+}
+
+bool nearlyEqual(qreal a, qreal b) {
+    return std::abs(a - b) <= kGradingEpsilon;
+}
+
+QVector<QPointF> interpolatedGradingCurvePoints(const QVector<QPointF>& previous,
+                                                const QVector<QPointF>& next,
+                                                qreal t) {
+    const QVector<QPointF> previousPoints = sanitizeGradingCurvePoints(previous);
+    const QVector<QPointF> nextPoints = sanitizeGradingCurvePoints(next);
+    if (previousPoints.size() != nextPoints.size()) {
+        return previousPoints;
+    }
+
+    QVector<QPointF> blended;
+    blended.reserve(previousPoints.size());
+    for (int i = 0; i < previousPoints.size(); ++i) {
+        if (!nearlyEqual(previousPoints.at(i).x(), nextPoints.at(i).x())) {
+            return previousPoints;
+        }
+        blended.push_back(QPointF(previousPoints.at(i).x(),
+                                  previousPoints.at(i).y() +
+                                      ((nextPoints.at(i).y() - previousPoints.at(i).y()) * t)));
+    }
+    return sanitizeGradingCurvePoints(blended);
+}
+
+bool gradingCurvePointsMatch(const QVector<QPointF>& a, const QVector<QPointF>& b) {
+    const QVector<QPointF> pointsA = sanitizeGradingCurvePoints(a);
+    const QVector<QPointF> pointsB = sanitizeGradingCurvePoints(b);
+    if (pointsA.size() != pointsB.size()) {
+        return false;
+    }
+    for (int i = 0; i < pointsA.size(); ++i) {
+        if (!nearlyEqual(pointsA.at(i).x(), pointsB.at(i).x()) ||
+            !nearlyEqual(pointsA.at(i).y(), pointsB.at(i).y())) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TimelineClip::GradingKeyframe interpolatedGradingKeyframe(const TimelineClip::GradingKeyframe& previous,
+                                                          const TimelineClip::GradingKeyframe& next,
+                                                          qreal t) {
+    TimelineClip::GradingKeyframe out;
+    out.brightness = previous.brightness + ((next.brightness - previous.brightness) * t);
+    out.contrast = previous.contrast + ((next.contrast - previous.contrast) * t);
+    out.saturation = previous.saturation + ((next.saturation - previous.saturation) * t);
+    out.shadowsR = previous.shadowsR + ((next.shadowsR - previous.shadowsR) * t);
+    out.shadowsG = previous.shadowsG + ((next.shadowsG - previous.shadowsG) * t);
+    out.shadowsB = previous.shadowsB + ((next.shadowsB - previous.shadowsB) * t);
+    out.midtonesR = previous.midtonesR + ((next.midtonesR - previous.midtonesR) * t);
+    out.midtonesG = previous.midtonesG + ((next.midtonesG - previous.midtonesG) * t);
+    out.midtonesB = previous.midtonesB + ((next.midtonesB - previous.midtonesB) * t);
+    out.highlightsR = previous.highlightsR + ((next.highlightsR - previous.highlightsR) * t);
+    out.highlightsG = previous.highlightsG + ((next.highlightsG - previous.highlightsG) * t);
+    out.highlightsB = previous.highlightsB + ((next.highlightsB - previous.highlightsB) * t);
+    out.curvePointsR = interpolatedGradingCurvePoints(previous.curvePointsR, next.curvePointsR, t);
+    out.curvePointsG = interpolatedGradingCurvePoints(previous.curvePointsG, next.curvePointsG, t);
+    out.curvePointsB = interpolatedGradingCurvePoints(previous.curvePointsB, next.curvePointsB, t);
+    out.curvePointsLuma = interpolatedGradingCurvePoints(previous.curvePointsLuma, next.curvePointsLuma, t);
+    out.curveThreePointLock = previous.curveThreePointLock;
+    out.curveSmoothingEnabled = previous.curveSmoothingEnabled;
+    return out;
+}
+
+bool gradingValuesMatch(const TimelineClip::GradingKeyframe& a,
+                        const TimelineClip::GradingKeyframe& b) {
+    return nearlyEqual(a.brightness, b.brightness) &&
+           nearlyEqual(a.contrast, b.contrast) &&
+           nearlyEqual(a.saturation, b.saturation) &&
+           nearlyEqual(a.shadowsR, b.shadowsR) &&
+           nearlyEqual(a.shadowsG, b.shadowsG) &&
+           nearlyEqual(a.shadowsB, b.shadowsB) &&
+           nearlyEqual(a.midtonesR, b.midtonesR) &&
+           nearlyEqual(a.midtonesG, b.midtonesG) &&
+           nearlyEqual(a.midtonesB, b.midtonesB) &&
+           nearlyEqual(a.highlightsR, b.highlightsR) &&
+           nearlyEqual(a.highlightsG, b.highlightsG) &&
+           nearlyEqual(a.highlightsB, b.highlightsB) &&
+           gradingCurvePointsMatch(a.curvePointsR, b.curvePointsR) &&
+           gradingCurvePointsMatch(a.curvePointsG, b.curvePointsG) &&
+           gradingCurvePointsMatch(a.curvePointsB, b.curvePointsB) &&
+           gradingCurvePointsMatch(a.curvePointsLuma, b.curvePointsLuma) &&
+           a.curveThreePointLock == b.curveThreePointLock &&
+           a.curveSmoothingEnabled == b.curveSmoothingEnabled;
 }
 } // namespace
 
@@ -188,47 +278,6 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
             opacityFrames.insert(opacityKeyframe.frame);
         }
 
-        auto nearlyEqual = [](qreal a, qreal b) {
-            return std::abs(a - b) <= 0.000001;
-        };
-
-        auto gradingValuesMatch = [&nearlyEqual](const TimelineClip::GradingKeyframe& a,
-                                                 const TimelineClip::GradingKeyframe& b) {
-            return nearlyEqual(a.brightness, b.brightness) &&
-                   nearlyEqual(a.contrast, b.contrast) &&
-                   nearlyEqual(a.saturation, b.saturation) &&
-                   nearlyEqual(a.shadowsR, b.shadowsR) &&
-                   nearlyEqual(a.shadowsG, b.shadowsG) &&
-                   nearlyEqual(a.shadowsB, b.shadowsB) &&
-                   nearlyEqual(a.midtonesR, b.midtonesR) &&
-                   nearlyEqual(a.midtonesG, b.midtonesG) &&
-                   nearlyEqual(a.midtonesB, b.midtonesB) &&
-                   nearlyEqual(a.highlightsR, b.highlightsR) &&
-                   nearlyEqual(a.highlightsG, b.highlightsG) &&
-                   nearlyEqual(a.highlightsB, b.highlightsB) &&
-                   a.curveThreePointLock == b.curveThreePointLock &&
-                   a.curveSmoothingEnabled == b.curveSmoothingEnabled;
-        };
-
-        auto blended = [](const TimelineClip::GradingKeyframe& previous,
-                          const TimelineClip::GradingKeyframe& next,
-                          qreal t) {
-            TimelineClip::GradingKeyframe out;
-            out.brightness = previous.brightness + ((next.brightness - previous.brightness) * t);
-            out.contrast = previous.contrast + ((next.contrast - previous.contrast) * t);
-            out.saturation = previous.saturation + ((next.saturation - previous.saturation) * t);
-            out.shadowsR = previous.shadowsR + ((next.shadowsR - previous.shadowsR) * t);
-            out.shadowsG = previous.shadowsG + ((next.shadowsG - previous.shadowsG) * t);
-            out.shadowsB = previous.shadowsB + ((next.shadowsB - previous.shadowsB) * t);
-            out.midtonesR = previous.midtonesR + ((next.midtonesR - previous.midtonesR) * t);
-            out.midtonesG = previous.midtonesG + ((next.midtonesG - previous.midtonesG) * t);
-            out.midtonesB = previous.midtonesB + ((next.midtonesB - previous.midtonesB) * t);
-            out.highlightsR = previous.highlightsR + ((next.highlightsR - previous.highlightsR) * t);
-            out.highlightsG = previous.highlightsG + ((next.highlightsG - previous.highlightsG) * t);
-            out.highlightsB = previous.highlightsB + ((next.highlightsB - previous.highlightsB) * t);
-            return out;
-        };
-
         for (int i = normalized.size() - 2; i >= 1; --i) {
             const TimelineClip::GradingKeyframe& current = normalized[i];
             if (!opacityFrames.contains(current.frame) || !current.linearInterpolation) {
@@ -244,7 +293,7 @@ void normalizeClipGradingKeyframes(TimelineClip& clip) {
 
             const qreal t = static_cast<qreal>(current.frame - previous.frame) /
                             static_cast<qreal>(span);
-            const TimelineClip::GradingKeyframe expected = blended(previous, next, t);
+            const TimelineClip::GradingKeyframe expected = interpolatedGradingKeyframe(previous, next, t);
             if (gradingValuesMatch(current, expected)) {
                 normalized.removeAt(i);
             }
@@ -639,30 +688,14 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtFrame(const TimelineClip& cli
         const TimelineClip::GradingKeyframe& current = clip.gradingKeyframes[i];
         if (localFrame < current.frame) {
             if (!current.linearInterpolation || current.frame <= previous.frame) {
-                return previous;
+                TimelineClip::GradingKeyframe resolved = previous;
+                resolved.opacity = evaluateClipOpacityAtFrame(clip, timelineFrame);
+                return resolved;
             }
             const qreal t = static_cast<qreal>(localFrame - previous.frame) /
                             static_cast<qreal>(current.frame - previous.frame);
+            state = interpolatedGradingKeyframe(previous, current, t);
             state.frame = localFrame;
-            state.brightness = previous.brightness + ((current.brightness - previous.brightness) * t);
-            state.contrast = previous.contrast + ((current.contrast - previous.contrast) * t);
-            state.saturation = previous.saturation + ((current.saturation - previous.saturation) * t);
-            // Shadows/Midtones/Highlights interpolation
-            state.shadowsR = previous.shadowsR + ((current.shadowsR - previous.shadowsR) * t);
-            state.shadowsG = previous.shadowsG + ((current.shadowsG - previous.shadowsG) * t);
-            state.shadowsB = previous.shadowsB + ((current.shadowsB - previous.shadowsB) * t);
-            state.midtonesR = previous.midtonesR + ((current.midtonesR - previous.midtonesR) * t);
-            state.midtonesG = previous.midtonesG + ((current.midtonesG - previous.midtonesG) * t);
-            state.midtonesB = previous.midtonesB + ((current.midtonesB - previous.midtonesB) * t);
-            state.highlightsR = previous.highlightsR + ((current.highlightsR - previous.highlightsR) * t);
-            state.highlightsG = previous.highlightsG + ((current.highlightsG - previous.highlightsG) * t);
-            state.highlightsB = previous.highlightsB + ((current.highlightsB - previous.highlightsB) * t);
-            state.curvePointsR = previous.curvePointsR;
-            state.curvePointsG = previous.curvePointsG;
-            state.curvePointsB = previous.curvePointsB;
-            state.curvePointsLuma = previous.curvePointsLuma;
-            state.curveThreePointLock = previous.curveThreePointLock;
-            state.curveSmoothingEnabled = previous.curveSmoothingEnabled;
             state.linearInterpolation = current.linearInterpolation;
             state.opacity = evaluateClipOpacityAtFrame(clip, timelineFrame);
             return state;
@@ -708,30 +741,14 @@ TimelineClip::GradingKeyframe evaluateClipGradingAtPosition(const TimelineClip& 
         const TimelineClip::GradingKeyframe& current = clip.gradingKeyframes[i];
         if (localFrame < static_cast<qreal>(current.frame)) {
             if (!current.linearInterpolation || current.frame <= previous.frame) {
-                return previous;
+                TimelineClip::GradingKeyframe resolved = previous;
+                resolved.opacity = evaluateClipOpacityAtPosition(clip, timelineFramePosition);
+                return resolved;
             }
             const qreal t = (localFrame - static_cast<qreal>(previous.frame)) /
                             static_cast<qreal>(current.frame - previous.frame);
+            state = interpolatedGradingKeyframe(previous, current, t);
             state.frame = qRound64(localFrame);
-            state.brightness = previous.brightness + ((current.brightness - previous.brightness) * t);
-            state.contrast = previous.contrast + ((current.contrast - previous.contrast) * t);
-            state.saturation = previous.saturation + ((current.saturation - previous.saturation) * t);
-            // Shadows/Midtones/Highlights interpolation
-            state.shadowsR = previous.shadowsR + ((current.shadowsR - previous.shadowsR) * t);
-            state.shadowsG = previous.shadowsG + ((current.shadowsG - previous.shadowsG) * t);
-            state.shadowsB = previous.shadowsB + ((current.shadowsB - previous.shadowsB) * t);
-            state.midtonesR = previous.midtonesR + ((current.midtonesR - previous.midtonesR) * t);
-            state.midtonesG = previous.midtonesG + ((current.midtonesG - previous.midtonesG) * t);
-            state.midtonesB = previous.midtonesB + ((current.midtonesB - previous.midtonesB) * t);
-            state.highlightsR = previous.highlightsR + ((current.highlightsR - previous.highlightsR) * t);
-            state.highlightsG = previous.highlightsG + ((current.highlightsG - previous.highlightsG) * t);
-            state.highlightsB = previous.highlightsB + ((current.highlightsB - previous.highlightsB) * t);
-            state.curvePointsR = previous.curvePointsR;
-            state.curvePointsG = previous.curvePointsG;
-            state.curvePointsB = previous.curvePointsB;
-            state.curvePointsLuma = previous.curvePointsLuma;
-            state.curveThreePointLock = previous.curveThreePointLock;
-            state.curveSmoothingEnabled = previous.curveSmoothingEnabled;
             state.linearInterpolation = current.linearInterpolation;
             state.opacity = evaluateClipOpacityAtPosition(clip, timelineFramePosition);
             return state;
