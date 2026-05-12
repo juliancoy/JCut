@@ -25,6 +25,7 @@
 #include <QTabWidget>
 #include <QTcpSocket>
 #include <QUrlQuery>
+#include <QWindow>
 
 #include <algorithm>
 #include <limits>
@@ -762,6 +763,76 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             {QStringLiteral("count"), windows.size()},
             {QStringLiteral("windows"), windows}
         });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/window")) {
+        QString error;
+        const QJsonObject body = parseJsonObject(request.body, &error);
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+        const QString op = body.value(QStringLiteral("op"))
+                               .toString(QStringLiteral("maximize"))
+                               .trimmed()
+                               .toLower();
+
+        QJsonObject response;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this, op]() {
+                if (!m_window) {
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("op"), op},
+                        {QStringLiteral("error"), QStringLiteral("window unavailable")}
+                    };
+                }
+
+                const QJsonObject before = topLevelWindowSnapshot(m_window);
+                bool ok = true;
+                QString operationError;
+                if (op == QStringLiteral("maximize")) {
+                    QScreen* targetScreen = m_window->screen();
+                    if (!targetScreen && m_window->windowHandle()) {
+                        targetScreen = m_window->windowHandle()->screen();
+                    }
+                    if (!targetScreen) {
+                        targetScreen = QGuiApplication::primaryScreen();
+                    }
+                    if (targetScreen) {
+                        m_window->showNormal();
+                        m_window->setGeometry(targetScreen->availableGeometry());
+                    }
+                    m_window->raise();
+                    m_window->activateWindow();
+                } else if (op == QStringLiteral("normal") || op == QStringLiteral("restore")) {
+                    m_window->showNormal();
+                } else if (op == QStringLiteral("minimize")) {
+                    m_window->showMinimized();
+                } else if (op == QStringLiteral("fullscreen") || op == QStringLiteral("full_screen")) {
+                    m_window->showFullScreen();
+                } else if (op == QStringLiteral("raise")) {
+                    m_window->raise();
+                    m_window->activateWindow();
+                } else {
+                    ok = false;
+                    operationError = QStringLiteral("unsupported window op: %1").arg(op);
+                }
+                QApplication::processEvents();
+                const QJsonObject after = topLevelWindowSnapshot(m_window);
+                return QJsonObject{
+                    {QStringLiteral("ok"), ok},
+                    {QStringLiteral("op"), op},
+                    {QStringLiteral("error"), operationError},
+                    {QStringLiteral("before"), before},
+                    {QStringLiteral("after"), after}
+                };
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for window operation"));
+            return true;
+        }
+
+        writeJson(socket, response.value(QStringLiteral("ok")).toBool() ? 200 : 400, response);
         return true;
     }
 

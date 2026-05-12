@@ -25,7 +25,6 @@ constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 
 constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at 30fps
 constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
 constexpr qint64 kNoVideoWarningThrottleMs = 15000;
-std::mutex g_h26xSoftwareDecodeMutex;
 
 #if defined(__SANITIZE_ADDRESS__)
 constexpr bool kAsanBuild = true;
@@ -136,7 +135,10 @@ bool DecoderContext::openInput() {
         return false;
     }
 
-    ret = avformat_find_stream_info(m_formatCtx, nullptr);
+    {
+        std::unique_lock<std::mutex> decodeLock(ffmpegDecodeMutex());
+        ret = avformat_find_stream_info(m_formatCtx, nullptr);
+    }
     if (ret < 0) {
         qWarning() << "Failed to find stream info:" << avErrToString(ret);
         return false;
@@ -437,6 +439,19 @@ bool DecoderContext::initCodec() {
 }
 
 bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
+    AVStream* stream = (m_formatCtx && m_videoStreamIndex >= 0 &&
+                        m_videoStreamIndex < static_cast<int>(m_formatCtx->nb_streams))
+                           ? m_formatCtx->streams[m_videoStreamIndex]
+                           : nullptr;
+    if (stream && stream->codecpar && stream->codecpar->codec_id == AV_CODEC_ID_AV1 &&
+        qEnvironmentVariableIntValue("JCUT_ALLOW_AV1_HARDWARE_DECODE") != 1) {
+        if (debugDecodeEnabled()) {
+            qDebug() << "Skipping AV1 hardware decode for" << m_path
+                     << "because this platform/build may advertise unsupported AV1 hwaccel";
+        }
+        return false;
+    }
+
     static const AVHWDeviceType kPreferredDevices[] = {
 #ifdef __APPLE__
         AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
@@ -510,6 +525,11 @@ bool DecoderContext::initHardwareAccel(const AVCodec* decoder) {
                     return true;
                 }
             }
+
+            // Runtime decode workers share a pre-created hardware-device pool.
+            // If the pool has no usable device for this type, stay on software
+            // instead of creating a private CUDA/VAAPI context behind its back.
+            continue;
         }
 
         // --- Fallback: create a new device context ---
@@ -649,7 +669,7 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
     // serialize avcodec_send_packet/receive_frame across contexts.
     // This avoids intermittent libavcodec null-call crashes seen during
     // concurrent software decode in playback/render/export.
-    std::unique_lock<std::mutex> h26xDecodeLock(g_h26xSoftwareDecodeMutex);
+    std::unique_lock<std::mutex> decodeLock(ffmpegDecodeMutex());
     if (!m_formatCtx || !m_codecCtx || m_videoStreamIndex < 0 ||
         m_videoStreamIndex >= static_cast<int>(m_formatCtx->nb_streams) ||
         !m_codecCtx->codec || !m_codecCtx->internal) {
@@ -810,7 +830,7 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
         }
     }
 
-    if (decodePreference == DecodePreference::HardwareZeroCopy) {
+    if (decodePreference == DecodePreference::HardwareZeroCopy && m_info.hardwareAccelerated) {
         decodeTrace(QStringLiteral("DecoderContext::convertToFrame.reject-materialized"),
                     QStringLiteral("file=%1 frame=%2 fmt=%3")
                         .arg(shortPath(m_path))

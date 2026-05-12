@@ -146,7 +146,7 @@ void drawSpeakerIcon(QPainter& painter, const QRect& rect, bool enabled, bool in
 
 TimelineWidget::TimelineWidget(QWidget* parent) : QWidget(parent) {
     setAcceptDrops(true);
-    setMinimumHeight(150);
+    setMinimumHeight(130);
     setMouseTracking(true);
     setAutoFillBackground(true);
 

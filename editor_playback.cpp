@@ -84,6 +84,20 @@ void EditorWindow::advanceFrame()
     const int64_t currentSample = m_absolutePlaybackSample;
     bool reachedEnd = false;
     const int64_t nextSample = nextPlaybackSample(currentSample, deltaSamples, ranges, &reachedEnd);
+    if (reachedEnd && m_playbackLoopEnabled) {
+        const int64_t loopStartFrame =
+            ranges.isEmpty() ? 0 : qMax<int64_t>(0, ranges.constFirst().startFrame);
+        const int64_t loopStartSample = frameToSamples(loopStartFrame);
+        m_timelineAdvanceCarrySamples = 0.0;
+        m_audioClockStallTicks = 0;
+        m_lastTimelineAdvanceTickMs = tickNowMs;
+        if (m_preview) {
+            m_preview->preparePlaybackAdvance(loopStartFrame);
+        }
+        setCurrentPlaybackSample(loopStartSample, true, true);
+        return;
+    }
+
     if (m_preview) {
         const int64_t nextFrame =
             qBound<int64_t>(0,
@@ -93,13 +107,7 @@ void EditorWindow::advanceFrame()
     }
     setCurrentPlaybackSample(nextSample, false, true);
     if (reachedEnd) {
-        if (m_playbackLoopEnabled) {
-            const int64_t loopStartFrame =
-                ranges.isEmpty() ? 0 : qMax<int64_t>(0, ranges.constFirst().startFrame);
-            setCurrentPlaybackSample(frameToSamples(loopStartFrame), false, true);
-        } else {
-            stopPlaybackWithReason(QStringLiteral("range_end"));
-        }
+        stopPlaybackWithReason(QStringLiteral("range_end"));
     }
 }
 

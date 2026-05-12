@@ -151,7 +151,7 @@ bool ControlServerWorker::handleUiBoundRouteGuard(QTcpSocket* socket, const Requ
          (path == QStringLiteral("/windows") ||
           path == QStringLiteral("/screenshot") || path == QStringLiteral("/menu"))) ||
         ((request.method == QStringLiteral("POST")) &&
-         (path == QStringLiteral("/menu") || path == QStringLiteral("/click-item") ||
+         (path == QStringLiteral("/window") || path == QStringLiteral("/menu") || path == QStringLiteral("/click-item") ||
           path == QStringLiteral("/click") || path == QStringLiteral("/profile/reset") ||
           path == QStringLiteral("/clips"))) ||
         ((request.method == QStringLiteral("GET") || request.method == QStringLiteral("POST")) &&

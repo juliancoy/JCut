@@ -8,6 +8,7 @@
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QDialog>
 #include <QDir>
 #include <QDrag>
@@ -324,6 +325,15 @@ void ExplorerPane::showPathContextMenu(const QString &absolutePath, const QPoint
     }
 
     QMenu menu(this);
+    const bool regularDirectory = info.isDir() && !isImageSequencePath(info.absoluteFilePath());
+    const QString folderPath = regularDirectory ? info.absoluteFilePath() : info.absolutePath();
+    QAction *openFolderAction = menu.addAction(
+        regularDirectory ? QStringLiteral("Open Folder") : QStringLiteral("Open Containing Folder"));
+    connect(openFolderAction, &QAction::triggered, this, [folderPath]()
+    {
+        QDesktopServices::openUrl(QUrl::fromLocalFile(folderPath));
+    });
+    menu.addSeparator();
     QAction *copyPathAction = menu.addAction(QStringLiteral("Copy Absolute Path"));
     connect(copyPathAction, &QAction::triggered, this, [path = info.absoluteFilePath()]()
     {

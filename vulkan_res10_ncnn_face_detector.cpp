@@ -14,6 +14,10 @@
 #include <cmath>
 #include <memory>
 
+#if !defined(JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE)
+#define JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE 0
+#endif
+
 namespace jcut::vulkan_detector {
 namespace {
 
@@ -100,8 +104,15 @@ bool VulkanRes10NcnnFaceDetector::initialize(const VulkanDeviceContext& context,
         return false;
     }
 
+#if JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE
     m_impl->vkdev = std::make_unique<ncnn::VulkanDevice>(
         deviceIndex, context.device, context.queue, context.queueFamilyIndex);
+#else
+    Q_UNUSED(deviceIndex);
+    setError(errorMessage,
+             QStringLiteral("ncnn build cannot wrap JCut's Vulkan device; Res10 zero-copy detector is unavailable."));
+    return false;
+#endif
     if (!m_impl->vkdev->is_valid()) {
         setError(errorMessage, QStringLiteral("failed to wrap JCut Vulkan device for ncnn Res10 inference"));
         m_impl->vkdev.reset();

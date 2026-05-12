@@ -38,6 +38,9 @@ public:
     QLabel *previewInfo() const { return m_previewInfo; }
     QToolButton *razorButton() const { return m_razorButton; }
 
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
 signals:
     void playClicked();
     void startClicked();
@@ -55,6 +58,7 @@ signals:
 
 private:
     void setupTransportControls();
+    void updateTransportDensity(int transportWidth = -1);
     PreviewSurface *m_preview = nullptr;
     TimelineContainer *m_timelineContainer = nullptr;
 

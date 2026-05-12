@@ -2,6 +2,7 @@
 
 #include "editor_shared.h"
 #include "ffmpeg_compat.h"
+#include "decoder_ffmpeg_utils.h"
 #include "preview_surface.h"
 
 #include <QByteArray>
@@ -841,7 +842,12 @@ private:
             return cache;
         }
 
-        if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
+        int streamInfoRet = 0;
+        {
+            std::unique_lock<std::mutex> decodeLock(editor::ffmpegDecodeMutex());
+            streamInfoRet = avformat_find_stream_info(formatCtx, nullptr);
+        }
+        if (streamInfoRet < 0) {
             avformat_close_input(&formatCtx);
             return cache;
         }
@@ -934,28 +940,31 @@ private:
             av_freep(&outData);
         };
 
-        while (!hitOutputLimit && av_read_frame(formatCtx, packet) >= 0) {
-            if (packet->stream_index != audioStreamIndex) {
+        {
+            std::unique_lock<std::mutex> decodeLock(editor::ffmpegDecodeMutex());
+            while (!hitOutputLimit && av_read_frame(formatCtx, packet) >= 0) {
+                if (packet->stream_index != audioStreamIndex) {
+                    av_packet_unref(packet);
+                    continue;
+                }
+                if (avcodec_send_packet(codecCtx, packet) >= 0) {
+                    while (avcodec_receive_frame(codecCtx, frame) >= 0) {
+                        appendConverted(frame);
+                        av_frame_unref(frame);
+                        if (hitOutputLimit) {
+                            break;
+                        }
+                    }
+                }
                 av_packet_unref(packet);
-                continue;
             }
-            if (avcodec_send_packet(codecCtx, packet) >= 0) {
+            if (!hitOutputLimit) {
+                reachedEof = true;
+                avcodec_send_packet(codecCtx, nullptr);
                 while (avcodec_receive_frame(codecCtx, frame) >= 0) {
                     appendConverted(frame);
                     av_frame_unref(frame);
-                    if (hitOutputLimit) {
-                        break;
-                    }
                 }
-            }
-            av_packet_unref(packet);
-        }
-        if (!hitOutputLimit) {
-            reachedEof = true;
-            avcodec_send_packet(codecCtx, nullptr);
-            while (avcodec_receive_frame(codecCtx, frame) >= 0) {
-                appendConverted(frame);
-                av_frame_unref(frame);
             }
         }
 

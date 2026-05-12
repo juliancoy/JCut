@@ -75,6 +75,30 @@ bool EditorWindow::handleOpacityKeyframeTableDelete(QObject *watched, QEvent *ev
 
 bool EditorWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    if (event->type() == QEvent::KeyPress) {
+        auto *keyEvent = static_cast<QKeyEvent *>(event);
+        const Qt::KeyboardModifiers modifiers = keyEvent->modifiers();
+        if ((modifiers & Qt::ControlModifier) &&
+            !(modifiers & Qt::AltModifier) &&
+            !(modifiers & Qt::MetaModifier)) {
+            bool belongsToEditor = false;
+            if (auto *widget = qobject_cast<QWidget *>(watched)) {
+                belongsToEditor = widget->window() == this;
+            }
+            if (belongsToEditor) {
+                const int key = keyEvent->key();
+                if (key == Qt::Key_Equal || key == Qt::Key_Plus) {
+                    adjustGlobalFontSize(+1);
+                    return true;
+                }
+                if (key == Qt::Key_Minus || key == Qt::Key_Underscore) {
+                    adjustGlobalFontSize(-1);
+                    return true;
+                }
+            }
+        }
+    }
+
     if (m_timecodeLabel && watched == m_timecodeLabel && event->type() == QEvent::MouseButtonRelease) {
         auto *mouseEvent = static_cast<QMouseEvent *>(event);
         if (mouseEvent->button() == Qt::LeftButton) {

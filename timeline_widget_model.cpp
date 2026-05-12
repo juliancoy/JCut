@@ -113,7 +113,7 @@ int TimelineWidget::trackDividerAt(const QPoint& pos) const {
 }
 
 void TimelineWidget::updateMinimumTimelineHeight() {
-    setMinimumHeight(150);
+    setMinimumHeight(130);
     m_verticalScrollOffset = qBound(0, m_verticalScrollOffset, maxVerticalScrollOffset());
 }
 

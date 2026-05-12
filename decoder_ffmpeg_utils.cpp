@@ -56,6 +56,12 @@ void installFfmpegLogFilter()
     }
 }
 
+std::mutex& ffmpegDecodeMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
 AVPixelFormat get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts) {
     const AVPixelFormat preferred =
         static_cast<AVPixelFormat>(reinterpret_cast<intptr_t>(ctx->opaque));
@@ -64,7 +70,7 @@ AVPixelFormat get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts) 
             return *p;
         }
     }
-    return pix_fmts[0];
+    return AV_PIX_FMT_NONE;
 }
 
 AVPixelFormat get_alpha_compatible_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts) {

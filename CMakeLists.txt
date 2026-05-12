@@ -141,6 +141,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/CPPMonetize/CMakeLists.txt")
 endif()
 
 set(JCUT_HAVE_NCNN 0)
+set(JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE 0)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ncnn/CMakeLists.txt")
     set(JCUT_NCNN_VERSION_PIN "20260512" CACHE STRING
         "Pinned vendored ncnn version to avoid date-based rebuild churn on CMake reconfigure.")
@@ -166,6 +167,10 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/ncnn/CMakeLists.txt")
             $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wno-unknown-pragmas>
             $<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang,AppleClang>:-Wno-unused-parameter>
         )
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/external/ncnn/src/gpu.h" _jcut_ncnn_gpu_h)
+        if(_jcut_ncnn_gpu_h MATCHES "VulkanDevice[ \t\r\n]*\\([ \t\r\n]*int[ \t\r\n]+device_index[ \t\r\n]*,[ \t\r\n]*VkDevice")
+            set(JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE 1)
+        endif()
     endif()
     set(CMAKE_AUTOMOC "${_saved_automoc}")
     set(CMAKE_AUTORCC "${_saved_autorcc}")
@@ -309,6 +314,7 @@ endif()
 target_compile_definitions(editor_core PUBLIC
     JCUT_HAVE_OPENCV=0
     JCUT_HAVE_OPENCV_CONTRIB=0
+    JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE=${JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE}
 )
 if(TARGET ncnn)
     target_link_libraries(editor_core PUBLIC ncnn)
@@ -517,6 +523,7 @@ target_compile_definitions(jcut_vulkan_facestream_offscreen PRIVATE
     JCUT_HAVE_OPENCV_CONTRIB=0
     JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
     JCUT_HAVE_OPENCV=0
+    JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE=${JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE}
 )
 set_target_properties(jcut_vulkan_facestream_offscreen PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"

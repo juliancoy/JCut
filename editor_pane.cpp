@@ -151,7 +151,7 @@ EditorPane::EditorPane(QWidget *parent)
     layout->addWidget(verticalSplitter, 1);
 
     auto *previewFrame = new QFrame;
-    previewFrame->setMinimumHeight(160);
+    previewFrame->setMinimumHeight(150);
     previewFrame->setFrameShape(QFrame::NoFrame);
     previewFrame->setStyleSheet(QStringLiteral(
         "QFrame { background: #05080c; border: 1px solid #202934; border-radius: 14px; }"));
@@ -206,12 +206,15 @@ EditorPane::EditorPane(QWidget *parent)
 
     // TimelineContainer with 2x2 grid layout
     m_timelineContainer = new TimelineContainer;
-    m_timelineContainer->setMinimumHeight(160);
+    m_timelineContainer->setMinimumHeight(200);
+    m_timelineContainer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::MinimumExpanding);
     
     // Create transport controls and add to TimelineContainer's transport area
     setupTransportControls();
     
     verticalSplitter->addWidget(m_timelineContainer);
+    verticalSplitter->setCollapsible(0, false);
+    verticalSplitter->setCollapsible(1, false);
     verticalSplitter->setStretchFactor(0, 3);
     verticalSplitter->setStretchFactor(1, 2);
     verticalSplitter->setSizes({540, 320});
@@ -225,6 +228,7 @@ void EditorPane::setupTransportControls()
         qWarning() << "Transport widget not found in TimelineContainer";
         return;
     }
+    transportWidget->installEventFilter(this);
     transportWidget->setMinimumWidth(0);
     transportWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
     
@@ -294,6 +298,7 @@ void EditorPane::setupTransportControls()
     m_seekSlider = new QSlider(Qt::Horizontal);
     m_seekSlider->setObjectName(QStringLiteral("transport.seek"));
     m_seekSlider->setRange(0, 300);
+    m_seekSlider->setMinimumWidth(96);
 
     m_timecodeLabel = new QLabel;
     m_timecodeLabel->setObjectName(QStringLiteral("transport.timecode"));
@@ -433,6 +438,51 @@ void EditorPane::setupTransportControls()
         }
     }
 
+    updateTransportDensity(transportWidget->width());
+}
+
+bool EditorPane::eventFilter(QObject *watched, QEvent *event)
+{
+    if (event->type() == QEvent::Resize &&
+        watched &&
+        watched->objectName() == QStringLiteral("timeline.transport")) {
+        auto *transportWidget = qobject_cast<QWidget*>(watched);
+        updateTransportDensity(transportWidget ? transportWidget->width() : -1);
+    }
+    return QWidget::eventFilter(watched, event);
+}
+
+void EditorPane::updateTransportDensity(int transportWidth)
+{
+    if (transportWidth < 0 && m_timelineContainer) {
+        if (auto *transportWidget =
+                m_timelineContainer->findChild<QWidget*>(QStringLiteral("timeline.transport"))) {
+            transportWidth = transportWidget->width();
+        }
+    }
+    if (transportWidth <= 0) {
+        return;
+    }
+
+    const bool showAudioStatus = transportWidth >= 760;
+    const bool showAudioTools = transportWidth >= 700;
+    const bool showAudioVolume = transportWidth >= 620;
+    const bool showPreviewMode = transportWidth >= 560;
+    const bool showPlaybackSpeed = transportWidth >= 500;
+    const bool showLoop = transportWidth >= 460;
+    const bool showMute = transportWidth >= 360;
+
+    if (m_audioNowPlayingLabel) m_audioNowPlayingLabel->setVisible(showAudioStatus);
+    if (m_audioToolsButton) m_audioToolsButton->setVisible(showAudioTools);
+    if (m_audioVolumeSlider) m_audioVolumeSlider->setVisible(showAudioVolume);
+    if (m_previewModeCombo) m_previewModeCombo->setVisible(showPreviewMode);
+    if (m_playbackSpeedCombo) m_playbackSpeedCombo->setVisible(showPlaybackSpeed);
+    if (m_loopButton) m_loopButton->setVisible(showLoop);
+    if (m_audioMuteButton) m_audioMuteButton->setVisible(showMute);
+
+    if (m_seekSlider) {
+        m_seekSlider->setMinimumWidth(transportWidth >= 420 ? 120 : 96);
+    }
 }
 
 // Accessor to get the TimelineWidget from the container

@@ -608,8 +608,7 @@ void AsyncDecoder::runLane(LaneState* lane) {
                 // Pass the shared device map so the context borrows a ref
                 // rather than calling av_hwdevice_ctx_create().
                 QMutexLocker hwLock(&m_sharedHwMutex);
-                const QHash<int, AVBufferRef*>* sharedDevices =
-                    m_sharedHwDevices.isEmpty() ? nullptr : &m_sharedHwDevices;
+                const QHash<int, AVBufferRef*>* sharedDevices = &m_sharedHwDevices;
                 hwLock.unlock();
 
                 state->context = std::make_unique<DecoderContext>(request.filePath, sharedDevices);

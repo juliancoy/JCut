@@ -103,7 +103,7 @@ resolve_ffmpeg_profile() {
     if [[ -e /proc/driver/nvidia/version || -e /dev/nvidia0 ]]; then
         FFMPEG_PROFILE="nvidia"
     else
-        FFMPEG_PROFILE="safe"
+        FFMPEG_PROFILE="safe-noasm"
     fi
 }
 
@@ -226,7 +226,7 @@ ensure_ffmpeg_installed() {
         --disable-debug
     )
 
-    if [[ "${FFMPEG_PROFILE}" == "safe" ]]; then
+    if [[ "${FFMPEG_PROFILE}" == "safe" || "${FFMPEG_PROFILE}" == "safe-noasm" ]]; then
         ffmpeg_configure+=(
             --disable-cuda
             --disable-cuvid
@@ -234,6 +234,11 @@ ensure_ffmpeg_installed() {
             --disable-nvdec
             --disable-ffnvcodec
         )
+        if [[ "${FFMPEG_PROFILE}" == "safe-noasm" ]]; then
+            ffmpeg_configure+=(
+                --disable-x86asm
+            )
+        fi
     elif [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
         # The Vulkan preview needs NVIDIA decode/CUDA hwframes, not NVENC.
         # Keeping NVENC disabled avoids nv-codec-headers/FFmpeg encoder API
@@ -336,7 +341,7 @@ for arg in "$@"; do
             FFMPEG_PROFILE="nvidia"
             ;;
         --ffmpeg-safe)
-            FFMPEG_PROFILE="safe"
+        FFMPEG_PROFILE="safe-noasm"
             ;;
         --with-tests)
             BUILD_TARGET="all"

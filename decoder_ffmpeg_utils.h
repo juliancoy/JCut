@@ -2,6 +2,8 @@
 
 #include <QString>
 
+#include <mutex>
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/pixfmt.h>
@@ -16,6 +18,7 @@ struct VideoDecoderThreadingPolicy {
 
 QString avErrToString(int errnum);
 void installFfmpegLogFilter();
+std::mutex& ffmpegDecodeMutex();
 AVPixelFormat get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
 AVPixelFormat get_alpha_compatible_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
 int64_t ptsToFrameNumber(int64_t pts, const AVRational& timeBase, double fps);

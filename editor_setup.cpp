@@ -213,6 +213,8 @@ void EditorWindow::setupPlaybackTimers()
 
 void EditorWindow::setupShortcuts()
 {
+    qApp->installEventFilter(this);
+
     auto *undoShortcut = new QShortcut(QKeySequence::Undo, this);
     connect(undoShortcut, &QShortcut::activated, this, [this]() {
         if (shouldBlockGlobalEditorShortcuts()) {
@@ -295,9 +297,11 @@ void EditorWindow::setupShortcuts()
         auto *shortcut = new QShortcut(sequence, this);
         shortcut->setContext(Qt::ApplicationShortcut);
         shortcut->setAutoRepeat(true);
-        connect(shortcut, &QShortcut::activated, this, [this, deltaPoints]() {
+        const auto adjust = [this, deltaPoints]() {
             adjustGlobalFontSize(deltaPoints);
-        });
+        };
+        connect(shortcut, &QShortcut::activated, this, adjust);
+        connect(shortcut, &QShortcut::activatedAmbiguously, this, adjust);
     };
 
     bindGlobalFontShortcut(QKeySequence::ZoomIn, +1);

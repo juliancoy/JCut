@@ -18,11 +18,11 @@
 
 extern "C" {
 #include <libavutil/hwcontext.h>
-#include <libavutil/hwcontext_cuda.h>
 #include <libavutil/pixfmt.h>
 }
 
 #if JCUT_HAS_CUDA_DRIVER
+#include <libavutil/hwcontext_cuda.h>
 #include <cuda.h>
 #include <unistd.h>
 #endif
