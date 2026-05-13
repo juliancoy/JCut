@@ -12,6 +12,7 @@ ControlServer::ControlServer(QWidget* window,
                              std::function<QJsonObject()> projectSnapshotCallback,
                              std::function<QJsonObject()> historySnapshotCallback,
                              std::function<QJsonObject()> profilingCallback,
+                             std::function<QJsonObject()> pipelineSnapshotCallback,
                              std::function<void()> resetProfilingCallback,
                              std::function<void(int64_t)> setPlayheadCallback,
                              std::function<QJsonObject()> getThrottlesCallback,
@@ -27,6 +28,7 @@ ControlServer::ControlServer(QWidget* window,
     , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
     , m_historySnapshotCallback(std::move(historySnapshotCallback))
     , m_profilingCallback(std::move(profilingCallback))
+    , m_pipelineSnapshotCallback(std::move(pipelineSnapshotCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback))
     , m_setPlayheadCallback(std::move(setPlayheadCallback))
     , m_getThrottlesCallback(std::move(getThrottlesCallback))
@@ -62,6 +64,7 @@ bool ControlServer::start(quint16 port) {
                                                            m_projectSnapshotCallback,
                                                            m_historySnapshotCallback,
                                                            m_profilingCallback,
+                                                           m_pipelineSnapshotCallback,
                                                            m_resetProfilingCallback,
                                                            m_setPlayheadCallback,
                                                            m_getThrottlesCallback,

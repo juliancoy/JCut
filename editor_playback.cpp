@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QSignalBlocker>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <cmath>
 #include <algorithm>
@@ -187,6 +188,59 @@ QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() c
         m_transcriptPrependMs,
         m_transcriptPostpendMs,
         neighborWordRadius);
+}
+
+void EditorWindow::scheduleTranscriptNormalizeRangeRefresh(int delayMs)
+{
+    ++m_transcriptNormalizeRefreshGeneration;
+    const int clampedDelayMs = qMax(0, delayMs);
+    if (m_transcriptNormalizeRefreshWatcher.isRunning()) {
+        if (clampedDelayMs > 0) {
+            m_transcriptNormalizeRefreshTimer.start(clampedDelayMs);
+        }
+        return;
+    }
+    if (clampedDelayMs <= 0) {
+        startTranscriptNormalizeRangeRefresh();
+        return;
+    }
+    m_transcriptNormalizeRefreshTimer.start(clampedDelayMs);
+}
+
+void EditorWindow::startTranscriptNormalizeRangeRefresh()
+{
+    m_transcriptNormalizeRefreshTimer.stop();
+    if (m_transcriptNormalizeRefreshWatcher.isRunning()) {
+        return;
+    }
+    if (!m_timeline) {
+        m_appliedTranscriptNormalizeRefreshGeneration = m_transcriptNormalizeRefreshGeneration;
+        if (m_audioEngine) {
+            m_audioEngine->setTranscriptNormalizeRanges({});
+        }
+        return;
+    }
+
+    const qint64 generation = m_transcriptNormalizeRefreshGeneration;
+    const QVector<ExportRangeSegment> baseRanges = m_timeline->exportRanges();
+    const QVector<TimelineClip> clips = m_timeline->clips();
+    const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+    const int transcriptPrependMs = m_transcriptPrependMs;
+    const int transcriptPostpendMs = m_transcriptPostpendMs;
+    const int neighborWordRadius = speechFilterPlaybackEnabled() ? 10 : 0;
+
+    m_transcriptNormalizeRefreshWatcher.setProperty("generation", generation);
+    m_transcriptNormalizeRefreshWatcher.setFuture(QtConcurrent::run(
+        [baseRanges, clips, markers, transcriptPrependMs, transcriptPostpendMs, neighborWordRadius]() {
+            TranscriptEngine engine;
+            return engine.transcriptWordExportRangesDiscrete(
+                baseRanges,
+                clips,
+                markers,
+                transcriptPrependMs,
+                transcriptPostpendMs,
+                neighborWordRadius);
+        }));
 }
 
 int64_t EditorWindow::nextPlaybackFrame(int64_t currentFrame) const

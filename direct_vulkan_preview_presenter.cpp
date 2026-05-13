@@ -10,12 +10,14 @@
 #include <QDebug>
 #include <QByteArray>
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QHash>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
+#include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
 #include <QApplication>
@@ -31,6 +33,7 @@
 #include <QWheelEvent>
 #include <QStackedLayout>
 #include <QTransform>
+#include <QTextDocument>
 #include <QVulkanFunctions>
 #include <QVulkanWindow>
 #include <QWidget>
@@ -126,6 +129,124 @@ QString vulkanFormatName(VkFormat format)
     }
 }
 
+void setFontPixelSizeRobust(QFont* font, qreal pixelSize, const QPaintDevice* device)
+{
+    if (!font) {
+        return;
+    }
+    const qreal dpiY = (device && device->logicalDpiY() > 0) ? device->logicalDpiY() : 96.0;
+    font->setPointSizeF((pixelSize * 72.0) / dpiY);
+}
+
+QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color)
+{
+    const QString safeTitle = title.trimmed().toHtmlEscaped();
+    if (safeTitle.isEmpty()) {
+        return QString();
+    }
+    return QStringLiteral(
+               "<div style=\"text-align:center;"
+               " font-weight:700;"
+               " letter-spacing:0.02em;"
+               " font-size:0.62em;"
+               " margin:0 0 0.30em 0;"
+               " color:%1;\">%2</div>")
+        .arg(color.name(QColor::HexRgb), safeTitle);
+}
+
+QString transcriptOverlayTextureKey(const TimelineClip& clip,
+                                    const QRectF& bounds,
+                                    const QRectF& textBounds,
+                                    qreal fontPixelSize,
+                                    const QString& shadowHtml,
+                                    const QString& textHtml)
+{
+    const QString keyMaterial =
+        clip.id + QLatin1Char('|') +
+        QString::number(qRound(bounds.width())) + QLatin1Char('|') +
+        QString::number(qRound(bounds.height())) + QLatin1Char('|') +
+        QString::number(qRound(textBounds.width())) + QLatin1Char('|') +
+        QString::number(qRound(textBounds.height())) + QLatin1Char('|') +
+        clip.transcriptOverlay.fontFamily + QLatin1Char('|') +
+        QString::number(fontPixelSize, 'f', 3) + QLatin1Char('|') +
+        (clip.transcriptOverlay.bold ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
+        (clip.transcriptOverlay.italic ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
+        (clip.transcriptOverlay.showBackground ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
+        shadowHtml + QLatin1Char('|') + textHtml;
+    const QByteArray digest = QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1);
+    return QString::fromLatin1(digest.toHex());
+}
+
+QImage renderTranscriptOverlayImage(const TimelineClip& clip,
+                                    const QRectF& bounds,
+                                    const QRectF& textBounds,
+                                    qreal fontPixelSize,
+                                    const QString& shadowHtml,
+                                    const QString& textHtml)
+{
+    const int imageWidth = qMax(1, qRound(bounds.width()));
+    const int imageHeight = qMax(1, qRound(bounds.height()));
+    QImage image(imageWidth, imageHeight, QImage::Format_RGBA8888_Premultiplied);
+    image.fill(Qt::transparent);
+
+    QPainter painter(&image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    if (clip.transcriptOverlay.showBackground) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 120));
+        painter.drawRoundedRect(QRectF(0.0, 0.0, imageWidth, imageHeight), 14.0, 14.0);
+    }
+
+    QFont font(clip.transcriptOverlay.fontFamily);
+    if (fontPixelSize <= 0.0) {
+        return image;
+    }
+    setFontPixelSizeRobust(&font, fontPixelSize, painter.device());
+    font.setBold(clip.transcriptOverlay.bold);
+    font.setItalic(clip.transcriptOverlay.italic);
+
+    QTextDocument shadowDoc;
+    shadowDoc.setDefaultFont(font);
+    shadowDoc.setDocumentMargin(0.0);
+    shadowDoc.setTextWidth(textBounds.width());
+    shadowDoc.setHtml(shadowHtml);
+
+    QTextDocument textDoc;
+    textDoc.setDefaultFont(font);
+    textDoc.setDocumentMargin(0.0);
+    textDoc.setTextWidth(textBounds.width());
+    textDoc.setHtml(textHtml);
+
+    const qreal widthScale = textDoc.size().width() > textBounds.width()
+                                 ? textBounds.width() / textDoc.size().width()
+                                 : 1.0;
+    const qreal heightScale = textDoc.size().height() > textBounds.height()
+                                  ? textBounds.height() / textDoc.size().height()
+                                  : 1.0;
+    const qreal docScale = qMin(widthScale, heightScale);
+    const qreal scaledDocHeight = textDoc.size().height() * docScale;
+    const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - scaledDocHeight) / 2.0);
+
+    painter.translate(textBounds.left() + 3.0, textY + 3.0);
+    if (docScale < 0.999) {
+        painter.scale(docScale, docScale);
+    }
+    shadowDoc.drawContents(&painter);
+    if (docScale < 0.999) {
+        painter.scale(1.0 / docScale, 1.0 / docScale);
+    }
+    painter.translate(-3.0, -3.0);
+    if (docScale < 0.999) {
+        painter.scale(docScale, docScale);
+    }
+    textDoc.drawContents(&painter);
+    painter.end();
+
+    return image;
+}
+
 class DirectVulkanPreviewRenderer final : public QVulkanWindowRenderer {
 public:
     DirectVulkanPreviewRenderer(DirectVulkanPreviewWindow* owner, QVulkanWindow* window)
@@ -165,6 +286,7 @@ private:
     QVulkanWindow* m_window = nullptr;
     QVulkanDeviceFunctions* m_devFuncs = nullptr;
     std::unique_ptr<VulkanResources> m_resources;
+    std::unique_ptr<VulkanResources> m_overlayResources;
     std::unique_ptr<VulkanPipeline> m_pipeline;
     std::unique_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff> m_frameHandoff;
     QString m_lastHandoffError;
@@ -334,7 +456,10 @@ QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
     }
     const QSize safeOutputSize = state->outputSize.isValid() ? state->outputSize : QSize(1080, 1920);
     const QString transcriptPath = activeTranscriptPathForClipFile(effectiveClip.filePath);
-    const QVector<TranscriptSection>& sections = loadTranscriptSections(transcriptPath);
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    const QVector<TranscriptSection>& sections =
+        runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
     const int64_t sourceFrame =
         transcriptFrameForClipAtTimelineSample(effectiveClip, state->currentSample, state->renderSyncMarkers);
     const TranscriptOverlayLayout layout = transcriptOverlayLayoutAtSourceFrame(effectiveClip, sections, sourceFrame);
@@ -1745,6 +1870,13 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
+    m_overlayResources = std::make_unique<VulkanResources>();
+    if (!m_overlayResources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
+        if (m_owner) {
+            m_owner->markFailure(QStringLiteral("Failed to initialize transcript overlay Vulkan resources."));
+        }
+        return;
+    }
     m_frameHandoff = std::make_unique<jcut::vulkan_detector::VulkanDetectorFrameHandoff>();
     const jcut::vulkan_detector::VulkanDeviceContext handoffContext{
         m_window->physicalDevice(),
@@ -2163,25 +2295,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     rp.renderPass = m_window->defaultRenderPass();
     rp.framebuffer = m_window->currentFramebuffer();
     const QSize swapSize = m_window->swapChainImageSize();
-    const int frameSlot = std::max(0, m_window->currentFrame());
-    if (m_readbackSlots.size() < static_cast<size_t>(m_window->concurrentFrameCount())) {
-        m_readbackSlots.resize(static_cast<size_t>(m_window->concurrentFrameCount()));
-    }
-    if (m_decoderReadbackSlots.size() < static_cast<size_t>(m_window->concurrentFrameCount())) {
-        m_decoderReadbackSlots.resize(static_cast<size_t>(m_window->concurrentFrameCount()));
-    }
-    ReadbackSlot* readbackSlot = frameSlot < static_cast<int>(m_readbackSlots.size())
-                                     ? &m_readbackSlots[static_cast<size_t>(frameSlot)]
-                                     : nullptr;
-    ReadbackSlot* decoderReadbackSlot = frameSlot < static_cast<int>(m_decoderReadbackSlots.size())
-                                            ? &m_decoderReadbackSlots[static_cast<size_t>(frameSlot)]
-                                            : nullptr;
-    if (readbackSlot) {
-        consumeReadbackSlot(readbackSlot);
-    }
-    if (decoderReadbackSlot) {
-        consumeDecoderReadbackSlot(decoderReadbackSlot);
-    }
     rp.renderArea.offset = {0, 0};
     rp.renderArea.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                             static_cast<uint32_t>(std::max(1, swapSize.height()))};
@@ -2260,7 +2373,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!forceChecker && canDrawTexture && status && status->hasFrame && m_frameHandoff && m_frameHandoff->isInitialized()) {
                 QString handoffError;
                 double uploadMs = 0.0;
-                const bool allowCpuUploadFallback = status->cpuImage;
+                const bool allowCpuUploadFallback = false;
                 handoffAttempted = true;
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->handoffAttempts;
@@ -2389,6 +2502,108 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 }
                 m_devFuncs->vkCmdClearAttachments(cb, 1, &attachment, 1, &rect);
             }
+            const TimelineClip effectiveClip = clipWithTransientTranscriptOverride(state, clip);
+            if (m_overlayResources && m_pipeline && m_overlayResources->isReady() &&
+                m_pipeline->isReady() && m_overlayResources->descriptorSet() != VK_NULL_HANDLE &&
+                clipSupportsTranscriptOverlay(effectiveClip)) {
+                const QString transcriptPath = activeTranscriptPathForClipFile(effectiveClip.filePath);
+                if (!transcriptPath.isEmpty()) {
+                    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+                        loadTranscriptRuntimeDocument(transcriptPath);
+                    const QVector<TranscriptSection>& sections =
+                        runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
+                    const int64_t sourceFrame =
+                        transcriptFrameForClipAtTimelineSample(effectiveClip,
+                                                               state->currentSample,
+                                                               state->renderSyncMarkers);
+                    const TranscriptOverlayLayout overlayLayout =
+                        transcriptOverlayLayoutAtSourceFrame(effectiveClip, sections, sourceFrame);
+                    if (!overlayLayout.lines.isEmpty()) {
+                        const QRectF outputRect = transcriptOverlayRectInOutputSpace(
+                            effectiveClip,
+                            state->outputSize,
+                            transcriptPath,
+                            sections,
+                            sourceFrame);
+                        const QRectF bounds = transcriptOverlayBoundsForClip(state, clip, viewTransform);
+                        const QRectF localBounds(0.0, 0.0, outputRect.width(), outputRect.height());
+                        const QRectF localTextBounds = localBounds.adjusted(18.0, 14.0, -18.0, -14.0);
+                        const qreal fontPixelSize = effectiveClip.transcriptOverlay.fontPointSize;
+                        if (outputRect.width() > 0.0 &&
+                            outputRect.height() > 0.0 &&
+                            bounds.width() > 0.0 &&
+                            bounds.height() > 0.0 &&
+                            localTextBounds.width() > 0.0 &&
+                            localTextBounds.height() > 0.0 &&
+                            fontPixelSize > 0.0) {
+                            const QColor highlightFillColor(QStringLiteral("#fff2a8"));
+                            const QColor highlightTextColor(QStringLiteral("#181818"));
+                            QString titleShadowHtml;
+                            QString titleTextHtml;
+                            if (effectiveClip.transcriptOverlay.showSpeakerTitle) {
+                                const QString titleText =
+                                    transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame);
+                                if (effectiveClip.transcriptOverlay.showShadow) {
+                                    titleShadowHtml = transcriptSpeakerTitleHtml(titleText, QColor(0, 0, 0, 200));
+                                }
+                                titleTextHtml = transcriptSpeakerTitleHtml(titleText, effectiveClip.transcriptOverlay.textColor);
+                            }
+                            const QString shadowHtml = effectiveClip.transcriptOverlay.showShadow
+                                ? (titleShadowHtml + transcriptOverlayHtml(
+                                    overlayLayout,
+                                    QColor(0, 0, 0, 200),
+                                    QColor(0, 0, 0, 200),
+                                    QColor(0, 0, 0, 0)))
+                                : QString();
+                            const QString textHtml = titleTextHtml + transcriptOverlayHtml(
+                                overlayLayout,
+                                effectiveClip.transcriptOverlay.textColor,
+                                highlightTextColor,
+                                highlightFillColor);
+                            if (!textHtml.isEmpty()) {
+                                const QString overlayKey = transcriptOverlayTextureKey(
+                                    effectiveClip,
+                                    bounds,
+                                    localTextBounds,
+                                    fontPixelSize,
+                                    shadowHtml,
+                                    textHtml);
+                                Q_UNUSED(overlayKey);
+                                const QImage overlayImage = renderTranscriptOverlayImage(
+                                    effectiveClip,
+                                    localBounds,
+                                    localTextBounds,
+                                    fontPixelSize,
+                                    shadowHtml,
+                                    textHtml);
+                                if (m_overlayResources->uploadImageTexture(cb, overlayImage)) {
+                                    PreviewClipGeometry overlayGeometry;
+                                    overlayGeometry.localRect = QRectF(-bounds.width() / 2.0,
+                                                                       -bounds.height() / 2.0,
+                                                                       bounds.width(),
+                                                                       bounds.height());
+                                    overlayGeometry.clipToScreen.translate(bounds.center().x(), bounds.center().y());
+                                    overlayGeometry.bounds = bounds;
+                                    VulkanPipeline::Push overlayPush{};
+                                    mvpForVulkanClipTransform(overlayGeometry.clipToScreen,
+                                                              overlayGeometry.localRect,
+                                                              swapSize,
+                                                              overlayPush.mvp);
+                                    VkRect2D overlayScissor{};
+                                    overlayScissor.offset = {0, 0};
+                                    overlayScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                                                             static_cast<uint32_t>(std::max(1, swapSize.height()))};
+                                    m_pipeline->bindAndDraw(cb,
+                                                            viewport,
+                                                            overlayScissor,
+                                                            m_overlayResources->descriptorSet(),
+                                                            overlayPush);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             QRectF selectionBounds = transformedBounds;
             if (selected) {
                 const QRectF transcriptBounds = transcriptOverlayBoundsForClip(state, clip, viewTransform);
@@ -2422,28 +2637,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
-
-    const bool pipelineThumbnailReadback =
-        m_owner->pipelineThumbnailReadbackPending() && !vulkanPreviewReadbackMirrorEnabled();
-    if (pipelineThumbnailReadback &&
-        decoderReadbackSlot &&
-        decoderReadbackCandidate.image != VK_NULL_HANDLE &&
-        ensureReadbackSlot(decoderReadbackSlot, decoderReadbackCandidate.size, decoderReadbackCandidate.format)) {
-        recordImageReadback(cb,
-                            decoderReadbackSlot,
-                            decoderReadbackCandidate.image,
-                            decoderReadbackCandidate.layout,
-                            decoderReadbackCandidate.size,
-                            decoderReadbackCandidate.format);
-    }
-    if ((vulkanPreviewSwapchainReadbackEnabled() || pipelineThumbnailReadback) &&
-        readbackSlot &&
-        ensureReadbackSlot(readbackSlot, swapSize, m_window->colorFormat())) {
-        recordSwapchainReadback(cb, readbackSlot, swapSize);
-        if (pipelineThumbnailReadback) {
-            m_owner->markPipelineThumbnailReadbackRecorded(swapSize);
-        }
-    }
 
     m_owner->markPresented();
     m_window->frameReady();
@@ -2503,7 +2696,6 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
         return;
     }
 
-    const bool readbackMirror = vulkanPreviewReadbackMirrorEnabled();
     m_placeholder = std::make_unique<DirectVulkanPreviewHostWidget>(
         m_state,
         [this]() { requestUpdate(); },
@@ -2513,10 +2705,8 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_placeholder->setStyleSheet(QStringLiteral("background:#05080d; border:0;"));
     m_placeholder->setAttribute(Qt::WA_NativeWindow, true);
     m_placeholder->winId();
-    if (readbackMirror) {
-        m_stack = new QStackedLayout(m_placeholder.get());
-        m_stack->setContentsMargins(0, 0, 0, 0);
-    }
+    m_stack = new QStackedLayout(m_placeholder.get());
+    m_stack->setContentsMargins(0, 0, 0, 0);
 
     m_window = new DirectVulkanPreviewWindow(
         m_state,
@@ -2525,17 +2715,6 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
         &m_active,
         &m_failureReason,
         [this](const QString& reason) { showFailure(reason); });
-    if (readbackMirror) {
-        m_window->setMirrorCallback([this](const QImage& image) {
-            if (!m_placeholder) {
-                return;
-            }
-            QMetaObject::invokeMethod(
-                m_placeholder.get(),
-                [this, image]() { updateReadbackMirror(image); },
-                Qt::QueuedConnection);
-        });
-    }
     m_window->setVulkanInstance(m_instance.get());
     const QVulkanInfoVector<QVulkanExtension> supportedDeviceExtensions = m_window->supportedDeviceExtensions();
     QByteArrayList requestedDeviceExtensions;
@@ -2568,19 +2747,17 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_windowContainer->setMinimumSize(160, 120);
     m_windowContainer->setToolTip(QStringLiteral("Direct Vulkan preview presenter (%1).")
                                       .arg(vulkanPreviewVisiblePathLabel()));
-    if (!readbackMirror) {
-        auto* layout = new QVBoxLayout(m_placeholder.get());
-        layout->setContentsMargins(0, 0, 0, 0);
-        layout->setSpacing(0);
-        layout->addWidget(m_windowContainer);
-        m_windowContainer->raise();
-        m_window->raise();
-        m_active = true;
-        updateTitle();
-        updateDiagnosticChrome();
-        m_window->requestUpdate();
-        return;
-    }
+
+    m_audioLabel = new QLabel(m_placeholder.get());
+    m_audioLabel->setAlignment(Qt::AlignCenter);
+    m_audioLabel->setWordWrap(true);
+    m_audioLabel->setMargin(18);
+    m_audioLabel->setStyleSheet(QStringLiteral(
+        "background:#0b1017; color:#dbe7f1; border:0; padding:18px;"
+        "font:500 14px 'DejaVu Sans';"));
+    m_audioLabel->setText(QStringLiteral(
+        "Audio view is not implemented for the Vulkan preview path.\n\n"
+        "Switch back to Video, or use the OpenGL preview backend for waveform/audio inspection."));
 
     m_statusLabel = new QLabel(m_placeholder.get());
     m_statusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -2601,15 +2778,8 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
         "font-weight:600; padding:18px;"));
     m_errorLabel->setText(QStringLiteral("Vulkan preview is initializing..."));
 
-    if (readbackMirror) {
-        m_readbackMirror = new QLabel(m_placeholder.get());
-        m_readbackMirror->setAlignment(Qt::AlignCenter);
-        m_readbackMirror->setAttribute(Qt::WA_TransparentForMouseEvents, true);
-        m_readbackMirror->setStyleSheet(QStringLiteral("background:transparent; border:0;"));
-        m_readbackMirror->hide();
-    }
-
     m_stack->addWidget(m_windowContainer);
+    m_stack->addWidget(m_audioLabel);
     m_stack->addWidget(m_errorLabel);
     m_stack->setCurrentWidget(m_windowContainer);
     m_active = true;
@@ -2641,37 +2811,6 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
         std::move(createKeyframeRequested));
 }
 
-void DirectVulkanPreviewPresenter::updateReadbackMirror(const QImage& image)
-{
-    if (!m_readbackMirror || !m_placeholder || image.isNull()) {
-        return;
-    }
-
-    const QRect contentRect = m_placeholder->rect();
-    if (contentRect.isEmpty()) {
-        return;
-    }
-
-    QImage displayImage = image;
-    if (displayImage.format() != QImage::Format_RGBA8888 &&
-        displayImage.format() != QImage::Format_RGB32 &&
-        displayImage.format() != QImage::Format_ARGB32) {
-        displayImage = displayImage.convertToFormat(QImage::Format_RGBA8888);
-    }
-
-    const QPixmap pixmap = QPixmap::fromImage(displayImage)
-                               .scaled(contentRect.size(),
-                                       Qt::KeepAspectRatio,
-                                       Qt::SmoothTransformation);
-    m_readbackMirror->setGeometry(contentRect);
-    m_readbackMirror->setPixmap(pixmap);
-    m_readbackMirror->show();
-    m_readbackMirror->raise();
-    if (m_statusLabel) {
-        m_statusLabel->raise();
-    }
-}
-
 DirectVulkanPreviewPresenter::~DirectVulkanPreviewPresenter()
 {
     delete m_window;
@@ -2700,23 +2839,6 @@ QString DirectVulkanPreviewPresenter::backendName() const
         : QStringLiteral("Vulkan Preview Unavailable");
 }
 
-void DirectVulkanPreviewPresenter::requestPipelineThumbnailReadback()
-{
-    if (m_window) {
-        m_window->requestPipelineThumbnailReadback();
-    }
-}
-
-QImage DirectVulkanPreviewPresenter::latestVulkanReadbackImage() const
-{
-    return m_window ? m_window->latestVulkanReadbackImage() : QImage();
-}
-
-QImage DirectVulkanPreviewPresenter::latestDecoderDiagnosticImage() const
-{
-    return m_window ? m_window->latestDecoderDiagnosticImage() : QImage();
-}
-
 void DirectVulkanPreviewPresenter::showFailure(const QString& reason)
 {
     m_active = false;
@@ -2738,10 +2860,20 @@ void DirectVulkanPreviewPresenter::showFailure(const QString& reason)
 void DirectVulkanPreviewPresenter::requestUpdate()
 {
     updateDiagnosticChrome();
-    if (vulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
+    const bool audioMode = m_state && m_state->viewMode == PreviewSurface::ViewMode::Audio;
+    if (m_stack) {
+        if (audioMode && m_audioLabel) {
+            m_stack->setCurrentWidget(m_audioLabel);
+        } else if (!m_failureReason.trimmed().isEmpty() && m_errorLabel) {
+            m_stack->setCurrentWidget(m_errorLabel);
+        } else if (m_windowContainer) {
+            m_stack->setCurrentWidget(m_windowContainer);
+        }
+    }
+    if (!audioMode && vulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
         m_windowContainer->raise();
     }
-    if (m_window) {
+    if (!audioMode && m_window) {
         if (vulkanPreviewDirectSwapchainVisible()) {
             m_window->raise();
         }
@@ -2754,7 +2886,12 @@ void DirectVulkanPreviewPresenter::updateTitle()
     if (!m_window || !m_state) {
         return;
     }
-    m_window->setTitle(QStringLiteral("JCut Direct Vulkan Preview - frame %1 clips %2")
+    const QString modeLabel =
+        m_state->viewMode == PreviewSurface::ViewMode::Audio
+            ? QStringLiteral("audio")
+            : QStringLiteral("video");
+    m_window->setTitle(QStringLiteral("JCut Direct Vulkan Preview - %1 - frame %2 clips %3")
+                           .arg(modeLabel)
                            .arg(m_state->currentFrame)
                            .arg(m_state->clipCount));
     updateDiagnosticChrome();
@@ -2776,7 +2913,10 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
 
     QString color = QStringLiteral("#7f8b96");
     QString state = QStringLiteral("initializing");
-    if (!m_active || !m_failureReason.trimmed().isEmpty()) {
+    if (m_state && m_state->viewMode == PreviewSurface::ViewMode::Audio) {
+        color = QStringLiteral("#4a90e2");
+        state = QStringLiteral("audio-placeholder");
+    } else if (!m_active || !m_failureReason.trimmed().isEmpty()) {
         color = QStringLiteral("#d9483b");
         state = QStringLiteral("failed");
     } else if (m_stats.textureDraws > 0) {
@@ -2916,15 +3056,15 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
             });
         }
     }
-    const bool cpuUploadPath = cpuStatuses > 0;
+    const bool cpuUploadPath = false;
     return QJsonObject{
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
         {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
         {QStringLiteral("visible_path"), vulkanPreviewVisiblePathLabel()},
         {QStringLiteral("optimal_present_requested"), vulkanPreviewOptimalPresentEnabled()},
-        {QStringLiteral("readback_mirror_enabled"), vulkanPreviewReadbackMirrorEnabled()},
-        {QStringLiteral("swapchain_readback_enabled"), vulkanPreviewSwapchainReadbackEnabled()},
+        {QStringLiteral("readback_mirror_enabled"), false},
+        {QStringLiteral("swapchain_readback_enabled"), false},
         {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
         {QStringLiteral("qvulkanwindow_valid"), windowValid},
         {QStringLiteral("native_window_visible"), m_window ? m_window->isVisible() : false},
@@ -2939,20 +3079,16 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("preview_zoom"), m_state ? m_state->previewZoom : 1.0},
         {QStringLiteral("preview_pan_x"), m_state ? m_state->previewPanOffset.x() : 0.0},
         {QStringLiteral("preview_pan_y"), m_state ? m_state->previewPanOffset.y() : 0.0},
-        {QStringLiteral("direct_preview_frame_image"), m_window && !m_window->latestVulkanReadbackImage().isNull()},
-        {QStringLiteral("direct_preview_frame_size"), m_window && !m_window->latestVulkanReadbackImage().isNull()
-             ? QStringLiteral("%1x%2")
-                   .arg(m_window->latestVulkanReadbackImage().width())
-                   .arg(m_window->latestVulkanReadbackImage().height())
-             : QString()},
-        {QStringLiteral("pipeline_thumbnail_readback_pending"), m_window && m_window->pipelineThumbnailReadbackPending()},
+        {QStringLiteral("direct_preview_frame_image"), false},
+        {QStringLiteral("direct_preview_frame_size"), QString()},
+        {QStringLiteral("pipeline_thumbnail_readback_pending"), false},
         {QStringLiteral("pipeline_thumbnail_readback_requests"), static_cast<double>(m_stats.diagnosticReadbackRequests)},
         {QStringLiteral("pipeline_thumbnail_readback_copies"), static_cast<double>(m_stats.diagnosticReadbackCopies)},
         {QStringLiteral("pipeline_thumbnail_readback_size"), m_stats.lastDiagnosticReadbackSize.isValid()
              ? QStringLiteral("%1x%2").arg(m_stats.lastDiagnosticReadbackSize.width()).arg(m_stats.lastDiagnosticReadbackSize.height())
              : QString()},
         {QStringLiteral("pipeline_thumbnail_readback_format"), m_stats.lastDiagnosticReadbackFormat},
-        {QStringLiteral("decoder_diagnostic_readback_image"), m_window && !m_window->latestDecoderDiagnosticImage().isNull()},
+        {QStringLiteral("decoder_diagnostic_readback_image"), false},
         {QStringLiteral("decoder_diagnostic_readback_copies"), static_cast<double>(m_stats.decoderDiagnosticReadbackCopies)},
         {QStringLiteral("decoder_diagnostic_readback_size"), m_stats.lastDecoderDiagnosticReadbackSize.isValid()
              ? QStringLiteral("%1x%2")

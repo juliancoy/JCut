@@ -37,6 +37,7 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFontComboBox>
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -80,6 +81,12 @@ public:
     explicit EditorWindow(quint16 controlPort);
     ~EditorWindow() override;
 
+    struct OptimizedPreviewProfile {
+        int playbackStartLookaheadFrames = 5;
+        int playbackStartLookaheadTimeoutMs = 1200;
+        PreviewSurface::PlaybackTuning previewTuning;
+    };
+
     void addFileToTimeline(const QString &filePath, int64_t startFrame = -1);
     bool prepareVulkanFaceStreamPreviewRun(const QString& filePath,
                                           bool createHarnessTranscript,
@@ -120,11 +127,15 @@ private:
     void updateTransportLabels();
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
+    QJsonObject pipelineSnapshot() const;
     QJsonObject startupProfileSnapshot() const;
     QJsonObject throttleConfigSnapshot() const;
     QJsonObject applyThrottleConfigPatch(const QJsonObject& patch);
     QJsonObject playbackConfigSnapshot() const;
     QJsonObject applyPlaybackConfigPatch(const QJsonObject& patch);
+    QString optimizedProfilePath() const;
+    QJsonObject optimizedProfileSnapshot() const;
+    QJsonObject ensureOptimizedProfile();
     void startupProfileMark(const QString& phase, const QJsonObject& extra = QJsonObject());
 
     void syncTranscriptTableToPlayhead();
@@ -142,6 +153,10 @@ private:
     void initializeDeferredTimelineSeek(QTimer *timer, int64_t *pendingFrame);
     void scheduleDeferredTimelineSeek(QTimer *timer, int64_t *pendingFrame, int64_t timelineFrame);
     void cancelDeferredTimelineSeek(QTimer *timer, int64_t *pendingFrame);
+    void applyOptimizedProfile(const OptimizedPreviewProfile& profile);
+    bool loadOptimizedProfileFromDisk(QJsonObject* loadedProfile = nullptr);
+    QJsonObject runStartupOptimizationPass();
+    OptimizedPreviewProfile defaultOptimizedPreviewProfile() const;
 
     // Root directory configuration (stored near executable in editor.config)
     QString configFilePath() const;
@@ -188,6 +203,8 @@ private:
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
+    void scheduleTranscriptNormalizeRangeRefresh(int delayMs = 0);
+    void startTranscriptNormalizeRangeRefresh();
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
     int64_t nextPlaybackSample(int64_t currentSample,
                                int64_t deltaSamples,
@@ -582,6 +599,8 @@ private:
     QTimer m_stateSaveTimer;
     QTimer m_historySaveTimer;
     QTimer m_autosaveTimer;
+    QTimer m_transcriptNormalizeRefreshTimer;
+    QFutureWatcher<QVector<ExportRangeSegment>> m_transcriptNormalizeRefreshWatcher;
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;
@@ -688,6 +707,11 @@ private:
     int m_transcriptManualSelectionHoldMs = 1200;
     int m_audioClockStallTicks = 0;
     int m_audioClockStallThresholdTicks = 1;
+    qint64 m_transcriptNormalizeRefreshGeneration = 0;
+    qint64 m_appliedTranscriptNormalizeRefreshGeneration = 0;
+    QJsonObject m_optimizedProfile;
+    bool m_optimizedProfileLoaded = false;
+    bool m_optimizedProfileGeneratedThisRun = false;
 };
 
 } // namespace editor

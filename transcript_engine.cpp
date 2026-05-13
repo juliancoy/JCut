@@ -712,6 +712,11 @@ bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
 
     const qint64 modifiedMs = transcriptInfo.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = transcriptInfo.size();
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    if (!runtimeDocument) {
+        return false;
+    }
     auto cacheIt = m_transcriptSourceWordRangesCache.constFind(transcriptPath);
     if (cacheIt != m_transcriptSourceWordRangesCache.constEnd() &&
         cacheIt->valid &&
@@ -723,45 +728,18 @@ bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
         return true;
     }
 
-    QFile transcriptFile(transcriptPath);
-    if (!transcriptFile.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject()) {
-        return false;
-    }
-
     QVector<ExportRangeSegment> sourceWordRanges;
-    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
-    for (const QJsonValue& segmentValue : segments) {
-        const QJsonArray words = segmentValue.toObject().value(QStringLiteral("words")).toArray();
-        for (const QJsonValue& wordValue : words) {
-            const QJsonObject wordObj = wordValue.toObject();
-            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+    const int64_t prependFrames =
+        qMax<int64_t>(0, static_cast<int64_t>(std::floor((transcriptPrependMs / 1000.0) * kTimelineFps)));
+    const int64_t postpendFrames =
+        qMax<int64_t>(0, static_cast<int64_t>(std::ceil((transcriptPostpendMs / 1000.0) * kTimelineFps)));
+    for (const TranscriptSection& section : runtimeDocument->sections) {
+        for (const TranscriptWord& word : section.words) {
+            if (word.skipped || word.text.trimmed().isEmpty()) {
                 continue;
             }
-            if (transcriptTokenText(wordObj).trimmed().isEmpty()) {
-                continue;
-            }
-
-            double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
-            if (startSeconds < 0.0 || endSeconds < startSeconds) {
-                continue;
-            }
-
-            const double prependSeconds = transcriptPrependMs / 1000.0;
-            const double postpendSeconds = transcriptPostpendMs / 1000.0;
-            startSeconds = qMax(0.0, startSeconds - prependSeconds);
-            const double adjustedEndSeconds = qMax(startSeconds, endSeconds + postpendSeconds);
-
-            const int64_t startFrame =
-                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
-            const int64_t endFrame =
-                qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(adjustedEndSeconds * kTimelineFps)) - 1);
+            const int64_t startFrame = qMax<int64_t>(0, word.startFrame - prependFrames);
+            const int64_t endFrame = qMax<int64_t>(startFrame, word.endFrame + postpendFrames);
             sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
         }
     }
@@ -1022,40 +1000,24 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete
             continue;
         }
 
-        QJsonDocument transcriptDoc;
-        if (!loadTranscriptJson(transcriptPathForClip(clip), &transcriptDoc)) {
+        const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+            loadTranscriptRuntimeDocument(transcriptPathForClip(clip));
+        if (!runtimeDocument) {
             continue;
         }
 
         QVector<ExportRangeSegment> sourceWordRanges;
-        const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
-        for (const QJsonValue &segmentValue : segments) {
-            const QJsonArray words = segmentValue.toObject().value(QStringLiteral("words")).toArray();
-            for (const QJsonValue &wordValue : words) {
-                const QJsonObject wordObj = wordValue.toObject();
-                if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+        const int64_t prependFrames =
+            qMax<int64_t>(0, static_cast<int64_t>(std::floor((transcriptPrependMs / 1000.0) * kTimelineFps)));
+        const int64_t postpendFrames =
+            qMax<int64_t>(0, static_cast<int64_t>(std::ceil((transcriptPostpendMs / 1000.0) * kTimelineFps)));
+        for (const TranscriptSection& section : runtimeDocument->sections) {
+            for (const TranscriptWord& word : section.words) {
+                if (word.skipped || word.text.trimmed().isEmpty()) {
                     continue;
                 }
-                if (wordObj.value(QStringLiteral("word")).toString().trimmed().isEmpty()) {
-                    continue;
-                }
-
-                double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-                const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
-                if (startSeconds < 0.0 || endSeconds < startSeconds) {
-                    continue;
-                }
-
-                const double prependSeconds = transcriptPrependMs / 1000.0;
-                const double postpendSeconds = transcriptPostpendMs / 1000.0;
-                startSeconds = qMax(0.0, startSeconds - prependSeconds);
-                const double adjustedEndSeconds = qMax(startSeconds, endSeconds + postpendSeconds);
-
-                const int64_t startFrame =
-                    qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
-                const int64_t endFrame =
-                    qMax<int64_t>(startFrame,
-                                  static_cast<int64_t>(std::ceil(adjustedEndSeconds * kTimelineFps)) - 1);
+                const int64_t startFrame = qMax<int64_t>(0, word.startFrame - prependFrames);
+                const int64_t endFrame = qMax<int64_t>(startFrame, word.endFrame + postpendFrames);
                 sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
             }
         }

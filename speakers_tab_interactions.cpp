@@ -134,6 +134,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     if (speakerId.isEmpty() || !clip || !m_loadedTranscriptDoc.isObject()) {
         if (m_widgets.selectedSpeakerIdLabel) {
             m_widgets.selectedSpeakerIdLabel->setText(QStringLiteral("No speaker selected"));
+            m_widgets.selectedSpeakerIdLabel->setToolTip(QString());
         }
         if (m_widgets.speakerCurrentSentenceLabel) {
             m_widgets.speakerCurrentSentenceLabel->setText(
@@ -157,10 +158,14 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     const QJsonObject root = m_loadedTranscriptDoc.object();
     const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
-    const QString displayName = profile.value(QString(kTranscriptSpeakerNameKey)).toString(speakerId);
+    const QString displayName = speakerDisplayLabel(speakerId);
     if (m_widgets.selectedSpeakerIdLabel) {
-        m_widgets.selectedSpeakerIdLabel->setText(
-            QStringLiteral("%1 (%2)").arg(displayName, speakerId));
+        m_widgets.selectedSpeakerIdLabel->setText(displayName);
+        if (displayName != speakerId) {
+            m_widgets.selectedSpeakerIdLabel->setToolTip(QStringLiteral("Speaker ID: %1").arg(speakerId));
+        } else {
+            m_widgets.selectedSpeakerIdLabel->setToolTip(QString());
+        }
     }
     if (m_widgets.speakerCurrentSentenceLabel) {
         m_widgets.speakerCurrentSentenceLabel->setText(
@@ -536,18 +541,18 @@ bool SpeakersTab::saveSpeakerProfileEdit(int tableRow, int column, const QString
     if (!m_widgets.speakersTable || !m_loadedTranscriptDoc.isObject()) {
         return false;
     }
-    QTableWidgetItem* idItem = m_widgets.speakersTable->item(tableRow, 1);
-    if (!idItem) {
+    QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(tableRow, 1);
+    if (!speakerItem) {
         return false;
     }
-    const QString speakerId = idItem->data(Qt::UserRole).toString().trimmed();
+    const QString speakerId = speakerItem->data(Qt::UserRole).toString().trimmed();
     if (speakerId.isEmpty()) {
         return false;
     }
 
     bool ok = true;
-    const double parsed = (column == 3 || column == 4) ? valueText.toDouble(&ok) : 0.0;
-    if ((column == 3 || column == 4) && !ok) {
+    const double parsed = (column == 2 || column == 3) ? valueText.toDouble(&ok) : 0.0;
+    if ((column == 2 || column == 3) && !ok) {
         return false;
     }
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
@@ -555,12 +560,12 @@ bool SpeakersTab::saveSpeakerProfileEdit(int tableRow, int column, const QString
             QJsonObject profile = profiles.value(speakerId).toObject();
             QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
 
-            if (column == 2) {
+            if (column == 1) {
                 profile[QString(kTranscriptSpeakerNameKey)] =
                     valueText.trimmed().isEmpty() ? speakerId : valueText.trimmed();
-            } else if (column == 3 || column == 4) {
+            } else if (column == 2 || column == 3) {
                 const double bounded = qBound(0.0, parsed, 1.0);
-                if (column == 3) {
+                if (column == 2) {
                     location[QString(kTranscriptSpeakerLocationXKey)] = bounded;
                 } else {
                     location[QString(kTranscriptSpeakerLocationYKey)] = bounded;
@@ -1060,11 +1065,11 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
         return;
     }
 
-    QTableWidgetItem* idItem = m_widgets.speakersTable->item(row, 1);
-    if (!idItem) {
+    QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(row, 1);
+    if (!speakerItem) {
         return;
     }
-    const QString speakerId = idItem->data(Qt::UserRole).toString().trimmed();
+    const QString speakerId = speakerItem->data(Qt::UserRole).toString().trimmed();
     if (speakerId.isEmpty()) {
         return;
     }
@@ -1276,7 +1281,7 @@ void SpeakersTab::onSpeakersTableItemClicked(QTableWidgetItem* item)
     if (!clickedSpeakerId.isEmpty() && m_widgets.speakersTable->currentRow() != item->row()) {
         m_widgets.speakersTable->setCurrentCell(item->row(), 1);
     }
-    if (column == 5 && activeCutMutable()) {
+    if (column == 4 && activeCutMutable()) {
         const QString speakerId = clickedSpeakerId.isEmpty() ? selectedSpeakerId() : clickedSpeakerId;
         if (speakerId.isEmpty()) {
             updateSpeakerTrackingStatusLabel();

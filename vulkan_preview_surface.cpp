@@ -15,31 +15,31 @@
 #include "transcript_engine.h"
 
 #include <QFileInfo>
+#include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QObject>
 #include <QStringList>
+#include <QThread>
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <utility>
 #include <QDateTime>
 
 using editor::FrameHandle;
 
 namespace {
-constexpr int kMaxVisibleBacklog = 1;
+constexpr int kDefaultMaxVisibleBacklog = 1;
 constexpr size_t kVulkanPreviewCpuCacheBytes = 192ull * 1024ull * 1024ull;
 constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
-constexpr int kVulkanPreviewSourceLookaheadFrames = 2;
-constexpr int kVulkanPreviewProxyLookaheadFrames = 8;
-
-int vulkanPreviewLookaheadFrames(bool useProxyMedia)
-{
-    return useProxyMedia ? kVulkanPreviewProxyLookaheadFrames : kVulkanPreviewSourceLookaheadFrames;
-}
+constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
+constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
 
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
@@ -63,7 +63,10 @@ bool clipSupportsDrawableTranscriptOverlayForSelection(const TimelineClip& clip,
         return false;
     }
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-    const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    const QVector<TranscriptSection>& sections =
+        runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(clip, currentSample, renderSyncMarkers);
     const TranscriptOverlayLayout layout = transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
     return !layout.lines.isEmpty();
@@ -133,6 +136,9 @@ QImage applyCorrectionMasksToCpuImage(const QImage& source,
 VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
 {
     m_pipelineOwner = std::make_unique<QObject>();
+    m_playbackTuning.visibleBacklogLimit = kDefaultMaxVisibleBacklog;
+    m_playbackTuning.sourceLookaheadFrames = kDefaultVulkanPreviewSourceLookaheadFrames;
+    m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
     m_previousDecodePreference = editor::debugDecodePreference();
     if (m_previousDecodePreference != editor::DecodePreference::Auto) {
         editor::setDebugDecodePreference(editor::DecodePreference::Auto);
@@ -340,7 +346,7 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
     }
     m_useProxyMedia = useProxyMedia;
     if (m_cache) {
-        m_cache->setLookaheadFrames(vulkanPreviewLookaheadFrames(m_useProxyMedia));
+        m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
         for (const QString& clipId : std::as_const(m_registeredClips)) {
             m_cache->unregisterClip(clipId);
         }
@@ -349,6 +355,34 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
     registerVisibleClips();
     requestFramesForCurrentPosition();
     requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setPlaybackTuning(const PlaybackTuning& tuning)
+{
+    PlaybackTuning normalized;
+    normalized.visibleBacklogLimit = qBound(1, tuning.visibleBacklogLimit, 16);
+    normalized.sourceLookaheadFrames = qBound(1, tuning.sourceLookaheadFrames, 32);
+    normalized.proxyLookaheadFrames = qBound(1, tuning.proxyLookaheadFrames, 64);
+    if (m_playbackTuning.visibleBacklogLimit == normalized.visibleBacklogLimit &&
+        m_playbackTuning.sourceLookaheadFrames == normalized.sourceLookaheadFrames &&
+        m_playbackTuning.proxyLookaheadFrames == normalized.proxyLookaheadFrames) {
+        return;
+    }
+    m_playbackTuning = normalized;
+    if (m_cache) {
+        m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
+    }
+}
+
+PreviewSurface::PlaybackTuning VulkanPreviewSurface::playbackTuning() const
+{
+    return m_playbackTuning;
+}
+
+int VulkanPreviewSurface::effectivePlaybackLookaheadFrames() const
+{
+    return m_useProxyMedia ? m_playbackTuning.proxyLookaheadFrames
+                           : m_playbackTuning.sourceLookaheadFrames;
 }
 
 void VulkanPreviewSurface::invalidateTranscriptOverlayCache(const QString& clipFilePath)
@@ -681,7 +715,6 @@ void VulkanPreviewSurface::ensureFramePipeline()
     if (!m_decoder->initialize()) {
         return;
     }
-    m_decoder->setWorkerCount(1);
     if (editor::MemoryBudget* budget = m_decoder->memoryBudget()) {
         budget->setMaxCpuMemory(kVulkanPreviewCpuCacheBytes);
         budget->setMaxGpuMemory(kVulkanPreviewGpuCacheBytes);
@@ -693,7 +726,7 @@ void VulkanPreviewSurface::ensureFramePipeline()
         budget->setMaxCpuMemory(kVulkanPreviewCpuCacheBytes);
         budget->setMaxGpuMemory(kVulkanPreviewGpuCacheBytes);
     }
-    m_cache->setLookaheadFrames(vulkanPreviewLookaheadFrames(m_useProxyMedia));
+    m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
     m_cache->setPlaybackState(m_interaction.playing ? editor::TimelineCache::PlaybackState::Playing
                                                      : editor::TimelineCache::PlaybackState::Stopped);
     m_cache->setPlayheadFrame(m_interaction.currentFrame);
@@ -811,7 +844,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             ++m_visibleRequestBlocked;
             continue;
         }
-        if (backlog >= kMaxVisibleBacklog) {
+        if (backlog >= m_playbackTuning.visibleBacklogLimit) {
             m_lastVisibleRequestDecision = QStringLiteral("skipped");
             m_lastVisibleRequestBlockReason = QStringLiteral("visible_request_backlog_full");
             ++m_visibleRequestBlocked;
@@ -861,6 +894,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     int missingCount = 0;
     int hardwareCount = 0;
     int cpuCount = 0;
+    int64_t maxFrameLag = 0;
 
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
@@ -961,6 +995,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             } else {
                 status.decodePath = QStringLiteral("unsupported_payload");
             }
+            maxFrameLag = qMax(maxFrameLag, qAbs(status.requestedSourceFrame - status.presentedSourceFrame));
             exactCount += status.exact ? 1 : 0;
             approxCount += status.exact ? 0 : 1;
             hardwareCount += status.hardwareFrame ? 1 : 0;
@@ -987,6 +1022,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     m_frameStatusMissingCount = missingCount;
     m_frameStatusHardwareCount = hardwareCount;
     m_frameStatusCpuCount = cpuCount;
+    recordPlaybackSmoothnessSample(exactCount, approxCount, missingCount, maxFrameLag);
     refreshFacestreamOverlays();
 }
 
@@ -1216,7 +1252,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         }
         ready = false;
         if (!m_cache->isVisibleRequestPending(clip.id, localFrame) &&
-            m_cache->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
+            m_cache->pendingVisibleRequestCount() < m_playbackTuning.visibleBacklogLimit) {
             m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
                 if (!m_pipelineOwner) {
                     return;
@@ -1235,9 +1271,40 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
     return ready;
 }
 
+bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
+{
+    if (futureFrames < 0 || !m_cache) {
+        return true;
+    }
+
+    for (int offset = 0; offset <= futureFrames; ++offset) {
+        const int64_t samplePosition = m_interaction.currentSample + frameToSamples(offset);
+        const qreal framePosition = samplesToFramePosition(samplePosition);
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (clip.mediaType != ClipMediaType::Video ||
+                clip.sourceKind == MediaSourceKind::ImageSequence ||
+                clip.filePath.isEmpty()) {
+                continue;
+            }
+            if (!visualClipActiveAtSample(clip,
+                                          m_interaction.tracks,
+                                          samplePosition,
+                                          framePosition,
+                                          m_bypassGrading)) {
+                continue;
+            }
+            const int64_t localFrame = sourceFrameForSample(clip, samplePosition);
+            if (!m_cache->hasDisplayableFrameForPreview(clip.id, localFrame, true, true)) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs)
 {
-    Q_UNUSED(timeoutMs);
     if (futureFrames <= 0) {
         return true;
     }
@@ -1245,38 +1312,35 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
     if (!m_cache) {
         return false;
     }
-    const int cappedFutureFrames = std::min(futureFrames, vulkanPreviewLookaheadFrames(m_useProxyMedia));
-    for (int offset = 0; offset <= cappedFutureFrames; ++offset) {
-        preparePlaybackAdvanceSample(m_interaction.currentSample + frameToSamples(offset));
+    const int cappedFutureFrames = std::min(futureFrames, effectivePlaybackLookaheadFrames());
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeoutMs) {
+        if (hasPlaybackLookaheadBuffered(cappedFutureFrames)) {
+            return true;
+        }
+        for (int offset = 0; offset <= cappedFutureFrames; ++offset) {
+            preparePlaybackAdvanceSample(m_interaction.currentSample + frameToSamples(offset));
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
+        QThread::msleep(8);
     }
-    return true;
+    return hasPlaybackLookaheadBuffered(cappedFutureFrames);
 }
 
 QImage VulkanPreviewSurface::latestPresentedFrameImageForClip(const QString& clipId) const
 {
-    for (const VulkanPreviewClipFrameStatus& status : m_interaction.vulkanFrameStatuses) {
-        if (status.clipId == clipId && status.frame.hasCpuImage()) {
-            return status.frame.cpuImage();
-        }
-    }
+    Q_UNUSED(clipId);
     return QImage();
 }
 
 QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelineSnapshots() const
 {
     QVector<PipelineStageSnapshot> snapshots;
-    QImage previewImage;
-    QImage decoderDiagnosticImage;
-    if (m_presenter) {
-        m_presenter->requestPipelineThumbnailReadback();
-        previewImage = m_presenter->latestVulkanReadbackImage();
-        decoderDiagnosticImage = m_presenter->latestDecoderDiagnosticImage();
-    }
-    auto decoderStageImage = [&decoderDiagnosticImage](const VulkanPreviewClipFrameStatus& status) {
-        if (status.frame.hasCpuImage()) {
-            return status.frame.cpuImage();
-        }
-        return status.hasFrame ? decoderDiagnosticImage : QImage();
+    const QImage previewImage;
+    const QImage decoderDiagnosticImage;
+    auto decoderStageImage = [](const VulkanPreviewClipFrameStatus& status) {
+        return QImage();
     };
     auto addStage = [&snapshots](const QString& label,
                                  const QString& detail,
@@ -1295,7 +1359,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                  .arg(m_interaction.currentFrame)
                  .arg(m_interaction.currentSample)
                  .arg(m_interaction.clipCount),
-             previewImage,
+             QImage(),
              QStringLiteral("surface"),
              true,
              true);
@@ -1584,15 +1648,14 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
     }
 
     if (snapshots.size() == 1 && !m_interaction.selectedClipId.isEmpty()) {
-        const QImage selectedImage = latestPresentedFrameImageForClip(m_interaction.selectedClipId);
+        const QImage selectedImage;
         snapshots.push_back(PipelineStageSnapshot{
             QStringLiteral("Selected Clip"),
-            selectedImage.isNull() ? QStringLiteral("No CPU image in the live Vulkan status cache")
-                                   : QStringLiteral("Latest live CPU image for selected clip"),
+            QStringLiteral("Vulkan path does not materialize CPU preview images"),
             selectedImage,
             QStringLiteral("decoder"),
             false,
-            !selectedImage.isNull()});
+            false});
     }
 
     addStage(QStringLiteral("13 Swapchain Readback"),
@@ -1621,11 +1684,11 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     QJsonObject snapshot = m_presenter ? m_presenter->profilingSnapshot() : QJsonObject{};
     snapshot.insert(QStringLiteral("render_use_proxy_media"), m_useProxyMedia);
     snapshot.insert(QStringLiteral("vulkan_decode_preference"), editor::decodePreferenceToString(editor::debugDecodePreference()));
-    snapshot.insert(QStringLiteral("vulkan_cpu_upload_permitted"), true);
-    snapshot.insert(QStringLiteral("vulkan_visible_backlog_limit"), kMaxVisibleBacklog);
-    snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), vulkanPreviewLookaheadFrames(m_useProxyMedia));
-    snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), kVulkanPreviewSourceLookaheadFrames);
-    snapshot.insert(QStringLiteral("vulkan_proxy_lookahead_frames"), kVulkanPreviewProxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_cpu_upload_permitted"), false);
+    snapshot.insert(QStringLiteral("vulkan_visible_backlog_limit"), m_playbackTuning.visibleBacklogLimit);
+    snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), effectivePlaybackLookaheadFrames());
+    snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), m_playbackTuning.sourceLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_proxy_lookahead_frames"), m_playbackTuning.proxyLookaheadFrames);
     if (m_decoder) {
         snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
         snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
@@ -1660,6 +1723,7 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("last_visible_request_force_retry"), m_lastVisibleRequestForceRetry);
     snapshot.insert(QStringLiteral("last_visible_request_backlog"), m_lastVisibleRequestBacklog);
     snapshot.insert(QStringLiteral("last_visible_request_callback_payload"), m_lastVisibleRequestCallbackPayload);
+    snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
     if (m_decoder && m_decoder->memoryBudget()) {
         const editor::MemoryBudget* budget = m_decoder->memoryBudget();
         snapshot.insert(QStringLiteral("memory_budget"), QJsonObject{
@@ -1689,6 +1753,187 @@ void VulkanPreviewSurface::resetProfilingStats()
     if (m_presenter) {
         m_presenter->resetProfilingStats();
     }
+    m_playbackSmoothnessSamples.clear();
+}
+
+void VulkanPreviewSurface::recordPlaybackSmoothnessSample(int exactCount,
+                                                          int approxCount,
+                                                          int missingCount,
+                                                          int64_t maxFrameLag)
+{
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    PlaybackSmoothnessSample sample;
+    sample.timestampMs = nowMs;
+    sample.exactCount = exactCount;
+    sample.approxCount = approxCount;
+    sample.missingCount = missingCount;
+    sample.maxFrameLag = maxFrameLag;
+    sample.playing = m_interaction.playing;
+    sample.visibleRequestAttempts = m_visibleRequestAttempts;
+    sample.visibleRequestDispatched = m_visibleRequestDispatched;
+    sample.visibleRequestBlocked = m_visibleRequestBlocked;
+    if (m_presenter) {
+        const QJsonObject presenterSnapshot = m_presenter->profilingSnapshot();
+        sample.lastUploadMs = presenterSnapshot.value(QStringLiteral("last_handoff_upload_ms")).toDouble();
+        sample.handoffAttempts =
+            static_cast<qint64>(presenterSnapshot.value(QStringLiteral("handoff_attempts")).toDouble());
+        sample.handoffSuccesses =
+            static_cast<qint64>(presenterSnapshot.value(QStringLiteral("handoff_successes")).toDouble());
+        sample.handoffFailures =
+            static_cast<qint64>(presenterSnapshot.value(QStringLiteral("handoff_failures")).toDouble());
+        sample.presentedFrames =
+            static_cast<qint64>(presenterSnapshot.value(QStringLiteral("presented_frames")).toDouble());
+    }
+    m_playbackSmoothnessSamples.push_back(sample);
+
+    constexpr qint64 kWindowMs = 5000;
+    constexpr int kMaxSamples = 240;
+    while (!m_playbackSmoothnessSamples.isEmpty() &&
+           (m_playbackSmoothnessSamples.constFirst().timestampMs < nowMs - kWindowMs ||
+            m_playbackSmoothnessSamples.size() > kMaxSamples)) {
+        m_playbackSmoothnessSamples.removeFirst();
+    }
+}
+
+QJsonObject VulkanPreviewSurface::playbackSmoothnessSnapshot(const QJsonObject& presenterSnapshot) const
+{
+    constexpr qint64 kWindowMs = 5000;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    QVector<PlaybackSmoothnessSample> window;
+    window.reserve(m_playbackSmoothnessSamples.size());
+    for (const PlaybackSmoothnessSample& sample : m_playbackSmoothnessSamples) {
+        if (sample.timestampMs >= nowMs - kWindowMs) {
+            window.push_back(sample);
+        }
+    }
+
+    QJsonObject smoothness{
+        {QStringLiteral("window_ms"), kWindowMs},
+        {QStringLiteral("sample_count"), window.size()},
+        {QStringLiteral("playing"), m_interaction.playing},
+        {QStringLiteral("playing_sample_count"), 0},
+        {QStringLiteral("exact_hit_rate"), 0.0},
+        {QStringLiteral("approximate_hit_rate"), 0.0},
+        {QStringLiteral("missing_frame_rate"), 0.0},
+        {QStringLiteral("late_sample_rate"), 0.0},
+        {QStringLiteral("avg_frame_lag"), 0.0},
+        {QStringLiteral("max_frame_lag"), 0},
+        {QStringLiteral("avg_handoff_upload_ms"), 0.0},
+        {QStringLiteral("p95_handoff_upload_ms"), 0.0},
+        {QStringLiteral("max_handoff_upload_ms"), 0.0},
+        {QStringLiteral("visible_request_attempt_rate"), 0.0},
+        {QStringLiteral("visible_request_dispatch_rate"), 0.0},
+        {QStringLiteral("visible_request_block_rate"), 0.0},
+        {QStringLiteral("visible_request_blocked_fraction"), 0.0},
+        {QStringLiteral("handoff_success_rate"), 0.0},
+        {QStringLiteral("presented_fps_estimate"), 0.0},
+        {QStringLiteral("current_decoder_pending_requests"),
+         m_decoder ? m_decoder->pendingRequestCount() : 0},
+        {QStringLiteral("current_decoder_worker_count"),
+         m_decoder ? m_decoder->workerCount() : 0},
+        {QStringLiteral("current_last_handoff_upload_ms"),
+         presenterSnapshot.value(QStringLiteral("last_handoff_upload_ms")).toDouble()},
+        {QStringLiteral("current_visible_request_backlog"), m_lastVisibleRequestBacklog},
+        {QStringLiteral("current_last_visible_request_block_reason"), m_lastVisibleRequestBlockReason}
+    };
+
+    if (window.isEmpty()) {
+        return smoothness;
+    }
+
+    int playingSampleCount = 0;
+    qint64 exactTotal = 0;
+    qint64 approxTotal = 0;
+    qint64 missingTotal = 0;
+    qint64 lateSamples = 0;
+    qint64 frameLagTotal = 0;
+    qint64 maxFrameLag = 0;
+    QVector<double> uploadSamples;
+    uploadSamples.reserve(window.size());
+
+    for (const PlaybackSmoothnessSample& sample : window) {
+        if (sample.playing) {
+            ++playingSampleCount;
+        }
+        exactTotal += sample.exactCount;
+        approxTotal += sample.approxCount;
+        missingTotal += sample.missingCount;
+        frameLagTotal += sample.maxFrameLag;
+        maxFrameLag = qMax(maxFrameLag, sample.maxFrameLag);
+        if (sample.maxFrameLag > 0) {
+            ++lateSamples;
+        }
+        if (sample.lastUploadMs > 0.0) {
+            uploadSamples.push_back(sample.lastUploadMs);
+        }
+    }
+
+    const qint64 frameSamples = exactTotal + approxTotal + missingTotal;
+    const qint64 availableSamples = exactTotal + approxTotal;
+    smoothness[QStringLiteral("playing_sample_count")] = playingSampleCount;
+    if (frameSamples > 0) {
+        smoothness[QStringLiteral("exact_hit_rate")] =
+            static_cast<double>(exactTotal) / static_cast<double>(frameSamples);
+        smoothness[QStringLiteral("approximate_hit_rate")] =
+            static_cast<double>(approxTotal) / static_cast<double>(frameSamples);
+        smoothness[QStringLiteral("missing_frame_rate")] =
+            static_cast<double>(missingTotal) / static_cast<double>(frameSamples);
+    }
+    if (availableSamples > 0) {
+        smoothness[QStringLiteral("avg_frame_lag")] =
+            static_cast<double>(frameLagTotal) / static_cast<double>(availableSamples);
+    }
+    smoothness[QStringLiteral("max_frame_lag")] = maxFrameLag;
+    smoothness[QStringLiteral("late_sample_rate")] =
+        static_cast<double>(lateSamples) / static_cast<double>(window.size());
+
+    if (!uploadSamples.isEmpty()) {
+        std::sort(uploadSamples.begin(), uploadSamples.end());
+        const double uploadSum = std::accumulate(uploadSamples.begin(), uploadSamples.end(), 0.0);
+        const int p95Index = qBound(0,
+                                    static_cast<int>(std::ceil(uploadSamples.size() * 0.95)) - 1,
+                                    uploadSamples.size() - 1);
+        smoothness[QStringLiteral("avg_handoff_upload_ms")] =
+            uploadSum / static_cast<double>(uploadSamples.size());
+        smoothness[QStringLiteral("p95_handoff_upload_ms")] = uploadSamples.at(p95Index);
+        smoothness[QStringLiteral("max_handoff_upload_ms")] = uploadSamples.constLast();
+    }
+
+    const PlaybackSmoothnessSample& first = window.constFirst();
+    const PlaybackSmoothnessSample& last = window.constLast();
+    const qint64 elapsedMs = qMax<qint64>(1, last.timestampMs - first.timestampMs);
+    const double elapsedSeconds = static_cast<double>(elapsedMs) / 1000.0;
+    const qint64 visibleAttemptsDelta =
+        qMax<qint64>(0, last.visibleRequestAttempts - first.visibleRequestAttempts);
+    const qint64 visibleDispatchedDelta =
+        qMax<qint64>(0, last.visibleRequestDispatched - first.visibleRequestDispatched);
+    const qint64 visibleBlockedDelta =
+        qMax<qint64>(0, last.visibleRequestBlocked - first.visibleRequestBlocked);
+    const qint64 handoffAttemptsDelta =
+        qMax<qint64>(0, last.handoffAttempts - first.handoffAttempts);
+    const qint64 handoffSuccessesDelta =
+        qMax<qint64>(0, last.handoffSuccesses - first.handoffSuccesses);
+    const qint64 presentedFramesDelta =
+        qMax<qint64>(0, last.presentedFrames - first.presentedFrames);
+
+    smoothness[QStringLiteral("visible_request_attempt_rate")] =
+        static_cast<double>(visibleAttemptsDelta) / elapsedSeconds;
+    smoothness[QStringLiteral("visible_request_dispatch_rate")] =
+        static_cast<double>(visibleDispatchedDelta) / elapsedSeconds;
+    smoothness[QStringLiteral("visible_request_block_rate")] =
+        static_cast<double>(visibleBlockedDelta) / elapsedSeconds;
+    if (visibleAttemptsDelta > 0) {
+        smoothness[QStringLiteral("visible_request_blocked_fraction")] =
+            static_cast<double>(visibleBlockedDelta) / static_cast<double>(visibleAttemptsDelta);
+    }
+    if (handoffAttemptsDelta > 0) {
+        smoothness[QStringLiteral("handoff_success_rate")] =
+            static_cast<double>(handoffSuccessesDelta) / static_cast<double>(handoffAttemptsDelta);
+    }
+    smoothness[QStringLiteral("presented_fps_estimate")] =
+        static_cast<double>(presentedFramesDelta) / elapsedSeconds;
+
+    return smoothness;
 }
 
 bool VulkanPreviewSurface::selectedOverlayIsTranscript() const

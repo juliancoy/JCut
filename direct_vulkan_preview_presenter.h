@@ -3,7 +3,6 @@
 #include "preview_interaction_state.h"
 
 #include <functional>
-#include <QImage>
 #include <QJsonObject>
 #include <QPointer>
 #include <QRectF>
@@ -68,9 +67,6 @@ public:
     bool isActive() const;
     QString failureReason() const;
     QString backendName() const;
-    void requestPipelineThumbnailReadback();
-    QImage latestDecoderDiagnosticImage() const;
-    QImage latestVulkanReadbackImage() const;
     void setInteractionCallbacks(
         std::function<void(const QString&)> selectionRequested,
         std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
@@ -89,14 +85,13 @@ public:
 private:
     void showFailure(const QString& reason);
     void updateDiagnosticChrome();
-    void updateReadbackMirror(const QImage& image);
 
     std::unique_ptr<QVulkanInstance> m_instance;
     std::unique_ptr<QWidget> m_placeholder;
     QPointer<QWidget> m_windowContainer;
     QPointer<QLabel> m_statusLabel;
+    QPointer<QLabel> m_audioLabel;
     QPointer<QLabel> m_errorLabel;
-    QPointer<QLabel> m_readbackMirror;
     QPointer<QStackedLayout> m_stack;
     DirectVulkanPreviewWindow* m_window = nullptr;
     PreviewInteractionState* m_state = nullptr;

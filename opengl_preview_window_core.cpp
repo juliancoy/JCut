@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <vector>
 
 using namespace editor;
@@ -56,6 +57,9 @@ PreviewWindow::PreviewWindow(QWidget* parent)
 {
     const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
     configurePreviewBackend(requestedBackend, false);
+    m_playbackTuning.visibleBacklogLimit = 4;
+    m_playbackTuning.sourceLookaheadFrames = 5;
+    m_playbackTuning.proxyLookaheadFrames = 8;
 
     setMinimumSize(320, 180);
     setMouseTracking(true);
@@ -290,7 +294,27 @@ void PreviewWindow::setExportRanges(const QVector<ExportRangeSegment>& ranges) {
 }
 
 void PreviewWindow::setUseProxyMedia(bool useProxyMedia) {
-    Q_UNUSED(useProxyMedia);
+    m_useProxyMedia = useProxyMedia;
+}
+
+void PreviewWindow::setPlaybackTuning(const PlaybackTuning& tuning)
+{
+    PlaybackTuning normalized;
+    normalized.visibleBacklogLimit = qBound(1, tuning.visibleBacklogLimit, 16);
+    normalized.sourceLookaheadFrames = qBound(1, tuning.sourceLookaheadFrames, 32);
+    normalized.proxyLookaheadFrames = qBound(1, tuning.proxyLookaheadFrames, 64);
+    m_playbackTuning = normalized;
+}
+
+PreviewSurface::PlaybackTuning PreviewWindow::playbackTuning() const
+{
+    return m_playbackTuning;
+}
+
+int PreviewWindow::effectivePlaybackLookaheadFrames() const
+{
+    return m_useProxyMedia ? m_playbackTuning.proxyLookaheadFrames
+                           : m_playbackTuning.sourceLookaheadFrames;
 }
 
 QString PreviewWindow::backendName() const {
@@ -904,6 +928,12 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
         snapshot[QStringLiteral("frame_selection")] = frameSelection;
     }
 
+    snapshot[QStringLiteral("playback_smoothness")] = playbackSmoothnessSnapshot();
+    snapshot[QStringLiteral("preview_visible_backlog_limit")] = m_playbackTuning.visibleBacklogLimit;
+    snapshot[QStringLiteral("preview_source_lookahead_frames")] = m_playbackTuning.sourceLookaheadFrames;
+    snapshot[QStringLiteral("preview_proxy_lookahead_frames")] = m_playbackTuning.proxyLookaheadFrames;
+    snapshot[QStringLiteral("preview_effective_lookahead_frames")] = effectivePlaybackLookaheadFrames();
+
     return snapshot;
 }
 
@@ -912,6 +942,164 @@ void PreviewWindow::resetProfilingStats() {
     m_renderCount = 0;
     m_totalRenderDurationMs = 0;
     m_renderTimeHistory.clear();
+    m_playbackSmoothnessSamples.clear();
+}
+
+void PreviewWindow::recordPlaybackSmoothnessSample(const QJsonObject& frameSelectionStats)
+{
+    const qint64 now = nowMs();
+    PlaybackSmoothnessSample sample;
+    sample.timestampMs = now;
+    sample.playing = m_interaction.playing;
+    sample.presentationCount = frameSelectionStats.value(QStringLiteral("presentation")).toInt(0);
+    sample.exactCount = frameSelectionStats.value(QStringLiteral("exact")).toInt(0);
+    sample.bestCount = frameSelectionStats.value(QStringLiteral("best")).toInt(0);
+    sample.heldCount = frameSelectionStats.value(QStringLiteral("held")).toInt(0);
+    sample.staleRejectedCount = frameSelectionStats.value(QStringLiteral("stale_rejected")).toInt(0);
+    sample.nullCount = frameSelectionStats.value(QStringLiteral("null")).toInt(0);
+    sample.renderDurationMs = m_lastRenderDurationMs;
+    sample.droppedPresentationFrames =
+        m_playbackPipeline ? m_playbackPipeline->droppedPresentationFrameCount() : 0;
+
+    int64_t maxFrameLag = 0;
+    const QJsonArray clips = frameSelectionStats.value(QStringLiteral("clips")).toArray();
+    for (const QJsonValue& value : clips) {
+        const QJsonObject clip = value.toObject();
+        const int64_t localFrame = clip.value(QStringLiteral("local_frame")).toInteger(-1);
+        const int64_t frameNumber = clip.value(QStringLiteral("frame_number")).toInteger(-1);
+        if (localFrame >= 0 && frameNumber >= 0) {
+            maxFrameLag = qMax(maxFrameLag, qAbs(localFrame - frameNumber));
+        }
+    }
+    sample.maxFrameLag = maxFrameLag;
+
+    m_playbackSmoothnessSamples.push_back(sample);
+    constexpr qint64 kWindowMs = 5000;
+    constexpr size_t kMaxSamples = 240;
+    while (!m_playbackSmoothnessSamples.empty() &&
+           (m_playbackSmoothnessSamples.front().timestampMs < now - kWindowMs ||
+            m_playbackSmoothnessSamples.size() > kMaxSamples)) {
+        m_playbackSmoothnessSamples.pop_front();
+    }
+}
+
+QJsonObject PreviewWindow::playbackSmoothnessSnapshot() const
+{
+    constexpr qint64 kWindowMs = 5000;
+    const qint64 now = nowMs();
+    QVector<PlaybackSmoothnessSample> window;
+    window.reserve(static_cast<int>(m_playbackSmoothnessSamples.size()));
+    for (const PlaybackSmoothnessSample& sample : m_playbackSmoothnessSamples) {
+        if (sample.timestampMs >= now - kWindowMs) {
+            window.push_back(sample);
+        }
+    }
+
+    QJsonObject smoothness{
+        {QStringLiteral("window_ms"), kWindowMs},
+        {QStringLiteral("sample_count"), window.size()},
+        {QStringLiteral("playing"), m_interaction.playing},
+        {QStringLiteral("playing_sample_count"), 0},
+        {QStringLiteral("exact_hit_rate"), 0.0},
+        {QStringLiteral("approximate_hit_rate"), 0.0},
+        {QStringLiteral("missing_frame_rate"), 0.0},
+        {QStringLiteral("late_sample_rate"), 0.0},
+        {QStringLiteral("avg_frame_lag"), 0.0},
+        {QStringLiteral("max_frame_lag"), 0},
+        {QStringLiteral("avg_handoff_upload_ms"), 0.0},
+        {QStringLiteral("p95_handoff_upload_ms"), 0.0},
+        {QStringLiteral("max_handoff_upload_ms"), 0.0},
+        {QStringLiteral("visible_request_attempt_rate"), 0.0},
+        {QStringLiteral("visible_request_dispatch_rate"), 0.0},
+        {QStringLiteral("visible_request_block_rate"), 0.0},
+        {QStringLiteral("visible_request_blocked_fraction"), 0.0},
+        {QStringLiteral("handoff_success_rate"), 1.0},
+        {QStringLiteral("presented_fps_estimate"), 0.0},
+        {QStringLiteral("current_decoder_pending_requests"),
+         m_decoder ? m_decoder->pendingRequestCount() : 0},
+        {QStringLiteral("current_decoder_worker_count"),
+         m_decoder ? m_decoder->workerCount() : 0},
+        {QStringLiteral("current_last_handoff_upload_ms"), 0.0},
+        {QStringLiteral("current_visible_request_backlog"),
+         m_cache ? m_cache->pendingVisibleRequestCount() : 0},
+        {QStringLiteral("current_last_visible_request_block_reason"), QString()},
+        {QStringLiteral("dropped_presentation_frames"),
+         m_playbackPipeline ? m_playbackPipeline->droppedPresentationFrameCount() : 0},
+        {QStringLiteral("upload_metrics_available"), false}
+    };
+
+    if (window.isEmpty()) {
+        return smoothness;
+    }
+
+    int playingSampleCount = 0;
+    qint64 presentationTotal = 0;
+    qint64 exactTotal = 0;
+    qint64 approxTotal = 0;
+    qint64 missingTotal = 0;
+    qint64 lateSamples = 0;
+    qint64 frameLagTotal = 0;
+    qint64 maxFrameLag = 0;
+    QVector<double> renderSamples;
+    renderSamples.reserve(window.size());
+
+    for (const PlaybackSmoothnessSample& sample : window) {
+        if (sample.playing) {
+            ++playingSampleCount;
+        }
+        presentationTotal += sample.presentationCount;
+        exactTotal += sample.exactCount;
+        approxTotal += sample.bestCount + sample.heldCount;
+        missingTotal += sample.nullCount;
+        frameLagTotal += sample.maxFrameLag;
+        maxFrameLag = qMax(maxFrameLag, sample.maxFrameLag);
+        if (sample.maxFrameLag > 0 || sample.staleRejectedCount > 0) {
+            ++lateSamples;
+        }
+        if (sample.renderDurationMs > 0) {
+            renderSamples.push_back(static_cast<double>(sample.renderDurationMs));
+        }
+    }
+
+    smoothness[QStringLiteral("playing_sample_count")] = playingSampleCount;
+    const qint64 totalOutcomes = exactTotal + approxTotal + missingTotal;
+    if (totalOutcomes > 0) {
+        smoothness[QStringLiteral("exact_hit_rate")] =
+            static_cast<double>(exactTotal) / static_cast<double>(totalOutcomes);
+        smoothness[QStringLiteral("approximate_hit_rate")] =
+            static_cast<double>(approxTotal) / static_cast<double>(totalOutcomes);
+        smoothness[QStringLiteral("missing_frame_rate")] =
+            static_cast<double>(missingTotal) / static_cast<double>(totalOutcomes);
+    }
+    if (presentationTotal > 0) {
+        smoothness[QStringLiteral("avg_frame_lag")] =
+            static_cast<double>(frameLagTotal) / static_cast<double>(presentationTotal);
+    }
+    smoothness[QStringLiteral("max_frame_lag")] = maxFrameLag;
+    smoothness[QStringLiteral("late_sample_rate")] =
+        static_cast<double>(lateSamples) / static_cast<double>(window.size());
+
+    if (!renderSamples.isEmpty()) {
+        std::sort(renderSamples.begin(), renderSamples.end());
+        const double renderSum = std::accumulate(renderSamples.begin(), renderSamples.end(), 0.0);
+        const int p95Index = qBound(0,
+                                    static_cast<int>(std::ceil(renderSamples.size() * 0.95)) - 1,
+                                    renderSamples.size() - 1);
+        smoothness[QStringLiteral("render_avg_ms")] =
+            renderSum / static_cast<double>(renderSamples.size());
+        smoothness[QStringLiteral("render_p95_ms")] = renderSamples.at(p95Index);
+        smoothness[QStringLiteral("render_max_ms")] = renderSamples.constLast();
+    }
+
+    const PlaybackSmoothnessSample& first = window.constFirst();
+    const PlaybackSmoothnessSample& last = window.constLast();
+    const qint64 elapsedMs = qMax<qint64>(1, last.timestampMs - first.timestampMs);
+    const double elapsedSeconds = static_cast<double>(elapsedMs) / 1000.0;
+    const qint64 presentedDelta = qMax<qint64>(0, last.presentationCount - first.presentationCount);
+    smoothness[QStringLiteral("presented_fps_estimate")] =
+        static_cast<double>(presentedDelta) / elapsedSeconds;
+
+    return smoothness;
 }
 
 void PreviewWindow::scheduleRepaint() {

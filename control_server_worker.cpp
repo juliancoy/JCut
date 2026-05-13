@@ -49,6 +49,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
                                          std::function<QJsonObject()> projectSnapshotCallback,
                                          std::function<QJsonObject()> historySnapshotCallback,
                                          std::function<QJsonObject()> profilingCallback,
+                                         std::function<QJsonObject()> pipelineSnapshotCallback,
                                          std::function<void()> resetProfilingCallback,
                                          std::function<void(int64_t)> setPlayheadCallback,
                                          std::function<QJsonObject()> getThrottlesCallback,
@@ -62,6 +63,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
     , m_projectSnapshotCallback(std::move(projectSnapshotCallback))
     , m_historySnapshotCallback(std::move(historySnapshotCallback))
     , m_profilingCallback(std::move(profilingCallback))
+    , m_pipelineSnapshotCallback(std::move(pipelineSnapshotCallback))
     , m_resetProfilingCallback(std::move(resetProfilingCallback))
     , m_setPlayheadCallback(std::move(setPlayheadCallback))
     , m_getThrottlesCallback(std::move(getThrottlesCallback))
@@ -159,7 +161,10 @@ void ControlServerWorker::refreshBackgroundCaches() {
         m_lastHistorySnapshot.isEmpty() || (now - m_lastHistoryDemandMs) <= m_snapshotDemandWindowMs;
     const bool uiTreeInDemand =
         m_lastUiTreeSnapshot.isEmpty() || (now - m_lastUiTreeDemandMs) <= m_snapshotDemandWindowMs;
-    const qint64 profileIntervalMs = uiResponsive ? m_profileRefreshIntervalMs : 1000;
+    const qint64 profileIntervalMs = uiResponsive
+        ? (playbackActive ? qMax(m_profileRefreshIntervalMs, m_profilePlaybackRefreshIntervalMs)
+                          : m_profileRefreshIntervalMs)
+        : 1000;
     const qint64 stateIntervalMs = uiResponsive
         ? (stateInDemand ? m_stateRefreshIntervalMs : m_idleStateRefreshIntervalMs)
         : 1000;
@@ -520,6 +525,34 @@ bool ControlServerWorker::refreshProfileCacheFromUi(int timeoutMs, QString* erro
     m_lastProfileSnapshot = profile;
     m_lastProfileSnapshotMs = QDateTime::currentMSecsSinceEpoch();
     ++m_profileSuccessCount;
+    return true;
+}
+
+bool ControlServerWorker::refreshPipelineSnapshotFromUi(int timeoutMs,
+                                                        QJsonObject* previewOut,
+                                                        QString* errorOut) {
+    if (!previewOut) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("pipeline snapshot target unavailable");
+        }
+        return false;
+    }
+    if (!m_pipelineSnapshotCallback) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("pipeline snapshot callback unavailable");
+        }
+        return false;
+    }
+    QJsonObject preview;
+    if (!invokeOnUiThread(m_window, timeoutMs, &preview, [this]() {
+            return m_pipelineSnapshotCallback ? m_pipelineSnapshotCallback() : QJsonObject{};
+        })) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("timed out waiting for pipeline snapshot");
+        }
+        return false;
+    }
+    *previewOut = preview;
     return true;
 }
 

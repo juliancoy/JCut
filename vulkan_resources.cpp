@@ -111,25 +111,14 @@ void VulkanResources::destroy()
         m_funcs->vkFreeMemory(m_device, m_stagingMemory, nullptr);
         m_stagingMemory = VK_NULL_HANDLE;
     }
-    if (m_textureView != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyImageView(m_device, m_textureView, nullptr);
-        m_textureView = VK_NULL_HANDLE;
-    }
+    destroyTextureImage();
     if (m_curveLutView != VK_NULL_HANDLE) {
         m_funcs->vkDestroyImageView(m_device, m_curveLutView, nullptr);
         m_curveLutView = VK_NULL_HANDLE;
     }
-    if (m_textureImage != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyImage(m_device, m_textureImage, nullptr);
-        m_textureImage = VK_NULL_HANDLE;
-    }
     if (m_curveLutImage != VK_NULL_HANDLE) {
         m_funcs->vkDestroyImage(m_device, m_curveLutImage, nullptr);
         m_curveLutImage = VK_NULL_HANDLE;
-    }
-    if (m_textureMemory != VK_NULL_HANDLE) {
-        m_funcs->vkFreeMemory(m_device, m_textureMemory, nullptr);
-        m_textureMemory = VK_NULL_HANDLE;
     }
     if (m_curveLutMemory != VK_NULL_HANDLE) {
         m_funcs->vkFreeMemory(m_device, m_curveLutMemory, nullptr);
@@ -149,8 +138,10 @@ void VulkanResources::destroy()
     }
     m_textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_textureUploaded = false;
+    m_textureSize = QSize();
     m_curveLutLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_curveLutBytes.clear();
+    m_stagingCapacity = 0;
     m_initialized = false;
     m_physicalDevice = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
@@ -213,35 +204,12 @@ bool VulkanResources::createTextureResources()
     return true;
     };
 
-    if (!createImageAndView(kTextureWidth, kTextureHeight, &m_textureImage, &m_textureMemory, &m_textureView) ||
+    if (!createTextureImage(QSize(static_cast<int>(kTextureWidth), static_cast<int>(kTextureHeight))) ||
         !createImageAndView(kCurveLutWidth, kCurveLutHeight, &m_curveLutImage, &m_curveLutMemory, &m_curveLutView)) {
         return false;
     }
 
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = std::max(kTextureBytes, kCurveLutBytes);
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (m_funcs->vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_stagingBuffer) != VK_SUCCESS) {
-        return false;
-    }
-    VkMemoryRequirements bufferReq{};
-    m_funcs->vkGetBufferMemoryRequirements(m_device, m_stagingBuffer, &bufferReq);
-    const uint32_t bufferMemType = findMemoryType(
-        bufferReq.memoryTypeBits,
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (bufferMemType == UINT32_MAX) {
-        return false;
-    }
-    VkMemoryAllocateInfo bufferAlloc{};
-    bufferAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    bufferAlloc.allocationSize = bufferReq.size;
-    bufferAlloc.memoryTypeIndex = bufferMemType;
-    if (m_funcs->vkAllocateMemory(m_device, &bufferAlloc, nullptr, &m_stagingMemory) != VK_SUCCESS) {
-        return false;
-    }
-    if (m_funcs->vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) != VK_SUCCESS) {
+    if (!ensureStagingCapacity(std::max(kTextureBytes, kCurveLutBytes))) {
         return false;
     }
 
@@ -265,6 +233,148 @@ bool VulkanResources::createTextureResources()
     return true;
 }
 
+bool VulkanResources::createTextureImage(const QSize& size)
+{
+    if (!size.isValid() || size.width() <= 0 || size.height() <= 0) {
+        return false;
+    }
+    destroyTextureImage();
+
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = static_cast<uint32_t>(size.width());
+    imageInfo.extent.height = static_cast<uint32_t>(size.height());
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (m_funcs->vkCreateImage(m_device, &imageInfo, nullptr, &m_textureImage) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements imageReq{};
+    m_funcs->vkGetImageMemoryRequirements(m_device, m_textureImage, &imageReq);
+    const uint32_t imageMemType = findMemoryType(imageReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (imageMemType == UINT32_MAX) {
+        destroyTextureImage();
+        return false;
+    }
+    VkMemoryAllocateInfo imageAlloc{};
+    imageAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    imageAlloc.allocationSize = imageReq.size;
+    imageAlloc.memoryTypeIndex = imageMemType;
+    if (m_funcs->vkAllocateMemory(m_device, &imageAlloc, nullptr, &m_textureMemory) != VK_SUCCESS) {
+        destroyTextureImage();
+        return false;
+    }
+    if (m_funcs->vkBindImageMemory(m_device, m_textureImage, m_textureMemory, 0) != VK_SUCCESS) {
+        destroyTextureImage();
+        return false;
+    }
+
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = m_textureImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.layerCount = 1;
+    if (m_funcs->vkCreateImageView(m_device, &viewInfo, nullptr, &m_textureView) != VK_SUCCESS) {
+        destroyTextureImage();
+        return false;
+    }
+
+    m_textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_textureUploaded = false;
+    m_textureSize = size;
+    setSampledImage(m_textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return true;
+}
+
+void VulkanResources::destroyTextureImage()
+{
+    if (m_textureView != VK_NULL_HANDLE) {
+        m_funcs->vkDestroyImageView(m_device, m_textureView, nullptr);
+        m_textureView = VK_NULL_HANDLE;
+    }
+    if (m_textureImage != VK_NULL_HANDLE) {
+        m_funcs->vkDestroyImage(m_device, m_textureImage, nullptr);
+        m_textureImage = VK_NULL_HANDLE;
+    }
+    if (m_textureMemory != VK_NULL_HANDLE) {
+        m_funcs->vkFreeMemory(m_device, m_textureMemory, nullptr);
+        m_textureMemory = VK_NULL_HANDLE;
+    }
+    m_textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    m_textureUploaded = false;
+    m_textureSize = QSize();
+}
+
+bool VulkanResources::ensureTextureSize(const QSize& size)
+{
+    if (!size.isValid() || size.width() <= 0 || size.height() <= 0) {
+        return false;
+    }
+    if (m_textureView != VK_NULL_HANDLE && m_textureSize == size) {
+        return true;
+    }
+    return createTextureImage(size);
+}
+
+bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
+{
+    if (bytes <= 0) {
+        return false;
+    }
+    if (m_stagingBuffer != VK_NULL_HANDLE && m_stagingMemory != VK_NULL_HANDLE && m_stagingCapacity >= bytes) {
+        return true;
+    }
+    if (m_stagingBuffer != VK_NULL_HANDLE) {
+        m_funcs->vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
+        m_stagingBuffer = VK_NULL_HANDLE;
+    }
+    if (m_stagingMemory != VK_NULL_HANDLE) {
+        m_funcs->vkFreeMemory(m_device, m_stagingMemory, nullptr);
+        m_stagingMemory = VK_NULL_HANDLE;
+    }
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = bytes;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (m_funcs->vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_stagingBuffer) != VK_SUCCESS) {
+        return false;
+    }
+    VkMemoryRequirements bufferReq{};
+    m_funcs->vkGetBufferMemoryRequirements(m_device, m_stagingBuffer, &bufferReq);
+    const uint32_t bufferMemType = findMemoryType(
+        bufferReq.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (bufferMemType == UINT32_MAX) {
+        return false;
+    }
+    VkMemoryAllocateInfo bufferAlloc{};
+    bufferAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    bufferAlloc.allocationSize = bufferReq.size;
+    bufferAlloc.memoryTypeIndex = bufferMemType;
+    if (m_funcs->vkAllocateMemory(m_device, &bufferAlloc, nullptr, &m_stagingMemory) != VK_SUCCESS) {
+        return false;
+    }
+    if (m_funcs->vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) != VK_SUCCESS) {
+        return false;
+    }
+    m_stagingCapacity = bytes;
+    return true;
+}
+
 uint32_t VulkanResources::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const
 {
     if (!m_physicalDevice) {
@@ -284,13 +394,13 @@ uint32_t VulkanResources::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlag
     return UINT32_MAX;
 }
 
-void VulkanResources::transitionImage(VkCommandBuffer cb,
-                                      VkImageLayout oldLayout,
-                                      VkImageLayout newLayout,
-                                      VkPipelineStageFlags srcStage,
-                                      VkPipelineStageFlags dstStage,
-                                      VkAccessFlags srcAccess,
-                                      VkAccessFlags dstAccess)
+void VulkanResources::transitionTextureImage(VkCommandBuffer cb,
+                                             VkImageLayout oldLayout,
+                                             VkImageLayout newLayout,
+                                             VkPipelineStageFlags srcStage,
+                                             VkPipelineStageFlags dstStage,
+                                             VkAccessFlags srcAccess,
+                                             VkAccessFlags dstAccess)
 {
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -357,7 +467,7 @@ bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer
     std::memcpy(mapped, pixels.data(), pixels.size());
     m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
 
-    transitionImage(commandBuffer,
+    transitionTextureImage(commandBuffer,
                     m_textureLayout,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -369,7 +479,9 @@ bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer
     VkBufferImageCopy region{};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
-    region.imageExtent = {kTextureWidth, kTextureHeight, 1};
+    region.imageExtent = {static_cast<uint32_t>(m_textureSize.width()),
+                          static_cast<uint32_t>(m_textureSize.height()),
+                          1};
     m_funcs->vkCmdCopyBufferToImage(commandBuffer,
                                     m_stagingBuffer,
                                     m_textureImage,
@@ -377,13 +489,70 @@ bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer
                                     1,
                                     &region);
 
-    transitionImage(commandBuffer,
+    transitionTextureImage(commandBuffer,
                     m_textureLayout,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_ACCESS_SHADER_READ_BIT);
+    m_textureLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    m_textureUploaded = true;
+    setSampledImage(m_textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return true;
+}
+
+bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image)
+{
+    if (!m_initialized || !commandBuffer || image.isNull()) {
+        return false;
+    }
+    const QImage rgbaImage = image.convertToFormat(QImage::Format_RGBA8888_Premultiplied);
+    if (rgbaImage.isNull() || rgbaImage.width() <= 0 || rgbaImage.height() <= 0) {
+        return false;
+    }
+    const QSize size = rgbaImage.size();
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(rgbaImage.sizeInBytes());
+    if (!ensureTextureSize(size) || !ensureStagingCapacity(bytes)) {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    if (m_funcs->vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+        return false;
+    }
+    std::memcpy(mapped, rgbaImage.constBits(), static_cast<size_t>(bytes));
+    m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
+
+    transitionTextureImage(commandBuffer,
+                           m_textureLayout,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0,
+                           VK_ACCESS_TRANSFER_WRITE_BIT);
+    m_textureLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {static_cast<uint32_t>(size.width()),
+                          static_cast<uint32_t>(size.height()),
+                          1};
+    m_funcs->vkCmdCopyBufferToImage(commandBuffer,
+                                    m_stagingBuffer,
+                                    m_textureImage,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    1,
+                                    &region);
+
+    transitionTextureImage(commandBuffer,
+                           m_textureLayout,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_SHADER_READ_BIT);
     m_textureLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     m_textureUploaded = true;
     setSampledImage(m_textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);

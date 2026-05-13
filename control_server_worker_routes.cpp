@@ -17,6 +17,7 @@
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
@@ -33,6 +34,26 @@
 
 namespace control_server {
 namespace {
+
+QByteArray cachedControlServerRootHtml()
+{
+    static QByteArray cachedHtml;
+    static qint64 cachedMtimeMs = std::numeric_limits<qint64>::min();
+    const QFileInfo info(QStringLiteral("control_server_webpage.html"));
+    const qint64 mtimeMs = info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    if (!cachedHtml.isEmpty() && cachedMtimeMs == mtimeMs) {
+        return cachedHtml;
+    }
+    QFile htmlFile(QStringLiteral("control_server_webpage.html"));
+    if (!htmlFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        cachedHtml.clear();
+        cachedMtimeMs = mtimeMs;
+        return {};
+    }
+    cachedHtml = htmlFile.readAll();
+    cachedMtimeMs = mtimeMs;
+    return cachedHtml;
+}
 
 void mergePlaybackConfigIntoState(const QJsonObject& playbackConfig, QJsonObject* state) {
     if (!state) {
@@ -192,10 +213,8 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         return false;
     }
 
-    QFile htmlFile("control_server_webpage.html");
-    if (htmlFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QByteArray htmlContent = htmlFile.readAll();
-        htmlFile.close();
+    const QByteArray htmlContent = cachedControlServerRootHtml();
+    if (!htmlContent.isEmpty()) {
         writeResponse(socket, 200, htmlContent, "text/html; charset=utf-8");
     } else {
         QByteArray simpleHtml = R"(
@@ -772,30 +791,20 @@ bool ControlServerWorker::handleHistoryRoutes(QTcpSocket* socket, const Request&
 bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request& request) {
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/pipeline")) {
         m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
-        const QUrlQuery query(request.url);
-        const bool refresh = queryBool(query, QStringLiteral("refresh"));
+        QJsonObject preview;
         QString liveError;
-        if ((refresh || m_lastProfileSnapshot.isEmpty()) &&
-            !refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &liveError)) {
-            m_lastProfileRefreshError = liveError;
-        }
-
-        if (m_lastProfileSnapshot.isEmpty()) {
-            const QString error = m_lastProfileRefreshError.isEmpty()
-                ? QStringLiteral("pipeline snapshot unavailable; profile cache warming")
-                : m_lastProfileRefreshError;
+        if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, &preview, &liveError)) {
+            const QString error = liveError.isEmpty()
+                ? QStringLiteral("pipeline snapshot unavailable")
+                : liveError;
             writeError(socket, 503, error);
             return true;
         }
 
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const QJsonObject preview = m_lastProfileSnapshot.value(QStringLiteral("preview")).toObject();
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
-            {QStringLiteral("live"), m_lastProfileSnapshotMs > 0 &&
-                 (now - m_lastProfileSnapshotMs) <= m_profileCacheFreshMs},
-            {QStringLiteral("snapshot_age_ms"),
-             m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1},
+            {QStringLiteral("live"), true},
+            {QStringLiteral("snapshot_age_ms"), 0},
             {QStringLiteral("backend"), preview.value(QStringLiteral("backend")).toString()},
             {QStringLiteral("pipeline"), preview.value(QStringLiteral("pipeline_stages")).toArray()},
             {QStringLiteral("preview"), preview}
@@ -804,53 +813,70 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
     }
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/profile")) {
-        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+        const QUrlQuery query(request.url);
+        const bool liveRequested =
+            queryBool(query, QStringLiteral("live")) || queryBool(query, QStringLiteral("refresh"));
         const QJsonObject snapshot = fastSnapshot();
+        const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
         const bool uiResponsive =
             snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
             m_uiHeartbeatStaleMs;
-        if (m_lastProfileSnapshot.isEmpty()) {
-            QString liveError;
-            if (refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &liveError)) {
-                writeJson(socket, 200, QJsonObject{
-                    {QStringLiteral("ok"), true},
-                    {QStringLiteral("live"), true},
-                    {QStringLiteral("ui_thread_responsive"), uiResponsive},
-                    {QStringLiteral("ui_error"), QString()},
-                    {QStringLiteral("profile"), m_lastProfileSnapshot},
-                    {QStringLiteral("served_cached"), false},
-                    {QStringLiteral("cache"), profileCacheMeta()},
-                    {QStringLiteral("fast_snapshot"), snapshot}
-                });
-                return true;
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        const qint64 ageMs = m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1;
+        const bool cacheFresh = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
+        QString liveError;
+        QString refreshSkippedReason;
+
+        if (liveRequested) {
+            m_lastProfileDemandMs = now;
+            if (playbackActive && cacheFresh) {
+                refreshSkippedReason = QStringLiteral("playback_active_cache_fresh");
+            } else if (!refreshProfileCacheFromUi(m_uiInvokeTimeoutMs, &liveError)) {
+                m_lastProfileRefreshError = liveError;
+            } else {
+                m_lastProfileRefreshError.clear();
             }
-            m_lastProfileRefreshError = liveError;
+        } else if (m_lastProfileSnapshot.isEmpty() && !playbackActive) {
+            if (!refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &liveError)) {
+                m_lastProfileRefreshError = liveError;
+            } else {
+                m_lastProfileRefreshError.clear();
+            }
+        } else if (m_lastProfileSnapshot.isEmpty() && playbackActive) {
+            refreshSkippedReason = QStringLiteral("playback_active_cache_warming");
+        }
+
+        if (m_lastProfileSnapshot.isEmpty()) {
             const QString error = m_lastProfileRefreshError.isEmpty()
                 ? QStringLiteral("profile snapshot unavailable; cache warming")
                 : m_lastProfileRefreshError;
             writeJson(socket, 200, QJsonObject{
                 {QStringLiteral("ok"), false},
                 {QStringLiteral("live"), false},
+                {QStringLiteral("live_requested"), liveRequested},
                 {QStringLiteral("ui_thread_responsive"), uiResponsive},
                 {QStringLiteral("ui_error"), error},
+                {QStringLiteral("refresh_skipped_reason"), refreshSkippedReason},
                 {QStringLiteral("profile"), QJsonObject{}},
                 {QStringLiteral("served_cached"), false},
+                {QStringLiteral("snapshot_age_ms"), -1},
                 {QStringLiteral("cache"), profileCacheMeta()},
                 {QStringLiteral("fast_snapshot"), snapshot}
             });
             return true;
         }
         ++m_profileServedCachedCount;
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const qint64 ageMs = m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1;
         const bool live = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), live},
+            {QStringLiteral("live_requested"), liveRequested},
             {QStringLiteral("ui_thread_responsive"), uiResponsive},
             {QStringLiteral("ui_error"), m_lastProfileRefreshError},
+            {QStringLiteral("refresh_skipped_reason"), refreshSkippedReason},
             {QStringLiteral("profile"), m_lastProfileSnapshot},
             {QStringLiteral("served_cached"), true},
+            {QStringLiteral("snapshot_age_ms"), ageMs},
             {QStringLiteral("cache"), profileCacheMeta()},
             {QStringLiteral("fast_snapshot"), snapshot}
         });
@@ -859,7 +885,6 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
 
     if (request.method == QStringLiteral("GET") &&
         request.url.path() == QStringLiteral("/profile/startup")) {
-        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
         if (m_lastProfileSnapshot.isEmpty()) {
             const QString error = m_lastProfileRefreshError.isEmpty()
                 ? QStringLiteral("profile snapshot unavailable; cache warming")

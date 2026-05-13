@@ -109,12 +109,14 @@ void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath
 }
 
 const QVector<TranscriptSection>& PreviewWindow::transcriptSectionsForClip(const TimelineClip& clip) const {
+    static const QVector<TranscriptSection> kEmpty;
     const QString key = clip.filePath;
     auto it = m_transcriptSectionsCache.find(key);
     if (it == m_transcriptSectionsCache.end()) {
-        it = m_transcriptSectionsCache.insert(key, loadTranscriptSections(activeTranscriptPathForClipFile(clip.filePath)));
+        it = m_transcriptSectionsCache.insert(
+            key, loadTranscriptRuntimeDocument(activeTranscriptPathForClipFile(clip.filePath)));
     }
-    return it.value();
+    return it.value() ? it.value()->sections : kEmpty;
 }
 
 const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPointsForClip(const TimelineClip& clip) const {
@@ -145,14 +147,8 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
     SpeakerTrackPointCacheEntry entry;
     entry.transcriptMtimeMs = transcriptMtimeMs;
     entry.artifactMtimeMs = artifactMtimeMs;
-    QFile file(transcriptPath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
-        return it->points;
-    }
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+    QJsonDocument doc;
+    if (!loadTranscriptJsonCached(transcriptPath, &doc) || !doc.isObject()) {
         it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
         return it->points;
     }

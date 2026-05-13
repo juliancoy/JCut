@@ -1,6 +1,7 @@
 #include "opengl_preview.h"
 #include "opengl_preview_debug.h"
 #include "debug_controls.h"
+#include "editor_shared.h"
 #include "titles.h"
 #include "decoder_image_io.h"
 #include "preview_frame_selection.h"
@@ -114,57 +115,53 @@ const HoverSpeakerProfile* hoverSpeakerProfileFor(const QString& transcriptPath,
     if (entry.mtimeMs != mtimeMs || entry.profilesBySpeaker.isEmpty()) {
         entry = HoverSpeakerProfileCacheEntry{};
         entry.mtimeMs = mtimeMs;
-        QFile transcriptFile(transcriptPath);
-        if (transcriptFile.open(QIODevice::ReadOnly)) {
-            QJsonParseError parseError;
-            const QJsonDocument doc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-            if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
-                const QJsonObject root = doc.object();
-                const QHash<QString, QStringList> wordsBySpeaker =
-                    wordsBySpeakerFromTranscriptRoot(root);
-                const QJsonObject profiles = root.value(QStringLiteral("speaker_profiles")).toObject();
-                QSet<QString> speakerIds;
-                for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
-                    speakerIds.insert(it.key());
+        QJsonDocument doc;
+        if (loadTranscriptJsonCached(transcriptPath, &doc) && doc.isObject()) {
+            const QJsonObject root = doc.object();
+            const QHash<QString, QStringList> wordsBySpeaker =
+                wordsBySpeakerFromTranscriptRoot(root);
+            const QJsonObject profiles = root.value(QStringLiteral("speaker_profiles")).toObject();
+            QSet<QString> speakerIds;
+            for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
+                speakerIds.insert(it.key());
+            }
+            for (auto it = profiles.begin(); it != profiles.end(); ++it) {
+                speakerIds.insert(it.key());
+            }
+            for (const QString& id : speakerIds) {
+                const QJsonObject profileObj = profiles.value(id).toObject();
+                HoverSpeakerProfile profile;
+                profile.speakerId = id;
+                profile.name = profileObj.value(QStringLiteral("name")).toString(id).trimmed();
+                profile.organization = profileObj.value(QStringLiteral("organization")).toString().trimmed();
+                QString description =
+                    profileObj.value(QStringLiteral("brief_description")).toString().trimmed();
+                if (description.isEmpty()) {
+                    description = profileObj.value(QStringLiteral("description")).toString().trimmed();
                 }
-                for (auto it = profiles.begin(); it != profiles.end(); ++it) {
-                    speakerIds.insert(it.key());
+                if (description.isEmpty()) {
+                    description = profileObj.value(QStringLiteral("bio")).toString().trimmed();
                 }
-                for (const QString& id : speakerIds) {
-                    const QJsonObject profileObj = profiles.value(id).toObject();
-                    HoverSpeakerProfile profile;
-                    profile.speakerId = id;
-                    profile.name = profileObj.value(QStringLiteral("name")).toString(id).trimmed();
-                    profile.organization = profileObj.value(QStringLiteral("organization")).toString().trimmed();
-                    QString description =
-                        profileObj.value(QStringLiteral("brief_description")).toString().trimmed();
-                    if (description.isEmpty()) {
-                        description = profileObj.value(QStringLiteral("description")).toString().trimmed();
-                    }
-                    if (description.isEmpty()) {
-                        description = profileObj.value(QStringLiteral("bio")).toString().trimmed();
-                    }
-                    if (description.isEmpty()) {
-                        description = clippedSummaryFromWords(wordsBySpeaker.value(id));
-                    }
-                    profile.description = description;
-                    QString imagePath =
-                        profileObj.value(QStringLiteral("image_path")).toString().trimmed();
-                    if (imagePath.isEmpty()) {
-                        imagePath = profileObj.value(QStringLiteral("avatar_path")).toString().trimmed();
-                    }
-                    if (imagePath.isEmpty()) {
-                        imagePath = profileObj.value(QStringLiteral("photo_path")).toString().trimmed();
-                    }
-                    if (imagePath.isEmpty()) {
-                        imagePath = profileObj.value(QStringLiteral("image")).toString().trimmed();
-                    }
-                    if (!imagePath.isEmpty() && QDir::isRelativePath(imagePath)) {
-                        imagePath = QFileInfo(info.absolutePath(), imagePath).absoluteFilePath();
-                    }
-                    profile.imagePath = imagePath;
-                    entry.profilesBySpeaker.insert(id, profile);
+                if (description.isEmpty()) {
+                    description = clippedSummaryFromWords(wordsBySpeaker.value(id));
                 }
+                profile.description = description;
+                QString imagePath =
+                    profileObj.value(QStringLiteral("image_path")).toString().trimmed();
+                if (imagePath.isEmpty()) {
+                    imagePath = profileObj.value(QStringLiteral("avatar_path")).toString().trimmed();
+                }
+                if (imagePath.isEmpty()) {
+                    imagePath = profileObj.value(QStringLiteral("photo_path")).toString().trimmed();
+                }
+                if (imagePath.isEmpty()) {
+                    imagePath = profileObj.value(QStringLiteral("image")).toString().trimmed();
+                }
+                if (!imagePath.isEmpty() && QDir::isRelativePath(imagePath)) {
+                    imagePath = QFileInfo(info.absolutePath(), imagePath).absoluteFilePath();
+                }
+                profile.imagePath = imagePath;
+                entry.profilesBySpeaker.insert(id, profile);
             }
         }
     }
@@ -733,8 +730,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                                     m_interaction.currentFramePosition);
         if (frame.isNull()) {
             if (usePlaybackPipeline && m_playbackPipeline && m_interaction.playing) {
-                static constexpr int kMaxVisibleBacklog = 4;
-                if (m_playbackPipeline->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
+                if (m_playbackPipeline->pendingVisibleRequestCount() < m_playbackTuning.visibleBacklogLimit) {
                     m_lastFrameRequestMs = nowMs();
                     m_playbackPipeline->requestFramesForSample(
                         m_interaction.currentSample,
@@ -816,6 +812,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         {QStringLiteral("null"), nullCount},
         {QStringLiteral("clips"), clipSelections}
     };
+    recordPlaybackSmoothnessSample(m_lastFrameSelectionStats);
 
     if (!drewAnyFrame) {
         const TimelineClip& primaryClip = activeClips.constFirst();

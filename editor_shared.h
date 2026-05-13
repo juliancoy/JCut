@@ -11,6 +11,7 @@
 #include <QSize>
 #include <QString>
 #include <QStringList>
+#include <memory>
 
 #include <cstdint>
 
@@ -39,6 +40,12 @@ struct TranscriptSection {
     int64_t endFrame = 0;
     QString text;
     QVector<TranscriptWord> words;
+};
+
+struct TranscriptRuntimeDocument {
+    qint64 mtimeMs = -1;
+    qint64 fileSize = -1;
+    QVector<TranscriptSection> sections;
 };
 
 struct SpeakerProfile {
@@ -256,6 +263,8 @@ void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& 
 void clearActiveTranscriptPathForClipFile(const QString& filePath);
 void clearAllActiveTranscriptPaths();
 bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* editablePathOut = nullptr);
+bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut);
+std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath);
 QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath);
 QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
                                                 const QVector<TranscriptSection>& sections,
@@ -268,6 +277,7 @@ bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clip
                                                              QPointF* locationOut,
                                                              qreal* boxSizeOut);
 void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath = QString());
+void invalidateTranscriptJsonCache(const QString& transcriptPath = QString());
 QJsonObject transcriptSpeakerTrackingConfigSnapshot();
 bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch,
                                                QString* errorOut = nullptr);

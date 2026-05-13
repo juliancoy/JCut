@@ -632,6 +632,14 @@ QWidget *InspectorPane::buildPipelineTab()
     auto *layout = createTabLayout(page);
     layout->addWidget(createTabHeading(QStringLiteral("Pipeline"), page));
 
+    m_pipelinePreviewHost = new QWidget(page);
+    m_pipelinePreviewHost->setObjectName(QStringLiteral("pipelinePreviewHost"));
+    m_pipelinePreviewHost->setMinimumHeight(180);
+    m_pipelinePreviewHost->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_pipelinePreviewHost->setStyleSheet(QStringLiteral(
+        "background:#05080c; border:1px solid #1c2732; border-radius:6px;"));
+    layout->addWidget(m_pipelinePreviewHost);
+
     m_pipelineStageList = new QListWidget(page);
     m_pipelineStageList->setViewMode(QListView::ListMode);
     m_pipelineStageList->setResizeMode(QListView::Adjust);

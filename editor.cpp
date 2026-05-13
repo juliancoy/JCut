@@ -110,6 +110,31 @@ EditorWindow::EditorWindow(quint16 controlPort)
 
     setupPlaybackTimers();
     startupProfileMark(QStringLiteral("setup.playback_timers.done"));
+    m_transcriptNormalizeRefreshTimer.setSingleShot(true);
+    m_transcriptNormalizeRefreshTimer.setTimerType(Qt::CoarseTimer);
+    connect(&m_transcriptNormalizeRefreshTimer, &QTimer::timeout,
+            this, &EditorWindow::startTranscriptNormalizeRangeRefresh);
+    connect(&m_transcriptNormalizeRefreshWatcher, &QFutureWatcher<QVector<ExportRangeSegment>>::finished,
+            this, [this]() {
+                const qint64 completedGeneration =
+                    m_transcriptNormalizeRefreshWatcher.property("generation").toLongLong();
+                if (completedGeneration < m_appliedTranscriptNormalizeRefreshGeneration) {
+                    if (m_transcriptNormalizeRefreshGeneration > completedGeneration &&
+                        !m_transcriptNormalizeRefreshTimer.isActive()) {
+                        startTranscriptNormalizeRangeRefresh();
+                    }
+                    return;
+                }
+                m_appliedTranscriptNormalizeRefreshGeneration = completedGeneration;
+                if (m_audioEngine) {
+                    m_audioEngine->setTranscriptNormalizeRanges(
+                        m_transcriptNormalizeRefreshWatcher.result());
+                }
+                if (m_transcriptNormalizeRefreshGeneration > completedGeneration &&
+                    !m_transcriptNormalizeRefreshTimer.isActive()) {
+                    startTranscriptNormalizeRangeRefresh();
+                }
+            });
     setupShortcuts();
     startupProfileMark(QStringLiteral("setup.shortcuts.done"));
     setupHeartbeat();

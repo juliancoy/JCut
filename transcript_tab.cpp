@@ -20,9 +20,11 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QMetaObject>
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSet>
+#include <QtConcurrent/QtConcurrentRun>
 #include <cmath>
 #include <limits>
 
@@ -93,6 +95,15 @@ bool clipSupportsTranscript(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
 }
 
+bool shouldUseSynchronousTranscriptIo()
+{
+    if (qEnvironmentVariableIntValue("JCUT_SYNC_TRANSCRIPT_IO") == 1) {
+        return true;
+    }
+    const QString appName = QCoreApplication::applicationName().trimmed().toLower();
+    return appName.startsWith(QStringLiteral("test_")) || appName.contains(QStringLiteral("qtest"));
+}
+
 QString transcriptCutStateLabel(bool mutableCut)
 {
     return mutableCut ? QStringLiteral("Editable Cut") : QStringLiteral("Original (Immutable)");
@@ -123,6 +134,58 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         m_refreshQueued = false;
         refresh();
     });
+    connect(&m_transcriptLoadWatcher, &QFutureWatcher<TranscriptLoadResult>::finished, this, [this]() {
+        const TranscriptLoadResult result = m_transcriptLoadWatcher.result();
+        if (!result.ok) {
+            if (result.transcriptPath == m_loadedTranscriptPath &&
+                result.clipFilePath == m_loadedClipFilePath &&
+                m_widgets.transcriptInspectorDetailsLabel) {
+                m_widgets.transcriptInspectorDetailsLabel->setText(
+                    result.error.isEmpty() ? QStringLiteral("Invalid transcript JSON file.") : result.error);
+            }
+            return;
+        }
+        if (result.transcriptPath != m_loadedTranscriptPath || result.clipFilePath != m_loadedClipFilePath) {
+            return;
+        }
+        m_loadedTranscriptDoc = result.document;
+        const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        if (!clip || clip->filePath != result.clipFilePath) {
+            return;
+        }
+        applyLoadedTranscriptDocumentData(*clip, originalTranscriptPathForClip(result.clipFilePath));
+    });
+    connect(&m_transcriptSaveWatcher, &QFutureWatcher<TranscriptSaveResult>::finished, this, [this]() {
+        const TranscriptSaveResult result = m_transcriptSaveWatcher.result();
+        if (!result.ok) {
+            qWarning().noquote()
+                << QStringLiteral("[transcript] async save failed for %1: %2")
+                       .arg(result.transcriptPath,
+                            result.error.isEmpty() ? QStringLiteral("unknown error") : result.error);
+        }
+        if (m_pendingTranscriptSaveRevision > result.revision &&
+            !m_pendingTranscriptSavePath.trimmed().isEmpty() &&
+            m_pendingTranscriptSaveDoc.isObject()) {
+            const QString path = m_pendingTranscriptSavePath;
+            const QJsonDocument doc = m_pendingTranscriptSaveDoc;
+            const qint64 revision = m_pendingTranscriptSaveRevision;
+            m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
+                TranscriptSaveResult next;
+                next.transcriptPath = path;
+                next.revision = revision;
+                if (path.trimmed().isEmpty() || !doc.isObject()) {
+                    next.error = QStringLiteral("Invalid transcript save payload.");
+                    return next;
+                }
+                editor::TranscriptEngine engine;
+                next.ok = engine.saveTranscriptJson(path, doc);
+                if (!next.ok) {
+                    next.error = QStringLiteral("saveTranscriptJson returned false.");
+                }
+                return next;
+            }));
+        }
+    });
 }
 
 bool TranscriptTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
@@ -142,10 +205,91 @@ bool TranscriptTab::updateLoadedTranscriptDocument(const std::function<bool(QJso
 
 bool TranscriptTab::saveLoadedTranscriptDocument()
 {
-    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (m_loadedTranscriptPath.trimmed().isEmpty()) {
         return false;
     }
-    return m_transcriptEngine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+    rehydrateLoadedTranscriptDocumentFromMemory();
+    if (!m_loadedTranscriptDoc.isObject()) {
+        return false;
+    }
+    queueLoadedTranscriptDocumentSave();
+    return true;
+}
+
+void TranscriptTab::queueLoadedTranscriptDocumentSave()
+{
+    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+    ++m_transcriptSaveRevision;
+    m_pendingTranscriptSaveRevision = m_transcriptSaveRevision;
+    m_pendingTranscriptSavePath = m_loadedTranscriptPath;
+    m_pendingTranscriptSaveDoc = m_loadedTranscriptDoc;
+    if (shouldUseSynchronousTranscriptIo()) {
+        m_transcriptEngine.saveTranscriptJson(m_pendingTranscriptSavePath, m_pendingTranscriptSaveDoc);
+        return;
+    }
+    if (m_transcriptSaveWatcher.isRunning()) {
+        return;
+    }
+    const QString path = m_pendingTranscriptSavePath;
+    const QJsonDocument doc = m_pendingTranscriptSaveDoc;
+    const qint64 revision = m_pendingTranscriptSaveRevision;
+    m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
+        TranscriptSaveResult result;
+        result.transcriptPath = path;
+        result.revision = revision;
+        if (path.trimmed().isEmpty() || !doc.isObject()) {
+            result.error = QStringLiteral("Invalid transcript save payload.");
+            return result;
+        }
+        editor::TranscriptEngine engine;
+        result.ok = engine.saveTranscriptJson(path, doc);
+        if (!result.ok) {
+            result.error = QStringLiteral("saveTranscriptJson returned false.");
+        }
+        return result;
+    }));
+}
+
+void TranscriptTab::startTranscriptLoadRequest(const QString& clipFilePath, const QString& transcriptPath)
+{
+    if (clipFilePath.trimmed().isEmpty() || transcriptPath.trimmed().isEmpty()) {
+        return;
+    }
+    if (shouldUseSynchronousTranscriptIo()) {
+        QString error;
+        QJsonDocument document;
+        if (m_transcriptEngine.loadTranscriptJson(transcriptPath, &document, &error)) {
+            m_loadedTranscriptDoc = document;
+            const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+            if (clip && clip->filePath == clipFilePath) {
+                applyLoadedTranscriptDocumentData(*clip, originalTranscriptPathForClip(clipFilePath));
+            }
+        } else if (m_widgets.transcriptInspectorDetailsLabel) {
+            m_widgets.transcriptInspectorDetailsLabel->setText(
+                error.isEmpty() ? QStringLiteral("Invalid transcript JSON file.") : error);
+        }
+        return;
+    }
+    ++m_transcriptLoadRequestId;
+    const qint64 requestId = m_transcriptLoadRequestId;
+    if (m_widgets.transcriptInspectorDetailsLabel) {
+        m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Loading transcript..."));
+    }
+    m_transcriptLoadWatcher.setFuture(QtConcurrent::run([clipFilePath, transcriptPath, requestId]() {
+        Q_UNUSED(requestId);
+        TranscriptLoadResult result;
+        result.clipFilePath = clipFilePath;
+        result.transcriptPath = transcriptPath;
+        editor::TranscriptEngine engine;
+        QString error;
+        result.ok = engine.loadTranscriptJson(transcriptPath, &result.document, &error);
+        if (!result.ok) {
+            result.error = error.isEmpty() ? QStringLiteral("Invalid transcript JSON file.") : error;
+        }
+        return result;
+    }));
 }
 
 void TranscriptTab::requestRefresh(int delayMs)
@@ -365,6 +509,9 @@ void TranscriptTab::refresh()
         m_widgets.transcriptTable->setRowCount(0);
     }
     m_followRanges.clear();
+    m_excludedRanges.clear();
+    m_allTranscriptRows.clear();
+    m_wordEditIndex.clear();
     m_lastSyncRow = -1;
     if (m_widgets.transcriptPrependMsSpin) {
         m_transcriptPrependMs = qMax(0, m_widgets.transcriptPrependMsSpin->value());
@@ -384,9 +531,15 @@ void TranscriptTab::refresh()
         m_loadedTranscriptPath.clear();
         m_loadedClipFilePath.clear();
         m_loadedTranscriptDoc = QJsonDocument();
+        m_transcriptDocumentSegments.clear();
+        m_transcriptWordAddressById.clear();
+        m_renderOrderedWordIds.clear();
+        m_allTranscriptRows.clear();
+        m_wordEditIndex.clear();
         m_persistedSelectedClipId.clear();
         m_persistedSelectedSegmentIndex = -1;
         m_persistedSelectedWordIndex = -1;
+        m_persistedSelectedWordId = -1;
         if (m_widgets.transcriptInspectorClipLabel) {
             m_widgets.transcriptInspectorClipLabel->setText(QString());
             m_widgets.transcriptInspectorClipLabel->setPlaceholderText(QStringLiteral("No transcript selected"));
@@ -531,25 +684,15 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
     }
 
     // If playhead is inside a skipped/outside-cut region, do not auto-select nearby rows.
-    for (int row = 0; row < m_widgets.transcriptTable->rowCount(); ++row) {
-        QTableWidgetItem* item = m_widgets.transcriptTable->item(row, 0);
-        if (!item) {
-            continue;
-        }
-        const bool isSkipped = item->data(Qt::UserRole + 7).toBool();
-        const bool isOutsideCut = item->data(Qt::UserRole + 12).toBool();
-        if (!isSkipped && !isOutsideCut) {
-            continue;
-        }
-        const int64_t startFrame = item->data(Qt::UserRole + 2).toLongLong();
-        const int64_t endFrame = item->data(Qt::UserRole + 3).toLongLong();
-        if (endFrame >= startFrame &&
-            currentSourceFrame >= startFrame &&
-            currentSourceFrame <= endFrame) {
-            m_widgets.transcriptTable->clearSelection();
-            m_lastSyncRow = -1;
-            return;
-        }
+    const auto excludedIt = std::lower_bound(
+        m_excludedRanges.cbegin(), m_excludedRanges.cend(), currentSourceFrame,
+        [](const ExcludedRange& range, int64_t frame) { return range.endFrame < frame; });
+    if (excludedIt != m_excludedRanges.cend() &&
+        excludedIt->startFrame <= currentSourceFrame &&
+        currentSourceFrame <= excludedIt->endFrame) {
+        m_widgets.transcriptTable->clearSelection();
+        m_lastSyncRow = -1;
+        return;
     }
 
     int matchingRow = -1;
@@ -630,40 +773,28 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
 
     if (matchingRow >= 0 && playbackSampleMoved) {
         if (forwardMotion && matchingRow == previousEligibleRow && nextEligibleRow >= 0) {
-            QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(nextEligibleRow, 0);
-            if (nextItem) {
-                const int64_t nextStartFrame = nextItem->data(Qt::UserRole + 2).toLongLong();
-                if ((nextStartFrame - currentSourceFrame) <= maxGapFrames) {
-                    matchingRow = nextEligibleRow;
-                }
+            const FollowRange& nextRange = m_followRanges.at(upperIndex);
+            if ((nextRange.startFrame - currentSourceFrame) <= maxGapFrames) {
+                matchingRow = nextEligibleRow;
             }
         } else if (backwardMotion && matchingRow == nextEligibleRow && previousEligibleRow >= 0) {
-            QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(previousEligibleRow, 0);
-            if (prevItem) {
-                const int64_t prevEndFrame = prevItem->data(Qt::UserRole + 3).toLongLong();
-                if ((currentSourceFrame - prevEndFrame) <= maxGapFrames) {
-                    matchingRow = previousEligibleRow;
-                }
+            const FollowRange& previousRange = m_followRanges.at(previousIndex);
+            if ((currentSourceFrame - previousRange.endFrame) <= maxGapFrames) {
+                matchingRow = previousEligibleRow;
             }
         }
     }
 
     if (matchingRow < 0) {
         if (forwardMotion && nextEligibleRow >= 0) {
-            QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(nextEligibleRow, 0);
-            if (nextItem) {
-                const int64_t nextStartFrame = nextItem->data(Qt::UserRole + 2).toLongLong();
-                if ((nextStartFrame - currentSourceFrame) <= maxGapFrames) {
-                    matchingRow = nextEligibleRow;
-                }
+            const FollowRange& nextRange = m_followRanges.at(upperIndex);
+            if ((nextRange.startFrame - currentSourceFrame) <= maxGapFrames) {
+                matchingRow = nextEligibleRow;
             }
         } else if (backwardMotion && previousEligibleRow >= 0) {
-            QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(previousEligibleRow, 0);
-            if (prevItem) {
-                const int64_t prevEndFrame = prevItem->data(Qt::UserRole + 3).toLongLong();
-                if ((currentSourceFrame - prevEndFrame) <= maxGapFrames) {
-                    matchingRow = previousEligibleRow;
-                }
+            const FollowRange& previousRange = m_followRanges.at(previousIndex);
+            if ((currentSourceFrame - previousRange.endFrame) <= maxGapFrames) {
+                matchingRow = previousEligibleRow;
             }
         } else if (nearestEligibleRow >= 0 && nearestDistance <= maxGapFrames) {
             matchingRow = nearestEligibleRow;
@@ -706,20 +837,14 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
         return;
     }
 
-    const int segmentIndex = item->data(Qt::UserRole + 5).toInt();
-    const int wordIndex = item->data(Qt::UserRole + 6).toInt();
+    const int wordId = item->data(Qt::UserRole + 16).toInt();
     const bool isGap = item->data(Qt::UserRole + 4).toBool();
-    if (isGap || segmentIndex < 0 || wordIndex < 0) return;
-
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-    if (segmentIndex >= segments.size()) return;
-
-    QJsonObject segmentObj = segments.at(segmentIndex).toObject();
-    QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-    if (wordIndex >= words.size()) return;
-
-    QJsonObject wordObj = words.at(wordIndex).toObject();
+    if (isGap || wordId < 0) return;
+    TranscriptDocumentWord* word = transcriptWordById(wordId);
+    if (!word) {
+        refresh();
+        return;
+    }
     if (item->column() == kTranscriptColSourceStart || item->column() == kTranscriptColSourceEnd) {
         double seconds = 0.0;
         if (!m_transcriptEngine.parseTranscriptTime(item->text(), &seconds)) {
@@ -727,41 +852,36 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
             return;
         }
         if (item->column() == kTranscriptColSourceStart) {
-            const double currentEnd = wordObj.value(QStringLiteral("end")).toDouble(seconds);
-            const double currentStart = wordObj.value(QStringLiteral("start")).toDouble(seconds);
+            const double currentEnd = word->endSeconds;
+            const double currentStart = word->startSeconds;
             if (!qFuzzyCompare(currentStart + 1.0, qMin(seconds, currentEnd) + 1.0)) {
-                transcriptAppendEditTag(&wordObj, QString(kTranscriptEditTimingTag));
+                if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
+                    word->editTags.push_back(QString(kTranscriptEditTimingTag));
+                }
             }
-            wordObj[QStringLiteral("start")] = qMin(seconds, currentEnd);
+            word->startSeconds = qMin(seconds, currentEnd);
         } else {
-            const double currentStart = wordObj.value(QStringLiteral("start")).toDouble(0.0);
-            const double currentEnd = wordObj.value(QStringLiteral("end")).toDouble(currentStart);
+            const double currentStart = word->startSeconds;
+            const double currentEnd = word->endSeconds;
             if (!qFuzzyCompare(currentEnd + 1.0, qMax(seconds, currentStart) + 1.0)) {
-                transcriptAppendEditTag(&wordObj, QString(kTranscriptEditTimingTag));
+                if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
+                    word->editTags.push_back(QString(kTranscriptEditTimingTag));
+                }
             }
-            wordObj[QStringLiteral("end")] = qMax(seconds, currentStart);
+            word->endSeconds = qMax(seconds, currentStart);
         }
     } else if (item->column() == kTranscriptColText) {
-        if (wordObj.value(QStringLiteral("word")).toString() != item->text()) {
-            transcriptAppendEditTag(&wordObj, QString(kTranscriptEditTextTag));
+        if (word->text != item->text()) {
+            if (!word->editTags.contains(QString(kTranscriptEditTextTag))) {
+                word->editTags.push_back(QString(kTranscriptEditTextTag));
+            }
         }
-        wordObj[QStringLiteral("word")] = item->text();
+        word->text = item->text();
     } else {
         return;
     }
-
-    words.replace(wordIndex, wordObj);
-    segmentObj[QStringLiteral("words")] = words;
-    segments.replace(segmentIndex, segmentObj);
-    root[QStringLiteral("segments")] = segments;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-            loadedRoot = root;
-            return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
-        return;
-    }
-
+    rehydrateLoadedTranscriptDocumentFromMemory();
+    saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
@@ -783,52 +903,47 @@ void TranscriptTab::deleteSelectedRows()
     const QModelIndexList selectedRows = selectionModel->selectedRows();
     if (selectedRows.isEmpty()) return;
 
-    QSet<quint64> deleteKeys;
+    QSet<int> deleteWordIds;
     for (const QModelIndex& index : selectedRows) {
         const int row = index.row();
         QTableWidgetItem* item = m_widgets.transcriptTable->item(row, 0);
         if (!item || item->data(Qt::UserRole + 4).toBool() || item->data(Qt::UserRole + 12).toBool()) continue;
-        const int segmentIndex = item->data(Qt::UserRole + 5).toInt();
-        const int wordIndex = item->data(Qt::UserRole + 6).toInt();
-        if (segmentIndex < 0 || wordIndex < 0) continue;
-        deleteKeys.insert((static_cast<quint64>(segmentIndex) << 32) |
-                          static_cast<quint32>(wordIndex));
+        const int wordId = item->data(Qt::UserRole + 16).toInt();
+        if (wordId < 0) continue;
+        deleteWordIds.insert(wordId);
     }
-    if (deleteKeys.isEmpty()) return;
+    if (deleteWordIds.isEmpty()) return;
 
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     int deletedCount = 0;
-    for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
-        QJsonObject segmentObj = segments.at(segmentIndex).toObject();
-        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-        QJsonArray filteredWords;
-        for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
-            const quint64 key = (static_cast<quint64>(segmentIndex) << 32) |
-                                static_cast<quint32>(wordIndex);
-            if (!deleteKeys.contains(key)) {
-                filteredWords.push_back(words.at(wordIndex));
-            } else {
+    for (int segmentIndex = 0; segmentIndex < m_transcriptDocumentSegments.size(); ++segmentIndex) {
+        auto& words = m_transcriptDocumentSegments[segmentIndex].words;
+        QVector<TranscriptDocumentWord> filteredWords;
+        filteredWords.reserve(words.size());
+        for (const TranscriptDocumentWord& word : std::as_const(words)) {
+            if (deleteWordIds.contains(word.wordId)) {
                 ++deletedCount;
+            } else {
+                filteredWords.push_back(word);
             }
         }
-        segmentObj[QStringLiteral("words")] = filteredWords;
-        segments.replace(segmentIndex, segmentObj);
+        words = std::move(filteredWords);
     }
+    m_renderOrderedWordIds.erase(
+        std::remove_if(m_renderOrderedWordIds.begin(), m_renderOrderedWordIds.end(),
+                       [&deleteWordIds](const int wordId) { return deleteWordIds.contains(wordId); }),
+        m_renderOrderedWordIds.end());
+    rebuildTranscriptWordAddressIndex();
 
-    root[QStringLiteral("segments")] = segments;
     if (deletedCount > 0) {
-        const int previousDeletedEdits = root.value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
-        root[QString(kTranscriptDeletedEditsCountKey)] = previousDeletedEdits + deletedCount;
-    }
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-            loadedRoot = root;
+        updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+            const int previousDeletedEdits = loadedRoot.value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
+            loadedRoot[QString(kTranscriptDeletedEditsCountKey)] = previousDeletedEdits + deletedCount;
             return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
-        return;
+        });
     }
-
+    normalizeTranscriptRenderOrder();
+    rehydrateLoadedTranscriptDocumentFromMemory();
+    saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
@@ -855,63 +970,43 @@ void TranscriptTab::setSelectedRowsSkipped(bool skipped)
         return;
     }
 
-    QSet<quint64> targetKeys;
+    QSet<int> targetWordIds;
     for (const QModelIndex& index : selectedRows) {
         QTableWidgetItem* item = m_widgets.transcriptTable->item(index.row(), 0);
         if (!item || item->data(Qt::UserRole + 4).toBool() || item->data(Qt::UserRole + 12).toBool()) {
             continue;
         }
-        const int segmentIndex = item->data(Qt::UserRole + 5).toInt();
-        const int wordIndex = item->data(Qt::UserRole + 6).toInt();
-        if (segmentIndex < 0 || wordIndex < 0) {
+        const int wordId = item->data(Qt::UserRole + 16).toInt();
+        if (wordId < 0) {
             continue;
         }
-        targetKeys.insert((static_cast<quint64>(segmentIndex) << 32) |
-                          static_cast<quint32>(wordIndex));
+        targetWordIds.insert(wordId);
     }
-    if (targetKeys.isEmpty()) {
+    if (targetWordIds.isEmpty()) {
         return;
     }
 
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     bool changed = false;
-    for (int segmentIndex = 0; segmentIndex < segments.size(); ++segmentIndex) {
-        QJsonObject segmentObj = segments.at(segmentIndex).toObject();
-        QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-        for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
-            const quint64 key = (static_cast<quint64>(segmentIndex) << 32) |
-                                static_cast<quint32>(wordIndex);
-            if (!targetKeys.contains(key)) {
-                continue;
-            }
-            QJsonObject wordObj = words.at(wordIndex).toObject();
-            const bool currentSkipped = wordObj.value(kTranscriptWordSkippedKey).toBool(false);
+    for (const int wordId : std::as_const(targetWordIds)) {
+        if (TranscriptDocumentWord* word = transcriptWordById(wordId)) {
+            const bool currentSkipped = word->skipped;
             if (currentSkipped == skipped) {
                 continue;
             }
-            wordObj[QString(kTranscriptWordSkippedKey)] = skipped;
-            transcriptAppendEditTag(&wordObj, QString(kTranscriptEditSkipTag));
-            words.replace(wordIndex, wordObj);
+            word->skipped = skipped;
+            if (!word->editTags.contains(QString(kTranscriptEditSkipTag))) {
+                word->editTags.push_back(QString(kTranscriptEditSkipTag));
+            }
             changed = true;
         }
-        segmentObj[QStringLiteral("words")] = words;
-        segments.replace(segmentIndex, segmentObj);
     }
 
     if (!changed) {
         return;
     }
 
-    root[QStringLiteral("segments")] = segments;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-            loadedRoot = root;
-            return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
-        return;
-    }
-
+    rehydrateLoadedTranscriptDocumentFromMemory();
+    saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
@@ -1014,6 +1109,7 @@ void TranscriptTab::onTranscriptSelectionChanged()
         }
         m_persistedSelectedSegmentIndex = item->data(Qt::UserRole + 5).toInt();
         m_persistedSelectedWordIndex = item->data(Qt::UserRole + 6).toInt();
+        m_persistedSelectedWordId = item->data(Qt::UserRole + 16).toInt();
     }
 
     const Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
@@ -1306,13 +1402,21 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
 
     const double currentStart = currentItem->data(Qt::UserRole).toDouble();
     const double currentEnd = currentItem->data(Qt::UserRole + 1).toDouble();
-    const int currentSegmentIndex = currentItem->data(Qt::UserRole + 5).toInt();
-    const int currentWordIndex = currentItem->data(Qt::UserRole + 6).toInt();
+    const int currentWordId = currentItem->data(Qt::UserRole + 16).toInt();
+    const auto neighborIt = m_wordEditIndex.constFind(currentWordId);
+    if (neighborIt == m_wordEditIndex.cend()) {
+        return;
+    }
+    const auto addressIt = m_transcriptWordAddressById.constFind(currentWordId);
+    if (addressIt == m_transcriptWordAddressById.cend()) {
+        return;
+    }
+    const int currentSegmentIndex = addressIt->segmentIndex;
+    const int currentWordIndex = addressIt->wordIndex;
 
     double newWordStart, newWordEnd;
     int targetSegmentIndex, targetWordIndex;
-    const QVariant renderOrderVariant = currentItem->data(Qt::UserRole + 15);
-    int insertRenderOrder = renderOrderVariant.isValid() ? renderOrderVariant.toInt() : -1;
+    int insertRenderOrder = neighborIt->renderOrder;
     if (insertRenderOrder < 0) {
         insertRenderOrder = row;
     }
@@ -1320,27 +1424,10 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         ++insertRenderOrder;
     }
     insertRenderOrder = qMax(0, insertRenderOrder);
-    const QString currentSpeaker = currentItem->data(Qt::UserRole + 9).toString().trimmed();
+    const QString currentSpeaker = neighborIt->speaker.trimmed();
 
     if (above) {
-        // Get previous row's end time
-        double prevEnd = 0.0;
-        if (row > 0) {
-            QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(row - 1, 0);
-            if (prevItem && !prevItem->data(Qt::UserRole + 4).toBool()) {
-                prevEnd = prevItem->data(Qt::UserRole + 1).toDouble();
-            } else if (prevItem) {
-                // Previous is a gap, check the one before
-                if (row > 1) {
-                    QTableWidgetItem* prevPrevItem = m_widgets.transcriptTable->item(row - 2, 0);
-                    if (prevPrevItem) {
-                        prevEnd = prevPrevItem->data(Qt::UserRole + 1).toDouble();
-                    }
-                }
-            }
-        }
-        
-        // Place new word between prevEnd and currentStart
+        const double prevEnd = neighborIt->hasPreviousWord ? neighborIt->previousWordEndSeconds : 0.0;
         newWordStart = (prevEnd + currentStart) / 2.0;
         newWordEnd = qMin(newWordStart + 0.1, currentStart - 0.01);
         if (newWordEnd <= newWordStart) {
@@ -1350,24 +1437,7 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         targetSegmentIndex = currentSegmentIndex;
         targetWordIndex = currentWordIndex;
     } else {
-        // Get next row's start time
-        double nextStart = currentEnd + 1.0;
-        if (row < m_widgets.transcriptTable->rowCount() - 1) {
-            QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(row + 1, 0);
-            if (nextItem && !nextItem->data(Qt::UserRole + 4).toBool()) {
-                nextStart = nextItem->data(Qt::UserRole).toDouble();
-            } else if (nextItem) {
-                // Next is a gap, check the one after
-                if (row < m_widgets.transcriptTable->rowCount() - 2) {
-                    QTableWidgetItem* nextNextItem = m_widgets.transcriptTable->item(row + 2, 0);
-                    if (nextNextItem) {
-                        nextStart = nextNextItem->data(Qt::UserRole).toDouble();
-                    }
-                }
-            }
-        }
-        
-        // Place new word between currentEnd and nextStart
+        const double nextStart = neighborIt->hasNextWord ? neighborIt->nextWordStartSeconds : (currentEnd + 1.0);
         newWordStart = (currentEnd + nextStart) / 2.0;
         newWordEnd = qMin(newWordStart + 0.1, nextStart - 0.01);
         if (newWordEnd <= newWordStart || newWordStart < currentEnd) {
@@ -1382,105 +1452,30 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
     newWordStart = qMax(0.0, newWordStart);
     newWordEnd = qMax(newWordStart + 0.01, newWordEnd);
 
-    // Create the new word object
-    QJsonObject newWordObj;
-    newWordObj[QStringLiteral("word")] = QStringLiteral("[new]");
-    if (!currentSpeaker.isEmpty()) {
-        newWordObj[QString(kTranscriptWordSpeakerKey)] = currentSpeaker;
-    }
-    newWordObj[QStringLiteral("start")] = newWordStart;
-    newWordObj[QStringLiteral("end")] = newWordEnd;
-    newWordObj[QString(kTranscriptWordRenderOrderKey)] = insertRenderOrder;
-    newWordObj[QString(kTranscriptWordOriginalSegmentKey)] = -1;
-    newWordObj[QString(kTranscriptWordOriginalWordKey)] = -1;
-    transcriptAppendEditTag(&newWordObj, QString(kTranscriptEditInsertedTag));
+    TranscriptDocumentWord newWord;
+    newWord.wordId = m_nextTranscriptWordId++;
+    newWord.text = QStringLiteral("[new]");
+    newWord.speaker = currentSpeaker;
+    newWord.startSeconds = newWordStart;
+    newWord.endSeconds = newWordEnd;
+    newWord.renderOrder = insertRenderOrder;
+    newWord.originalSegmentIndex = -1;
+    newWord.originalWordIndex = -1;
+    newWord.editTags.push_back(QString(kTranscriptEditInsertedTag));
 
-    // Update the JSON document
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-
-    // Normalize render_order across all words before insertion so below/above placement
-    // remains stable even when older words did not have explicit render_order values.
-    {
-        const QVector<TranscriptRow> orderedRows = parseTranscriptRows(segments, m_transcriptPrependMs, m_transcriptPostpendMs);
-        QHash<quint64, int> desiredOrderByKey;
-        desiredOrderByKey.reserve(orderedRows.size());
-        int nextOrder = 0;
-        for (const TranscriptRow& orderedRow : orderedRows) {
-            if (orderedRow.segmentIndex < 0 || orderedRow.wordIndex < 0) {
-                continue;
-            }
-            const quint64 key = (static_cast<quint64>(orderedRow.segmentIndex) << 32) |
-                                static_cast<quint32>(orderedRow.wordIndex);
-            if (desiredOrderByKey.contains(key)) {
-                continue;
-            }
-            desiredOrderByKey.insert(key, nextOrder++);
-        }
-
-        int fallbackOrder = nextOrder;
-        for (int segIdx = 0; segIdx < segments.size(); ++segIdx) {
-            QJsonObject segmentObj = segments.at(segIdx).toObject();
-            QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-            bool segmentChanged = false;
-            for (int wordIdx = 0; wordIdx < words.size(); ++wordIdx) {
-                QJsonObject wordObj = words.at(wordIdx).toObject();
-                const quint64 key = (static_cast<quint64>(segIdx) << 32) |
-                                    static_cast<quint32>(wordIdx);
-                const int desiredOrder = desiredOrderByKey.contains(key)
-                    ? desiredOrderByKey.value(key)
-                    : fallbackOrder++;
-                if (wordObj.value(QString(kTranscriptWordRenderOrderKey)).toInt(-1) != desiredOrder) {
-                    wordObj[QString(kTranscriptWordRenderOrderKey)] = desiredOrder;
-                    words.replace(wordIdx, wordObj);
-                    segmentChanged = true;
-                }
-            }
-            if (segmentChanged) {
-                segmentObj[QStringLiteral("words")] = words;
-                segments.replace(segIdx, segmentObj);
-            }
-        }
-    }
-
-    for (int segIdx = 0; segIdx < segments.size(); ++segIdx) {
-        QJsonObject segmentObj = segments.at(segIdx).toObject();
-        QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-        bool segmentChanged = false;
-        for (int wordIdx = 0; wordIdx < words.size(); ++wordIdx) {
-            QJsonObject wordObj = words.at(wordIdx).toObject();
-            const int existingOrder = wordObj.value(QString(kTranscriptWordRenderOrderKey)).toInt(-1);
-            if (existingOrder >= insertRenderOrder) {
-                wordObj[QString(kTranscriptWordRenderOrderKey)] = existingOrder + 1;
-                words.replace(wordIdx, wordObj);
-                segmentChanged = true;
-            }
-        }
-        if (segmentChanged) {
-            segmentObj[QStringLiteral("words")] = words;
-            segments.replace(segIdx, segmentObj);
-        }
-    }
-
-    if (targetSegmentIndex >= 0 && targetSegmentIndex < segments.size()) {
-        QJsonObject segmentObj = segments.at(targetSegmentIndex).toObject();
-        QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-
-        // Insert at appropriate position
-        int insertIndex = qBound(0, targetWordIndex, words.size());
-        words.insert(insertIndex, newWordObj);
-
-        segmentObj[QStringLiteral("words")] = words;
-        segments.replace(targetSegmentIndex, segmentObj);
-        root[QStringLiteral("segments")] = segments;
-        if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-                loadedRoot = root;
-                return true;
-            }) || !saveLoadedTranscriptDocument()) {
-            refresh();
-            return;
-        }
-
+    if (targetSegmentIndex >= 0 && targetSegmentIndex < m_transcriptDocumentSegments.size()) {
+        auto& words = m_transcriptDocumentSegments[targetSegmentIndex].words;
+        const int insertIndex = qBound(0, targetWordIndex, words.size());
+        words.insert(insertIndex, newWord);
+        const auto renderIt = std::find(m_renderOrderedWordIds.begin(), m_renderOrderedWordIds.end(), currentWordId);
+        const int renderIndex = renderIt == m_renderOrderedWordIds.end()
+            ? m_renderOrderedWordIds.size()
+            : static_cast<int>(std::distance(m_renderOrderedWordIds.begin(), renderIt)) + (above ? 0 : 1);
+        m_renderOrderedWordIds.insert(renderIndex, newWord.wordId);
+        rebuildTranscriptWordAddressIndex();
+        normalizeTranscriptRenderOrder();
+        rehydrateLoadedTranscriptDocumentFromMemory();
+        saveLoadedTranscriptDocument();
         refresh();
         emit transcriptDocumentChanged();
         if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
@@ -1505,72 +1500,40 @@ void TranscriptTab::expandSelectedRow(int row)
     const bool isOutsideCut = currentItem->data(Qt::UserRole + 12).toBool();
     if (isGap || isOutsideCut) return;
 
-    const int segmentIndex = currentItem->data(Qt::UserRole + 5).toInt();
-    const int wordIndex = currentItem->data(Qt::UserRole + 6).toInt();
-    if (segmentIndex < 0 || wordIndex < 0) return;
-
-    // Find the previous word's end time
-    double newStartTime = 0.0;
-    bool hasPreviousWord = false;
-    for (int r = row - 1; r >= 0; --r) {
-        QTableWidgetItem* prevItem = m_widgets.transcriptTable->item(r, 0);
-        if (!prevItem) continue;
-        if (prevItem->data(Qt::UserRole + 4).toBool()) continue; // Skip gaps
-        newStartTime = prevItem->data(Qt::UserRole + 1).toDouble(); // Previous word's end time
-        hasPreviousWord = true;
-        break;
-    }
-
-    // Find the next word's start time
-    double newEndTime = 0.0;
-    bool hasNextWord = false;
-    for (int r = row + 1; r < m_widgets.transcriptTable->rowCount(); ++r) {
-        QTableWidgetItem* nextItem = m_widgets.transcriptTable->item(r, 0);
-        if (!nextItem) continue;
-        if (nextItem->data(Qt::UserRole + 4).toBool()) continue; // Skip gaps
-        newEndTime = nextItem->data(Qt::UserRole).toDouble(); // Next word's start time
-        hasNextWord = true;
-        break;
-    }
-
-    // Update the JSON document
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-    if (segmentIndex >= segments.size()) return;
-
-    QJsonObject segmentObj = segments.at(segmentIndex).toObject();
-    QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-    if (wordIndex >= words.size()) return;
-
-    QJsonObject wordObj = words.at(wordIndex).toObject();
-
-    if (hasPreviousWord) {
-        if (!qFuzzyCompare(wordObj.value(QStringLiteral("start")).toDouble(newStartTime) + 1.0,
-                           newStartTime + 1.0)) {
-            transcriptAppendEditTag(&wordObj, QString(kTranscriptEditTimingTag));
-        }
-        wordObj[QStringLiteral("start")] = newStartTime;
-    }
-    if (hasNextWord) {
-        if (!qFuzzyCompare(wordObj.value(QStringLiteral("end")).toDouble(newEndTime) + 1.0,
-                           newEndTime + 1.0)) {
-            transcriptAppendEditTag(&wordObj, QString(kTranscriptEditTimingTag));
-        }
-        wordObj[QStringLiteral("end")] = newEndTime;
-    }
-
-    words.replace(wordIndex, wordObj);
-    segmentObj[QStringLiteral("words")] = words;
-    segments.replace(segmentIndex, segmentObj);
-    root[QStringLiteral("segments")] = segments;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-            loadedRoot = root;
-            return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
+    const int wordId = currentItem->data(Qt::UserRole + 16).toInt();
+    if (wordId < 0) return;
+    const auto neighborIt = m_wordEditIndex.constFind(wordId);
+    if (neighborIt == m_wordEditIndex.cend()) {
         return;
     }
+    const double newStartTime = neighborIt->previousWordEndSeconds;
+    const bool hasPreviousWord = neighborIt->hasPreviousWord;
+    const double newEndTime = neighborIt->nextWordStartSeconds;
+    const bool hasNextWord = neighborIt->hasNextWord;
 
+    TranscriptDocumentWord* word = transcriptWordById(wordId);
+    if (!word) return;
+
+    if (hasPreviousWord) {
+        if (!qFuzzyCompare(word->startSeconds + 1.0,
+                           newStartTime + 1.0)) {
+            if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
+                word->editTags.push_back(QString(kTranscriptEditTimingTag));
+            }
+        }
+        word->startSeconds = newStartTime;
+    }
+    if (hasNextWord) {
+        if (!qFuzzyCompare(word->endSeconds + 1.0,
+                           newEndTime + 1.0)) {
+            if (!word->editTags.contains(QString(kTranscriptEditTimingTag))) {
+                word->editTags.push_back(QString(kTranscriptEditTimingTag));
+            }
+        }
+        word->endSeconds = newEndTime;
+    }
+    rehydrateLoadedTranscriptDocumentFromMemory();
+    saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();

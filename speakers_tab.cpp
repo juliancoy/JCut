@@ -19,6 +19,7 @@
 #include <QHBoxLayout>
 #include <QCheckBox>
 #include <QApplication>
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
@@ -46,18 +47,80 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <QWheelEvent>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
 #include <limits>
 
+namespace {
+bool shouldUseSynchronousSpeakerTranscriptIo()
+{
+    if (qEnvironmentVariableIntValue("JCUT_SYNC_TRANSCRIPT_IO") == 1) {
+        return true;
+    }
+    const QString appName = QCoreApplication::applicationName().trimmed().toLower();
+    return appName.startsWith(QStringLiteral("test_")) || appName.contains(QStringLiteral("qtest"));
+}
+}
 
 SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : TableTabBase(deps, parent)
     , m_widgets(widgets)
     , m_speakerDeps(deps)
 {
+    connect(&m_transcriptLoadWatcher, &QFutureWatcher<TranscriptLoadResult>::finished, this, [this]() {
+        const TranscriptLoadResult result = m_transcriptLoadWatcher.result();
+        if (!result.ok) {
+            if (result.transcriptPath == m_loadedTranscriptPath &&
+                result.clipFilePath == m_loadedClipFilePath &&
+                m_widgets.speakersInspectorDetailsLabel) {
+                m_widgets.speakersInspectorDetailsLabel->setText(
+                    result.error.isEmpty() ? QStringLiteral("Unable to load transcript JSON file.") : result.error);
+            }
+            m_updating = false;
+            updateSelectedSpeakerPanel();
+            updateSpeakerTrackingStatusLabel();
+            return;
+        }
+        if (result.transcriptPath != m_loadedTranscriptPath || result.clipFilePath != m_loadedClipFilePath) {
+            return;
+        }
+        m_loadedTranscriptDoc = result.document;
+        const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        if (!clip || clip->filePath != result.clipFilePath) {
+            return;
+        }
+        applyLoadedTranscriptDocumentData(*clip, m_pendingPreferredSpeakerId);
+    });
+    connect(&m_transcriptSaveWatcher, &QFutureWatcher<TranscriptSaveResult>::finished, this, [this]() {
+        const TranscriptSaveResult result = m_transcriptSaveWatcher.result();
+        if (!result.ok) {
+            qWarning().noquote()
+                << QStringLiteral("[speakers] async save failed for %1: %2")
+                       .arg(result.transcriptPath,
+                            result.error.isEmpty() ? QStringLiteral("unknown error") : result.error);
+        }
+        if (m_pendingTranscriptSaveRevision > result.revision &&
+            !m_pendingTranscriptSavePath.trimmed().isEmpty() &&
+            m_pendingTranscriptSaveDoc.isObject()) {
+            const QString path = m_pendingTranscriptSavePath;
+            const QJsonDocument doc = m_pendingTranscriptSaveDoc;
+            const qint64 revision = m_pendingTranscriptSaveRevision;
+            m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
+                TranscriptSaveResult next;
+                next.transcriptPath = path;
+                next.revision = revision;
+                editor::TranscriptEngine engine;
+                next.ok = engine.saveTranscriptJson(path, doc);
+                if (!next.ok) {
+                    next.error = QStringLiteral("saveTranscriptJson returned false.");
+                }
+                return next;
+            }));
+        }
+    });
 }
 
 bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
@@ -80,9 +143,110 @@ bool SpeakersTab::saveLoadedTranscriptDocument()
     if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
         return false;
     }
+    queueLoadedTranscriptDocumentSave();
+    return true;
+}
 
-    editor::TranscriptEngine engine;
-    return engine.saveTranscriptJson(m_loadedTranscriptPath, m_loadedTranscriptDoc);
+void SpeakersTab::queueLoadedTranscriptDocumentSave()
+{
+    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+        return;
+    }
+    ++m_transcriptSaveRevision;
+    m_pendingTranscriptSaveRevision = m_transcriptSaveRevision;
+    m_pendingTranscriptSavePath = m_loadedTranscriptPath;
+    m_pendingTranscriptSaveDoc = m_loadedTranscriptDoc;
+    if (shouldUseSynchronousSpeakerTranscriptIo()) {
+        editor::TranscriptEngine engine;
+        engine.saveTranscriptJson(m_pendingTranscriptSavePath, m_pendingTranscriptSaveDoc);
+        return;
+    }
+    if (m_transcriptSaveWatcher.isRunning()) {
+        return;
+    }
+    const QString path = m_pendingTranscriptSavePath;
+    const QJsonDocument doc = m_pendingTranscriptSaveDoc;
+    const qint64 revision = m_pendingTranscriptSaveRevision;
+    m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
+        TranscriptSaveResult result;
+        result.transcriptPath = path;
+        result.revision = revision;
+        editor::TranscriptEngine engine;
+        result.ok = engine.saveTranscriptJson(path, doc);
+        if (!result.ok) {
+            result.error = QStringLiteral("saveTranscriptJson returned false.");
+        }
+        return result;
+    }));
+}
+
+void SpeakersTab::startTranscriptLoadRequest(const QString& clipFilePath,
+                                             const QString& transcriptPath,
+                                             const QString& preferredSpeakerId)
+{
+    if (clipFilePath.trimmed().isEmpty() || transcriptPath.trimmed().isEmpty()) {
+        return;
+    }
+    m_pendingPreferredSpeakerId = preferredSpeakerId;
+    if (shouldUseSynchronousSpeakerTranscriptIo()) {
+        QJsonDocument transcriptDoc;
+        if (loadTranscriptJsonCached(transcriptPath, &transcriptDoc)) {
+            m_loadedTranscriptDoc = transcriptDoc;
+            const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+            if (clip && clip->filePath == clipFilePath) {
+                applyLoadedTranscriptDocumentData(*clip, preferredSpeakerId);
+            }
+        } else {
+            if (m_widgets.speakersInspectorClipLabel) {
+                m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1")
+                                                                  .arg(m_deps.getSelectedClip ? m_deps.getSelectedClip()->label : QString()));
+            }
+            if (m_widgets.speakersInspectorDetailsLabel) {
+                m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Unable to load transcript JSON file."));
+            }
+            m_updating = false;
+            updateSelectedSpeakerPanel();
+            updateSpeakerTrackingStatusLabel();
+        }
+        return;
+    }
+    if (m_widgets.speakersInspectorDetailsLabel) {
+        m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Loading transcript..."));
+    }
+    m_transcriptLoadWatcher.setFuture(QtConcurrent::run([clipFilePath, transcriptPath]() {
+        TranscriptLoadResult result;
+        result.clipFilePath = clipFilePath;
+        result.transcriptPath = transcriptPath;
+        result.ok = loadTranscriptJsonCached(transcriptPath, &result.document);
+        if (!result.ok) {
+            result.error = QStringLiteral("Unable to load transcript JSON file.");
+        }
+        return result;
+    }));
+}
+
+void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId)
+{
+    if (m_widgets.speakersInspectorClipLabel) {
+        m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip.label));
+    }
+    if (m_widgets.speakersInspectorDetailsLabel) {
+        m_widgets.speakersInspectorDetailsLabel->setText(
+            QStringLiteral("FaceStream sidecar: %1")
+                .arg(facestreamSidecarExistsForClipFile(clip.filePath)
+                         ? QStringLiteral("Present")
+                         : QStringLiteral("Missing")));
+    }
+
+    refreshSpeakersTable(m_loadedTranscriptDoc.object(), preferredSpeakerId);
+    requestRefreshFaceStreamPathsPanel();
+    if (m_widgets.speakersTable) {
+        m_widgets.speakersTable->setEnabled(activeCutMutable());
+    }
+
+    m_updating = false;
+    updateSelectedSpeakerPanel();
+    updateSpeakerTrackingStatusLabel();
 }
 
 void SpeakersTab::wire()
@@ -100,7 +264,7 @@ void SpeakersTab::wire()
         m_widgets.speakersTable->setContextMenuPolicy(Qt::CustomContextMenu);
         m_widgets.speakersTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
         m_widgets.speakersTable->setItemDelegateForColumn(
-            2, new SpeakerNameItemDelegate(m_widgets.speakersTable));
+            1, new SpeakerNameItemDelegate(m_widgets.speakersTable));
         connect(m_widgets.speakersTable, &QTableWidget::itemChanged,
                 this, &SpeakersTab::onSpeakersTableItemChanged);
         connect(m_widgets.speakersTable, &QTableWidget::itemClicked,
@@ -916,45 +1080,13 @@ void SpeakersTab::refresh()
         m_loadedTranscriptPath == transcriptPath &&
         m_loadedClipFilePath == clip->filePath;
     if (!canReuseLoadedDoc) {
-        editor::TranscriptEngine transcriptEngine;
-        QJsonDocument transcriptDoc;
-        if (!transcriptEngine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
-            if (m_widgets.speakersInspectorClipLabel) {
-                m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
-            }
-            if (m_widgets.speakersInspectorDetailsLabel) {
-                m_widgets.speakersInspectorDetailsLabel->setText(QStringLiteral("Unable to load transcript JSON file."));
-            }
-            m_updating = false;
-            updateSelectedSpeakerPanel();
-            updateSpeakerTrackingStatusLabel();
-            return;
-        }
         m_loadedTranscriptPath = transcriptPath;
         m_loadedClipFilePath = clip->filePath;
-        m_loadedTranscriptDoc = transcriptDoc;
+        m_loadedTranscriptDoc = QJsonDocument();
+        startTranscriptLoadRequest(clip->filePath, transcriptPath, preferredSpeakerId);
+        return;
     }
-
-    if (m_widgets.speakersInspectorClipLabel) {
-        m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("Speakers\n%1").arg(clip->label));
-    }
-    if (m_widgets.speakersInspectorDetailsLabel) {
-        m_widgets.speakersInspectorDetailsLabel->setText(
-            QStringLiteral("FaceStream sidecar: %1")
-                .arg(facestreamSidecarExistsForClipFile(clip->filePath)
-                         ? QStringLiteral("Present")
-                         : QStringLiteral("Missing")));
-    }
-
-    refreshSpeakersTable(m_loadedTranscriptDoc.object(), preferredSpeakerId);
-    requestRefreshFaceStreamPathsPanel();
-    if (m_widgets.speakersTable) {
-        m_widgets.speakersTable->setEnabled(activeCutMutable());
-    }
-
-    m_updating = false;
-    updateSelectedSpeakerPanel();
-    updateSpeakerTrackingStatusLabel();
+    applyLoadedTranscriptDocumentData(*clip, preferredSpeakerId);
 }
 
 bool SpeakersTab::generateFaceStreamForSelectedClip()
@@ -1491,14 +1623,23 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         }
     }
 
+    const QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     QStringList ids = speakerIds.values();
-    std::sort(ids.begin(), ids.end(), [](const QString& a, const QString& b) {
+    std::sort(ids.begin(), ids.end(), [&profiles](const QString& a, const QString& b) {
+        const QString aName =
+            profiles.value(a).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+        const QString bName =
+            profiles.value(b).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+        const QString aLabel = aName.isEmpty() ? a : aName;
+        const QString bLabel = bName.isEmpty() ? b : bName;
+        const int byLabel = aLabel.localeAwareCompare(bLabel);
+        if (byLabel != 0) {
+            return byLabel < 0;
+        }
         return a.localeAwareCompare(b) < 0;
     });
     const QString selectionToRestore =
         preferredSpeakerId.isEmpty() ? selectedSpeakerId() : preferredSpeakerId;
-
-    const QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
 
     QSignalBlocker blocker(m_widgets.speakersTable);
     m_widgets.speakersTable->setRowCount(ids.size());
@@ -1506,7 +1647,8 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         const QString id = ids.at(row);
         const QJsonObject profileJson = profiles.value(id).toObject();
         const SpeakerProfile speakerProfile = speakerProfileFromJson(id, profileJson);
-        const QString name = speakerProfile.name.isEmpty() ? id : speakerProfile.name;
+        const QString name = speakerProfile.name.trimmed();
+        const QString displayLabel = name.isEmpty() ? id : name;
         const QString organization = speakerProfile.organization;
         const QString description = speakerProfile.description;
         const QJsonObject location = profileJson.value(QString(kTranscriptSpeakerLocationKey)).toObject();
@@ -1530,16 +1672,13 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         avatarItem->setTextAlignment(Qt::AlignCenter);
         avatarItem->setSizeHint(QSize(32, 32));
 
-        auto* idItem = new QTableWidgetItem(id);
-        idItem->setFlags(idItem->flags() & ~Qt::ItemIsEditable);
-        idItem->setData(Qt::UserRole, id);
-        auto* nameItem = new QTableWidgetItem(name);
-        nameItem->setData(Qt::UserRole, id);
-        nameItem->setData(Qt::UserRole + 10, keyframeCount > 0);
-        nameItem->setToolTip(QStringLiteral("Speaker: %1\nOrganization: %2\nSummary: %3")
-                                 .arg(name,
-                                      organization.isEmpty() ? QStringLiteral("None") : organization,
-                                      description.isEmpty() ? QStringLiteral("None") : description));
+        auto* displayItem = new QTableWidgetItem(displayLabel);
+        displayItem->setData(Qt::UserRole, id);
+        displayItem->setData(Qt::UserRole + 10, keyframeCount > 0);
+        displayItem->setToolTip(QStringLiteral("Speaker ID: %1\nOrganization: %2\nSummary: %3")
+                                    .arg(id,
+                                         organization.isEmpty() ? QStringLiteral("None") : organization,
+                                         description.isEmpty() ? QStringLiteral("None") : description));
         auto* xItem = new QTableWidgetItem(QString::number(x, 'f', 3));
         xItem->setData(Qt::UserRole, id);
         auto* yItem = new QTableWidgetItem(QString::number(y, 'f', 3));
@@ -1551,22 +1690,21 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         trackingModeItem->setFlags(trackingModeItem->flags() & ~Qt::ItemIsEditable);
         trackingModeItem->setData(Qt::UserRole, id);
         m_widgets.speakersTable->setItem(row, 0, avatarItem);
-        m_widgets.speakersTable->setItem(row, 1, idItem);
-        m_widgets.speakersTable->setItem(row, 2, nameItem);
-        m_widgets.speakersTable->setItem(row, 3, xItem);
-        m_widgets.speakersTable->setItem(row, 4, yItem);
-        m_widgets.speakersTable->setItem(row, 5, trackingModeItem);
+        m_widgets.speakersTable->setItem(row, 1, displayItem);
+        m_widgets.speakersTable->setItem(row, 2, xItem);
+        m_widgets.speakersTable->setItem(row, 3, yItem);
+        m_widgets.speakersTable->setItem(row, 4, trackingModeItem);
         m_widgets.speakersTable->setRowHeight(row, 34);
     }
 
     bool restoredSelection = false;
     if (!selectionToRestore.isEmpty()) {
         for (int row = 0; row < m_widgets.speakersTable->rowCount(); ++row) {
-            QTableWidgetItem* idItem = m_widgets.speakersTable->item(row, 1);
-            if (!idItem) {
+            QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(row, 1);
+            if (!speakerItem) {
                 continue;
             }
-            const QString rowSpeakerId = idItem->data(Qt::UserRole).toString().trimmed();
+            const QString rowSpeakerId = speakerItem->data(Qt::UserRole).toString().trimmed();
             if (rowSpeakerId != selectionToRestore) {
                 continue;
             }
@@ -1578,11 +1716,11 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         }
     }
     if (!restoredSelection && !ids.isEmpty()) {
-        QTableWidgetItem* idItem = m_widgets.speakersTable->item(0, 1);
-        if (idItem) {
+        QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(0, 1);
+        if (speakerItem) {
             m_widgets.speakersTable->setCurrentCell(0, 1);
             m_widgets.speakersTable->selectRow(0);
-            m_lastSelectedSpeakerIdHint = idItem->data(Qt::UserRole).toString().trimmed();
+            m_lastSelectedSpeakerIdHint = speakerItem->data(Qt::UserRole).toString().trimmed();
         }
     }
 }
@@ -1602,11 +1740,32 @@ QString SpeakersTab::selectedSpeakerId() const
     if (row < 0) {
         return QString();
     }
-    QTableWidgetItem* idItem = m_widgets.speakersTable->item(row, 1);
-    if (!idItem) {
+    QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(row, 1);
+    if (!speakerItem) {
         return QString();
     }
-    return idItem->data(Qt::UserRole).toString().trimmed();
+    return speakerItem->data(Qt::UserRole).toString().trimmed();
+}
+
+QString SpeakersTab::speakerDisplayName(const QString& speakerId) const
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (trimmedSpeakerId.isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+        return QString();
+    }
+    const QJsonObject profiles =
+        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+    return profiles.value(trimmedSpeakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+}
+
+QString SpeakersTab::speakerDisplayLabel(const QString& speakerId) const
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (trimmedSpeakerId.isEmpty()) {
+        return QString();
+    }
+    const QString name = speakerDisplayName(trimmedSpeakerId);
+    return name.isEmpty() ? trimmedSpeakerId : name;
 }
 
 int64_t SpeakersTab::firstSourceFrameForSpeaker(const QJsonObject& transcriptRoot,

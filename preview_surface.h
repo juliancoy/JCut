@@ -54,6 +54,12 @@ public:
         QJsonObject facts;
     };
 
+    struct PlaybackTuning {
+        int visibleBacklogLimit = 4;
+        int sourceLookaheadFrames = 5;
+        int proxyLookaheadFrames = 8;
+    };
+
     virtual ~PreviewSurface() = default;
     virtual QWidget* asWidget() = 0;
     virtual const QWidget* asWidget() const = 0;
@@ -114,6 +120,8 @@ public:
     virtual bool preparePlaybackAdvance(int64_t targetFrame) = 0;
     virtual bool preparePlaybackAdvanceSample(int64_t targetSample) = 0;
     virtual bool warmPlaybackLookahead(int futureFrames, int timeoutMs) = 0;
+    virtual void setPlaybackTuning(const PlaybackTuning& tuning) = 0;
+    virtual PlaybackTuning playbackTuning() const = 0;
     virtual QImage latestPresentedFrameImageForClip(const QString& clipId) const = 0;
     virtual QVector<PipelineStageSnapshot> livePipelineSnapshots() const = 0;
     virtual QJsonObject profilingSnapshot() const = 0;

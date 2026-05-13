@@ -131,21 +131,11 @@ void refreshTranscriptInspector()
         }
 
         const QString transcriptPath = transcriptPathForClip(*clip);
-        QFile transcriptFile(transcriptPath);
-        if (!transcriptFile.open(QIODevice::ReadOnly))
+        QJsonDocument transcriptDoc;
+        if (!loadTranscriptJsonCached(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject())
         {
             m_transcriptInspectorClipLabel->setText(clip->label);
             m_transcriptInspectorDetailsLabel->setText(QStringLiteral("No transcript file found."));
-            m_updatingTranscriptInspector = false;
-            return;
-        }
-
-        QJsonParseError parseError;
-        const QJsonDocument transcriptDoc = QJsonDocument::fromJson(transcriptFile.readAll(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !transcriptDoc.isObject())
-        {
-            m_transcriptInspectorClipLabel->setText(clip->label);
-            m_transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
             m_updatingTranscriptInspector = false;
             return;
         }

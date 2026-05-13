@@ -1,6 +1,7 @@
 #include "inspector_pane.h"
 
 #include <QHBoxLayout>
+#include <QPalette>
 #include <QStyle>
 #include <QTabBar>
 #include <QTabWidget>
@@ -63,30 +64,35 @@ void InspectorPane::configureInspectorTabs()
 
     for (const TabSpec& spec : specs) {
         m_inspectorTabs->setTabIcon(spec.index, style()->standardIcon(spec.icon));
-        m_inspectorTabs->setTabText(spec.index, QString());
+        m_inspectorTabs->setTabText(spec.index, QString::fromUtf8(spec.label));
         bar->setTabToolTip(spec.index, QString::fromUtf8(spec.tooltip));
     }
     bar->setElideMode(Qt::ElideRight);
+    QPalette palette = bar->palette();
+    palette.setColor(QPalette::WindowText, Qt::white);
+    palette.setColor(QPalette::ButtonText, Qt::white);
+    palette.setColor(QPalette::Text, Qt::white);
+    bar->setPalette(palette);
 
     bar->setStyleSheet(QStringLiteral(
         "QTabBar::tab {"
-        " min-width: 44px;"
-        " min-height: 24px;"
+        " min-width: 112px;"
+        " min-height: 28px;"
         " margin: 0;"
-        " padding: 0 6px;"
+        " padding: 4px 10px;"
         " text-align: left;"
-        " color: #c9d1d9;"
+        " color: #ffffff;"
         " }"
         "QTabBar::tab:selected {"
         " background: #1f2a36;"
         " border: 1px solid #44556a;"
         " border-radius: 6px;"
-        " color: #f0f6fc;"
+        " color: #ffffff;"
         " }"
         "QTabBar::tab:hover {"
         " background: #233142;"
         " border: 1px solid #4a5c71;"
-        " color: #f0f6fc;"
+        " color: #ffffff;"
         " }"
         "QTabBar::tab:!selected {"
         " background: #121922;"

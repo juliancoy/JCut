@@ -218,8 +218,12 @@ void EditorWindow::createPipelineTab()
 {
     m_pipelineTab = std::make_unique<PipelineTab>(
         PipelineTab::Widgets{
+            m_inspectorPane ? m_inspectorPane->pipelinePreviewHost() : nullptr,
             m_inspectorPane ? m_inspectorPane->pipelineStageList() : nullptr},
         PipelineTab::Dependencies{
+            [this]() {
+                return m_preview && m_preview->backendName().contains(QStringLiteral("Vulkan"), Qt::CaseInsensitive);
+            },
             [this]() {
                 return m_preview ? m_preview->livePipelineSnapshots()
                                  : QVector<PreviewSurface::PipelineStageSnapshot>{};
@@ -301,7 +305,6 @@ void EditorWindow::createTranscriptTab()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
-            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
@@ -310,6 +313,7 @@ void EditorWindow::createTranscriptTab()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
+        scheduleTranscriptNormalizeRangeRefresh(50);
         refreshTranscriptDerivedInspectorViews(true);
     });
 
@@ -324,7 +328,6 @@ void EditorWindow::createTranscriptTab()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
-            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
@@ -332,6 +335,11 @@ void EditorWindow::createTranscriptTab()
             m_audioEngine->setTranscriptNormalizeEnabled(
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        }
+        scheduleTranscriptNormalizeRangeRefresh(50);
+        if (m_timeline && m_preview) {
+            const bool duringPlayback = m_playbackTimer.isActive();
+            setCurrentPlaybackSample(m_absolutePlaybackSample, duringPlayback, duringPlayback);
         }
         refreshSpeechFilterInspectorViews();
     });
@@ -478,7 +486,6 @@ void EditorWindow::createSpeakersTab()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
-            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
@@ -487,6 +494,7 @@ void EditorWindow::createSpeakersTab()
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         }
+        scheduleTranscriptNormalizeRangeRefresh(50);
         refreshTranscriptDerivedInspectorViews(true);
     });
 }

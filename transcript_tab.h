@@ -10,6 +10,7 @@
 #include <QFontComboBox>
 #include <QJsonDocument>
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QTimer>
 #include <QComboBox>
 #include <QLineEdit>
@@ -118,6 +119,9 @@ private slots:
 private:
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
     bool saveLoadedTranscriptDocument();
+    void queueLoadedTranscriptDocumentSave();
+    void startTranscriptLoadRequest(const QString& clipFilePath, const QString& transcriptPath);
+    void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& originalPath);
     void requestRefresh(int delayMs = 35);
     struct TranscriptRow
     {
@@ -142,6 +146,7 @@ private:
         int editFlags = EditNone;
         int segmentIndex = -1;
         int wordIndex = -1;
+        int wordId = -1;
         int originalSegmentIndex = -1;
         int originalWordIndex = -1;
         int renderOrder = -1;
@@ -152,10 +157,75 @@ private:
         int64_t endFrame = 0;
         int row = -1;
     };
+    struct ExcludedRange
+    {
+        int64_t startFrame = 0;
+        int64_t endFrame = 0;
+    };
+    struct WordEditNeighborInfo
+    {
+        bool hasPreviousWord = false;
+        double previousWordEndSeconds = 0.0;
+        int previousWordId = -1;
+        bool hasNextWord = false;
+        double nextWordStartSeconds = 0.0;
+        int nextWordId = -1;
+        int renderOrder = -1;
+        QString speaker;
+    };
+    struct TranscriptLoadResult
+    {
+        QString clipFilePath;
+        QString transcriptPath;
+        QJsonDocument document;
+        QString error;
+        bool ok = false;
+    };
+    struct TranscriptSaveResult
+    {
+        QString transcriptPath;
+        QString error;
+        qint64 revision = 0;
+        bool ok = false;
+    };
+    struct TranscriptDocumentWord
+    {
+        int wordId = -1;
+        QString text;
+        double startSeconds = 0.0;
+        double endSeconds = 0.0;
+        QString speaker;
+        bool skipped = false;
+        QStringList editTags;
+        int renderOrder = -1;
+        int originalSegmentIndex = -1;
+        int originalWordIndex = -1;
+    };
+    struct TranscriptDocumentSegment
+    {
+        QJsonObject metadata;
+        QVector<TranscriptDocumentWord> words;
+    };
+    struct TranscriptWordAddress
+    {
+        int segmentIndex = -1;
+        int wordIndex = -1;
+    };
+    void rebuildWordEditIndex(const QVector<TranscriptRow>& rows);
+    bool rebuildInMemoryTranscriptDocument(const QJsonDocument& document);
+    QJsonDocument serializeInMemoryTranscriptDocument() const;
+    TranscriptDocumentWord* transcriptWordAt(int segmentIndex, int wordIndex);
+    const TranscriptDocumentWord* transcriptWordAt(int segmentIndex, int wordIndex) const;
+    TranscriptDocumentWord* transcriptWordById(int wordId);
+    const TranscriptDocumentWord* transcriptWordById(int wordId) const;
+    int transcriptWordCount() const;
+    void normalizeTranscriptRenderOrder();
+    void rehydrateLoadedTranscriptDocumentFromMemory();
+    void rebuildTranscriptWordAddressIndex();
 
     void updateOverlayWidgetsFromClip(const TimelineClip& clip);
     void loadTranscriptFile(const TimelineClip& clip);
-    QVector<TranscriptRow> parseTranscriptRows(const QJsonArray& segments, int prependMs, int postpendMs);
+    QVector<TranscriptRow> parseTranscriptRows(int prependMs, int postpendMs) const;
     void populateTable(const QVector<TranscriptRow>& rows);
     void adjustOverlappingRows(QVector<TranscriptRow>& rows);
     void insertGapRows(QVector<TranscriptRow>* rows) const;
@@ -182,6 +252,8 @@ private:
     bool activeCutMutable() const;
     bool showOutsideCutLinesEnabled() const;
     QString originalWordKey(const TranscriptRow& row) const;
+    quint64 transcriptWordKey(int segmentIndex, int wordIndex) const;
+    QString speakerDisplayLabel(const QString& speakerId) const;
     void persistRenderOrderFromTable();
     void computeRenderFrames(QVector<TranscriptRow>* rows) const;
     void rebuildFollowRanges(const QVector<TranscriptRow>& rows);
@@ -196,6 +268,12 @@ private:
     QString m_loadedTranscriptPath;
     QString m_loadedClipFilePath;
     QJsonDocument m_loadedTranscriptDoc;
+    QVector<TranscriptDocumentSegment> m_transcriptDocumentSegments;
+    QVector<TranscriptRow> m_allTranscriptRows;
+    QHash<int, TranscriptWordAddress> m_transcriptWordAddressById;
+    QVector<int> m_renderOrderedWordIds;
+    QHash<int, WordEditNeighborInfo> m_wordEditIndex;
+    int m_nextTranscriptWordId = 1;
     int m_transcriptPrependMs = 150;
     int m_transcriptPostpendMs = 70;
     int m_speechFilterFadeSamples = 300;
@@ -208,11 +286,20 @@ private:
     int64_t m_lastSyncSourceFrame = -1;
     int m_lastSyncRow = -1;
     QVector<FollowRange> m_followRanges;
+    QVector<ExcludedRange> m_excludedRanges;
     bool m_suppressSelectionSideEffects = false;
     QString m_persistedSelectedClipId;
     int m_persistedSelectedSegmentIndex = -1;
     int m_persistedSelectedWordIndex = -1;
+    int m_persistedSelectedWordId = -1;
     bool m_updatingScriptVersionSelector = false;
     QTimer m_refreshDebounceTimer;
     bool m_refreshQueued = false;
+    QFutureWatcher<TranscriptLoadResult> m_transcriptLoadWatcher;
+    QFutureWatcher<TranscriptSaveResult> m_transcriptSaveWatcher;
+    qint64 m_transcriptLoadRequestId = 0;
+    qint64 m_transcriptSaveRevision = 0;
+    qint64 m_pendingTranscriptSaveRevision = 0;
+    QString m_pendingTranscriptSavePath;
+    QJsonDocument m_pendingTranscriptSaveDoc;
 };

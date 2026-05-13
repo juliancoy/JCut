@@ -105,10 +105,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("last_playback_stop_reason"), m_lastPlaybackStopReason}};
 
     if (m_preview) {
-        QJsonObject preview = m_preview->profilingSnapshot();
-        preview.insert(QStringLiteral("pipeline_stages"),
-                       pipelineStagesToJson(m_preview->livePipelineSnapshots()));
-        snapshot[QStringLiteral("preview")] = preview;
+        snapshot[QStringLiteral("preview")] = m_preview->profilingSnapshot();
     }
 
     if (m_audioEngine) {
@@ -116,6 +113,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
     }
 
     snapshot[QStringLiteral("startup")] = startupProfileSnapshot();
+    snapshot[QStringLiteral("optimized_profile")] = optimizedProfileSnapshot();
     snapshot[QStringLiteral("export")] = QJsonObject{
         {QStringLiteral("active"), m_renderInProgress},
         {QStringLiteral("live"), m_liveRenderProfile},
@@ -123,6 +121,17 @@ QJsonObject EditorWindow::profilingSnapshot() const
     snapshot[QStringLiteral("speaker_tracking")] = transcriptSpeakerTrackingProfilingSnapshot();
 
     return snapshot;
+}
+
+QJsonObject EditorWindow::pipelineSnapshot() const
+{
+    if (!m_preview) {
+        return QJsonObject{};
+    }
+    QJsonObject preview = m_preview->profilingSnapshot();
+    preview.insert(QStringLiteral("pipeline_stages"),
+                   pipelineStagesToJson(m_preview->livePipelineSnapshots()));
+    return preview;
 }
 
 QJsonObject EditorWindow::throttleConfigSnapshot() const
@@ -139,6 +148,15 @@ QJsonObject EditorWindow::throttleConfigSnapshot() const
         {QStringLiteral("state_save_debounce_interval_ms"), m_stateSaveDebounceIntervalMs},
         {QStringLiteral("transcript_manual_selection_hold_ms"), m_transcriptManualSelectionHoldMs},
         {QStringLiteral("audio_clock_stall_threshold_ticks"), m_audioClockStallThresholdTicks},
+        {QStringLiteral("preview_visible_backlog_limit"),
+         m_preview ? m_preview->playbackTuning().visibleBacklogLimit : defaultOptimizedPreviewProfile().previewTuning.visibleBacklogLimit},
+        {QStringLiteral("preview_source_lookahead_frames"),
+         m_preview ? m_preview->playbackTuning().sourceLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.sourceLookaheadFrames},
+        {QStringLiteral("preview_proxy_lookahead_frames"),
+         m_preview ? m_preview->playbackTuning().proxyLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.proxyLookaheadFrames},
+        {QStringLiteral("optimized_profile_path"), optimizedProfilePath()},
+        {QStringLiteral("optimized_profile_loaded"), m_optimizedProfileLoaded},
+        {QStringLiteral("optimized_profile_generated_this_run"), m_optimizedProfileGeneratedThisRun},
         {QStringLiteral("speaker_tracking_max_speed_permille_per_frame"),
          speakerTrackingConfig.value(QStringLiteral("max_speed_permille_per_frame")).toInt(40)},
         {QStringLiteral("speaker_tracking_smoothing_permille"),
@@ -180,6 +198,12 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
     };
 
     QString error;
+    int previewVisibleBacklogLimit =
+        m_preview ? m_preview->playbackTuning().visibleBacklogLimit : defaultOptimizedPreviewProfile().previewTuning.visibleBacklogLimit;
+    int previewSourceLookaheadFrames =
+        m_preview ? m_preview->playbackTuning().sourceLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.sourceLookaheadFrames;
+    int previewProxyLookaheadFrames =
+        m_preview ? m_preview->playbackTuning().proxyLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.proxyLookaheadFrames;
     if (!parsePositiveMs(patch, QStringLiteral("playback_ui_sync_min_interval_ms"), &m_playbackUiSyncMinIntervalMs, &error) ||
         !parsePositiveMs(patch, QStringLiteral("playback_state_save_min_interval_ms"), &m_playbackStateSaveMinIntervalMs, &error) ||
         !parsePositiveMs(patch, QStringLiteral("slow_seek_warn_threshold_ms"), &m_slowSeekWarnThresholdMs, &error) ||
@@ -188,11 +212,21 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
         !parsePositiveInt(patch, QStringLiteral("main_thread_heartbeat_interval_ms"), &m_mainThreadHeartbeatIntervalMs, &error) ||
         !parsePositiveInt(patch, QStringLiteral("state_save_debounce_interval_ms"), &m_stateSaveDebounceIntervalMs, &error) ||
         !parsePositiveInt(patch, QStringLiteral("transcript_manual_selection_hold_ms"), &m_transcriptManualSelectionHoldMs, &error) ||
-        !parsePositiveInt(patch, QStringLiteral("audio_clock_stall_threshold_ticks"), &m_audioClockStallThresholdTicks, &error)) {
+        !parsePositiveInt(patch, QStringLiteral("audio_clock_stall_threshold_ticks"), &m_audioClockStallThresholdTicks, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_visible_backlog_limit"), &previewVisibleBacklogLimit, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_source_lookahead_frames"), &previewSourceLookaheadFrames, &error) ||
+        !parsePositiveInt(patch, QStringLiteral("preview_proxy_lookahead_frames"), &previewProxyLookaheadFrames, &error)) {
         return QJsonObject{
             {QStringLiteral("ok"), false},
             {QStringLiteral("error"), error}
         };
+    }
+    if (m_preview) {
+        PreviewSurface::PlaybackTuning tuning = m_preview->playbackTuning();
+        tuning.visibleBacklogLimit = previewVisibleBacklogLimit;
+        tuning.sourceLookaheadFrames = previewSourceLookaheadFrames;
+        tuning.proxyLookaheadFrames = previewProxyLookaheadFrames;
+        m_preview->setPlaybackTuning(tuning);
     }
     QJsonObject speakerTrackingPatch;
     if (patch.contains(QStringLiteral("speaker_tracking_max_speed_permille_per_frame"))) {

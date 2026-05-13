@@ -419,6 +419,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             };
         },
         [this]() { return profilingSnapshot(); },
+        [this]() { return pipelineSnapshot(); },
         [this]() {
             if (m_preview) m_preview->resetProfilingStats();
             resetTranscriptSpeakerTrackingProfiling();
@@ -483,6 +484,9 @@ void EditorWindow::setupStartupLoad()
         startupProfileMark(QStringLiteral("startup_load.projects_refreshed"));
         loadState();
         startupProfileMark(QStringLiteral("startup_load.state_loaded"));
+        startupProfileMark(QStringLiteral("startup_load.optimization.begin"));
+        const QJsonObject optimizationResult = ensureOptimizedProfile();
+        startupProfileMark(QStringLiteral("startup_load.optimization.end"), optimizationResult);
         setupAutosaveTimer();
         startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
         refreshCurrentInspectorTab();

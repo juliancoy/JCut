@@ -85,14 +85,15 @@ bool PreviewWindow::warmPlaybackLookahead(int futureFrames, int timeoutMs) {
         m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
     }
 
+    const int cappedFutureFrames = std::min(futureFrames, effectivePlaybackLookaheadFrames());
     QElapsedTimer timer;
     timer.start();
     while (timer.elapsed() < timeoutMs) {
-        if (hasPlaybackLookaheadBuffered(futureFrames)) {
+        if (hasPlaybackLookaheadBuffered(cappedFutureFrames)) {
             return true;
         }
 
-        for (int offset = 0; offset <= futureFrames; ++offset) {
+        for (int offset = 0; offset <= cappedFutureFrames; ++offset) {
             const int64_t targetSample = m_interaction.currentSample + frameToSamples(offset);
             preparePlaybackAdvanceSample(targetSample);
             if (m_playbackPipeline) {
@@ -108,7 +109,7 @@ bool PreviewWindow::warmPlaybackLookahead(int futureFrames, int timeoutMs) {
         QThread::msleep(8);
     }
 
-    return hasPlaybackLookaheadBuffered(futureFrames);
+    return hasPlaybackLookaheadBuffered(cappedFutureFrames);
 }
 
 bool PreviewWindow::hasPlaybackLookaheadBuffered(int futureFrames) const {
@@ -234,7 +235,6 @@ bool PreviewWindow::isFrameTooStaleForPlayback(const TimelineClip& clip,
 }
 
 void PreviewWindow::requestFramesForCurrentPosition() {
-    static constexpr int kMaxVisibleBacklog = 4;
     playbackTrace(QStringLiteral("PreviewWindow::requestFramesForCurrentPosition"),
                   QStringLiteral("frame=%1 playing=%2 activeClips=%3")
                       .arg(m_interaction.currentFramePosition, 0, 'f', 3)
@@ -283,7 +283,7 @@ void PreviewWindow::requestFramesForCurrentPosition() {
                                       m_interaction.playing,
                                       true));
         const bool pending = usePlaybackPipeline
-                                 ? m_playbackPipeline->pendingVisibleRequestCount() >= kMaxVisibleBacklog
+                                 ? m_playbackPipeline->pendingVisibleRequestCount() >= m_playbackTuning.visibleBacklogLimit
                                  : m_cache->isVisibleRequestPending(clip->id, localFrame);
         const bool forceRetry = !usePlaybackPipeline &&
                                 m_cache->shouldForceVisibleRequestRetry(clip->id, localFrame, 250);

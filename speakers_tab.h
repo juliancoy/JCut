@@ -2,6 +2,7 @@
 
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QFutureWatcher>
 #include <QPixmap>
 #include <QTableWidget>
 #include <QHash>
@@ -134,8 +135,28 @@ private slots:
     void onSpeakerApplyFramingToClipChanged(bool checked);
 
 private:
+    struct TranscriptLoadResult
+    {
+        QString clipFilePath;
+        QString transcriptPath;
+        QJsonDocument document;
+        QString error;
+        bool ok = false;
+    };
+    struct TranscriptSaveResult
+    {
+        QString transcriptPath;
+        QString error;
+        qint64 revision = 0;
+        bool ok = false;
+    };
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
     bool saveLoadedTranscriptDocument();
+    void queueLoadedTranscriptDocumentSave();
+    void startTranscriptLoadRequest(const QString& clipFilePath,
+                                    const QString& transcriptPath,
+                                    const QString& preferredSpeakerId);
+    void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId);
     void requestRefreshFaceStreamPathsPanel();
     enum class SentenceNavAction {
         Previous,
@@ -174,6 +195,8 @@ private:
     bool activeCutMutable() const;
     QString originalTranscriptPathForClip(const QString& clipFilePath) const;
     QString selectedSpeakerId() const;
+    QString speakerDisplayName(const QString& speakerId) const;
+    QString speakerDisplayLabel(const QString& speakerId) const;
     QString speakerTrackingSummary(const QJsonObject& profile) const;
     bool ensureAiActionReady(const QString& actionTitle) const;
     void updateSpeakerTrackingStatusLabel();
@@ -250,4 +273,11 @@ private:
     QString m_boxStreamPanelRefreshSignature;
     QJsonArray m_boxStreamPanelRows;
     mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
+    QFutureWatcher<TranscriptLoadResult> m_transcriptLoadWatcher;
+    QFutureWatcher<TranscriptSaveResult> m_transcriptSaveWatcher;
+    qint64 m_transcriptSaveRevision = 0;
+    qint64 m_pendingTranscriptSaveRevision = 0;
+    QString m_pendingTranscriptSavePath;
+    QJsonDocument m_pendingTranscriptSaveDoc;
+    QString m_pendingPreferredSpeakerId;
 };

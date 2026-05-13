@@ -100,6 +100,18 @@ struct SpeakerIdentityCacheEntry {
     QHash<QString, QString> titleBySpeaker;
 };
 
+struct TranscriptJsonCacheEntry {
+    qint64 mtimeMs = -1;
+    qint64 fileSize = -1;
+    QJsonDocument document;
+};
+
+struct TranscriptRuntimeCacheEntry {
+    qint64 mtimeMs = -1;
+    qint64 fileSize = -1;
+    std::shared_ptr<const TranscriptRuntimeDocument> document;
+};
+
 QMutex& speakerProfileCacheMutex() {
     static QMutex mutex;
     return mutex;
@@ -113,6 +125,130 @@ QHash<QString, SpeakerProfileCacheEntry>& speakerProfileCacheByPath() {
 QHash<QString, SpeakerIdentityCacheEntry>& speakerIdentityCacheByPath() {
     static QHash<QString, SpeakerIdentityCacheEntry> cache;
     return cache;
+}
+
+QMutex& transcriptJsonCacheMutex() {
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, TranscriptJsonCacheEntry>& transcriptJsonCacheByPath() {
+    static QHash<QString, TranscriptJsonCacheEntry> cache;
+    return cache;
+}
+
+QMutex& transcriptRuntimeCacheMutex() {
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, TranscriptRuntimeCacheEntry>& transcriptRuntimeCacheByPath() {
+    static QHash<QString, TranscriptRuntimeCacheEntry> cache;
+    return cache;
+}
+
+QVector<TranscriptSection> buildTranscriptSectionsFromDocument(const QJsonDocument& transcriptDoc)
+{
+    QVector<TranscriptWord> words;
+    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segmentValue : segments) {
+        const QJsonObject segmentObj = segmentValue.toObject();
+        const QString segmentSpeaker = segmentObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray segmentWords = segmentObj.value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : segmentWords) {
+            const QJsonObject wordObj = wordValue.toObject();
+            const QString text = wordObj.value(QStringLiteral("word")).toString().trimmed();
+            if (text.isEmpty() || wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
+            if (startSeconds < 0.0 || endSeconds < startSeconds) {
+                continue;
+            }
+            const int64_t startFrame =
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+            const int64_t endFrame =
+                qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)) - 1);
+            QString speaker = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
+            if (speaker.isEmpty()) {
+                speaker = segmentSpeaker;
+            }
+            words.push_back({startFrame, endFrame, speaker, text, false});
+        }
+    }
+
+    std::sort(words.begin(), words.end(), [](const TranscriptWord& a, const TranscriptWord& b) {
+        if (a.startFrame == b.startFrame) {
+            return a.endFrame < b.endFrame;
+        }
+        return a.startFrame < b.startFrame;
+    });
+
+    QVector<TranscriptSection> sections;
+    sections.reserve(words.size());
+    TranscriptSection current;
+    const QRegularExpression punctuationPattern(QStringLiteral("[\\.!\\?;:]$"));
+    for (const TranscriptWord& word : std::as_const(words)) {
+        if (current.text.isEmpty()) {
+            current.startFrame = word.startFrame;
+            current.endFrame = word.endFrame;
+            current.text = word.text;
+            current.words.push_back(word);
+        } else {
+            current.endFrame = word.endFrame;
+            current.text += QStringLiteral(" ") + word.text;
+            current.words.push_back(word);
+        }
+        if (punctuationPattern.match(word.text).hasMatch()) {
+            sections.push_back(current);
+            current = TranscriptSection();
+        }
+    }
+    if (!current.text.isEmpty()) {
+        sections.push_back(current);
+    }
+    return sections;
+}
+
+bool loadTranscriptJsonWithCache(const QString& transcriptPath, QJsonDocument* documentOut)
+{
+    if (!documentOut || transcriptPath.trimmed().isEmpty()) {
+        return false;
+    }
+    const QFileInfo info(transcriptPath);
+    if (!info.exists() || !info.isFile()) {
+        return false;
+    }
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = info.size();
+    {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        const auto it = transcriptJsonCacheByPath().constFind(transcriptPath);
+        if (it != transcriptJsonCacheByPath().cend() &&
+            it->mtimeMs == mtimeMs &&
+            it->fileSize == fileSize &&
+            it->document.isObject()) {
+            *documentOut = it->document;
+            return true;
+        }
+    }
+
+    editor::TranscriptEngine engine;
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
+        return false;
+    }
+
+    {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        TranscriptJsonCacheEntry& entry = transcriptJsonCacheByPath()[transcriptPath];
+        entry.mtimeMs = mtimeMs;
+        entry.fileSize = fileSize;
+        entry.document = transcriptDoc;
+    }
+    *documentOut = transcriptDoc;
+    return true;
 }
 
 std::atomic<qint64>& speakerTrackingLookupCount() {
@@ -261,9 +397,8 @@ QVector<SpeakerTrackingKeyframe> sanitizeTrackingKeyframes(const QVector<Speaker
 }
 
 QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transcriptPath) {
-    editor::TranscriptEngine engine;
     QJsonDocument transcriptDoc;
-    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+    if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc)) {
         return {};
     }
 
@@ -325,9 +460,8 @@ QHash<QString, SpeakerProfileRuntime> parseSpeakerProfiles(const QString& transc
 }
 
 QHash<QString, QString> parseSpeakerTitles(const QString& transcriptPath) {
-    editor::TranscriptEngine engine;
     QJsonDocument transcriptDoc;
-    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+    if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc)) {
         return {};
     }
 
@@ -605,76 +739,61 @@ bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* edita
     return QFile::copy(originalPath, editablePath);
 }
 
-QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath) {
-    editor::TranscriptEngine engine;
-    QJsonDocument transcriptDoc;
-    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut)
+{
+    return loadTranscriptJsonWithCache(transcriptPath, documentOut);
+}
+
+std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath)
+{
+    if (transcriptPath.trimmed().isEmpty()) {
         return {};
     }
 
-    QVector<TranscriptWord> words;
-    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
-    for (const QJsonValue& segmentValue : segments) {
-        const QJsonObject segmentObj = segmentValue.toObject();
-        const QString segmentSpeaker = segmentObj.value(QStringLiteral("speaker")).toString().trimmed();
-        const QJsonArray segmentWords = segmentObj.value(QStringLiteral("words")).toArray();
-        for (const QJsonValue& wordValue : segmentWords) {
-            const QJsonObject wordObj = wordValue.toObject();
-            const QString text = wordObj.value(QStringLiteral("word")).toString().trimmed();
-            if (text.isEmpty()) {
-                continue;
-            }
-            const bool skipped = wordObj.value(QStringLiteral("skipped")).toBool(false);
-            if (skipped) {
-                continue;
-            }
-            const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
-            if (startSeconds < 0.0 || endSeconds < startSeconds) {
-                continue;
-            }
-            const int64_t startFrame =
-                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
-            const int64_t endFrame =
-                qMax<int64_t>(startFrame, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)) - 1);
-            QString speaker = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
-            if (speaker.isEmpty()) {
-                speaker = segmentSpeaker;
-            }
-            words.push_back({startFrame, endFrame, speaker, text, false});
-        }
+    const QFileInfo info(transcriptPath);
+    if (!info.exists() || !info.isFile()) {
+        return {};
     }
-    std::sort(words.begin(), words.end(), [](const TranscriptWord& a, const TranscriptWord& b) {
-        if (a.startFrame == b.startFrame) {
-            return a.endFrame < b.endFrame;
-        }
-        return a.startFrame < b.startFrame;
-    });
-
-    QVector<TranscriptSection> sections;
-    TranscriptSection current;
-    const QRegularExpression punctuationPattern(QStringLiteral("[\\.!\\?;:]$"));
-    for (const TranscriptWord& word : std::as_const(words)) {
-        if (current.text.isEmpty()) {
-            current.startFrame = word.startFrame;
-            current.endFrame = word.endFrame;
-            current.text = word.text;
-            current.words.push_back(word);
-        } else {
-            current.endFrame = word.endFrame;
-            current.text += QStringLiteral(" ") + word.text;
-            current.words.push_back(word);
-        }
-        if (punctuationPattern.match(word.text).hasMatch()) {
-            sections.push_back(current);
-            current = TranscriptSection();
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = info.size();
+    {
+        QMutexLocker locker(&transcriptRuntimeCacheMutex());
+        const auto it = transcriptRuntimeCacheByPath().constFind(transcriptPath);
+        if (it != transcriptRuntimeCacheByPath().cend() &&
+            it->mtimeMs == mtimeMs &&
+            it->fileSize == fileSize &&
+            it->document) {
+            return it->document;
         }
     }
 
-    if (!current.text.isEmpty()) {
-        sections.push_back(current);
+    QJsonDocument transcriptDoc;
+    if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
+        return {};
     }
-    return sections;
+
+    auto runtimeDocument = std::make_shared<TranscriptRuntimeDocument>();
+    runtimeDocument->mtimeMs = mtimeMs;
+    runtimeDocument->fileSize = fileSize;
+    runtimeDocument->sections = buildTranscriptSectionsFromDocument(transcriptDoc);
+
+    {
+        QMutexLocker locker(&transcriptRuntimeCacheMutex());
+        TranscriptRuntimeCacheEntry& entry = transcriptRuntimeCacheByPath()[transcriptPath];
+        entry.mtimeMs = mtimeMs;
+        entry.fileSize = fileSize;
+        entry.document = runtimeDocument;
+    }
+    return runtimeDocument;
+}
+
+QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath) {
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    if (!runtimeDocument) {
+        return {};
+    }
+    return runtimeDocument->sections;
 }
 
 QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
@@ -786,6 +905,26 @@ void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath) {
     } else {
         speakerProfileCacheByPath().remove(transcriptPath);
         speakerIdentityCacheByPath().remove(transcriptPath);
+    }
+}
+
+void invalidateTranscriptJsonCache(const QString& transcriptPath)
+{
+    {
+        QMutexLocker locker(&transcriptJsonCacheMutex());
+        if (transcriptPath.isEmpty()) {
+            transcriptJsonCacheByPath().clear();
+        } else {
+            transcriptJsonCacheByPath().remove(transcriptPath);
+        }
+    }
+    {
+        QMutexLocker locker(&transcriptRuntimeCacheMutex());
+        if (transcriptPath.isEmpty()) {
+            transcriptRuntimeCacheByPath().clear();
+        } else {
+            transcriptRuntimeCacheByPath().remove(transcriptPath);
+        }
     }
 }
 

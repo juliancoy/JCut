@@ -555,8 +555,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
                                     m_interaction.currentFramePosition);
         if (frame.isNull()) {
             if (usePlaybackPipeline && m_playbackPipeline && m_interaction.playing) {
-                static constexpr int kMaxVisibleBacklog = 4;
-                if (m_playbackPipeline->pendingVisibleRequestCount() < kMaxVisibleBacklog) {
+                if (m_playbackPipeline->pendingVisibleRequestCount() < m_playbackTuning.visibleBacklogLimit) {
                     m_lastFrameRequestMs = nowMs();
                     m_playbackPipeline->requestFramesForSample(
                         m_interaction.currentSample,
@@ -665,4 +664,5 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
         {QStringLiteral("skipped_zero_opacity"), skippedZeroOpacityCount},
         {QStringLiteral("clips"), clipSelections}
     };
+    recordPlaybackSmoothnessSample(m_lastFrameSelectionStats);
 }

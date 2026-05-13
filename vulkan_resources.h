@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QImage>
 #include <QSize>
 
 #include <vulkan/vulkan.h>
@@ -22,6 +23,7 @@ public:
 
     bool ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer);
     bool setSampledImage(VkImageView imageView, VkImageLayout imageLayout);
+    bool uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image);
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
 
     VkDescriptorSetLayout descriptorSetLayout() const { return m_descriptorSetLayout; }
@@ -30,8 +32,12 @@ public:
 
 private:
     bool createTextureResources();
+    bool createTextureImage(const QSize& size);
+    void destroyTextureImage();
+    bool ensureTextureSize(const QSize& size);
+    bool ensureStagingCapacity(VkDeviceSize bytes);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
-    void transitionImage(VkCommandBuffer cb,
+    void transitionTextureImage(VkCommandBuffer cb,
                          VkImageLayout oldLayout,
                          VkImageLayout newLayout,
                          VkPipelineStageFlags srcStage,
@@ -54,6 +60,7 @@ private:
     VkImageView m_textureView = VK_NULL_HANDLE;
     VkImageLayout m_textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     bool m_textureUploaded = false;
+    QSize m_textureSize;
 
     VkImage m_curveLutImage = VK_NULL_HANDLE;
     VkDeviceMemory m_curveLutMemory = VK_NULL_HANDLE;
@@ -63,4 +70,5 @@ private:
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
+    VkDeviceSize m_stagingCapacity = 0;
 };

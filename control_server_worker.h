@@ -71,6 +71,7 @@ public:
                         std::function<QJsonObject()> projectSnapshotCallback,
                         std::function<QJsonObject()> historySnapshotCallback,
                         std::function<QJsonObject()> profilingCallback,
+                        std::function<QJsonObject()> pipelineSnapshotCallback,
                         std::function<void()> resetProfilingCallback,
                         std::function<void(int64_t)> setPlayheadCallback,
                         std::function<QJsonObject()> getThrottlesCallback,
@@ -117,6 +118,7 @@ private:
     QJsonObject frameTraceSnapshot(const QUrlQuery& query) const;
 
     bool refreshProfileCacheFromUi(int timeoutMs, QString* errorOut);
+    bool refreshPipelineSnapshotFromUi(int timeoutMs, QJsonObject* previewOut, QString* errorOut);
     bool refreshStateCacheFromUi(int timeoutMs, QString* errorOut);
     bool refreshProjectCacheFromUi(int timeoutMs, QString* errorOut);
     bool refreshHistoryCacheFromUi(int timeoutMs, QString* errorOut);
@@ -163,6 +165,7 @@ private:
     std::function<QJsonObject()> m_projectSnapshotCallback;
     std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
+    std::function<QJsonObject()> m_pipelineSnapshotCallback;
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
     std::function<QJsonObject()> m_getThrottlesCallback;
@@ -223,7 +226,8 @@ private:
     qint64 m_profileCacheFreshMs = 250;
     qint64 m_backgroundRefreshTickMs = 50;
     qint64 m_profileRefreshIntervalMs = 100;
-    qint64 m_profileDemandWindowMs = 15000;
+    qint64 m_profilePlaybackRefreshIntervalMs = 750;
+    qint64 m_profileDemandWindowMs = 3000;
     qint64 m_snapshotDemandWindowMs = 15000;
     qint64 m_stateRefreshIntervalMs = 100;
     qint64 m_projectRefreshIntervalMs = 750;

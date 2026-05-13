@@ -27,6 +27,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QPushButton>
+#include <QPainter>
 #include <QToolButton>
 #include <QSize>
 #include <QStyle>
@@ -65,9 +66,25 @@ protected:
         for (int i = 0; i < count(); ++i) {
             initStyleOption(&option, i);
             painter.drawControl(QStyle::CE_TabBarTabShape, option);
-            QStyleOptionTab labelOption(option);
-            labelOption.shape = QTabBar::RoundedNorth;
-            painter.drawControl(QStyle::CE_TabBarTabLabel, labelOption);
+
+            const QRect rect = tabRect(i).adjusted(10, 0, -10, 0);
+            QRect iconRect = rect;
+            QRect textRect = rect;
+            const QIcon icon = tabIcon(i);
+            const QSize iconExtent(16, 16);
+            if (!icon.isNull()) {
+                iconRect.setWidth(iconExtent.width());
+                const QPixmap pixmap = icon.pixmap(iconExtent, isTabEnabled(i) ? QIcon::Normal : QIcon::Disabled);
+                const QPoint iconTopLeft(iconRect.left(),
+                                         rect.top() + ((rect.height() - iconExtent.height()) / 2));
+                painter.drawPixmap(iconTopLeft, pixmap);
+                textRect.setLeft(iconRect.right() + 8);
+            }
+
+            painter.save();
+            painter.setPen(isTabEnabled(i) ? Qt::white : QColor(QStringLiteral("#7f8b99")));
+            painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, tabText(i));
+            painter.restore();
         }
     }
 
@@ -1283,11 +1300,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersInspectorDetailsLabel->setWordWrap(true);
 
     m_speakersTable = new SpeakersTable(page);
-    m_speakersTable->setColumnCount(6);
+    m_speakersTable->setColumnCount(5);
     m_speakersTable->setHorizontalHeaderLabels(
         {QStringLiteral("Avatar"),
-         QStringLiteral("Speaker ID"),
-         QStringLiteral("Name"),
+         QStringLiteral("Speaker"),
          QStringLiteral("X"),
          QStringLiteral("Y"),
          QStringLiteral("Subtitle Face Tracking")});

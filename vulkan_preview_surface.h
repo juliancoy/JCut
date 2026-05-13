@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QHash>
 #include <QSet>
+#include <QVector>
 
 #include <memory>
 
@@ -87,6 +88,8 @@ public:
     bool preparePlaybackAdvance(int64_t targetFrame) override;
     bool preparePlaybackAdvanceSample(int64_t targetSample) override;
     bool warmPlaybackLookahead(int futureFrames, int timeoutMs) override;
+    void setPlaybackTuning(const PlaybackTuning& tuning) override;
+    PlaybackTuning playbackTuning() const override;
     QImage latestPresentedFrameImageForClip(const QString& clipId) const override;
     QVector<PipelineStageSnapshot> livePipelineSnapshots() const override;
     QJsonObject profilingSnapshot() const override;
@@ -115,10 +118,28 @@ private:
         QString signature;
         QVector<FacestreamTrack> tracks;
     };
+    struct PlaybackSmoothnessSample {
+        qint64 timestampMs = 0;
+        int exactCount = 0;
+        int approxCount = 0;
+        int missingCount = 0;
+        int64_t maxFrameLag = 0;
+        double lastUploadMs = 0.0;
+        qint64 visibleRequestAttempts = 0;
+        qint64 visibleRequestDispatched = 0;
+        qint64 visibleRequestBlocked = 0;
+        qint64 handoffAttempts = 0;
+        qint64 handoffSuccesses = 0;
+        qint64 handoffFailures = 0;
+        qint64 presentedFrames = 0;
+        bool playing = false;
+    };
 
     void requestNativeUpdate();
     void updateNativeTitle();
     void ensureFramePipeline();
+    bool hasPlaybackLookaheadBuffered(int futureFrames) const;
+    int effectivePlaybackLookaheadFrames() const;
     void registerVisibleClips();
     void requestFramesForCurrentPosition();
     void refreshVulkanFrameStatuses();
@@ -128,6 +149,11 @@ private:
                                                          const QJsonObject& artifactRoot) const;
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
+    void recordPlaybackSmoothnessSample(int exactCount,
+                                        int approxCount,
+                                        int missingCount,
+                                        int64_t maxFrameLag);
+    QJsonObject playbackSmoothnessSnapshot(const QJsonObject& presenterSnapshot) const;
 
     std::unique_ptr<DirectVulkanPreviewPresenter> m_presenter;
     std::unique_ptr<QObject> m_pipelineOwner;
@@ -149,6 +175,7 @@ private:
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
     bool m_useProxyMedia = false;
+    PlaybackTuning m_playbackTuning;
     bool m_forcedPreviewDecodePreference = false;
     editor::DecodePreference m_previousDecodePreference = editor::DecodePreference::Hardware;
     bool m_bulkUpdating = false;
@@ -173,4 +200,5 @@ private:
     int64_t m_visibleRequestCallbacks = 0;
     int64_t m_visibleRequestNullCallbacks = 0;
     QString m_lastVisibleRequestCallbackPayload;
+    QVector<PlaybackSmoothnessSample> m_playbackSmoothnessSamples;
 };

@@ -13,6 +13,7 @@
 #include <QImage>
 #include <QColor>
 #include <QDateTime>
+#include <QVector>
 #include <deque>
 #include <memory>
 #include <functional>
@@ -110,6 +111,8 @@ public:
     bool preparePlaybackAdvance(int64_t targetFrame);
     bool preparePlaybackAdvanceSample(int64_t targetSample);
     bool warmPlaybackLookahead(int futureFrames, int timeoutMs);
+    void setPlaybackTuning(const PlaybackTuning& tuning) override;
+    PlaybackTuning playbackTuning() const override;
     QImage latestPresentedFrameImageForClip(const QString& clipId) const;
     QVector<PipelineStageSnapshot> livePipelineSnapshots() const override;
     QJsonObject profilingSnapshot() const;
@@ -160,6 +163,19 @@ private:
         qint64 artifactMtimeMs = -1;
         QVector<SpeakerTrackPoint> points;
     };
+    struct PlaybackSmoothnessSample {
+        qint64 timestampMs = 0;
+        int presentationCount = 0;
+        int exactCount = 0;
+        int bestCount = 0;
+        int heldCount = 0;
+        int staleRejectedCount = 0;
+        int nullCount = 0;
+        int64_t maxFrameLag = 0;
+        qint64 droppedPresentationFrames = 0;
+        qint64 renderDurationMs = 0;
+        bool playing = false;
+    };
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
     bool dispatchFaceStreamBoxAtPosition(const QPointF& position);
@@ -190,6 +206,7 @@ private:
     void trimTranscriptTextureCache();
     bool usingCpuFallback() const;
     void ensurePipeline();
+    int effectivePlaybackLookaheadFrames() const;
     void releaseGlResources();
     GLuint textureForFrame(const FrameHandle& frame);
     void trimTextureCache();
@@ -216,6 +233,8 @@ private:
     void requestFramesForCurrentPosition();
     void scheduleFrameRequest();
     void scheduleRepaint();
+    void recordPlaybackSmoothnessSample(const QJsonObject& frameSelectionStats);
+    QJsonObject playbackSmoothnessSnapshot() const;
     void drawCompositedPreview(QPainter* painter, const QRect& safeRect,
                                const QList<TimelineClip>& activeClips);
     void drawEmptyState(QPainter* painter, const QRect& safeRect);
@@ -264,6 +283,7 @@ private:
     bool m_correctionsEnabled = true;
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
+    PlaybackTuning m_playbackTuning;
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
     QTimer m_repaintTimer;
@@ -280,10 +300,11 @@ private:
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
+    bool m_useProxyMedia = false;
     QString m_facestreamOverlaySource = QStringLiteral("all");
         PreviewOverlayModel m_overlayModel;
     mutable QHash<QString, qreal> m_audioDisplayPeakCache;
-    mutable QHash<QString, QVector<TranscriptSection>> m_transcriptSectionsCache;
+    mutable QHash<QString, std::shared_ptr<const TranscriptRuntimeDocument>> m_transcriptSectionsCache;
     mutable QHash<QString, SpeakerTrackPointCacheEntry> m_speakerTrackPointsCache;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
     GLuint m_curveLutTextureId = 0;
@@ -294,6 +315,7 @@ private:
     mutable QJsonObject m_lastFrameSelectionStats;
     static constexpr int kRenderTimeHistorySize = 60;
     std::deque<qint64> m_renderTimeHistory;
+    std::deque<PlaybackSmoothnessSample> m_playbackSmoothnessSamples;
     int m_bulkUpdateDepth = 0;
     bool m_pendingFrameRequest = false;
     bool m_frameRequestsArmed = false;
