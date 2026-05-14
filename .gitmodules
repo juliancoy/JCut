@@ -16,3 +16,6 @@
 	path = external/ncnn
 	url = https://github.com/juliancoy/ncnn.git
 	branch = jcut/external-vulkan-device
+[submodule "loiacono"]
+	path = loiacono
+	url = https://github.com/juliancoy/loiacono.git
