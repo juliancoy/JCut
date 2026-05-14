@@ -1,0 +1,88 @@
+#version 450
+
+#define PI 3.14159265358979323846
+#define SIGNAL_LENGTH 32768
+#define THREADS_PER_WORKGROUP 128
+
+layout(std430, set = 0, binding = 1) buffer ProcessedWaveformBins { vec2 u_processedBins[]; };
+layout(std430, set = 0, binding = 2) readonly buffer SignalBuffer { float x[SIGNAL_LENGTH]; };
+layout(std430, set = 0, binding = 3) readonly buffer FrequencyBuffer { float f[]; };
+layout(std430, set = 0, binding = 4) readonly buffer NormalizationBuffer { float norm[]; };
+layout(std430, set = 0, binding = 5) readonly buffer WindowBuffer { int windowLen[]; };
+layout(std430, set = 0, binding = 6) readonly buffer ParamsBuffer { uint params[16]; };
+layout(std430, set = 0, binding = 7) buffer MagnitudeBuffer { float L[]; };
+layout(std430, set = 0, binding = 8) buffer PeakBuffer { uint peakBits[]; };
+
+layout(push_constant) uniform Push {
+    float leakiness;
+} pc;
+
+layout(local_size_x = THREADS_PER_WORKGROUP, local_size_y = 1, local_size_z = 1) in;
+
+shared float sharedTr[THREADS_PER_WORKGROUP];
+shared float sharedTi[THREADS_PER_WORKGROUP];
+
+float windowWeight(int mode, int index, int len)
+{
+    if (len <= 1) return 1.0;
+    float phase = 2.0 * PI * float(index) / float(len - 1);
+    if (mode == 1) return 0.5 - 0.5 * cos(phase);
+    if (mode == 2) return 0.54 - 0.46 * cos(phase);
+    if (mode == 3) return 0.42 - 0.5 * cos(phase) + 0.08 * cos(2.0 * phase);
+    if (mode == 4) return 0.35875 - 0.48829 * cos(phase) + 0.14128 * cos(2.0 * phase) - 0.01168 * cos(3.0 * phase);
+    return 1.0;
+}
+
+void main()
+{
+    uint frequencyIx = gl_WorkGroupID.x;
+    uint threadIx = gl_LocalInvocationID.x;
+    uint totalBins = max(params[5], 1u);
+    if (frequencyIx >= totalBins) {
+        return;
+    }
+
+    int validSamples = min(windowLen[frequencyIx], int(min(params[1], uint(SIGNAL_LENGTH))));
+    if (validSamples <= 0) {
+        if (threadIx == 0u) {
+            L[frequencyIx] = 0.0;
+        }
+        return;
+    }
+
+    uint ringStart = (params[0] + uint(SIGNAL_LENGTH - validSamples)) % uint(SIGNAL_LENGTH);
+    float freq = f[frequencyIx];
+    float scale = norm[frequencyIx];
+    int windowMode = int(params[3]);
+
+    float tr = 0.0;
+    float ti = 0.0;
+    for (int k = int(threadIx); k < validSamples; k += THREADS_PER_WORKGROUP) {
+        uint readIx = (ringStart + uint(k)) % uint(SIGNAL_LENGTH);
+        float sampleValue = x[readIx];
+        float weight = windowMode == 5
+            ? pow(pc.leakiness, float(validSamples - 1 - k))
+            : windowWeight(windowMode, k, validSamples);
+        float angle = 2.0 * PI * freq * float(k);
+        tr += sampleValue * cos(angle) * scale * weight;
+        ti -= sampleValue * sin(angle) * scale * weight;
+    }
+
+    sharedTr[threadIx] = tr;
+    sharedTi[threadIx] = ti;
+    barrier();
+
+    for (uint stride = THREADS_PER_WORKGROUP / 2u; stride > 0u; stride >>= 1u) {
+        if (threadIx < stride) {
+            sharedTr[threadIx] += sharedTr[threadIx + stride];
+            sharedTi[threadIx] += sharedTi[threadIx + stride];
+        }
+        barrier();
+    }
+
+    if (threadIx == 0u) {
+        float magnitude = sqrt(sharedTr[0] * sharedTr[0] + sharedTi[0] * sharedTi[0]);
+        L[frequencyIx] = magnitude;
+        atomicMax(peakBits[0], floatBitsToUint(max(0.0, magnitude)));
+    }
+}

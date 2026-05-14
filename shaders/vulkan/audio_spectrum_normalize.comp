@@ -1,0 +1,26 @@
+#version 450
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 1) writeonly buffer ProcessedWaveformBins { vec2 u_processedBins[]; };
+layout(std430, set = 0, binding = 7) readonly buffer MagnitudeBuffer { float u_magnitudes[]; };
+layout(std430, set = 0, binding = 8) readonly buffer PeakBuffer { uint u_peakBits[]; };
+
+layout(push_constant) uniform Push {
+    vec4 u_params;
+} pc;
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    uint totalBins = uint(max(1.0, pc.u_params.x));
+    if (idx >= totalBins) {
+        return;
+    }
+
+    float peak = max(uintBitsToFloat(u_peakBits[0]), 0.000001);
+    float normalized = clamp((u_magnitudes[idx] * pc.u_params.y) / peak, 0.0, 1.0);
+    float gated = normalized <= pc.u_params.w ? 0.0 : normalized;
+    float shaped = pow(gated, pc.u_params.z);
+    u_processedBins[idx] = vec2(shaped, shaped);
+}

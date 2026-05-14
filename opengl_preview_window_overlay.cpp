@@ -1,4 +1,5 @@
 #include "opengl_preview.h"
+#include "audio_preview_support.h"
 #include "opengl_preview_debug.h"
 #include "debug_controls.h"
 #include "editor_shared.h"
@@ -1086,8 +1087,8 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
 
     QVector<qreal> waveformMin(totalDrawBins, 0.0);
     QVector<qreal> waveformMax(totalDrawBins, 0.0);
-    (void)audioWaveformEnvelopeForClip(
-        clip, totalDrawBins, startNorm, endNorm, &waveformMin, &waveformMax);
+    (void)queryAudioWaveformEnvelopeForClip(
+        clip, m_audioDynamics, totalDrawBins, startNorm, endNorm, &waveformMin, &waveformMax);
 
     // Absolute amplitude scale: +/-1.0 is always full row height (digital full-scale).
     const qreal unityScale = 1.0;

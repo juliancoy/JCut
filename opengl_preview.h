@@ -75,6 +75,8 @@ public:
     void setFacestreamOverlaySource(const QString& source);
     void setAudioSpeakerHoverModalEnabled(bool enabled);
     void setAudioWaveformVisible(bool visible);
+    void setAudioVisualizationMode(AudioVisualizationMode mode) { m_interaction.audioVisualizationMode = mode; update(); }
+    void setLoiaconoSpectrumSettings(const LoiaconoSpectrumSettings& settings) { m_interaction.loiaconoSpectrumSettings = settings; update(); }
     bool audioSpeakerHoverModalEnabled() const { return m_audioSpeakerHoverModalEnabled; }
     bool audioWaveformVisible() const { return m_audioWaveformVisible; }
     void setViewMode(ViewMode mode);
@@ -246,14 +248,7 @@ private:
                               const QList<TimelineClip>& activeAudioClips);
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
-    bool audioWaveformEnvelopeForClip(const TimelineClip& clip,
-                                      int binCount,
-                                      qreal rangeStartNorm,
-                                      qreal rangeEndNorm,
-                                      QVector<qreal>* minOut,
-                                      QVector<qreal>* maxOut) const;
     bool audioWaveformDisplayPeakForClip(const TimelineClip& clip, qreal* peakOut) const;
-    QString audioDynamicsCacheKey() const;
     void drawSpeakerPickOverlay(QPainter* painter) const;
     QRect fitRect(const QSize& source, const QRect& bounds) const;
     QPointF mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info, const QPointF& normalizedPoint) const;

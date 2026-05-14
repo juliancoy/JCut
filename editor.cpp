@@ -594,6 +594,44 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("audioSpeakerHoverModalEnabled")).toBool(true);
     const bool audioWaveformVisible =
         root.value(QStringLiteral("audioWaveformVisible")).toBool(true);
+    const PreviewSurface::AudioVisualizationMode audioVisualizationMode =
+        root.value(QStringLiteral("audioVisualizationMode")).toInt(
+            static_cast<int>(PreviewSurface::AudioVisualizationMode::Waveform)) == static_cast<int>(PreviewSurface::AudioVisualizationMode::Spectrum)
+            ? PreviewSurface::AudioVisualizationMode::Spectrum
+            : PreviewSurface::AudioVisualizationMode::Waveform;
+    PreviewSurface::LoiaconoSpectrumSettings loiaconoSpectrumSettings;
+    loiaconoSpectrumSettings.multiple =
+        qBound(2, root.value(QStringLiteral("loiaconoMultiple")).toInt(loiaconoSpectrumSettings.multiple), 240);
+    loiaconoSpectrumSettings.bins =
+        qBound(32, root.value(QStringLiteral("loiaconoBins")).toInt(loiaconoSpectrumSettings.bins), 2400);
+    loiaconoSpectrumSettings.freqMin =
+        qBound(20, root.value(QStringLiteral("loiaconoFreqMin")).toInt(loiaconoSpectrumSettings.freqMin), 2000);
+    loiaconoSpectrumSettings.freqMax =
+        qBound(loiaconoSpectrumSettings.freqMin + 50,
+               root.value(QStringLiteral("loiaconoFreqMax")).toInt(loiaconoSpectrumSettings.freqMax),
+               12000);
+    loiaconoSpectrumSettings.sampleRate =
+        qBound(8000, root.value(QStringLiteral("loiaconoSampleRate")).toInt(loiaconoSpectrumSettings.sampleRate), 192000);
+    loiaconoSpectrumSettings.gain =
+        qBound(0.1, root.value(QStringLiteral("loiaconoGain")).toDouble(loiaconoSpectrumSettings.gain), 20.0);
+    loiaconoSpectrumSettings.gamma =
+        qBound(0.1, root.value(QStringLiteral("loiaconoGamma")).toDouble(loiaconoSpectrumSettings.gamma), 2.0);
+    loiaconoSpectrumSettings.floor =
+        qBound(0.0, root.value(QStringLiteral("loiaconoFloor")).toDouble(loiaconoSpectrumSettings.floor), 0.5);
+    loiaconoSpectrumSettings.leakiness =
+        qBound(0.99, root.value(QStringLiteral("loiaconoLeakiness")).toDouble(loiaconoSpectrumSettings.leakiness), 1.0);
+    loiaconoSpectrumSettings.temporalWeightingMode =
+        root.value(QStringLiteral("loiaconoTemporalWeightingMode"))
+            .toInt(loiaconoSpectrumSettings.temporalWeightingMode);
+    loiaconoSpectrumSettings.normalizationMode =
+        root.value(QStringLiteral("loiaconoNormalizationMode"))
+            .toInt(loiaconoSpectrumSettings.normalizationMode);
+    loiaconoSpectrumSettings.windowLengthMode =
+        root.value(QStringLiteral("loiaconoWindowLengthMode"))
+            .toInt(loiaconoSpectrumSettings.windowLengthMode);
+    loiaconoSpectrumSettings.algorithmMode =
+        root.value(QStringLiteral("loiaconoAlgorithmMode"))
+            .toInt(loiaconoSpectrumSettings.algorithmMode);
     
     QVector<ExportRangeSegment> loadedExportRanges;
     const QJsonArray exportRanges = root.value(QStringLiteral("exportRanges")).toArray();
@@ -1154,6 +1192,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     m_audioSpeakerHoverModalEnabled = audioSpeakerHoverModalEnabled;
     m_audioWaveformVisible = audioWaveformVisible;
+    m_audioVisualizationMode = audioVisualizationMode;
+    m_loiaconoSpectrumSettings = loiaconoSpectrumSettings;
     if (m_audioSpeakerHoverModalCheckBox) {
         QSignalBlocker block(m_audioSpeakerHoverModalCheckBox);
         m_audioSpeakerHoverModalCheckBox->setChecked(m_audioSpeakerHoverModalEnabled);
@@ -1161,6 +1201,21 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_audioShowWaveformCheckBox) {
         QSignalBlocker block(m_audioShowWaveformCheckBox);
         m_audioShowWaveformCheckBox->setChecked(m_audioWaveformVisible);
+    }
+    if (m_audioVisualizationModeCombo) {
+        QSignalBlocker block(m_audioVisualizationModeCombo);
+        const int visualizationIndex = m_audioVisualizationModeCombo->findData(
+            static_cast<int>(m_audioVisualizationMode));
+        if (visualizationIndex >= 0) {
+            m_audioVisualizationModeCombo->setCurrentIndex(visualizationIndex);
+        }
+    }
+    if (m_loiaconoSpectrumSettingsButton) {
+        m_loiaconoSpectrumSettingsButton->setEnabled(
+            m_audioVisualizationMode == PreviewSurface::AudioVisualizationMode::Spectrum);
+    }
+    if (m_loiaconoSpectrumSettingsDialog) {
+        m_loiaconoSpectrumSettingsDialog->setSettings(m_loiaconoSpectrumSettings);
     }
     if (m_audioNormalizeEnabledCheckBox) {
         QSignalBlocker block(m_audioNormalizeEnabledCheckBox);
@@ -1252,6 +1307,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_preview) {
         m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);
         m_preview->setAudioWaveformVisible(m_audioWaveformVisible);
+        m_preview->setAudioVisualizationMode(m_audioVisualizationMode);
+        m_preview->setLoiaconoSpectrumSettings(m_loiaconoSpectrumSettings);
     }
     editor::setDebugPlaybackCacheFallbackEnabled(previewPlaybackCacheFallback);
     editor::setDebugLeadPrefetchEnabled(previewLeadPrefetchEnabled);

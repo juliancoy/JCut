@@ -15,6 +15,79 @@
 
 #include <cmath>
 
+namespace {
+bool audioSeekSampleAtPosition(const PreviewInteractionState& interaction,
+                               const QRect& widgetRect,
+                               const QPointF& position,
+                               int64_t* sampleOut)
+{
+    if (!sampleOut || interaction.viewMode != PreviewSurface::ViewMode::Audio) {
+        return false;
+    }
+    const QRect safeRect = widgetRect.adjusted(24, 24, -24, -24);
+    const QRect panel = safeRect.adjusted(12, 12, -12, -12);
+    const QRect waveRect = panel.adjusted(24, 120, -24, -36);
+    const qreal rulerGutterWidth = qBound<qreal>(32.0, waveRect.width() * 0.12, 56.0);
+    const QRectF graphRect(static_cast<qreal>(waveRect.left()) + rulerGutterWidth,
+                           static_cast<qreal>(waveRect.top()),
+                           qMax<qreal>(1.0, static_cast<qreal>(waveRect.width()) - rulerGutterWidth),
+                           static_cast<qreal>(waveRect.height()));
+    if (!graphRect.contains(position)) {
+        return false;
+    }
+
+    const TimelineClip* clip = nullptr;
+    for (const TimelineClip& candidate : interaction.clips) {
+        const bool includeForAudioView =
+            clipAudioPlaybackEnabled(candidate) &&
+            (candidate.id == interaction.selectedClipId ||
+             (interaction.currentSample >= clipTimelineStartSamples(candidate) &&
+              interaction.currentSample < clipTimelineStartSamples(candidate) + frameToSamples(candidate.durationFrames)));
+        const bool includeAsFallback =
+            clipIsAudioOnly(candidate) &&
+            interaction.currentSample >= clipTimelineStartSamples(candidate) &&
+            interaction.currentSample < clipTimelineStartSamples(candidate) + frameToSamples(candidate.durationFrames);
+        if (includeForAudioView || includeAsFallback) {
+            clip = &candidate;
+            break;
+        }
+    }
+    if (!clip) {
+        return false;
+    }
+
+    const int rowCount = qBound(2, waveRect.height() / 88, 6);
+    const int binsPerRow = qMax(256, static_cast<int>(graphRect.width()));
+    const int totalDrawBins = qMax(96, qMin(8192, rowCount * binsPerRow));
+    const int64_t clipStartSample = clipTimelineStartSamples(*clip);
+    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip->durationFrames)));
+    const qreal minVisibleBySamples = qBound<qreal>(
+        0.00001,
+        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
+        1.0);
+    const qreal zoom = qBound<qreal>(1.0, interaction.previewZoom, 100000.0);
+    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
+    const qreal startNorm = qBound<qreal>(0.0, interaction.previewPanOffset.x(), maxStart);
+    const qreal localX = qBound<qreal>(0.0,
+                                       (position.x() - graphRect.left()) / qMax<qreal>(1.0, graphRect.width()),
+                                       1.0);
+    const qreal localY = qBound<qreal>(0.0,
+                                       (position.y() - graphRect.top()) / qMax<qreal>(1.0, graphRect.height()),
+                                       0.99999);
+    const int row = qBound(0, static_cast<int>(std::floor(localY * rowCount)), rowCount - 1);
+    const int binInRow = qBound(0,
+                                static_cast<int>(std::round(localX * static_cast<qreal>(qMax(1, binsPerRow - 1)))),
+                                qMax(0, binsPerRow - 1));
+    const int visibleBinIndex = qBound(0, row * binsPerRow + binInRow, qMax(0, totalDrawBins - 1));
+    const qreal timelineNorm = startNorm +
+        (((static_cast<qreal>(visibleBinIndex) + 0.5) / static_cast<qreal>(totalDrawBins)) * visibleFraction);
+    const int64_t targetOffset = static_cast<int64_t>(std::llround(timelineNorm * static_cast<qreal>(clipSamples - 1)));
+    *sampleOut = qBound<int64_t>(clipStartSample, clipStartSample + targetOffset, clipStartSample + clipSamples - 1);
+    return true;
+}
+}
+
 void PreviewWindow::showEvent(QShowEvent* event) {
     QOpenGLWidget::showEvent(event);
     m_frameRequestsArmed = true;
@@ -29,6 +102,16 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
     if (event->button() != Qt::LeftButton) {
         QWidget::mousePressEvent(event);
         return;
+    }
+
+    if (m_interaction.viewMode == ViewMode::Audio) {
+        int64_t targetSample = 0;
+        if (playbackSampleRequested &&
+            audioSeekSampleAtPosition(m_interaction, rect(), event->position(), &targetSample)) {
+            playbackSampleRequested(targetSample);
+            event->accept();
+            return;
+        }
     }
 
     if (m_interaction.correctionDrawMode) {
@@ -628,6 +711,11 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
             clearHoveredFaceStreamBox();
             setCursor(Qt::ArrowCursor);
         }
+        return;
+    }
+
+    if (m_interaction.viewMode == ViewMode::Audio) {
+        setCursor(Qt::ArrowCursor);
         return;
     }
 

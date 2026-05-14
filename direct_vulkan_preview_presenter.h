@@ -12,6 +12,7 @@
 
 class QWidget;
 class QLabel;
+class QFrame;
 class QStackedLayout;
 class QVulkanWindow;
 class DirectVulkanPreviewWindow;
@@ -71,6 +72,7 @@ public:
         std::function<void(const QString&)> selectionRequested,
         std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
         std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+        std::function<void(int64_t)> playbackSampleRequested = {},
         std::function<void(const QString&, qreal, qreal)> correctionPointRequested = {},
         std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
         std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested = {},
@@ -85,13 +87,23 @@ public:
 private:
     void showFailure(const QString& reason);
     void updateDiagnosticChrome();
+    void updateAudioOverlay();
 
     std::unique_ptr<QVulkanInstance> m_instance;
     std::unique_ptr<QWidget> m_placeholder;
     QPointer<QWidget> m_windowContainer;
     QPointer<QLabel> m_statusLabel;
-    QPointer<QLabel> m_audioLabel;
     QPointer<QLabel> m_errorLabel;
+    QPointer<QWidget> m_audioInfoPanel;
+    QPointer<QLabel> m_audioTitleLabel;
+    QPointer<QLabel> m_audioSummaryLabel;
+    QPointer<QLabel> m_audioFooterLabel;
+    QPointer<QFrame> m_audioHoverCard;
+    QPointer<QLabel> m_audioHoverAvatarLabel;
+    QPointer<QLabel> m_audioHoverNameLabel;
+    QPointer<QLabel> m_audioHoverOrgLabel;
+    QPointer<QLabel> m_audioHoverMetaLabel;
+    QPointer<QLabel> m_audioHoverDescLabel;
     QPointer<QStackedLayout> m_stack;
     DirectVulkanPreviewWindow* m_window = nullptr;
     PreviewInteractionState* m_state = nullptr;

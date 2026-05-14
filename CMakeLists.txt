@@ -243,6 +243,19 @@ set(JCUT_VULKAN_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_
 set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform_process.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_loiacono.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_goertzel.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_fft.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_normalize.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_history.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_loiacono_tile.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_goertzel_tile.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_fft_tile.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrum_tile_normalize.comp
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_spectrogram_history_normalize.comp
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/mask.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/nv12.vert
@@ -281,11 +294,18 @@ target_sources(editor_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/opengl_preview.h
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ui_icons.qrc
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_rolling_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/spectrum_settings_dialog.cpp
 )
 
 target_include_directories(editor_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/loiacono
         ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${EDITOR_OPTIONAL_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/rtaudio

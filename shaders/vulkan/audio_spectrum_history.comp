@@ -1,0 +1,30 @@
+#version 450
+
+#define SPECTROGRAM_MAX_BINS 2400
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 1) readonly buffer ProcessedWaveformBins {
+    vec2 u_processedBins[];
+};
+
+layout(std430, set = 0, binding = 10) writeonly buffer SpectrogramHistory {
+    float u_spectrogram[];
+};
+
+layout(push_constant) uniform Push {
+    vec4 u_params;
+} pc;
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    uint totalBins = uint(max(1.0, pc.u_params.x));
+    uint historyColumns = uint(max(1.0, pc.u_params.y));
+    uint headColumn = uint(max(0.0, pc.u_params.z));
+    if (idx >= totalBins || headColumn >= historyColumns) {
+        return;
+    }
+
+    u_spectrogram[headColumn * SPECTROGRAM_MAX_BINS + idx] = clamp(u_processedBins[idx].x, 0.0, 1.0);
+}

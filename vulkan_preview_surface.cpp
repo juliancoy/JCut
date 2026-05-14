@@ -41,6 +41,62 @@ constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
 constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
 
+bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state)
+{
+    if (!state ||
+        !state->playing ||
+        state->viewMode != PreviewSurface::ViewMode::Audio) {
+        return false;
+    }
+
+    const TimelineClip* audioClip = nullptr;
+    for (const TimelineClip& clip : state->clips) {
+        const int64_t clipStartSample = clipTimelineStartSamples(clip);
+        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        const bool withinClip = state->currentSample >= clipStartSample && state->currentSample < clipEndSample;
+        const bool includeForAudioView =
+            clipAudioPlaybackEnabled(clip) &&
+            (clip.id == state->selectedClipId || withinClip);
+        const bool includeAsFallback = clipIsAudioOnly(clip) && withinClip;
+        if (includeForAudioView || includeAsFallback) {
+            audioClip = &clip;
+            break;
+        }
+    }
+    if (!audioClip) {
+        return false;
+    }
+
+    const int64_t clipStartSample = clipTimelineStartSamples(*audioClip);
+    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, audioClip->durationFrames)));
+    const qreal zoom = qBound<qreal>(1.0, state->previewZoom, 100000.0);
+    const qreal visibleFraction = qBound<qreal>(0.00001, 1.0 / zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
+    const qreal startNorm = qBound<qreal>(0.0, state->previewPanOffset.x(), maxStart);
+    const qreal playheadNorm = qBound<qreal>(
+        0.0,
+        static_cast<qreal>(state->currentSample - clipStartSample) / static_cast<qreal>(clipSamples),
+        1.0);
+
+    const qreal leftGuard = startNorm + visibleFraction * 0.15;
+    const qreal rightGuard = startNorm + visibleFraction * 0.85;
+    qreal newStart = startNorm;
+    if (playheadNorm < leftGuard) {
+        newStart = playheadNorm - visibleFraction * 0.15;
+    } else if (playheadNorm > rightGuard) {
+        newStart = playheadNorm - visibleFraction * 0.85;
+    } else {
+        return false;
+    }
+
+    newStart = qBound<qreal>(0.0, newStart, maxStart);
+    if (qAbs(newStart - startNorm) < 0.000001) {
+        return false;
+    }
+    state->previewPanOffset.setX(newStart);
+    return true;
+}
+
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
                               int64_t samplePosition,
@@ -165,6 +221,11 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
                     moveRequested(clipId, x, y, finalize);
                 }
             },
+            [this](int64_t samplePosition) {
+                if (playbackSampleRequested) {
+                    playbackSampleRequested(samplePosition);
+                }
+            },
             [this](const QString& clipId, qreal xNorm, qreal yNorm) {
                 if (correctionPointRequested) {
                     correctionPointRequested(clipId, xNorm, yNorm);
@@ -276,6 +337,7 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
     m_interaction.currentFramePosition = samplesToFramePosition(m_interaction.currentSample);
     m_interaction.currentFrame = qMax<int64_t>(
         0, static_cast<int64_t>(std::floor(m_interaction.currentFramePosition)));
+    syncAudioPreviewPanToPlayhead(&m_interaction);
     if (m_cache) {
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
     }
@@ -519,11 +581,29 @@ void VulkanPreviewSurface::setFacestreamOverlaySource(const QString& source)
 void VulkanPreviewSurface::setAudioSpeakerHoverModalEnabled(bool enabled)
 {
     m_audioSpeakerHoverModalEnabled = enabled;
+    m_interaction.audioSpeakerHoverModalEnabled = enabled;
+    requestNativeUpdate();
 }
 
 void VulkanPreviewSurface::setAudioWaveformVisible(bool visible)
 {
     m_audioWaveformVisible = visible;
+    m_interaction.audioWaveformVisible = visible;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setAudioVisualizationMode(AudioVisualizationMode mode)
+{
+    m_audioVisualizationMode = mode;
+    m_interaction.audioVisualizationMode = mode;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setLoiaconoSpectrumSettings(const LoiaconoSpectrumSettings& settings)
+{
+    m_loiaconoSpectrumSettings = settings;
+    m_interaction.loiaconoSpectrumSettings = settings;
+    requestNativeUpdate();
 }
 
 bool VulkanPreviewSurface::audioSpeakerHoverModalEnabled() const
@@ -550,6 +630,8 @@ PreviewSurface::ViewMode VulkanPreviewSurface::viewMode() const
 void VulkanPreviewSurface::setAudioDynamicsSettings(const AudioDynamicsSettings& settings)
 {
     m_audioDynamics = settings;
+    m_interaction.audioDynamics = settings;
+    requestNativeUpdate();
 }
 
 PreviewSurface::AudioDynamicsSettings VulkanPreviewSurface::audioDynamicsSettings() const

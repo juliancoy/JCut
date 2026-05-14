@@ -48,6 +48,62 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip) {
 bool suppressBridgeFallbackLogs() {
     return qEnvironmentVariableIntValue("JCUT_PREVIEW_SUPPRESS_BRIDGE_LOG") == 1;
 }
+
+bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state)
+{
+    if (!state ||
+        !state->playing ||
+        state->viewMode != PreviewSurface::ViewMode::Audio) {
+        return false;
+    }
+
+    const TimelineClip* audioClip = nullptr;
+    for (const TimelineClip& clip : state->clips) {
+        const int64_t clipStartSample = clipTimelineStartSamples(clip);
+        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        const bool withinClip = state->currentSample >= clipStartSample && state->currentSample < clipEndSample;
+        const bool includeForAudioView =
+            clipAudioPlaybackEnabled(clip) &&
+            (clip.id == state->selectedClipId || withinClip);
+        const bool includeAsFallback = clipIsAudioOnly(clip) && withinClip;
+        if (includeForAudioView || includeAsFallback) {
+            audioClip = &clip;
+            break;
+        }
+    }
+    if (!audioClip) {
+        return false;
+    }
+
+    const int64_t clipStartSample = clipTimelineStartSamples(*audioClip);
+    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, audioClip->durationFrames)));
+    const qreal zoom = qBound<qreal>(1.0, state->previewZoom, 100000.0);
+    const qreal visibleFraction = qBound<qreal>(0.00001, 1.0 / zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
+    const qreal startNorm = qBound<qreal>(0.0, state->previewPanOffset.x(), maxStart);
+    const qreal playheadNorm = qBound<qreal>(
+        0.0,
+        static_cast<qreal>(state->currentSample - clipStartSample) / static_cast<qreal>(clipSamples),
+        1.0);
+
+    const qreal leftGuard = startNorm + visibleFraction * 0.15;
+    const qreal rightGuard = startNorm + visibleFraction * 0.85;
+    qreal newStart = startNorm;
+    if (playheadNorm < leftGuard) {
+        newStart = playheadNorm - visibleFraction * 0.15;
+    } else if (playheadNorm > rightGuard) {
+        newStart = playheadNorm - visibleFraction * 0.85;
+    } else {
+        return false;
+    }
+
+    newStart = qBound<qreal>(0.0, newStart, maxStart);
+    if (qAbs(newStart - startNorm) < 0.000001) {
+        return false;
+    }
+    state->previewPanOffset.setX(newStart);
+    return true;
+}
 } // namespace
 
 PreviewWindow::PreviewWindow(QWidget* parent)
@@ -180,6 +236,7 @@ void PreviewWindow::setCurrentPlaybackSample(int64_t samplePosition) {
     m_interaction.currentSample = sanitizedSample;
     m_interaction.currentFramePosition = framePosition;
     m_interaction.currentFrame = displayFrame;
+    syncAudioPreviewPanToPlayhead(&m_interaction);
     if (m_cache) {
         m_cache->setPlayheadFrame(displayFrame);
     }

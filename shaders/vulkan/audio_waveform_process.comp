@@ -1,0 +1,78 @@
+#version 450
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer RawWaveformBins {
+    vec2 u_rawBins[];
+};
+
+layout(std430, set = 0, binding = 1) writeonly buffer ProcessedWaveformBins {
+    vec2 u_processedBins[];
+};
+
+layout(push_constant) uniform Push {
+    vec4 u_gainNormalizeLimiterPeak;
+    vec4 u_compressor;
+    vec4 u_flags;
+    vec4 u_bins;
+} pc;
+
+float compressSample(float v, float threshold, float ratio) {
+    float av = abs(v);
+    if (threshold <= 0.0 || ratio <= 1.0 || av <= threshold) {
+        return v;
+    }
+    float over = av - threshold;
+    float reduced = threshold + over / ratio;
+    return sign(v) * reduced;
+}
+
+float softReducePeak(float v, float threshold) {
+    float av = abs(v);
+    if (threshold <= 0.0 || av <= threshold) {
+        return v;
+    }
+    float over = av - threshold;
+    float reduced = threshold + over * 0.35;
+    return sign(v) * min(reduced, 1.0);
+}
+
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    uint totalBins = uint(max(1.0, pc.u_bins.x));
+    if (idx >= totalBins) {
+        return;
+    }
+
+    vec2 mm = u_rawBins[idx];
+    float minV = min(mm.x, mm.y);
+    float maxV = max(mm.x, mm.y);
+
+    float scale = 1.0;
+    if (pc.u_flags.x > 0.5) {
+        scale *= pc.u_gainNormalizeLimiterPeak.x;
+    }
+    if (pc.u_flags.y > 0.5) {
+        scale *= pc.u_gainNormalizeLimiterPeak.y;
+    }
+    minV *= scale;
+    maxV *= scale;
+
+    if (pc.u_bins.y > 0.5) {
+        minV = compressSample(minV, pc.u_compressor.x, pc.u_compressor.y);
+        maxV = compressSample(maxV, pc.u_compressor.x, pc.u_compressor.y);
+    }
+    if (pc.u_flags.w > 0.5) {
+        minV = softReducePeak(minV, pc.u_gainNormalizeLimiterPeak.w);
+        maxV = softReducePeak(maxV, pc.u_gainNormalizeLimiterPeak.w);
+    }
+    if (pc.u_flags.z > 0.5) {
+        float limit = max(0.0, pc.u_gainNormalizeLimiterPeak.z);
+        minV = clamp(minV, -limit, limit);
+        maxV = clamp(maxV, -limit, limit);
+    }
+
+    minV = clamp(minV, -1.0, 1.0);
+    maxV = clamp(maxV, -1.0, 1.0);
+    u_processedBins[idx] = vec2(min(minV, maxV), max(minV, maxV));
+}

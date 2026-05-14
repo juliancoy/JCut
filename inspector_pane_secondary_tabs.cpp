@@ -2,6 +2,7 @@
 
 #include "debug_controls.h"
 #include "editor_shared.h"
+#include "preview_surface.h"
 
 #include <QAbstractItemView>
 #include <QCheckBox>
@@ -413,6 +414,12 @@ QWidget *InspectorPane::buildAudioTab()
     m_audioShowWaveformCheckBox =
         new QCheckBox(QStringLiteral("Show Waveform"), page);
     m_audioShowWaveformCheckBox->setChecked(true);
+    m_audioVisualizationModeCombo = new QComboBox(page);
+    m_audioVisualizationModeCombo->addItem(QStringLiteral("Waveform"),
+                                           static_cast<int>(PreviewSurface::AudioVisualizationMode::Waveform));
+    m_audioVisualizationModeCombo->addItem(QStringLiteral("Spectrum"),
+                                           static_cast<int>(PreviewSurface::AudioVisualizationMode::Spectrum));
+    m_loiaconoSpectrumSettingsButton = new QPushButton(QStringLiteral("Spectrum Settings..."), page);
     m_audioWaveformPreviewProcessedCheckBox =
         new QCheckBox(QStringLiteral("Preview"), page);
     m_audioWaveformPreviewProcessedCheckBox->setChecked(true);
@@ -423,6 +430,8 @@ QWidget *InspectorPane::buildAudioTab()
     form->addRow(QStringLiteral("Amplify Gain"), m_audioAmplifyDbSpin);
     form->addRow(QStringLiteral("Hover Info"), m_audioSpeakerHoverModalCheckBox);
     form->addRow(QStringLiteral("Waveform"), m_audioShowWaveformCheckBox);
+    form->addRow(QStringLiteral("Visualization"), m_audioVisualizationModeCombo);
+    form->addRow(QStringLiteral("Spectrum"), m_loiaconoSpectrumSettingsButton);
     form->addRow(QStringLiteral("Waveform Source"), m_audioWaveformPreviewProcessedCheckBox);
 
     m_audioNormalizeEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);

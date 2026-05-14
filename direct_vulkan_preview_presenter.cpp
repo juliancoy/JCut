@@ -1,21 +1,31 @@
 #include "direct_vulkan_preview_presenter.h"
+#include "direct_vulkan_preview_audio.h"
 #include "preview_view_transform.h"
 #include "preview_overlay_model.h"
 #include "editor_shared.h"
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
+#include "vulkan_audio_tab.h"
 #include "vulkan_pipeline.h"
 #include "vulkan_resources.h"
+#include "waveform_service.h"
+#include "loiacono_rolling.h"
 
 #include <QDebug>
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDir>
 #include <QHash>
+#include <QFile>
+#include <QFileInfo>
 #include <QImage>
+#include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QFrame>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QPainter>
 #include <QPainterPath>
@@ -29,9 +39,11 @@
 #include <QTimer>
 #include <QVersionNumber>
 #include <QMouseEvent>
+#include <QRegularExpression>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <QStackedLayout>
+#include <QSet>
 #include <QTransform>
 #include <QTextDocument>
 #include <QVulkanFunctions>
@@ -41,6 +53,9 @@
 #include <vulkan/vulkan.h>
 
 extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libswresample/swresample.h>
 #include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
@@ -110,6 +125,209 @@ QString vulkanPreviewVisiblePathLabel()
 int vulkanPreviewCanvasMarginPx()
 {
     return 36;
+}
+
+struct HoverSpeakerProfile {
+    QString speakerId;
+    QString name;
+    QString organization;
+    QString description;
+    QString imagePath;
+};
+
+struct HoverSpeakerProfileCacheEntry {
+    qint64 mtimeMs = -1;
+    QHash<QString, HoverSpeakerProfile> profilesBySpeaker;
+};
+
+QHash<QString, HoverSpeakerProfileCacheEntry>& hoverSpeakerProfileCache()
+{
+    static QHash<QString, HoverSpeakerProfileCacheEntry> cache;
+    return cache;
+}
+
+QHash<QString, QPixmap>& hoverSpeakerImageCache()
+{
+    static QHash<QString, QPixmap> cache;
+    return cache;
+}
+
+QString clippedSummaryFromWords(const QStringList& words)
+{
+    if (words.isEmpty()) {
+        return QStringLiteral("No transcript summary available.");
+    }
+    QStringList clipped;
+    clipped.reserve(qMin(34, words.size()));
+    for (int i = 0; i < words.size() && i < 34; ++i) {
+        QString token = words.at(i).trimmed();
+        token.remove(QRegularExpression(QStringLiteral("^[\\s\\p{Punct}]+|[\\s\\p{Punct}]+$")));
+        if (token.isEmpty()) {
+            continue;
+        }
+        clipped.push_back(token);
+    }
+    if (clipped.isEmpty()) {
+        return QStringLiteral("No transcript summary available.");
+    }
+    QString summary = clipped.join(QLatin1Char(' '));
+    if (words.size() > clipped.size()) {
+        summary += QStringLiteral("...");
+    }
+    return summary;
+}
+
+QHash<QString, QStringList> wordsBySpeakerFromTranscriptRoot(const QJsonObject& root)
+{
+    QHash<QString, QStringList> wordsBySpeaker;
+    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segObj = segValue.toObject();
+        const QString segmentSpeaker = segObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray words = segObj.value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            QString speakerId = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
+            if (speakerId.isEmpty()) {
+                speakerId = segmentSpeaker;
+            }
+            const QString token = wordObj.value(QStringLiteral("word")).toString().trimmed();
+            if (!speakerId.isEmpty() && !token.isEmpty()) {
+                wordsBySpeaker[speakerId].push_back(token);
+            }
+        }
+    }
+    return wordsBySpeaker;
+}
+
+const HoverSpeakerProfile* hoverSpeakerProfileFor(const QString& transcriptPath, const QString& speakerId)
+{
+    if (transcriptPath.isEmpty() || speakerId.trimmed().isEmpty()) {
+        return nullptr;
+    }
+    const QFileInfo info(transcriptPath);
+    if (!info.exists() || !info.isFile()) {
+        return nullptr;
+    }
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    HoverSpeakerProfileCacheEntry& entry = hoverSpeakerProfileCache()[transcriptPath];
+    if (entry.mtimeMs != mtimeMs || entry.profilesBySpeaker.isEmpty()) {
+        entry = HoverSpeakerProfileCacheEntry{};
+        entry.mtimeMs = mtimeMs;
+        QJsonDocument doc;
+        if (loadTranscriptJsonCached(transcriptPath, &doc) && doc.isObject()) {
+            const QJsonObject root = doc.object();
+            const QHash<QString, QStringList> wordsBySpeaker = wordsBySpeakerFromTranscriptRoot(root);
+            const QJsonObject profiles = root.value(QStringLiteral("speaker_profiles")).toObject();
+            QSet<QString> speakerIds;
+            for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
+                speakerIds.insert(it.key());
+            }
+            for (auto it = profiles.begin(); it != profiles.end(); ++it) {
+                speakerIds.insert(it.key());
+            }
+            for (const QString& id : speakerIds) {
+                const QJsonObject profileObj = profiles.value(id).toObject();
+                HoverSpeakerProfile profile;
+                profile.speakerId = id;
+                profile.name = profileObj.value(QStringLiteral("name")).toString(id).trimmed();
+                profile.organization = profileObj.value(QStringLiteral("organization")).toString().trimmed();
+                QString description = profileObj.value(QStringLiteral("brief_description")).toString().trimmed();
+                if (description.isEmpty()) {
+                    description = profileObj.value(QStringLiteral("description")).toString().trimmed();
+                }
+                if (description.isEmpty()) {
+                    description = profileObj.value(QStringLiteral("bio")).toString().trimmed();
+                }
+                if (description.isEmpty()) {
+                    description = clippedSummaryFromWords(wordsBySpeaker.value(id));
+                }
+                profile.description = description;
+                QString imagePath = profileObj.value(QStringLiteral("image_path")).toString().trimmed();
+                if (imagePath.isEmpty()) {
+                    imagePath = profileObj.value(QStringLiteral("avatar_path")).toString().trimmed();
+                }
+                if (imagePath.isEmpty()) {
+                    imagePath = profileObj.value(QStringLiteral("photo_path")).toString().trimmed();
+                }
+                if (imagePath.isEmpty()) {
+                    imagePath = profileObj.value(QStringLiteral("image")).toString().trimmed();
+                }
+                if (!imagePath.isEmpty() && QDir::isRelativePath(imagePath)) {
+                    imagePath = QFileInfo(info.absolutePath(), imagePath).absoluteFilePath();
+                }
+                profile.imagePath = imagePath;
+                entry.profilesBySpeaker.insert(id, profile);
+            }
+        }
+    }
+    auto it = entry.profilesBySpeaker.constFind(speakerId);
+    if (it == entry.profilesBySpeaker.constEnd()) {
+        return nullptr;
+    }
+    return &(*it);
+}
+
+QPixmap hoverSpeakerImage(const HoverSpeakerProfile& profile, int edgePx)
+{
+    const int safeSize = qBound(28, edgePx, 192);
+    if (profile.imagePath.trimmed().isEmpty()) {
+        return QPixmap();
+    }
+    const QString cacheKey = QStringLiteral("%1|%2").arg(profile.imagePath).arg(safeSize);
+    auto& cache = hoverSpeakerImageCache();
+    const auto cached = cache.constFind(cacheKey);
+    if (cached != cache.constEnd()) {
+        return cached.value();
+    }
+    QPixmap pix(profile.imagePath);
+    if (!pix.isNull() && (pix.width() != safeSize || pix.height() != safeSize)) {
+        pix = pix.scaled(safeSize, safeSize, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    }
+    cache.insert(cacheKey, pix);
+    return pix;
+}
+
+QPixmap fallbackSpeakerAvatar(const QString& speakerId, const QString& displayName, int edgePx)
+{
+    const int size = qBound(28, edgePx, 192);
+    QPixmap avatar(size, size);
+    avatar.fill(Qt::transparent);
+    QPainter p(&avatar);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const uint hueHash = qHash(speakerId.trimmed().isEmpty() ? displayName : speakerId);
+    QColor base = QColor::fromHsv(static_cast<int>(hueHash % 360), 140, 165);
+    p.setPen(Qt::NoPen);
+    p.setBrush(base);
+    p.drawEllipse(QRect(0, 0, size, size));
+    p.setPen(QPen(QColor(255, 255, 255, 210), 1.3));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(QRectF(1.0, 1.0, size - 2.0, size - 2.0));
+
+    QString initials = displayName.trimmed();
+    if (initials.isEmpty()) {
+        initials = speakerId.trimmed();
+    }
+    if (initials.isEmpty()) {
+        initials = QStringLiteral("?");
+    } else {
+        const QStringList parts = initials.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        if (parts.size() >= 2) {
+            initials = parts.at(0).left(1) + parts.at(1).left(1);
+        } else {
+            initials = parts.first().left(2);
+        }
+    }
+    p.setPen(QColor(245, 250, 255));
+    QFont f = p.font();
+    f.setBold(true);
+    f.setPointSize(qMax(10, size / 3));
+    p.setFont(f);
+    p.drawText(QRect(0, 0, size, size), Qt::AlignCenter, initials.toUpper());
+    return avatar;
 }
 
 QString pixelFormatName(int format)
@@ -288,6 +506,7 @@ private:
     std::unique_ptr<VulkanResources> m_resources;
     std::unique_ptr<VulkanResources> m_overlayResources;
     std::unique_ptr<VulkanPipeline> m_pipeline;
+    std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
     std::unique_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff> m_frameHandoff;
     QString m_lastHandoffError;
     std::vector<ReadbackSlot> m_readbackSlots;
@@ -381,9 +600,606 @@ bool applyVideoPreviewWheelZoom(PreviewInteractionState* state,
     return true;
 }
 
+bool applyAudioPreviewWheelZoom(PreviewInteractionState* state,
+                                const QRectF& surfaceRect,
+                                const QPointF& surfacePosition,
+                                int deltaY)
+{
+    if (!state || deltaY == 0 || surfaceRect.isEmpty()) {
+        return false;
+    }
+    const qreal oldZoom = qBound<qreal>(1.0, state->previewZoom, 100000.0);
+    const qreal factor = deltaY > 0 ? 1.18 : (1.0 / 1.18);
+    const qreal newZoom = qBound<qreal>(1.0, oldZoom * factor, 100000.0);
+    if (qFuzzyCompare(oldZoom, newZoom)) {
+        return true;
+    }
+    const qreal oldVisible = qBound<qreal>(0.00001, 1.0 / oldZoom, 1.0);
+    const qreal newVisible = qBound<qreal>(0.00001, 1.0 / newZoom, 1.0);
+    const qreal focus = qBound<qreal>(
+        0.0,
+        (surfacePosition.x() - surfaceRect.left()) / qMax<qreal>(1.0, surfaceRect.width()),
+        1.0);
+    const qreal oldStart = qBound<qreal>(0.0, state->previewPanOffset.x(), qMax<qreal>(0.0, 1.0 - oldVisible));
+    const qreal focusNorm = oldStart + (focus * oldVisible);
+    const qreal newStart = qBound<qreal>(0.0, focusNorm - (focus * newVisible), qMax<qreal>(0.0, 1.0 - newVisible));
+    state->previewZoom = newZoom;
+    state->previewPanOffset.setX(newStart);
+    return true;
+}
+
+bool audioSeekSampleAtSurfacePosition(const PreviewInteractionState& state,
+                                      const QRectF& surfaceRect,
+                                      const QPointF& surfacePosition,
+                                      int64_t* sampleOut)
+{
+    if (!sampleOut || state.viewMode != PreviewSurface::ViewMode::Audio) {
+        return false;
+    }
+    const QRectF safeRect = surfaceRect.adjusted(18.0, 18.0, -18.0, -18.0);
+    const QRectF panel = safeRect.adjusted(12.0, 12.0, -12.0, -12.0);
+    const QRectF waveRect = panel.adjusted(24.0, 118.0, -24.0, -36.0);
+    const qreal rulerGutterWidth = qBound<qreal>(32.0, waveRect.width() * 0.12, 56.0);
+    const QRectF graphRect(waveRect.left() + rulerGutterWidth,
+                           waveRect.top(),
+                           qMax<qreal>(1.0, waveRect.width() - rulerGutterWidth),
+                           waveRect.height());
+    if (!graphRect.contains(surfacePosition)) {
+        return false;
+    }
+
+    const TimelineClip* clip = nullptr;
+    for (const TimelineClip& candidate : state.clips) {
+        const int64_t clipStartSample = clipTimelineStartSamples(candidate);
+        const int64_t clipEndSample = clipStartSample + frameToSamples(candidate.durationFrames);
+        const bool withinClip = state.currentSample >= clipStartSample && state.currentSample < clipEndSample;
+        const bool includeForAudioView =
+            clipAudioPlaybackEnabled(candidate) &&
+            (candidate.id == state.selectedClipId || withinClip);
+        const bool includeAsFallback = clipIsAudioOnly(candidate) && withinClip;
+        if (includeForAudioView || includeAsFallback) {
+            clip = &candidate;
+            break;
+        }
+    }
+    if (!clip) {
+        return false;
+    }
+
+    const int rowCount = qBound(2, static_cast<int>(waveRect.height()) / 88, 6);
+    const int binsPerRow = qMax(256, static_cast<int>(graphRect.width()));
+    const int totalDrawBins = qMax(96, qMin(8192, rowCount * binsPerRow));
+    const int64_t clipStartSample = clipTimelineStartSamples(*clip);
+    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip->durationFrames)));
+    const qreal minVisibleBySamples = qBound<qreal>(
+        0.00001,
+        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
+        1.0);
+    const qreal zoom = qBound<qreal>(1.0, state.previewZoom, 100000.0);
+    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
+    const qreal startNorm = qBound<qreal>(0.0, state.previewPanOffset.x(), maxStart);
+    const qreal localX = qBound<qreal>(0.0,
+                                       (surfacePosition.x() - graphRect.left()) / qMax<qreal>(1.0, graphRect.width()),
+                                       1.0);
+    const qreal localY = qBound<qreal>(0.0,
+                                       (surfacePosition.y() - graphRect.top()) / qMax<qreal>(1.0, graphRect.height()),
+                                       0.99999);
+    const int row = qBound(0, static_cast<int>(std::floor(localY * rowCount)), rowCount - 1);
+    const int binInRow = qBound(0,
+                                static_cast<int>(std::round(localX * static_cast<qreal>(qMax(1, binsPerRow - 1)))),
+                                qMax(0, binsPerRow - 1));
+    const int visibleBinIndex = qBound(0, row * binsPerRow + binInRow, qMax(0, totalDrawBins - 1));
+    const qreal timelineNorm = startNorm +
+        (((static_cast<qreal>(visibleBinIndex) + 0.5) / static_cast<qreal>(totalDrawBins)) * visibleFraction);
+    const int64_t targetOffset = static_cast<int64_t>(std::llround(timelineNorm * static_cast<qreal>(clipSamples - 1)));
+    *sampleOut = qBound<int64_t>(clipStartSample, clipStartSample + targetOffset, clipStartSample + clipSamples - 1);
+    return true;
+}
+
 bool clipSupportsTranscriptOverlay(const TimelineClip& clip)
 {
     return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
+}
+
+QString audioDynamicsCacheKey(const PreviewSurface::AudioDynamicsSettings& settings)
+{
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9|%10|%11|%12|%13|%14|%15")
+        .arg(settings.amplifyEnabled ? 1 : 0)
+        .arg(settings.amplifyDb, 0, 'f', 2)
+        .arg(settings.normalizeEnabled ? 1 : 0)
+        .arg(settings.normalizeTargetDb, 0, 'f', 2)
+        .arg(settings.selectiveNormalizeEnabled ? 1 : 0)
+        .arg(settings.selectiveNormalizeMinSegmentSeconds, 0, 'f', 2)
+        .arg(settings.selectiveNormalizePeakDb, 0, 'f', 2)
+        .arg(settings.selectiveNormalizePasses)
+        .arg(settings.peakReductionEnabled ? 1 : 0)
+        .arg(settings.peakThresholdDb, 0, 'f', 2)
+        .arg(settings.limiterEnabled ? 1 : 0)
+        .arg(settings.limiterThresholdDb, 0, 'f', 2)
+        .arg(settings.compressorEnabled ? 1 : 0)
+        .arg(QStringLiteral("%1|%2")
+                 .arg(settings.compressorThresholdDb, 0, 'f', 2)
+                 .arg(settings.compressorRatio, 0, 'f', 2))
+        .arg(settings.waveformPreviewPostProcessing ? 1 : 0);
+}
+
+QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* state)
+{
+    QList<TimelineClip> active;
+    if (!state) {
+        return active;
+    }
+    for (const TimelineClip& clip : state->clips) {
+        if (!(clip.mediaType == ClipMediaType::Audio || clip.hasAudio)) {
+            continue;
+        }
+        const int64_t clipStartSample = clipTimelineStartSamples(clip);
+        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
+            active.push_back(clip);
+        }
+    }
+    if (active.isEmpty() && !state->selectedClipId.isEmpty()) {
+        for (const TimelineClip& clip : state->clips) {
+            if (clip.id == state->selectedClipId &&
+                (clip.mediaType == ClipMediaType::Audio || clip.hasAudio)) {
+                active.push_back(clip);
+                break;
+            }
+        }
+    }
+    std::sort(active.begin(), active.end(), [](const TimelineClip& a, const TimelineClip& b) {
+        if (a.trackIndex != b.trackIndex) {
+            return a.trackIndex < b.trackIndex;
+        }
+        return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
+    });
+    return active;
+}
+
+QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame)
+{
+    for (const TranscriptSection& section : sections) {
+        if (sourceFrame < section.startFrame) {
+            return QString();
+        }
+        if (sourceFrame > section.endFrame) {
+            continue;
+        }
+        int bestIndex = -1;
+        for (int i = 0; i < section.words.size(); ++i) {
+            const TranscriptWord& word = section.words.at(i);
+            if (sourceFrame >= word.startFrame && sourceFrame <= word.endFrame) {
+                bestIndex = i;
+                break;
+            }
+            if (sourceFrame > word.endFrame) {
+                bestIndex = i;
+            }
+        }
+        if (bestIndex < 0 && !section.words.isEmpty()) {
+            bestIndex = 0;
+        }
+        if (bestIndex >= 0 && bestIndex < section.words.size()) {
+            return section.words.at(bestIndex).speaker.trimmed();
+        }
+        return QString();
+    }
+    return QString();
+}
+
+QColor speakerColor(const QString& speakerId, int alpha)
+{
+    const uint hueHash = qHash(speakerId);
+    QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 170, 185);
+    color.setAlpha(qBound(0, alpha, 255));
+    return color;
+}
+
+void fillShortUnknownSpeakerGaps(QVector<int>* speakerIndexByBin, int maxGapBins)
+{
+    if (!speakerIndexByBin || speakerIndexByBin->isEmpty() || maxGapBins <= 0) {
+        return;
+    }
+    QVector<int>& bins = *speakerIndexByBin;
+    const int count = bins.size();
+    int i = 0;
+    while (i < count) {
+        if (bins[i] >= 0) {
+            ++i;
+            continue;
+        }
+        const int start = i;
+        while (i < count && bins[i] < 0) {
+            ++i;
+        }
+        const int end = i;
+        const int gap = end - start;
+        if (gap <= 0 || gap > maxGapBins || start == 0 || end >= count) {
+            continue;
+        }
+        const int left = bins[start - 1];
+        const int right = bins[end];
+        if (left < 0 || right < 0 || left != right) {
+            continue;
+        }
+        for (int k = start; k < end; ++k) {
+            bins[k] = left;
+        }
+    }
+}
+
+bool audioWaveformEnvelopeForClip(const TimelineClip& clip,
+                                  const PreviewSurface::AudioDynamicsSettings& settings,
+                                  int binCount,
+                                  qreal rangeStartNorm,
+                                  qreal rangeEndNorm,
+                                  QVector<qreal>* minOut,
+                                  QVector<qreal>* maxOut)
+{
+    if (!minOut || !maxOut) {
+        return false;
+    }
+    const int safeBins = qBound(64, binCount, 8192);
+    minOut->fill(0.0, safeBins);
+    maxOut->fill(0.0, safeBins);
+
+    QString mediaPath = playbackAudioPathForClip(clip);
+    if (mediaPath.isEmpty()) {
+        mediaPath = interactivePreviewMediaPathForClip(clip);
+    }
+    if (mediaPath.isEmpty()) {
+        return false;
+    }
+
+    const int64_t sourceStartSample = qMax<int64_t>(0, frameToSamples(qMax<int64_t>(0, clip.sourceInFrame)));
+    const int64_t sourceDurationSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const qreal startNorm = qBound<qreal>(0.0, rangeStartNorm, 1.0);
+    const qreal endNorm = qBound<qreal>(startNorm, rangeEndNorm, 1.0);
+    const int64_t visibleStartOffset = static_cast<int64_t>(
+        std::floor(startNorm * static_cast<qreal>(sourceDurationSamples)));
+    const int64_t visibleEndOffset = static_cast<int64_t>(
+        std::ceil(endNorm * static_cast<qreal>(sourceDurationSamples)));
+    const int64_t visibleStartSample = sourceStartSample + qBound<int64_t>(0, visibleStartOffset, sourceDurationSamples);
+    const int64_t visibleEndSample = sourceStartSample + qBound<int64_t>(
+        visibleStartOffset + 1,
+        visibleEndOffset,
+        sourceDurationSamples);
+    const QString variantKey = settings.waveformPreviewPostProcessing
+        ? audioDynamicsCacheKey(settings)
+        : QStringLiteral("disk");
+    const editor::WaveformService::WaveformProcessSettings processSettings{
+        settings.amplifyEnabled,
+        static_cast<float>(settings.amplifyDb),
+        settings.normalizeEnabled,
+        static_cast<float>(settings.normalizeTargetDb),
+        settings.selectiveNormalizeEnabled,
+        static_cast<float>(settings.selectiveNormalizeMinSegmentSeconds),
+        static_cast<float>(settings.selectiveNormalizePeakDb),
+        settings.selectiveNormalizePasses,
+        settings.peakReductionEnabled,
+        static_cast<float>(settings.peakThresholdDb),
+        settings.limiterEnabled,
+        static_cast<float>(settings.limiterThresholdDb),
+        settings.compressorEnabled,
+        static_cast<float>(settings.compressorThresholdDb),
+        static_cast<float>(settings.compressorRatio)};
+
+    QVector<float> minValues;
+    QVector<float> maxValues;
+    if (!editor::WaveformService::instance().queryEnvelope(mediaPath,
+                                                           visibleStartSample,
+                                                           visibleEndSample,
+                                                           safeBins,
+                                                           &minValues,
+                                                           &maxValues,
+                                                           variantKey,
+                                                           settings.waveformPreviewPostProcessing
+                                                               ? &processSettings
+                                                               : nullptr) ||
+        minValues.size() != safeBins ||
+        maxValues.size() != safeBins) {
+        return false;
+    }
+
+    for (int i = 0; i < safeBins; ++i) {
+        const qreal minV = qBound<qreal>(-1.0, static_cast<qreal>(minValues[i]), 1.0);
+        const qreal maxV = qBound<qreal>(-1.0, static_cast<qreal>(maxValues[i]), 1.0);
+        (*minOut)[i] = qMin(minV, maxV);
+        (*maxOut)[i] = qMax(minV, maxV);
+    }
+    return true;
+}
+
+struct DecodedAudioCacheEntry {
+    QVector<float> samples;
+    int sampleRate = 0;
+};
+
+QHash<QString, DecodedAudioCacheEntry>& decodedAudioCache()
+{
+    static QHash<QString, DecodedAudioCacheEntry> cache;
+    return cache;
+}
+
+bool decodeMonoSamples(const QString& mediaPath, int targetSampleRate, DecodedAudioCacheEntry* out)
+{
+    if (!out || mediaPath.isEmpty()) {
+        return false;
+    }
+    const QString key = mediaPath + QLatin1Char('|') + QString::number(targetSampleRate);
+    auto it = decodedAudioCache().constFind(key);
+    if (it != decodedAudioCache().constEnd()) {
+        *out = it.value();
+        return !out->samples.isEmpty();
+    }
+
+    AVFormatContext* formatCtx = nullptr;
+    if (avformat_open_input(&formatCtx, mediaPath.toUtf8().constData(), nullptr, nullptr) < 0 || !formatCtx) {
+        return false;
+    }
+    auto closeFormat = [&]() { avformat_close_input(&formatCtx); };
+    if (avformat_find_stream_info(formatCtx, nullptr) < 0) {
+        closeFormat();
+        return false;
+    }
+    const int streamIndex = av_find_best_stream(formatCtx, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (streamIndex < 0) {
+        closeFormat();
+        return false;
+    }
+    AVStream* stream = formatCtx->streams[streamIndex];
+    const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
+    AVCodecContext* codecCtx = codec ? avcodec_alloc_context3(codec) : nullptr;
+    if (!codecCtx ||
+        avcodec_parameters_to_context(codecCtx, stream->codecpar) < 0 ||
+        avcodec_open2(codecCtx, codec, nullptr) < 0) {
+        if (codecCtx) avcodec_free_context(&codecCtx);
+        closeFormat();
+        return false;
+    }
+    const AVChannelLayout outLayout = AV_CHANNEL_LAYOUT_MONO;
+    SwrContext* swr = nullptr;
+    if (swr_alloc_set_opts2(&swr,
+                            &outLayout,
+                            AV_SAMPLE_FMT_FLT,
+                            targetSampleRate,
+                            &codecCtx->ch_layout,
+                            codecCtx->sample_fmt,
+                            codecCtx->sample_rate,
+                            0,
+                            nullptr) < 0 ||
+        !swr ||
+        swr_init(swr) < 0) {
+        if (swr) swr_free(&swr);
+        avcodec_free_context(&codecCtx);
+        closeFormat();
+        return false;
+    }
+    AVPacket* packet = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    if (!packet || !frame) {
+        if (packet) av_packet_free(&packet);
+        if (frame) av_frame_free(&frame);
+        swr_free(&swr);
+        avcodec_free_context(&codecCtx);
+        closeFormat();
+        return false;
+    }
+
+    QVector<float> samples;
+    auto receive = [&]() {
+        while (avcodec_receive_frame(codecCtx, frame) == 0) {
+            const int outSamples = swr_get_out_samples(swr, frame->nb_samples);
+            if (outSamples > 0) {
+                std::vector<float> mono(static_cast<size_t>(outSamples), 0.0f);
+                uint8_t* outData[1] = {reinterpret_cast<uint8_t*>(mono.data())};
+                const int converted = swr_convert(swr,
+                                                  outData,
+                                                  outSamples,
+                                                  const_cast<const uint8_t**>(frame->extended_data),
+                                                  frame->nb_samples);
+                for (int i = 0; i < converted; ++i) {
+                    samples.push_back(qBound(-1.0f, mono[static_cast<size_t>(i)], 1.0f));
+                }
+            }
+            av_frame_unref(frame);
+        }
+    };
+    while (av_read_frame(formatCtx, packet) >= 0) {
+        if (packet->stream_index == streamIndex && avcodec_send_packet(codecCtx, packet) == 0) {
+            receive();
+        }
+        av_packet_unref(packet);
+    }
+    avcodec_send_packet(codecCtx, nullptr);
+    receive();
+
+    av_frame_free(&frame);
+    av_packet_free(&packet);
+    swr_free(&swr);
+    avcodec_free_context(&codecCtx);
+    closeFormat();
+
+    DecodedAudioCacheEntry entry;
+    entry.samples = std::move(samples);
+    entry.sampleRate = targetSampleRate;
+    decodedAudioCache().insert(key, entry);
+    *out = entry;
+    return !out->samples.isEmpty();
+}
+
+constexpr int kSpectrumSignalLength = 1 << 15;
+
+double spectrumWindowWeight(int mode, int index, int length)
+{
+    if (length <= 1) {
+        return 1.0;
+    }
+    constexpr double kTwoPi = 2.0 * M_PI;
+    const double phase = kTwoPi * static_cast<double>(index) / static_cast<double>(length - 1);
+    switch (mode) {
+    case 1:
+        return 0.5 - 0.5 * std::cos(phase);
+    case 2:
+        return 0.54 - 0.46 * std::cos(phase);
+    case 3:
+        return 0.42 - 0.5 * std::cos(phase) + 0.08 * std::cos(2.0 * phase);
+    case 4:
+        return 0.35875 - 0.48829 * std::cos(phase) + 0.14128 * std::cos(2.0 * phase)
+            - 0.01168 * std::cos(3.0 * phase);
+    default:
+        return 1.0;
+    }
+}
+
+double spectrumNormalizationScale(int normalizationMode, int windowMode, int length)
+{
+    const int safeLength = std::max(1, length);
+    double weightSum = 0.0;
+    double weightEnergy = 0.0;
+    for (int i = 0; i < safeLength; ++i) {
+        const double weight = spectrumWindowWeight(windowMode, i, safeLength);
+        weightSum += weight;
+        weightEnergy += weight * weight;
+    }
+    switch (normalizationMode) {
+    case 1:
+        return weightSum > 0.0 ? 1.0 / weightSum : 1.0;
+    case 2:
+        return weightEnergy > 0.0 ? 1.0 / std::sqrt(weightEnergy) : 1.0;
+    default:
+        return 1.0;
+    }
+}
+
+int spectrumFftLength(const std::vector<int>& windowLengths)
+{
+    int maxWindow = 2;
+    for (int length : windowLengths) {
+        maxWindow = std::max(maxWindow, length);
+    }
+    int fftLength = 1;
+    while (fftLength * 2 <= maxWindow && fftLength * 2 <= kSpectrumSignalLength) {
+        fftLength *= 2;
+    }
+    return std::max(2, fftLength);
+}
+
+struct SpectrumGpuInput {
+    std::vector<float> signal;
+    std::vector<float> freqs;
+    std::vector<float> norms;
+    std::vector<int> windowLengths;
+    int validSamples = 0;
+    int fftLength = 2;
+};
+
+int64_t timelineSamplesToDecodedSamples(int64_t timelineSamples, int decodedSampleRate)
+{
+    if (decodedSampleRate <= 0) {
+        return 0;
+    }
+    const long double scale =
+        static_cast<long double>(decodedSampleRate) / static_cast<long double>(kAudioSampleRate);
+    const long double scaled = static_cast<long double>(qMax<int64_t>(0, timelineSamples)) * scale;
+    return qMax<int64_t>(0, static_cast<int64_t>(std::llround(scaled)));
+}
+
+bool loiaconoSpectrumGpuInputForClip(const TimelineClip& clip,
+                                     int64_t currentTimelineSample,
+                                     const PreviewSurface::LoiaconoSpectrumSettings& settings,
+                                     SpectrumGpuInput* out)
+{
+    if (!out) {
+        return false;
+    }
+    QString mediaPath = playbackAudioPathForClip(clip);
+    if (mediaPath.isEmpty()) {
+        mediaPath = interactivePreviewMediaPathForClip(clip);
+    }
+    DecodedAudioCacheEntry decoded;
+    if (!decodeMonoSamples(mediaPath, qBound(8000, settings.sampleRate, 192000), &decoded)) {
+        return false;
+    }
+    const int64_t clipStartSample = clipTimelineStartSamples(clip);
+    const int64_t localSample = qMax<int64_t>(0, currentTimelineSample - clipStartSample);
+    const int64_t sourceSample = timelineSamplesToDecodedSamples(
+        frameToSamples(qMax<int64_t>(0, clip.sourceInFrame)) + localSample,
+        decoded.sampleRate);
+    const int binCount = qBound(32, settings.bins, 2400);
+    const double sampleRate = std::max(1, decoded.sampleRate);
+    const double referenceA = 440.0;
+    const double freqMin = qBound(20, settings.freqMin, 2000);
+    const double freqMax = qBound(500, settings.freqMax, 12000);
+    const double midiMinExact = 69.0 + 12.0 * std::log2(freqMin / referenceA);
+    const double midiMaxExact = 69.0 + 12.0 * std::log2(freqMax / referenceA);
+    const double semitoneSpan = std::max(1e-6, midiMaxExact - midiMinExact);
+    const int steps = std::max(1, binCount - 1);
+    const int binsPerSemitone = std::max(1, static_cast<int>(std::lround(steps / semitoneSpan)));
+    const double midiStep = 1.0 / static_cast<double>(binsPerSemitone);
+    const double totalMidiSpan = static_cast<double>(steps) * midiStep;
+    const double midiCenter = 0.5 * (midiMinExact + midiMaxExact);
+    const double midiStart = std::round((midiCenter - 0.5 * totalMidiSpan) / midiStep) * midiStep;
+    const double midiEnd = midiStart + totalMidiSpan;
+    const double freqMinGrid = referenceA * std::pow(2.0, (midiStart - 69.0) / 12.0);
+    const double freqMaxGrid = referenceA * std::pow(2.0, (midiEnd - 69.0) / 12.0);
+    const double logMin = std::log(freqMinGrid);
+    const double logMax = std::log(freqMaxGrid);
+    const double logStep = binCount > 1
+        ? (logMax - logMin) / static_cast<double>(binCount - 1)
+        : 0.0;
+    const double maxFreqNorm = std::exp(logMax) / sampleRate;
+    const double safeMaxFreqNorm = std::max(maxFreqNorm, 1.0 / sampleRate);
+    const double baseWindow = static_cast<double>(qBound(2, settings.multiple, 240)) / safeMaxFreqNorm;
+    double windowLengthExponent = 1.0;
+    switch (settings.windowLengthMode) {
+    case 0:
+        windowLengthExponent = 0.0;
+        break;
+    case 1:
+        windowLengthExponent = 0.5;
+        break;
+    default:
+        windowLengthExponent = 1.0;
+        break;
+    }
+
+    out->signal.assign(static_cast<size_t>(kSpectrumSignalLength), 0.0f);
+    out->freqs.resize(static_cast<size_t>(binCount));
+    out->norms.resize(static_cast<size_t>(binCount));
+    out->windowLengths.resize(static_cast<size_t>(binCount));
+    const int64_t start = sourceSample - kSpectrumSignalLength + 1;
+    int validSamples = 0;
+    for (int i = 0; i < kSpectrumSignalLength; ++i) {
+        const int64_t idx = start + i;
+        if (idx >= 0 && idx < decoded.samples.size()) {
+            out->signal[static_cast<size_t>(i)] = decoded.samples[static_cast<int>(idx)];
+            validSamples = i + 1;
+        }
+    }
+
+    for (int i = 0; i < binCount; ++i) {
+        const double freqHz = std::exp(logMin + static_cast<double>(i) * logStep);
+        const double freqNorm = freqHz / sampleRate;
+        out->freqs[static_cast<size_t>(i)] = static_cast<float>(freqNorm);
+        const double freqRatio = std::clamp(
+            safeMaxFreqNorm / std::max(freqNorm, 1.0 / sampleRate),
+            1.0,
+            static_cast<double>(kSpectrumSignalLength));
+        int windowLength = static_cast<int>(std::lround(baseWindow * std::pow(freqRatio, windowLengthExponent)));
+        windowLength = std::max(windowLength, 2);
+        windowLength = std::min(windowLength, kSpectrumSignalLength);
+        out->windowLengths[static_cast<size_t>(i)] = windowLength;
+        out->norms[static_cast<size_t>(i)] = static_cast<float>(
+            spectrumNormalizationScale(settings.normalizationMode,
+                                       settings.temporalWeightingMode,
+                                       windowLength));
+    }
+    out->validSamples = std::max(1, validSamples);
+    out->fftLength = spectrumFftLength(out->windowLengths);
+    return true;
 }
 
 const TimelineClip* clipForId(const PreviewInteractionState* state, const QString& clipId)
@@ -808,14 +1624,25 @@ protected:
             QWidget::wheelEvent(event);
             return;
         }
-        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
-            QWidget::wheelEvent(event);
-            return;
-        }
         const QRectF surfaceRect = PreviewViewTransform::rectForWidget(
             this, PreviewSurfaceCoordinateSpace::DeviceSurface);
         const QPointF surfacePosition = PreviewViewTransform::pointForWidgetPoint(
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
+        if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
+            if (applyAudioPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
+                if (m_updateCallback) {
+                    m_updateCallback();
+                }
+                event->accept();
+                return;
+            }
+            QWidget::wheelEvent(event);
+            return;
+        }
+        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
+            QWidget::wheelEvent(event);
+            return;
+        }
         if (applyVideoPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
             if (m_updateCallback) {
                 m_updateCallback();
@@ -1051,6 +1878,7 @@ public:
     void setInteractionCallbacks(std::function<void(const QString&)> selectionRequested,
                                  std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
                                  std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+                                 std::function<void(int64_t)> playbackSampleRequested = {},
                                  std::function<void(const QString&, qreal, qreal)> correctionPointRequested = {},
                                  std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
                                  std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested = {},
@@ -1060,6 +1888,7 @@ public:
         m_selectionRequested = std::move(selectionRequested);
         m_resizeRequested = std::move(resizeRequested);
         m_moveRequested = std::move(moveRequested);
+        m_playbackSampleRequested = std::move(playbackSampleRequested);
         m_correctionPointRequested = std::move(correctionPointRequested);
         m_speakerPointRequested = std::move(speakerPointRequested);
         m_speakerBoxRequested = std::move(speakerBoxRequested);
@@ -1102,14 +1931,23 @@ protected:
             QVulkanWindow::wheelEvent(event);
             return;
         }
-        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
-            QVulkanWindow::wheelEvent(event);
-            return;
-        }
         const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
             this, PreviewSurfaceCoordinateSpace::DeviceSurface);
         const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
+        if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
+            if (applyAudioPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
+                requestUpdate();
+                event->accept();
+                return;
+            }
+            QVulkanWindow::wheelEvent(event);
+            return;
+        }
+        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
+            QVulkanWindow::wheelEvent(event);
+            return;
+        }
         if (applyVideoPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
             requestUpdate();
             event->accept();
@@ -1124,17 +1962,24 @@ protected:
             QVulkanWindow::mousePressEvent(event);
             return;
         }
-        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
-            QVulkanWindow::mousePressEvent(event);
-            return;
-        }
-
         const QRectF surfaceRect = PreviewViewTransform::rectForWindow(
             this, PreviewSurfaceCoordinateSpace::DeviceSurface);
         const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
-        const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
         m_state->transient.lastMousePos = surfacePosition;
+        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
+            if (m_state->viewMode == PreviewSurface::ViewMode::Audio && m_playbackSampleRequested) {
+                int64_t targetSample = 0;
+                if (audioSeekSampleAtSurfacePosition(*m_state, surfaceRect, surfacePosition, &targetSample)) {
+                    m_playbackSampleRequested(targetSample);
+                    event->accept();
+                    return;
+                }
+            }
+            QVulkanWindow::mousePressEvent(event);
+            return;
+        }
+        const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
 
         PreviewInteractionTransientState& transient = m_state->transient;
         VulkanInteractionOverlayInfo selectedInfo;
@@ -1713,6 +2558,11 @@ private:
             return;
         }
 
+        if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
+            setCursor(Qt::ArrowCursor);
+            return;
+        }
+
         if (m_state->titleOverlayInteractionOnly && !clipIdIsTitleForVulkan(m_state, currentClipId)) {
             unsetCursor();
             return;
@@ -1836,6 +2686,7 @@ private:
     std::function<void(const QString&)> m_failureCallback;
     std::function<void(const QImage&)> m_mirrorCallback;
     std::function<void(const QString&)> m_selectionRequested;
+    std::function<void(int64_t)> m_playbackSampleRequested;
     std::function<void(const QString&, qreal, qreal)> m_correctionPointRequested;
     std::function<void(const QString&, qreal, qreal)> m_speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> m_speakerBoxRequested;
@@ -1900,6 +2751,19 @@ void DirectVulkanPreviewRenderer::initResources()
         if (m_owner) {
             m_owner->markFailure(error.isEmpty()
                                      ? QStringLiteral("Failed to initialize direct presenter Vulkan pipeline.")
+                                     : error);
+        }
+        return;
+    }
+    m_audioTab = std::make_unique<jcut::VulkanAudioTab>();
+    if (!m_audioTab->initialize(m_window->physicalDevice(),
+                                m_window->device(),
+                                m_devFuncs,
+                                m_window->defaultRenderPass(),
+                                &error)) {
+        if (m_owner) {
+            m_owner->markFailure(error.isEmpty()
+                                     ? QStringLiteral("Failed to initialize Vulkan audio waveform pipeline.")
                                      : error);
         }
         return;
@@ -2282,10 +3146,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         base = QColor(Qt::black);
     }
 
+    const float phase = state
+        ? std::fmod(static_cast<float>(state->currentFramePosition), 180.0f) / 179.0f
+        : 0.25f;
+    const float clipFactor = state
+        ? qBound(0.0f, static_cast<float>(state->clipCount) / 8.0f, 1.0f)
+        : 0.0f;
+    const float motion = (state && state->playing) ? phase : 0.25f;
+
     VkClearValue clearValues[2]{};
-    clearValues[0].color.float32[0] = 0.015f;
-    clearValues[0].color.float32[1] = 0.020f;
-    clearValues[0].color.float32[2] = 0.030f;
+    clearValues[0].color.float32[0] = 0.08f + 0.22f * motion;
+    clearValues[0].color.float32[1] = 0.10f + 0.18f * clipFactor;
+    clearValues[0].color.float32[2] = 0.13f + 0.35f * (1.0f - motion);
     clearValues[0].color.float32[3] = 1.0f;
     clearValues[1].depthStencil.depth = 1.0f;
     clearValues[1].depthStencil.stencil = 0;
@@ -2309,6 +3181,19 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         VkFormat format = VK_FORMAT_UNDEFINED;
     } decoderReadbackCandidate;
     m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
+    bool audioWaitingForWaveform = false;
+    if (renderDirectVulkanAudioFrame(
+            DirectVulkanAudioRenderContext{state, m_devFuncs, m_audioTab.get(), cb, swapSize},
+            &audioWaitingForWaveform)) {
+        m_devFuncs->vkCmdEndRenderPass(cb);
+        m_owner->markPresented();
+        m_window->frameReady();
+        m_owner->markPreviewUpdateDelivered();
+        if (state->playing || audioWaitingForWaveform) {
+            m_owner->schedulePreviewUpdate();
+        }
+        return;
+    }
     if (state) {
         VkViewport viewport{};
         viewport.x = 0.0f;
@@ -2748,17 +3633,6 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_windowContainer->setToolTip(QStringLiteral("Direct Vulkan preview presenter (%1).")
                                       .arg(vulkanPreviewVisiblePathLabel()));
 
-    m_audioLabel = new QLabel(m_placeholder.get());
-    m_audioLabel->setAlignment(Qt::AlignCenter);
-    m_audioLabel->setWordWrap(true);
-    m_audioLabel->setMargin(18);
-    m_audioLabel->setStyleSheet(QStringLiteral(
-        "background:#0b1017; color:#dbe7f1; border:0; padding:18px;"
-        "font:500 14px 'DejaVu Sans';"));
-    m_audioLabel->setText(QStringLiteral(
-        "Audio view is not implemented for the Vulkan preview path.\n\n"
-        "Switch back to Video, or use the OpenGL preview backend for waveform/audio inspection."));
-
     m_statusLabel = new QLabel(m_placeholder.get());
     m_statusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     m_statusLabel->setWordWrap(false);
@@ -2770,6 +3644,61 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_statusLabel->setVisible(vulkanPreviewDebugChromeEnabled());
     m_statusLabel->raise();
 
+    m_audioInfoPanel = new QWidget(m_placeholder.get());
+    m_audioInfoPanel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_audioInfoPanel->setStyleSheet(QStringLiteral(
+        "background:rgba(9,18,24,170); border:1px solid rgba(120,145,168,120); border-radius:10px;"));
+    auto* audioInfoLayout = new QVBoxLayout(m_audioInfoPanel);
+    audioInfoLayout->setContentsMargins(16, 14, 16, 14);
+    audioInfoLayout->setSpacing(6);
+    m_audioTitleLabel = new QLabel(m_audioInfoPanel);
+    m_audioTitleLabel->setStyleSheet(QStringLiteral("color:#eef5fb; font-weight:700; font-size:17px;"));
+    m_audioSummaryLabel = new QLabel(m_audioInfoPanel);
+    m_audioSummaryLabel->setWordWrap(true);
+    m_audioSummaryLabel->setStyleSheet(QStringLiteral("color:#c8d5e0; font-size:12px;"));
+    m_audioFooterLabel = new QLabel(m_audioInfoPanel);
+    m_audioFooterLabel->setWordWrap(true);
+    m_audioFooterLabel->setStyleSheet(QStringLiteral("color:#9fb3c8; font-size:11px;"));
+    audioInfoLayout->addWidget(m_audioTitleLabel);
+    audioInfoLayout->addWidget(m_audioSummaryLabel);
+    audioInfoLayout->addWidget(m_audioFooterLabel);
+    m_audioInfoPanel->hide();
+
+    m_audioHoverCard = new QFrame(m_placeholder.get());
+    m_audioHoverCard->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_audioHoverCard->setStyleSheet(QStringLiteral(
+        "QFrame { background:qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 rgba(12,19,29,238), stop:1 rgba(7,12,19,235));"
+        "border:1px solid rgba(94,127,160,170); border-radius:10px; }"));
+    auto* hoverRoot = new QHBoxLayout(m_audioHoverCard);
+    hoverRoot->setContentsMargins(10, 10, 10, 10);
+    hoverRoot->setSpacing(12);
+    m_audioHoverAvatarLabel = new QLabel(m_audioHoverCard);
+    m_audioHoverAvatarLabel->setFixedSize(72, 72);
+    m_audioHoverAvatarLabel->setScaledContents(true);
+    auto* hoverTextLayout = new QVBoxLayout;
+    hoverTextLayout->setContentsMargins(0, 0, 0, 0);
+    hoverTextLayout->setSpacing(4);
+    m_audioHoverNameLabel = new QLabel(m_audioHoverCard);
+    m_audioHoverNameLabel->setWordWrap(true);
+    m_audioHoverNameLabel->setStyleSheet(QStringLiteral("color:#e8f6ff; font-weight:700; font-size:14px;"));
+    m_audioHoverOrgLabel = new QLabel(m_audioHoverCard);
+    m_audioHoverOrgLabel->setWordWrap(true);
+    m_audioHoverOrgLabel->setStyleSheet(QStringLiteral("color:rgb(151,192,224); font-size:12px;"));
+    m_audioHoverMetaLabel = new QLabel(m_audioHoverCard);
+    m_audioHoverMetaLabel->setWordWrap(true);
+    m_audioHoverMetaLabel->setStyleSheet(QStringLiteral("color:rgb(132,164,191); font-size:11px;"));
+    m_audioHoverDescLabel = new QLabel(m_audioHoverCard);
+    m_audioHoverDescLabel->setWordWrap(true);
+    m_audioHoverDescLabel->setStyleSheet(QStringLiteral("color:#dff5ff; font-size:12px;"));
+    hoverTextLayout->addWidget(m_audioHoverNameLabel);
+    hoverTextLayout->addWidget(m_audioHoverOrgLabel);
+    hoverTextLayout->addWidget(m_audioHoverMetaLabel);
+    hoverTextLayout->addWidget(m_audioHoverDescLabel);
+    hoverTextLayout->addStretch(1);
+    hoverRoot->addWidget(m_audioHoverAvatarLabel, 0, Qt::AlignTop);
+    hoverRoot->addLayout(hoverTextLayout, 1);
+    m_audioHoverCard->hide();
+
     m_errorLabel = new QLabel(m_placeholder.get());
     m_errorLabel->setAlignment(Qt::AlignCenter);
     m_errorLabel->setWordWrap(true);
@@ -2779,7 +3708,6 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_errorLabel->setText(QStringLiteral("Vulkan preview is initializing..."));
 
     m_stack->addWidget(m_windowContainer);
-    m_stack->addWidget(m_audioLabel);
     m_stack->addWidget(m_errorLabel);
     m_stack->setCurrentWidget(m_windowContainer);
     m_active = true;
@@ -2791,6 +3719,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
     std::function<void(const QString&)> selectionRequested,
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested,
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested,
+    std::function<void(int64_t)> playbackSampleRequested,
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested,
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested,
@@ -2804,6 +3733,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
         std::move(selectionRequested),
         std::move(resizeRequested),
         std::move(moveRequested),
+        std::move(playbackSampleRequested),
         std::move(correctionPointRequested),
         std::move(speakerPointRequested),
         std::move(speakerBoxRequested),
@@ -2860,24 +3790,31 @@ void DirectVulkanPreviewPresenter::showFailure(const QString& reason)
 void DirectVulkanPreviewPresenter::requestUpdate()
 {
     updateDiagnosticChrome();
-    const bool audioMode = m_state && m_state->viewMode == PreviewSurface::ViewMode::Audio;
     if (m_stack) {
-        if (audioMode && m_audioLabel) {
-            m_stack->setCurrentWidget(m_audioLabel);
-        } else if (!m_failureReason.trimmed().isEmpty() && m_errorLabel) {
+        if (!m_failureReason.trimmed().isEmpty() && m_errorLabel) {
             m_stack->setCurrentWidget(m_errorLabel);
         } else if (m_windowContainer) {
             m_stack->setCurrentWidget(m_windowContainer);
         }
     }
-    if (!audioMode && vulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
+    if (vulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
         m_windowContainer->raise();
     }
-    if (!audioMode && m_window) {
+    if (m_window) {
         if (vulkanPreviewDirectSwapchainVisible()) {
             m_window->raise();
         }
         m_window->schedulePreviewUpdate();
+    }
+    updateAudioOverlay();
+    if (m_audioInfoPanel && m_audioInfoPanel->isVisible()) {
+        m_audioInfoPanel->raise();
+    }
+    if (m_audioHoverCard && m_audioHoverCard->isVisible()) {
+        m_audioHoverCard->raise();
+    }
+    if (m_statusLabel && m_statusLabel->isVisible()) {
+        m_statusLabel->raise();
     }
 }
 
@@ -2895,6 +3832,7 @@ void DirectVulkanPreviewPresenter::updateTitle()
                            .arg(m_state->currentFrame)
                            .arg(m_state->clipCount));
     updateDiagnosticChrome();
+    updateAudioOverlay();
 }
 
 void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
@@ -2915,7 +3853,7 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
     QString state = QStringLiteral("initializing");
     if (m_state && m_state->viewMode == PreviewSurface::ViewMode::Audio) {
         color = QStringLiteral("#4a90e2");
-        state = QStringLiteral("audio-placeholder");
+        state = QStringLiteral("audio-vulkan");
     } else if (!m_active || !m_failureReason.trimmed().isEmpty()) {
         color = QStringLiteral("#d9483b");
         state = QStringLiteral("failed");
@@ -2981,6 +3919,28 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
         .arg(m_stats.textureDraws)
         .arg(m_stats.explicitFailureDraws)
         .arg(error.isEmpty() ? QString() : QStringLiteral(" | ") + error));
+}
+
+void DirectVulkanPreviewPresenter::updateAudioOverlay()
+{
+    if (!m_placeholder || !m_state || !m_audioInfoPanel || !m_audioHoverCard) {
+        return;
+    }
+    const bool audioMode = m_state->viewMode == PreviewSurface::ViewMode::Audio;
+    updateDirectVulkanAudioOverlay(
+        m_state,
+        DirectVulkanAudioOverlayWidgets{
+            m_placeholder.get(),
+            m_audioInfoPanel,
+            m_audioTitleLabel,
+            m_audioSummaryLabel,
+            m_audioFooterLabel,
+            m_audioHoverCard,
+            m_audioHoverAvatarLabel,
+            m_audioHoverNameLabel,
+            m_audioHoverOrgLabel,
+            m_audioHoverMetaLabel,
+            m_audioHoverDescLabel});
 }
 
 QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const

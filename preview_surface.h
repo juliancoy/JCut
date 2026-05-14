@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "spectrum_settings_dialog.h"
 #include "timeline_widget.h"
 
 #include <QColor>
@@ -17,9 +18,15 @@ class QWidget;
 
 class PreviewSurface {
 public:
+    using LoiaconoSpectrumSettings = loiacono::SpectrumSettings;
     enum class ViewMode {
         Video = 0,
         Audio = 1,
+    };
+
+    enum class AudioVisualizationMode {
+        Waveform = 0,
+        Spectrum = 1,
     };
 
     struct AudioDynamicsSettings {
@@ -94,6 +101,8 @@ public:
     virtual void setFacestreamOverlaySource(const QString& source) = 0;
     virtual void setAudioSpeakerHoverModalEnabled(bool enabled) = 0;
     virtual void setAudioWaveformVisible(bool visible) = 0;
+    virtual void setAudioVisualizationMode(AudioVisualizationMode mode) = 0;
+    virtual void setLoiaconoSpectrumSettings(const LoiaconoSpectrumSettings& settings) = 0;
     virtual bool audioSpeakerHoverModalEnabled() const = 0;
     virtual bool audioWaveformVisible() const = 0;
     virtual void setViewMode(ViewMode mode) = 0;
@@ -132,6 +141,7 @@ public:
     std::function<void(const QString&, qreal, qreal, bool)> resizeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> moveRequested;
     std::function<void(const QString&)> createKeyframeRequested;
+    std::function<void(int64_t)> playbackSampleRequested;
     std::function<void(const QString&, qreal, qreal)> correctionPointRequested;
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;

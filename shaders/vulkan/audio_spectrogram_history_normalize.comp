@@ -1,0 +1,38 @@
+#version 450
+
+#define SPECTROGRAM_MAX_BINS 2400
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer GlobalPeakBuffer {
+    uint u_globalPeakBits[];
+};
+
+layout(std430, set = 0, binding = 10) buffer SpectrogramHistory {
+    float u_spectrogram[];
+};
+
+layout(push_constant) uniform Push {
+    vec4 u_meta;
+    vec4 u_display;
+} pc;
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    uint columnIx = gl_WorkGroupID.y;
+    uint totalBins = uint(max(1.0, pc.u_meta.x));
+    uint historyColumns = uint(max(1.0, pc.u_meta.y));
+    if (idx >= totalBins || columnIx >= historyColumns) {
+        return;
+    }
+
+    float gain = max(pc.u_display.x, 0.1);
+    float gamma = clamp(pc.u_display.y, 0.1, 2.0);
+    float floorValue = clamp(pc.u_display.z, 0.0, 0.5);
+    float peak = max(uintBitsToFloat(u_globalPeakBits[0]), 0.000001);
+    uint historyIndex = columnIx * SPECTROGRAM_MAX_BINS + idx;
+    float normalized = clamp((u_spectrogram[historyIndex] * gain) / peak, 0.0, 1.0);
+    float gated = normalized <= floorValue ? 0.0 : normalized;
+    u_spectrogram[historyIndex] = pow(gated, gamma);
+}

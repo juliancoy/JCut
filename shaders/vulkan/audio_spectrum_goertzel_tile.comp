@@ -1,0 +1,79 @@
+#version 450
+
+#define PI 3.14159265358979323846
+#define SIGNAL_LENGTH 32768
+#define SPECTROGRAM_MAX_BINS 2400
+#define SPECTROGRAM_TILE_COLUMNS 64
+
+layout(std430, set = 0, binding = 3) readonly buffer FrequencyBuffer { float f[]; };
+layout(std430, set = 0, binding = 4) readonly buffer NormalizationBuffer { float norm[]; };
+layout(std430, set = 0, binding = 5) readonly buffer WindowBuffer { int windowLen[]; };
+layout(std430, set = 0, binding = 6) readonly buffer ParamsBuffer { uint params[16]; };
+layout(std430, set = 0, binding = 0) buffer GlobalPeakBuffer { uint globalPeakBits[]; };
+layout(std430, set = 0, binding = 11) readonly buffer TileSignalBuffer { float x[]; };
+layout(std430, set = 0, binding = 12) buffer TileMagnitudeBuffer { float L[]; };
+layout(std430, set = 0, binding = 13) buffer TilePeakBuffer { uint peakBits[]; };
+layout(std430, set = 0, binding = 14) readonly buffer TileValidBuffer { uint validSamples[]; };
+
+layout(push_constant) uniform Push {
+    float leakiness;
+} pc;
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+float windowWeight(int mode, int index, int len)
+{
+    if (len <= 1) return 1.0;
+    float phase = 2.0 * PI * float(index) / float(len - 1);
+    if (mode == 1) return 0.5 - 0.5 * cos(phase);
+    if (mode == 2) return 0.54 - 0.46 * cos(phase);
+    if (mode == 3) return 0.42 - 0.5 * cos(phase) + 0.08 * cos(2.0 * phase);
+    if (mode == 4) return 0.35875 - 0.48829 * cos(phase) + 0.14128 * cos(2.0 * phase) - 0.01168 * cos(3.0 * phase);
+    return 1.0;
+}
+
+void main()
+{
+    if (gl_LocalInvocationID.x != 0u) {
+        return;
+    }
+    uint frequencyIx = gl_WorkGroupID.x;
+    uint columnIx = gl_WorkGroupID.y;
+    uint totalBins = max(params[5], 1u);
+    if (frequencyIx >= totalBins || columnIx >= SPECTROGRAM_TILE_COLUMNS) {
+        return;
+    }
+
+    int valid = int(min(validSamples[columnIx], uint(SIGNAL_LENGTH)));
+    int len = min(windowLen[frequencyIx], valid);
+    if (len <= 0) {
+        L[columnIx * SPECTROGRAM_MAX_BINS + frequencyIx] = 0.0;
+        return;
+    }
+
+    uint signalBase = columnIx * SIGNAL_LENGTH;
+    uint ringStart = uint(SIGNAL_LENGTH - len);
+    float omega = 2.0 * PI * f[frequencyIx];
+    float coeff = 2.0 * cos(omega);
+    float q0 = 0.0;
+    float q1 = 0.0;
+    float q2 = 0.0;
+    int windowMode = int(params[3]);
+
+    for (int k = 0; k < len; ++k) {
+        float weight = windowMode == 5
+            ? pow(pc.leakiness, float(len - 1 - k))
+            : windowWeight(windowMode, k, len);
+        float sampleValue = x[signalBase + ringStart + uint(k)] * weight;
+        q0 = sampleValue + coeff * q1 - q2;
+        q2 = q1;
+        q1 = q0;
+    }
+
+    float realPart = q1 - q2 * cos(omega);
+    float imagPart = q2 * sin(omega);
+    float magnitude = sqrt(realPart * realPart + imagPart * imagPart) * norm[frequencyIx];
+    L[columnIx * SPECTROGRAM_MAX_BINS + frequencyIx] = magnitude;
+    atomicMax(peakBits[columnIx], floatBitsToUint(max(0.0, magnitude)));
+    atomicMax(globalPeakBits[0], floatBitsToUint(max(0.0, magnitude)));
+}

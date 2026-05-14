@@ -448,6 +448,8 @@ private:
     QDoubleSpinBox *m_audioAmplifyDbSpin = nullptr;
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
+    QComboBox *m_audioVisualizationModeCombo = nullptr;
+    QPushButton *m_loiaconoSpectrumSettingsButton = nullptr;
     QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
@@ -645,6 +647,10 @@ private:
     PreviewSurface::AudioDynamicsSettings m_previewAudioDynamics;
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
+    PreviewSurface::AudioVisualizationMode m_audioVisualizationMode =
+        PreviewSurface::AudioVisualizationMode::Waveform;
+    PreviewSurface::LoiaconoSpectrumSettings m_loiaconoSpectrumSettings;
+    loiacono::SpectrumSettingsDialog *m_loiaconoSpectrumSettingsDialog = nullptr;
     QString m_previewViewMode = QStringLiteral("video");
     QString m_renderBackendPreference = QStringLiteral("vulkan");
     QString m_previewVulkanPresenterPreference = QStringLiteral("embedded");

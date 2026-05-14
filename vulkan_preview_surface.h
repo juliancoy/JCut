@@ -62,6 +62,8 @@ public:
     void setFacestreamOverlaySource(const QString& source) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
     void setAudioWaveformVisible(bool visible) override;
+    void setAudioVisualizationMode(AudioVisualizationMode mode) override;
+    void setLoiaconoSpectrumSettings(const LoiaconoSpectrumSettings& settings) override;
     bool audioSpeakerHoverModalEnabled() const override;
     bool audioWaveformVisible() const override;
     void setViewMode(ViewMode mode) override;
@@ -163,6 +165,8 @@ private:
     QHash<QString, FacestreamOverlayCacheEntry> m_facestreamOverlayCache;
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
+    LoiaconoSpectrumSettings m_loiaconoSpectrumSettings;
+    AudioVisualizationMode m_audioVisualizationMode = AudioVisualizationMode::Waveform;
     QString m_failureReason;
     QString m_facestreamOverlaySource;
     QString m_activeAudioClipLabel;

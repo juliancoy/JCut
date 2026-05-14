@@ -255,6 +255,8 @@ public:
     QCheckBox *audioSpeakerHoverModalCheckBox() const { return m_audioSpeakerHoverModalCheckBox; }
     QCheckBox *audioShowWaveformCheckBox() const { return m_audioShowWaveformCheckBox; }
     QCheckBox *audioWaveformPreviewProcessedCheckBox() const { return m_audioWaveformPreviewProcessedCheckBox; }
+    QComboBox *audioVisualizationModeCombo() const { return m_audioVisualizationModeCombo; }
+    QPushButton *loiaconoSpectrumSettingsButton() const { return m_loiaconoSpectrumSettingsButton; }
     QCheckBox *audioNormalizeEnabledCheckBox() const { return m_audioNormalizeEnabledCheckBox; }
     QDoubleSpinBox *audioNormalizeTargetDbSpin() const { return m_audioNormalizeTargetDbSpin; }
     QCheckBox *audioSelectiveNormalizeEnabledCheckBox() const { return m_audioSelectiveNormalizeEnabledCheckBox; }
@@ -528,6 +530,8 @@ private:
     QCheckBox *m_audioSpeakerHoverModalCheckBox = nullptr;
     QCheckBox *m_audioShowWaveformCheckBox = nullptr;
     QCheckBox *m_audioWaveformPreviewProcessedCheckBox = nullptr;
+    QComboBox *m_audioVisualizationModeCombo = nullptr;
+    QPushButton *m_loiaconoSpectrumSettingsButton = nullptr;
     QCheckBox *m_audioNormalizeEnabledCheckBox = nullptr;
     QDoubleSpinBox *m_audioNormalizeTargetDbSpin = nullptr;
     QCheckBox *m_audioSelectiveNormalizeEnabledCheckBox = nullptr;

@@ -109,6 +109,11 @@ struct PreviewInteractionState {
     QVector<ExportRangeSegment> exportRanges;
     QString selectedClipId;
     PreviewSurface::ViewMode viewMode = PreviewSurface::ViewMode::Video;
+    PreviewSurface::AudioDynamicsSettings audioDynamics;
+    PreviewSurface::AudioVisualizationMode audioVisualizationMode = PreviewSurface::AudioVisualizationMode::Waveform;
+    PreviewSurface::LoiaconoSpectrumSettings loiaconoSpectrumSettings;
+    bool audioSpeakerHoverModalEnabled = true;
+    bool audioWaveformVisible = true;
     qreal previewZoom = 1.0;
     QPointF previewPanOffset;
     bool correctionDrawMode = false;

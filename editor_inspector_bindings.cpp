@@ -61,6 +61,8 @@ void EditorWindow::bindInspectorWidgets()
     m_audioAmplifyDbSpin = m_inspectorPane->audioAmplifyDbSpin();
     m_audioSpeakerHoverModalCheckBox = m_inspectorPane->audioSpeakerHoverModalCheckBox();
     m_audioShowWaveformCheckBox = m_inspectorPane->audioShowWaveformCheckBox();
+    m_audioVisualizationModeCombo = m_inspectorPane->audioVisualizationModeCombo();
+    m_loiaconoSpectrumSettingsButton = m_inspectorPane->loiaconoSpectrumSettingsButton();
     m_audioWaveformPreviewProcessedCheckBox = m_inspectorPane->audioWaveformPreviewProcessedCheckBox();
     m_audioNormalizeEnabledCheckBox = m_inspectorPane->audioNormalizeEnabledCheckBox();
     m_audioNormalizeTargetDbSpin = m_inspectorPane->audioNormalizeTargetDbSpin();
@@ -711,6 +713,43 @@ void EditorWindow::setupPreviewControls()
             scheduleSaveState();
         });
     }
+    if (m_audioVisualizationModeCombo) {
+        connect(m_audioVisualizationModeCombo, qOverload<int>(&QComboBox::currentIndexChanged), this,
+                [this](int index) {
+                    if (!m_audioVisualizationModeCombo || index < 0) {
+                        return;
+                    }
+                    m_audioVisualizationMode = static_cast<PreviewSurface::AudioVisualizationMode>(
+                        m_audioVisualizationModeCombo->itemData(index).toInt());
+                    if (m_preview) {
+                        m_preview->setAudioVisualizationMode(m_audioVisualizationMode);
+                    }
+                    if (m_loiaconoSpectrumSettingsButton) {
+                        m_loiaconoSpectrumSettingsButton->setEnabled(
+                            m_audioVisualizationMode == PreviewSurface::AudioVisualizationMode::Spectrum);
+                    }
+                    scheduleSaveState();
+                });
+    }
+    if (m_loiaconoSpectrumSettingsButton) {
+        connect(m_loiaconoSpectrumSettingsButton, &QPushButton::clicked, this, [this]() {
+            if (!m_loiaconoSpectrumSettingsDialog) {
+                m_loiaconoSpectrumSettingsDialog = new loiacono::SpectrumSettingsDialog(this);
+                connect(m_loiaconoSpectrumSettingsDialog, &loiacono::SpectrumSettingsDialog::settingsChanged,
+                        this, [this](const PreviewSurface::LoiaconoSpectrumSettings& settings) {
+                            m_loiaconoSpectrumSettings = settings;
+                            if (m_preview) {
+                                m_preview->setLoiaconoSpectrumSettings(m_loiaconoSpectrumSettings);
+                            }
+                            scheduleSaveState();
+                        });
+            }
+            m_loiaconoSpectrumSettingsDialog->setSettings(m_loiaconoSpectrumSettings);
+            m_loiaconoSpectrumSettingsDialog->show();
+            m_loiaconoSpectrumSettingsDialog->raise();
+            m_loiaconoSpectrumSettingsDialog->activateWindow();
+        });
+    }
     if (m_audioNormalizeEnabledCheckBox) {
         connect(m_audioNormalizeEnabledCheckBox, &QCheckBox::toggled, this,
                 [applyAudioDynamicsFromInspector](bool) { applyAudioDynamicsFromInspector(); });
@@ -778,6 +817,12 @@ void EditorWindow::setupPreviewControls()
     if (m_preview) {
         m_preview->setAudioSpeakerHoverModalEnabled(m_audioSpeakerHoverModalEnabled);
         m_preview->setAudioWaveformVisible(m_audioWaveformVisible);
+        m_preview->setAudioVisualizationMode(m_audioVisualizationMode);
+        m_preview->setLoiaconoSpectrumSettings(m_loiaconoSpectrumSettings);
+    }
+    if (m_loiaconoSpectrumSettingsButton) {
+        m_loiaconoSpectrumSettingsButton->setEnabled(
+            m_audioVisualizationMode == PreviewSurface::AudioVisualizationMode::Spectrum);
     }
 
     connect(m_inspectorPane->backgroundColorButton(), &QPushButton::clicked, this, [this]() {

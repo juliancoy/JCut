@@ -307,6 +307,9 @@ void EditorWindow::connectPreviewSignals()
     m_preview->selectionRequested = [this](const QString &clipId) {
         if (m_timeline) m_timeline->setSelectedClipId(clipId);
     };
+    m_preview->playbackSampleRequested = [this](int64_t samplePosition) {
+        setCurrentPlaybackSample(samplePosition, true, playbackActive());
+    };
     m_preview->correctionPointRequested = [this](const QString& clipId, qreal xNorm, qreal yNorm) {
         if (m_correctionsTab) {
             m_correctionsTab->handlePreviewPoint(clipId, xNorm, yNorm);

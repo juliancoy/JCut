@@ -1,0 +1,35 @@
+#version 450
+
+#define SPECTROGRAM_MAX_BINS 2400
+#define SPECTROGRAM_TILE_COLUMNS 64
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout(std430, set = 0, binding = 10) writeonly buffer SpectrogramHistory {
+    float u_spectrogram[];
+};
+layout(std430, set = 0, binding = 12) readonly buffer TileMagnitudeBuffer {
+    float u_magnitudes[];
+};
+
+layout(push_constant) uniform Push {
+    vec4 u_tile;
+    vec4 u_display;
+} pc;
+
+void main()
+{
+    uint idx = gl_GlobalInvocationID.x;
+    uint columnIx = gl_WorkGroupID.y;
+    uint totalBins = uint(max(1.0, pc.u_tile.x));
+    uint tileColumns = uint(max(1.0, pc.u_tile.y));
+    uint historyStart = uint(max(0.0, pc.u_tile.z));
+    uint historyColumns = uint(max(1.0, pc.u_tile.w));
+    if (idx >= totalBins || columnIx >= tileColumns || columnIx >= SPECTROGRAM_TILE_COLUMNS) {
+        return;
+    }
+
+    uint historyColumn = (historyStart + columnIx) % historyColumns;
+    u_spectrogram[historyColumn * SPECTROGRAM_MAX_BINS + idx] =
+        max(u_magnitudes[columnIx * SPECTROGRAM_MAX_BINS + idx], 0.0);
+}

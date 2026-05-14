@@ -725,6 +725,21 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("audioAmplifyDb")] = m_previewAudioDynamics.amplifyDb;
     root[QStringLiteral("audioSpeakerHoverModalEnabled")] = m_audioSpeakerHoverModalEnabled;
     root[QStringLiteral("audioWaveformVisible")] = m_audioWaveformVisible;
+    root[QStringLiteral("audioVisualizationMode")] = static_cast<int>(m_audioVisualizationMode);
+    root[QStringLiteral("loiaconoMultiple")] = m_loiaconoSpectrumSettings.multiple;
+    root[QStringLiteral("loiaconoBins")] = m_loiaconoSpectrumSettings.bins;
+    root[QStringLiteral("loiaconoFreqMin")] = m_loiaconoSpectrumSettings.freqMin;
+    root[QStringLiteral("loiaconoFreqMax")] = m_loiaconoSpectrumSettings.freqMax;
+    root[QStringLiteral("loiaconoSampleRate")] = m_loiaconoSpectrumSettings.sampleRate;
+    root[QStringLiteral("loiaconoGain")] = m_loiaconoSpectrumSettings.gain;
+    root[QStringLiteral("loiaconoGamma")] = m_loiaconoSpectrumSettings.gamma;
+    root[QStringLiteral("loiaconoFloor")] = m_loiaconoSpectrumSettings.floor;
+    root[QStringLiteral("loiaconoLeakiness")] = m_loiaconoSpectrumSettings.leakiness;
+    root[QStringLiteral("loiaconoTemporalWeightingMode")] =
+        m_loiaconoSpectrumSettings.temporalWeightingMode;
+    root[QStringLiteral("loiaconoNormalizationMode")] = m_loiaconoSpectrumSettings.normalizationMode;
+    root[QStringLiteral("loiaconoWindowLengthMode")] = m_loiaconoSpectrumSettings.windowLengthMode;
+    root[QStringLiteral("loiaconoAlgorithmMode")] = m_loiaconoSpectrumSettings.algorithmMode;
     root[QStringLiteral("audioNormalizeEnabled")] = m_previewAudioDynamics.normalizeEnabled;
     root[QStringLiteral("audioNormalizeTargetDb")] = m_previewAudioDynamics.normalizeTargetDb;
     root[QStringLiteral("audioSelectiveNormalizeEnabled")] = m_previewAudioDynamics.selectiveNormalizeEnabled;
