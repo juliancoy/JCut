@@ -951,6 +951,24 @@ QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
     return speakerId;
 }
 
+SpeakerProfile transcriptSpeakerProfileForSourceFrame(const QString& transcriptPath,
+                                                      const QVector<TranscriptSection>& sections,
+                                                      int64_t sourceFrame) {
+    const QString speakerId = activeSpeakerForSourceFrame(sections, sourceFrame);
+    if (speakerId.isEmpty() || transcriptPath.isEmpty()) {
+        return {};
+    }
+
+    QJsonDocument transcriptDoc;
+    if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
+        return {};
+    }
+
+    const QJsonObject profilesObj =
+        transcriptDoc.object().value(QStringLiteral("speaker_profiles")).toObject();
+    return speakerProfileFromJson(speakerId, profilesObj.value(speakerId).toObject());
+}
+
 QJsonObject transcriptSpeakerTrackingConfigSnapshot() {
     return QJsonObject{
         {QStringLiteral("max_speed_permille_per_frame"), speakerTrackingMaxSpeedPermillePerFrame().load()},

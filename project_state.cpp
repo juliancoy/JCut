@@ -640,8 +640,7 @@ QJsonObject EditorWindow::buildStateJson() const
         editor::debugDeterministicPipelineEnabled();
     root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;
     root[QStringLiteral("autosaveMaxBackups")] = m_autosaveMaxBackups;
-    root[QStringLiteral("speechFilterEnabled")] =
-        m_speechFilterEnabledCheckBox ? m_speechFilterEnabledCheckBox->isChecked() : false;
+    root[QStringLiteral("speechFilterEnabled")] = m_speechFilterEnabled;
     root[QStringLiteral("transcriptPrependMs")] = m_transcriptPrependMs;
     root[QStringLiteral("transcriptPostpendMs")] = m_transcriptPostpendMs;
     root[QStringLiteral("speechFilterFadeSamples")] = m_speechFilterFadeSamples;

@@ -9,12 +9,9 @@
 #include "vulkan_facestream_offscreen_runner.h"
 
 #include <QApplication>
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
-#include <QCheckBox>
-#include <QClipboard>
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -22,9 +19,6 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
-#include <QPlainTextEdit>
-#include <QProcess>
-#include <QProcessEnvironment>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QVBoxLayout>
@@ -33,24 +27,6 @@ using namespace jcut::facestream;
 
 namespace {
 constexpr int kFaceStreamScrfdTargetSize = 640;
-
-QString resolveFaceStreamGeneratorBinary()
-{
-    const QString appDir = QCoreApplication::applicationDirPath();
-    const QStringList candidates{
-        QDir(appDir).absoluteFilePath(QStringLiteral("jcut_vulkan_facestream_offscreen")),
-        QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("build/jcut_vulkan_facestream_offscreen")),
-        QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("jcut_vulkan_facestream_offscreen")),
-        QDir(appDir).absoluteFilePath(QStringLiteral("../jcut_vulkan_facestream_offscreen"))
-    };
-    for (const QString& candidate : candidates) {
-        const QFileInfo info(candidate);
-        if (info.exists() && info.isFile() && info.isExecutable()) {
-            return info.absoluteFilePath();
-        }
-    }
-    return {};
-}
 
 QString resolveMediaPathForFaceStream(const TimelineClip& clip)
 {
@@ -179,47 +155,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             detectorSettingsPath,
             &preflightDialog);
     layout->addWidget(detectorPanel.widget);
-    auto* previewCheckBox = new QCheckBox(QStringLiteral("Enable Preview (window + preview files)"), &preflightDialog);
-    previewCheckBox->setChecked(false);
-    previewCheckBox->setToolTip(
-        QStringLiteral("When enabled, runs the generator with interactive preview output instead of offscreen-only mode."));
-    layout->addWidget(previewCheckBox);
-    auto* allowCpuFallbackCheckBox = new QCheckBox(QStringLiteral("Allow CPU Upload Fallback (explicit)"), &preflightDialog);
-    allowCpuFallbackCheckBox->setChecked(false);
-    allowCpuFallbackCheckBox->setToolTip(
-        QStringLiteral("Unchecked = strict zero-copy (hard fail). Checked = permit decoder CPU-image upload fallback."));
-    layout->addWidget(allowCpuFallbackCheckBox);
-    auto* isolatedProcessCheckBox = new QCheckBox(QStringLiteral("Run In Isolated Worker Process"), &preflightDialog);
-    isolatedProcessCheckBox->setChecked(false);
-    isolatedProcessCheckBox->setToolTip(
-        QStringLiteral("Uses external jcut_vulkan_facestream_offscreen binary. Slower startup, but isolates crashes from the editor."));
-    layout->addWidget(isolatedProcessCheckBox);
-    auto* copyWorkerCommandCheckBox = new QCheckBox(QStringLiteral("Copy Worker Command On Proceed"), &preflightDialog);
-    copyWorkerCommandCheckBox->setChecked(false);
-    copyWorkerCommandCheckBox->setEnabled(false);
-    copyWorkerCommandCheckBox->setToolTip(
-        QStringLiteral("Copies the exact external command line to clipboard when isolated worker mode is selected."));
-    layout->addWidget(copyWorkerCommandCheckBox);
-    QObject::connect(isolatedProcessCheckBox, &QCheckBox::toggled, &preflightDialog, [copyWorkerCommandCheckBox](bool checked) {
-        copyWorkerCommandCheckBox->setEnabled(checked);
-        if (!checked) {
-            copyWorkerCommandCheckBox->setChecked(false);
-        }
-    });
-    auto* commandLabel = new QLabel(QStringLiteral("Command Preview"), &preflightDialog);
-    commandLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
-    layout->addWidget(commandLabel);
-    auto* commandEdit = new QPlainTextEdit(&preflightDialog);
-    commandEdit->setReadOnly(true);
-    commandEdit->setMaximumBlockCount(10);
-    commandEdit->setMinimumHeight(90);
-    commandEdit->setPlaceholderText(QStringLiteral("Command will appear here."));
-    layout->addWidget(commandEdit);
-    auto* commandButtons = new QHBoxLayout;
-    commandButtons->addStretch(1);
-    auto* copyCommandButton = new QPushButton(QStringLiteral("Copy Command"), &preflightDialog);
-    commandButtons->addWidget(copyCommandButton);
-    layout->addLayout(commandButtons);
     auto buildArgsForPreflight = [&]() {
         QStringList args{
             mediaPath,
@@ -242,62 +177,14 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         args << (detectorSettings.smallFaceFallback
                     ? QStringLiteral("--small-face-fallback")
                     : QStringLiteral("--no-small-face-fallback"));
-        if (allowCpuFallbackCheckBox->isChecked()) {
-            args << QStringLiteral("--allow-cpu-upload-fallback");
-        } else {
-            args << QStringLiteral("--require-zero-copy");
-        }
-        if (previewCheckBox->isChecked()) {
-            args << QStringLiteral("--preview-window")
-                 << QStringLiteral("--preview-files");
-        } else {
-            args << QStringLiteral("--no-preview-window")
-                 << QStringLiteral("--no-preview-files");
-        }
+        args << QStringLiteral("--require-zero-copy");
+        args << QStringLiteral("--no-preview-window")
+             << QStringLiteral("--no-preview-files");
         if (maxFrames > 0) {
             args << QStringLiteral("--max-frames") << QString::number(maxFrames);
         }
         return args;
     };
-    auto shellQuote = [](const QString& token) {
-        QString out = token;
-        out.replace(QLatin1Char('\''), QStringLiteral("'\"'\"'"));
-        return QStringLiteral("'%1'").arg(out);
-    };
-    auto refreshCommandPreview = [&]() {
-        QString executable = QStringLiteral("jcut_vulkan_facestream_offscreen");
-        if (isolatedProcessCheckBox->isChecked()) {
-            const QString resolved = resolveFaceStreamGeneratorBinary();
-            if (!resolved.isEmpty()) {
-                executable = resolved;
-            }
-        }
-        const QStringList args = buildArgsForPreflight();
-        QStringList tokens;
-        tokens << executable;
-        tokens << args;
-        QStringList quoted;
-        quoted.reserve(tokens.size());
-        for (const QString& token : tokens) {
-            quoted << shellQuote(token);
-        }
-        commandEdit->setPlainText(quoted.join(QLatin1Char(' ')));
-    };
-    QObject::connect(previewCheckBox, &QCheckBox::toggled, &preflightDialog, [refreshCommandPreview](bool) {
-        refreshCommandPreview();
-    });
-    QObject::connect(allowCpuFallbackCheckBox, &QCheckBox::toggled, &preflightDialog, [refreshCommandPreview](bool) {
-        refreshCommandPreview();
-    });
-    QObject::connect(isolatedProcessCheckBox, &QCheckBox::toggled, &preflightDialog, [refreshCommandPreview](bool) {
-        refreshCommandPreview();
-    });
-    QObject::connect(copyCommandButton, &QPushButton::clicked, &preflightDialog, [commandEdit]() {
-        if (QClipboard* clipboard = QApplication::clipboard()) {
-            clipboard->setText(commandEdit->toPlainText());
-        }
-    });
-    refreshCommandPreview();
 
     auto* buttons = new QHBoxLayout;
     buttons->addStretch(1);
@@ -311,10 +198,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     if (preflightDialog.exec() != QDialog::Accepted) {
         return;
     }
-    const bool previewEnabled = previewCheckBox->isChecked();
-    const bool allowCpuUploadFallback = allowCpuFallbackCheckBox->isChecked();
-    const bool runIsolatedWorker = isolatedProcessCheckBox->isChecked();
-    const bool copyWorkerCommand = copyWorkerCommandCheckBox->isChecked();
     QString saveDetectorSettingsError;
     if (!saveDetectorRuntimeSettingsFile(
             detectorSettingsPath,
@@ -329,16 +212,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 ? QStringLiteral("Failed to save detector settings before launch.")
                 : saveDetectorSettingsError);
         return;
-    }
-
-    QString generatorPath;
-    if (runIsolatedWorker) {
-        generatorPath = resolveFaceStreamGeneratorBinary();
-        if (generatorPath.isEmpty()) {
-            QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
-                                 QStringLiteral("Could not find jcut_vulkan_facestream_offscreen for isolated worker mode."));
-            return;
-        }
     }
 
     const QString requestPath = QDir(debugRun.runDir).absoluteFilePath(
@@ -370,38 +243,19 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     args << (detectorSettings.smallFaceFallback
                 ? QStringLiteral("--small-face-fallback")
                 : QStringLiteral("--no-small-face-fallback"));
-    if (allowCpuUploadFallback) {
-        args << QStringLiteral("--allow-cpu-upload-fallback");
-    } else {
-        args << QStringLiteral("--require-zero-copy");
-    }
-    if (previewEnabled) {
-        args << QStringLiteral("--preview-window")
-             << QStringLiteral("--preview-files");
-    } else {
-        args << QStringLiteral("--no-preview-window")
-             << QStringLiteral("--no-preview-files");
-    }
+    args << QStringLiteral("--require-zero-copy");
+    args << QStringLiteral("--no-preview-window")
+         << QStringLiteral("--no-preview-files");
     if (maxFrames > 0) {
         args << QStringLiteral("--max-frames") << QString::number(maxFrames);
-    }
-    if (runIsolatedWorker && copyWorkerCommand) {
-        if (QClipboard* clipboard = QApplication::clipboard()) {
-            clipboard->setText(commandEdit->toPlainText());
-        }
     }
 
     QJsonObject request;
     request[QStringLiteral("run_id")] = debugRun.runId;
-    request[QStringLiteral("engine")] = runIsolatedWorker
-        ? QStringLiteral("jcut_vulkan_facestream_offscreen_worker_scrfd_zero_copy_v1")
-        : QStringLiteral("jcut_vulkan_facestream_offscreen_inprocess_scrfd_zero_copy_v1");
-    request[QStringLiteral("execution_mode")] = runIsolatedWorker
-        ? QStringLiteral("isolated_worker_binary")
-        : QStringLiteral("inprocess_function");
-    if (runIsolatedWorker) {
-        request[QStringLiteral("generator_binary")] = generatorPath;
-    }
+    request[QStringLiteral("engine")] =
+        QStringLiteral("jcut_vulkan_facestream_offscreen_inprocess_scrfd_zero_copy_v1");
+    request[QStringLiteral("execution_mode")] =
+        QStringLiteral("inprocess_function");
     request[QStringLiteral("media_path")] = mediaPath;
     request[QStringLiteral("clip_id")] = selectedClip->id;
     request[QStringLiteral("source_start_frame")] = static_cast<qint64>(startFrame);
@@ -432,9 +286,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     progressLayout->setContentsMargins(10, 10, 10, 10);
     progressLayout->setSpacing(8);
     auto* statusLabel = new QLabel(
-        runIsolatedWorker
-            ? QStringLiteral("Generating resumable SCRFD zero-copy FaceStream artifact in isolated worker process...")
-            : QStringLiteral("Generating resumable SCRFD zero-copy FaceStream artifact in-process..."),
+        QStringLiteral("Generating resumable SCRFD zero-copy FaceStream artifact in-process..."),
         &progressDialog);
     statusLabel->setWordWrap(true);
     progressLayout->addWidget(statusLabel);
@@ -444,44 +296,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     auto* progressButtons = new QHBoxLayout;
     progressButtons->addStretch(1);
     auto* cancelRunButton = new QPushButton(QStringLiteral("Cancel"), &progressDialog);
-    cancelRunButton->setEnabled(runIsolatedWorker);
+    cancelRunButton->setEnabled(false);
     progressButtons->addWidget(cancelRunButton);
     progressLayout->addLayout(progressButtons);
     progressDialog.show();
     QApplication::processEvents();
     int runExitCode = -1;
-    if (runIsolatedWorker) {
-        QProcess process;
-        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-        if (!previewEnabled) {
-            env.insert(QStringLiteral("QT_QPA_PLATFORM"), QStringLiteral("offscreen"));
-        }
-        process.setProcessEnvironment(env);
-        process.setWorkingDirectory(QFileInfo(generatorPath).absolutePath());
-        bool canceled = false;
-        QObject::connect(cancelRunButton, &QPushButton::clicked, [&]() {
-            canceled = true;
-            cancelRunButton->setEnabled(false);
-            statusLabel->setText(QStringLiteral("Canceling worker process..."));
-            process.terminate();
-        });
-        process.start(generatorPath, args);
-        if (!process.waitForStarted(3000)) {
-            progressDialog.close();
-            const QString message = QStringLiteral("Failed to start isolated worker: %1").arg(process.errorString());
-            QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), message);
-            return;
-        }
-        while (!process.waitForFinished(100)) {
-            QApplication::processEvents();
-            if (canceled && process.state() != QProcess::NotRunning && !process.waitForFinished(1000)) {
-                process.kill();
-            }
-        }
-        runExitCode = (process.exitStatus() == QProcess::NormalExit) ? process.exitCode() : -1;
-    } else {
-        runExitCode = runVulkanFacestreamOffscreen(args);
-    }
+    runExitCode = runVulkanFacestreamOffscreen(args);
     progressDialog.close();
 
     const bool processOk = runExitCode == 0;

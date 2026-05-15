@@ -311,3 +311,6 @@ QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
 QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
                                              const QVector<TranscriptSection>& sections,
                                              int64_t sourceFrame);
+SpeakerProfile transcriptSpeakerProfileForSourceFrame(const QString& transcriptPath,
+                                                      const QVector<TranscriptSection>& sections,
+                                                      int64_t sourceFrame);

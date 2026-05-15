@@ -476,12 +476,23 @@ public:
     }
 
     int64_t currentSample() const {
-        const int64_t submitted = m_audioClockSample.load(std::memory_order_acquire);
+        const int64_t queuedEndSample = m_ringBufferEndSample.load(std::memory_order_acquire);
+        const qreal playbackRate = qBound<qreal>(
+            0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
+        const int64_t queuedFrames =
+            static_cast<int64_t>(m_ringBuffer.available() / static_cast<size_t>(m_channelCount));
         long latencyFrames = 0;
         if (m_rtaudio && m_rtaudio->isStreamOpen()) {
             latencyFrames = m_rtaudio->getStreamLatency();
         }
-        return qMax<int64_t>(0, submitted - qMax<long>(0, latencyFrames));
+        const int64_t bufferedFrames =
+            queuedFrames + static_cast<int64_t>(qMax<long>(0, latencyFrames));
+        const int64_t bufferedTimelineSamples = qMax<int64_t>(
+            0,
+            static_cast<int64_t>(std::llround(
+                static_cast<long double>(bufferedFrames) *
+                static_cast<long double>(playbackRate))));
+        return qMax<int64_t>(0, queuedEndSample - bufferedTimelineSamples);
     }
 
     int64_t currentFrame() const {

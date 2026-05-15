@@ -114,7 +114,7 @@ void EditorWindow::advanceFrame()
 
 bool EditorWindow::speechFilterPlaybackEnabled() const
 {
-    return m_speechFilterEnabledCheckBox && m_speechFilterEnabledCheckBox->isChecked();
+    return m_speechFilterEnabled;
 }
 
 int64_t EditorWindow::filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const
@@ -495,6 +495,14 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
             syncKeyframeTableToPlayhead();
             syncGradingTableToPlayhead();
             m_titlesTab->syncTableToPlayhead();
+            if (m_inspectorPane && m_inspectorPane->tabs()) {
+                const int inspectorIndex = m_inspectorPane->tabs()->currentIndex();
+                if (inspectorIndex >= 0 &&
+                    m_inspectorPane->tabs()->tabText(inspectorIndex).compare(QStringLiteral("Audio"),
+                                                                            Qt::CaseInsensitive) == 0) {
+                    refreshAudioInspectorViews();
+                }
+            }
             m_lastPlaybackUiSyncMs = tickNowMs;
         }
     } else {

@@ -306,6 +306,7 @@ private:
     void connectPreviewSignals();
     void refreshCurrentInspectorTab();
     void refreshInspectorTabByName(const QString& tabName);
+    void refreshAudioInspectorViews();
     void refreshTimelineStructureInspectorViews();
     void refreshTimelineSelectionInspectorViews();
     void refreshPreviewTransformInspectorViews();
@@ -408,6 +409,8 @@ private:
 
     QLabel *m_audioInspectorClipLabel = nullptr;
     QLabel *m_audioInspectorDetailsLabel = nullptr;
+    QLabel *m_audioCurrentSpeakerTitleLabel = nullptr;
+    QLabel *m_audioCurrentSpeakerDetailsLabel = nullptr;
     QSpinBox *m_audioFadeSamplesSpin = nullptr;
     bool m_updatingAudioInspector = false;
 
@@ -543,6 +546,7 @@ private:
     QComboBox *m_playbackAudioWarpModeCombo = nullptr;
     int m_transcriptPrependMs = 150;
     int m_transcriptPostpendMs = 70;
+    bool m_speechFilterEnabled = false;
     int m_speechFilterFadeSamples = 300;
     bool m_speechFilterRangeCrossfade = false;
     PlaybackClockSource m_playbackClockSource = PlaybackClockSource::Auto;

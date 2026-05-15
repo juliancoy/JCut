@@ -215,6 +215,8 @@ public:
 
     QLabel *audioInspectorClipLabel() const { return m_audioInspectorClipLabel; }
     QLabel *audioInspectorDetailsLabel() const { return m_audioInspectorDetailsLabel; }
+    QLabel *audioCurrentSpeakerTitleLabel() const { return m_audioCurrentSpeakerTitleLabel; }
+    QLabel *audioCurrentSpeakerDetailsLabel() const { return m_audioCurrentSpeakerDetailsLabel; }
     QWidget *pipelinePreviewHost() const { return m_pipelinePreviewHost; }
     QListWidget *pipelineStageList() const { return m_pipelineStageList; }
 
@@ -490,6 +492,8 @@ private:
 
     QLabel *m_audioInspectorClipLabel = nullptr;
     QLabel *m_audioInspectorDetailsLabel = nullptr;
+    QLabel *m_audioCurrentSpeakerTitleLabel = nullptr;
+    QLabel *m_audioCurrentSpeakerDetailsLabel = nullptr;
     QWidget *m_pipelinePreviewHost = nullptr;
     QListWidget *m_pipelineStageList = nullptr;
 

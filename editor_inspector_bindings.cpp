@@ -130,6 +130,8 @@ void EditorWindow::bindInspectorWidgets()
     m_keyframesFollowCurrentCheckBox = m_inspectorPane->keyframesFollowCurrentCheckBox();
     m_audioInspectorClipLabel = m_inspectorPane->audioInspectorClipLabel();
     m_audioInspectorDetailsLabel = m_inspectorPane->audioInspectorDetailsLabel();
+    m_audioCurrentSpeakerTitleLabel = m_inspectorPane->audioCurrentSpeakerTitleLabel();
+    m_audioCurrentSpeakerDetailsLabel = m_inspectorPane->audioCurrentSpeakerDetailsLabel();
     m_videoTranslationXSpin = m_inspectorPane->videoTranslationXSpin();
     m_videoTranslationYSpin = m_inspectorPane->videoTranslationYSpin();
     m_videoRotationSpin = m_inspectorPane->videoRotationSpin();
@@ -322,23 +324,6 @@ void EditorWindow::setupSpeechFilterControls()
         if (pushHistory) pushHistorySnapshot();
     };
 
-    connect(m_speechFilterEnabledCheckBox, &QCheckBox::toggled, this,
-            [refreshSpeechFilterRouting](bool) { refreshSpeechFilterRouting(true); });
-    connect(m_transcriptPrependMsSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-            [this, refreshSpeechFilterRouting](int value) {
-                m_transcriptPrependMs = qMax(0, value);
-                refreshSpeechFilterRouting(true);
-            });
-    connect(m_transcriptPostpendMsSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-            [this, refreshSpeechFilterRouting](int value) {
-                m_transcriptPostpendMs = qMax(0, value);
-                refreshSpeechFilterRouting(true);
-            });
-    connect(m_speechFilterFadeSamplesSpin, qOverload<int>(&QSpinBox::valueChanged), this,
-            [this, refreshSpeechFilterRouting](int value) {
-                m_speechFilterFadeSamples = qMax(0, value);
-                refreshSpeechFilterRouting(true);
-            });
     connect(m_speechFilterRangeCrossfadeCheckBox, &QCheckBox::toggled, this,
             [this, refreshSpeechFilterRouting](bool checked) {
                 m_speechFilterRangeCrossfade = checked;

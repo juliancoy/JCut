@@ -401,6 +401,19 @@ QWidget *InspectorPane::buildAudioTab()
     summary->setWordWrap(true);
     layout->addWidget(summary);
 
+    auto *speakerSectionLabel = new QLabel(QStringLiteral("Current Speaker"), page);
+    speakerSectionLabel->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8; margin-top: 8px;"));
+    m_audioCurrentSpeakerTitleLabel = new QLabel(QStringLiteral("No current speaker"), page);
+    m_audioCurrentSpeakerDetailsLabel =
+        new QLabel(QStringLiteral("Select an audio-backed clip and move the playhead into spoken content."), page);
+    for (QLabel *label : {m_audioCurrentSpeakerTitleLabel, m_audioCurrentSpeakerDetailsLabel}) {
+        label->setWordWrap(true);
+        label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    }
+    layout->addWidget(speakerSectionLabel);
+    layout->addWidget(m_audioCurrentSpeakerTitleLabel);
+    layout->addWidget(m_audioCurrentSpeakerDetailsLabel);
+
     auto *form = new QFormLayout;
     m_audioAmplifyEnabledCheckBox = new QCheckBox(QStringLiteral("Enable"), page);
     m_audioAmplifyDbSpin = new QDoubleSpinBox(page);

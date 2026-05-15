@@ -40,6 +40,8 @@ void EditorWindow::refreshInspectorTabByName(const QString& tabName)
         if (m_historyTab) m_historyTab->refresh();
     } else if (normalized.compare(QStringLiteral("Tracks"), Qt::CaseInsensitive) == 0) {
         if (m_tracksTab) m_tracksTab->refresh();
+    } else if (normalized.compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
+        refreshAudioInspectorViews();
     } else if (normalized.compare(QStringLiteral("Output"), Qt::CaseInsensitive) == 0) {
         if (m_outputTab) m_outputTab->refresh();
     } else if (normalized.compare(QStringLiteral("Pipeline"), Qt::CaseInsensitive) == 0) {
@@ -61,6 +63,77 @@ void EditorWindow::refreshCurrentInspectorTab()
         return;
     }
     refreshInspectorTabByName(m_inspectorPane->tabs()->tabText(index));
+}
+
+void EditorWindow::refreshAudioInspectorViews()
+{
+    if (!m_audioCurrentSpeakerTitleLabel || !m_audioCurrentSpeakerDetailsLabel || !m_timeline) {
+        return;
+    }
+
+    const TimelineClip *clip = m_timeline->selectedClip();
+    if (!clip || !(clip->mediaType == ClipMediaType::Audio || clip->hasAudio)) {
+        m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No audio clip selected"));
+        m_audioCurrentSpeakerDetailsLabel->setText(
+            QStringLiteral("Select an audio-backed clip to inspect the speaker at the current playhead."));
+        return;
+    }
+
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
+    if (transcriptPath.trimmed().isEmpty()) {
+        m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No speaker information"));
+        m_audioCurrentSpeakerDetailsLabel->setText(
+            QStringLiteral("The selected clip does not have an active transcript with speaker metadata."));
+        return;
+    }
+
+    const int64_t clipStartSample = clipTimelineStartSamples(*clip);
+    const int64_t clipEndSample = clipStartSample + frameToSamples(clip->durationFrames);
+    if (m_absolutePlaybackSample < clipStartSample || m_absolutePlaybackSample >= clipEndSample) {
+        m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("Playhead outside selected clip"));
+        m_audioCurrentSpeakerDetailsLabel->setText(
+            QStringLiteral("Move the playhead into the selected clip to inspect the active speaker."));
+        return;
+    }
+
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    if (!runtimeDocument || runtimeDocument->sections.isEmpty()) {
+        m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No speaker information"));
+        m_audioCurrentSpeakerDetailsLabel->setText(
+            QStringLiteral("The active transcript did not provide any speaker-tagged transcript sections."));
+        return;
+    }
+
+    const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+        *clip,
+        m_absolutePlaybackSample,
+        m_timeline->renderSyncMarkers());
+    const QString speakerTitle =
+        transcriptSpeakerTitleForSourceFrame(transcriptPath, runtimeDocument->sections, sourceFrame).trimmed();
+    if (speakerTitle.isEmpty()) {
+        m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No current speaker"));
+        m_audioCurrentSpeakerDetailsLabel->setText(
+            QStringLiteral("No speaker-tagged transcript segment is active at the current playhead."));
+        return;
+    }
+
+    const SpeakerProfile profile =
+        transcriptSpeakerProfileForSourceFrame(transcriptPath, runtimeDocument->sections, sourceFrame);
+    m_audioCurrentSpeakerTitleLabel->setText(speakerTitle);
+
+    QStringList details;
+    if (!profile.description.trimmed().isEmpty()) {
+        details.push_back(profile.description.trimmed());
+    }
+    if (!profile.speakerId.trimmed().isEmpty() &&
+        profile.speakerId.trimmed().compare(speakerTitle, Qt::CaseSensitive) != 0) {
+        details.push_back(QStringLiteral("Speaker ID: %1").arg(profile.speakerId.trimmed()));
+    }
+    if (details.isEmpty()) {
+        details.push_back(QStringLiteral("Speaker metadata is available, but no description is set."));
+    }
+    m_audioCurrentSpeakerDetailsLabel->setText(details.join(QStringLiteral("\n")));
 }
 
 void EditorWindow::refreshTimelineStructureInspectorViews()
@@ -318,6 +391,7 @@ void EditorWindow::createTranscriptTab()
     });
 
     connect(m_transcriptTab.get(), &TranscriptTab::speechFilterParametersChanged, this, [this]() {
+        m_speechFilterEnabled = m_transcriptTab->speechFilterEnabled();
         m_transcriptPrependMs = m_transcriptTab->transcriptPrependMs();
         m_transcriptPostpendMs = m_transcriptTab->transcriptPostpendMs();
         m_speechFilterFadeSamples = m_transcriptTab->speechFilterFadeSamples();

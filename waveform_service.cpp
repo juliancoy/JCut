@@ -1,6 +1,7 @@
 #include "waveform_service.h"
 
 #include "debug_controls.h"
+#include "editor_shared.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -544,7 +545,7 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
     if (swr_alloc_set_opts2(&swr,
                             &outLayout,
                             AV_SAMPLE_FMT_FLT,
-                            codecCtx->sample_rate,
+                            kAudioSampleRate,
                             &codecCtx->ch_layout,
                             codecCtx->sample_fmt,
                             codecCtx->sample_rate,
@@ -697,7 +698,7 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
         levels.push_back(std::move(next));
     }
 
-    const int decodedSampleRate = qMax(1, codecCtx->sample_rate);
+    const int decodedSampleRate = kAudioSampleRate;
     *totalSamplesOut = qMax<int64_t>(1, totalSamples);
     *levelsOut = std::move(levels);
     *sampleRateOut = decodedSampleRate;

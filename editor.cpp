@@ -1039,8 +1039,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_preferencesFeatureAudioDynamicsToolsCheckBox);
         m_preferencesFeatureAudioDynamicsToolsCheckBox->setChecked(m_featureAudioDynamicsTools);
     }
-    if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(speechFilterEnabled); }
-    
+    m_speechFilterEnabled = speechFilterEnabled;
+    if (m_speechFilterEnabledCheckBox) { QSignalBlocker block(m_speechFilterEnabledCheckBox); m_speechFilterEnabledCheckBox->setChecked(m_speechFilterEnabled); }
+
     m_transcriptPrependMs = transcriptPrependMs;
     m_transcriptPostpendMs = transcriptPostpendMs;
     m_speechFilterFadeSamples = qMax(0, speechFilterFadeSamples);

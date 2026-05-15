@@ -51,7 +51,9 @@ This document maps the temporal domains in JCut, the conversion paths between th
 ## Runtime Clock Paths
 - Audio-master path:
   - `EditorWindow::advanceFrame()` uses `AudioEngine::currentSample()` when `shouldUseAudioMasterClock(...)` is true.
-  - Implication: visual playhead follows audio clock; best A/V lock when audio is healthy.
+  - `AudioEngine::currentSample()` is the effective audible output position in 48 kHz timeline-sample space, not the tail of already queued audio.
+  - Practical definition: derive from queued end position minus still-buffered frames and output-stream latency.
+  - Implication: visual playhead follows the sample reaching the output device as closely as backend timing permits; this is the best available A/V lock when audio is healthy.
 - Timeline-timer path:
   - `advanceFrame()` increments by elapsed wall-clock * playback speed.
   - Implication: fallback when audio unavailable/stalled; can diverge from audio if audio later resumes.
@@ -126,9 +128,11 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - UI or transform systems assuming continuous timeline time can feel “fast” or “jumping” unless they use filtered/effective duration paths.
 - Audio clock stability governs perceived sync quality in playback.
   - Stalls trigger fallback to timer path; repeated transitions can present jitter if decode/audio is under pressure.
+  - A clock derived from future queued/submitted position instead of effective audible position will make visual playheads lead the heard audio.
 
 ## Practical Source-of-Truth Rules
 - Primary runtime playhead truth: `absolutePlaybackSample`.
+- Audio-master clock truth: effective audible output position, not future queued/submitted position.
 - Transcript truth at a playhead instant: marker-aware `sourceSample/sourceFrame` derived from that sample.
 - Speech keep/remove truth: `TranscriptEngine::transcriptWordExportRanges(...)` from active transcript path.
 - Overlay/speaker timing truth: transcript/source frame mapping, not render-order table position.
