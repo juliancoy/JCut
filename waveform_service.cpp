@@ -228,6 +228,60 @@ bool WaveformService::queryEnvelope(const QString& mediaPath,
     return true;
 }
 
+bool WaveformService::queryTotalSamples(const QString& mediaPath, int64_t* totalSamplesOut) {
+    if (!totalSamplesOut) {
+        return false;
+    }
+    *totalSamplesOut = 0;
+
+    const QString path = canonicalPath(mediaPath);
+    if (path.isEmpty()) {
+        return false;
+    }
+
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        return false;
+    }
+    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 fileSize = info.size();
+
+    QMutexLocker locker(&m_mutex);
+    Entry& entry = m_entries[path];
+    const bool fingerprintChanged =
+        entry.fileMtimeMs != mtimeMs || entry.fileSize != fileSize;
+    if (fingerprintChanged) {
+        entry = Entry{};
+        entry.fileMtimeMs = mtimeMs;
+        entry.fileSize = fileSize;
+    }
+    entry.lastAccessMs = QDateTime::currentMSecsSinceEpoch();
+
+    const int desiredBaseWindow =
+        qBound(kMinBaseWindowSamples,
+               debugTimelineAudioEnvelopeGranularity(),
+               kMaxBaseWindowSamples);
+    const bool needsRebuildForGranularity =
+        entry.baseWindowSamples > 0 && entry.baseWindowSamples != desiredBaseWindow;
+    if (needsRebuildForGranularity) {
+        entry.ready = false;
+        entry.failed = false;
+        entry.levels.clear();
+        entry.processedVariants.clear();
+    }
+
+    if (!entry.ready) {
+        ensureDecodeScheduledLocked(path, &entry);
+        return false;
+    }
+    if (entry.totalSamples <= 0) {
+        return false;
+    }
+
+    *totalSamplesOut = entry.totalSamples;
+    return true;
+}
+
 void WaveformService::setReadyCallback(std::function<void()> callback) {
     QMutexLocker locker(&m_mutex);
     if (!m_readyCallback) {

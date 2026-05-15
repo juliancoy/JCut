@@ -220,6 +220,51 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
     return true;
 }
 
+bool renderFrameToVulkanWithPreviewImage(VulkanFrameProvider* provider,
+                                         const TimelineClip& sourceClip,
+                                         const QString& mediaPath,
+                                         int64_t timelineFrame,
+                                         int64_t sourceFrame,
+                                         const QSize& outputSize,
+                                         render_detail::OffscreenVulkanFrame* frame,
+                                         QImage* previewImageOut,
+                                         VulkanFrameStats* stats,
+                                         QString* errorMessage)
+{
+    if (previewImageOut) {
+        *previewImageOut = QImage();
+    }
+    if (!renderFrameToVulkan(provider,
+                             sourceClip,
+                             mediaPath,
+                             timelineFrame,
+                             sourceFrame,
+                             outputSize,
+                             frame,
+                             stats,
+                             errorMessage)) {
+        return false;
+    }
+
+    QImage previewImage = readLastRenderedVulkanFrameImage(provider, stats, errorMessage);
+    if (previewImage.isNull()) {
+        provider->failed = true;
+        if (provider->failureReason.isEmpty()) {
+            provider->failureReason = errorMessage && !errorMessage->isEmpty()
+                ? *errorMessage
+                : QStringLiteral("Failed to read back Vulkan FaceStream preview frame.");
+        }
+        return false;
+    }
+
+    provider->failed = false;
+    provider->failureReason.clear();
+    if (previewImageOut) {
+        *previewImageOut = previewImage;
+    }
+    return true;
+}
+
 QImage readLastRenderedVulkanFrameImage(VulkanFrameProvider* provider,
                                         VulkanFrameStats* stats,
                                         QString* errorMessage)
@@ -276,7 +321,98 @@ QImage readLastRenderedVulkanFrameImage(VulkanFrameProvider* provider,
     return out;
 }
 
-QImage buildScanPreview(const QImage& source, const QVector<QRect>& detections, int activeTracks)
+VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
+                                                         const editor::FrameHandle& frameHandle,
+                                                         int64_t requestedFrame,
+                                                         const QSize& fallbackFrameSize)
+{
+    VulkanPreviewClipFrameStatus status;
+    status.clipId = clipId;
+    status.label = clipId;
+    status.active = true;
+    status.requestedSourceFrame = requestedFrame;
+    status.presentedSourceFrame = frameHandle.isNull() ? -1 : frameHandle.frameNumber();
+    status.frameSize = frameHandle.size().isValid() ? frameHandle.size() : fallbackFrameSize;
+    status.hasFrame = !frameHandle.isNull();
+    status.exact = status.hasFrame && status.presentedSourceFrame == requestedFrame;
+    status.exactFrameAvailable = status.exact;
+    status.selectedFrameAvailable = status.hasFrame;
+    status.hardwareFrame = frameHandle.hasHardwareFrame();
+    status.gpuTexture = frameHandle.hasGpuTexture();
+    status.cpuImage = frameHandle.hasCpuImage() && !status.hardwareFrame && !status.gpuTexture;
+    status.frame = frameHandle;
+    status.transform = TimelineClip::TransformKeyframe{};
+    status.grading = TimelineClip::GradingKeyframe{};
+    if (status.gpuTexture) {
+        status.decodePath = QStringLiteral("gpu_texture");
+    } else if (status.hardwareFrame) {
+        status.decodePath = QStringLiteral("hardware_frame");
+    } else if (status.cpuImage) {
+        status.decodePath = QStringLiteral("cpu_image");
+    } else {
+        status.decodePath = QStringLiteral("missing");
+        status.missingReason = QStringLiteral("No presentable decoded frame payload.");
+    }
+    return status;
+}
+
+QVector<VulkanPreviewFacestreamOverlay> buildDetectionPreviewOverlays(
+    const QString& clipId,
+    int64_t sourceFrame,
+    const QSize& frameSize,
+    const QVector<QRectF>& detectionBoxes,
+    const QVector<float>& confidences,
+    const QString& source)
+{
+    QVector<VulkanPreviewFacestreamOverlay> overlays;
+    overlays.reserve(detectionBoxes.size());
+    const qreal denomW = qMax<qreal>(1.0, frameSize.width());
+    const qreal denomH = qMax<qreal>(1.0, frameSize.height());
+    for (int i = 0; i < detectionBoxes.size(); ++i) {
+        const QRectF& box = detectionBoxes.at(i);
+        VulkanPreviewFacestreamOverlay overlay;
+        overlay.clipId = clipId;
+        overlay.streamId = QStringLiteral("det-%1").arg(i);
+        overlay.source = source;
+        overlay.trackId = i;
+        overlay.sourceFrame = sourceFrame;
+        overlay.confidence = i < confidences.size() ? confidences.at(i) : 0.0f;
+        overlay.boxNorm = QRectF(box.x() / denomW,
+                                 box.y() / denomH,
+                                 box.width() / denomW,
+                                 box.height() / denomH);
+        if (overlay.boxNorm.isValid() && !overlay.boxNorm.isEmpty()) {
+            overlays.push_back(overlay);
+        }
+    }
+    return overlays;
+}
+
+void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
+                                             const TimelineClip& sourceClip,
+                                             int64_t frameNumber,
+                                             const VulkanPreviewClipFrameStatus& status,
+                                             const QVector<VulkanPreviewFacestreamOverlay>& overlays)
+{
+    if (!state) {
+        return;
+    }
+    state->currentFrame = frameNumber;
+    state->currentSample = frameToSamples(frameNumber);
+    state->currentFramePosition = static_cast<qreal>(frameNumber);
+    state->playing = true;
+    state->selectedClipId = sourceClip.id;
+    state->clipCount = 1;
+    state->clips = QVector<TimelineClip>{sourceClip};
+    state->tracks = QVector<TimelineTrack>{TimelineTrack{}};
+    state->vulkanFrameStatuses = QVector<VulkanPreviewClipFrameStatus>{status};
+    state->facestreamOverlays = overlays;
+}
+
+QImage buildScanPreview(const QImage& source,
+                        const QVector<QRect>& detections,
+                        int activeTracks,
+                        const QRectF& roiRect)
 {
     if (source.isNull()) {
         return QImage();
@@ -284,6 +420,10 @@ QImage buildScanPreview(const QImage& source, const QVector<QRect>& detections, 
     QImage preview = source.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     QPainter painter(&preview);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    if (!roiRect.isNull() && roiRect.width() > 0.0 && roiRect.height() > 0.0) {
+        painter.setPen(QPen(QColor(QStringLiteral("#ffaa33")), 2.0, Qt::DashLine));
+        painter.drawRect(roiRect);
+    }
     painter.setPen(QPen(QColor(QStringLiteral("#66ff66")), 2.0));
     for (const QRect& det : detections) {
         painter.drawRect(det);

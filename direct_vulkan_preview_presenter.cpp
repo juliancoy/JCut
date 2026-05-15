@@ -1,4 +1,5 @@
 #include "direct_vulkan_preview_presenter.h"
+#include "audio_preview_support.h"
 #include "direct_vulkan_preview_audio.h"
 #include "preview_view_transform.h"
 #include "preview_overlay_model.h"
@@ -9,7 +10,7 @@
 #include "vulkan_pipeline.h"
 #include "vulkan_resources.h"
 #include "waveform_service.h"
-#include "loiacono_rolling.h"
+#include "loiacono/loiacono_rolling.h"
 
 #include <QDebug>
 #include <QByteArray>
@@ -472,6 +473,7 @@ public:
     ~DirectVulkanPreviewRenderer() override;
 
     void initResources() override;
+    void releaseResources() override;
     void startNextFrame() override;
     void physicalDeviceLost() override;
     void logicalDeviceLost() override;
@@ -667,18 +669,10 @@ bool audioSeekSampleAtSurfacePosition(const PreviewInteractionState& state,
     }
 
     const int rowCount = qBound(2, static_cast<int>(waveRect.height()) / 88, 6);
-    const int binsPerRow = qMax(256, static_cast<int>(graphRect.width()));
-    const int totalDrawBins = qMax(96, qMin(8192, rowCount * binsPerRow));
     const int64_t clipStartSample = clipTimelineStartSamples(*clip);
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip->durationFrames)));
-    const qreal minVisibleBySamples = qBound<qreal>(
-        0.00001,
-        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-        1.0);
-    const qreal zoom = qBound<qreal>(1.0, state.previewZoom, 100000.0);
-    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, state.previewPanOffset.x(), maxStart);
+    const int64_t clipSamples = resolvedAudioPreviewClipSamples(*clip);
+    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
+        *clip, rowCount, state.previewZoom, state.previewPanOffset.x(), state.currentSample);
     const qreal localX = qBound<qreal>(0.0,
                                        (surfacePosition.x() - graphRect.left()) / qMax<qreal>(1.0, graphRect.width()),
                                        1.0);
@@ -686,13 +680,23 @@ bool audioSeekSampleAtSurfacePosition(const PreviewInteractionState& state,
                                        (surfacePosition.y() - graphRect.top()) / qMax<qreal>(1.0, graphRect.height()),
                                        0.99999);
     const int row = qBound(0, static_cast<int>(std::floor(localY * rowCount)), rowCount - 1);
-    const int binInRow = qBound(0,
-                                static_cast<int>(std::round(localX * static_cast<qreal>(qMax(1, binsPerRow - 1)))),
-                                qMax(0, binsPerRow - 1));
-    const int visibleBinIndex = qBound(0, row * binsPerRow + binInRow, qMax(0, totalDrawBins - 1));
-    const qreal timelineNorm = startNorm +
-        (((static_cast<qreal>(visibleBinIndex) + 0.5) / static_cast<qreal>(totalDrawBins)) * visibleFraction);
-    const int64_t targetOffset = static_cast<int64_t>(std::llround(timelineNorm * static_cast<qreal>(clipSamples - 1)));
+    const qreal clickedVisibleNorm = qBound<qreal>(
+        0.0,
+        (static_cast<qreal>(row) + localX) / static_cast<qreal>(qMax(1, rowCount)),
+        1.0);
+    qreal targetClipNorm = viewport.startNorm + (clickedVisibleNorm * viewport.visibleFraction);
+    if (viewport.playheadVisible) {
+        const qreal deltaVisibleNorm = clickedVisibleNorm - viewport.playheadVisibleNorm;
+        const int64_t deltaSamples = static_cast<int64_t>(
+            std::llround(deltaVisibleNorm * viewport.visibleFraction * static_cast<qreal>(clipSamples - 1)));
+        *sampleOut = qBound<int64_t>(
+            clipStartSample,
+            state.currentSample + deltaSamples,
+            clipStartSample + clipSamples - 1);
+        return true;
+    }
+    const int64_t targetOffset = static_cast<int64_t>(
+        std::llround(targetClipNorm * static_cast<qreal>(clipSamples - 1)));
     *sampleOut = qBound<int64_t>(clipStartSample, clipStartSample + targetOffset, clipStartSample + clipSamples - 1);
     return true;
 }
@@ -1859,12 +1863,14 @@ class DirectVulkanPreviewWindow final : public QVulkanWindow {
 public:
     DirectVulkanPreviewWindow(PreviewInteractionState* state,
                               int64_t* presentedFrames,
+                              int64_t* lastPresentedSourceFrame,
                               DirectVulkanPreviewStats* stats,
                               bool* active,
                               QString* failureReason,
                               std::function<void(const QString&)> failureCallback = {})
         : m_state(state),
           m_presentedFrames(presentedFrames),
+          m_lastPresentedSourceFrame(lastPresentedSourceFrame),
           m_stats(stats),
           m_active(active),
           m_failureReason(failureReason),
@@ -1908,6 +1914,11 @@ public:
         }
         m_updatePending = true;
         requestUpdate();
+    }
+
+    bool updatePending() const
+    {
+        return m_updatePending;
     }
 
 protected:
@@ -2605,6 +2616,12 @@ public:
             ++(*m_presentedFrames);
         }
     }
+    void markPresentedSourceFrame(int64_t frame)
+    {
+        if (m_lastPresentedSourceFrame) {
+            *m_lastPresentedSourceFrame = frame;
+        }
+    }
     void markPreviewUpdateDelivered()
     {
         m_updatePending = false;
@@ -2680,6 +2697,7 @@ public:
 private:
     PreviewInteractionState* m_state = nullptr;
     int64_t* m_presentedFrames = nullptr;
+    int64_t* m_lastPresentedSourceFrame = nullptr;
     DirectVulkanPreviewStats* m_stats = nullptr;
     bool* m_active = nullptr;
     QString* m_failureReason = nullptr;
@@ -2773,6 +2791,20 @@ void DirectVulkanPreviewRenderer::initResources()
 DirectVulkanPreviewRenderer::~DirectVulkanPreviewRenderer()
 {
     destroyReadbackSlots();
+}
+
+void DirectVulkanPreviewRenderer::releaseResources()
+{
+    destroyReadbackSlots();
+    if (m_frameHandoff) {
+        m_frameHandoff->release();
+        m_frameHandoff.reset();
+    }
+    m_audioTab.reset();
+    m_pipeline.reset();
+    m_overlayResources.reset();
+    m_resources.reset();
+    m_devFuncs = nullptr;
 }
 
 uint32_t DirectVulkanPreviewRenderer::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const
@@ -3195,6 +3227,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         return;
     }
     if (state) {
+        int64_t presentedSourceFrame = -1;
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
@@ -3505,6 +3538,9 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                selectionThickness);
             }
             activeClipGeometry.insert(clip.id, clipGeometry);
+            if (status && status->hasFrame) {
+                presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
+            }
         }
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);
         for (const VulkanPreviewFacestreamOverlay& overlay : state->facestreamOverlays) {
@@ -3523,6 +3559,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
 
+    m_owner->markPresentedSourceFrame(state ? static_cast<int64_t>(state->currentFrame) : -1);
     m_owner->markPresented();
     m_window->frameReady();
     m_owner->markPreviewUpdateDelivered();
@@ -3596,6 +3633,7 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_window = new DirectVulkanPreviewWindow(
         m_state,
         &m_presentedFrames,
+        &m_lastPresentedSourceFrame,
         &m_stats,
         &m_active,
         &m_failureReason,
@@ -3743,7 +3781,12 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
 
 DirectVulkanPreviewPresenter::~DirectVulkanPreviewPresenter()
 {
-    delete m_window;
+    if (m_windowContainer) {
+        m_windowContainer->hide();
+    }
+    if (m_window) {
+        m_window->hide();
+    }
     m_window = nullptr;
 }
 
@@ -3755,6 +3798,26 @@ QWidget* DirectVulkanPreviewPresenter::widget() const
 bool DirectVulkanPreviewPresenter::isActive() const
 {
     return m_active && m_window && m_window->isValid();
+}
+
+bool DirectVulkanPreviewPresenter::hasFailed() const
+{
+    return !m_failureReason.trimmed().isEmpty();
+}
+
+bool DirectVulkanPreviewPresenter::updatePending() const
+{
+    return m_window && m_window->updatePending();
+}
+
+int64_t DirectVulkanPreviewPresenter::presentedFrames() const
+{
+    return m_presentedFrames;
+}
+
+int64_t DirectVulkanPreviewPresenter::lastPresentedSourceFrame() const
+{
+    return m_lastPresentedSourceFrame;
 }
 
 QString DirectVulkanPreviewPresenter::failureReason() const
@@ -3782,9 +3845,6 @@ void DirectVulkanPreviewPresenter::showFailure(const QString& reason)
         m_stack->setCurrentWidget(m_errorLabel);
     }
     updateDiagnosticChrome();
-    QTimer::singleShot(0, qApp, []() {
-        QCoreApplication::exit(2);
-    });
 }
 
 void DirectVulkanPreviewPresenter::requestUpdate()

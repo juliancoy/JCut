@@ -14,6 +14,7 @@ struct RunContext {
     QString clipDebugRoot;
     QString runId;
     QString runDir;
+    bool reusedExistingRun = false;
 };
 
 enum class OverwriteAction {

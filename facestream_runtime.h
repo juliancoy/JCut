@@ -2,6 +2,7 @@
 
 #include "editor_shared.h"
 #include "frame_handle.h"
+#include "preview_interaction_state.h"
 #include "render.h"
 #include "render_internal.h"
 
@@ -54,11 +55,44 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
                          VulkanFrameStats* stats = nullptr,
                          QString* errorMessage = nullptr);
 
+bool renderFrameToVulkanWithPreviewImage(VulkanFrameProvider* provider,
+                                         const TimelineClip& sourceClip,
+                                         const QString& mediaPath,
+                                         int64_t timelineFrame,
+                                         int64_t sourceFrame,
+                                         const QSize& outputSize,
+                                         render_detail::OffscreenVulkanFrame* frame,
+                                         QImage* previewImageOut,
+                                         VulkanFrameStats* stats = nullptr,
+                                         QString* errorMessage = nullptr);
+
 QImage readLastRenderedVulkanFrameImage(VulkanFrameProvider* provider,
                                         VulkanFrameStats* stats = nullptr,
                                         QString* errorMessage = nullptr);
 
-QImage buildScanPreview(const QImage& source, const QVector<QRect>& detections, int activeTracks);
+VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
+                                                         const editor::FrameHandle& frameHandle,
+                                                         int64_t requestedFrame,
+                                                         const QSize& fallbackFrameSize);
+
+QVector<VulkanPreviewFacestreamOverlay> buildDetectionPreviewOverlays(
+    const QString& clipId,
+    int64_t sourceFrame,
+    const QSize& frameSize,
+    const QVector<QRectF>& detectionBoxes,
+    const QVector<float>& confidences,
+    const QString& source = QStringLiteral("facestream"));
+
+void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
+                                             const TimelineClip& sourceClip,
+                                             int64_t frameNumber,
+                                             const VulkanPreviewClipFrameStatus& status,
+                                             const QVector<VulkanPreviewFacestreamOverlay>& overlays);
+
+QImage buildScanPreview(const QImage& source,
+                        const QVector<QRect>& detections,
+                        int activeTracks,
+                        const QRectF& roiRect = QRectF());
 
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,
                                   const QJsonObject& transcriptRoot,

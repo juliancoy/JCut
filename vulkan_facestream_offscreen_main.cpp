@@ -2,9 +2,11 @@
 #include "facestream_runtime.h"
 #include "decoder_context.h"
 #include "decoder_ffmpeg_utils.h"
+#include "direct_vulkan_preview_presenter.h"
 #include "debug_controls.h"
 #include "editor_shared.h"
 #include "frame_handle.h"
+#include "preview_interaction_state.h"
 #include "vulkan_res10_ncnn_face_detector.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_scrfd_ncnn_face_detector.h"
@@ -14,6 +16,7 @@
 #include <QDir>
 #include <QDataStream>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QApplication>
@@ -28,7 +31,6 @@
 #include <QHBoxLayout>
 #include <QLocalSocket>
 #include <QPainter>
-#include <QPixmap>
 #include <QProgressBar>
 #include <QSet>
 #include <QSlider>
@@ -45,6 +47,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
+#include <deque>
 #include <fcntl.h>
 #include <functional>
 #include <iomanip>
@@ -315,6 +318,28 @@ QVector<Detection> sanitizeDetections(const QVector<Detection>& raw,
     }
     if (maxFacesPerFrame > 0 && out.size() > maxFacesPerFrame) {
         out.resize(maxFacesPerFrame);
+    }
+    return out;
+}
+
+QRectF flipBoxVertically(const QRectF& box, int imageHeight)
+{
+    const qreal height = box.height();
+    const qreal flippedTop = static_cast<qreal>(imageHeight) - box.y() - height;
+    return QRectF(box.x(), flippedTop, box.width(), height);
+}
+
+QVector<Detection> flipDetectionsVertically(const QVector<Detection>& raw,
+                                            int imageWidth,
+                                            int imageHeight)
+{
+    QVector<Detection> out;
+    out.reserve(raw.size());
+    const QRectF bounds(0.0, 0.0, imageWidth, imageHeight);
+    for (const Detection& det : raw) {
+        Detection flipped = det;
+        flipped.box = flipBoxVertically(det.box, imageHeight).intersected(bounds);
+        out.push_back(flipped);
     }
     return out;
 }
@@ -696,8 +721,22 @@ struct DetectorControlPanel {
     QLabel* trackMatchValue = nullptr;
     QSlider* newTrack = nullptr;
     QLabel* newTrackValue = nullptr;
+    QSlider* roiX1 = nullptr;
+    QLabel* roiX1Value = nullptr;
+    QSlider* roiY1 = nullptr;
+    QLabel* roiY1Value = nullptr;
+    QSlider* roiX2 = nullptr;
+    QLabel* roiX2Value = nullptr;
+    QSlider* roiY2 = nullptr;
+    QLabel* roiY2Value = nullptr;
     QSlider* minArea = nullptr;
     QLabel* minAreaValue = nullptr;
+    QSlider* maxArea = nullptr;
+    QLabel* maxAreaValue = nullptr;
+    QSlider* minAspect = nullptr;
+    QLabel* minAspectValue = nullptr;
+    QSlider* maxAspect = nullptr;
+    QLabel* maxAspectValue = nullptr;
     QSlider* maxFaces = nullptr;
     QLabel* maxFacesValue = nullptr;
     QCheckBox* primaryFaceOnly = nullptr;
@@ -724,6 +763,11 @@ QString areaRatioText(float value)
     return QStringLiteral("%1%").arg(static_cast<double>(value * 100.0f), 0, 'f', 3);
 }
 
+QString aspectText(float value)
+{
+    return QStringLiteral("%1").arg(static_cast<double>(value), 0, 'f', 2);
+}
+
 void syncDetectorControlPanel(DetectorControlPanel* panel, const RuntimeTuning& tuning)
 {
     if (!panel || !panel->window) {
@@ -738,8 +782,22 @@ void syncDetectorControlPanel(DetectorControlPanel* panel, const RuntimeTuning& 
     panel->trackMatchValue->setText(percentText(tuning.trackMatchIouThreshold));
     panel->newTrack->setValue(qRound(tuning.newTrackMinConfidence * 100.0f));
     panel->newTrackValue->setText(percentText(tuning.newTrackMinConfidence));
+    panel->roiX1->setValue(qRound(tuning.roiX1 * 100.0f));
+    panel->roiX1Value->setText(percentText(tuning.roiX1));
+    panel->roiY1->setValue(qRound(tuning.roiY1 * 100.0f));
+    panel->roiY1Value->setText(percentText(tuning.roiY1));
+    panel->roiX2->setValue(qRound(tuning.roiX2 * 100.0f));
+    panel->roiX2Value->setText(percentText(tuning.roiX2));
+    panel->roiY2->setValue(qRound(tuning.roiY2 * 100.0f));
+    panel->roiY2Value->setText(percentText(tuning.roiY2));
     panel->minArea->setValue(qRound(tuning.minFaceAreaRatio * 100000.0f));
     panel->minAreaValue->setText(areaRatioText(tuning.minFaceAreaRatio));
+    panel->maxArea->setValue(qRound(tuning.maxFaceAreaRatio * 100000.0f));
+    panel->maxAreaValue->setText(areaRatioText(tuning.maxFaceAreaRatio));
+    panel->minAspect->setValue(qRound(tuning.minAspect * 100.0f));
+    panel->minAspectValue->setText(aspectText(tuning.minAspect));
+    panel->maxAspect->setValue(qRound(tuning.maxAspect * 100.0f));
+    panel->maxAspectValue->setText(aspectText(tuning.maxAspect));
     panel->maxFaces->setValue(tuning.maxFacesPerFrame);
     panel->maxFacesValue->setText(tuning.maxFacesPerFrame == 0
                                       ? QStringLiteral("unlimited")
@@ -863,12 +921,72 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
               &panel.newTrack, &panel.newTrackValue,
               [](int v) { return percentText(v / 100.0f); },
               [tuning](int v) { tuning->newTrackMinConfidence = v / 100.0f; });
+    addSlider(QStringLiteral("ROI left"),
+              QStringLiteral("Left edge of the allowed face region as a percent of frame width. Raise this to ignore detections on the far left."),
+              0, 100, qRound(tuning->roiX1 * 100.0f),
+              &panel.roiX1, &panel.roiX1Value,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) {
+                  tuning->roiX1 = v / 100.0f;
+                  if (tuning->roiX2 < tuning->roiX1) std::swap(tuning->roiX1, tuning->roiX2);
+              });
+    addSlider(QStringLiteral("ROI top"),
+              QStringLiteral("Top edge of the allowed face region as a percent of frame height. Raise this to ignore detections near the top."),
+              0, 100, qRound(tuning->roiY1 * 100.0f),
+              &panel.roiY1, &panel.roiY1Value,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) {
+                  tuning->roiY1 = v / 100.0f;
+                  if (tuning->roiY2 < tuning->roiY1) std::swap(tuning->roiY1, tuning->roiY2);
+              });
+    addSlider(QStringLiteral("ROI right"),
+              QStringLiteral("Right edge of the allowed face region as a percent of frame width. Lower this to ignore detections on the far right."),
+              0, 100, qRound(tuning->roiX2 * 100.0f),
+              &panel.roiX2, &panel.roiX2Value,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) {
+                  tuning->roiX2 = v / 100.0f;
+                  if (tuning->roiX2 < tuning->roiX1) std::swap(tuning->roiX1, tuning->roiX2);
+              });
+    addSlider(QStringLiteral("ROI bottom"),
+              QStringLiteral("Bottom edge of the allowed face region as a percent of frame height. Lower this to ignore detections near the bottom."),
+              0, 100, qRound(tuning->roiY2 * 100.0f),
+              &panel.roiY2, &panel.roiY2Value,
+              [](int v) { return percentText(v / 100.0f); },
+              [tuning](int v) {
+                  tuning->roiY2 = v / 100.0f;
+                  if (tuning->roiY2 < tuning->roiY1) std::swap(tuning->roiY1, tuning->roiY2);
+              });
     addSlider(QStringLiteral("Min face area"),
               QStringLiteral("Smallest accepted face box as a percent of frame area. Lower this for distant/small faces; raise it to reject tiny false positives."),
               0, 2000, qRound(tuning->minFaceAreaRatio * 100000.0f),
               &panel.minArea, &panel.minAreaValue,
               [](int v) { return areaRatioText(v / 100000.0f); },
               [tuning](int v) { tuning->minFaceAreaRatio = v / 100000.0f; });
+    addSlider(QStringLiteral("Max face area"),
+              QStringLiteral("Largest accepted face box as a percent of frame area. Lower this to reject oversized false positives or partial-frame detections; raise it to allow very close faces."),
+              0, 100000, qRound(tuning->maxFaceAreaRatio * 100000.0f),
+              &panel.maxArea, &panel.maxAreaValue,
+              [](int v) { return areaRatioText(v / 100000.0f); },
+              [tuning](int v) { tuning->maxFaceAreaRatio = v / 100000.0f; });
+    addSlider(QStringLiteral("Min aspect"),
+              QStringLiteral("Smallest allowed width/height ratio for a face box. Raise this to reject tall narrow boxes such as arms or fingers."),
+              1, 1000, qRound(tuning->minAspect * 100.0f),
+              &panel.minAspect, &panel.minAspectValue,
+              [](int v) { return aspectText(v / 100.0f); },
+              [tuning](int v) {
+                  tuning->minAspect = v / 100.0f;
+                  if (tuning->maxAspect < tuning->minAspect) std::swap(tuning->minAspect, tuning->maxAspect);
+              });
+    addSlider(QStringLiteral("Max aspect"),
+              QStringLiteral("Largest allowed width/height ratio for a face box. Lower this to reject wide non-face boxes such as hands or partial torsos."),
+              1, 1000, qRound(tuning->maxAspect * 100.0f),
+              &panel.maxAspect, &panel.maxAspectValue,
+              [](int v) { return aspectText(v / 100.0f); },
+              [tuning](int v) {
+                  tuning->maxAspect = v / 100.0f;
+                  if (tuning->maxAspect < tuning->minAspect) std::swap(tuning->minAspect, tuning->maxAspect);
+              });
     addSlider(QStringLiteral("Max faces/frame"),
               QStringLiteral("Maximum accepted faces per processed frame after filtering. 0 means unlimited. Use 1 or Primary mode for single-speaker videos; increase for panels or crowds."),
               0, 64, tuning->maxFacesPerFrame,
@@ -1510,7 +1628,10 @@ QVector<Detection> detectVulkanFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDe
     if (!detector->inferFromTensor(tensor, detectionBuffer, maxDetections, threshold, error)) {
         return out;
     }
-    out = readDetections(*vk, frame.size.width(), frame.size.height());
+    out = flipDetectionsVertically(
+        readDetections(*vk, frame.size.width(), frame.size.height()),
+        frame.size.width(),
+        frame.size.height());
     if (vulkanMs) {
         *vulkanMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
     }
@@ -1588,7 +1709,7 @@ QVector<Detection> detectRes10VulkanFrame(jcut::vulkan_detector::VulkanZeroCopyF
                        bounded.y() * frame.size.height() + det.box.y(),
                        det.box.width(),
                        det.box.height());
-            dst->push_back({box, det.confidence});
+            dst->push_back({flipBoxVertically(box, frame.size.height()), det.confidence});
         }
         return true;
     };
@@ -1747,7 +1868,7 @@ QVector<Detection> detectScrfdVulkanFrame(jcut::vulkan_detector::VulkanZeroCopyF
         detector->inferFromTensor(tensor, layout, sourceWidth, sourceHeight, threshold, error);
     out.reserve(raw.size());
     for (const auto& det : raw) {
-        out.push_back({det.box, det.confidence});
+        out.push_back({flipBoxVertically(det.box, sourceHeight), det.confidence});
     }
     if (vulkanMs) {
         *vulkanMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
@@ -1966,14 +2087,15 @@ void updateTracks(QVector<Track>* tracks,
 
 QImage buildPreview(QImage image,
                     const QVector<Track>& tracks,
-                    const QVector<Detection>& detections)
+                    const QVector<Detection>& detections,
+                    const QRectF& roiRect)
 {
     QVector<QRect> boxes;
     boxes.reserve(detections.size());
     for (const Detection& detection : detections) {
         boxes.push_back(detection.box.toAlignedRect());
     }
-    return jcut::facestream::buildScanPreview(image, boxes, tracks.size());
+    return jcut::facestream::buildScanPreview(image, boxes, tracks.size(), roiRect);
 }
 
 bool sendPreviewFrame(QLocalSocket* socket, const QImage& image)
@@ -2273,18 +2395,11 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     const bool platformIsOffscreen =
         QString::fromLocal8Bit(qgetenv("QT_QPA_PLATFORM")).compare(QStringLiteral("offscreen"),
                                                                    Qt::CaseInsensitive) == 0;
-    QLabel previewWindow;
-    QLabel* previewWindowPtr = nullptr;
-    if (options.livePreview && !platformIsOffscreen) {
-        previewWindow.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator Offscreen Preview"));
-        previewWindow.setAlignment(Qt::AlignCenter);
-        previewWindow.setMinimumSize(960, 540);
-        previewWindow.setStyleSheet(QStringLiteral("background:#111; color:#ddd; border:1px solid #333;"));
-        previewWindow.setText(QStringLiteral("Waiting for JCut DNN FaceStream preview..."));
-        previewWindow.show();
-        previewWindowPtr = &previewWindow;
-        appPtr->processEvents();
-    }
+    QWidget previewHostWindow;
+    QWidget* previewWindowPtr = nullptr;
+    QLabel* previewStatusLabelPtr = nullptr;
+    PreviewInteractionState livePreviewState;
+    std::unique_ptr<DirectVulkanPreviewPresenter> livePreviewPresenter;
 
     editor::setDebugDecodePreference(options.decodePreference);
     editor::DecoderContext decoder(options.videoPath);
@@ -2314,6 +2429,58 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     const QSize renderSize = decoder.info().frameSize.isValid()
         ? decoder.info().frameSize
         : QSize(1920, 1080);
+    sourceClip.sourceFrameSize = renderSize;
+    if (options.livePreview && !platformIsOffscreen) {
+        previewHostWindow.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator Vulkan Preview"));
+        previewHostWindow.resize(1080, 720);
+        auto* previewLayout = new QVBoxLayout(&previewHostWindow);
+        previewLayout->setContentsMargins(0, 0, 0, 0);
+        previewLayout->setSpacing(0);
+        auto* previewStatusLabel = new QLabel(QStringLiteral("Waiting for JCut DNN FaceStream preview..."),
+                                              &previewHostWindow);
+        previewStatusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        previewStatusLabel->setWordWrap(false);
+        previewStatusLabel->setStyleSheet(QStringLiteral(
+            "background:#161d26; color:#d6e2ef; border:0; padding:6px 10px; "
+            "font:600 11px 'DejaVu Sans Mono';"));
+        previewLayout->addWidget(previewStatusLabel);
+
+        livePreviewState.viewMode = PreviewSurface::ViewMode::Video;
+        livePreviewState.outputSize = renderSize;
+        livePreviewState.backgroundColor = QColor(Qt::black);
+        livePreviewState.clipCount = 1;
+        livePreviewState.selectedClipId = sourceClip.id;
+        livePreviewState.clips = QVector<TimelineClip>{sourceClip};
+        livePreviewState.tracks = QVector<TimelineTrack>{TimelineTrack{}};
+        livePreviewState.playing = true;
+
+        livePreviewPresenter = std::make_unique<DirectVulkanPreviewPresenter>(&livePreviewState, &previewHostWindow);
+        if (QWidget* presenterWidget = livePreviewPresenter->widget()) {
+            presenterWidget->setMinimumSize(960, 540);
+            previewLayout->addWidget(presenterWidget, 1);
+        }
+        previewHostWindow.show();
+        previewWindowPtr = &previewHostWindow;
+        previewStatusLabelPtr = previewStatusLabel;
+        QElapsedTimer previewInitTimer;
+        previewInitTimer.start();
+        while (previewInitTimer.elapsed() < 3000 &&
+               livePreviewPresenter &&
+               !livePreviewPresenter->isActive() &&
+               !livePreviewPresenter->hasFailed()) {
+            appPtr->processEvents(QEventLoop::AllEvents, 16);
+            usleep(16 * 1000);
+        }
+        if (!livePreviewPresenter || !livePreviewPresenter->isActive()) {
+            const QString failureReason =
+                livePreviewPresenter && livePreviewPresenter->hasFailed()
+                    ? livePreviewPresenter->failureReason().trimmed()
+                    : QStringLiteral("Timed out waiting for Vulkan preview presenter initialization.");
+            std::cerr << "Failed to initialize Vulkan preview presenter: "
+                      << failureReason.toStdString() << "\n";
+            return 2;
+        }
+    }
     QLocalSocket previewSocket;
     QLocalSocket* previewSocketPtr = nullptr;
     if (!options.previewSocket.isEmpty()) {
@@ -2325,6 +2492,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                       << options.previewSocket.toStdString() << "\n";
         }
     }
+    const bool previewRequested = previewWindowPtr || previewSocketPtr || options.writePreviewFiles;
+    const bool previewMustTrackDetection = previewWindowPtr || previewSocketPtr;
+    const int effectivePreviewStride = previewMustTrackDetection ? 1 : qMax(1, options.previewStride);
+    bool previewPipelinePrimed = !previewRequested;
 
     QString error;
 #if JCUT_HAVE_OPENCV
@@ -2453,6 +2624,250 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             std::cerr << saveError.toStdString() << "\n";
         }
         appPtr->processEvents();
+    }
+    auto currentRoiRect = [&](const QSize& size) -> QRectF {
+        return QRectF(tuning.roiX1 * size.width(),
+                      tuning.roiY1 * size.height(),
+                      (tuning.roiX2 - tuning.roiX1) * size.width(),
+                      (tuning.roiY2 - tuning.roiY1) * size.height());
+    };
+    auto updateLivePreviewState = [&](const editor::FrameHandle& frameHandle,
+                                      int frameNumber,
+                                      const QVector<Track>& tracks,
+                                      const QVector<Detection>& detections,
+                                      const QString& titlePrefix) -> bool {
+        if (!livePreviewPresenter || !previewWindowPtr) {
+            return false;
+        }
+        if (!previewWindowPtr->isVisible() || !livePreviewPresenter->isActive()) {
+            return false;
+        }
+        const bool gpuBackedFrame =
+            !frameHandle.isNull() && (frameHandle.hasHardwareFrame() || frameHandle.hasGpuTexture());
+        if (!gpuBackedFrame) {
+            if (previewStatusLabelPtr) {
+                previewStatusLabelPtr->setText(
+                    QStringLiteral("Zero-copy Vulkan preview requires a hardware/gpu-backed frame."));
+            }
+            appPtr->processEvents();
+            return false;
+        }
+        const VulkanPreviewClipFrameStatus status =
+            jcut::facestream::buildPreviewClipFrameStatus(sourceClip.id,
+                                                          frameHandle,
+                                                          frameNumber,
+                                                          renderSize);
+        QVector<QRectF> detectionBoxes;
+        detectionBoxes.reserve(detections.size());
+        QVector<float> detectionConfidences;
+        detectionConfidences.reserve(detections.size());
+        for (const Detection& det : detections) {
+            detectionBoxes.push_back(det.box);
+            detectionConfidences.push_back(det.confidence);
+        }
+        const QVector<VulkanPreviewFacestreamOverlay> overlays =
+            jcut::facestream::buildDetectionPreviewOverlays(sourceClip.id,
+                                                            frameNumber,
+                                                            status.frameSize,
+                                                            detectionBoxes,
+                                                            detectionConfidences);
+        jcut::facestream::updateSingleClipPreviewInteractionState(&livePreviewState,
+                                                                  sourceClip,
+                                                                  frameNumber,
+                                                                  status,
+                                                                  overlays);
+        livePreviewState.playing = false;
+        if (previewStatusLabelPtr) {
+            previewStatusLabelPtr->setText(QStringLiteral("%1 | frame %2 | detections %3 | tracks %4")
+                                               .arg(titlePrefix)
+                                               .arg(frameNumber)
+                                               .arg(detections.size())
+                                               .arg(tracks.size()));
+        }
+        livePreviewPresenter->updateTitle();
+        livePreviewPresenter->requestUpdate();
+        return true;
+    };
+    auto emitPreview = [&](const QImage& image,
+                           int frameNumber,
+                           const QVector<Track>& tracks,
+                           const QVector<Detection>& detections,
+                           const QString& titlePrefix) -> bool {
+        if (image.isNull()) {
+            return false;
+        }
+        const bool previewFrameDue =
+            !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
+        const bool needsPreviewFrame =
+            previewFrameDue &&
+            (previewWindowPtr ||
+             previewSocketPtr ||
+             (options.writePreviewFiles && previewWritten < options.previewFrames));
+        if (!needsPreviewFrame) {
+            return false;
+        }
+        const QImage preview = buildPreview(image, tracks, detections, currentRoiRect(image.size()));
+        bool emitted = false;
+        if (previewSocketPtr) {
+            emitted = sendPreviewFrame(previewSocketPtr, preview) || emitted;
+        }
+        if (options.writePreviewFiles && previewWritten < options.previewFrames) {
+            const QString previewPath = QDir(options.outputDir).filePath(
+                QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
+            if (preview.save(previewPath)) {
+                ++previewWritten;
+                emitted = true;
+            }
+        }
+        previewPipelinePrimed = previewPipelinePrimed || emitted;
+        return emitted;
+    };
+    auto requireSynchronizedPreview = [&](int frameNumber,
+                                          const editor::FrameHandle& frameHandle,
+                                          const QVector<Track>& tracks,
+                                          const QVector<Detection>& detections,
+                                          const QString& titlePrefix,
+                                          const std::function<QImage()>& previewImageProvider) -> bool {
+        if (!previewMustTrackDetection) {
+            return true;
+        }
+        constexpr qint64 kPreviewSyncTimeoutMs = 1500;
+        QElapsedTimer syncTimer;
+        syncTimer.start();
+        bool livePreviewRequested = false;
+        while (syncTimer.elapsed() < kPreviewSyncTimeoutMs) {
+            if (livePreviewPresenter &&
+                !livePreviewRequested &&
+                updateLivePreviewState(frameHandle, frameNumber, tracks, detections, titlePrefix)) {
+                livePreviewRequested = true;
+            }
+            if (livePreviewPresenter && livePreviewRequested) {
+                if (livePreviewPresenter->hasFailed()) {
+                    if (previewStatusLabelPtr) {
+                        previewStatusLabelPtr->setText(
+                            QStringLiteral("Preview failed at frame %1.\n\n%2")
+                                .arg(frameNumber)
+                                .arg(livePreviewPresenter->failureReason()));
+                    }
+                    appPtr->processEvents();
+                    return false;
+                }
+                if (livePreviewPresenter->lastPresentedSourceFrame() == frameNumber &&
+                    !livePreviewPresenter->updatePending()) {
+                    previewPipelinePrimed = true;
+                    appPtr->processEvents();
+                    return true;
+                }
+            }
+            if (!previewWindowPtr) {
+                const QImage previewImage = previewImageProvider();
+                if (!previewImage.isNull() &&
+                    emitPreview(previewImage, frameNumber, tracks, detections, titlePrefix)) {
+                    return true;
+                }
+            }
+            if (previewStatusLabelPtr) {
+                previewStatusLabelPtr->setText(
+                    QStringLiteral("Preview sync stalled.\n\n"
+                                   "Waiting for frame %1 from detector.")
+                        .arg(frameNumber));
+            }
+            appPtr->processEvents();
+            usleep(16 * 1000);
+        }
+        if (previewStatusLabelPtr) {
+            previewStatusLabelPtr->setText(
+                QStringLiteral("Preview sync failed.\n\n"
+                               "Stopping detector at frame %1.")
+                    .arg(frameNumber));
+        }
+        appPtr->processEvents();
+        std::cerr << "Preview synchronization failed at frame "
+                  << frameNumber
+                  << ". Detection will not continue without preview.\n";
+        return false;
+    };
+    if (!previewPipelinePrimed) {
+        auto tryWarmupPreview = [&]() -> bool {
+            const QVector<Track> warmupTracks;
+            const QVector<Detection> warmupDetections;
+            editor::FrameHandle warmupFrame = decoder.decodeFrame(options.startFrame);
+            if (!warmupFrame.isNull() && livePreviewPresenter) {
+                if (updateLivePreviewState(warmupFrame,
+                                           options.startFrame,
+                                           warmupTracks,
+                                           warmupDetections,
+                                           QStringLiteral("JCut DNN FaceStream Generator (Preview Warmup)"))) {
+                    QElapsedTimer presentTimer;
+                    presentTimer.start();
+                    while (presentTimer.elapsed() < 500) {
+                        if (livePreviewPresenter->hasFailed()) {
+                            return false;
+                        }
+                        if (livePreviewPresenter->lastPresentedSourceFrame() == options.startFrame &&
+                            !livePreviewPresenter->updatePending()) {
+                            previewPipelinePrimed = true;
+                            appPtr->processEvents();
+                            return true;
+                        }
+                        appPtr->processEvents(QEventLoop::AllEvents, 16);
+                        usleep(16 * 1000);
+                    }
+                }
+            }
+            if (!warmupFrame.isNull() &&
+                warmupFrame.hasCpuImage() &&
+                emitPreview(warmupFrame.cpuImage(),
+                            options.startFrame,
+                            warmupTracks,
+                            warmupDetections,
+                            QStringLiteral("JCut DNN FaceStream Generator (Preview Warmup)"))) {
+                return true;
+            }
+            jcut::facestream::VulkanFrameStats warmupStats;
+            const QImage warmupImage = jcut::facestream::renderFrameWithVulkan(&appFrameProvider,
+                                                                               sourceClip,
+                                                                               options.videoPath,
+                                                                               options.startFrame,
+                                                                               options.startFrame,
+                                                                               renderSize,
+                                                                               &warmupStats);
+            if (!warmupImage.isNull() &&
+                emitPreview(warmupImage,
+                            options.startFrame,
+                            warmupTracks,
+                            warmupDetections,
+                            QStringLiteral("JCut DNN FaceStream Generator (Preview Warmup)"))) {
+                return true;
+            }
+            return false;
+        };
+
+        if (previewStatusLabelPtr) {
+            previewStatusLabelPtr->setText(QStringLiteral("Warming up JCut DNN FaceStream preview..."));
+            appPtr->processEvents();
+        }
+        QElapsedTimer previewWarmupTimer;
+        previewWarmupTimer.start();
+        constexpr qint64 kPreviewWarmupTimeoutMs = 3000;
+        while (!previewPipelinePrimed && previewWarmupTimer.elapsed() < kPreviewWarmupTimeoutMs) {
+            if (tryWarmupPreview()) {
+                break;
+            }
+            if (previewStatusLabelPtr) {
+                previewStatusLabelPtr->setText(
+                    QStringLiteral("Waiting for JCut DNN FaceStream preview...\n\n"
+                                   "Starting detector after %1 ms if preview stays unavailable.")
+                        .arg(kPreviewWarmupTimeoutMs));
+            }
+            appPtr->processEvents();
+            usleep(50 * 1000);
+        }
+        if (!previewPipelinePrimed && previewStatusLabelPtr) {
+            previewStatusLabelPtr->setText(QStringLiteral("Preview warmup timed out.\n\n"
+                                                          "Starting detector anyway."));
+            appPtr->processEvents();
+        }
     }
 
     const auto wallStart = std::chrono::steady_clock::now();
@@ -2620,46 +3035,6 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         double decoderUploadMs = 0.0;
 
         if (zeroCopyVulkanDetector) {
-            auto emitPreview = [&](const QImage& image, const QString& titlePrefix) {
-                if (image.isNull()) {
-                    return;
-                }
-                const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
-                const bool needsPreviewFrame =
-                    previewFrameDue &&
-                    (previewWindowPtr ||
-                     previewSocketPtr ||
-                     (options.writePreviewFiles && previewWritten < options.previewFrames));
-                if (!needsPreviewFrame) {
-                    return;
-                }
-                const QImage preview = buildPreview(image, tracks, detections);
-                if (previewSocketPtr) {
-                    sendPreviewFrame(previewSocketPtr, preview);
-                }
-                if (previewWindowPtr && !preview.isNull()) {
-                    previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
-                        previewWindowPtr->size(),
-                        Qt::KeepAspectRatio,
-                        Qt::SmoothTransformation));
-                    previewWindowPtr->setWindowTitle(QStringLiteral("%1 - frame %2 tracks %3")
-                                                         .arg(titlePrefix)
-                                                         .arg(frameNumber)
-                                                         .arg(tracks.size()));
-                    appPtr->processEvents();
-                    if (!previewWindowPtr->isVisible()) {
-                        options.livePreview = false;
-                        previewWindowPtr = nullptr;
-                    }
-                }
-                if (options.writePreviewFiles && previewWritten < options.previewFrames) {
-                    const QString previewPath = QDir(options.outputDir).filePath(
-                        QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
-                    preview.save(previewPath);
-                    ++previewWritten;
-                }
-            };
-
             auto processDecoderFrameDirectly = [&]() -> bool {
                 editor::FrameHandle decodedFrame = decoder.decodeFrame(frameNumber);
                 if (decodedFrame.isNull()) {
@@ -2773,18 +3148,38 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 }
                 lastHardwareDirectAttemptReason = decoderFrameHandoff.lastHardwareDirectAttemptReason();
                 detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
-                if (decodedFrame.hasCpuImage()) {
+                if (!requireSynchronizedPreview(
+                        frameNumber,
+                        decodedFrame,
+                        tracks,
+                        detections,
+                        QStringLiteral("JCut DNN FaceStream Generator (Decoder Vulkan Upload Fallback)"),
+                        [&]() -> QImage {
+                            if (decodedFrame.hasCpuImage()) {
+                                return decodedFrame.cpuImage();
+                            }
+                            editor::FrameHandle previewFrame = decoder.decodeFrame(frameNumber);
+                            return previewFrame.hasCpuImage() ? previewFrame.cpuImage() : QImage();
+                        })) {
+                    return false;
+                }
+                if (!previewMustTrackDetection && decodedFrame.hasCpuImage()) {
                     emitPreview(decodedFrame.cpuImage(),
+                                frameNumber,
+                                tracks,
+                                detections,
                                 QStringLiteral("JCut DNN FaceStream Generator (Decoder Vulkan Upload Fallback)"));
                 }
                 return true;
             };
 
             render_detail::OffscreenVulkanFrame vulkanFrame;
+            QImage synchronizedPreviewFrame;
             error.clear();
             const bool preferDecoderDirect =
-                options.requireZeroCopy && options.scrfdDetector && !previewWindowPtr &&
-                !previewSocketPtr && !options.writePreviewFiles;
+                (livePreviewPresenter && !options.heuristicZeroCopyDetector) ||
+                (options.requireZeroCopy && options.scrfdDetector && !previewWindowPtr &&
+                 !previewSocketPtr && !options.writePreviewFiles);
             bool frameProcessed = false;
             if (preferDecoderDirect) {
                 frameProcessed = processDecoderFrameDirectly();
@@ -2793,15 +3188,27 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 } else {
                     continue;
                 }
-            } else if (!jcut::facestream::renderFrameToVulkan(&appFrameProvider,
-                                                             sourceClip,
-                                                             options.videoPath,
-                                                             frameNumber,
-                                                             frameNumber,
-                                                             renderSize,
-                                                             &vulkanFrame,
-                                                             &renderStats,
-                                                             &error)) {
+            } else if (!(previewMustTrackDetection
+                             ? jcut::facestream::renderFrameToVulkanWithPreviewImage(
+                                   &appFrameProvider,
+                                   sourceClip,
+                                   options.videoPath,
+                                   frameNumber,
+                                   frameNumber,
+                                   renderSize,
+                                   &vulkanFrame,
+                                   &synchronizedPreviewFrame,
+                                   &renderStats,
+                                   &error)
+                             : jcut::facestream::renderFrameToVulkan(&appFrameProvider,
+                                                                     sourceClip,
+                                                                     options.videoPath,
+                                                                     frameNumber,
+                                                                     frameNumber,
+                                                                     renderSize,
+                                                                     &vulkanFrame,
+                                                                     &renderStats,
+                                                                     &error))) {
                 if (!printedAppVulkanFailure) {
                     std::cerr << "Application Vulkan frame path unavailable: "
                               << error.toStdString() << "\n";
@@ -2856,21 +3263,40 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     continue;
                 }
                 detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
-                const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
+                const bool previewFrameDue =
+                    !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
                 const bool needsPreviewFrame =
                     previewFrameDue &&
                     (previewWindowPtr ||
                      previewSocketPtr ||
                      (options.writePreviewFiles && previewWritten < options.previewFrames));
                 if (needsPreviewFrame) {
-                    QImage frameImage = jcut::facestream::readLastRenderedVulkanFrameImage(&appFrameProvider,
-                                                                                           &renderStats,
-                                                                                           &error);
-                    if (!frameImage.isNull()) {
-                        emitPreview(frameImage, QStringLiteral("JCut DNN FaceStream Generator"));
-                    } else if (!error.isEmpty() && !printedAppVulkanFailure) {
-                        std::cerr << "Preview readback unavailable: " << error.toStdString() << "\n";
-                        printedAppVulkanFailure = true;
+                    if (!requireSynchronizedPreview(
+                            frameNumber,
+                            editor::FrameHandle{},
+                            tracks,
+                            detections,
+                            QStringLiteral("JCut DNN FaceStream Generator"),
+                            [&]() -> QImage {
+                                if (previewMustTrackDetection) {
+                                    return synchronizedPreviewFrame;
+                                }
+                                QString previewError;
+                                QImage frameImage =
+                                    jcut::facestream::readLastRenderedVulkanFrameImage(
+                                        &appFrameProvider, &renderStats, &previewError);
+                                if (!frameImage.isNull()) {
+                                    return frameImage;
+                                }
+                                if (!previewError.isEmpty() && !printedAppVulkanFailure) {
+                                    std::cerr << "Preview readback unavailable: "
+                                              << previewError.toStdString() << "\n";
+                                    printedAppVulkanFailure = true;
+                                }
+                                editor::FrameHandle previewFrame = decoder.decodeFrame(frameNumber);
+                                return previewFrame.hasCpuImage() ? previewFrame.cpuImage() : QImage();
+                            })) {
+                        return 2;
                     }
                 }
             }
@@ -2972,38 +3398,30 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             }
             detections = sanitizeDetections(detections, detectionFrameSize, tuning.maxFacesPerFrame, tuning);
 
-            const bool previewFrameDue = (frameNumber % options.previewStride) == 0;
+            const bool previewFrameDue =
+                !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
             const bool needsPreviewFrame =
                 previewFrameDue &&
                 (previewWindowPtr ||
                  previewSocketPtr ||
                  (options.writePreviewFiles && previewWritten < options.previewFrames));
             if (needsPreviewFrame) {
-                const QImage preview = buildPreview(frameImage, tracks, detections);
-                if (previewSocketPtr) {
-                    sendPreviewFrame(previewSocketPtr, preview);
+                if (!requireSynchronizedPreview(
+                        frameNumber,
+                        editor::FrameHandle{},
+                        tracks,
+                        detections,
+                        QStringLiteral("JCut Materialized Generate FaceStream"),
+                        [&]() -> QImage { return frameImage; })) {
+                    return 2;
                 }
-                if (previewWindowPtr && !preview.isNull()) {
-                    previewWindowPtr->setPixmap(QPixmap::fromImage(preview).scaled(
-                        previewWindowPtr->size(),
-                        Qt::KeepAspectRatio,
-                        Qt::SmoothTransformation));
-                    previewWindowPtr->setWindowTitle(QStringLiteral(
-                        "JCut Materialized Generate FaceStream - frame %1 tracks %2")
-                        .arg(frameNumber)
-                        .arg(tracks.size()));
-                    appPtr->processEvents();
-                    if (!previewWindowPtr->isVisible()) {
-                        options.livePreview = false;
-                        previewWindowPtr = nullptr;
-                    }
-                }
-                if (options.writePreviewFiles && previewWritten < options.previewFrames) {
-                    const QString previewPath = QDir(options.outputDir).filePath(
-                        QStringLiteral("preview_%1.png").arg(frameNumber, 6, 10, QChar('0')));
-                    preview.save(previewPath);
-                    ++previewWritten;
-                }
+            }
+            if (needsPreviewFrame && !previewMustTrackDetection) {
+                emitPreview(frameImage,
+                            frameNumber,
+                            tracks,
+                            detections,
+                            QStringLiteral("JCut Materialized Generate FaceStream"));
             }
 #endif
         }

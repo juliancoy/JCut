@@ -49,6 +49,10 @@ public:
                        const QString& variantKey = QString(),
                        const WaveformProcessSettings* processSettings = nullptr);
 
+    // Returns true when decoded metadata is ready and fills totalSamplesOut.
+    // Returns false while decode is pending or unavailable.
+    bool queryTotalSamples(const QString& mediaPath, int64_t* totalSamplesOut);
+
     void setReadyCallback(std::function<void()> callback);
     void trimCache(int maxEntries = 32);
 

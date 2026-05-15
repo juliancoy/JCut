@@ -226,6 +226,9 @@ int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
 int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
                                                int64_t timelineSample,
                                                const QVector<RenderSyncMarker>& markers);
+int64_t playableSampleAtOrAfter(int64_t samplePos,
+                                const QVector<ExportRangeSegment>& ranges,
+                                bool* atOrPastEnd = nullptr);
 
 MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds = 4.0);
 QImage applyClipGrade(const QImage& source, const TimelineClip& clip);

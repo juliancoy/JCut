@@ -132,7 +132,11 @@ Product sidecar: none.
 8. A resolved layer is the source used by speaker-aware tracking and stabilization.
 
 ## Proposed Debug Artefact Root
+Preferred:
 `projects/<project_id>/debug/speaker_flow/<clip_id>/<run_id>/`
+
+Deterministic fallback when the transcript path is not under `projects/<project_id>/...`:
+`<transcript_directory>/debug/speaker_flow/<clip_id>/<run_id>/`
 
 Where `run_id` format is:
 `YYYYMMDD-HHMMSS-<short_uuid>`
@@ -152,6 +156,7 @@ Rules:
 3. If multiple files of same type are required, append `_partN` or `_idxN` before extension.
 4. Fixed-name files inside a generated FaceStream artifact directory, such as `facestream.part`, `tracks.bin`, and `summary.json`, are allowed when the parent artifact directory is registered in `index.json`.
 5. Identity clustering and identity assignment state lives in a dedicated transcript sidecar: `{transcript_basename}_identity.bin`.
+6. Debug-run artefacts must never resolve relative to process current working directory when a transcript path is available.
 
 ## Artefact Index (Required)
 File: `index.json`
@@ -224,10 +229,16 @@ Contents:
 
 Artifact roles:
 1. `{transcript_basename}_facestream.bin` is the durable product sidecar loaded by JCut runtime, preview overlay, speaker-aware tracking, and stabilization.
-2. `continuity_facestream.bin` is the generator-to-editor import payload. After successful import into `{transcript_basename}_facestream.bin`, it is redundant for normal runtime.
-3. `facestream.part` is a streaming checkpoint for resumable generation. It is useful while a run is active or interrupted, but redundant for normal runtime after successful import.
-4. `tracks.bin` is raw track/frame diagnostic output used to explain or rebuild the continuity result. It is not required by normal runtime after successful import.
-5. `summary.json` is profiling and run metadata. It is not required by normal runtime, but is useful for UI diagnostics and performance/debug review.
+2. `{transcript_basename}_facestream_processed.bin` is a derived runtime helper sidecar rebuilt from the raw continuity artefact plus transcript state. It is runtime-adjacent, not generator cache.
+3. `continuity_facestream.bin` is the generator-to-editor import payload. After successful import into `{transcript_basename}_facestream.bin`, it is redundant for normal runtime.
+4. `facestream.part` is a streaming checkpoint for resumable generation. It is useful while a run is active or interrupted, but redundant for normal runtime after successful import.
+5. `tracks.bin` is raw track/frame diagnostic output used to explain or rebuild the continuity result. It is not required by normal runtime after successful import.
+6. `summary.json` is profiling and run metadata. It is not required by normal runtime, but is useful for UI diagnostics and performance/debug review.
+
+Run reuse policy:
+1. Reusing the latest debug run is allowed only when the active transcript already has a FaceStream product sidecar and the existing run is not legacy-only.
+2. If the transcript FaceStream sidecar is missing, Auto Track must create a fresh run instead of importing from a stale debug-run cache.
+3. Legacy-only runs may be inspected for diagnostics, but they must not be treated as the authoritative source for fresh import.
 
 ### Stage 4: FaceStream Representative Crop Extraction
 Product sidecar: none. These files are debug-run artifacts only.

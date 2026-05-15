@@ -1,4 +1,5 @@
 #include "opengl_preview.h"
+#include "audio_preview_support.h"
 #include "preview_view_transform.h"
 #include "opengl_preview_debug.h"
 
@@ -75,33 +76,15 @@ bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state)
         return false;
     }
 
-    const int64_t clipStartSample = clipTimelineStartSamples(*audioClip);
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, audioClip->durationFrames)));
-    const qreal zoom = qBound<qreal>(1.0, state->previewZoom, 100000.0);
-    const qreal visibleFraction = qBound<qreal>(0.00001, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, state->previewPanOffset.x(), maxStart);
-    const qreal playheadNorm = qBound<qreal>(
-        0.0,
-        static_cast<qreal>(state->currentSample - clipStartSample) / static_cast<qreal>(clipSamples),
-        1.0);
-
-    const qreal leftGuard = startNorm + visibleFraction * 0.15;
-    const qreal rightGuard = startNorm + visibleFraction * 0.85;
-    qreal newStart = startNorm;
-    if (playheadNorm < leftGuard) {
-        newStart = playheadNorm - visibleFraction * 0.15;
-    } else if (playheadNorm > rightGuard) {
-        newStart = playheadNorm - visibleFraction * 0.85;
-    } else {
+    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
+        *audioClip, 2, state->previewZoom, state->previewPanOffset.x(), state->currentSample);
+    if (!viewport.playheadVisible) {
         return false;
     }
-
-    newStart = qBound<qreal>(0.0, newStart, maxStart);
-    if (qAbs(newStart - startNorm) < 0.000001) {
+    if (qAbs(viewport.startNorm - state->previewPanOffset.x()) < 0.000001) {
         return false;
     }
-    state->previewPanOffset.setX(newStart);
+    state->previewPanOffset.setX(viewport.startNorm);
     return true;
 }
 } // namespace

@@ -1161,10 +1161,50 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
     }
 
     if (confirmDialog) {
+        QStringList affectedPaths;
+        const QString facestreamArtifactPath = engine.facestreamArtifactPath(m_loadedTranscriptPath);
+        if (!facestreamArtifactPath.trimmed().isEmpty()) {
+            affectedPaths.push_back(facestreamArtifactPath);
+        }
+        const QString processedArtifactPath = engine.facestreamProcessedArtifactPath(m_loadedTranscriptPath);
+        QJsonObject processedArtifactRoot;
+        const bool hasProcessedClipPayload =
+            engine.loadFacestreamProcessedArtifact(m_loadedTranscriptPath, &processedArtifactRoot) &&
+            jcut::facestream::continuityRootHasStoredPayload(
+                processedArtifactRoot.value(QStringLiteral("continuity_facestreams_by_clip"))
+                    .toObject()
+                    .value(clipId)
+                    .toObject());
+        if (hasProcessedClipPayload && !processedArtifactPath.trimmed().isEmpty()) {
+            affectedPaths.push_back(processedArtifactPath);
+        }
+        const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        const QJsonObject clipFlow = clipsRoot.value(clipId).toObject();
+        const bool hasLegacyTranscriptPayload =
+            clipFlow.contains(QStringLiteral("continuity_facestreams"));
+        if (hasLegacyTranscriptPayload && !m_loadedTranscriptPath.trimmed().isEmpty()) {
+            affectedPaths.push_back(m_loadedTranscriptPath);
+        }
+        affectedPaths.removeDuplicates();
+
+        QString confirmationMessage =
+            QStringLiteral("Delete FaceStream data for this clip?\n\n");
+        if (!affectedPaths.isEmpty()) {
+            confirmationMessage += QStringLiteral("This will remove this clip's FaceStream entries from:\n");
+            for (const QString& path : affectedPaths) {
+                confirmationMessage += QStringLiteral("- %1\n").arg(path);
+            }
+            confirmationMessage += QLatin1Char('\n');
+        }
+        confirmationMessage +=
+            QStringLiteral("Debug-run artifacts such as facestream.part, tracks.bin, continuity_facestream.bin, and summary.json are not deleted by this action.\n\nThis cannot be undone.");
+
         const auto confirmation = QMessageBox::warning(
             nullptr,
             QStringLiteral("Delete FaceStream"),
-            QStringLiteral("Delete all FaceStream paths for this clip?\n\nThis cannot be undone."),
+            confirmationMessage,
             QMessageBox::Yes | QMessageBox::Cancel,
             QMessageBox::Cancel);
         if (confirmation != QMessageBox::Yes) {

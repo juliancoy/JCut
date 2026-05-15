@@ -13,6 +13,7 @@ set(EDITOR_TEST_TARGETS
     test_shader_grading_logic
     test_grading_keyframes
     test_vulkan_direct_render_parity
+    test_facestream_preview_smoke
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
@@ -25,6 +26,8 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
     target_compile_definitions(${test_target}
         PRIVATE
             JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+            JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
+            EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
     )
     set_target_properties(${test_target} PROPERTIES
         BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"

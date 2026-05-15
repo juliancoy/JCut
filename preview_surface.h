@@ -1,7 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
-#include "spectrum_settings_dialog.h"
+#include "loiacono/spectrum_settings_dialog.h"
 #include "timeline_widget.h"
 
 #include <QColor>

@@ -72,6 +72,18 @@ export QT_QPA_PLATFORM=xcb
 ./tests/test_async_decoder
 ```
 
+### Vulkan FaceStream Preview Smoke
+
+The standalone `jcut_vulkan_facestream_offscreen --preview-window` smoke test is opt-in because it
+requires a real GUI display plus working Vulkan preview support:
+
+```bash
+export JCUT_RUN_VULKAN_FACESTREAM_PREVIEW_SMOKE=1
+ctest --output-on-failure -R test_facestream_preview_smoke
+```
+
+If the env var is not set, or no `DISPLAY` / `WAYLAND_DISPLAY` is available, the test skips cleanly.
+
 ### With Address Sanitizer
 
 ```bash

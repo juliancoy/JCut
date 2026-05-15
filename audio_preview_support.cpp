@@ -24,11 +24,93 @@ QString audioPreviewDynamicsCacheKey(const PreviewSurface::AudioDynamicsSettings
         .arg(settings.waveformPreviewPostProcessing ? 1 : 0);
 }
 
+int64_t resolvedAudioPreviewClipSamples(const TimelineClip& clip)
+{
+    const int64_t fallbackSamples =
+        qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+
+    QString mediaPath = playbackAudioPathForClip(clip);
+    if (mediaPath.isEmpty()) {
+        mediaPath = interactivePreviewMediaPathForClip(clip);
+    }
+    if (mediaPath.isEmpty()) {
+        return fallbackSamples;
+    }
+
+    int64_t totalDecodedSamples = 0;
+    if (!editor::WaveformService::instance().queryTotalSamples(mediaPath, &totalDecodedSamples)) {
+        return fallbackSamples;
+    }
+    const int64_t sourceStartSample = qMax<int64_t>(0, clipSourceInSamples(clip));
+    const int64_t availableSourceSamples = qMax<int64_t>(0, totalDecodedSamples - sourceStartSample);
+    if (availableSourceSamples <= 0) {
+        return fallbackSamples;
+    }
+
+    const int64_t metadataSourceSamples = qMax<int64_t>(
+        1,
+        sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(1, clip.sourceDurationFrames))));
+    const int64_t resolvedSourceSamples = qMin(availableSourceSamples, metadataSourceSamples);
+    const qreal playbackRate = qBound<qreal>(0.001, clip.playbackRate, 1000.0);
+    const int64_t timelineSamples = qMax<int64_t>(
+        1,
+        static_cast<int64_t>(std::llround(static_cast<qreal>(resolvedSourceSamples) / playbackRate)));
+    return timelineSamples;
+}
+
+AudioPreviewViewport resolveAudioPreviewViewport(const TimelineClip& clip,
+                                                int rowCount,
+                                                qreal previewZoom,
+                                                qreal previewPanNorm,
+                                                int64_t currentSample)
+{
+    AudioPreviewViewport viewport;
+    const int safeRows = qMax(1, rowCount);
+    const int64_t clipStartSample = clipTimelineStartSamples(clip);
+    const int64_t clipSamples = resolvedAudioPreviewClipSamples(clip);
+    const qreal minVisibleBySamples = qBound<qreal>(
+        0.00001,
+        (100.0 * static_cast<qreal>(safeRows)) / static_cast<qreal>(clipSamples),
+        1.0);
+    const qreal maxAudioZoom = qBound<qreal>(
+        20.0,
+        1.0 / qMax<qreal>(0.00001, minVisibleBySamples),
+        100000.0);
+    viewport.zoom = qBound<qreal>(1.0, previewZoom, maxAudioZoom);
+    viewport.visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / viewport.zoom, 1.0);
+    const qreal maxStart = qMax<qreal>(0.0, 1.0 - viewport.visibleFraction);
+
+    viewport.playheadVisible =
+        currentSample >= clipStartSample && currentSample < (clipStartSample + clipSamples);
+    if (viewport.playheadVisible) {
+        viewport.playheadClipNorm = qBound<qreal>(
+            0.0,
+            static_cast<qreal>(qMax<int64_t>(0, currentSample - clipStartSample)) /
+                static_cast<qreal>(clipSamples),
+            1.0);
+        const qreal centeredStart = viewport.playheadClipNorm - (viewport.visibleFraction * 0.5);
+        viewport.startNorm = qBound<qreal>(0.0, centeredStart, maxStart);
+    } else {
+        viewport.startNorm = qBound<qreal>(0.0, previewPanNorm, maxStart);
+    }
+
+    viewport.endNorm = qBound<qreal>(viewport.startNorm, viewport.startNorm + viewport.visibleFraction, 1.0);
+    if (viewport.playheadVisible) {
+        viewport.playheadVisibleNorm = qBound<qreal>(
+            0.0,
+            (viewport.playheadClipNorm - viewport.startNorm) /
+                qMax<qreal>(0.00001, viewport.visibleFraction),
+            1.0);
+    }
+    return viewport;
+}
+
 bool queryAudioWaveformEnvelopeForClip(const TimelineClip& clip,
                                        const PreviewSurface::AudioDynamicsSettings& settings,
                                        int binCount,
                                        qreal rangeStartNorm,
                                        qreal rangeEndNorm,
+                                       const QVector<RenderSyncMarker>& markers,
                                        QVector<qreal>* minOut,
                                        QVector<qreal>* maxOut)
 {
@@ -47,20 +129,27 @@ bool queryAudioWaveformEnvelopeForClip(const TimelineClip& clip,
         return false;
     }
 
-    const int64_t sourceStartSample = qMax<int64_t>(0, clipSourceInSamples(clip));
-    const int64_t sourceDurationSamples =
-        qMax<int64_t>(1, sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(1, clip.durationFrames))));
+    const int64_t clipStartSample = clipTimelineStartSamples(clip);
+    const int64_t clipTimelineDurationSamples = resolvedAudioPreviewClipSamples(clip);
     const qreal startNorm = qBound<qreal>(0.0, rangeStartNorm, 1.0);
     const qreal endNorm = qBound<qreal>(startNorm, rangeEndNorm, 1.0);
     const int64_t visibleStartOffset = static_cast<int64_t>(
-        std::floor(startNorm * static_cast<qreal>(sourceDurationSamples)));
+        std::floor(startNorm * static_cast<qreal>(clipTimelineDurationSamples)));
     const int64_t visibleEndOffset = static_cast<int64_t>(
-        std::ceil(endNorm * static_cast<qreal>(sourceDurationSamples)));
-    const int64_t visibleStartSample = sourceStartSample + qBound<int64_t>(0, visibleStartOffset, sourceDurationSamples);
-    const int64_t visibleEndSample = sourceStartSample + qBound<int64_t>(
-        visibleStartOffset + 1,
-        visibleEndOffset,
-        sourceDurationSamples);
+        std::ceil(endNorm * static_cast<qreal>(clipTimelineDurationSamples)));
+    const int64_t visibleStartTimelineSample =
+        clipStartSample + qBound<int64_t>(0, visibleStartOffset, clipTimelineDurationSamples - 1);
+    const int64_t visibleEndTimelineSample =
+        clipStartSample +
+        qBound<int64_t>(visibleStartOffset + 1, visibleEndOffset, clipTimelineDurationSamples);
+    const int64_t visibleStartSample =
+        sourceSampleForClipAtTimelineSample(clip, visibleStartTimelineSample, markers);
+    const int64_t visibleEndSampleExclusive =
+        sourceSampleForClipAtTimelineSample(clip, qMax<int64_t>(visibleStartTimelineSample + 1,
+                                                                visibleEndTimelineSample - 1),
+                                            markers) + 1;
+    const int64_t queryStartSample = qMin(visibleStartSample, visibleEndSampleExclusive - 1);
+    const int64_t queryEndSample = qMax(visibleStartSample + 1, visibleEndSampleExclusive);
     const QString variantKey = settings.waveformPreviewPostProcessing
         ? audioPreviewDynamicsCacheKey(settings)
         : QStringLiteral("disk");
@@ -85,8 +174,8 @@ bool queryAudioWaveformEnvelopeForClip(const TimelineClip& clip,
     QVector<float> minValues;
     QVector<float> maxValues;
     if (!editor::WaveformService::instance().queryEnvelope(mediaPath,
-                                                           visibleStartSample,
-                                                           visibleEndSample,
+                                                           queryStartSample,
+                                                           queryEndSample,
                                                            safeBins,
                                                            &minValues,
                                                            &maxValues,

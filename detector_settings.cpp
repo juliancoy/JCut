@@ -31,6 +31,11 @@ QString areaRatioText(float value)
     return QStringLiteral("%1%").arg(static_cast<double>(value * 100.0f), 0, 'f', 3);
 }
 
+QString aspectText(float value)
+{
+    return QStringLiteral("%1").arg(static_cast<double>(value), 0, 'f', 2);
+}
+
 } // namespace
 
 QString detectorSettingsPathForVideo(const QString& videoPath)
@@ -141,8 +146,22 @@ void syncDetectorSettingsPanel(DetectorSettingsPanel* panel, const DetectorRunti
     panel->trackMatchValue->setText(percentText(s.trackMatchIouThreshold));
     panel->newTrack->setValue(qRound(s.newTrackMinConfidence * 100.0f));
     panel->newTrackValue->setText(percentText(s.newTrackMinConfidence));
+    panel->roiX1->setValue(qRound(s.roiX1 * 100.0f));
+    panel->roiX1Value->setText(percentText(s.roiX1));
+    panel->roiY1->setValue(qRound(s.roiY1 * 100.0f));
+    panel->roiY1Value->setText(percentText(s.roiY1));
+    panel->roiX2->setValue(qRound(s.roiX2 * 100.0f));
+    panel->roiX2Value->setText(percentText(s.roiX2));
+    panel->roiY2->setValue(qRound(s.roiY2 * 100.0f));
+    panel->roiY2Value->setText(percentText(s.roiY2));
     panel->minArea->setValue(qRound(s.minFaceAreaRatio * 100000.0f));
     panel->minAreaValue->setText(areaRatioText(s.minFaceAreaRatio));
+    panel->maxArea->setValue(qRound(s.maxFaceAreaRatio * 100000.0f));
+    panel->maxAreaValue->setText(areaRatioText(s.maxFaceAreaRatio));
+    panel->minAspect->setValue(qRound(s.minAspect * 100.0f));
+    panel->minAspectValue->setText(aspectText(s.minAspect));
+    panel->maxAspect->setValue(qRound(s.maxAspect * 100.0f));
+    panel->maxAspectValue->setText(aspectText(s.maxAspect));
     panel->maxFaces->setValue(s.maxFacesPerFrame);
     panel->maxFacesValue->setText(s.maxFacesPerFrame == 0 ? QStringLiteral("unlimited") : QString::number(s.maxFacesPerFrame));
     panel->primaryFaceOnly->setChecked(s.primaryFaceOnly);
@@ -214,10 +233,56 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
               QStringLiteral("Minimum confidence required to create a brand-new track. Lower this when valid faces are not starting tracks; raise it if noisy detections create extra tracks."),
               1, 99, qRound(settings->newTrackMinConfidence * 100.0f), &panel.newTrack, &panel.newTrackValue,
               [](int v) { return percentText(v / 100.0f); }, [settings](int v) { settings->newTrackMinConfidence = v / 100.0f; });
+    addSlider(QStringLiteral("ROI left"),
+              QStringLiteral("Left edge of the allowed face region as a percent of frame width. Raise this to ignore detections on the far left."),
+              0, 100, qRound(settings->roiX1 * 100.0f), &panel.roiX1, &panel.roiX1Value,
+              [](int v) { return percentText(v / 100.0f); }, [settings](int v) {
+                  settings->roiX1 = v / 100.0f;
+                  if (settings->roiX2 < settings->roiX1) std::swap(settings->roiX1, settings->roiX2);
+              });
+    addSlider(QStringLiteral("ROI top"),
+              QStringLiteral("Top edge of the allowed face region as a percent of frame height. Raise this to ignore detections near the top."),
+              0, 100, qRound(settings->roiY1 * 100.0f), &panel.roiY1, &panel.roiY1Value,
+              [](int v) { return percentText(v / 100.0f); }, [settings](int v) {
+                  settings->roiY1 = v / 100.0f;
+                  if (settings->roiY2 < settings->roiY1) std::swap(settings->roiY1, settings->roiY2);
+              });
+    addSlider(QStringLiteral("ROI right"),
+              QStringLiteral("Right edge of the allowed face region as a percent of frame width. Lower this to ignore detections on the far right."),
+              0, 100, qRound(settings->roiX2 * 100.0f), &panel.roiX2, &panel.roiX2Value,
+              [](int v) { return percentText(v / 100.0f); }, [settings](int v) {
+                  settings->roiX2 = v / 100.0f;
+                  if (settings->roiX2 < settings->roiX1) std::swap(settings->roiX1, settings->roiX2);
+              });
+    addSlider(QStringLiteral("ROI bottom"),
+              QStringLiteral("Bottom edge of the allowed face region as a percent of frame height. Lower this to ignore detections near the bottom."),
+              0, 100, qRound(settings->roiY2 * 100.0f), &panel.roiY2, &panel.roiY2Value,
+              [](int v) { return percentText(v / 100.0f); }, [settings](int v) {
+                  settings->roiY2 = v / 100.0f;
+                  if (settings->roiY2 < settings->roiY1) std::swap(settings->roiY1, settings->roiY2);
+              });
     addSlider(QStringLiteral("Min face area"),
               QStringLiteral("Smallest accepted face box as a percent of frame area. Lower this for distant/small faces; raise it to reject tiny false positives."),
               0, 2000, qRound(settings->minFaceAreaRatio * 100000.0f), &panel.minArea, &panel.minAreaValue,
               [](int v) { return areaRatioText(v / 100000.0f); }, [settings](int v) { settings->minFaceAreaRatio = v / 100000.0f; });
+    addSlider(QStringLiteral("Max face area"),
+              QStringLiteral("Largest accepted face box as a percent of frame area. Lower this to reject oversized false positives or partial-frame detections; raise it to allow very close faces."),
+              0, 100000, qRound(settings->maxFaceAreaRatio * 100000.0f), &panel.maxArea, &panel.maxAreaValue,
+              [](int v) { return areaRatioText(v / 100000.0f); }, [settings](int v) { settings->maxFaceAreaRatio = v / 100000.0f; });
+    addSlider(QStringLiteral("Min aspect"),
+              QStringLiteral("Smallest allowed width/height ratio for a face box. Raise this to reject tall narrow boxes such as arms or fingers."),
+              1, 1000, qRound(settings->minAspect * 100.0f), &panel.minAspect, &panel.minAspectValue,
+              [](int v) { return aspectText(v / 100.0f); }, [settings](int v) {
+                  settings->minAspect = v / 100.0f;
+                  if (settings->maxAspect < settings->minAspect) std::swap(settings->minAspect, settings->maxAspect);
+              });
+    addSlider(QStringLiteral("Max aspect"),
+              QStringLiteral("Largest allowed width/height ratio for a face box. Lower this to reject wide non-face boxes such as hands or partial torsos."),
+              1, 1000, qRound(settings->maxAspect * 100.0f), &panel.maxAspect, &panel.maxAspectValue,
+              [](int v) { return aspectText(v / 100.0f); }, [settings](int v) {
+                  settings->maxAspect = v / 100.0f;
+                  if (settings->maxAspect < settings->minAspect) std::swap(settings->minAspect, settings->maxAspect);
+              });
     addSlider(QStringLiteral("Max faces/frame"),
               QStringLiteral("Maximum accepted faces per processed frame after filtering. 0 means unlimited. Use 1 or Primary mode for single-speaker videos; increase for panels or crowds."),
               0, 64, settings->maxFacesPerFrame, &panel.maxFaces, &panel.maxFacesValue,

@@ -1,4 +1,5 @@
 #include "opengl_preview.h"
+#include "audio_preview_support.h"
 #include "preview_view_transform.h"
 #include "titles.h"
 
@@ -57,18 +58,10 @@ bool audioSeekSampleAtPosition(const PreviewInteractionState& interaction,
     }
 
     const int rowCount = qBound(2, waveRect.height() / 88, 6);
-    const int binsPerRow = qMax(256, static_cast<int>(graphRect.width()));
-    const int totalDrawBins = qMax(96, qMin(8192, rowCount * binsPerRow));
     const int64_t clipStartSample = clipTimelineStartSamples(*clip);
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip->durationFrames)));
-    const qreal minVisibleBySamples = qBound<qreal>(
-        0.00001,
-        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-        1.0);
-    const qreal zoom = qBound<qreal>(1.0, interaction.previewZoom, 100000.0);
-    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, interaction.previewPanOffset.x(), maxStart);
+    const int64_t clipSamples = resolvedAudioPreviewClipSamples(*clip);
+    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
+        *clip, rowCount, interaction.previewZoom, interaction.previewPanOffset.x(), interaction.currentSample);
     const qreal localX = qBound<qreal>(0.0,
                                        (position.x() - graphRect.left()) / qMax<qreal>(1.0, graphRect.width()),
                                        1.0);
@@ -76,13 +69,24 @@ bool audioSeekSampleAtPosition(const PreviewInteractionState& interaction,
                                        (position.y() - graphRect.top()) / qMax<qreal>(1.0, graphRect.height()),
                                        0.99999);
     const int row = qBound(0, static_cast<int>(std::floor(localY * rowCount)), rowCount - 1);
-    const int binInRow = qBound(0,
-                                static_cast<int>(std::round(localX * static_cast<qreal>(qMax(1, binsPerRow - 1)))),
-                                qMax(0, binsPerRow - 1));
-    const int visibleBinIndex = qBound(0, row * binsPerRow + binInRow, qMax(0, totalDrawBins - 1));
-    const qreal timelineNorm = startNorm +
-        (((static_cast<qreal>(visibleBinIndex) + 0.5) / static_cast<qreal>(totalDrawBins)) * visibleFraction);
-    const int64_t targetOffset = static_cast<int64_t>(std::llround(timelineNorm * static_cast<qreal>(clipSamples - 1)));
+    const qreal clickedVisibleNorm = qBound<qreal>(
+        0.0,
+        (static_cast<qreal>(row) + localX) / static_cast<qreal>(qMax(1, rowCount)),
+        1.0);
+    qreal targetClipNorm = viewport.startNorm + (clickedVisibleNorm * viewport.visibleFraction);
+    if (viewport.playheadVisible) {
+        const qreal deltaVisibleNorm = clickedVisibleNorm - viewport.playheadVisibleNorm;
+        const int64_t deltaSamples = static_cast<int64_t>(
+            std::llround(deltaVisibleNorm * viewport.visibleFraction * static_cast<qreal>(clipSamples - 1)));
+        const int64_t relativeTargetSample = qBound<int64_t>(
+            clipStartSample,
+            interaction.currentSample + deltaSamples,
+            clipStartSample + clipSamples - 1);
+        *sampleOut = relativeTargetSample;
+        return true;
+    }
+    const int64_t targetOffset = static_cast<int64_t>(
+        std::llround(targetClipNorm * static_cast<qreal>(clipSamples - 1)));
     *sampleOut = qBound<int64_t>(clipStartSample, clipStartSample + targetOffset, clipStartSample + clipSamples - 1);
     return true;
 }
@@ -525,7 +529,10 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
         const QRect panel = safeRect.adjusted(12, 12, -12, -12);
         const QRect waveRect = panel.adjusted(24, 120, -24, -36);
 
-        int64_t clipSamples = 0;
+        const int rowCount = qBound(2, waveRect.height() / 88, 6);
+        const int binsPerRow = qMax(256, waveRect.width());
+        const int totalDrawBins = qMax(96, rowCount * binsPerRow);
+        const TimelineClip* activeClip = nullptr;
         for (const TimelineClip& clip : m_interaction.clips) {
             const bool includeForAudioView =
                 clipAudioPlaybackEnabled(clip) &&
@@ -533,29 +540,38 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
             const bool includeAsFallback =
                 clipIsAudioOnly(clip) && isSampleWithinClip(clip, m_interaction.currentSample);
             if (includeForAudioView || includeAsFallback) {
-                clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+                activeClip = &clip;
                 break;
             }
         }
-        const int rowCount = qBound(2, waveRect.height() / 88, 6);
-        const int binsPerRow = qMax(256, waveRect.width());
-        const int totalDrawBins = qMax(96, rowCount * binsPerRow);
-        const qreal minVisibleBySamples = clipSamples > 0
-            ? qBound<qreal>(0.00001,
-                            (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-                            1.0)
-            : 0.001;
-        const qreal maxAudioZoom =
-            qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
-        const qreal oldZoom = qBound<qreal>(1.0, m_interaction.previewZoom, maxAudioZoom);
+        const AudioPreviewViewport oldViewport = activeClip
+            ? resolveAudioPreviewViewport(
+                  *activeClip,
+                  rowCount,
+                  m_interaction.previewZoom,
+                  m_interaction.previewPanOffset.x(),
+                  m_interaction.currentSample)
+            : AudioPreviewViewport{};
+        const qreal oldZoom = oldViewport.zoom;
+        const qreal maxAudioZoom = activeClip
+            ? qMax<qreal>(oldZoom, 1.0 / qMax<qreal>(0.00001, oldViewport.visibleFraction))
+            : 100000.0;
         const qreal nextZoom = qBound<qreal>(1.0, oldZoom * factor, maxAudioZoom);
         if (qAbs(nextZoom - oldZoom) < 0.000001) {
             event->accept();
             return;
         }
-        const qreal oldVisible = qBound<qreal>(minVisibleBySamples, 1.0 / oldZoom, 1.0);
-        const qreal nextVisible = qBound<qreal>(minVisibleBySamples, 1.0 / nextZoom, 1.0);
-        const qreal oldStart = qBound<qreal>(0.0, m_interaction.previewPanOffset.x(), qMax<qreal>(0.0, 1.0 - oldVisible));
+        const qreal oldVisible = oldViewport.visibleFraction;
+        const qreal nextVisible = activeClip
+            ? resolveAudioPreviewViewport(
+                  *activeClip,
+                  rowCount,
+                  nextZoom,
+                  m_interaction.previewPanOffset.x(),
+                  m_interaction.currentSample)
+                  .visibleFraction
+            : qBound<qreal>(0.001, 1.0 / nextZoom, 1.0);
+        const qreal oldStart = oldViewport.startNorm;
 
         const qreal localX = qBound<qreal>(
             0.0,
@@ -586,10 +602,16 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
         const qreal anchorNorm =
             (static_cast<qreal>(visibleBinIndex) + 0.5) / qMax<qreal>(1.0, static_cast<qreal>(totalDrawBins));
         const qreal anchoredTimelineNorm = oldStart + (anchorNorm * oldVisible);
-        const qreal nextStart = qBound<qreal>(
+        qreal nextStart = qBound<qreal>(
             0.0,
             anchoredTimelineNorm - (anchorNorm * nextVisible),
             qMax<qreal>(0.0, 1.0 - nextVisible));
+        if (activeClip && oldViewport.playheadVisible) {
+            nextStart = qBound<qreal>(
+                0.0,
+                oldViewport.playheadClipNorm - (nextVisible * 0.5),
+                qMax<qreal>(0.0, 1.0 - nextVisible));
+        }
 
         m_interaction.previewZoom = nextZoom;
         m_interaction.previewPanOffset = QPointF(nextStart, 0.0);

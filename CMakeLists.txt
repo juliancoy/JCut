@@ -502,17 +502,30 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
 endif()
 
 add_executable(jcut_vulkan_facestream_offscreen
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_preview_support.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facestream_offscreen_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/direct_vulkan_preview_presenter.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/direct_vulkan_preview_audio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pipeline.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_scrfd_ncnn_face_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/waveform_service.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_rolling_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
 )
 target_include_directories(jcut_vulkan_facestream_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}

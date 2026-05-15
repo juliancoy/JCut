@@ -6,9 +6,10 @@
 #include "editor_shared.h"
 #include "render_internal.h"
 #include "transcript_engine.h"
-#include "vulkan_facestream_offscreen_runner.h"
 
 #include <QApplication>
+#include <QCheckBox>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
 #include <QDir>
@@ -19,8 +20,11 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QVBoxLayout>
 
 using namespace jcut::facestream;
@@ -81,6 +85,135 @@ bool readJsonObject(const QString& path, QJsonObject* objectOut, QString* errorO
     return true;
 }
 
+QString facestreamOffscreenExecutablePath()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QString exeName = QStringLiteral("jcut_vulkan_facestream_offscreen");
+    const QString candidate = QDir(appDir).absoluteFilePath(exeName);
+    if (QFileInfo::exists(candidate)) {
+        return candidate;
+    }
+    const QString buildCandidate = QDir(QDir::currentPath()).absoluteFilePath(QStringLiteral("build/%1").arg(exeName));
+    if (QFileInfo::exists(buildCandidate)) {
+        return buildCandidate;
+    }
+    return candidate;
+}
+
+struct FaceStreamProcessResult {
+    bool started = false;
+    bool canceled = false;
+    int exitCode = -1;
+    QProcess::ExitStatus exitStatus = QProcess::NormalExit;
+    QString standardOutput;
+    QString standardError;
+};
+
+FaceStreamProcessResult runFaceStreamGeneratorProcess(QWidget* parent,
+                                                     const QString& program,
+                                                     const QStringList& args,
+                                                     bool livePreview)
+{
+    FaceStreamProcessResult result;
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(args);
+    process.setWorkingDirectory(QFileInfo(program).absolutePath());
+    process.setProcessChannelMode(QProcess::SeparateChannels);
+
+    QDialog progressDialog(parent);
+    progressDialog.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator"));
+    progressDialog.setWindowFlag(Qt::Window, true);
+    progressDialog.resize(760, 320);
+
+    auto* progressLayout = new QVBoxLayout(&progressDialog);
+    progressLayout->setContentsMargins(10, 10, 10, 10);
+    progressLayout->setSpacing(8);
+
+    auto* statusLabel = new QLabel(
+        livePreview
+            ? QStringLiteral("Running FaceStream generator with live preview in a background process...")
+            : QStringLiteral("Running FaceStream generator headless in a background process..."),
+        &progressDialog);
+    statusLabel->setWordWrap(true);
+    progressLayout->addWidget(statusLabel);
+
+    auto* progressBar = new QProgressBar(&progressDialog);
+    progressBar->setRange(0, 0);
+    progressLayout->addWidget(progressBar);
+
+    auto* logView = new QPlainTextEdit(&progressDialog);
+    logView->setReadOnly(true);
+    logView->setMaximumBlockCount(400);
+    progressLayout->addWidget(logView, 1);
+
+    auto appendLog = [logView](const QString& text) {
+        if (text.isEmpty()) {
+            return;
+        }
+        logView->moveCursor(QTextCursor::End);
+        logView->insertPlainText(text);
+        auto* bar = logView->verticalScrollBar();
+        if (bar) {
+            bar->setValue(bar->maximum());
+        }
+    };
+
+    auto* progressButtons = new QHBoxLayout;
+    progressButtons->addStretch(1);
+    auto* cancelRunButton = new QPushButton(QStringLiteral("Cancel"), &progressDialog);
+    progressButtons->addWidget(cancelRunButton);
+    progressLayout->addLayout(progressButtons);
+
+    QObject::connect(cancelRunButton, &QPushButton::clicked, &progressDialog, [&]() {
+        result.canceled = true;
+        statusLabel->setText(QStringLiteral("Canceling FaceStream generator..."));
+        cancelRunButton->setEnabled(false);
+        if (process.state() != QProcess::NotRunning) {
+            process.terminate();
+            if (!process.waitForFinished(1500)) {
+                process.kill();
+            }
+        }
+    });
+    QObject::connect(&process, &QProcess::readyReadStandardOutput, &progressDialog, [&]() {
+        const QString chunk = QString::fromLocal8Bit(process.readAllStandardOutput());
+        result.standardOutput += chunk;
+        appendLog(chunk);
+    });
+    QObject::connect(&process, &QProcess::readyReadStandardError, &progressDialog, [&]() {
+        const QString chunk = QString::fromLocal8Bit(process.readAllStandardError());
+        result.standardError += chunk;
+        appendLog(chunk);
+    });
+    QObject::connect(&process,
+                     qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                     &progressDialog,
+                     [&](int exitCode, QProcess::ExitStatus exitStatus) {
+        result.exitCode = exitCode;
+        result.exitStatus = exitStatus;
+        progressDialog.accept();
+    });
+    QObject::connect(&process, &QProcess::errorOccurred, &progressDialog, [&](QProcess::ProcessError error) {
+        appendLog(QStringLiteral("\n[process-error] %1\n").arg(static_cast<int>(error)));
+    });
+
+    process.start();
+    result.started = process.waitForStarted(5000);
+    if (!result.started) {
+        result.standardError += process.errorString();
+        return result;
+    }
+
+    progressDialog.exec();
+    if (process.state() != QProcess::NotRunning) {
+        process.waitForFinished(-1);
+    }
+    result.standardOutput += QString::fromLocal8Bit(process.readAllStandardOutput());
+    result.standardError += QString::fromLocal8Bit(process.readAllStandardError());
+    return result;
+}
+
 } // namespace
 
 void SpeakersTab::onSpeakerRunAutoTrackClicked()
@@ -105,6 +238,15 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         m_loadedTranscriptPath,
         selectedClip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : selectedClip->id,
         QFileInfo(mediaPath).completeBaseName());
+    if (debugRun.projectRoot.trimmed().isEmpty() || debugRun.runDir.trimmed().isEmpty()) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("Cannot create a FaceStream debug run because the active transcript path is unavailable."));
+        return;
+    }
+    const bool transcriptHasFacestreamSidecar =
+        facestreamSidecarExistsForClipFile(selectedClip->filePath);
     const QDir initialRunDir(debugRun.runDir);
     const QDir initialArtifactDir(initialRunDir.absoluteFilePath(QStringLiteral("facestream_artifact")));
     const bool initialRunHasArtifactState =
@@ -116,7 +258,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         !initialRunHasArtifactState &&
         !initialRunDir.entryList(QStringList{QStringLiteral("*_continuity_facestream_request.json")},
                                  QDir::Files).isEmpty();
-    if (initialRunLooksLegacyOnly) {
+    const bool shouldForceFreshRun =
+        debugRun.reusedExistingRun &&
+        (!transcriptHasFacestreamSidecar || initialRunLooksLegacyOnly);
+    if (shouldForceFreshRun) {
         debugRun = speaker_flow_debug::createNewRunFrom(debugRun);
     }
     const QString artifactDir = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("facestream_artifact"));
@@ -147,6 +292,9 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     artifactLabel->setWordWrap(true);
     artifactLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
     layout->addWidget(artifactLabel);
+    auto* livePreviewCheckbox = new QCheckBox(QStringLiteral("Show live preview"), &preflightDialog);
+    livePreviewCheckbox->setChecked(true);
+    layout->addWidget(livePreviewCheckbox);
     DetectorSettingsPanel detectorPanel =
         createDetectorSettingsPanel(
             &detectorSettings,
@@ -178,8 +326,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                     ? QStringLiteral("--small-face-fallback")
                     : QStringLiteral("--no-small-face-fallback"));
         args << QStringLiteral("--require-zero-copy");
-        args << QStringLiteral("--no-preview-window")
-             << QStringLiteral("--no-preview-files");
+        args << (livePreviewCheckbox->isChecked()
+                    ? QStringLiteral("--preview-window")
+                    : QStringLiteral("--no-preview-window"));
+        args << QStringLiteral("--no-preview-files");
         if (maxFrames > 0) {
             args << QStringLiteral("--max-frames") << QString::number(maxFrames);
         }
@@ -244,8 +394,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 ? QStringLiteral("--small-face-fallback")
                 : QStringLiteral("--no-small-face-fallback"));
     args << QStringLiteral("--require-zero-copy");
-    args << QStringLiteral("--no-preview-window")
-         << QStringLiteral("--no-preview-files");
+    args << (livePreviewCheckbox->isChecked()
+                ? QStringLiteral("--preview-window")
+                : QStringLiteral("--no-preview-window"));
+    args << QStringLiteral("--no-preview-files");
     if (maxFrames > 0) {
         args << QStringLiteral("--max-frames") << QString::number(maxFrames);
     }
@@ -278,38 +430,46 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         reqFile.close();
     }
 
-    QDialog progressDialog;
-    progressDialog.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator"));
-    progressDialog.setWindowFlag(Qt::Window, true);
-    progressDialog.resize(520, 160);
-    auto* progressLayout = new QVBoxLayout(&progressDialog);
-    progressLayout->setContentsMargins(10, 10, 10, 10);
-    progressLayout->setSpacing(8);
-    auto* statusLabel = new QLabel(
-        QStringLiteral("Generating resumable SCRFD zero-copy FaceStream artifact in-process..."),
-        &progressDialog);
-    statusLabel->setWordWrap(true);
-    progressLayout->addWidget(statusLabel);
-    auto* progressBar = new QProgressBar(&progressDialog);
-    progressBar->setRange(0, 0);
-    progressLayout->addWidget(progressBar);
-    auto* progressButtons = new QHBoxLayout;
-    progressButtons->addStretch(1);
-    auto* cancelRunButton = new QPushButton(QStringLiteral("Cancel"), &progressDialog);
-    cancelRunButton->setEnabled(false);
-    progressButtons->addWidget(cancelRunButton);
-    progressLayout->addLayout(progressButtons);
-    progressDialog.show();
-    QApplication::processEvents();
-    int runExitCode = -1;
-    runExitCode = runVulkanFacestreamOffscreen(args);
-    progressDialog.close();
+    const QString generatorProgram = facestreamOffscreenExecutablePath();
+    if (!QFileInfo::exists(generatorProgram)) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("FaceStream generator executable was not found.\n\nExpected: %1")
+                .arg(generatorProgram));
+        return;
+    }
+    const FaceStreamProcessResult processResult =
+        runFaceStreamGeneratorProcess(nullptr, generatorProgram, args, livePreviewCheckbox->isChecked());
+    if (!processResult.started) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("Failed to start FaceStream generator.\n\n%1")
+                .arg(processResult.standardError.trimmed().isEmpty()
+                         ? QStringLiteral("Unknown process start failure.")
+                         : processResult.standardError.trimmed()));
+        return;
+    }
+    if (processResult.canceled) {
+        speaker_flow_debug::persistIndex(
+            indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
+            m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("canceled"),
+            QStringLiteral("FaceStream generation canceled by user."),
+            {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+        return;
+    }
 
-    const bool processOk = runExitCode == 0;
+    const bool processOk =
+        processResult.exitStatus == QProcess::NormalExit &&
+        processResult.exitCode == 0;
     if (!processOk) {
         const QString message =
-            QStringLiteral("JCut DNN FaceStream Generator failed (exit code %1).")
-                .arg(runExitCode);
+            QStringLiteral("JCut DNN FaceStream Generator failed (exit code %1).\n\n%2")
+                .arg(processResult.exitCode)
+                .arg(processResult.standardError.trimmed().isEmpty()
+                         ? processResult.standardOutput.trimmed()
+                         : processResult.standardError.trimmed());
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),

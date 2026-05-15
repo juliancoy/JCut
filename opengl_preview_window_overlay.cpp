@@ -7,6 +7,7 @@
 #include "decoder_image_io.h"
 #include "preview_frame_selection.h"
 #include "preview_view_transform.h"
+#include "audio_preview_support.h"
 #include "waveform_service.h"
 #include "render_internal.h"
 
@@ -1072,23 +1073,24 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
     const int64_t sourceSpan = qMax<int64_t>(1, clip.durationFrames);
 
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
-    const qreal minVisibleBySamples = qBound<qreal>(
-        0.00001,
-        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-        1.0);
-    const qreal maxAudioZoom =
-        qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
-    const qreal zoom = qBound<qreal>(1.0, m_interaction.previewZoom, maxAudioZoom);
-    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, m_interaction.previewPanOffset.x(), maxStart);
-    const qreal endNorm = qBound<qreal>(startNorm, startNorm + visibleFraction, 1.0);
+    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
+        clip, rowCount, m_interaction.previewZoom, m_interaction.previewPanOffset.x(), m_interaction.currentSample);
+    const qreal zoom = viewport.zoom;
+    const qreal visibleFraction = viewport.visibleFraction;
+    const qreal startNorm = viewport.startNorm;
+    const qreal endNorm = viewport.endNorm;
 
     QVector<qreal> waveformMin(totalDrawBins, 0.0);
     QVector<qreal> waveformMax(totalDrawBins, 0.0);
     (void)queryAudioWaveformEnvelopeForClip(
-        clip, m_audioDynamics, totalDrawBins, startNorm, endNorm, &waveformMin, &waveformMax);
+        clip,
+        m_audioDynamics,
+        totalDrawBins,
+        startNorm,
+        endNorm,
+        m_interaction.renderSyncMarkers,
+        &waveformMin,
+        &waveformMax);
 
     // Absolute amplitude scale: +/-1.0 is always full row height (digital full-scale).
     const qreal unityScale = 1.0;
@@ -1098,6 +1100,19 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
     const int64_t visibleSourceSpan = qMax<int64_t>(
         1,
         static_cast<int64_t>(std::ceil(visibleFraction * static_cast<qreal>(sourceSpan))));
+    const int playheadWrappedBin = viewport.playheadVisible
+        ? qBound(
+              0,
+              static_cast<int>(std::floor(
+                  viewport.playheadVisibleNorm * static_cast<qreal>(qMax(1, totalDrawBins - 1)))),
+              qMax(0, totalDrawBins - 1))
+        : -1;
+    const int playheadRowIndex = playheadWrappedBin >= 0
+        ? qBound(0, playheadWrappedBin / qMax(1, binsPerRow), qMax(0, rowCount - 1))
+        : -1;
+    const int playheadBinInRow = playheadWrappedBin >= 0
+        ? qBound(0, playheadWrappedBin - (playheadRowIndex * qMax(1, binsPerRow)), qMax(0, binsPerRow - 1))
+        : -1;
     if (!sections.isEmpty()) {
         for (int i = 0; i < totalDrawBins; ++i) {
             const qreal t = (static_cast<qreal>(i) + 0.5) / static_cast<qreal>(totalDrawBins);
@@ -1402,6 +1417,18 @@ void PreviewWindow::drawAudioPlaceholder(QPainter* painter, const QRect& safeRec
                 }
                 painter->restore();
             }
+        }
+
+        if (viewport.playheadVisible && row == playheadRowIndex) {
+            const qreal playheadX = rowRect.left() +
+                ((static_cast<qreal>(playheadBinInRow) + 0.5) / static_cast<qreal>(qMax(1, binsPerRow))) *
+                    rowRect.width();
+            painter->save();
+            painter->setPen(QPen(QColor(255, 214, 117, 84), 4.0));
+            painter->drawLine(QPointF(playheadX, rowRect.top()), QPointF(playheadX, rowRect.bottom()));
+            painter->setPen(QPen(QColor(255, 246, 199, 232), 1.4));
+            painter->drawLine(QPointF(playheadX, rowRect.top()), QPointF(playheadX, rowRect.bottom()));
+            painter->restore();
         }
 
         if (m_audioSpeakerHoverModalEnabled &&

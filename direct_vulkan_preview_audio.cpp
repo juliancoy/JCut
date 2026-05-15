@@ -537,7 +537,7 @@ bool fillSpectrumSignalWindow(const DecodedAudioCacheEntry& decoded,
     }
     const int64_t clipStartSample = clipTimelineStartSamples(clip);
     const int64_t localSample = qMax<int64_t>(0, currentTimelineSample - clipStartSample);
-    const int64_t clipTimelineSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
+    const int64_t clipTimelineSamples = resolvedAudioPreviewClipSamples(clip);
     const qreal localNorm = qBound<qreal>(
         0.0,
         static_cast<qreal>(localSample) / static_cast<qreal>(clipTimelineSamples),
@@ -677,17 +677,13 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
     const int rowCount = qBound(2, static_cast<int>(waveRect.height()) / 88, 6);
     const int binsPerRow = qMax(256, static_cast<int>(graphRect.width()));
     const int totalDrawBins = qMax(96, qMin(8192, rowCount * binsPerRow));
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
-    const qreal minVisibleBySamples = qBound<qreal>(
-        0.00001,
-        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-        1.0);
-    const qreal maxAudioZoom = qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
-    const qreal zoom = qBound<qreal>(1.0, state->previewZoom, maxAudioZoom);
-    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, state->previewPanOffset.x(), maxStart);
-    const qreal endNorm = qBound<qreal>(startNorm, startNorm + visibleFraction, 1.0);
+    const int64_t clipSamples = resolvedAudioPreviewClipSamples(clip);
+    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
+        clip, rowCount, state->previewZoom, state->previewPanOffset.x(), state->currentSample);
+    const qreal zoom = viewport.zoom;
+    const qreal visibleFraction = viewport.visibleFraction;
+    const qreal startNorm = viewport.startNorm;
+    const qreal endNorm = viewport.endNorm;
     const int64_t sourceStartFrame = qMax<int64_t>(0, clip.sourceInFrame);
     const int64_t sourceSpanFrames = qMax<int64_t>(1, clip.durationFrames);
     const int64_t visibleSourceStart = sourceStartFrame + static_cast<int64_t>(
@@ -696,8 +692,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
         1,
         static_cast<int64_t>(std::ceil(visibleFraction * static_cast<qreal>(sourceSpanFrames))));
     const int64_t clipStartSample = clipTimelineStartSamples(clip);
-    const int64_t clipEndSample = clipStartSample + clipSamples;
-    const bool playheadVisible = state->currentSample >= clipStartSample && state->currentSample < clipEndSample;
+    const bool playheadVisible = viewport.playheadVisible;
     const qreal currentTimelineNorm = qBound<qreal>(
         0.0,
         static_cast<qreal>(qMax<int64_t>(0, state->currentSample - clipStartSample)) /
@@ -713,11 +708,13 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
     const int64_t visibleSourceSpanSamples = qMax<int64_t>(
         1,
         static_cast<int64_t>(std::ceil(visibleFraction * static_cast<qreal>(sourceDurationSamples))));
-    const qreal playheadTimelineNorm = qBound<qreal>(
-        0.0,
-        static_cast<qreal>(currentSourceSample - visibleSourceStartSample) /
-            static_cast<qreal>(visibleSourceSpanSamples),
-        1.0);
+    const qreal playheadTimelineNorm = playheadVisible
+        ? viewport.playheadVisibleNorm
+        : qBound<qreal>(
+              0.0,
+              static_cast<qreal>(currentSourceSample - visibleSourceStartSample) /
+                  static_cast<qreal>(visibleSourceSpanSamples),
+              1.0);
     const int playheadWrappedBin = qBound(
         0,
         static_cast<int>(std::floor(playheadTimelineNorm * static_cast<qreal>(qMax(1, totalDrawBins - 1)))),
@@ -859,6 +856,7 @@ bool renderDirectVulkanAudioFrame(const DirectVulkanAudioRenderContext& context,
             totalDrawBins,
             startNorm,
             endNorm,
+            state->renderSyncMarkers,
             &waveformMin,
             &waveformMax);
     }
@@ -972,17 +970,12 @@ void updateDirectVulkanAudioOverlay(const PreviewInteractionState* state,
     const bool spectrumMode =
         state->audioVisualizationMode == PreviewSurface::AudioVisualizationMode::Spectrum;
     const int totalDrawBins = qMax(96, qMin(8192, rowCount * binsPerRow));
-    const int64_t clipSamples = qMax<int64_t>(1, frameToSamples(qMax<int64_t>(1, clip.durationFrames)));
-    const qreal minVisibleBySamples = qBound<qreal>(
-        0.00001,
-        (100.0 * static_cast<qreal>(rowCount)) / static_cast<qreal>(clipSamples),
-        1.0);
-    const qreal maxAudioZoom = qBound<qreal>(20.0, 1.0 / qMax<qreal>(0.00001, minVisibleBySamples), 100000.0);
-    const qreal zoom = qBound<qreal>(1.0, state->previewZoom, maxAudioZoom);
-    const qreal visibleFraction = qBound<qreal>(minVisibleBySamples, 1.0 / zoom, 1.0);
-    const qreal maxStart = qMax<qreal>(0.0, 1.0 - visibleFraction);
-    const qreal startNorm = qBound<qreal>(0.0, state->previewPanOffset.x(), maxStart);
-    const qreal endNorm = qBound<qreal>(startNorm, startNorm + visibleFraction, 1.0);
+    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
+        clip, rowCount, state->previewZoom, state->previewPanOffset.x(), state->currentSample);
+    const qreal zoom = viewport.zoom;
+    const qreal visibleFraction = viewport.visibleFraction;
+    const qreal startNorm = viewport.startNorm;
+    const qreal endNorm = viewport.endNorm;
 
     const QString waveformSource = state->audioDynamics.waveformPreviewPostProcessing
         ? QStringLiteral("preview post-processing")
@@ -1100,7 +1093,14 @@ void updateDirectVulkanAudioOverlay(const PreviewInteractionState* state,
     PreviewSurface::AudioDynamicsSettings rawWaveformSettings;
     rawWaveformSettings.waveformPreviewPostProcessing = false;
     (void)queryAudioWaveformEnvelopeForClip(
-        clip, rawWaveformSettings, totalDrawBins, startNorm, endNorm, &waveformMin, &waveformMax);
+        clip,
+        rawWaveformSettings,
+        totalDrawBins,
+        startNorm,
+        endNorm,
+        state->renderSyncMarkers,
+        &waveformMin,
+        &waveformMax);
     const qreal hoverAmplitude = qMax(qAbs(waveformMin.value(hoverBin)), qAbs(waveformMax.value(hoverBin)));
     const int64_t hoverSourceFrame = visibleSourceStart + static_cast<int64_t>(
         std::floor(((static_cast<qreal>(hoverBin) + 0.5) / static_cast<qreal>(totalDrawBins)) *

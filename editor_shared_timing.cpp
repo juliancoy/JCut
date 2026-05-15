@@ -62,6 +62,34 @@ int64_t clipSourceInSamples(const TimelineClip& clip) {
     return sourceFramesToSamples(clip, static_cast<qreal>(clip.sourceInFrame)) + clip.sourceInSubframeSamples;
 }
 
+int64_t playableSampleAtOrAfter(int64_t samplePos,
+                                const QVector<ExportRangeSegment>& ranges,
+                                bool* atOrPastEnd) {
+    if (atOrPastEnd) {
+        *atOrPastEnd = false;
+    }
+    if (ranges.isEmpty()) {
+        return qMax<int64_t>(0, samplePos);
+    }
+
+    const int64_t boundedSample = qMax<int64_t>(0, samplePos);
+    for (const ExportRangeSegment& range : ranges) {
+        const int64_t startSample = frameToSamples(range.startFrame);
+        const int64_t endSampleExclusive = frameToSamples(range.endFrame + 1);
+        if (boundedSample < startSample) {
+            return startSample;
+        }
+        if (boundedSample >= startSample && boundedSample < endSampleExclusive) {
+            return boundedSample;
+        }
+    }
+
+    if (atOrPastEnd) {
+        *atOrPastEnd = true;
+    }
+    return qMax<int64_t>(0, frameToSamples(ranges.constLast().endFrame + 1) - 1);
+}
+
 void normalizeSubframeTiming(int64_t& frame, int64_t& subframeSamples) {
     if (subframeSamples >= kSamplesPerFrame) {
         frame += subframeSamples / kSamplesPerFrame;

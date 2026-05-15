@@ -827,14 +827,17 @@ inline cv::Mat qImageToBgrMat(const QImage& image)
     return bgr;
 }
 
-inline QImage buildScanPreview(const QImage& source, const std::vector<cv::Rect>& detections, int activeTracks)
+inline QImage buildScanPreview(const QImage& source,
+                               const std::vector<cv::Rect>& detections,
+                               int activeTracks,
+                               const QRectF& roiRect = QRectF())
 {
     QVector<QRect> boxes;
     boxes.reserve(static_cast<int>(detections.size()));
     for (const cv::Rect& det : detections) {
         boxes.push_back(QRect(det.x, det.y, det.width, det.height));
     }
-    return jcut::facestream::buildScanPreview(source, boxes, activeTracks);
+    return jcut::facestream::buildScanPreview(source, boxes, activeTracks, roiRect);
 }
 
 inline std::vector<WeightedDetection> filterAndSuppressDetections(std::vector<WeightedDetection> detections,

@@ -11,6 +11,7 @@ private slots:
     void testNormalizedAudioWarpMode();
     void testEffectiveWarpRate();
     void testAudioMasterClockPolicy();
+    void testPlayableSampleAtOrAfterAcrossSpeechRanges();
 };
 
 void TestPlaybackPolicy::testClockSourceRoundTrip() {
@@ -74,6 +75,32 @@ void TestPlaybackPolicy::testAudioMasterClockPolicy() {
                                        PlaybackAudioWarpMode::Varispeed,
                                        1.0,
                                        true));
+}
+
+void TestPlaybackPolicy::testPlayableSampleAtOrAfterAcrossSpeechRanges() {
+    const QVector<ExportRangeSegment> ranges{
+        ExportRangeSegment{10, 19},
+        ExportRangeSegment{30, 39},
+        ExportRangeSegment{50, 59},
+    };
+
+    bool atOrPastEnd = false;
+    QCOMPARE(playableSampleAtOrAfter(frameToSamples(5), ranges, &atOrPastEnd),
+             frameToSamples(10));
+    QVERIFY(!atOrPastEnd);
+
+    QCOMPARE(playableSampleAtOrAfter(frameToSamples(12), ranges, &atOrPastEnd),
+             frameToSamples(12));
+    QVERIFY(!atOrPastEnd);
+
+    QCOMPARE(playableSampleAtOrAfter(frameToSamples(25), ranges, &atOrPastEnd),
+             frameToSamples(30));
+    QVERIFY(!atOrPastEnd);
+
+    const int64_t lastPlayableSample = frameToSamples(60) - 1;
+    QCOMPARE(playableSampleAtOrAfter(frameToSamples(65), ranges, &atOrPastEnd),
+             lastPlayableSample);
+    QVERIFY(atOrPastEnd);
 }
 
 QTEST_MAIN(TestPlaybackPolicy)

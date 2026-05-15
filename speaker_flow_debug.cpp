@@ -42,12 +42,20 @@ QString sanitizeToken(const QString& raw)
 
 QString deriveProjectRootFromTranscriptPath(const QString& transcriptPath)
 {
+    const QFileInfo transcriptInfo(transcriptPath);
+    const QString absoluteTranscriptPath = transcriptInfo.absoluteFilePath();
+    if (absoluteTranscriptPath.trimmed().isEmpty()) {
+        return {};
+    }
     const QRegularExpression re(QStringLiteral("(.*/projects/[^/]+)/.*"));
-    const QRegularExpressionMatch m = re.match(transcriptPath);
+    const QRegularExpressionMatch m = re.match(absoluteTranscriptPath);
     if (m.hasMatch()) {
         return m.captured(1);
     }
-    return QDir::currentPath();
+    if (!absoluteTranscriptPath.trimmed().isEmpty()) {
+        return transcriptInfo.absoluteDir().absolutePath();
+    }
+    return {};
 }
 
 QString makeRunId()
@@ -93,11 +101,15 @@ RunContext openLatestOrCreateRun(const QString& transcriptPath,
     ctx.clipToken = sanitizeToken(clipId.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clipId);
     ctx.videoStem = sanitizeToken(videoStem);
     ctx.projectRoot = deriveProjectRootFromTranscriptPath(transcriptPath);
+    if (ctx.projectRoot.trimmed().isEmpty()) {
+        return ctx;
+    }
     ctx.clipDebugRoot = QDir(ctx.projectRoot).absoluteFilePath(
         QStringLiteral("debug/speaker_flow/%1").arg(ctx.clipToken));
     QDir().mkpath(ctx.clipDebugRoot);
     ctx.runId = latestRunId(ctx.clipDebugRoot);
-    if (ctx.runId.isEmpty()) {
+    ctx.reusedExistingRun = !ctx.runId.isEmpty();
+    if (!ctx.reusedExistingRun) {
         ctx.runId = makeRunId();
     }
     ctx.runDir = QDir(ctx.clipDebugRoot).absoluteFilePath(ctx.runId);
@@ -110,6 +122,7 @@ RunContext createNewRunFrom(const RunContext& base)
     RunContext ctx = base;
     ctx.runId = makeRunId();
     ctx.runDir = QDir(ctx.clipDebugRoot).absoluteFilePath(ctx.runId);
+    ctx.reusedExistingRun = false;
     QDir().mkpath(ctx.runDir);
     return ctx;
 }

@@ -66,6 +66,10 @@ public:
 
     QWidget* widget() const;
     bool isActive() const;
+    bool hasFailed() const;
+    bool updatePending() const;
+    int64_t presentedFrames() const;
+    int64_t lastPresentedSourceFrame() const;
     QString failureReason() const;
     QString backendName() const;
     void setInteractionCallbacks(
@@ -110,5 +114,6 @@ private:
     QString m_failureReason;
     bool m_active = false;
     int64_t m_presentedFrames = 0;
+    int64_t m_lastPresentedSourceFrame = -1;
     DirectVulkanPreviewStats m_stats;
 };
