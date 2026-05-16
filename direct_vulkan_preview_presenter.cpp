@@ -4,6 +4,7 @@
 #include "preview_view_transform.h"
 #include "preview_overlay_model.h"
 #include "editor_shared.h"
+#include "render_internal.h"
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_audio_tab.h"
@@ -1772,6 +1773,14 @@ VkClearValue clipColorForStatus(const TimelineClip& clip,
 VkClearValue facestreamOverlayColor(const PreviewInteractionState* state,
                                    const VulkanPreviewFacestreamOverlay& overlay)
 {
+    if (overlay.source.compare(QStringLiteral("roi"), Qt::CaseInsensitive) == 0) {
+        VkClearValue roi{};
+        roi.color.float32[0] = 1.0f;
+        roi.color.float32[1] = 0.667f;
+        roi.color.float32[2] = 0.2f;
+        roi.color.float32[3] = 0.95f;
+        return roi;
+    }
     if (state &&
         overlay.trackId >= 0 &&
         overlay.trackId == state->transient.hoveredFaceStreamTrackId &&
@@ -3226,8 +3235,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
         return;
     }
+    int64_t presentedSourceFrame = -1;
     if (state) {
-        int64_t presentedSourceFrame = -1;
         VkViewport viewport{};
         viewport.x = 0.0f;
         viewport.y = 0.0f;
@@ -3281,7 +3290,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     QPointF(transform.translationX, transform.translationY),
                     transform.rotation,
                     QPointF(transform.scaleX, transform.scaleY));
-            const QRectF transformedBounds = clipGeometry.bounds;
+            PreviewClipGeometry effectiveClipGeometry = clipGeometry;
+            if (status->sampledFrameNeedsYFlip) {
+                effectiveClipGeometry.clipToScreen.scale(1.0, -1.0);
+                effectiveClipGeometry.bounds =
+                    effectiveClipGeometry.clipToScreen.mapRect(effectiveClipGeometry.localRect);
+            }
+            const QRectF transformedBounds = effectiveClipGeometry.bounds;
             const VkClearRect rect = clearRectFromQRect(transformedBounds, swapSize);
             const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
                                         m_pipeline->isReady() && m_resources->descriptorSet() != VK_NULL_HANDLE;
@@ -3291,12 +3306,33 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!forceChecker && canDrawTexture && status && status->hasFrame && m_frameHandoff && m_frameHandoff->isInitialized()) {
                 QString handoffError;
                 double uploadMs = 0.0;
-                const bool allowCpuUploadFallback = false;
                 handoffAttempted = true;
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->handoffAttempts;
                 }
-                if (m_frameHandoff->uploadFrame(status->frame, allowCpuUploadFallback, &uploadMs, &handoffError)) {
+                const bool handoffOk = [&]() -> bool {
+                    if (status->externalVulkanFrame) {
+                        render_detail::OffscreenVulkanFrame offscreenFrame;
+                        offscreenFrame.physicalDevice = status->externalPhysicalDevice;
+                        offscreenFrame.device = status->externalDevice;
+                        offscreenFrame.queue = status->externalQueue;
+                        offscreenFrame.queueFamilyIndex = status->externalQueueFamilyIndex;
+                        offscreenFrame.image = status->externalImage;
+                        offscreenFrame.imageView = status->externalImageView;
+                        offscreenFrame.imageMemory = status->externalImageMemory;
+                        offscreenFrame.imageLayout = status->externalImageLayout;
+                        offscreenFrame.imageFormat = status->externalImageFormat;
+                        offscreenFrame.readySemaphoreFd = status->externalReadySemaphoreFd;
+                        offscreenFrame.size = status->frameSize;
+                        offscreenFrame.valid = status->hasFrame;
+                        return m_frameHandoff->importOffscreenFrame(offscreenFrame, &handoffError);
+                    }
+                    return m_frameHandoff->uploadFrame(status->frame,
+                                                       false,
+                                                       &uploadMs,
+                                                       &handoffError);
+                }();
+                if (handoffOk) {
                     const jcut::vulkan_detector::VulkanExternalImage external = m_frameHandoff->externalImage();
                     decoderReadbackCandidate.image = m_frameHandoff->image();
                     decoderReadbackCandidate.layout = m_frameHandoff->imageLayout();
@@ -3308,11 +3344,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         stats->lastUploadMs = uploadMs;
                         stats->lastExternalImageSize = external.size;
                         stats->lastHandoffError.clear();
-                        stats->lastHandoffMode = m_frameHandoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::HardwareDirect
-                            ? QStringLiteral("hardware_direct")
-                            : (m_frameHandoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::CpuUpload
-                                   ? QStringLiteral("cpu_upload")
-                                   : QStringLiteral("invalid"));
+                        stats->lastHandoffMode =
+                            m_frameHandoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::HardwareDirect
+                                ? QStringLiteral("hardware_direct")
+                                : (m_frameHandoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::ExternalMemoryImport
+                                       ? QStringLiteral("external_memory_import")
+                                       : (m_frameHandoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::CpuUpload
+                                              ? QStringLiteral("cpu_upload")
+                                              : QStringLiteral("invalid")));
                         const auto& probe = m_frameHandoff->lastProbe();
                         stats->lastProbePath = probe.path;
                         stats->lastProbeReason = probe.reason;
@@ -3345,8 +3384,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     ++stats->activeClipDraws;
                 }
                 VulkanPipeline::Push push{};
-                mvpForVulkanClipTransform(clipGeometry.clipToScreen,
-                                          clipGeometry.localRect,
+                mvpForVulkanClipTransform(effectiveClipGeometry.clipToScreen,
+                                          effectiveClipGeometry.localRect,
                                           swapSize,
                                           push.mvp);
                 push.opacity = static_cast<float>(std::clamp(static_cast<double>(status->grading.opacity), 0.0, 1.0));
@@ -3537,8 +3576,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                clearRectFromQRect(selectionBounds, swapSize),
                                selectionThickness);
             }
-            activeClipGeometry.insert(clip.id, clipGeometry);
-            if (status && status->hasFrame) {
+            activeClipGeometry.insert(clip.id, effectiveClipGeometry);
+            if (status && status->hasFrame && canDrawTexture && sampledFrameReady) {
                 presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
             }
         }
@@ -3559,7 +3598,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
 
-    m_owner->markPresentedSourceFrame(state ? static_cast<int64_t>(state->currentFrame) : -1);
+    m_owner->markPresentedSourceFrame(presentedSourceFrame);
     m_owner->markPresented();
     m_window->frameReady();
     m_owner->markPreviewUpdateDelivered();
@@ -3651,6 +3690,8 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     };
     addDeviceExtension(QByteArrayLiteral(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME));
     addDeviceExtension(QByteArrayLiteral(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME));
+    addDeviceExtension(QByteArrayLiteral(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME));
+    addDeviceExtension(QByteArrayLiteral(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME));
     addDeviceExtension(QByteArrayLiteral(VK_KHR_BIND_MEMORY_2_EXTENSION_NAME));
     if (!requestedDeviceExtensions.isEmpty()) {
         m_window->setDeviceExtensions(requestedDeviceExtensions);
@@ -3901,7 +3942,8 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
         return;
     }
 
-    if (!vulkanPreviewDebugChromeEnabled() && m_failureReason.trimmed().isEmpty()) {
+    const bool showOverlayLabel = !m_failureReason.trimmed().isEmpty();
+    if (!vulkanPreviewDebugChromeEnabled() && !showOverlayLabel) {
         m_placeholder->setStyleSheet(QStringLiteral("background:#05080d; border:0;"));
         if (m_statusLabel) {
             m_statusLabel->hide();
@@ -3933,9 +3975,13 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
     if (!m_statusLabel) {
         return;
     }
+    if (!showOverlayLabel) {
+        m_statusLabel->hide();
+        return;
+    }
     m_statusLabel->show();
-    const int labelWidth = std::max(24, m_placeholder->width() - 6);
-    m_statusLabel->setGeometry(3, 3, labelWidth, 24);
+    const int labelWidth = std::max(240, m_placeholder->width() - 24);
+    m_statusLabel->setGeometry(12, 12, labelWidth, 28);
     m_statusLabel->raise();
 
     int ready = 0;
@@ -3965,20 +4011,10 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
     }
 
     const QString error = m_stats.lastHandoffError.trimmed();
-    m_statusLabel->setText(QStringLiteral(
-        "Vulkan %1 | ready %2 exact %3 tex %4 hwf %5 cpu %6 miss %7 | req %8 shown %9 | draw %10 fail %11%12")
-        .arg(state)
-        .arg(ready)
-        .arg(exact)
-        .arg(gpuTexture)
-        .arg(hardwareFrame)
-        .arg(cpu)
-        .arg(missing)
-        .arg(requestedFrame)
-        .arg(presentedFrame)
-        .arg(m_stats.textureDraws)
-        .arg(m_stats.explicitFailureDraws)
-        .arg(error.isEmpty() ? QString() : QStringLiteral(" | ") + error));
+    m_statusLabel->setText(
+        error.isEmpty()
+            ? QStringLiteral("Vulkan preview failure: %1").arg(state)
+            : QStringLiteral("Vulkan preview failure: %1 | %2").arg(state, error));
 }
 
 void DirectVulkanPreviewPresenter::updateAudioOverlay()

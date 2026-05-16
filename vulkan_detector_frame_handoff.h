@@ -7,12 +7,17 @@
 #include <QString>
 #include <QtGlobal>
 
+namespace render_detail {
+struct OffscreenVulkanFrame;
+}
+
 namespace jcut::vulkan_detector {
 
 enum class FrameHandoffMode {
     Invalid = 0,
     CpuUpload = 1,
     HardwareDirect = 2,
+    ExternalMemoryImport = 3,
 };
 
 struct HardwareInteropProbeResult {
@@ -46,6 +51,8 @@ public:
                      bool allowCpuUploadFallback,
                      double* uploadMs = nullptr,
                      QString* errorMessage = nullptr);
+    bool importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
+                              QString* errorMessage = nullptr);
     QString lastHardwareDirectAttemptReason() const { return m_lastHardwareDirectAttemptReason; }
 
     VulkanExternalImage externalImage() const;
@@ -69,6 +76,11 @@ private:
     bool ensureImageResources(const QSize& size,
                               VkFormat format,
                               QString* errorMessage);
+    bool ensureImportedImageResources(const QSize& size,
+                                      VkFormat format,
+                                      QString* errorMessage);
+    bool copyImportedFrameToLocal(VkImageLayout sourceLayout,
+                                  QString* errorMessage);
     bool ensureStagingBuffer(VkDeviceSize bytes, QString* errorMessage);
     void transitionImage(VkImageLayout oldLayout, VkImageLayout newLayout);
     void destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory);
@@ -87,6 +99,15 @@ private:
     VkImageLayout m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat m_imageFormat = VK_FORMAT_UNDEFINED;
     QSize m_imageSize;
+    bool m_imageImported = false;
+    VkDevice m_importSourceDevice = VK_NULL_HANDLE;
+    VkDeviceMemory m_importSourceMemory = VK_NULL_HANDLE;
+    VkImage m_importedImage = VK_NULL_HANDLE;
+    VkDeviceMemory m_importedImageMemory = VK_NULL_HANDLE;
+    VkImageView m_importedImageView = VK_NULL_HANDLE;
+    VkImageLayout m_importedImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkFormat m_importedImageFormat = VK_FORMAT_UNDEFINED;
+    QSize m_importedImageSize;
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;

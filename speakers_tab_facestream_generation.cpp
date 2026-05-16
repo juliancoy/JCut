@@ -1,6 +1,7 @@
 #include "speakers_tab.h"
 #include "speaker_flow_debug.h"
 
+#include "clip_serialization.h"
 #include "facestream_runtime.h"
 #include "detector_settings.h"
 #include "editor_shared.h"
@@ -8,7 +9,6 @@
 #include "transcript_engine.h"
 
 #include <QApplication>
-#include <QCheckBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDialog>
@@ -273,94 +273,37 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const int64_t startFrame = qMax<int64_t>(0, selectedClip->sourceInFrame);
     const int64_t maxFrames = qMax<int64_t>(0, selectedClip->durationFrames);
 
-    QDialog preflightDialog;
-    preflightDialog.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator"));
-    preflightDialog.setWindowFlag(Qt::Window, true);
-    preflightDialog.resize(760, 420);
-    auto* layout = new QVBoxLayout(&preflightDialog);
-    layout->setContentsMargins(12, 12, 12, 12);
-    layout->setSpacing(8);
-    auto* infoLabel = new QLabel(
-        QStringLiteral("This flow launches the generated FaceStream artifact pipeline, then imports its continuity tracks for the selected clip.\n\n"
-                       "Detector: SCRFD ncnn Vulkan only. CPU detector fallback is not used."),
-        &preflightDialog);
-    infoLabel->setWordWrap(true);
-    layout->addWidget(infoLabel);
-    auto* artifactLabel = new QLabel(
-        QStringLiteral("Artifact: facestream.part + tracks.bin + continuity_facestream.bin. Interrupted runs resume from facestream.part."),
-        &preflightDialog);
-    artifactLabel->setWordWrap(true);
-    artifactLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
-    layout->addWidget(artifactLabel);
-    auto* livePreviewCheckbox = new QCheckBox(QStringLiteral("Show live preview"), &preflightDialog);
-    livePreviewCheckbox->setChecked(true);
-    layout->addWidget(livePreviewCheckbox);
-    DetectorSettingsPanel detectorPanel =
-        createDetectorSettingsPanel(
+    const FaceStreamPreflightDialogResult preflight =
+        runFaceStreamPreflightDialog(
             &detectorSettings,
             QStringLiteral("scrfd-ncnn-vulkan"),
             kFaceStreamScrfdTargetSize,
             detectorSettingsPath,
-            &preflightDialog);
-    layout->addWidget(detectorPanel.widget);
-    auto buildArgsForPreflight = [&]() {
-        QStringList args{
-            mediaPath,
-            QStringLiteral("--detector"), QStringLiteral("scrfd-ncnn-vulkan"),
-            QStringLiteral("--stride"), QString::number(qMax(1, detectorSettings.stride)),
-            QStringLiteral("--threshold"), QString::number(detectorSettings.threshold, 'f', 4),
-            QStringLiteral("--nms-iou"), QString::number(detectorSettings.nmsIouThreshold, 'f', 4),
-            QStringLiteral("--track-match-iou"), QString::number(detectorSettings.trackMatchIouThreshold, 'f', 4),
-            QStringLiteral("--new-track-min-confidence"), QString::number(detectorSettings.newTrackMinConfidence, 'f', 4),
-            QStringLiteral("--max-faces-per-frame"), QString::number(qMax(0, detectorSettings.maxFacesPerFrame)),
-            QStringLiteral("--scrfd-target-size"), QString::number(kFaceStreamScrfdTargetSize),
-            QStringLiteral("--start-frame"), QString::number(startFrame),
-            QStringLiteral("--quiet"),
-            QStringLiteral("--progress"),
-            QStringLiteral("--out-dir"), artifactDir
-        };
-        args << (detectorSettings.primaryFaceOnly
-                    ? QStringLiteral("--primary-face-only")
-                    : QStringLiteral("--multi-face"));
-        args << (detectorSettings.smallFaceFallback
-                    ? QStringLiteral("--small-face-fallback")
-                    : QStringLiteral("--no-small-face-fallback"));
-        args << QStringLiteral("--require-zero-copy");
-        args << (livePreviewCheckbox->isChecked()
-                    ? QStringLiteral("--preview-window")
-                    : QStringLiteral("--no-preview-window"));
-        args << QStringLiteral("--no-preview-files");
-        if (maxFrames > 0) {
-            args << QStringLiteral("--max-frames") << QString::number(maxFrames);
-        }
-        return args;
-    };
-
-    auto* buttons = new QHBoxLayout;
-    buttons->addStretch(1);
-    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &preflightDialog);
-    auto* proceedButton = new QPushButton(QStringLiteral("Proceed"), &preflightDialog);
-    buttons->addWidget(cancelButton);
-    buttons->addWidget(proceedButton);
-    layout->addLayout(buttons);
-    connect(cancelButton, &QPushButton::clicked, &preflightDialog, &QDialog::reject);
-    connect(proceedButton, &QPushButton::clicked, &preflightDialog, &QDialog::accept);
-    if (preflightDialog.exec() != QDialog::Accepted) {
+            FaceStreamPreflightDialogOptions{
+                QStringLiteral("JCut DNN FaceStream Generator"),
+                QStringLiteral("This flow launches the generated FaceStream detection artifact pipeline, then imports its raw face detections for the selected clip.\n\n"
+                               "Detector: SCRFD ncnn Vulkan only. CPU detector fallback is not used."),
+                QStringLiteral("Artifact: facestream.part + tracks.bin + continuity_facestream.bin. Interrupted runs resume from facestream.part. Track processing now runs in a later step."),
+                QStringLiteral("Proceed"),
+                QStringLiteral("Cancel"),
+                QSize(760, 420),
+                true,
+                true,
+                false,
+                true,
+                false,
+                QStringLiteral("Apply selected clip grading during detection")
+            });
+    if (!preflight.accepted) {
         return;
     }
-    QString saveDetectorSettingsError;
-    if (!saveDetectorRuntimeSettingsFile(
-            detectorSettingsPath,
-            detectorSettings,
-            QStringLiteral("scrfd-ncnn-vulkan"),
-            kFaceStreamScrfdTargetSize,
-            &saveDetectorSettingsError)) {
+    if (!preflight.saveError.trimmed().isEmpty()) {
         QMessageBox::warning(
             nullptr,
             QStringLiteral("JCut DNN FaceStream Generator"),
-            saveDetectorSettingsError.isEmpty()
+            preflight.saveError.isEmpty()
                 ? QStringLiteral("Failed to save detector settings before launch.")
-                : saveDetectorSettingsError);
+                : preflight.saveError);
         return;
     }
 
@@ -370,6 +313,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const QString tracksPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("tracks.bin"));
     const QString summaryPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("summary.json"));
     const QString facestreamPartPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("facestream.part"));
+    const QString clipJsonPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("clip_input.json"));
     const QString indexPath = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("index.json"));
 
     QStringList args{
@@ -378,8 +322,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QStringLiteral("--stride"), QString::number(qMax(1, detectorSettings.stride)),
         QStringLiteral("--threshold"), QString::number(detectorSettings.threshold, 'f', 4),
         QStringLiteral("--nms-iou"), QString::number(detectorSettings.nmsIouThreshold, 'f', 4),
-        QStringLiteral("--track-match-iou"), QString::number(detectorSettings.trackMatchIouThreshold, 'f', 4),
-        QStringLiteral("--new-track-min-confidence"), QString::number(detectorSettings.newTrackMinConfidence, 'f', 4),
         QStringLiteral("--max-faces-per-frame"), QString::number(qMax(0, detectorSettings.maxFacesPerFrame)),
         QStringLiteral("--scrfd-target-size"), QString::number(kFaceStreamScrfdTargetSize),
         QStringLiteral("--start-frame"), QString::number(startFrame),
@@ -387,19 +329,30 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QStringLiteral("--progress"),
         QStringLiteral("--out-dir"), artifactDir
     };
-    args << (detectorSettings.primaryFaceOnly
-                ? QStringLiteral("--primary-face-only")
-                : QStringLiteral("--multi-face"));
     args << (detectorSettings.smallFaceFallback
                 ? QStringLiteral("--small-face-fallback")
                 : QStringLiteral("--no-small-face-fallback"));
     args << QStringLiteral("--require-zero-copy");
-    args << (livePreviewCheckbox->isChecked()
+    args << (preflight.livePreview
                 ? QStringLiteral("--preview-window")
                 : QStringLiteral("--no-preview-window"));
     args << QStringLiteral("--no-preview-files");
     if (maxFrames > 0) {
         args << QStringLiteral("--max-frames") << QString::number(maxFrames);
+    }
+    if (preflight.applyClipGrading) {
+        QFile clipFile(clipJsonPath);
+        if (!clipFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(
+                nullptr,
+                QStringLiteral("JCut DNN FaceStream Generator"),
+                QStringLiteral("Failed to write clip grading input: %1").arg(clipJsonPath));
+            return;
+        }
+        clipFile.write(QJsonDocument(editor::clipToJson(*selectedClip)).toJson(QJsonDocument::Indented));
+        clipFile.close();
+        args << QStringLiteral("--clip-json") << clipJsonPath;
+        args << QStringLiteral("--apply-clip-grading");
     }
 
     QJsonObject request;
@@ -423,6 +376,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     request[QStringLiteral("tracks_bin")] = tracksPath;
     request[QStringLiteral("continuity_facestream_bin")] = outputPath;
     request[QStringLiteral("summary_json")] = summaryPath;
+    request[QStringLiteral("clip_json")] = preflight.applyClipGrading ? clipJsonPath : QString();
+    request[QStringLiteral("apply_clip_grading")] = preflight.applyClipGrading;
     request[QStringLiteral("arguments")] = args.join(QLatin1Char(' '));
     QFile reqFile(requestPath);
     if (reqFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -440,7 +395,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         return;
     }
     const FaceStreamProcessResult processResult =
-        runFaceStreamGeneratorProcess(nullptr, generatorProgram, args, livePreviewCheckbox->isChecked());
+        runFaceStreamGeneratorProcess(nullptr, generatorProgram, args, preflight.livePreview);
     if (!processResult.started) {
         QMessageBox::warning(
             nullptr,
@@ -503,21 +458,22 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         return;
     }
 
-    continuityRoot[QStringLiteral("raw_tracks")] = rawTracksArtifact.value(QStringLiteral("tracks")).toArray();
-    continuityRoot[QStringLiteral("raw_frames")] = rawTracksArtifact.value(QStringLiteral("frames")).toArray();
+    const QJsonArray rawTracks = rawTracksArtifact.value(QStringLiteral("tracks")).toArray();
+    const QJsonArray rawFrames = rawTracksArtifact.value(QStringLiteral("frames")).toArray();
+    continuityRoot[QStringLiteral("raw_tracks")] = rawTracks;
+    continuityRoot[QStringLiteral("raw_frames")] = rawFrames;
     continuityRoot[QStringLiteral("raw_schema")] = rawTracksArtifact.value(QStringLiteral("schema")).toString();
     if (!continuityRoot.contains(QStringLiteral("detector_mode"))) {
         continuityRoot[QStringLiteral("detector_mode")] = rawTracksArtifact.value(QStringLiteral("backend")).toString();
     }
 
-    const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
-    if (streams.isEmpty()) {
-        const QString noTracksMessage = QStringLiteral("Generated FaceStream artifact contains no usable raw FaceStream tracks for this clip.");
+    if (rawTracks.isEmpty() && rawFrames.isEmpty()) {
+        const QString noDetectionsMessage = QStringLiteral("Generated FaceStream artifact contains no raw face detections for this clip.");
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
-            noTracksMessage, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), noTracksMessage);
+            noDetectionsMessage, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), noDetectionsMessage);
         return;
     }
     continuityRoot[QStringLiteral("run_id")] = debugRun.runId;
@@ -536,8 +492,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         clipId,
         continuityRoot,
         &artifactRoot);
-    bool savedProcessed = false;
-    if (saved) {
+    bool savedProcessed = true;
+    if (saved && !rawTracks.isEmpty()) {
         savedProcessed = jcut::facestream::saveProcessedContinuityArtifact(
             m_loadedTranscriptPath,
             clipId,
@@ -546,8 +502,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             nullptr);
     }
     QString statusMessage = saved
-        ? QStringLiteral("Imported generated FaceStream artifact.")
+        ? QStringLiteral("Imported generated FaceStream detection artifact.")
         : QStringLiteral("Generated FaceStream artifact, but failed to save transcript artifact.");
+    if (saved && rawTracks.isEmpty()) {
+        statusMessage += QStringLiteral(" Track processing now runs in a later step.");
+    }
     if (saved && !savedProcessed) {
         statusMessage += QStringLiteral(" Processed FaceStream sidecar rebuild failed.");
     }
@@ -573,8 +532,9 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     QMessageBox::information(
         nullptr,
         QStringLiteral("JCut DNN FaceStream Generator"),
-        QStringLiteral("Imported %1 FaceStream path(s).\n\nArtifact: %2")
-            .arg(streams.size())
+        QStringLiteral("Imported raw FaceStream detection artifact.\n\nFrames: %1\nTracks: %2\nArtifact: %3")
+            .arg(rawFrames.size())
+            .arg(rawTracks.size())
             .arg(artifactDir));
     refresh();
 }

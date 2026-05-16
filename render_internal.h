@@ -205,7 +205,10 @@ struct OffscreenVulkanFrame {
     uint32_t queueFamilyIndex = UINT32_MAX;
     VkImage image = VK_NULL_HANDLE;
     VkImageView imageView = VK_NULL_HANDLE;
+    VkDeviceMemory imageMemory = VK_NULL_HANDLE;
     VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkFormat imageFormat = VK_FORMAT_UNDEFINED;
+    int readySemaphoreFd = -1;
     QSize size;
     bool queueSupportsCompute = false;
     bool valid = false;

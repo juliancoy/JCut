@@ -363,6 +363,7 @@ endif()
 set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/async_decoder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decode_trace.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/detector_settings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decoder_context.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decoder_ffmpeg_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decoder_image_io.cpp

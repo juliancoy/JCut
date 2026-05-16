@@ -2,6 +2,7 @@
 
 #include <QCheckBox>
 #include <QDebug>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -9,6 +10,7 @@
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QPushButton>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -51,7 +53,7 @@ QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& s,
 {
     return {
         {QStringLiteral("detector"), detector},
-        {QStringLiteral("scrfd_target_size"), scrfdTargetSize},
+        {QStringLiteral("scrfd_target_size"), s.scrfdTargetSize > 0 ? s.scrfdTargetSize : scrfdTargetSize},
         {QStringLiteral("stride"), s.stride},
         {QStringLiteral("max_detections"), s.maxDetections},
         {QStringLiteral("max_faces_per_frame"), s.maxFacesPerFrame},
@@ -61,6 +63,7 @@ QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& s,
         {QStringLiteral("new_track_min_confidence"), s.newTrackMinConfidence},
         {QStringLiteral("primary_face_only"), s.primaryFaceOnly},
         {QStringLiteral("small_face_fallback"), s.smallFaceFallback},
+        {QStringLiteral("scrfd_tiled"), s.scrfdTiled},
         {QStringLiteral("roi_x1"), s.roiX1},
         {QStringLiteral("roi_y1"), s.roiY1},
         {QStringLiteral("roi_x2"), s.roiX2},
@@ -77,6 +80,7 @@ bool applyDetectorRuntimeSettingsObject(const QJsonObject& o, DetectorRuntimeSet
     if (!s) return false;
     if (o.contains(QStringLiteral("stride"))) s->stride = std::max(1, o.value(QStringLiteral("stride")).toInt(s->stride));
     if (o.contains(QStringLiteral("max_detections"))) s->maxDetections = std::max(1, o.value(QStringLiteral("max_detections")).toInt(s->maxDetections));
+    if (o.contains(QStringLiteral("scrfd_target_size"))) s->scrfdTargetSize = std::max(320, o.value(QStringLiteral("scrfd_target_size")).toInt(s->scrfdTargetSize));
     if (o.contains(QStringLiteral("max_faces_per_frame"))) s->maxFacesPerFrame = std::max(0, o.value(QStringLiteral("max_faces_per_frame")).toInt(s->maxFacesPerFrame));
     if (o.contains(QStringLiteral("threshold"))) s->threshold = std::clamp(static_cast<float>(o.value(QStringLiteral("threshold")).toDouble(s->threshold)), 0.0f, 1.0f);
     if (o.contains(QStringLiteral("nms_iou_threshold"))) s->nmsIouThreshold = std::clamp(static_cast<float>(o.value(QStringLiteral("nms_iou_threshold")).toDouble(s->nmsIouThreshold)), 0.0f, 1.0f);
@@ -84,6 +88,7 @@ bool applyDetectorRuntimeSettingsObject(const QJsonObject& o, DetectorRuntimeSet
     if (o.contains(QStringLiteral("new_track_min_confidence"))) s->newTrackMinConfidence = std::clamp(static_cast<float>(o.value(QStringLiteral("new_track_min_confidence")).toDouble(s->newTrackMinConfidence)), 0.0f, 1.0f);
     if (o.contains(QStringLiteral("primary_face_only"))) s->primaryFaceOnly = o.value(QStringLiteral("primary_face_only")).toBool(s->primaryFaceOnly);
     if (o.contains(QStringLiteral("small_face_fallback"))) s->smallFaceFallback = o.value(QStringLiteral("small_face_fallback")).toBool(s->smallFaceFallback);
+    if (o.contains(QStringLiteral("scrfd_tiled"))) s->scrfdTiled = o.value(QStringLiteral("scrfd_tiled")).toBool(s->scrfdTiled);
     if (o.contains(QStringLiteral("roi_x1"))) s->roiX1 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_x1")).toDouble(s->roiX1)), 0.0f, 1.0f);
     if (o.contains(QStringLiteral("roi_y1"))) s->roiY1 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_y1")).toDouble(s->roiY1)), 0.0f, 1.0f);
     if (o.contains(QStringLiteral("roi_x2"))) s->roiX2 = std::clamp(static_cast<float>(o.value(QStringLiteral("roi_x2")).toDouble(s->roiX2)), 0.0f, 1.0f);
@@ -130,7 +135,10 @@ bool saveDetectorRuntimeSettingsFile(const QString& path,
         if (errorMessage) *errorMessage = QStringLiteral("failed to write detector settings: %1").arg(path);
         return false;
     }
-    f.write(QJsonDocument(detectorRuntimeSettingsToJson(settings, detector, scrfdTargetSize)).toJson(QJsonDocument::Indented));
+    f.write(QJsonDocument(detectorRuntimeSettingsToJson(
+        settings,
+        detector,
+        settings.scrfdTargetSize > 0 ? settings.scrfdTargetSize : scrfdTargetSize)).toJson(QJsonDocument::Indented));
     f.write("\n");
     return true;
 }
@@ -138,40 +146,118 @@ bool saveDetectorRuntimeSettingsFile(const QString& path,
 void syncDetectorSettingsPanel(DetectorSettingsPanel* panel, const DetectorRuntimeSettings& s)
 {
     if (!panel || !panel->widget) return;
-    panel->threshold->setValue(qRound(s.threshold * 100.0f));
-    panel->thresholdValue->setText(percentText(s.threshold));
-    panel->nms->setValue(qRound(s.nmsIouThreshold * 100.0f));
-    panel->nmsValue->setText(percentText(s.nmsIouThreshold));
-    panel->trackMatch->setValue(qRound(s.trackMatchIouThreshold * 100.0f));
-    panel->trackMatchValue->setText(percentText(s.trackMatchIouThreshold));
-    panel->newTrack->setValue(qRound(s.newTrackMinConfidence * 100.0f));
-    panel->newTrackValue->setText(percentText(s.newTrackMinConfidence));
-    panel->roiX1->setValue(qRound(s.roiX1 * 100.0f));
-    panel->roiX1Value->setText(percentText(s.roiX1));
-    panel->roiY1->setValue(qRound(s.roiY1 * 100.0f));
-    panel->roiY1Value->setText(percentText(s.roiY1));
-    panel->roiX2->setValue(qRound(s.roiX2 * 100.0f));
-    panel->roiX2Value->setText(percentText(s.roiX2));
-    panel->roiY2->setValue(qRound(s.roiY2 * 100.0f));
-    panel->roiY2Value->setText(percentText(s.roiY2));
-    panel->minArea->setValue(qRound(s.minFaceAreaRatio * 100000.0f));
-    panel->minAreaValue->setText(areaRatioText(s.minFaceAreaRatio));
-    panel->maxArea->setValue(qRound(s.maxFaceAreaRatio * 100000.0f));
-    panel->maxAreaValue->setText(areaRatioText(s.maxFaceAreaRatio));
-    panel->minAspect->setValue(qRound(s.minAspect * 100.0f));
-    panel->minAspectValue->setText(aspectText(s.minAspect));
-    panel->maxAspect->setValue(qRound(s.maxAspect * 100.0f));
-    panel->maxAspectValue->setText(aspectText(s.maxAspect));
-    panel->maxFaces->setValue(s.maxFacesPerFrame);
-    panel->maxFacesValue->setText(s.maxFacesPerFrame == 0 ? QStringLiteral("unlimited") : QString::number(s.maxFacesPerFrame));
-    panel->primaryFaceOnly->setChecked(s.primaryFaceOnly);
-    panel->smallFaceFallback->setChecked(s.smallFaceFallback);
+    if (panel->threshold) {
+        panel->threshold->setValue(qRound(s.threshold * 100.0f));
+    }
+    if (panel->thresholdValue) {
+        panel->thresholdValue->setText(percentText(s.threshold));
+    }
+    if (panel->nms) {
+        panel->nms->setValue(qRound(s.nmsIouThreshold * 100.0f));
+    }
+    if (panel->nmsValue) {
+        panel->nmsValue->setText(percentText(s.nmsIouThreshold));
+    }
+    if (panel->trackMatch) {
+        panel->trackMatch->setValue(qRound(s.trackMatchIouThreshold * 100.0f));
+    }
+    if (panel->trackMatchValue) {
+        panel->trackMatchValue->setText(percentText(s.trackMatchIouThreshold));
+    }
+    if (panel->newTrack) {
+        panel->newTrack->setValue(qRound(s.newTrackMinConfidence * 100.0f));
+    }
+    if (panel->newTrackValue) {
+        panel->newTrackValue->setText(percentText(s.newTrackMinConfidence));
+    }
+    if (panel->roiX1) {
+        panel->roiX1->setValue(qRound(s.roiX1 * 100.0f));
+    }
+    if (panel->roiX1Value) {
+        panel->roiX1Value->setText(percentText(s.roiX1));
+    }
+    if (panel->roiY1) {
+        panel->roiY1->setValue(qRound(s.roiY1 * 100.0f));
+    }
+    if (panel->roiY1Value) {
+        panel->roiY1Value->setText(percentText(s.roiY1));
+    }
+    if (panel->roiX2) {
+        panel->roiX2->setValue(qRound(s.roiX2 * 100.0f));
+    }
+    if (panel->roiX2Value) {
+        panel->roiX2Value->setText(percentText(s.roiX2));
+    }
+    if (panel->roiY2) {
+        panel->roiY2->setValue(qRound(s.roiY2 * 100.0f));
+    }
+    if (panel->roiY2Value) {
+        panel->roiY2Value->setText(percentText(s.roiY2));
+    }
+    if (panel->minArea) {
+        panel->minArea->setValue(qRound(s.minFaceAreaRatio * 100000.0f));
+    }
+    if (panel->minAreaValue) {
+        panel->minAreaValue->setText(areaRatioText(s.minFaceAreaRatio));
+    }
+    if (panel->maxArea) {
+        panel->maxArea->setValue(qRound(s.maxFaceAreaRatio * 100000.0f));
+    }
+    if (panel->maxAreaValue) {
+        panel->maxAreaValue->setText(areaRatioText(s.maxFaceAreaRatio));
+    }
+    if (panel->minAspect) {
+        panel->minAspect->setValue(qRound(s.minAspect * 100.0f));
+    }
+    if (panel->minAspectValue) {
+        panel->minAspectValue->setText(aspectText(s.minAspect));
+    }
+    if (panel->maxAspect) {
+        panel->maxAspect->setValue(qRound(s.maxAspect * 100.0f));
+    }
+    if (panel->maxAspectValue) {
+        panel->maxAspectValue->setText(aspectText(s.maxAspect));
+    }
+    if (panel->maxFaces) {
+        panel->maxFaces->setValue(s.maxFacesPerFrame);
+    }
+    if (panel->maxFacesValue) {
+        panel->maxFacesValue->setText(s.maxFacesPerFrame == 0 ? QStringLiteral("unlimited") : QString::number(s.maxFacesPerFrame));
+    }
+    if (panel->primaryFaceOnly) {
+        panel->primaryFaceOnly->setChecked(s.primaryFaceOnly);
+    }
+    if (panel->smallFaceFallback) {
+        panel->smallFaceFallback->setChecked(s.smallFaceFallback);
+    }
+    if (panel->scrfdTiled) {
+        panel->scrfdTiled->setChecked(s.scrfdTiled);
+    }
+    if (panel->stride) {
+        panel->stride->setValue(s.stride);
+    }
+    if (panel->strideValue) {
+        panel->strideValue->setText(QString::number(s.stride));
+    }
+    if (panel->maxDetections) {
+        panel->maxDetections->setValue(s.maxDetections);
+    }
+    if (panel->maxDetectionsValue) {
+        panel->maxDetectionsValue->setText(QString::number(s.maxDetections));
+    }
+    if (panel->scrfdTargetSize) {
+        panel->scrfdTargetSize->setValue(s.scrfdTargetSize);
+    }
+    if (panel->scrfdTargetSizeValue) {
+        panel->scrfdTargetSizeValue->setText(QString::number(s.scrfdTargetSize));
+    }
 }
 
 DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* settings,
                                                   const QString& detector,
                                                   int scrfdTargetSize,
                                                   const QString& settingsPath,
+                                                  bool showTrackingControls,
                                                   QWidget* parent)
 {
     DetectorSettingsPanel panel;
@@ -184,7 +270,11 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
     const auto syncing = std::make_shared<bool>(false);
     auto persist = [settings, detector, scrfdTargetSize, settingsPath]() {
         QString error;
-        if (!saveDetectorRuntimeSettingsFile(settingsPath, *settings, detector, scrfdTargetSize, &error) && !error.isEmpty()) {
+        if (!saveDetectorRuntimeSettingsFile(settingsPath,
+                                             *settings,
+                                             detector,
+                                             settings && settings->scrfdTargetSize > 0 ? settings->scrfdTargetSize : scrfdTargetSize,
+                                             &error) && !error.isEmpty()) {
             qWarning().noquote() << error;
         }
     };
@@ -217,6 +307,22 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
         *labelOut = valueLabel;
     };
 
+    addSlider(QStringLiteral("Stride"),
+              QStringLiteral("Run detection every Nth source frame. Lower values improve recall and preview responsiveness; higher values are faster but can skip faces between samples."),
+              1, 120, settings->stride, &panel.stride, &panel.strideValue,
+              [](int v) { return QString::number(v); }, [settings](int v) { settings->stride = std::max(1, v); });
+    addSlider(QStringLiteral("Max detections"),
+              QStringLiteral("Maximum number of raw detector boxes kept before post-filtering. Raise this for crowded scenes or panels; lower it to reduce duplicate/noisy candidates."),
+              1, 1024, settings->maxDetections, &panel.maxDetections, &panel.maxDetectionsValue,
+              [](int v) { return QString::number(v); }, [settings](int v) { settings->maxDetections = std::max(1, v); });
+    const bool scrfdFamily = detector.contains(QStringLiteral("scrfd"), Qt::CaseInsensitive) ||
+                             detector.compare(QStringLiteral("jcut-dnn"), Qt::CaseInsensitive) == 0;
+    if (scrfdFamily) {
+        addSlider(QStringLiteral("SCRFD target"),
+                  QStringLiteral("Input size for the SCRFD model. Raise this to improve small-face recall at higher GPU cost; lower it for speed."),
+                  320, 1280, settings->scrfdTargetSize, &panel.scrfdTargetSize, &panel.scrfdTargetSizeValue,
+                  [](int v) { return QString::number(v); }, [settings](int v) { settings->scrfdTargetSize = std::max(320, v); });
+    }
     addSlider(QStringLiteral("Confidence threshold"),
               QStringLiteral("Minimum detector confidence accepted as a face. Lower this to catch smaller or blurrier faces; raise it to reject false positives such as text, hands, or background shapes."),
               1, 99, qRound(settings->threshold * 100.0f), &panel.threshold, &panel.thresholdValue,
@@ -225,14 +331,16 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
               QStringLiteral("Overlap threshold for merging duplicate face boxes. Lower values suppress nearby duplicate boxes more aggressively; higher values keep more overlapping detections."),
               0, 100, qRound(settings->nmsIouThreshold * 100.0f), &panel.nms, &panel.nmsValue,
               [](int v) { return percentText(v / 100.0f); }, [settings](int v) { settings->nmsIouThreshold = v / 100.0f; });
-    addSlider(QStringLiteral("Track match IoU"),
-              QStringLiteral("How much a new detection must overlap an existing track to continue it. Lower values tolerate camera/subject motion; higher values prevent unrelated faces from stealing a track."),
-              0, 100, qRound(settings->trackMatchIouThreshold * 100.0f), &panel.trackMatch, &panel.trackMatchValue,
-              [](int v) { return percentText(v / 100.0f); }, [settings](int v) { settings->trackMatchIouThreshold = v / 100.0f; });
-    addSlider(QStringLiteral("New track confidence"),
-              QStringLiteral("Minimum confidence required to create a brand-new track. Lower this when valid faces are not starting tracks; raise it if noisy detections create extra tracks."),
-              1, 99, qRound(settings->newTrackMinConfidence * 100.0f), &panel.newTrack, &panel.newTrackValue,
-              [](int v) { return percentText(v / 100.0f); }, [settings](int v) { settings->newTrackMinConfidence = v / 100.0f; });
+    if (showTrackingControls) {
+        addSlider(QStringLiteral("Track match IoU"),
+                  QStringLiteral("How much a new detection must overlap an existing track to continue it. Lower values tolerate camera/subject motion; higher values prevent unrelated faces from stealing a track."),
+                  0, 100, qRound(settings->trackMatchIouThreshold * 100.0f), &panel.trackMatch, &panel.trackMatchValue,
+                  [](int v) { return percentText(v / 100.0f); }, [settings](int v) { settings->trackMatchIouThreshold = v / 100.0f; });
+        addSlider(QStringLiteral("New track confidence"),
+                  QStringLiteral("Minimum confidence required to create a brand-new track. Lower this when valid faces are not starting tracks; raise it if noisy detections create extra tracks."),
+                  1, 99, qRound(settings->newTrackMinConfidence * 100.0f), &panel.newTrack, &panel.newTrackValue,
+                  [](int v) { return percentText(v / 100.0f); }, [settings](int v) { settings->newTrackMinConfidence = v / 100.0f; });
+    }
     addSlider(QStringLiteral("ROI left"),
               QStringLiteral("Left edge of the allowed face region as a percent of frame width. Raise this to ignore detections on the far left."),
               0, 100, qRound(settings->roiX1 * 100.0f), &panel.roiX1, &panel.roiX1Value,
@@ -284,18 +392,20 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
                   if (settings->maxAspect < settings->minAspect) std::swap(settings->minAspect, settings->maxAspect);
               });
     addSlider(QStringLiteral("Max faces/frame"),
-              QStringLiteral("Maximum accepted faces per processed frame after filtering. 0 means unlimited. Use 1 or Primary mode for single-speaker videos; increase for panels or crowds."),
+              QStringLiteral("Maximum accepted faces per processed frame after filtering. 0 means unlimited. Use lower values for single-speaker videos and higher values for panels or crowds."),
               0, 64, settings->maxFacesPerFrame, &panel.maxFaces, &panel.maxFacesValue,
               [](int v) { return v == 0 ? QStringLiteral("unlimited") : QString::number(v); }, [settings](int v) { settings->maxFacesPerFrame = v; });
 
-    panel.primaryFaceOnly = new QCheckBox(QStringLiteral("Keep only strongest face"), panel.widget);
-    panel.primaryFaceOnly->setToolTip(QStringLiteral("When enabled, only the strongest face detection is kept and only one track is allowed. Use this for single-subject clips to avoid track explosions."));
-    form->addRow(QStringLiteral("Primary mode"), panel.primaryFaceOnly);
-    QObject::connect(panel.primaryFaceOnly, &QCheckBox::toggled, panel.widget, [syncing, settings, persist](bool checked) {
-        if (*syncing || !settings) return;
-        settings->primaryFaceOnly = checked;
-        persist();
-    });
+    if (showTrackingControls) {
+        panel.primaryFaceOnly = new QCheckBox(QStringLiteral("Keep only strongest face"), panel.widget);
+        panel.primaryFaceOnly->setToolTip(QStringLiteral("When enabled, only the strongest face detection is kept and only one track is allowed. Use this for single-subject clips to avoid track explosions."));
+        form->addRow(QStringLiteral("Primary mode"), panel.primaryFaceOnly);
+        QObject::connect(panel.primaryFaceOnly, &QCheckBox::toggled, panel.widget, [syncing, settings, persist](bool checked) {
+            if (*syncing || !settings) return;
+            settings->primaryFaceOnly = checked;
+            persist();
+        });
+    }
     panel.smallFaceFallback = new QCheckBox(QStringLiteral("Enable Res10 tiled fallback"), panel.widget);
     panel.smallFaceFallback->setToolTip(QStringLiteral("Runs extra cropped Res10 passes when the zero-copy Res10 detector misses. This can help some small faces but is slower and may produce false positives; SCRFD usually handles small faces better."));
     form->addRow(QStringLiteral("Small-face fallback"), panel.smallFaceFallback);
@@ -304,6 +414,16 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
         settings->smallFaceFallback = checked;
         persist();
     });
+    if (scrfdFamily) {
+        panel.scrfdTiled = new QCheckBox(QStringLiteral("Enable SCRFD 2x2 tiled pass"), panel.widget);
+        panel.scrfdTiled->setToolTip(QStringLiteral("Runs SCRFD on the full frame plus overlapping 2x2 tiles to improve recall on smaller panel faces at higher GPU cost."));
+        form->addRow(QStringLiteral("SCRFD tiling"), panel.scrfdTiled);
+        QObject::connect(panel.scrfdTiled, &QCheckBox::toggled, panel.widget, [syncing, settings, persist](bool checked) {
+            if (*syncing || !settings) return;
+            settings->scrfdTiled = checked;
+            persist();
+        });
+    }
     panel.settingsPath = new QLabel(settingsPath, panel.widget);
     panel.settingsPath->setToolTip(QStringLiteral("Detector settings are saved here automatically and loaded the next time this video is opened."));
     panel.settingsPath->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -314,6 +434,104 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
     syncDetectorSettingsPanel(&panel, *settings);
     *syncing = false;
     return panel;
+}
+
+FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
+    DetectorRuntimeSettings* settings,
+    const QString& detector,
+    int scrfdTargetSize,
+    const QString& settingsPath,
+    const FaceStreamPreflightDialogOptions& options,
+    QWidget* parent)
+{
+    FaceStreamPreflightDialogResult result;
+    result.livePreview = options.livePreviewChecked;
+    result.applyClipGrading = options.applyClipGradingChecked;
+    if (!settings) {
+        result.saveError = QStringLiteral("Detector settings are unavailable.");
+        return result;
+    }
+
+    QDialog preflightDialog(parent);
+    preflightDialog.setWindowTitle(options.title.trimmed().isEmpty()
+                                       ? QStringLiteral("JCut DNN FaceStream Generator")
+                                       : options.title);
+    preflightDialog.setWindowFlag(Qt::Window, true);
+    preflightDialog.resize(options.initialSize.isValid() ? options.initialSize : QSize(760, 420));
+
+    auto* layout = new QVBoxLayout(&preflightDialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    if (!options.introText.trimmed().isEmpty()) {
+        auto* infoLabel = new QLabel(options.introText, &preflightDialog);
+        infoLabel->setWordWrap(true);
+        layout->addWidget(infoLabel);
+    }
+
+    if (!options.detailText.trimmed().isEmpty()) {
+        auto* detailLabel = new QLabel(options.detailText, &preflightDialog);
+        detailLabel->setWordWrap(true);
+        detailLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
+        layout->addWidget(detailLabel);
+    }
+
+    QCheckBox* livePreviewCheckbox = nullptr;
+    if (options.showLivePreviewToggle) {
+        livePreviewCheckbox = new QCheckBox(QStringLiteral("Show live preview"), &preflightDialog);
+        livePreviewCheckbox->setChecked(options.livePreviewChecked);
+        layout->addWidget(livePreviewCheckbox);
+    }
+
+    QCheckBox* applyClipGradingCheckbox = nullptr;
+    if (options.showApplyClipGradingToggle) {
+        applyClipGradingCheckbox = new QCheckBox(
+            options.applyClipGradingLabel.trimmed().isEmpty()
+                ? QStringLiteral("Apply clip grading during detection")
+                : options.applyClipGradingLabel,
+            &preflightDialog);
+        applyClipGradingCheckbox->setChecked(options.applyClipGradingChecked);
+        layout->addWidget(applyClipGradingCheckbox);
+    }
+
+    DetectorSettingsPanel detectorPanel =
+        createDetectorSettingsPanel(settings,
+                                    detector,
+                                    scrfdTargetSize,
+                                    settingsPath,
+                                    options.showTrackingControls,
+                                    &preflightDialog);
+    layout->addWidget(detectorPanel.widget);
+
+    auto* buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto* cancelButton = new QPushButton(
+        options.cancelButtonText.trimmed().isEmpty() ? QStringLiteral("Cancel") : options.cancelButtonText,
+        &preflightDialog);
+    auto* proceedButton = new QPushButton(
+        options.proceedButtonText.trimmed().isEmpty() ? QStringLiteral("Proceed") : options.proceedButtonText,
+        &preflightDialog);
+    buttons->addWidget(cancelButton);
+    buttons->addWidget(proceedButton);
+    layout->addLayout(buttons);
+
+    QObject::connect(cancelButton, &QPushButton::clicked, &preflightDialog, &QDialog::reject);
+    QObject::connect(proceedButton, &QPushButton::clicked, &preflightDialog, &QDialog::accept);
+
+    if (preflightDialog.exec() != QDialog::Accepted) {
+        return result;
+    }
+
+    result.accepted = true;
+    result.livePreview = livePreviewCheckbox ? livePreviewCheckbox->isChecked() : options.livePreviewChecked;
+    result.applyClipGrading =
+        applyClipGradingCheckbox ? applyClipGradingCheckbox->isChecked() : options.applyClipGradingChecked;
+    saveDetectorRuntimeSettingsFile(settingsPath,
+                                    *settings,
+                                    detector,
+                                    scrfdTargetSize,
+                                    &result.saveError);
+    return result;
 }
 
 } // namespace jcut::facestream

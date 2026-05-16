@@ -73,10 +73,6 @@ TimelineClip buildFacestreamRenderClip(const TimelineClip& sourceClip,
     clip.sourceDurationFrames = qMax<int64_t>(clip.sourceInFrame + 1, sourceClip.sourceDurationFrames);
     clip.playbackRate = 1.0;
     clip.trackIndex = 0;
-    clip.brightness = 0.0;
-    clip.contrast = 1.0;
-    clip.saturation = 1.0;
-    clip.opacity = 1.0;
     clip.baseTranslationX = 0.0;
     clip.baseTranslationY = 0.0;
     clip.baseRotation = 0.0;
@@ -85,11 +81,8 @@ TimelineClip buildFacestreamRenderClip(const TimelineClip& sourceClip,
     clip.speakerFramingEnabled = false;
     clip.transformKeyframes.clear();
     clip.speakerFramingKeyframes.clear();
-    clip.gradingKeyframes.clear();
-    clip.opacityKeyframes.clear();
     clip.titleKeyframes.clear();
     clip.transcriptOverlay.enabled = false;
-    clip.correctionPolygons.clear();
     return clip;
 }
 
@@ -101,7 +94,7 @@ RenderRequest buildFacestreamRenderRequest(const TimelineClip& clip,
     request.outputPath = QStringLiteral("facestream://vulkan");
     request.outputFormat = QStringLiteral("facestream-preview");
     request.outputSize = outputSize;
-    request.bypassGrading = true;
+    request.bypassGrading = false;
     request.correctionsEnabled = false;
     request.clips = QVector<TimelineClip>{clip};
     request.tracks = QVector<TimelineTrack>{TimelineTrack{}};
@@ -356,18 +349,68 @@ VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
     return status;
 }
 
+VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
+                                                         const render_detail::OffscreenVulkanFrame& frame,
+                                                         int64_t requestedFrame)
+{
+    VulkanPreviewClipFrameStatus status;
+    status.clipId = clipId;
+    status.label = clipId;
+    status.active = true;
+    status.requestedSourceFrame = requestedFrame;
+    status.presentedSourceFrame = requestedFrame;
+    status.frameSize = frame.size;
+    status.hasFrame = frame.valid && frame.imageView != VK_NULL_HANDLE;
+    status.exact = status.hasFrame;
+    status.exactFrameAvailable = status.hasFrame;
+    status.selectedFrameAvailable = status.hasFrame;
+    status.decodePath = status.hasFrame ? QStringLiteral("offscreen_vulkan") : QStringLiteral("missing");
+    status.missingReason = status.hasFrame ? QString() : QStringLiteral("No presentable offscreen Vulkan frame payload.");
+    status.externalVulkanFrame = status.hasFrame;
+    status.sampledFramePregraded = status.hasFrame;
+    status.sampledFrameNeedsYFlip = status.hasFrame;
+    status.externalPhysicalDevice = frame.physicalDevice;
+    status.externalDevice = frame.device;
+    status.externalQueue = frame.queue;
+    status.externalQueueFamilyIndex = frame.queueFamilyIndex;
+    status.externalImage = frame.image;
+    status.externalImageView = frame.imageView;
+    status.externalImageMemory = frame.imageMemory;
+    status.externalImageLayout = frame.imageLayout;
+    status.externalImageFormat = frame.imageFormat;
+    status.externalReadySemaphoreFd = frame.readySemaphoreFd;
+    return status;
+}
+
 QVector<VulkanPreviewFacestreamOverlay> buildDetectionPreviewOverlays(
     const QString& clipId,
     int64_t sourceFrame,
     const QSize& frameSize,
     const QVector<QRectF>& detectionBoxes,
     const QVector<float>& confidences,
+    const QRectF& roiRect,
     const QString& source)
 {
     QVector<VulkanPreviewFacestreamOverlay> overlays;
-    overlays.reserve(detectionBoxes.size());
+    overlays.reserve(detectionBoxes.size() + 1);
     const qreal denomW = qMax<qreal>(1.0, frameSize.width());
     const qreal denomH = qMax<qreal>(1.0, frameSize.height());
+    if (!roiRect.isNull() && roiRect.isValid() && !roiRect.isEmpty()) {
+        VulkanPreviewFacestreamOverlay roiOverlay;
+        roiOverlay.clipId = clipId;
+        roiOverlay.streamId = QStringLiteral("roi");
+        roiOverlay.source = QStringLiteral("roi");
+        roiOverlay.trackId = -1;
+        roiOverlay.sourceFrame = sourceFrame;
+        roiOverlay.confidence = 1.0;
+        roiOverlay.boxNorm = QRectF(roiRect.x() / denomW,
+                                    roiRect.y() / denomH,
+                                    roiRect.width() / denomW,
+                                    roiRect.height() / denomH);
+        if (roiOverlay.boxNorm.isValid() && !roiOverlay.boxNorm.isEmpty()) {
+            overlays.push_back(roiOverlay);
+        }
+    }
     for (int i = 0; i < detectionBoxes.size(); ++i) {
         const QRectF& box = detectionBoxes.at(i);
         VulkanPreviewFacestreamOverlay overlay;
@@ -411,7 +454,7 @@ void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
 
 QImage buildScanPreview(const QImage& source,
                         const QVector<QRect>& detections,
-                        int activeTracks,
+                        int detectionCount,
                         const QRectF& roiRect)
 {
     if (source.isNull()) {
@@ -434,7 +477,7 @@ QImage buildScanPreview(const QImage& source,
     painter.drawRoundedRect(panel, 6.0, 6.0);
     painter.setPen(Qt::white);
     painter.drawText(panel.adjusted(10, 0, -10, 0), Qt::AlignVCenter | Qt::AlignLeft,
-                     QStringLiteral("Tracks: %1").arg(activeTracks));
+                     QStringLiteral("Detections: %1").arg(detectionCount));
     return preview;
 }
 

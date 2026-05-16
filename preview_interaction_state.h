@@ -12,6 +12,7 @@
 #include <QSizeF>
 #include <QString>
 #include <QVector>
+#include <vulkan/vulkan.h>
 
 enum class PreviewDragMode {
     None,
@@ -79,6 +80,19 @@ struct VulkanPreviewClipFrameStatus {
     QString missingReason;
     QString effectsPath;
     editor::FrameHandle frame;
+    bool externalVulkanFrame = false;
+    bool sampledFramePregraded = false;
+    bool sampledFrameNeedsYFlip = false;
+    VkPhysicalDevice externalPhysicalDevice = VK_NULL_HANDLE;
+    VkDevice externalDevice = VK_NULL_HANDLE;
+    VkQueue externalQueue = VK_NULL_HANDLE;
+    uint32_t externalQueueFamilyIndex = UINT32_MAX;
+    VkImage externalImage = VK_NULL_HANDLE;
+    VkImageView externalImageView = VK_NULL_HANDLE;
+    VkDeviceMemory externalImageMemory = VK_NULL_HANDLE;
+    VkImageLayout externalImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkFormat externalImageFormat = VK_FORMAT_UNDEFINED;
+    int externalReadySemaphoreFd = -1;
 };
 
 struct VulkanPreviewFacestreamOverlay {

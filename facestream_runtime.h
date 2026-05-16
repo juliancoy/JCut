@@ -17,6 +17,11 @@
 
 namespace jcut::facestream {
 
+TimelineClip buildFacestreamRenderClip(const TimelineClip& sourceClip,
+                                       const QString& mediaPath,
+                                       int64_t timelineFrame,
+                                       int64_t sourceFrame);
+
 struct VulkanFrameStats {
     qint64 decodeMs = 0;
     qint64 textureMs = 0;
@@ -74,6 +79,9 @@ VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
                                                          const editor::FrameHandle& frameHandle,
                                                          int64_t requestedFrame,
                                                          const QSize& fallbackFrameSize);
+VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
+                                                         const render_detail::OffscreenVulkanFrame& frame,
+                                                         int64_t requestedFrame);
 
 QVector<VulkanPreviewFacestreamOverlay> buildDetectionPreviewOverlays(
     const QString& clipId,
@@ -81,6 +89,7 @@ QVector<VulkanPreviewFacestreamOverlay> buildDetectionPreviewOverlays(
     const QSize& frameSize,
     const QVector<QRectF>& detectionBoxes,
     const QVector<float>& confidences,
+    const QRectF& roiRect = QRectF(),
     const QString& source = QStringLiteral("facestream"));
 
 void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
@@ -91,7 +100,7 @@ void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
 
 QImage buildScanPreview(const QImage& source,
                         const QVector<QRect>& detections,
-                        int activeTracks,
+                        int detectionCount,
                         const QRectF& roiRect = QRectF());
 
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,

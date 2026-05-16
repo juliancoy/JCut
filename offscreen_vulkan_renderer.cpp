@@ -659,11 +659,14 @@ public:
             (selectedFamilies[static_cast<int>(m_graphicsQueueFamily)].queueFlags & VK_QUEUE_COMPUTE_BIT);
         m_vkGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
             vkGetDeviceProcAddr(m_device, "vkGetMemoryFdKHR"));
+        m_vkGetSemaphoreFdKHR = reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(m_device, "vkGetSemaphoreFdKHR"));
         qInfo().noquote()
-            << QStringLiteral("Vulkan/CUDA interop capability: external_memory_fd=%1 external_semaphore_fd=%2 get_memory_fd=%3")
+            << QStringLiteral("Vulkan/CUDA interop capability: external_memory_fd=%1 external_semaphore_fd=%2 get_memory_fd=%3 get_semaphore_fd=%4")
                    .arg(m_externalMemoryFdSupported ? QStringLiteral("yes") : QStringLiteral("no"),
                         m_externalSemaphoreFdSupported ? QStringLiteral("yes") : QStringLiteral("no"),
-                        m_vkGetMemoryFdKHR ? QStringLiteral("yes") : QStringLiteral("no"));
+                        m_vkGetMemoryFdKHR ? QStringLiteral("yes") : QStringLiteral("no"),
+                        m_vkGetSemaphoreFdKHR ? QStringLiteral("yes") : QStringLiteral("no"));
 
         VkCommandPoolCreateInfo poolInfo{};
         poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -709,6 +712,12 @@ public:
         imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        VkExternalMemoryImageCreateInfo externalImageInfo{};
+        if (m_externalMemoryFdSupported && m_vkGetMemoryFdKHR) {
+            externalImageInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+            externalImageInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+            imageInfo.pNext = &externalImageInfo;
+        }
 
         if (vkCreateImage(m_device, &imageInfo, nullptr, &m_colorImage) != VK_SUCCESS) {
             if (errorMessage) {
@@ -735,6 +744,12 @@ public:
         allocMemoryInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocMemoryInfo.allocationSize = memRequirements.size;
         allocMemoryInfo.memoryTypeIndex = memoryTypeIndex;
+        VkExportMemoryAllocateInfo exportAllocInfo{};
+        if (m_externalMemoryFdSupported && m_vkGetMemoryFdKHR) {
+            exportAllocInfo.sType = VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO;
+            exportAllocInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
+            allocMemoryInfo.pNext = &exportAllocInfo;
+        }
 
         if (vkAllocateMemory(m_device, &allocMemoryInfo, nullptr, &m_colorImageMemory) != VK_SUCCESS) {
             if (errorMessage) {
@@ -2338,7 +2353,10 @@ public:
         frame->queueFamilyIndex = m_graphicsQueueFamily;
         frame->image = m_colorImage;
         frame->imageView = m_colorImageView;
+        frame->imageMemory = m_colorImageMemory;
         frame->imageLayout = m_colorImageLayout;
+        frame->imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
+        frame->readySemaphoreFd = -1;
         frame->size = m_outputSize;
         frame->queueSupportsCompute = m_graphicsQueueSupportsCompute;
         frame->valid = true;
@@ -3160,6 +3178,7 @@ private:
     bool m_externalSemaphoreFdSupported = false;
     bool m_graphicsQueueSupportsCompute = false;
     PFN_vkGetMemoryFdKHR m_vkGetMemoryFdKHR = nullptr;
+    PFN_vkGetSemaphoreFdKHR m_vkGetSemaphoreFdKHR = nullptr;
 
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;

@@ -2,6 +2,7 @@
 
 #include <QDateTime>
 #include <QJsonObject>
+#include <QSize>
 #include <QString>
 
 class QCheckBox;
@@ -14,6 +15,7 @@ namespace jcut::facestream {
 struct DetectorRuntimeSettings {
     int stride = 12;
     int maxDetections = 256;
+    int scrfdTargetSize = 640;
     int maxFacesPerFrame = 32;
     float threshold = 0.45f;
     float nmsIouThreshold = 0.35f;
@@ -21,6 +23,7 @@ struct DetectorRuntimeSettings {
     float newTrackMinConfidence = 0.45f;
     bool primaryFaceOnly = true;
     bool smallFaceFallback = false;
+    bool scrfdTiled = false;
     float roiX1 = 0.0f;
     float roiY1 = 0.0f;
     float roiX2 = 1.0f;
@@ -33,6 +36,12 @@ struct DetectorRuntimeSettings {
 
 struct DetectorSettingsPanel {
     QWidget* widget = nullptr;
+    QSlider* stride = nullptr;
+    QLabel* strideValue = nullptr;
+    QSlider* maxDetections = nullptr;
+    QLabel* maxDetectionsValue = nullptr;
+    QSlider* scrfdTargetSize = nullptr;
+    QLabel* scrfdTargetSizeValue = nullptr;
     QSlider* threshold = nullptr;
     QLabel* thresholdValue = nullptr;
     QSlider* nms = nullptr;
@@ -61,7 +70,30 @@ struct DetectorSettingsPanel {
     QLabel* maxFacesValue = nullptr;
     QCheckBox* primaryFaceOnly = nullptr;
     QCheckBox* smallFaceFallback = nullptr;
+    QCheckBox* scrfdTiled = nullptr;
     QLabel* settingsPath = nullptr;
+};
+
+struct FaceStreamPreflightDialogOptions {
+    QString title = QStringLiteral("JCut DNN FaceStream Generator");
+    QString introText;
+    QString detailText;
+    QString proceedButtonText = QStringLiteral("Proceed");
+    QString cancelButtonText = QStringLiteral("Cancel");
+    QSize initialSize = QSize(760, 420);
+    bool showLivePreviewToggle = true;
+    bool livePreviewChecked = true;
+    bool showTrackingControls = false;
+    bool showApplyClipGradingToggle = false;
+    bool applyClipGradingChecked = false;
+    QString applyClipGradingLabel = QStringLiteral("Apply clip grading during detection");
+};
+
+struct FaceStreamPreflightDialogResult {
+    bool accepted = false;
+    bool livePreview = true;
+    bool applyClipGrading = false;
+    QString saveError;
 };
 
 QString detectorSettingsPathForVideo(const QString& videoPath);
@@ -81,7 +113,15 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
                                                   const QString& detector,
                                                   int scrfdTargetSize,
                                                   const QString& settingsPath,
+                                                  bool showTrackingControls = false,
                                                   QWidget* parent = nullptr);
 void syncDetectorSettingsPanel(DetectorSettingsPanel* panel, const DetectorRuntimeSettings& settings);
+FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
+    DetectorRuntimeSettings* settings,
+    const QString& detector,
+    int scrfdTargetSize,
+    const QString& settingsPath,
+    const FaceStreamPreflightDialogOptions& options,
+    QWidget* parent = nullptr);
 
 } // namespace jcut::facestream

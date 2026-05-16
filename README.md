@@ -86,6 +86,12 @@ ctest --test-dir build --output-on-failure
   --out-dir /tmp/jcut_facestream
 ```
 
+For the same detector preflight UI used by the editor, start the standalone runner with `--preflight`:
+
+```bash
+./build/jcut_vulkan_facestream_offscreen input.mp4 --preflight --out-dir /tmp/jcut_facestream
+```
+
 Runtime tuning can be changed while the process is running by editing the JSON file passed with `--params-file`:
 
 ```json
