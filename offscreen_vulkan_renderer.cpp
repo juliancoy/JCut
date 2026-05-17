@@ -1,5 +1,6 @@
 #include "render_internal.h"
 #include "titles.h"
+#include "vulkan_detector_frame_handoff.h"
 
 #include <QDebug>
 #include <QDateTime>
@@ -1883,6 +1884,9 @@ public:
 
 	    struct LayerInput {
 	        QImage image;
+            editor::FrameHandle frameHandle;
+            QSize sourceSize;
+            bool preferHardwareDirect = false;
 	        QString cacheKey;
 	        QByteArray curveLutRgba = identityCurveLutBytes();
 	        float brightness = 0.0f;
@@ -2000,11 +2004,11 @@ public:
         return true;
     }
 
-    QImage renderFrameFromLayers(const QVector<LayerInput>& layers, bool readbackToImage)
-    {
-        if (!m_initialized || m_device == VK_NULL_HANDLE || m_commandBuffer == VK_NULL_HANDLE) {
-            return QImage();
-        }
+	    QImage renderFrameFromLayers(const QVector<LayerInput>& layers, bool readbackToImage)
+	    {
+	        if (!m_initialized || m_device == VK_NULL_HANDLE || m_commandBuffer == VK_NULL_HANDLE) {
+	            return QImage();
+	        }
         if (!selectNextSlot()) {
             return QImage();
         }
@@ -2075,29 +2079,92 @@ public:
         fullViewport.height = static_cast<float>(m_outputSize.height());
         fullViewport.minDepth = 0.0f;
         fullViewport.maxDepth = 1.0f;
-        VkRect2D fullScissor{};
-        fullScissor.offset = {0, 0};
-        fullScissor.extent = {static_cast<uint32_t>(m_outputSize.width()),
-                              static_cast<uint32_t>(m_outputSize.height())};
-        int layerIndex = 0;
-        while (layerIndex < layers.size()) {
-            const int batchCount = qMin(kMaxLayerTextures, layers.size() - layerIndex);
-	            const VkDeviceSize layerImageBytes =
-	                static_cast<VkDeviceSize>(m_outputSize.width()) *
-	                static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
-	            const VkDeviceSize layerStagingSize = layerImageBytes + kCurveLutBytes;
-	            VkDeviceSize maxStagingWriteEnd = 0;
-	            for (int i = 0; i < batchCount; ++i) {
-	                const LayerInput& layer = layers.at(layerIndex + i);
-                if (layer.image.isNull()) {
-                    continue;
+	        VkRect2D fullScissor{};
+	        fullScissor.offset = {0, 0};
+	        fullScissor.extent = {static_cast<uint32_t>(m_outputSize.width()),
+	                              static_cast<uint32_t>(m_outputSize.height())};
+            const VkDeviceSize layerImageBytes =
+                static_cast<VkDeviceSize>(m_outputSize.width()) *
+                static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
+            const VkDeviceSize layerStagingSize = layerImageBytes + kCurveLutBytes;
+            auto layerHasRenderableSource = [](const LayerInput& layer) {
+                return !layer.image.isNull() || !layer.frameHandle.isNull();
+            };
+            auto updateLayerDescriptorSet = [&](LayerTextureSlot& slot,
+                                                VkImageView sourceView,
+                                                VkImageLayout sourceLayout) {
+                VkDescriptorImageInfo di[2]{};
+                di[0].imageLayout = sourceLayout;
+                di[0].imageView = sourceView;
+                di[0].sampler = m_sampler;
+                di[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                di[1].imageView = slot.curveLutView;
+                di[1].sampler = m_sampler;
+                VkWriteDescriptorSet writes[2]{};
+                for (uint32_t binding = 0; binding < 2; ++binding) {
+                    writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    writes[binding].dstSet = slot.descriptorSet;
+                    writes[binding].dstBinding = binding;
+                    writes[binding].descriptorCount = 1;
+                    writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                    writes[binding].pImageInfo = &di[binding];
+                }
+                vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+            };
+            auto prepareLayerSource = [&](LayerTextureSlot& slot,
+                                          const LayerInput& layer,
+                                          VkDeviceSize stagingOffset,
+                                          VkImageView* sourceViewOut,
+                                          VkImageLayout* sourceLayoutOut) -> bool {
+                if (sourceViewOut) {
+                    *sourceViewOut = VK_NULL_HANDLE;
+                }
+                if (sourceLayoutOut) {
+                    *sourceLayoutOut = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                }
+                if (layer.preferHardwareDirect && !layer.frameHandle.isNull() && layer.frameHandle.hasHardwareFrame()) {
+                    if (!slot.hardwareFrameHandoff) {
+                        auto handoff = std::make_shared<jcut::vulkan_detector::VulkanDetectorFrameHandoff>();
+                        jcut::vulkan_detector::VulkanDeviceContext context;
+                        context.physicalDevice = m_physicalDevice;
+                        context.device = m_device;
+                        context.queue = m_graphicsQueue;
+                        context.queueFamilyIndex = m_graphicsQueueFamily;
+                        QString handoffError;
+                        if (!handoff->initialize(context, &handoffError)) {
+                            qWarning().noquote()
+                                << QStringLiteral("[vulkan-compose] hardware frame handoff initialization failed: %1")
+                                       .arg(handoffError);
+                        } else {
+                            slot.hardwareFrameHandoff = handoff;
+                        }
+                    }
+                    if (slot.hardwareFrameHandoff) {
+                        QString uploadError;
+                        if (slot.hardwareFrameHandoff->uploadFrame(layer.frameHandle,
+                                                                   false,
+                                                                   nullptr,
+                                                                   &uploadError)) {
+                            const auto external = slot.hardwareFrameHandoff->externalImage();
+                            if (sourceViewOut) {
+                                *sourceViewOut = external.imageView;
+                            }
+                            if (sourceLayoutOut) {
+                                *sourceLayoutOut = external.imageLayout;
+                            }
+                            return external.imageView != VK_NULL_HANDLE;
+                        }
+                        qWarning().noquote()
+                            << QStringLiteral("[vulkan-compose] hardware frame handoff failed; falling back to CPU image path: %1")
+                                   .arg(uploadError);
+                    }
                 }
                 QImage rgba;
                 if (!layer.cacheKey.isEmpty()) {
                     rgba = m_preparedImageCache.value(layer.cacheKey);
                 }
                 if (rgba.isNull()) {
-                    rgba = layer.image;
+                    rgba = !layer.image.isNull() ? layer.image : frameHandleToCpuImage(layer.frameHandle);
                     if (rgba.format() != QImage::Format_RGBA8888) {
                         rgba = rgba.convertToFormat(QImage::Format_RGBA8888);
                     }
@@ -2108,26 +2175,14 @@ public:
                         m_preparedImageCache.insert(layer.cacheKey, rgba);
                     }
                 }
-                if (!m_stagingMapped) {
-                    return QImage();
+                if (rgba.isNull() || !m_stagingMapped) {
+                    return false;
                 }
-	                const size_t bytes = static_cast<size_t>(rgba.sizeInBytes());
-	                const VkDeviceSize stagingOffset = layerStagingSize * i;
-	                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset,
-	                            rgba.constBits(),
-	                            bytes);
-	                maxStagingWriteEnd = qMax(maxStagingWriteEnd, stagingOffset + static_cast<VkDeviceSize>(bytes));
-
-	                const QByteArray curveBytes = layer.curveLutRgba.size() == static_cast<int>(kCurveLutBytes)
-	                                                  ? layer.curveLutRgba
-	                                                  : identityCurveLutBytes();
-	                const VkDeviceSize curveStagingOffset = stagingOffset + layerImageBytes;
-	                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + curveStagingOffset,
-	                            curveBytes.constData(),
-	                            static_cast<size_t>(kCurveLutBytes));
-	                maxStagingWriteEnd = qMax(maxStagingWriteEnd, curveStagingOffset + kCurveLutBytes);
-
-	                LayerTextureSlot& slot = m_layerSlots[i];
+                const size_t bytes = static_cast<size_t>(rgba.sizeInBytes());
+                std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset, rgba.constBits(), bytes);
+                if (!flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes))) {
+                    return false;
+                }
                 transitionImageLayout(
                     m_commandBuffer,
                     slot.image,
@@ -2153,59 +2208,102 @@ public:
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     1,
                     &uploadRegion);
-	                transitionImageLayout(
-	                    m_commandBuffer,
-	                    slot.image,
-	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-	                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	                slot.uploaded = true;
-
-	                transitionImageLayout(
-	                    m_commandBuffer,
-	                    slot.curveLutImage,
-	                    slot.curveUploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
-	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-	                VkBufferImageCopy curveUploadRegion{};
-	                curveUploadRegion.bufferOffset = curveStagingOffset;
-	                curveUploadRegion.bufferRowLength = 0;
-	                curveUploadRegion.bufferImageHeight = 0;
-	                curveUploadRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	                curveUploadRegion.imageSubresource.mipLevel = 0;
-	                curveUploadRegion.imageSubresource.baseArrayLayer = 0;
-	                curveUploadRegion.imageSubresource.layerCount = 1;
-	                curveUploadRegion.imageExtent = {
-	                    static_cast<uint32_t>(kCurveLutWidth),
-	                    static_cast<uint32_t>(kCurveLutHeight),
-	                    1
-	                };
-	                vkCmdCopyBufferToImage(
-	                    m_commandBuffer,
-	                    m_stagingBuffer,
-	                    slot.curveLutImage,
-	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-	                    1,
-	                    &curveUploadRegion);
-	                transitionImageLayout(
-	                    m_commandBuffer,
-	                    slot.curveLutImage,
-	                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-	                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-	                slot.curveUploaded = true;
-	            }
-	            if (!flushActiveStagingWrite(0, maxStagingWriteEnd)) {
-	                vkEndCommandBuffer(m_commandBuffer);
-	                return QImage();
-	            }
-
-	            vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
-            vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_effectsPipeline);
-            vkCmdSetViewport(m_commandBuffer, 0, 1, &fullViewport);
-            vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
-            for (int i = 0; i < batchCount; ++i) {
-                const LayerInput& layer = layers.at(layerIndex + i);
-                if (layer.image.isNull()) {
-                    continue;
+                transitionImageLayout(
+                    m_commandBuffer,
+                    slot.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                slot.uploaded = true;
+                if (sourceViewOut) {
+                    *sourceViewOut = slot.view;
                 }
+                if (sourceLayoutOut) {
+                    *sourceLayoutOut = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                }
+                return true;
+            };
+	        int layerIndex = 0;
+	        while (layerIndex < layers.size()) {
+	            const int batchCount = qMin(kMaxLayerTextures, layers.size() - layerIndex);
+                struct PreparedBatchLayer {
+                    VkImageView view = VK_NULL_HANDLE;
+                    VkImageLayout layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                };
+                QVector<PreparedBatchLayer> preparedLayers(batchCount);
+                for (int i = 0; i < batchCount; ++i) {
+                    const LayerInput& layer = layers.at(layerIndex + i);
+                    if (!layerHasRenderableSource(layer)) {
+                        continue;
+                    }
+                    LayerTextureSlot& slot = m_layerSlots[i];
+                    const VkDeviceSize stagingOffset = layerStagingSize * i;
+                    if (!prepareLayerSource(slot,
+                                            layer,
+                                            stagingOffset,
+                                            &preparedLayers[i].view,
+                                            &preparedLayers[i].layout)) {
+                        vkEndCommandBuffer(m_commandBuffer);
+                        return QImage();
+                    }
+
+                    const QByteArray curveBytes = layer.curveLutRgba.size() == static_cast<int>(kCurveLutBytes)
+                                                      ? layer.curveLutRgba
+                                                      : identityCurveLutBytes();
+                    if (!m_stagingMapped) {
+                        vkEndCommandBuffer(m_commandBuffer);
+                        return QImage();
+                    }
+                    const VkDeviceSize curveStagingOffset = stagingOffset + layerImageBytes;
+                    std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + curveStagingOffset,
+                                curveBytes.constData(),
+                                static_cast<size_t>(kCurveLutBytes));
+                    if (!flushActiveStagingWrite(curveStagingOffset, kCurveLutBytes)) {
+                        vkEndCommandBuffer(m_commandBuffer);
+                        return QImage();
+                    }
+                    transitionImageLayout(
+                        m_commandBuffer,
+                        slot.curveLutImage,
+                        slot.curveUploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                    VkBufferImageCopy curveUploadRegion{};
+                    curveUploadRegion.bufferOffset = curveStagingOffset;
+                    curveUploadRegion.bufferRowLength = 0;
+                    curveUploadRegion.bufferImageHeight = 0;
+                    curveUploadRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    curveUploadRegion.imageSubresource.mipLevel = 0;
+                    curveUploadRegion.imageSubresource.baseArrayLayer = 0;
+                    curveUploadRegion.imageSubresource.layerCount = 1;
+                    curveUploadRegion.imageExtent = {
+                        static_cast<uint32_t>(kCurveLutWidth),
+                        static_cast<uint32_t>(kCurveLutHeight),
+                        1
+                    };
+                    vkCmdCopyBufferToImage(
+                        m_commandBuffer,
+                        m_stagingBuffer,
+                        slot.curveLutImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        1,
+                        &curveUploadRegion);
+                    transitionImageLayout(
+                        m_commandBuffer,
+                        slot.curveLutImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                    slot.curveUploaded = true;
+                    updateLayerDescriptorSet(slot, preparedLayers[i].view, preparedLayers[i].layout);
+                }
+
+		            vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo, VK_SUBPASS_CONTENTS_INLINE);
+	            vkCmdBindPipeline(m_commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_effectsPipeline);
+	            vkCmdSetViewport(m_commandBuffer, 0, 1, &fullViewport);
+	            vkCmdSetScissor(m_commandBuffer, 0, 1, &fullScissor);
+	            for (int i = 0; i < batchCount; ++i) {
+	                const LayerInput& layer = layers.at(layerIndex + i);
+	                if (!layerHasRenderableSource(layer)) {
+	                    continue;
+	                }
                 LayerTextureSlot& slot = m_layerSlots[i];
                 vkCmdBindDescriptorSets(m_commandBuffer,
                                         VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -3214,6 +3312,7 @@ private:
 	        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
 	        bool uploaded = false;
 	        bool curveUploaded = false;
+            std::shared_ptr<jcut::vulkan_detector::VulkanDetectorFrameHandoff> hardwareFrameHandoff;
 	    };
     QVector<LayerTextureSlot> m_layerSlots;
     QHash<QString, QImage> m_preparedImageCache;
@@ -3364,6 +3463,7 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
 
             OffscreenVulkanRendererPrivate::LayerInput layer;
             layer.image = titleImage;
+            layer.sourceSize = titleImage.size();
             layer.opacity = 1.0f;
             layers.push_back(layer);
             continue;
@@ -3387,15 +3487,21 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
             ++decodeNullCount;
             continue;
         }
-        const QImage layerImage = frameHandleToCpuImage(frame);
-        if (layerImage.isNull()) {
-            ++decodeConvertFailCount;
-            continue;
-        }
         if (!frame.isNull()) {
             OffscreenVulkanRendererPrivate::LayerInput layer;
-            layer.image = layerImage;
-            if (clip.mediaType == ClipMediaType::Image) {
+            layer.frameHandle = frame;
+            layer.sourceSize = frame.size();
+            layer.preferHardwareDirect = frame.hasHardwareFrame();
+            if (!layer.preferHardwareDirect) {
+                const QImage layerImage = frame.hasCpuImage() ? frame.cpuImage() : frameHandleToCpuImage(frame);
+                if (layerImage.isNull()) {
+                    ++decodeConvertFailCount;
+                    continue;
+                }
+                layer.image = layerImage;
+                layer.sourceSize = layerImage.size();
+            }
+            if (clip.mediaType == ClipMediaType::Image && !layer.preferHardwareDirect) {
                 layer.cacheKey = clip.id + QStringLiteral(":prepared_rgba");
             }
             layer.opacity = static_cast<float>(grade.opacity);
@@ -3412,11 +3518,12 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
 	            layer.highlights[1] = static_cast<float>(grade.highlightsG);
 	            layer.highlights[2] = static_cast<float>(grade.highlightsB);
 	            layer.curveLutRgba = curveLutBytesForGrade(grade);
-	            const TimelineClip::TransformKeyframe transform =
-	                evaluateClipRenderTransformAtPosition(
-	                    clip, static_cast<qreal>(timelineFrame), request.outputSize);
-	            const QRect fitted = fitRect(layer.image.size(), request.outputSize);
-	            QMatrix4x4 projection;
+		            const TimelineClip::TransformKeyframe transform =
+		                evaluateClipRenderTransformAtPosition(
+		                    clip, static_cast<qreal>(timelineFrame), request.outputSize);
+		            const QSize sourceSize = layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size();
+		            const QRect fitted = fitRect(sourceSize, request.outputSize);
+		            QMatrix4x4 projection;
 	            projection.ortho(0.0f,
 	                             static_cast<float>(request.outputSize.width()),
 	                             static_cast<float>(request.outputSize.height()),
@@ -3449,6 +3556,7 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         transcriptLayerBounds = alphaBoundsForImage(transcriptLayer);
         OffscreenVulkanRendererPrivate::LayerInput overlay;
         overlay.image = transcriptLayer;
+        overlay.sourceSize = transcriptLayer.size();
         overlay.opacity = 1.0f;
         layers.push_back(overlay);
     }
@@ -3466,6 +3574,7 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         OffscreenVulkanRendererPrivate::LayerInput black;
         black.image = QImage(request.outputSize, QImage::Format_RGBA8888);
         black.image.fill(Qt::black);
+        black.sourceSize = black.image.size();
         black.opacity = 1.0f;
         layers.push_back(black);
     }

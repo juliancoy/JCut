@@ -6,36 +6,65 @@
 #include <QString>
 
 class QCheckBox;
+class QComboBox;
 class QLabel;
 class QSlider;
 class QWidget;
 
 namespace jcut::facestream {
 
+inline constexpr int kDefaultDetectorStride = 4;
+inline constexpr int kDefaultDetectorMaxDetections = 512;
+inline constexpr int kDefaultDetectorScrfdTargetSize = 960;
+inline constexpr int kDefaultDetectorMaxFacesPerFrame = 16;
+inline constexpr float kDefaultDetectorThreshold = 0.30f;
+inline constexpr float kDefaultDetectorNmsIouThreshold = 0.35f;
+inline constexpr float kDefaultDetectorTrackMatchIouThreshold = 0.35f;
+inline constexpr float kDefaultDetectorNewTrackMinConfidence = 0.45f;
+inline constexpr bool kDefaultDetectorPrimaryFaceOnly = false;
+inline constexpr bool kDefaultDetectorSmallFaceFallback = false;
+inline constexpr bool kDefaultDetectorScrfdTiled = false;
+inline constexpr float kDefaultDetectorRoiX1 = 0.0f;
+inline constexpr float kDefaultDetectorRoiY1 = 0.0f;
+inline constexpr float kDefaultDetectorRoiX2 = 1.0f;
+inline constexpr float kDefaultDetectorRoiY2 = 1.0f;
+inline constexpr float kDefaultDetectorMinFaceAreaRatio = 0.0f;
+inline constexpr float kDefaultDetectorMaxFaceAreaRatio = 0.18f;
+inline constexpr float kDefaultDetectorMinAspect = 0.50f;
+inline constexpr float kDefaultDetectorMaxAspect = 1.60f;
+
 struct DetectorRuntimeSettings {
-    int stride = 12;
-    int maxDetections = 256;
-    int scrfdTargetSize = 640;
-    int maxFacesPerFrame = 32;
-    float threshold = 0.45f;
-    float nmsIouThreshold = 0.35f;
-    float trackMatchIouThreshold = 0.22f;
-    float newTrackMinConfidence = 0.45f;
-    bool primaryFaceOnly = true;
-    bool smallFaceFallback = false;
-    bool scrfdTiled = false;
-    float roiX1 = 0.0f;
-    float roiY1 = 0.0f;
-    float roiX2 = 1.0f;
-    float roiY2 = 1.0f;
-    float minFaceAreaRatio = 0.0005f;
-    float maxFaceAreaRatio = 1.0f;
-    float minAspect = 0.45f;
-    float maxAspect = 1.80f;
+    int stride = kDefaultDetectorStride;
+    int maxDetections = kDefaultDetectorMaxDetections;
+    int scrfdTargetSize = kDefaultDetectorScrfdTargetSize;
+    int maxFacesPerFrame = kDefaultDetectorMaxFacesPerFrame;
+    float threshold = kDefaultDetectorThreshold;
+    float nmsIouThreshold = kDefaultDetectorNmsIouThreshold;
+    float trackMatchIouThreshold = kDefaultDetectorTrackMatchIouThreshold;
+    float newTrackMinConfidence = kDefaultDetectorNewTrackMinConfidence;
+    bool primaryFaceOnly = kDefaultDetectorPrimaryFaceOnly;
+    bool smallFaceFallback = kDefaultDetectorSmallFaceFallback;
+    bool scrfdTiled = kDefaultDetectorScrfdTiled;
+    float roiX1 = kDefaultDetectorRoiX1;
+    float roiY1 = kDefaultDetectorRoiY1;
+    float roiX2 = kDefaultDetectorRoiX2;
+    float roiY2 = kDefaultDetectorRoiY2;
+    float minFaceAreaRatio = kDefaultDetectorMinFaceAreaRatio;
+    float maxFaceAreaRatio = kDefaultDetectorMaxFaceAreaRatio;
+    float minAspect = kDefaultDetectorMinAspect;
+    float maxAspect = kDefaultDetectorMaxAspect;
+};
+
+struct DetectorSettingsProfileDefinition {
+    QString id;
+    QString label;
+    QString description;
+    DetectorRuntimeSettings settings;
 };
 
 struct DetectorSettingsPanel {
     QWidget* widget = nullptr;
+    QComboBox* profileCombo = nullptr;
     QSlider* stride = nullptr;
     QLabel* strideValue = nullptr;
     QSlider* maxDetections = nullptr;
@@ -97,9 +126,11 @@ struct FaceStreamPreflightDialogResult {
 };
 
 QString detectorSettingsPathForVideo(const QString& videoPath);
+QVector<DetectorSettingsProfileDefinition> builtInDetectorProfiles();
+bool builtInDetectorProfileById(const QString& id, DetectorRuntimeSettings* settingsOut);
 QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& settings,
                                           const QString& detector,
-                                          int scrfdTargetSize = 640);
+                                          int scrfdTargetSize = kDefaultDetectorScrfdTargetSize);
 bool applyDetectorRuntimeSettingsObject(const QJsonObject& object, DetectorRuntimeSettings* settings);
 bool loadDetectorRuntimeSettingsFile(const QString& path,
                                      DetectorRuntimeSettings* settings,
@@ -107,7 +138,7 @@ bool loadDetectorRuntimeSettingsFile(const QString& path,
 bool saveDetectorRuntimeSettingsFile(const QString& path,
                                      const DetectorRuntimeSettings& settings,
                                      const QString& detector,
-                                     int scrfdTargetSize = 640,
+                                     int scrfdTargetSize = kDefaultDetectorScrfdTargetSize,
                                      QString* errorMessage = nullptr);
 DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* settings,
                                                   const QString& detector,

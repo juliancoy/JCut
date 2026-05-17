@@ -1,6 +1,7 @@
 #include "detector_settings.h"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDebug>
 #include <QDialog>
 #include <QDir>
@@ -16,12 +17,66 @@
 #include <QWidget>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <memory>
 
 namespace jcut::facestream {
 namespace {
+
+DetectorRuntimeSettings immutableDefaultDetectorSettings()
+{
+    return DetectorRuntimeSettings{};
+}
+
+DetectorRuntimeSettings fastPreviewDetectorSettings()
+{
+    DetectorRuntimeSettings settings = immutableDefaultDetectorSettings();
+    settings.stride = 8;
+    settings.maxDetections = 256;
+    settings.scrfdTargetSize = 640;
+    settings.maxFacesPerFrame = 12;
+    settings.threshold = 0.32f;
+    return settings;
+}
+
+DetectorRuntimeSettings panelRecallDetectorSettings()
+{
+    DetectorRuntimeSettings settings = immutableDefaultDetectorSettings();
+    settings.maxDetections = 768;
+    settings.scrfdTargetSize = 1280;
+    settings.maxFacesPerFrame = 24;
+    settings.threshold = 0.24f;
+    settings.scrfdTiled = true;
+    settings.maxFaceAreaRatio = 0.22f;
+    return settings;
+}
+
+const std::array<DetectorSettingsProfileDefinition, 3>& detectorProfiles()
+{
+    static const std::array<DetectorSettingsProfileDefinition, 3> profiles{{
+        DetectorSettingsProfileDefinition{
+            QStringLiteral("immutable-default"),
+            QStringLiteral("Default (Immutable)"),
+            QStringLiteral("Canonical balanced baseline for most panel and event videos."),
+            immutableDefaultDetectorSettings()
+        },
+        DetectorSettingsProfileDefinition{
+            QStringLiteral("fast-preview"),
+            QStringLiteral("Fast Preview"),
+            QStringLiteral("Reduced GPU cost and faster iteration with lower small-face recall."),
+            fastPreviewDetectorSettings()
+        },
+        DetectorSettingsProfileDefinition{
+            QStringLiteral("panel-recall"),
+            QStringLiteral("Panel Recall"),
+            QStringLiteral("Higher recall for crowded panels and smaller faces at a higher GPU cost."),
+            panelRecallDetectorSettings()
+        }
+    }};
+    return profiles;
+}
 
 QString percentText(float value)
 {
@@ -38,6 +93,15 @@ QString aspectText(float value)
     return QStringLiteral("%1").arg(static_cast<double>(value), 0, 'f', 2);
 }
 
+QString detectorProfileSummary(const DetectorRuntimeSettings& settings)
+{
+    return QStringLiteral("stride %1 | target %2 | threshold %3 | max faces %4")
+        .arg(settings.stride)
+        .arg(settings.scrfdTargetSize)
+        .arg(static_cast<double>(settings.threshold), 0, 'f', 2)
+        .arg(settings.maxFacesPerFrame);
+}
+
 } // namespace
 
 QString detectorSettingsPathForVideo(const QString& videoPath)
@@ -45,6 +109,30 @@ QString detectorSettingsPathForVideo(const QString& videoPath)
     const QFileInfo info(videoPath);
     const QString baseName = info.completeBaseName().isEmpty() ? info.fileName() : info.completeBaseName();
     return info.dir().absoluteFilePath(baseName + QStringLiteral("_detectorsettings.json"));
+}
+
+QVector<DetectorSettingsProfileDefinition> builtInDetectorProfiles()
+{
+    QVector<DetectorSettingsProfileDefinition> profiles;
+    profiles.reserve(static_cast<int>(detectorProfiles().size()));
+    for (const DetectorSettingsProfileDefinition& profile : detectorProfiles()) {
+        profiles.push_back(profile);
+    }
+    return profiles;
+}
+
+bool builtInDetectorProfileById(const QString& id, DetectorRuntimeSettings* settingsOut)
+{
+    if (!settingsOut) {
+        return false;
+    }
+    for (const DetectorSettingsProfileDefinition& profile : detectorProfiles()) {
+        if (profile.id == id) {
+            *settingsOut = profile.settings;
+            return true;
+        }
+    }
+    return false;
 }
 
 QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& s,
@@ -278,6 +366,16 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
             qWarning().noquote() << error;
         }
     };
+    auto applyProfile = [syncing, settings, persist, &panel](const DetectorRuntimeSettings& profileSettings) {
+        if (!settings) {
+            return;
+        }
+        *syncing = true;
+        *settings = profileSettings;
+        syncDetectorSettingsPanel(&panel, *settings);
+        *syncing = false;
+        persist();
+    };
     auto addSlider = [&](const QString& name, const QString& tooltip, int minValue, int maxValue, int initialValue,
                          QSlider** sliderOut, QLabel** labelOut,
                          const std::function<QString(int)>& labelText,
@@ -306,6 +404,39 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
         *sliderOut = slider;
         *labelOut = valueLabel;
     };
+
+    auto* profileRow = new QWidget(panel.widget);
+    auto* profileLayout = new QHBoxLayout(profileRow);
+    profileLayout->setContentsMargins(0, 0, 0, 0);
+    panel.profileCombo = new QComboBox(profileRow);
+    auto* applyProfileButton = new QPushButton(QStringLiteral("Apply"), profileRow);
+    profileLayout->addWidget(panel.profileCombo, 1);
+    profileLayout->addWidget(applyProfileButton);
+    form->addRow(QStringLiteral("Profile"), profileRow);
+    panel.profileCombo->setToolTip(QStringLiteral(
+        "Built-in immutable detector profiles. Applying one replaces the current saved per-video settings."));
+    applyProfileButton->setToolTip(panel.profileCombo->toolTip());
+    for (const DetectorSettingsProfileDefinition& profile : detectorProfiles()) {
+        panel.profileCombo->addItem(profile.label, profile.id);
+        const int index = panel.profileCombo->count() - 1;
+        panel.profileCombo->setItemData(
+            index,
+            QStringLiteral("%1\n%2")
+                .arg(profile.description, detectorProfileSummary(profile.settings)),
+            Qt::ToolTipRole);
+    }
+    QObject::connect(applyProfileButton, &QPushButton::clicked, panel.widget, [applyProfile, &panel]() {
+        if (!panel.profileCombo) {
+            return;
+        }
+        const QString selectedId = panel.profileCombo->currentData().toString();
+        for (const DetectorSettingsProfileDefinition& profile : detectorProfiles()) {
+            if (selectedId == profile.id) {
+                applyProfile(profile.settings);
+                return;
+            }
+        }
+    });
 
     addSlider(QStringLiteral("Stride"),
               QStringLiteral("Run detection every Nth source frame. Lower values improve recall and preview responsiveness; higher values are faster but can skip faces between samples."),

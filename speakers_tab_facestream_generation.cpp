@@ -30,8 +30,6 @@
 using namespace jcut::facestream;
 
 namespace {
-constexpr int kFaceStreamScrfdTargetSize = 640;
-
 QString resolveMediaPathForFaceStream(const TimelineClip& clip)
 {
     QString candidate = interactivePreviewMediaPathForClip(clip);
@@ -277,7 +275,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         runFaceStreamPreflightDialog(
             &detectorSettings,
             QStringLiteral("scrfd-ncnn-vulkan"),
-            kFaceStreamScrfdTargetSize,
+            detectorSettings.scrfdTargetSize,
             detectorSettingsPath,
             FaceStreamPreflightDialogOptions{
                 QStringLiteral("JCut DNN FaceStream Generator"),
@@ -319,19 +317,29 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     QStringList args{
         mediaPath,
         QStringLiteral("--detector"), QStringLiteral("scrfd-ncnn-vulkan"),
+        QStringLiteral("--params-file"), detectorSettingsPath,
         QStringLiteral("--stride"), QString::number(qMax(1, detectorSettings.stride)),
         QStringLiteral("--threshold"), QString::number(detectorSettings.threshold, 'f', 4),
         QStringLiteral("--nms-iou"), QString::number(detectorSettings.nmsIouThreshold, 'f', 4),
+        QStringLiteral("--track-match-iou"), QString::number(detectorSettings.trackMatchIouThreshold, 'f', 4),
+        QStringLiteral("--new-track-min-confidence"), QString::number(detectorSettings.newTrackMinConfidence, 'f', 4),
         QStringLiteral("--max-faces-per-frame"), QString::number(qMax(0, detectorSettings.maxFacesPerFrame)),
-        QStringLiteral("--scrfd-target-size"), QString::number(kFaceStreamScrfdTargetSize),
+        QStringLiteral("--max-detections"), QString::number(qMax(1, detectorSettings.maxDetections)),
+        QStringLiteral("--scrfd-target-size"), QString::number(qMax(320, detectorSettings.scrfdTargetSize)),
         QStringLiteral("--start-frame"), QString::number(startFrame),
         QStringLiteral("--quiet"),
         QStringLiteral("--progress"),
         QStringLiteral("--out-dir"), artifactDir
     };
+    args << (detectorSettings.primaryFaceOnly
+                ? QStringLiteral("--primary-face-only")
+                : QStringLiteral("--multi-face"));
     args << (detectorSettings.smallFaceFallback
                 ? QStringLiteral("--small-face-fallback")
                 : QStringLiteral("--no-small-face-fallback"));
+    args << (detectorSettings.scrfdTiled
+                ? QStringLiteral("--scrfd-tiling")
+                : QStringLiteral("--no-scrfd-tiling"));
     args << QStringLiteral("--require-zero-copy");
     args << (preflight.livePreview
                 ? QStringLiteral("--preview-window")
@@ -370,7 +378,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         detectorRuntimeSettingsToJson(
             detectorSettings,
             QStringLiteral("scrfd-ncnn-vulkan"),
-            kFaceStreamScrfdTargetSize);
+            detectorSettings.scrfdTargetSize);
     request[QStringLiteral("artifact_out_dir")] = artifactDir;
     request[QStringLiteral("facestream_part")] = facestreamPartPath;
     request[QStringLiteral("tracks_bin")] = tracksPath;
