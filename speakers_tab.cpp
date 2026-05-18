@@ -135,6 +135,7 @@ bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonO
     }
 
     m_loadedTranscriptDoc.setObject(root);
+    clearFaceStreamDerivedCaches();
     return true;
 }
 
@@ -247,6 +248,13 @@ void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, co
     m_updating = false;
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
+}
+
+void SpeakersTab::clearFaceStreamDerivedCaches()
+{
+    m_avatarCache.clear();
+    m_avatarHoverTooltipHtmlCache.clear();
+    m_continuityStreamsCache.clear();
 }
 
 void SpeakersTab::wire()
@@ -706,15 +714,23 @@ QVector<QPixmap> SpeakersTab::assignedFaceStreamPreviewPixmaps(const TimelineCli
 
 QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
 {
+    const QString cacheKey = m_loadedTranscriptPath + QLatin1Char('\n') + clip.id.trimmed();
+    const auto cached = m_continuityStreamsCache.constFind(cacheKey);
+    if (cached != m_continuityStreamsCache.cend()) {
+        return cached.value();
+    }
+
+    QJsonArray streams;
     editor::TranscriptEngine transcriptEngine;
     QJsonObject artifactRoot;
     if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
         const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
         const QJsonObject continuityRoot = byClip.value(clip.id.trimmed()).toObject();
-        const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
+        streams = jcut::facestream::continuityStreamsForRoot(
             continuityRoot,
             m_loadedTranscriptDoc.object());
         if (!streams.isEmpty()) {
+            m_continuityStreamsCache.insert(cacheKey, streams);
             return streams;
         }
     }
@@ -723,7 +739,9 @@ QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
     const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
     const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_facestreams")).toObject();
-    return continuityRoot.value(QStringLiteral("streams")).toArray();
+    streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+    m_continuityStreamsCache.insert(cacheKey, streams);
+    return streams;
 }
 
 bool SpeakersTab::rebuildProcessedFaceStreamForSelectedClip(bool interactive)
@@ -1071,9 +1089,9 @@ void SpeakersTab::refresh()
     const bool transcriptChanged =
         previousTranscriptPath != transcriptPath || previousClipFilePath != clip->filePath;
     if (transcriptChanged) {
-        m_avatarCache.clear();
-        m_avatarHoverTooltipHtmlCache.clear();
+        clearFaceStreamDerivedCaches();
     }
+    m_continuityStreamsCache.clear();
 
     const bool canReuseLoadedDoc =
         m_loadedTranscriptDoc.isObject() &&
@@ -1556,7 +1574,6 @@ void SpeakersTab::refreshFaceStreamPathsPanel()
     if (!clip) {
         return;
     }
-
     const QFileInfo transcriptInfo(m_loadedTranscriptPath);
     const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_loadedTranscriptPath);
     const QString refreshSignature =
@@ -1702,6 +1719,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
     if (!clip) {
         return;
     }
+    const QJsonArray streams = continuityStreamsForClip(*clip);
 
     QSet<QString> speakerIds;
     const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
@@ -1761,7 +1779,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         auto* avatarItem = new QTableWidgetItem();
         avatarItem->setFlags(avatarItem->flags() & ~Qt::ItemIsEditable);
         avatarItem->setData(Qt::UserRole, id);
-        avatarItem->setIcon(QIcon(speakerAvatarForRow(*clip, transcriptRoot, profileJson, id)));
+        avatarItem->setIcon(QIcon(speakerAvatarForRow(*clip, transcriptRoot, profileJson, streams, id)));
         const uint hueHash = qHash(id);
         const QColor speakerHueTint = QColor::fromHsv(static_cast<int>(hueHash % 360), 160, 92, 105);
         avatarItem->setBackground(QBrush(speakerHueTint));
@@ -1951,6 +1969,7 @@ QPixmap SpeakersTab::unsetSpeakerAvatar(int size) const
 QPixmap SpeakersTab::speakerAvatarForRow(const TimelineClip& clip,
                                          const QJsonObject& transcriptRoot,
                                          const QJsonObject& profile,
+                                         const QJsonArray& streams,
                                          const QString& speakerId)
 {
     const QJsonArray faceRefs = speakerFaceRefs(profile);
@@ -1960,7 +1979,6 @@ QPixmap SpeakersTab::speakerAvatarForRow(const TimelineClip& clip,
             return faceStreamPreviewAvatar(clip, speakerId, previewKeyframe, 32);
         }
     }
-    const QJsonArray streams = continuityStreamsForClip(clip);
     const QVector<int> assignedTrackIds =
         resolvedAssignedTrackIdsForSpeaker(clip, streams, speakerId);
     for (const QJsonValue& streamValue : streams) {

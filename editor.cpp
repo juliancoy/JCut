@@ -41,6 +41,7 @@
 #include <QTemporaryFile>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <cmath>
 #include <cstring>
@@ -57,6 +58,15 @@ bool restVulkanDiagnosticsModeEnabled()
            value == QStringLiteral("true") ||
            value == QStringLiteral("yes") ||
            value == QStringLiteral("on");
+}
+
+QString normalizedPreviewFacestreamOverlaySource(const QString& source)
+{
+    const QString normalized = source.trimmed().toLower();
+    if (normalized.startsWith(QStringLiteral("scrfd"))) {
+        return QStringLiteral("scrfd");
+    }
+    return normalized.isEmpty() ? QStringLiteral("all") : normalized;
 }
 }
 
@@ -135,6 +145,10 @@ EditorWindow::EditorWindow(quint16 controlPort)
                     startTranscriptNormalizeRangeRefresh();
                 }
             });
+    connect(&m_transcriptTextCompanionBackfillWatcher, &QFutureWatcher<QJsonObject>::finished, this, [this]() {
+        const QJsonObject result = m_transcriptTextCompanionBackfillWatcher.result();
+        startupProfileMark(QStringLiteral("load_state.transcript_txt_backfill.complete"), result);
+    });
     setupShortcuts();
     startupProfileMark(QStringLiteral("setup.shortcuts.done"));
     setupHeartbeat();
@@ -195,6 +209,102 @@ void EditorWindow::closeEvent(QCloseEvent *event)
     }
     saveStateNow();
     QMainWindow::closeEvent(event);
+}
+
+void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
+                                          const QVector<ExportRangeSegment>& playbackRanges,
+                                          int64_t currentFrame,
+                                          bool seekPlayback)
+{
+    if (!m_timeline || !m_preview) {
+        return;
+    }
+
+    m_preview->beginBulkUpdate();
+    m_preview->setClipCount(m_timeline->clips().size());
+    m_preview->setTimelineTracks(m_timeline->tracks());
+    m_preview->setTimelineClips(m_timeline->clips());
+    m_preview->setExportRanges(playbackRanges);
+    m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+    m_preview->setSelectedClipId(selectedClipId);
+    m_preview->endBulkUpdate();
+
+    if (m_audioEngine) {
+        m_audioEngine->setTimelineClips(m_timeline->clips());
+        m_audioEngine->setExportRanges(playbackRanges);
+        m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
+        m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+        m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+        m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+        m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
+        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        if (seekPlayback) {
+            m_audioEngine->seek(currentFrame);
+        }
+    }
+
+    if (seekPlayback) {
+        setCurrentFrame(currentFrame);
+    }
+}
+
+void EditorWindow::scheduleTranscriptTextCompanionBackfill()
+{
+    if (m_transcriptTextCompanionBackfillWatcher.isRunning() || !m_timeline) {
+        return;
+    }
+
+    QSet<QString> transcriptPaths;
+    const QVector<TimelineClip> clips = m_timeline->clips();
+    for (const TimelineClip& clip : clips) {
+        const QString clipPath = clip.filePath.trimmed();
+        if (clipPath.isEmpty()) {
+            continue;
+        }
+        const QString originalPath = transcriptPathForClipFile(clipPath);
+        const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+        const QString activePath = activeTranscriptPathForClipFile(clipPath);
+        if (!originalPath.isEmpty()) {
+            transcriptPaths.insert(originalPath);
+        }
+        if (!editablePath.isEmpty()) {
+            transcriptPaths.insert(editablePath);
+        }
+        if (!activePath.isEmpty()) {
+            transcriptPaths.insert(activePath);
+        }
+    }
+
+    startupProfileMark(QStringLiteral("load_state.transcript_txt_backfill.deferred"),
+                       QJsonObject{{QStringLiteral("transcript_path_count"), transcriptPaths.size()}});
+    if (transcriptPaths.isEmpty()) {
+        startupProfileMark(QStringLiteral("load_state.transcript_txt_backfill.complete"),
+                           QJsonObject{{QStringLiteral("transcript_path_count"), 0},
+                                       {QStringLiteral("txt_created_count"), 0}});
+        return;
+    }
+
+    const QStringList transcriptPathList = transcriptPaths.values();
+    m_transcriptTextCompanionBackfillWatcher.setFuture(QtConcurrent::run([transcriptPathList]() {
+        TranscriptEngine engine;
+        int createdTxtCount = 0;
+        for (const QString& transcriptPath : transcriptPathList) {
+            const QFileInfo txtInfo(QFileInfo(transcriptPath).dir().filePath(
+                QFileInfo(transcriptPath).completeBaseName() + QStringLiteral(".txt")));
+            if (txtInfo.exists()) {
+                continue;
+            }
+            if (engine.ensureTranscriptTextCompanion(transcriptPath)) {
+                ++createdTxtCount;
+            }
+        }
+        return QJsonObject{
+            {QStringLiteral("transcript_path_count"), transcriptPathList.size()},
+            {QStringLiteral("txt_created_count"), createdTxtCount}
+        };
+    }));
 }
 
 void EditorWindow::syncTranscriptTableToPlayhead()
@@ -436,8 +546,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
-    const QString previewFacestreamOverlaySource =
-        root.value(QStringLiteral("previewFacestreamOverlaySource")).toString(QStringLiteral("all")).trimmed();
+    const QString previewFacestreamOverlaySource = normalizedPreviewFacestreamOverlaySource(
+        root.value(QStringLiteral("previewFacestreamOverlaySource")).toString(QStringLiteral("all")));
     const int autosaveIntervalMinutes = qBound(
         1,
         root.value(QStringLiteral("autosaveIntervalMinutes"))
@@ -1370,39 +1480,28 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     setTransformSkipAwareTimelineRanges(
         speechFilterPlaybackEnabled() ? playbackRanges : QVector<ExportRangeSegment>{});
     
-    markStartup(QStringLiteral("apply_state.preview_bind.begin"));
-    m_preview->beginBulkUpdate();
-    m_preview->setClipCount(m_timeline->clips().size());
-    m_preview->setTimelineTracks(m_timeline->tracks());
-    m_preview->setTimelineClips(m_timeline->clips());
-    m_preview->setExportRanges(playbackRanges);
-    m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
-    m_preview->setSelectedClipId(selectedClipId);
-    m_preview->endBulkUpdate();
-    markStartup(QStringLiteral("apply_state.preview_bind.end"));
-    
-    if (m_audioEngine) {
+    if (!startupMarking) {
+        markStartup(QStringLiteral("apply_state.preview_bind.begin"));
         markStartup(QStringLiteral("apply_state.audio_bind.begin"));
-        m_audioEngine->setTimelineClips(m_timeline->clips());
-        m_audioEngine->setExportRanges(playbackRanges);
-        m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
-        m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
-        m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
-        m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
-        m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
-        m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
-        m_audioEngine->setTranscriptNormalizeEnabled(m_previewAudioDynamics.transcriptNormalizeEnabled);
-        m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
-        if (!startupMarking) {
-            m_audioEngine->seek(currentFrame);
+        bindTimelineMediaState(selectedClipId, playbackRanges, currentFrame, false);
+        markStartup(QStringLiteral("apply_state.preview_bind.end"));
+        if (m_audioEngine) {
+            markStartup(QStringLiteral("apply_state.audio_bind.end"));
         }
-        markStartup(QStringLiteral("apply_state.audio_bind.end"));
+    } else {
+        markStartup(QStringLiteral("apply_state.preview_bind.deferred"));
+        if (m_audioEngine) {
+            markStartup(QStringLiteral("apply_state.audio_bind.deferred"));
+        }
     }
     
     markStartup(QStringLiteral("apply_state.seek.begin"),
                 QJsonObject{{QStringLiteral("target_frame"), static_cast<qint64>(currentFrame)}});
     if (!startupMarking) {
         setCurrentFrame(currentFrame);
+        if (m_audioEngine) {
+            m_audioEngine->seek(currentFrame);
+        }
         markStartup(QStringLiteral("apply_state.seek.end"));
     } else {
         markStartup(QStringLiteral("apply_state.seek.deferred"));
@@ -1426,16 +1525,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         ? projectsRoot 
         : resolvedRootPath;
     
-    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking]() {
-        if (startupMarking) {
-            if (m_audioEngine) {
-                m_audioEngine->seek(currentFrame);
-            }
-            setCurrentFrame(currentFrame);
-        }
+    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking, selectedClipId, playbackRanges]() {
         if (m_explorerPane) {
             m_explorerPane->setInitialRootPath(mediaRoot);
         }
-        refreshCurrentInspectorTab();
+        if (!startupMarking) {
+            refreshCurrentInspectorTab();
+        }
+        if (startupMarking) {
+            QTimer::singleShot(0, this, [this, currentFrame, selectedClipId, playbackRanges]() {
+                bindTimelineMediaState(selectedClipId, playbackRanges, currentFrame, true);
+            });
+        }
     });
 }

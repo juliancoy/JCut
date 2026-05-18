@@ -180,6 +180,7 @@ private:
     QString assignedFaceStreamPreviewTooltipHtml(const TimelineClip& clip,
                                                  const QString& speakerId) const;
     QJsonArray continuityStreamsForClip(const TimelineClip& clip) const;
+    void clearFaceStreamDerivedCaches();
     QJsonObject resolveFaceStreamAssignmentRow(const TimelineClip& clip,
                                                const QJsonArray& streams,
                                                const QJsonObject& row) const;
@@ -216,6 +217,7 @@ private:
     QPixmap speakerAvatarForRow(const TimelineClip& clip,
                                 const QJsonObject& transcriptRoot,
                                 const QJsonObject& profile,
+                                const QJsonArray& streams,
                                 const QString& speakerId);
     QPixmap speakerReferenceAvatar(const TimelineClip& clip,
                                    const QString& speakerId,
@@ -256,6 +258,7 @@ private:
     QString m_loadedClipFilePath;
     QJsonDocument m_loadedTranscriptDoc;
     mutable QHash<QString, QPixmap> m_avatarCache;
+    mutable QHash<QString, QJsonArray> m_continuityStreamsCache;
     int m_pendingReferencePick = 0;
     bool m_selectedAvatarDragActive = false;
     int m_selectedAvatarDragReferenceIndex = 0;

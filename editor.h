@@ -111,6 +111,7 @@ private:
 
     void loadState();
     void openTranscriptionWindow(const QString &filePath, const QString &label);
+    void scheduleTranscriptTextCompanionBackfill();
 
     QString defaultProxyOutputPath(const TimelineClip &clip,
                                    const MediaProbeResult *knownProbe = nullptr,
@@ -136,6 +137,7 @@ private:
     QString optimizedProfilePath() const;
     QJsonObject optimizedProfileSnapshot() const;
     QJsonObject ensureOptimizedProfile();
+    void scheduleOptimizedProfileEnsure();
     void startupProfileMark(const QString& phase, const QJsonObject& extra = QJsonObject());
 
     void syncTranscriptTableToPlayhead();
@@ -197,6 +199,10 @@ private:
     void setupAutosaveTimer();
     void saveAutosaveBackup();
     void applyStateJson(const QJsonObject &root);
+    void bindTimelineMediaState(const QString& selectedClipId,
+                                const QVector<ExportRangeSegment>& playbackRanges,
+                                int64_t currentFrame,
+                                bool seekPlayback);
 
     void advanceFrame();
     bool speechFilterPlaybackEnabled() const;
@@ -300,6 +306,7 @@ private:
     void setupTabs();
     void setupInspectorRefreshRouting();
     void setupStartupLoad();
+    void scheduleDeferredStartupUiWarmup(bool refreshProjects);
     void bindEditorPaneWidgets(EditorPane* pane);
     void connectTransportControls(EditorPane* pane);
     void connectTimelineSignals();
@@ -607,6 +614,7 @@ private:
     QTimer m_autosaveTimer;
     QTimer m_transcriptNormalizeRefreshTimer;
     QFutureWatcher<QVector<ExportRangeSegment>> m_transcriptNormalizeRefreshWatcher;
+    QFutureWatcher<QJsonObject> m_transcriptTextCompanionBackfillWatcher;
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;
@@ -722,6 +730,7 @@ private:
     QJsonObject m_optimizedProfile;
     bool m_optimizedProfileLoaded = false;
     bool m_optimizedProfileGeneratedThisRun = false;
+    bool m_optimizedProfileEnsureScheduled = false;
 };
 
 } // namespace editor

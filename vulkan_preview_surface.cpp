@@ -41,6 +41,29 @@ constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
 constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
 
+QString normalizedFacestreamOverlaySource(QString source)
+{
+    source = source.trimmed().toLower();
+    if (source.startsWith(QStringLiteral("scrfd"))) {
+        return QStringLiteral("scrfd");
+    }
+    return source.isEmpty() ? QStringLiteral("all") : source;
+}
+
+bool facestreamOverlaySourceMatches(const QString& sourceFilter, const QString& trackSource, const QString& streamId)
+{
+    if (sourceFilter == QStringLiteral("all")) {
+        return true;
+    }
+    const QString normalizedTrackSource = trackSource.trimmed().toLower();
+    const QString normalizedStreamId = streamId.trimmed().toLower();
+    if (sourceFilter == QStringLiteral("scrfd")) {
+        return normalizedTrackSource.startsWith(QStringLiteral("scrfd")) ||
+               normalizedStreamId.startsWith(QStringLiteral("scrfd"));
+    }
+    return sourceFilter == normalizedTrackSource || sourceFilter == normalizedStreamId;
+}
+
 bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state)
 {
     if (!state ||
@@ -573,7 +596,7 @@ void VulkanPreviewSurface::setShowSpeakerTrackBoxes(bool show)
 
 void VulkanPreviewSurface::setFacestreamOverlaySource(const QString& source)
 {
-    m_facestreamOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed().toLower();
+    m_facestreamOverlaySource = normalizedFacestreamOverlaySource(source);
     refreshFacestreamOverlays();
     requestNativeUpdate();
 }
@@ -1235,9 +1258,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         }
         return keyframe.boxNorm;
     };
-    const QString sourceFilter = m_facestreamOverlaySource.trimmed().isEmpty()
-        ? QStringLiteral("all")
-        : m_facestreamOverlaySource.trimmed().toLower();
+    const QString sourceFilter = normalizedFacestreamOverlaySource(m_facestreamOverlaySource);
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
             continue;
@@ -1267,11 +1288,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             if (track.keyframes.isEmpty()) {
                 continue;
             }
-            const bool sourceAccepted =
-                sourceFilter == QStringLiteral("all") ||
-                sourceFilter == track.source ||
-                sourceFilter == track.streamId.trimmed().toLower();
-            if (!sourceAccepted) {
+            if (!facestreamOverlaySourceMatches(sourceFilter, track.source, track.streamId)) {
                 continue;
             }
             const int64_t lookupFrame = facestreamLookupFrameForDomain(

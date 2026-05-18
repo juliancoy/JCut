@@ -458,6 +458,16 @@ void EditorWindow::setupAudioEngine()
     }
 }
 
+void EditorWindow::scheduleDeferredStartupUiWarmup(bool refreshProjects)
+{
+    QTimer::singleShot(0, this, [this, refreshProjects]() {
+        if (refreshProjects) {
+            refreshProjectsList();
+        }
+        refreshCurrentInspectorTab();
+    });
+}
+
 void EditorWindow::setupStartupLoad()
 {
     startupProfileMark(QStringLiteral("startup_load.queue_posted"));
@@ -467,8 +477,6 @@ void EditorWindow::setupStartupLoad()
             qDebug() << "[STARTUP] REST Vulkan diagnostics mode: skipping project/state startup load";
             setupAutosaveTimer();
             startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
-            refreshCurrentInspectorTab();
-            startupProfileMark(QStringLiteral("startup_load.inspector_refreshed"));
             m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
                 ? m_startupProfileTimer.elapsed()
                 : 0;
@@ -476,26 +484,22 @@ void EditorWindow::setupStartupLoad()
                                QJsonObject{{QStringLiteral("total_ms"), m_startupProfileCompletedMs},
                                            {QStringLiteral("diagnostic_mode"), true}});
             m_startupProfileCompleted = true;
+            scheduleDeferredStartupUiWarmup(false);
             return;
         }
         loadProjectsFromFolders();
         startupProfileMark(QStringLiteral("startup_load.projects_loaded"));
-        refreshProjectsList();
-        startupProfileMark(QStringLiteral("startup_load.projects_refreshed"));
         loadState();
         startupProfileMark(QStringLiteral("startup_load.state_loaded"));
-        startupProfileMark(QStringLiteral("startup_load.optimization.begin"));
-        const QJsonObject optimizationResult = ensureOptimizedProfile();
-        startupProfileMark(QStringLiteral("startup_load.optimization.end"), optimizationResult);
         setupAutosaveTimer();
         startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
-        refreshCurrentInspectorTab();
-        startupProfileMark(QStringLiteral("startup_load.inspector_refreshed"));
         m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
             ? m_startupProfileTimer.elapsed()
             : 0;
         startupProfileMark(QStringLiteral("startup_load.complete"),
                            QJsonObject{{QStringLiteral("total_ms"), m_startupProfileCompletedMs}});
         m_startupProfileCompleted = true;
+        scheduleDeferredStartupUiWarmup(true);
+        scheduleOptimizedProfileEnsure();
     });
 }

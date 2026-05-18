@@ -1285,9 +1285,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *mappingPage = new QWidget(speakersSubtabs);
     mappingPage->setObjectName(QStringLiteral("speakers.subtab.speakers"));
     auto *mappingLayout = createTabLayout(mappingPage);
-    auto *identityPage = new QWidget(speakersSubtabs);
-    identityPage->setObjectName(QStringLiteral("speakers.subtab.assign_identity"));
-    auto *identityLayout = createTabLayout(identityPage);
     auto *trackingPage = new QWidget(speakersSubtabs);
     trackingPage->setObjectName(QStringLiteral("speakers.subtab.tracking"));
     auto *trackingLayout = createTabLayout(trackingPage);
@@ -1567,20 +1564,32 @@ QWidget *InspectorPane::buildSpeakersTab()
     mappingLayout->addWidget(mappingTitle);
     mappingLayout->addWidget(mappingHelp);
     mappingLayout->addLayout(speakerTranscriptAiRow);
-    mappingLayout->addWidget(m_speakersTable, 1);
-
-    identityLayout->addWidget(identityTitle);
-    identityLayout->addWidget(identityHelp);
-    identityLayout->addLayout(speakerAssignmentRow);
-    identityLayout->addWidget(selectedSpeakerTitle);
-    identityLayout->addWidget(m_selectedSpeakerIdLabel);
-    identityLayout->addWidget(selectedFaceStreamsTitle);
-    identityLayout->addWidget(m_selectedSpeakerFaceStreamsList);
-    identityLayout->addLayout(selectedActionsRow);
-    identityLayout->addWidget(currentSentenceTitle);
-    identityLayout->addWidget(m_speakerCurrentSentenceLabel);
-    identityLayout->addWidget(m_speakerTrackingStatusLabel);
-    identityLayout->addStretch(1);
+    auto *identityPanel = new QWidget(mappingPage);
+    identityPanel->setObjectName(QStringLiteral("speakers.identity_panel"));
+    identityPanel->setMinimumWidth(260);
+    identityPanel->setMaximumWidth(440);
+    identityPanel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+    auto *identityPanelLayout = new QVBoxLayout(identityPanel);
+    identityPanelLayout->setContentsMargins(0, 0, 0, 0);
+    identityPanelLayout->setSpacing(6);
+    identityPanelLayout->addWidget(identityTitle);
+    identityPanelLayout->addWidget(identityHelp);
+    identityPanelLayout->addLayout(speakerAssignmentRow);
+    identityPanelLayout->addWidget(selectedSpeakerTitle);
+    identityPanelLayout->addWidget(m_selectedSpeakerIdLabel);
+    identityPanelLayout->addWidget(selectedFaceStreamsTitle);
+    identityPanelLayout->addWidget(m_selectedSpeakerFaceStreamsList);
+    identityPanelLayout->addLayout(selectedActionsRow);
+    identityPanelLayout->addWidget(currentSentenceTitle);
+    identityPanelLayout->addWidget(m_speakerCurrentSentenceLabel);
+    identityPanelLayout->addWidget(m_speakerTrackingStatusLabel);
+    identityPanelLayout->addStretch(1);
+    auto *mappingContentRow = new QHBoxLayout;
+    mappingContentRow->setContentsMargins(0, 0, 0, 0);
+    mappingContentRow->setSpacing(8);
+    mappingContentRow->addWidget(m_speakersTable, 1);
+    mappingContentRow->addWidget(identityPanel);
+    mappingLayout->addLayout(mappingContentRow, 1);
 
     trackingLayout->addWidget(trackingTitle);
     trackingLayout->addWidget(trackingHelp);
@@ -1636,7 +1645,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *overlaySourceLabel = new QLabel(QStringLiteral("Preview Tracker"), facestreamPage);
     m_speakerFaceStreamOverlaySourceCombo = new QComboBox(facestreamPage);
     m_speakerFaceStreamOverlaySourceCombo->addItem(QStringLiteral("All FaceStreams"), QStringLiteral("all"));
-    m_speakerFaceStreamOverlaySourceCombo->addItem(QStringLiteral("SCRFD ncnn Vulkan"), QStringLiteral("scrfd_500m_ncnn_vulkan_zero_copy_v1"));
+    m_speakerFaceStreamOverlaySourceCombo->addItem(QStringLiteral("SCRFD ncnn Vulkan"), QStringLiteral("scrfd"));
     m_speakerFaceStreamOverlaySourceCombo->setCurrentIndex(0);
     m_speakerFaceStreamOverlaySourceCombo->setToolTip(
         QStringLiteral("Choose whether all generated SCRFD FaceStreams or only SCRFD-source paths are superimposed in Preview."));
@@ -1656,7 +1665,6 @@ QWidget *InspectorPane::buildSpeakersTab()
 
     speakersSubtabs->addTab(mappingPage, QStringLiteral("Speakers"));
     speakersSubtabs->addTab(facestreamPage, QStringLiteral("Generate FaceStream"));
-    speakersSubtabs->addTab(identityPage, QStringLiteral("Assign Speaker Identity"));
     speakersSubtabs->addTab(trackingPage, QStringLiteral("Speaker Tracking"));
     speakersSubtabs->addTab(debugPage, QStringLiteral("Debug"));
     layout->addWidget(speakersSubtabs, 1);

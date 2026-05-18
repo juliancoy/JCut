@@ -308,6 +308,7 @@ QJsonObject EditorWindow::runStartupOptimizationPass()
 
 QJsonObject EditorWindow::ensureOptimizedProfile()
 {
+    m_optimizedProfileEnsureScheduled = false;
     m_optimizedProfileLoaded = false;
     m_optimizedProfileGeneratedThisRun = false;
 
@@ -345,4 +346,17 @@ QJsonObject EditorWindow::ensureOptimizedProfile()
         {QStringLiteral("path"), optimizedProfilePath()},
         {QStringLiteral("error"), error}
     };
+}
+
+void EditorWindow::scheduleOptimizedProfileEnsure()
+{
+    if (m_optimizedProfileEnsureScheduled) {
+        return;
+    }
+    m_optimizedProfileEnsureScheduled = true;
+    QTimer::singleShot(0, this, [this]() {
+        startupProfileMark(QStringLiteral("deferred_optimization.begin"));
+        const QJsonObject optimizationResult = ensureOptimizedProfile();
+        startupProfileMark(QStringLiteral("deferred_optimization.end"), optimizationResult);
+    });
 }
