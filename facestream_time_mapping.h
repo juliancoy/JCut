@@ -2,6 +2,8 @@
 
 #include "editor_shared.h"
 
+#include <QVector>
+
 enum class FacestreamFrameDomain {
     ClipTimeline30Fps,
     SourceRelative,
@@ -21,3 +23,11 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
                                        int64_t facestreamFrame,
                                        FacestreamFrameDomain domain,
                                        const QVector<RenderSyncMarker>& markers);
+
+int64_t facestreamTypicalFrameStep(const QVector<int64_t>& sortedFrames);
+
+bool facestreamShouldBridgeGap(int64_t previousFrame,
+                               int64_t nextFrame,
+                               int64_t typicalStep);
+
+int64_t facestreamMaxEdgeHoldFrames(int64_t typicalStep);

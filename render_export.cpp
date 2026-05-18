@@ -1,4 +1,5 @@
 #include "render_internal.h"
+#include "overlay_render_backend.h"
 #include "render_backend.h"
 #include "vulkan_backend.h"
 
@@ -6,6 +7,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QPainter>
 using namespace render_detail;
 
 namespace {
@@ -765,36 +767,46 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 frameReadbackMsPtr = nullptr;
             }
             QJsonArray frameSkippedClips;
-            QImage rendered = useGpuRenderer
-                ? activeRenderer->renderFrame(request,
-                                          timelineFrame,
-                                          decoders,
-                                          &asyncDecoder,
-                                          &asyncFrameCache,
-                                          orderedClips,
-                                          &clipStageStats,
-                                          &frameDecodeMs,
-                                          &frameTextureMs,
-                                          &frameCompositeMs,
-                                          frameReadbackMsPtr,
-                                          &frameSkippedClips,
-                                          &skippedReasonCounts)
-                : renderTimelineFrame(request,
-                                      timelineFrame,
-                                      decoders,
-                                      &asyncDecoder,
-                                      &asyncFrameCache,
-                                      orderedClips,
-                                      &clipStageStats,
-                                      &frameSkippedClips,
-                                      &skippedReasonCounts);
+            render_detail::OffscreenRenderFrame renderedFrame;
+            const bool renderedOk = useGpuRenderer
+                ? activeRenderer->renderFrameToOutput(request,
+                                                      timelineFrame,
+                                                      decoders,
+                                                      &asyncDecoder,
+                                                      &asyncFrameCache,
+                                                      orderedClips,
+                                                      &renderedFrame,
+                                                      !directGpuFrameReadback,
+                                                      &clipStageStats,
+                                                      &frameDecodeMs,
+                                                      &frameTextureMs,
+                                                      &frameCompositeMs,
+                                                      frameReadbackMsPtr,
+                                                      &frameSkippedClips,
+                                                      &skippedReasonCounts)
+                : renderTimelineFrameToOutput(request,
+                                              timelineFrame,
+                                              decoders,
+                                              &asyncDecoder,
+                                              &asyncFrameCache,
+                                              orderedClips,
+                                              &renderedFrame,
+                                              true,
+                                              &clipStageStats,
+                                              &frameDecodeMs,
+                                              &frameTextureMs,
+                                              &frameCompositeMs,
+                                              &frameReadbackMs,
+                                              &frameSkippedClips,
+                                              &skippedReasonCounts);
+            QImage rendered = renderedFrame.cpuImage;
             lastSkippedClips = frameSkippedClips;
             totalRenderStageMs += renderStageTimer.elapsed();
             totalRenderDecodeStageMs += frameDecodeMs;
             totalRenderTextureStageMs += frameTextureMs;
             totalRenderCompositeStageMs += frameCompositeMs;
             totalGpuReadbackMs += frameReadbackMs;
-            if (rendered.isNull() && !directGpuFrameReadback) {
+            if ((!renderedOk || rendered.isNull()) && !directGpuFrameReadback) {
                 errorMessage = useGpuRenderer
                     ? QStringLiteral("Failed to render GPU timeline frame %1.").arg(timelineFrame)
                     : QStringLiteral("Failed to render timeline frame %1.").arg(timelineFrame);
@@ -804,7 +816,13 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             if ((!directNv12Conversion || hasTranscriptOverlay) && !rendered.isNull()) {
                 QElapsedTimer overlayTimer;
                 overlayTimer.start();
-                renderTranscriptOverlays(&rendered, request, timelineFrame, orderedClips, transcriptCache);
+                const OverlayImage overlay = renderTranscriptOverlay(
+                    rendered.size(), request, timelineFrame, orderedClips, transcriptCache);
+                if (!overlay.isNull()) {
+                    QPainter painter(&rendered);
+                    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    painter.drawImage(QPoint(0, 0), overlay.asQImageView());
+                }
                 totalOverlayStageMs += overlayTimer.elapsed();
             }
 

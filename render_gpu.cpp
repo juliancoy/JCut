@@ -1,9 +1,11 @@
 #include "render_internal.h"
+#include "overlay_render_backend.h"
 #include "visual_effects_shader.h"
 #include "polygon_triangulation.h"
 #include "titles.h"
 
 #include <QByteArray>
+#include <QPainter>
 
 namespace render_detail {
 
@@ -313,13 +315,11 @@ public:
                 QElapsedTimer decodeTimer;
                 decodeTimer.start();
                 
-                // Render title to an image
-                QImage titleImage(m_outputSize, QImage::Format_ARGB32_Premultiplied);
-                titleImage.fill(Qt::transparent);
-                QPainter titlePainter(&titleImage);
-                titlePainter.setRenderHint(QPainter::Antialiasing, true);
-                drawTitleOverlay(&titlePainter, QRect(QPoint(0, 0), m_outputSize), title, m_outputSize);
-                titlePainter.end();
+                const OverlayImage titleImage =
+                    renderTitleOverlay(m_outputSize, title, m_outputSize);
+                if (titleImage.isNull()) {
+                    continue;
+                }
                 
                 const qint64 decodeElapsed = decodeTimer.elapsed();
                 if (decodeMs) {
@@ -329,7 +329,7 @@ public:
                 QElapsedTimer textureTimer;
                 textureTimer.start();
                 
-                // Create texture from title image
+                // Upload the neutral overlay buffer directly to avoid a QImage round-trip.
                 GLuint titleTextureId = 0;
                 glGenTextures(1, &titleTextureId);
                 glBindTexture(GL_TEXTURE_2D, titleTextureId);
@@ -337,12 +337,9 @@ public:
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                
-                // Convert QImage to RGBA format for OpenGL
-                // Feed title overlays as straight-alpha RGBA and skip shader unpremultiply.
-                QImage rgbaImage = titleImage.convertToFormat(QImage::Format_RGBA8888);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, rgbaImage.width(), rgbaImage.height(), 0,
-                            GL_RGBA, GL_UNSIGNED_BYTE, rgbaImage.constBits());
+
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, titleImage.width, titleImage.height, 0,
+                             GL_RGBA, GL_UNSIGNED_BYTE, titleImage.rgbaPremultiplied.constData());
                 
                 const qint64 textureElapsed = textureTimer.elapsed();
                 if (textureMs) {
@@ -842,6 +839,43 @@ QImage OffscreenGpuRenderer::renderFrame(const RenderRequest& request,
                           readbackMs, skippedClips, skippedReasonCounts);
 }
 
+bool OffscreenGpuRenderer::renderFrameToOutput(
+    const RenderRequest& request,
+    int64_t timelineFrame,
+    QHash<QString, editor::DecoderContext*>& decoders,
+    editor::AsyncDecoder* asyncDecoder,
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+    const QVector<TimelineClip>& orderedClips,
+    OffscreenRenderFrame* output,
+    bool readbackToCpuImage,
+    QHash<QString, RenderClipStageStats>* clipStageStats,
+    qint64* decodeMs,
+    qint64* textureMs,
+    qint64* compositeMs,
+    qint64* readbackMs,
+    QJsonArray* skippedClips,
+    QJsonObject* skippedReasonCounts)
+{
+    if (!output) {
+        return false;
+    }
+    *output = OffscreenRenderFrame{};
+    output->cpuImage = renderFrame(request,
+                                   timelineFrame,
+                                   decoders,
+                                   asyncDecoder,
+                                   asyncFrameCache,
+                                   orderedClips,
+                                   clipStageStats,
+                                   decodeMs,
+                                   textureMs,
+                                   compositeMs,
+                                   readbackToCpuImage ? readbackMs : nullptr,
+                                   skippedClips,
+                                   skippedReasonCounts);
+    return readbackToCpuImage ? !output->cpuImage.isNull() : true;
+}
+
 bool OffscreenGpuRenderer::convertLastFrameToNv12(AVFrame* frame,
                                                   qint64* nv12ConvertMs,
                                                   qint64* readbackMs) {
@@ -869,6 +903,53 @@ bool OffscreenGpuRenderer::copyLastFrameToBgra(AVFrame* frame,
 QString OffscreenGpuRenderer::backendId() const
 {
     return QStringLiteral("opengl");
+}
+
+bool renderTimelineFrameToOutput(const RenderRequest& request,
+                                 int64_t timelineFrame,
+                                 QHash<QString, editor::DecoderContext*>& decoders,
+                                 editor::AsyncDecoder* asyncDecoder,
+                                 QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                                 const QVector<TimelineClip>& orderedClips,
+                                 OffscreenRenderFrame* output,
+                                 bool readbackToCpuImage,
+                                 QHash<QString, RenderClipStageStats>* clipStageStats,
+                                 qint64* decodeMs,
+                                 qint64* textureMs,
+                                 qint64* compositeMs,
+                                 qint64* readbackMs,
+                                 QJsonArray* skippedClips,
+                                 QJsonObject* skippedReasonCounts)
+{
+    if (!output) {
+        return false;
+    }
+    *output = OffscreenRenderFrame{};
+    if (!readbackToCpuImage) {
+        return false;
+    }
+    if (decodeMs) {
+        *decodeMs = 0;
+    }
+    if (textureMs) {
+        *textureMs = 0;
+    }
+    if (compositeMs) {
+        *compositeMs = 0;
+    }
+    if (readbackMs) {
+        *readbackMs = 0;
+    }
+    output->cpuImage = renderTimelineFrame(request,
+                                           timelineFrame,
+                                           decoders,
+                                           asyncDecoder,
+                                           asyncFrameCache,
+                                           orderedClips,
+                                           clipStageStats,
+                                           skippedClips,
+                                           skippedReasonCounts);
+    return !output->cpuImage.isNull();
 }
 
 QImage renderTimelineFrame(const RenderRequest& request,
@@ -920,9 +1001,11 @@ QImage renderTimelineFrame(const RenderRequest& request,
             QElapsedTimer compositeTimer;
             compositeTimer.start();
             
-            // Draw title overlay directly onto the canvas
-            // Note: We use the full canvas rect for title rendering
-            drawTitleOverlay(&painter, QRect(QPoint(0, 0), request.outputSize), title, request.outputSize);
+            const OverlayImage titleImage =
+                renderTitleOverlay(request.outputSize, title, request.outputSize);
+            if (!titleImage.isNull()) {
+                painter.drawImage(QPoint(0, 0), titleImage.asQImageView());
+            }
             
             accumulateClipStageStats(clipStageStats, clip, 0, 0, compositeTimer.elapsed());
             continue;

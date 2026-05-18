@@ -1,6 +1,7 @@
 #pragma once
 
 #include "facestream_runtime.h"
+#include "detector_settings.h"
 #include "decoder_context.h"
 #include "editor_shared.h"
 #include "frame_handle.h"
@@ -223,22 +224,28 @@ inline QImage renderFacestreamFrameWithVulkan(VulkanFacestreamFrameProvider* pro
     qint64 textureMs = 0;
     qint64 compositeMs = 0;
     qint64 readbackMs = 0;
-    QImage frame = provider->renderer->renderFrame(request,
-                                                   timelineFrame,
-                                                   provider->decoders,
-                                                   nullptr,
-                                                   &provider->asyncFrameCache,
-                                                   QVector<TimelineClip>{clip},
-                                                   nullptr,
-                                                   &decodeMs,
-                                                   &textureMs,
-                                                   &compositeMs,
-                                                   &readbackMs,
-                                                   nullptr,
-                                                   nullptr);
+    render_detail::OffscreenRenderFrame renderedFrame;
+    const bool renderedOk = provider->renderer->renderFrameToOutput(request,
+                                                                    timelineFrame,
+                                                                    provider->decoders,
+                                                                    nullptr,
+                                                                    &provider->asyncFrameCache,
+                                                                    QVector<TimelineClip>{clip},
+                                                                    &renderedFrame,
+                                                                    true,
+                                                                    nullptr,
+                                                                    &decodeMs,
+                                                                    &textureMs,
+                                                                    &compositeMs,
+                                                                    &readbackMs,
+                                                                    nullptr,
+                                                                    nullptr);
+    QImage frame = renderedFrame.cpuImage;
     if (frame.isNull()) {
         provider->failed = true;
-        provider->failureReason = QStringLiteral("Vulkan FaceStream frame render returned null.");
+        provider->failureReason = renderedOk
+            ? QStringLiteral("Vulkan FaceStream frame render returned null.")
+            : QStringLiteral("Vulkan FaceStream render output request failed.");
     }
     return frame;
 }
@@ -881,33 +888,7 @@ inline std::vector<WeightedDetection> filterAndSuppressDetections(std::vector<We
 
 inline bool ensureFaceDnnModel(const QString& baseDir, QString* prototxtOut, QString* modelOut)
 {
-    if (!prototxtOut || !modelOut) {
-        return false;
-    }
-    const QString prototxtPath = QDir(baseDir).absoluteFilePath(
-        QStringLiteral("external/opencv/samples/dnn/face_detector/deploy.prototxt"));
-    const QString modelPath = QDir(baseDir).absoluteFilePath(
-        QStringLiteral("external/opencv/samples/dnn/face_detector/res10_300x300_ssd_iter_140000_fp16.caffemodel"));
-    if (!QFileInfo::exists(modelPath)) {
-        QDir().mkpath(QFileInfo(modelPath).absolutePath());
-        QStringList args = {
-            QStringLiteral("-L"),
-            QStringLiteral("-o"), modelPath,
-            QStringLiteral("https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel")
-        };
-        QProcess proc;
-        proc.start(QStringLiteral("curl"), args);
-        proc.waitForFinished(-1);
-        if (proc.exitStatus() != QProcess::NormalExit || proc.exitCode() != 0 || !QFileInfo::exists(modelPath)) {
-            return false;
-        }
-    }
-    if (!QFileInfo::exists(prototxtPath)) {
-        return false;
-    }
-    *prototxtOut = prototxtPath;
-    *modelOut = modelPath;
-    return true;
+    return jcut::facestream::ensureRes10FaceDnnModelAssets(baseDir, prototxtOut, modelOut, nullptr);
 }
 
 inline std::vector<cv::Rect> runDnnFaceDetect(DnnFaceDetectorRuntime* runtime, const cv::Mat& bgr, float confThreshold = 0.5f)

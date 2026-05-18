@@ -1,6 +1,7 @@
 #include "facestream_time_mapping.h"
 
 #include <cmath>
+#include <algorithm>
 
 FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
                                                int64_t keyframeMin,
@@ -56,4 +57,39 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
         return safeFrame;
     }
     return qMax<int64_t>(0, clip.sourceInFrame + safeFrame);
+}
+
+int64_t facestreamTypicalFrameStep(const QVector<int64_t>& sortedFrames)
+{
+    QVector<int64_t> deltas;
+    deltas.reserve(sortedFrames.size());
+    for (int i = 1; i < sortedFrames.size(); ++i) {
+        const int64_t delta = sortedFrames.at(i) - sortedFrames.at(i - 1);
+        if (delta > 0) {
+            deltas.push_back(delta);
+        }
+    }
+    if (deltas.isEmpty()) {
+        return 1;
+    }
+    std::sort(deltas.begin(), deltas.end());
+    return qMax<int64_t>(1, deltas.at(deltas.size() / 2));
+}
+
+bool facestreamShouldBridgeGap(int64_t previousFrame,
+                               int64_t nextFrame,
+                               int64_t typicalStep)
+{
+    if (previousFrame < 0 || nextFrame < 0 || nextFrame <= previousFrame) {
+        return false;
+    }
+    const int64_t safeStep = qMax<int64_t>(1, typicalStep);
+    const int64_t maxBridgeGap = qMax<int64_t>(2, safeStep * 2);
+    return (nextFrame - previousFrame) <= maxBridgeGap;
+}
+
+int64_t facestreamMaxEdgeHoldFrames(int64_t typicalStep)
+{
+    const int64_t safeStep = qMax<int64_t>(1, typicalStep);
+    return qMax<int64_t>(1, safeStep / 2);
 }

@@ -5,6 +5,7 @@
 #include "facestream_runtime.h"
 #include "detector_settings.h"
 #include "editor_shared.h"
+#include "json_io_utils.h"
 #include "render_internal.h"
 #include "transcript_engine.h"
 
@@ -16,7 +17,6 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
@@ -59,28 +59,7 @@ QString resolveMediaPathForFaceStream(const TimelineClip& clip)
 
 bool readJsonObject(const QString& path, QJsonObject* objectOut, QString* errorOut = nullptr)
 {
-    if (objectOut) {
-        *objectOut = QJsonObject{};
-    }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to open %1").arg(path);
-        }
-        return false;
-    }
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to parse %1: %2").arg(path, parseError.errorString());
-        }
-        return false;
-    }
-    if (objectOut) {
-        *objectOut = doc.object();
-    }
-    return true;
+    return jcut::jsonio::readJsonFile(path, objectOut, errorOut);
 }
 
 QString facestreamOffscreenExecutablePath()
@@ -290,7 +269,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 false,
                 true,
                 false,
-                QStringLiteral("Apply selected clip grading during detection")
+                QStringLiteral("Apply selected clip grading during detection"),
+                true,
+                false,
+                QStringLiteral("Restart from scratch (delete facestream.part before launch)")
             });
     if (!preflight.accepted) {
         return;
@@ -308,11 +290,21 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const QString requestPath = QDir(debugRun.runDir).absoluteFilePath(
         QStringLiteral("%1_facestream_request.json").arg(debugRun.videoStem));
     const QString outputPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("continuity_facestream.bin"));
+    const QString detectionsPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("detections.bin"));
     const QString tracksPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("tracks.bin"));
     const QString summaryPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("summary.json"));
     const QString facestreamPartPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("facestream.part"));
     const QString clipJsonPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("clip_input.json"));
     const QString indexPath = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("index.json"));
+
+    if (preflight.restartFromScratch && QFileInfo::exists(facestreamPartPath) && !QFile::remove(facestreamPartPath)) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("Failed to delete restart checkpoint before launch.\n\n%1")
+                .arg(facestreamPartPath));
+        return;
+    }
 
     QStringList args{
         mediaPath,
@@ -325,6 +317,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QStringLiteral("--new-track-min-confidence"), QString::number(detectorSettings.newTrackMinConfidence, 'f', 4),
         QStringLiteral("--max-faces-per-frame"), QString::number(qMax(0, detectorSettings.maxFacesPerFrame)),
         QStringLiteral("--max-detections"), QString::number(qMax(1, detectorSettings.maxDetections)),
+        QStringLiteral("--scrfd-model"), normalizeScrfdModelVariantId(detectorSettings.scrfdModelVariant),
         QStringLiteral("--scrfd-target-size"), QString::number(qMax(320, detectorSettings.scrfdTargetSize)),
         QStringLiteral("--start-frame"), QString::number(startFrame),
         QStringLiteral("--quiet"),
@@ -349,16 +342,16 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         args << QStringLiteral("--max-frames") << QString::number(maxFrames);
     }
     if (preflight.applyClipGrading) {
-        QFile clipFile(clipJsonPath);
-        if (!clipFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QString writeError;
+        if (!jcut::jsonio::writeJsonFile(clipJsonPath, editor::clipToJson(*selectedClip), true, &writeError)) {
             QMessageBox::warning(
                 nullptr,
                 QStringLiteral("JCut DNN FaceStream Generator"),
-                QStringLiteral("Failed to write clip grading input: %1").arg(clipJsonPath));
+                writeError.trimmed().isEmpty()
+                    ? QStringLiteral("Failed to write clip grading input: %1").arg(clipJsonPath)
+                    : writeError);
             return;
         }
-        clipFile.write(QJsonDocument(editor::clipToJson(*selectedClip)).toJson(QJsonDocument::Indented));
-        clipFile.close();
         args << QStringLiteral("--clip-json") << clipJsonPath;
         args << QStringLiteral("--apply-clip-grading");
     }
@@ -381,16 +374,16 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             detectorSettings.scrfdTargetSize);
     request[QStringLiteral("artifact_out_dir")] = artifactDir;
     request[QStringLiteral("facestream_part")] = facestreamPartPath;
+    request[QStringLiteral("detections_bin")] = detectionsPath;
     request[QStringLiteral("tracks_bin")] = tracksPath;
     request[QStringLiteral("continuity_facestream_bin")] = outputPath;
     request[QStringLiteral("summary_json")] = summaryPath;
     request[QStringLiteral("clip_json")] = preflight.applyClipGrading ? clipJsonPath : QString();
     request[QStringLiteral("apply_clip_grading")] = preflight.applyClipGrading;
     request[QStringLiteral("arguments")] = args.join(QLatin1Char(' '));
-    QFile reqFile(requestPath);
-    if (reqFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        reqFile.write(QJsonDocument(request).toJson(QJsonDocument::Indented));
-        reqFile.close();
+    QString requestWriteError;
+    if (!jcut::jsonio::writeJsonFile(requestPath, request, true, &requestWriteError)) {
+        qWarning().noquote() << "Failed to write FaceStream request file:" << requestWriteError;
     }
 
     const QString generatorProgram = facestreamOffscreenExecutablePath();
@@ -419,7 +412,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("canceled"),
             QStringLiteral("FaceStream generation canceled by user."),
-            {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+            {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
         return;
     }
 
@@ -436,7 +429,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
-            message, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+            message, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
         QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), message);
         return;
     }
@@ -448,29 +441,44 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
-            parseError, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+            parseError, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
         QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), parseError);
         return;
     }
 
     const QJsonObject generatedByClip = generatedArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
     QJsonObject continuityRoot = generatedByClip.value(QStringLiteral("facestream-offscreen-source")).toObject();
+    QJsonObject rawDetectionsArtifact;
+    if ((!jcut::facestream::readBinaryJsonObject(detectionsPath, &rawDetectionsArtifact, &parseError) &&
+         !readJsonObject(detectionsPath, &rawDetectionsArtifact, &parseError)) &&
+        QFileInfo::exists(detectionsPath)) {
+        speaker_flow_debug::persistIndex(
+            indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
+            m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
+            parseError, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), parseError);
+        return;
+    }
     QJsonObject rawTracksArtifact;
     if (!jcut::facestream::readBinaryJsonObject(tracksPath, &rawTracksArtifact, &parseError) &&
         !readJsonObject(tracksPath, &rawTracksArtifact, &parseError)) {
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
-            parseError, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+            parseError, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
         QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), parseError);
         return;
     }
 
     const QJsonArray rawTracks = rawTracksArtifact.value(QStringLiteral("tracks")).toArray();
-    const QJsonArray rawFrames = rawTracksArtifact.value(QStringLiteral("frames")).toArray();
+    QJsonArray rawFrames = rawDetectionsArtifact.value(QStringLiteral("frames")).toArray();
+    if (rawFrames.isEmpty()) {
+        rawFrames = rawTracksArtifact.value(QStringLiteral("frames")).toArray();
+    }
     continuityRoot[QStringLiteral("raw_tracks")] = rawTracks;
     continuityRoot[QStringLiteral("raw_frames")] = rawFrames;
-    continuityRoot[QStringLiteral("raw_schema")] = rawTracksArtifact.value(QStringLiteral("schema")).toString();
+    continuityRoot[QStringLiteral("raw_tracks_schema")] = rawTracksArtifact.value(QStringLiteral("schema")).toString();
+    continuityRoot[QStringLiteral("raw_frames_schema")] = rawDetectionsArtifact.value(QStringLiteral("schema")).toString();
     if (!continuityRoot.contains(QStringLiteral("detector_mode"))) {
         continuityRoot[QStringLiteral("detector_mode")] = rawTracksArtifact.value(QStringLiteral("backend")).toString();
     }
@@ -480,7 +488,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
-            noDetectionsMessage, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+            noDetectionsMessage, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
         QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), noDetectionsMessage);
         return;
     }
@@ -522,7 +530,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
         m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"),
         (saved && savedProcessed) ? QStringLiteral("ok") : QStringLiteral("error"),
-        statusMessage, {requestPath, facestreamPartPath, tracksPath, outputPath, summaryPath});
+        statusMessage, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
 
     if (!saved) {
         QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), statusMessage);

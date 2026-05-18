@@ -1,7 +1,9 @@
 #include "detector_settings.h"
+#include "json_io_utils.h"
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDebug>
 #include <QDialog>
 #include <QDir>
@@ -9,21 +11,265 @@
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
-#include <QJsonDocument>
 #include <QLabel>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <curl/curl.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
+#include <filesystem>
 #include <functional>
 #include <memory>
 
 namespace jcut::facestream {
 namespace {
+
+constexpr const char* kNcnnAndroidScrfdSourceRevision =
+    "f94e2630ac1b2eaef8cd00c506f5baf4c530d5c1";
+
+const std::array<ScrfdModelVariantDefinition, 5>& scrfdModelVariants()
+{
+    static const std::array<ScrfdModelVariantDefinition, 5> variants{{
+        {QStringLiteral("500m"),
+         QStringLiteral("SCRFD 500M"),
+         QStringLiteral("Fastest SCRFD variant with the lowest compute cost and weakest small-face recall."),
+         QStringLiteral("scrfd_500m-opt2")},
+        {QStringLiteral("1g"),
+         QStringLiteral("SCRFD 1G"),
+         QStringLiteral("Small step up in recall over 500M at a modest compute increase."),
+         QStringLiteral("scrfd_1g-opt2")},
+        {QStringLiteral("2.5g"),
+         QStringLiteral("SCRFD 2.5G"),
+         QStringLiteral("Balanced mid-size SCRFD variant with higher recall and meaningfully higher GPU cost."),
+         QStringLiteral("scrfd_2.5g-opt2")},
+        {QStringLiteral("10g"),
+         QStringLiteral("SCRFD 10G"),
+         QStringLiteral("High-recall SCRFD variant for smaller or crowded faces at substantially higher GPU cost."),
+         QStringLiteral("scrfd_10g-opt2")},
+        {QStringLiteral("34g"),
+         QStringLiteral("SCRFD 34G"),
+         QStringLiteral("Largest supported SCRFD variant with the highest compute cost."),
+         QStringLiteral("scrfd_34g-opt2")},
+    }};
+    return variants;
+}
+
+QString scrfdModelParamFileNameForId(const QString& variantId)
+{
+    ScrfdModelVariantDefinition definition;
+    if (scrfdModelVariantById(variantId, &definition)) {
+        return definition.modelStem + QStringLiteral(".param");
+    }
+    return QStringLiteral("scrfd_500m-opt2.param");
+}
+
+QString scrfdModelBinFileNameForId(const QString& variantId)
+{
+    ScrfdModelVariantDefinition definition;
+    if (scrfdModelVariantById(variantId, &definition)) {
+        return definition.modelStem + QStringLiteral(".bin");
+    }
+    return QStringLiteral("scrfd_500m-opt2.bin");
+}
+
+QString scrubbedScrfdModelVariantId(const QString& id)
+{
+    const QString trimmed = id.trimmed().toLower();
+    if (trimmed == QStringLiteral("500m") ||
+        trimmed == QStringLiteral("1g") ||
+        trimmed == QStringLiteral("2.5g") ||
+        trimmed == QStringLiteral("10g") ||
+        trimmed == QStringLiteral("34g")) {
+        return trimmed;
+    }
+    return QString::fromLatin1(kDefaultScrfdModelVariant);
+}
+
+QStringList scrfdAssetCandidatePaths(const QString& fileName)
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    return {
+        fileName,
+        QDir::current().absoluteFilePath(QStringLiteral("assets/models/%1").arg(fileName)),
+        QDir::current().absoluteFilePath(QStringLiteral("testbench_assets/models/%1").arg(fileName)),
+        QDir(appDir).absoluteFilePath(QStringLiteral("assets/models/%1").arg(fileName)),
+        QDir(appDir).absoluteFilePath(QStringLiteral("../assets/models/%1").arg(fileName)),
+    };
+}
+
+QStringList managedModelRoots()
+{
+    return {
+        QDir::current().absoluteFilePath(QStringLiteral("assets/models")),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("assets/models")),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral("../assets/models")),
+        QDir::current().absoluteFilePath(QStringLiteral("testbench_assets/models")),
+        QDir::current().absoluteFilePath(QStringLiteral("models"))
+    };
+}
+
+QString existingManagedModelPath(const QString& fileName)
+{
+    for (const QString& root : managedModelRoots()) {
+        const QString candidate = QDir(root).absoluteFilePath(fileName);
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+QString preferredManagedModelPath(const QString& fileName)
+{
+    for (const QString& root : managedModelRoots()) {
+        const QFileInfo info(root);
+        if (info.exists() && info.isDir()) {
+            return QDir(root).absoluteFilePath(fileName);
+        }
+    }
+    return QDir::current().absoluteFilePath(QStringLiteral("assets/models/%1").arg(fileName));
+}
+
+QString scrfdAssetDownloadUrl(const QString& fileName)
+{
+    return QStringLiteral(
+               "https://raw.githubusercontent.com/nihui/ncnn-android-scrfd/%1/app/src/main/assets/%2")
+        .arg(QString::fromLatin1(kNcnnAndroidScrfdSourceRevision), fileName);
+}
+
+bool ensureCurlGlobalInit()
+{
+    static const bool initialized = []() {
+        return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
+    }();
+    return initialized;
+}
+
+size_t writeCurlPayload(char* ptr, size_t size, size_t nmemb, void* userdata)
+{
+    FILE* file = static_cast<FILE*>(userdata);
+    if (!file) {
+        return 0;
+    }
+    return std::fwrite(ptr, size, nmemb, file);
+}
+
+bool downloadUrlToFile(const QString& url, const QString& outputPath, QString* errorMessage)
+{
+    if (!ensureCurlGlobalInit()) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("libcurl global initialization failed.");
+        }
+        return false;
+    }
+
+    const QFileInfo outputInfo(outputPath);
+    if (!QDir().mkpath(outputInfo.absolutePath())) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Could not create model directory: %1")
+                                .arg(outputInfo.absolutePath());
+        }
+        return false;
+    }
+
+    const std::filesystem::path finalPath(outputPath.toStdString());
+    const std::filesystem::path tempPath = finalPath.string() + ".download";
+    std::error_code ec;
+    std::filesystem::remove(tempPath, ec);
+
+    FILE* file = std::fopen(tempPath.string().c_str(), "wb");
+    if (!file) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Could not open temporary file for download: %1")
+                                .arg(QString::fromStdString(tempPath.string()));
+        }
+        return false;
+    }
+
+    CURL* curl = curl_easy_init();
+    if (!curl) {
+        std::fclose(file);
+        std::filesystem::remove(tempPath, ec);
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("libcurl request initialization failed.");
+        }
+        return false;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.toUtf8().constData());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 5L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 120L);
+    curl_easy_setopt(curl, CURLOPT_FAILONERROR, 0L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "JCut/1.0");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, &writeCurlPayload);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+
+    const CURLcode result = curl_easy_perform(curl);
+    long httpStatus = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &httpStatus);
+    curl_easy_cleanup(curl);
+    const int flushResult = std::fflush(file);
+    const int closeResult = std::fclose(file);
+
+    if (result != CURLE_OK || httpStatus >= 400 || flushResult != 0 || closeResult != 0) {
+        std::filesystem::remove(tempPath, ec);
+        if (errorMessage) {
+            if (result != CURLE_OK) {
+                *errorMessage = QStringLiteral("Failed to download %1: %2")
+                                    .arg(url, QString::fromLatin1(curl_easy_strerror(result)));
+            } else if (httpStatus >= 400) {
+                *errorMessage = QStringLiteral("Failed to download %1: HTTP %2")
+                                    .arg(url)
+                                    .arg(httpStatus);
+            } else {
+                *errorMessage = QStringLiteral("Failed to finalize downloaded file: %1")
+                                    .arg(outputPath);
+            }
+        }
+        return false;
+    }
+
+    std::filesystem::rename(tempPath, finalPath, ec);
+    if (ec) {
+        std::filesystem::remove(finalPath, ec);
+        ec.clear();
+        std::filesystem::rename(tempPath, finalPath, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(tempPath, ec);
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Could not move downloaded file into place: %1")
+                                .arg(outputPath);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool scrfdVariantAssetsPresent(const QString& variantId)
+{
+    const QString paramFileName = scrfdModelParamFileNameForId(variantId);
+    const QString binFileName = scrfdModelBinFileNameForId(variantId);
+    auto anyExists = [](const QStringList& candidates) {
+        for (const QString& path : candidates) {
+            if (QFileInfo::exists(path)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    return anyExists(scrfdAssetCandidatePaths(paramFileName)) &&
+           anyExists(scrfdAssetCandidatePaths(binFileName));
+}
 
 DetectorRuntimeSettings immutableDefaultDetectorSettings()
 {
@@ -95,11 +341,50 @@ QString aspectText(float value)
 
 QString detectorProfileSummary(const DetectorRuntimeSettings& settings)
 {
-    return QStringLiteral("stride %1 | target %2 | threshold %3 | max faces %4")
+    return QStringLiteral("model %1 | stride %2 | target %3 | threshold %4 | max faces %5")
+        .arg(normalizeScrfdModelVariantId(settings.scrfdModelVariant))
         .arg(settings.stride)
         .arg(settings.scrfdTargetSize)
         .arg(static_cast<double>(settings.threshold), 0, 'f', 2)
         .arg(settings.maxFacesPerFrame);
+}
+
+bool detectorRuntimeSettingsEqual(const DetectorRuntimeSettings& lhs,
+                                  const DetectorRuntimeSettings& rhs)
+{
+    return lhs.stride == rhs.stride &&
+           lhs.maxDetections == rhs.maxDetections &&
+           lhs.scrfdTargetSize == rhs.scrfdTargetSize &&
+           lhs.maxFacesPerFrame == rhs.maxFacesPerFrame &&
+           normalizeScrfdModelVariantId(lhs.scrfdModelVariant) ==
+               normalizeScrfdModelVariantId(rhs.scrfdModelVariant) &&
+           lhs.threshold == rhs.threshold &&
+           lhs.nmsIouThreshold == rhs.nmsIouThreshold &&
+           lhs.trackMatchIouThreshold == rhs.trackMatchIouThreshold &&
+           lhs.newTrackMinConfidence == rhs.newTrackMinConfidence &&
+           lhs.primaryFaceOnly == rhs.primaryFaceOnly &&
+           lhs.smallFaceFallback == rhs.smallFaceFallback &&
+           lhs.scrfdTiled == rhs.scrfdTiled &&
+           lhs.roiX1 == rhs.roiX1 &&
+           lhs.roiY1 == rhs.roiY1 &&
+           lhs.roiX2 == rhs.roiX2 &&
+           lhs.roiY2 == rhs.roiY2 &&
+           lhs.minFaceAreaRatio == rhs.minFaceAreaRatio &&
+           lhs.maxFaceAreaRatio == rhs.maxFaceAreaRatio &&
+           lhs.minAspect == rhs.minAspect &&
+           lhs.maxAspect == rhs.maxAspect;
+}
+
+void updateSettingsPathLabel(QLabel* label, const QString& settingsPath, bool fileExists)
+{
+    if (!label) {
+        return;
+    }
+    label->setText(
+        fileExists
+            ? settingsPath
+            : QStringLiteral("%1\n(no specialized settings file; built-in defaults will be used)")
+                  .arg(settingsPath));
 }
 
 } // namespace
@@ -109,6 +394,108 @@ QString detectorSettingsPathForVideo(const QString& videoPath)
     const QFileInfo info(videoPath);
     const QString baseName = info.completeBaseName().isEmpty() ? info.fileName() : info.completeBaseName();
     return info.dir().absoluteFilePath(baseName + QStringLiteral("_detectorsettings.json"));
+}
+
+QVector<ScrfdModelVariantDefinition> supportedScrfdModelVariants()
+{
+    QVector<ScrfdModelVariantDefinition> variants;
+    variants.reserve(static_cast<int>(scrfdModelVariants().size()));
+    for (const ScrfdModelVariantDefinition& variant : scrfdModelVariants()) {
+        variants.push_back(variant);
+    }
+    return variants;
+}
+
+bool scrfdModelVariantById(const QString& id, ScrfdModelVariantDefinition* definitionOut)
+{
+    if (!definitionOut) {
+        return false;
+    }
+    const QString normalized = scrubbedScrfdModelVariantId(id);
+    for (const ScrfdModelVariantDefinition& variant : scrfdModelVariants()) {
+        if (variant.id == normalized) {
+            *definitionOut = variant;
+            return true;
+        }
+    }
+    return false;
+}
+
+QString normalizeScrfdModelVariantId(const QString& id)
+{
+    return scrubbedScrfdModelVariantId(id);
+}
+
+bool ensureScrfdModelVariantAssets(const QString& variantId,
+                                   QString* paramPathOut,
+                                   QString* binPathOut,
+                                   QString* errorMessage)
+{
+    if (!paramPathOut || !binPathOut) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("SCRFD model asset output paths are required.");
+        }
+        return false;
+    }
+
+    const QString normalized = normalizeScrfdModelVariantId(variantId);
+    const QString paramFileName = scrfdModelParamFileNameForId(normalized);
+    const QString binFileName = scrfdModelBinFileNameForId(normalized);
+
+    QString paramPath = existingManagedModelPath(paramFileName);
+    if (paramPath.isEmpty()) {
+        paramPath = preferredManagedModelPath(paramFileName);
+        if (!downloadUrlToFile(scrfdAssetDownloadUrl(paramFileName), paramPath, errorMessage)) {
+            return false;
+        }
+    }
+
+    QString binPath = existingManagedModelPath(binFileName);
+    if (binPath.isEmpty()) {
+        binPath = preferredManagedModelPath(binFileName);
+        if (!downloadUrlToFile(scrfdAssetDownloadUrl(binFileName), binPath, errorMessage)) {
+            return false;
+        }
+    }
+
+    *paramPathOut = paramPath;
+    *binPathOut = binPath;
+    return QFileInfo::exists(*paramPathOut) && QFileInfo::exists(*binPathOut);
+}
+
+bool ensureRes10FaceDnnModelAssets(const QString& baseDir,
+                                   QString* prototxtOut,
+                                   QString* modelOut,
+                                   QString* errorMessage)
+{
+    if (!prototxtOut || !modelOut) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Res10 model asset output paths are required.");
+        }
+        return false;
+    }
+
+    const QString prototxtPath = QDir(baseDir).absoluteFilePath(
+        QStringLiteral("external/opencv/samples/dnn/face_detector/deploy.prototxt"));
+    const QString modelPath = QDir(baseDir).absoluteFilePath(
+        QStringLiteral("external/opencv/samples/dnn/face_detector/res10_300x300_ssd_iter_140000_fp16.caffemodel"));
+    if (!QFileInfo::exists(modelPath)) {
+        if (!downloadUrlToFile(
+                QStringLiteral("https://raw.githubusercontent.com/opencv/opencv_3rdparty/dnn_samples_face_detector_20180205_fp16/res10_300x300_ssd_iter_140000_fp16.caffemodel"),
+                modelPath,
+                errorMessage)) {
+            return false;
+        }
+    }
+    if (!QFileInfo::exists(prototxtPath)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Missing Res10 deploy prototxt: %1").arg(prototxtPath);
+        }
+        return false;
+    }
+    *prototxtOut = prototxtPath;
+    *modelOut = modelPath;
+    return true;
 }
 
 QVector<DetectorSettingsProfileDefinition> builtInDetectorProfiles()
@@ -141,6 +528,7 @@ QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& s,
 {
     return {
         {QStringLiteral("detector"), detector},
+        {QStringLiteral("scrfd_model_variant"), normalizeScrfdModelVariantId(s.scrfdModelVariant)},
         {QStringLiteral("scrfd_target_size"), s.scrfdTargetSize > 0 ? s.scrfdTargetSize : scrfdTargetSize},
         {QStringLiteral("stride"), s.stride},
         {QStringLiteral("max_detections"), s.maxDetections},
@@ -166,6 +554,12 @@ QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& s,
 bool applyDetectorRuntimeSettingsObject(const QJsonObject& o, DetectorRuntimeSettings* s)
 {
     if (!s) return false;
+    if (o.contains(QStringLiteral("scrfd_model_variant"))) {
+        s->scrfdModelVariant =
+            normalizeScrfdModelVariantId(o.value(QStringLiteral("scrfd_model_variant")).toString(s->scrfdModelVariant));
+    } else {
+        s->scrfdModelVariant = normalizeScrfdModelVariantId(s->scrfdModelVariant);
+    }
     if (o.contains(QStringLiteral("stride"))) s->stride = std::max(1, o.value(QStringLiteral("stride")).toInt(s->stride));
     if (o.contains(QStringLiteral("max_detections"))) s->maxDetections = std::max(1, o.value(QStringLiteral("max_detections")).toInt(s->maxDetections));
     if (o.contains(QStringLiteral("scrfd_target_size"))) s->scrfdTargetSize = std::max(320, o.value(QStringLiteral("scrfd_target_size")).toInt(s->scrfdTargetSize));
@@ -201,12 +595,9 @@ bool loadDetectorRuntimeSettingsFile(const QString& path,
     if (!info.exists()) return false;
     const QDateTime mtime = info.lastModified();
     if (lastAppliedMtime && lastAppliedMtime->isValid() && mtime <= *lastAppliedMtime) return false;
-    QFile f(path);
-    if (!f.open(QIODevice::ReadOnly)) return false;
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) return false;
-    if (!applyDetectorRuntimeSettingsObject(doc.object(), settings)) return false;
+    QJsonObject object;
+    if (!jcut::jsonio::readJsonFile(path, &object)) return false;
+    if (!applyDetectorRuntimeSettingsObject(object, settings)) return false;
     if (lastAppliedMtime) *lastAppliedMtime = mtime;
     return true;
 }
@@ -218,22 +609,32 @@ bool saveDetectorRuntimeSettingsFile(const QString& path,
                                      QString* errorMessage)
 {
     if (path.isEmpty()) return false;
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        if (errorMessage) *errorMessage = QStringLiteral("failed to write detector settings: %1").arg(path);
+    if (!jcut::jsonio::writeJsonFile(
+            path,
+            detectorRuntimeSettingsToJson(
+                settings,
+                detector,
+                settings.scrfdTargetSize > 0 ? settings.scrfdTargetSize : scrfdTargetSize),
+            true,
+            errorMessage)) {
+        if (errorMessage && errorMessage->isEmpty()) {
+            *errorMessage = QStringLiteral("failed to write detector settings: %1").arg(path);
+        }
         return false;
     }
-    f.write(QJsonDocument(detectorRuntimeSettingsToJson(
-        settings,
-        detector,
-        settings.scrfdTargetSize > 0 ? settings.scrfdTargetSize : scrfdTargetSize)).toJson(QJsonDocument::Indented));
-    f.write("\n");
     return true;
 }
 
 void syncDetectorSettingsPanel(DetectorSettingsPanel* panel, const DetectorRuntimeSettings& s)
 {
     if (!panel || !panel->widget) return;
+    if (panel->scrfdModelVariant) {
+        const QString normalized = normalizeScrfdModelVariantId(s.scrfdModelVariant);
+        const int index = panel->scrfdModelVariant->findData(normalized);
+        if (index >= 0) {
+            panel->scrfdModelVariant->setCurrentIndex(index);
+        }
+    }
     if (panel->threshold) {
         panel->threshold->setValue(qRound(s.threshold * 100.0f));
     }
@@ -356,7 +757,8 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
     auto* form = new QFormLayout;
     root->addLayout(form);
     const auto syncing = std::make_shared<bool>(false);
-    auto persist = [settings, detector, scrfdTargetSize, settingsPath]() {
+    const auto settingsFilePresent = std::make_shared<bool>(QFileInfo::exists(settingsPath));
+    auto persist = [settings, detector, scrfdTargetSize, settingsPath, settingsFilePresent]() {
         QString error;
         if (!saveDetectorRuntimeSettingsFile(settingsPath,
                                              *settings,
@@ -364,14 +766,19 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
                                              settings && settings->scrfdTargetSize > 0 ? settings->scrfdTargetSize : scrfdTargetSize,
                                              &error) && !error.isEmpty()) {
             qWarning().noquote() << error;
+        } else {
+            *settingsFilePresent = true;
         }
     };
     auto applyProfile = [syncing, settings, persist, &panel](const DetectorRuntimeSettings& profileSettings) {
         if (!settings) {
             return;
         }
+        const QString currentScrfdModelVariant =
+            normalizeScrfdModelVariantId(settings->scrfdModelVariant);
         *syncing = true;
         *settings = profileSettings;
+        settings->scrfdModelVariant = currentScrfdModelVariant;
         syncDetectorSettingsPanel(&panel, *settings);
         *syncing = false;
         persist();
@@ -449,6 +856,37 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
     const bool scrfdFamily = detector.contains(QStringLiteral("scrfd"), Qt::CaseInsensitive) ||
                              detector.compare(QStringLiteral("jcut-dnn"), Qt::CaseInsensitive) == 0;
     if (scrfdFamily) {
+        panel.scrfdModelVariant = new QComboBox(panel.widget);
+        panel.scrfdModelVariant->setToolTip(
+            QStringLiteral("SCRFD model family variant. Larger variants improve recall, especially for small or crowded faces, at higher GPU cost."));
+        const QVector<ScrfdModelVariantDefinition> variants = supportedScrfdModelVariants();
+        for (const ScrfdModelVariantDefinition& variant : variants) {
+            const bool assetsPresent = scrfdVariantAssetsPresent(variant.id);
+            const QString label = assetsPresent
+                ? variant.label
+                : QStringLiteral("%1 (downloads on demand)").arg(variant.label);
+            panel.scrfdModelVariant->addItem(label, variant.id);
+            const int index = panel.scrfdModelVariant->count() - 1;
+            panel.scrfdModelVariant->setItemData(
+                index,
+                QStringLiteral("%1\nparam: %2\nbin: %3")
+                    .arg(variant.description,
+                         scrfdModelParamFileNameForId(variant.id),
+                         scrfdModelBinFileNameForId(variant.id)),
+                Qt::ToolTipRole);
+        }
+        form->addRow(QStringLiteral("SCRFD model"), panel.scrfdModelVariant);
+        QObject::connect(panel.scrfdModelVariant,
+                         &QComboBox::currentIndexChanged,
+                         panel.widget,
+                         [syncing, settings, persist, &panel](int index) {
+                             if (*syncing || !settings || !panel.scrfdModelVariant || index < 0) {
+                                 return;
+                             }
+                             settings->scrfdModelVariant =
+                                 normalizeScrfdModelVariantId(panel.scrfdModelVariant->itemData(index).toString());
+                             persist();
+                         });
         addSlider(QStringLiteral("SCRFD target"),
                   QStringLiteral("Input size for the SCRFD model. Raise this to improve small-face recall at higher GPU cost; lower it for speed."),
                   320, 1280, settings->scrfdTargetSize, &panel.scrfdTargetSize, &panel.scrfdTargetSizeValue,
@@ -561,6 +999,32 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
     panel.settingsPath->setWordWrap(true);
     root->addWidget(panel.settingsPath);
 
+    auto* settingsActions = new QHBoxLayout;
+    settingsActions->addStretch(1);
+    auto* deleteSettingsButton = new QPushButton(QStringLiteral("Delete Saved Settings"), panel.widget);
+    deleteSettingsButton->setToolTip(
+        QStringLiteral("Delete the specialized per-video detector settings file and reset this panel to the built-in defaults."));
+    deleteSettingsButton->setEnabled(*settingsFilePresent);
+    settingsActions->addWidget(deleteSettingsButton);
+    root->addLayout(settingsActions);
+
+    updateSettingsPathLabel(panel.settingsPath, settingsPath, *settingsFilePresent);
+    QObject::connect(deleteSettingsButton, &QPushButton::clicked, panel.widget, [syncing, settings, settingsPath, settingsFilePresent, deleteSettingsButton, &panel]() {
+        if (!settings) {
+            return;
+        }
+        if (QFileInfo::exists(settingsPath)) {
+            QFile::remove(settingsPath);
+        }
+        *settingsFilePresent = false;
+        *syncing = true;
+        *settings = immutableDefaultDetectorSettings();
+        syncDetectorSettingsPanel(&panel, *settings);
+        *syncing = false;
+        updateSettingsPathLabel(panel.settingsPath, settingsPath, false);
+        deleteSettingsButton->setEnabled(false);
+    });
+
     *syncing = true;
     syncDetectorSettingsPanel(&panel, *settings);
     *syncing = false;
@@ -578,6 +1042,7 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
     FaceStreamPreflightDialogResult result;
     result.livePreview = options.livePreviewChecked;
     result.applyClipGrading = options.applyClipGradingChecked;
+    result.restartFromScratch = options.restartFromScratchChecked;
     if (!settings) {
         result.saveError = QStringLiteral("Detector settings are unavailable.");
         return result;
@@ -625,6 +1090,17 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
         layout->addWidget(applyClipGradingCheckbox);
     }
 
+    QCheckBox* restartFromScratchCheckbox = nullptr;
+    if (options.showRestartFromScratchToggle) {
+        restartFromScratchCheckbox = new QCheckBox(
+            options.restartFromScratchLabel.trimmed().isEmpty()
+                ? QStringLiteral("Restart from scratch (delete facestream.part)")
+                : options.restartFromScratchLabel,
+            &preflightDialog);
+        restartFromScratchCheckbox->setChecked(options.restartFromScratchChecked);
+        layout->addWidget(restartFromScratchCheckbox);
+    }
+
     DetectorSettingsPanel detectorPanel =
         createDetectorSettingsPanel(settings,
                                     detector,
@@ -657,11 +1133,16 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
     result.livePreview = livePreviewCheckbox ? livePreviewCheckbox->isChecked() : options.livePreviewChecked;
     result.applyClipGrading =
         applyClipGradingCheckbox ? applyClipGradingCheckbox->isChecked() : options.applyClipGradingChecked;
-    saveDetectorRuntimeSettingsFile(settingsPath,
-                                    *settings,
-                                    detector,
-                                    scrfdTargetSize,
-                                    &result.saveError);
+    result.restartFromScratch =
+        restartFromScratchCheckbox ? restartFromScratchCheckbox->isChecked() : options.restartFromScratchChecked;
+    if (QFileInfo::exists(settingsPath) ||
+        !detectorRuntimeSettingsEqual(*settings, immutableDefaultDetectorSettings())) {
+        saveDetectorRuntimeSettingsFile(settingsPath,
+                                        *settings,
+                                        detector,
+                                        scrfdTargetSize,
+                                        &result.saveError);
+    }
     return result;
 }
 

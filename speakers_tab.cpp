@@ -1147,6 +1147,15 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
         m_loadedTranscriptDoc.object());
     const bool hasStoredPayload =
         jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
+    QString facestreamPartPath = continuityRoot.value(QStringLiteral("facestream_part")).toString().trimmed();
+    if (facestreamPartPath.isEmpty()) {
+        const QString importedArtifactDir =
+            continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString().trimmed();
+        if (!importedArtifactDir.isEmpty()) {
+            facestreamPartPath =
+                QDir(importedArtifactDir).absoluteFilePath(QStringLiteral("facestream.part"));
+        }
+    }
 
     if (streams.isEmpty() && !hasStoredPayload) {
         return fail(
@@ -1160,6 +1169,7 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
             });
     }
 
+    bool deleteFacestreamPart = false;
     if (confirmDialog) {
         QStringList affectedPaths;
         const QString facestreamArtifactPath = engine.facestreamArtifactPath(m_loadedTranscriptPath);
@@ -1189,6 +1199,15 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
         }
         affectedPaths.removeDuplicates();
 
+        QDialog confirmationDialog;
+        confirmationDialog.setWindowTitle(QStringLiteral("Delete FaceStream"));
+        confirmationDialog.setWindowFlag(Qt::Window, true);
+        confirmationDialog.resize(620, 280);
+
+        auto* layout = new QVBoxLayout(&confirmationDialog);
+        layout->setContentsMargins(12, 12, 12, 12);
+        layout->setSpacing(8);
+
         QString confirmationMessage =
             QStringLiteral("Delete FaceStream data for this clip?\n\n");
         if (!affectedPaths.isEmpty()) {
@@ -1198,20 +1217,44 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
             }
             confirmationMessage += QLatin1Char('\n');
         }
-        confirmationMessage +=
-            QStringLiteral("Debug-run artifacts such as facestream.part, tracks.bin, continuity_facestream.bin, and summary.json are not deleted by this action.\n\nThis cannot be undone.");
+        confirmationMessage += QStringLiteral(
+            "By default, debug-run artifacts such as facestream.part, tracks.bin, continuity_facestream.bin, and summary.json are not deleted by this action.\n\nThis cannot be undone.");
 
-        const auto confirmation = QMessageBox::warning(
-            nullptr,
-            QStringLiteral("Delete FaceStream"),
-            confirmationMessage,
-            QMessageBox::Yes | QMessageBox::Cancel,
-            QMessageBox::Cancel);
-        if (confirmation != QMessageBox::Yes) {
+        auto* label = new QLabel(confirmationMessage, &confirmationDialog);
+        label->setWordWrap(true);
+        layout->addWidget(label);
+
+        QCheckBox* deletePartCheckbox = nullptr;
+        if (!facestreamPartPath.isEmpty()) {
+            deletePartCheckbox = new QCheckBox(
+                QStringLiteral("Also delete facestream.part checkpoint"), &confirmationDialog);
+            deletePartCheckbox->setToolTip(facestreamPartPath);
+            layout->addWidget(deletePartCheckbox);
+
+            auto* partPathLabel = new QLabel(
+                QStringLiteral("Checkpoint: %1").arg(facestreamPartPath), &confirmationDialog);
+            partPathLabel->setWordWrap(true);
+            partPathLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
+            layout->addWidget(partPathLabel);
+        }
+
+        auto* buttons = new QHBoxLayout;
+        buttons->addStretch(1);
+        auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &confirmationDialog);
+        auto* deleteButton = new QPushButton(QStringLiteral("Delete"), &confirmationDialog);
+        buttons->addWidget(cancelButton);
+        buttons->addWidget(deleteButton);
+        layout->addLayout(buttons);
+
+        QObject::connect(cancelButton, &QPushButton::clicked, &confirmationDialog, &QDialog::reject);
+        QObject::connect(deleteButton, &QPushButton::clicked, &confirmationDialog, &QDialog::accept);
+
+        if (confirmationDialog.exec() != QDialog::Accepted) {
             return editor::ActionResult::failure(
                 QStringLiteral("canceled"),
                 QStringLiteral("Delete FaceStream was canceled."));
         }
+        deleteFacestreamPart = deletePartCheckbox && deletePartCheckbox->isChecked();
     }
 
     continuityByClip.remove(clipId);
@@ -1261,6 +1304,21 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
             return true;
         });
         saveLoadedTranscriptDocument();
+    }
+
+    if (deleteFacestreamPart && !facestreamPartPath.isEmpty() && QFileInfo::exists(facestreamPartPath)) {
+        if (!QFile::remove(facestreamPartPath)) {
+            return fail(
+                QStringLiteral("delete_checkpoint_failed"),
+                QStringLiteral("FaceStream entries were removed, but deleting facestream.part failed:\n%1")
+                    .arg(facestreamPartPath),
+                [](const QString& message) {
+                    QMessageBox::warning(
+                        nullptr,
+                        QStringLiteral("Delete FaceStream"),
+                        message);
+                });
+        }
     }
 
     emit transcriptDocumentChanged();

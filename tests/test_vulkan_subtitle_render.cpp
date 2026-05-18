@@ -155,6 +155,17 @@ void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels()
     request.exportEndFrame = 15;
 
     QVector<TimelineClip> orderedClips = request.clips;
+    QHash<QString, QVector<TranscriptSection>> transcriptCache;
+    const render_detail::OverlayImage overlay =
+        render_detail::renderTranscriptOverlay(outputSize,
+                                               request,
+                                               15,
+                                               orderedClips,
+                                               transcriptCache);
+    QVERIFY2(!overlay.isNull(), "Transcript overlay helper returned a null overlay");
+    QCOMPARE(overlay.width, outputSize.width());
+    QCOMPARE(overlay.height, outputSize.height());
+
     QHash<QString, editor::DecoderContext*> decoders;
     QHash<render_detail::RenderAsyncFrameKey, editor::FrameHandle> asyncCache;
     qint64 decodeMs = 0;

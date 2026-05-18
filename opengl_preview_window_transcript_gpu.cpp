@@ -60,12 +60,12 @@ QString PreviewWindow::transcriptOverlayTextureKey(const TimelineClip& clip,
     return QString::fromLatin1(digest.toHex());
 }
 
-QImage PreviewWindow::renderTranscriptOverlayImage(const TimelineClip& clip,
-                                                   const QRectF& bounds,
-                                                   const QRectF& textBounds,
-                                                   qreal fontPixelSize,
-                                                   const QString& shadowHtml,
-                                                   const QString& textHtml) const {
+render_detail::OverlayImage PreviewWindow::renderTranscriptOverlay(const TimelineClip& clip,
+                                                                   const QRectF& bounds,
+                                                                   const QRectF& textBounds,
+                                                                   qreal fontPixelSize,
+                                                                   const QString& shadowHtml,
+                                                                   const QString& textHtml) const {
     const int imageWidth = qMax(1, qRound(bounds.width()));
     const int imageHeight = qMax(1, qRound(bounds.height()));
     QImage image(imageWidth, imageHeight, QImage::Format_RGBA8888_Premultiplied);
@@ -83,7 +83,13 @@ QImage PreviewWindow::renderTranscriptOverlayImage(const TimelineClip& clip,
 
     QFont font(clip.transcriptOverlay.fontFamily);
     if (fontPixelSize <= 0.0) {
-        return image;
+        render_detail::OverlayImage overlay;
+        overlay.width = image.width();
+        overlay.height = image.height();
+        overlay.rgbaPremultiplied = QByteArray(
+            reinterpret_cast<const char*>(image.constBits()),
+            static_cast<int>(image.sizeInBytes()));
+        return overlay;
     }
     setFontPixelSizeRobust(&font, fontPixelSize, painter.device());
     font.setBold(clip.transcriptOverlay.bold);
@@ -126,15 +132,22 @@ QImage PreviewWindow::renderTranscriptOverlayImage(const TimelineClip& clip,
     textDoc.drawContents(&painter);
     painter.end();
 
-    return image;
+    render_detail::OverlayImage overlay;
+    overlay.width = image.width();
+    overlay.height = image.height();
+    overlay.rgbaPremultiplied = QByteArray(
+        reinterpret_cast<const char*>(image.constBits()),
+        static_cast<int>(image.sizeInBytes()));
+    return overlay;
 }
 
-GLuint PreviewWindow::textureForTranscriptOverlay(const QString& key, const QImage& image) {
+GLuint PreviewWindow::textureForTranscriptOverlay(const QString& key, const render_detail::OverlayImage& image) {
     if (key.isEmpty() || image.isNull()) {
         return 0;
     }
     editor::GlTextureCacheEntry entry = m_transcriptTextureCache.value(key);
-    if (entry.textureId != 0 && entry.size == image.size()) {
+    const QSize imageSize(image.width, image.height);
+    if (entry.textureId != 0 && entry.size == imageSize) {
         entry.lastUsedMs = nowMs();
         m_transcriptTextureCache.insert(key, entry);
         return entry.textureId;
@@ -151,15 +164,15 @@ GLuint PreviewWindow::textureForTranscriptOverlay(const QString& key, const QIma
     glTexImage2D(GL_TEXTURE_2D,
                  0,
                  GL_RGBA,
-                 image.width(),
-                 image.height(),
+                 image.width,
+                 image.height,
                  0,
                  GL_RGBA,
                  GL_UNSIGNED_BYTE,
-                 image.constBits());
+                 image.rgbaPremultiplied.constData());
     glBindTexture(GL_TEXTURE_2D, 0);
 
-    entry.size = image.size();
+    entry.size = imageSize;
     entry.lastUsedMs = nowMs();
     m_transcriptTextureCache.insert(key, entry);
     trimTranscriptTextureCache();
@@ -225,7 +238,7 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
 
     const QString textureKey =
         transcriptOverlayTextureKey(clip, bounds, localTextBounds, fontPixelSize, shadowHtml, textHtml);
-    const QImage image = renderTranscriptOverlayImage(
+    const render_detail::OverlayImage image = renderTranscriptOverlay(
         clip,
         localBounds,
         localTextBounds,

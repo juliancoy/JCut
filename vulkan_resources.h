@@ -1,5 +1,7 @@
 #pragma once
 
+#include "overlay_render_backend.h"
+
 #include <QByteArray>
 #include <QImage>
 #include <QSize>
@@ -23,6 +25,7 @@ public:
 
     bool ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer);
     bool setSampledImage(VkImageView imageView, VkImageLayout imageLayout);
+    bool uploadImageTexture(VkCommandBuffer commandBuffer, const render_detail::OverlayImage& image);
     bool uploadImageTexture(VkCommandBuffer commandBuffer, const QImage& image);
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
 

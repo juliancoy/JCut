@@ -1,5 +1,6 @@
 #include "vulkan_scrfd_ncnn_face_detector.h"
 
+#include <QElapsedTimer>
 #include <QFileInfo>
 
 #if JCUT_HAVE_NCNN
@@ -14,8 +15,10 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #if !defined(JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE)
@@ -37,10 +40,89 @@ struct FaceObject {
     float prob = 0.0f;
 };
 
+struct ScrfdOutputBinding {
+    int featStride = 0;
+    int baseSize = 0;
+    std::vector<const char*> scoreBlobCandidates;
+    std::vector<const char*> bboxBlobCandidates;
+};
+
 double intersectionArea(const FaceObject& a, const FaceObject& b)
 {
     const QRectF inter = a.rect.intersected(b.rect);
     return inter.width() * inter.height();
+}
+
+std::array<ScrfdOutputBinding, 3> scrfdOutputBindingsForVariant(const QString& modelVariant)
+{
+    const bool legacyNumericFirst = (modelVariant == QStringLiteral("500m"));
+    const std::array<ScrfdOutputBinding, 3> bindings{{
+        {8,
+         16,
+         legacyNumericFirst ? std::vector<const char*>{"412", "score_8"} : std::vector<const char*>{"score_8", "412"},
+         legacyNumericFirst ? std::vector<const char*>{"415", "bbox_8"} : std::vector<const char*>{"bbox_8", "415"}},
+        {16,
+         64,
+         legacyNumericFirst ? std::vector<const char*>{"474", "score_16"} : std::vector<const char*>{"score_16", "474"},
+         legacyNumericFirst ? std::vector<const char*>{"477", "bbox_16"} : std::vector<const char*>{"bbox_16", "477"}},
+        {32,
+         256,
+         legacyNumericFirst ? std::vector<const char*>{"536", "score_32"} : std::vector<const char*>{"score_32", "536"},
+         legacyNumericFirst ? std::vector<const char*>{"539", "bbox_32"} : std::vector<const char*>{"bbox_32", "539"}},
+    }};
+    return bindings;
+}
+
+template <typename BlobT>
+bool extractFirstAvailableBlob(ncnn::Extractor& extractor,
+                               const std::vector<const char*>& candidates,
+                               BlobT* blobOut,
+                               QString* resolvedNameOut)
+{
+    if (!blobOut) {
+        return false;
+    }
+    for (const char* candidate : candidates) {
+        BlobT blob;
+        if (extractor.extract(candidate, blob) == 0) {
+            *blobOut = blob;
+            if (resolvedNameOut) {
+                *resolvedNameOut = QString::fromLatin1(candidate);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool bindScrfdInput(ncnn::Extractor& extractor,
+                    const ncnn::Mat& input,
+                    QString* errorMessage)
+{
+    static const std::array<const char*, 3> candidates{{"input.1", "input", "data"}};
+    for (const char* candidate : candidates) {
+        if (extractor.input(candidate, input) == 0) {
+            return true;
+        }
+    }
+    setError(errorMessage,
+             QStringLiteral("SCRFD model does not expose a supported input blob (tried input.1/input/data)"));
+    return false;
+}
+
+bool bindScrfdInput(ncnn::Extractor& extractor,
+                    const ncnn::VkMat& input,
+                    QString* errorMessage)
+{
+    static const std::array<const char*, 3> candidates{{"input.1", "input", "data"}};
+    for (const char* candidate : candidates) {
+        if (extractor.input(candidate, input) == 0) {
+            return true;
+        }
+    }
+    setError(errorMessage,
+             QStringLiteral("SCRFD model does not expose a supported input blob (tried input.1/input/data)"));
+    return false;
 }
 
 void nmsSortedBboxes(const std::vector<FaceObject>& faceobjects,
@@ -169,6 +251,8 @@ struct VulkanScrfdNcnnFaceDetector::Impl {
     VulkanDeviceContext context;
     bool initialized = false;
     bool zeroCopyInput = false;
+    QString modelVariant = QStringLiteral("500m");
+    NcnnInferenceStats lastStats;
 };
 
 VulkanScrfdNcnnFaceDetector::VulkanScrfdNcnnFaceDetector()
@@ -215,6 +299,18 @@ bool VulkanScrfdNcnnFaceDetector::initialize(const QString& paramPath,
         setError(errorMessage, QStringLiteral("failed to load SCRFD ncnn bin file: %1").arg(binPath));
         release();
         return false;
+    }
+    const QString lowerParamPath = QFileInfo(paramPath).fileName().toLower();
+    if (lowerParamPath.contains(QStringLiteral("scrfd_1g"))) {
+        m_impl->modelVariant = QStringLiteral("1g");
+    } else if (lowerParamPath.contains(QStringLiteral("scrfd_2.5g"))) {
+        m_impl->modelVariant = QStringLiteral("2.5g");
+    } else if (lowerParamPath.contains(QStringLiteral("scrfd_10g"))) {
+        m_impl->modelVariant = QStringLiteral("10g");
+    } else if (lowerParamPath.contains(QStringLiteral("scrfd_34g"))) {
+        m_impl->modelVariant = QStringLiteral("34g");
+    } else {
+        m_impl->modelVariant = QStringLiteral("500m");
     }
     m_impl->initialized = true;
     m_impl->zeroCopyInput = false;
@@ -281,6 +377,18 @@ bool VulkanScrfdNcnnFaceDetector::initialize(const VulkanDeviceContext& context,
         release();
         return false;
     }
+    const QString lowerParamPath = QFileInfo(paramPath).fileName().toLower();
+    if (lowerParamPath.contains(QStringLiteral("scrfd_1g"))) {
+        m_impl->modelVariant = QStringLiteral("1g");
+    } else if (lowerParamPath.contains(QStringLiteral("scrfd_2.5g"))) {
+        m_impl->modelVariant = QStringLiteral("2.5g");
+    } else if (lowerParamPath.contains(QStringLiteral("scrfd_10g"))) {
+        m_impl->modelVariant = QStringLiteral("10g");
+    } else if (lowerParamPath.contains(QStringLiteral("scrfd_34g"))) {
+        m_impl->modelVariant = QStringLiteral("34g");
+    } else {
+        m_impl->modelVariant = QStringLiteral("500m");
+    }
     m_impl->context = context;
     m_impl->initialized = true;
     m_impl->zeroCopyInput = true;
@@ -298,6 +406,8 @@ void VulkanScrfdNcnnFaceDetector::release()
     m_impl->context = {};
     m_impl->initialized = false;
     m_impl->zeroCopyInput = false;
+    m_impl->modelVariant = QStringLiteral("500m");
+    m_impl->lastStats = {};
 }
 
 bool VulkanScrfdNcnnFaceDetector::isInitialized() const
@@ -364,19 +474,23 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromBgr(const cv::Mat&
     inputPad.substract_mean_normalize(meanVals, normVals);
 
     ncnn::Extractor ex = m_impl->net.create_extractor();
-    if (ex.input("input.1", inputPad) != 0) {
-        setError(errorMessage, QStringLiteral("SCRFD model does not expose expected input blob 'input.1'"));
+    if (!bindScrfdInput(ex, inputPad, errorMessage)) {
         return out;
     }
 
     std::vector<FaceObject> proposals;
-    auto extractLevel = [&](const char* scoreName, const char* bboxName, int baseSize, int featStride) -> bool {
+    auto extractLevel = [&](const ScrfdOutputBinding& binding, double* stageMs) -> bool {
+        QElapsedTimer stageTimer;
+        stageTimer.start();
         ncnn::Mat scoreBlob;
         ncnn::Mat bboxBlob;
-        if (ex.extract(scoreName, scoreBlob) != 0 || ex.extract(bboxName, bboxBlob) != 0) {
+        QString resolvedScoreName;
+        QString resolvedBboxName;
+        if (!extractFirstAvailableBlob(ex, binding.scoreBlobCandidates, &scoreBlob, &resolvedScoreName) ||
+            !extractFirstAvailableBlob(ex, binding.bboxBlobCandidates, &bboxBlob, &resolvedBboxName)) {
             setError(errorMessage,
-                     QStringLiteral("SCRFD model does not expose expected output blobs %1/%2")
-                         .arg(QString::fromLatin1(scoreName), QString::fromLatin1(bboxName)));
+                     QStringLiteral("SCRFD model does not expose supported output blobs for stride %1")
+                         .arg(binding.featStride));
             return false;
         }
         ncnn::Mat ratios(1);
@@ -384,14 +498,15 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromBgr(const cv::Mat&
         ncnn::Mat scales(2);
         scales[0] = 1.0f;
         scales[1] = 2.0f;
-        const ncnn::Mat anchors = generateAnchors(baseSize, ratios, scales);
-        generateProposals(anchors, featStride, scoreBlob, bboxBlob, threshold, &proposals);
+        const ncnn::Mat anchors = generateAnchors(binding.baseSize, ratios, scales);
+        generateProposals(anchors, binding.featStride, scoreBlob, bboxBlob, threshold, &proposals);
         return true;
     };
-    if (!extractLevel("412", "415", 16, 8) ||
-        !extractLevel("474", "477", 64, 16) ||
-        !extractLevel("536", "539", 256, 32)) {
-        return out;
+    const auto bindings = scrfdOutputBindingsForVariant(m_impl->modelVariant);
+    for (const ScrfdOutputBinding& binding : bindings) {
+        if (!extractLevel(binding, nullptr)) {
+            return out;
+        }
     }
 
     std::sort(proposals.begin(), proposals.end(), [](const FaceObject& a, const FaceObject& b) {
@@ -425,6 +540,7 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
                                                                      QString* errorMessage)
 {
     QVector<ScrfdDetection> out;
+    m_impl->lastStats = {};
     if (!m_impl->initialized) {
         setError(errorMessage, QStringLiteral("SCRFD ncnn detector is not initialized"));
         return out;
@@ -444,6 +560,8 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
     setError(errorMessage, QStringLiteral("JCut was built without ncnn; SCRFD detector is unavailable."));
     return out;
 #else
+    QElapsedTimer totalTimer;
+    totalTimer.start();
     m_impl->inputMemory.buffer = inputTensor.buffer;
     m_impl->inputMemory.offset = 0;
     m_impl->inputMemory.capacity = static_cast<size_t>(inputTensor.byteSize);
@@ -462,19 +580,26 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
                          m_impl->net.opt.blob_vkallocator);
     ncnn::Extractor ex = m_impl->net.create_extractor();
     ex.set_light_mode(false);
-    if (ex.input("input.1", gpuInput) != 0) {
-        setError(errorMessage, QStringLiteral("SCRFD model does not expose expected input blob 'input.1'"));
+    QElapsedTimer inputTimer;
+    inputTimer.start();
+    if (!bindScrfdInput(ex, gpuInput, errorMessage)) {
         return out;
     }
+    m_impl->lastStats.inputMs = static_cast<double>(inputTimer.nsecsElapsed()) / 1'000'000.0;
 
     std::vector<FaceObject> proposals;
-    auto extractLevel = [&](const char* scoreName, const char* bboxName, int baseSize, int featStride) -> bool {
+    auto extractLevel = [&](const ScrfdOutputBinding& binding, double* stageMs) -> bool {
+        QElapsedTimer stageTimer;
+        stageTimer.start();
         ncnn::Mat scoreBlob;
         ncnn::Mat bboxBlob;
-        if (ex.extract(scoreName, scoreBlob) != 0 || ex.extract(bboxName, bboxBlob) != 0) {
+        QString resolvedScoreName;
+        QString resolvedBboxName;
+        if (!extractFirstAvailableBlob(ex, binding.scoreBlobCandidates, &scoreBlob, &resolvedScoreName) ||
+            !extractFirstAvailableBlob(ex, binding.bboxBlobCandidates, &bboxBlob, &resolvedBboxName)) {
             setError(errorMessage,
-                     QStringLiteral("SCRFD model does not expose expected output blobs %1/%2")
-                         .arg(QString::fromLatin1(scoreName), QString::fromLatin1(bboxName)));
+                     QStringLiteral("SCRFD model does not expose supported output blobs for stride %1")
+                         .arg(binding.featStride));
             return false;
         }
         ncnn::Mat ratios(1);
@@ -482,16 +607,33 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
         ncnn::Mat scales(2);
         scales[0] = 1.0f;
         scales[1] = 2.0f;
-        const ncnn::Mat anchors = generateAnchors(baseSize, ratios, scales);
-        generateProposals(anchors, featStride, scoreBlob, bboxBlob, threshold, &proposals);
+        const ncnn::Mat anchors = generateAnchors(binding.baseSize, ratios, scales);
+        generateProposals(anchors, binding.featStride, scoreBlob, bboxBlob, threshold, &proposals);
+        if (stageMs) {
+            *stageMs = static_cast<double>(stageTimer.nsecsElapsed()) / 1'000'000.0;
+        }
         return true;
     };
-    if (!extractLevel("412", "415", 16, 8) ||
-        !extractLevel("474", "477", 64, 16) ||
-        !extractLevel("536", "539", 256, 32)) {
-        return out;
+    QElapsedTimer extractTimer;
+    extractTimer.start();
+    const auto bindings = scrfdOutputBindingsForVariant(m_impl->modelVariant);
+    for (const ScrfdOutputBinding& binding : bindings) {
+        double* stageMs = nullptr;
+        if (binding.featStride == 8) {
+            stageMs = &m_impl->lastStats.extractLevel8Ms;
+        } else if (binding.featStride == 16) {
+            stageMs = &m_impl->lastStats.extractLevel16Ms;
+        } else if (binding.featStride == 32) {
+            stageMs = &m_impl->lastStats.extractLevel32Ms;
+        }
+        if (!extractLevel(binding, stageMs)) {
+            return out;
+        }
     }
+    m_impl->lastStats.extractMs = static_cast<double>(extractTimer.nsecsElapsed()) / 1'000'000.0;
 
+    QElapsedTimer postTimer;
+    postTimer.start();
     std::sort(proposals.begin(), proposals.end(), [](const FaceObject& a, const FaceObject& b) {
         return a.prob > b.prob;
     });
@@ -518,16 +660,23 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
             out.push_back({box, obj.prob});
         }
     }
+    m_impl->lastStats.postMs = static_cast<double>(postTimer.nsecsElapsed()) / 1'000'000.0;
+    m_impl->lastStats.totalMs = static_cast<double>(totalTimer.nsecsElapsed()) / 1'000'000.0;
     return out;
 #endif
+}
+
+NcnnInferenceStats VulkanScrfdNcnnFaceDetector::lastInferenceStats() const
+{
+    return m_impl->lastStats;
 }
 
 QString VulkanScrfdNcnnFaceDetector::backendId() const
 {
     if (m_impl->zeroCopyInput) {
-        return QStringLiteral("scrfd_500m_ncnn_vulkan_zero_copy_v1");
+        return QStringLiteral("scrfd_%1_ncnn_vulkan_zero_copy_v1").arg(m_impl->modelVariant);
     }
-    return QStringLiteral("scrfd_500m_ncnn_vulkan_materialized_input_v1");
+    return QStringLiteral("scrfd_%1_ncnn_vulkan_materialized_input_v1").arg(m_impl->modelVariant);
 }
 
 } // namespace jcut::vulkan_detector

@@ -198,13 +198,13 @@ private:
                                         qreal fontPixelSize,
                                         const QString& shadowHtml,
                                         const QString& textHtml) const;
-    QImage renderTranscriptOverlayImage(const TimelineClip& clip,
-                                        const QRectF& bounds,
-                                        const QRectF& textBounds,
-                                        qreal fontPixelSize,
-                                        const QString& shadowHtml,
-                                        const QString& textHtml) const;
-    GLuint textureForTranscriptOverlay(const QString& key, const QImage& image);
+    render_detail::OverlayImage renderTranscriptOverlay(const TimelineClip& clip,
+                                                        const QRectF& bounds,
+                                                        const QRectF& textBounds,
+                                                        qreal fontPixelSize,
+                                                        const QString& shadowHtml,
+                                                        const QString& textHtml) const;
+    GLuint textureForTranscriptOverlay(const QString& key, const render_detail::OverlayImage& image);
     void trimTranscriptTextureCache();
     bool usingCpuFallback() const;
     void ensurePipeline();

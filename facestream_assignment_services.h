@@ -34,6 +34,13 @@ struct ClusterRequest {
     QString arcfaceBinPath;
 };
 
+struct TrackIdentityEvidence {
+    int trackId = -1;
+    QVector<facefind::Candidate> cropSamples;
+    std::vector<float> embedding;
+    bool hasEmbedding = false;
+};
+
 struct ClusterResult {
     bool ok = false;
     QString cancelStageMessage;
@@ -51,9 +58,31 @@ struct ClusterResult {
     double reviewThreshold = 0.55;
 };
 
+struct AssignmentResolutionResult {
+    QJsonArray overrides;
+    QJsonArray auditLog;
+    QJsonArray resolvedMap;
+    QHash<QString, QVector<facefind::Candidate>> assignmentsBySpeaker;
+};
+
+QVector<QJsonObject> selectRepresentativeKeyframesForIdentity(
+    const QJsonArray& keyframes,
+    int maxRepresentativeCrops = 3,
+    int minFrameSpacing = 24);
+
 CropExtractionResult extractRepresentativeCrops(
     const CropExtractionRequest& request,
     const std::function<bool(int, const QString&)>& progress);
+
+ClusterResult clusterTrackIdentityEvidence(
+    const QVector<TrackIdentityEvidence>& trackEvidence,
+    double autoClusterThreshold = 0.70,
+    double reviewThreshold = 0.55);
+
+AssignmentResolutionResult resolveTrackIdentityAssignments(
+    const QJsonArray& assignmentTableRows,
+    const QVector<facefind::Candidate>& trackCandidates,
+    const QString& timestampUtc);
 
 ClusterResult clusterFaceTracks(
     const ClusterRequest& request,

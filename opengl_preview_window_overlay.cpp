@@ -491,7 +491,11 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                 clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
             const EvaluatedTitle title =
                 composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
-            drawTitleOverlay(painter, compositeRect, title, m_interaction.outputSize);
+            const render_detail::OverlayImage titleImage = renderTitleOverlay(
+                m_interaction.outputSize, title, m_interaction.outputSize);
+            if (!titleImage.isNull()) {
+                painter->drawImage(compositeRect, titleImage.asQImageView());
+            }
 
             // Register overlay bounds so the title is draggable in the preview
             if (title.valid && !title.text.isEmpty()) {
@@ -499,11 +503,7 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                     ? static_cast<qreal>(compositeRect.width()) / m_interaction.outputSize.width() : 1.0;
                 const qreal sy = m_interaction.outputSize.height() > 0
                     ? static_cast<qreal>(compositeRect.height()) / m_interaction.outputSize.height() : 1.0;
-                QFont font(title.fontFamily);
-                font.setPointSizeF(title.fontSize * qMin(sx, sy));
-                font.setBold(title.bold);
-                font.setItalic(title.italic);
-                const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
+                const TitleLayoutMetrics metrics = measureTitleLayout(title, qMin(sx, sy));
                 const qreal cx = compositeRect.center().x() + title.x * sx;
                 const qreal cy = compositeRect.center().y() + title.y * sy;
                 const qreal windowPaddingPx = title.windowEnabled
@@ -858,17 +858,17 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
                 clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
             const EvaluatedTitle title =
                 composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));
-            drawTitleOverlay(painter, compositeRect, title, m_interaction.outputSize);
+            const render_detail::OverlayImage titleImage = renderTitleOverlay(
+                m_interaction.outputSize, title, m_interaction.outputSize);
+            if (!titleImage.isNull()) {
+                painter->drawImage(compositeRect, titleImage.asQImageView());
+            }
             if (title.valid && !title.text.isEmpty()) {
                 const qreal sx = m_interaction.outputSize.width() > 0
                     ? static_cast<qreal>(compositeRect.width()) / m_interaction.outputSize.width() : 1.0;
                 const qreal sy = m_interaction.outputSize.height() > 0
                     ? static_cast<qreal>(compositeRect.height()) / m_interaction.outputSize.height() : 1.0;
-                QFont font(title.fontFamily);
-                font.setPointSizeF(title.fontSize * qMin(sx, sy));
-                font.setBold(title.bold);
-                font.setItalic(title.italic);
-                const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
+                const TitleLayoutMetrics metrics = measureTitleLayout(title, qMin(sx, sy));
                 const qreal cx = compositeRect.center().x() + title.x * sx;
                 const qreal cy = compositeRect.center().y() + title.y * sy;
                 const qreal windowPaddingPx = title.windowEnabled

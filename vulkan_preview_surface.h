@@ -114,6 +114,7 @@ private:
         QString source;
         int trackId = -1;
         FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+        int64_t typicalFrameStep = 1;
         QVector<FacestreamKeyframe> keyframes;
     };
     struct FacestreamOverlayCacheEntry {

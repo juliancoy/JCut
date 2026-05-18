@@ -1168,6 +1168,12 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
         std::sort(track.keyframes.begin(), track.keyframes.end(), [](const FacestreamKeyframe& a, const FacestreamKeyframe& b) {
             return a.frame < b.frame;
         });
+        QVector<int64_t> sortedFrames;
+        sortedFrames.reserve(track.keyframes.size());
+        for (const FacestreamKeyframe& keyframe : track.keyframes) {
+            sortedFrames.push_back(keyframe.frame);
+        }
+        track.typicalFrameStep = facestreamTypicalFrameStep(sortedFrames);
         if (!track.keyframes.isEmpty()) {
             tracks.push_back(track);
         }
@@ -1215,6 +1221,20 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         m_interaction.facestreamOverlays = overlays;
         return;
     }
+    auto keyframeBoxNorm = [](const FacestreamKeyframe& keyframe,
+                              const QSize& clipFrameSize) -> QRectF {
+        if (keyframe.hasCenterBox) {
+            if (!clipFrameSize.isValid()) {
+                return QRectF();
+            }
+            return normalizedCenterBoxRect(
+                keyframe.xNorm,
+                keyframe.yNorm,
+                keyframe.boxSizeNorm,
+                QSizeF(clipFrameSize.width(), clipFrameSize.height()));
+        }
+        return keyframe.boxNorm;
+    };
     const QString sourceFilter = m_facestreamOverlaySource.trimmed().isEmpty()
         ? QStringLiteral("all")
         : m_facestreamOverlaySource.trimmed().toLower();
@@ -1256,7 +1276,6 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
             const int64_t lookupFrame = facestreamLookupFrameForDomain(
                 track.frameDomain, localTimelineFrame, localSourceFrame, localFrame);
-            const FacestreamKeyframe* best = &track.keyframes.constFirst();
             auto nextIt = std::lower_bound(
                 track.keyframes.constBegin(),
                 track.keyframes.constEnd(),
@@ -1264,43 +1283,73 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 [](const FacestreamKeyframe& keyframe, int64_t frame) {
                     return keyframe.frame < frame;
                 });
-            if (nextIt == track.keyframes.constBegin()) {
-                best = &(*nextIt);
-            } else if (nextIt == track.keyframes.constEnd()) {
-                best = &track.keyframes.constLast();
+            const FacestreamKeyframe* selected = nullptr;
+            FacestreamKeyframe interpolated;
+            const FacestreamKeyframe* previous =
+                (nextIt != track.keyframes.constBegin()) ? &(*(nextIt - 1)) : nullptr;
+            const FacestreamKeyframe* next =
+                (nextIt != track.keyframes.constEnd()) ? &(*nextIt) : nullptr;
+            const int64_t edgeHoldFrames = facestreamMaxEdgeHoldFrames(track.typicalFrameStep);
+
+            if (next && next->frame == lookupFrame) {
+                selected = next;
+            } else if (previous && previous->frame == lookupFrame) {
+                selected = previous;
+            } else if (previous && next) {
+                if (!facestreamShouldBridgeGap(
+                        previous->frame, next->frame, track.typicalFrameStep)) {
+                    continue;
+                }
+                const QRectF previousBox = keyframeBoxNorm(*previous, clipFrameSize);
+                const QRectF nextBox = keyframeBoxNorm(*next, clipFrameSize);
+                if (!previousBox.isValid() || previousBox.isEmpty() ||
+                    !nextBox.isValid() || nextBox.isEmpty()) {
+                    continue;
+                }
+                const int64_t span = qMax<int64_t>(1, next->frame - previous->frame);
+                const qreal t = qBound<qreal>(
+                    0.0,
+                    static_cast<qreal>(lookupFrame - previous->frame) / static_cast<qreal>(span),
+                    1.0);
+                interpolated.frame = lookupFrame;
+                interpolated.boxNorm = QRectF(
+                    previousBox.x() + ((nextBox.x() - previousBox.x()) * t),
+                    previousBox.y() + ((nextBox.y() - previousBox.y()) * t),
+                    previousBox.width() + ((nextBox.width() - previousBox.width()) * t),
+                    previousBox.height() + ((nextBox.height() - previousBox.height()) * t))
+                    .intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+                interpolated.confidence =
+                    previous->confidence + ((next->confidence - previous->confidence) * t);
+                interpolated.source = next->source.isEmpty() ? previous->source : next->source;
+                if (!interpolated.boxNorm.isValid() || interpolated.boxNorm.isEmpty()) {
+                    continue;
+                }
+                selected = &interpolated;
+            } else if (previous &&
+                       qAbs(previous->frame - lookupFrame) <= edgeHoldFrames) {
+                selected = previous;
+            } else if (next &&
+                       qAbs(next->frame - lookupFrame) <= edgeHoldFrames) {
+                selected = next;
             } else {
-                const FacestreamKeyframe& nextKeyframe = *nextIt;
-                const FacestreamKeyframe& prevKeyframe = *(nextIt - 1);
-                const int64_t nextDistance = qAbs(nextKeyframe.frame - lookupFrame);
-                const int64_t prevDistance = qAbs(prevKeyframe.frame - lookupFrame);
-                best = (nextDistance < prevDistance) ? &nextKeyframe : &prevKeyframe;
+                continue;
             }
-            if (qAbs(best->frame - lookupFrame) > 90) {
+
+            if (!selected) {
                 continue;
             }
             VulkanPreviewFacestreamOverlay overlay;
             overlay.clipId = clip.id;
             overlay.streamId = track.streamId;
-            overlay.source = best->source.isEmpty() ? track.source : best->source;
+            overlay.source = selected->source.isEmpty() ? track.source : selected->source;
             overlay.trackId = track.trackId;
             overlay.sourceFrame = mapFacestreamFrameToSourceFrame(
-                clip, best->frame, track.frameDomain, m_interaction.renderSyncMarkers);
-            if (best->hasCenterBox && clipFrameSize.isValid()) {
-                const QRectF centerBoxNorm = normalizedCenterBoxRect(
-                    best->xNorm,
-                    best->yNorm,
-                    best->boxSizeNorm,
-                    QSizeF(clipFrameSize.width(), clipFrameSize.height()));
-                if (centerBoxNorm.isValid() && !centerBoxNorm.isEmpty()) {
-                    overlay.boxNorm = centerBoxNorm;
-                }
-            } else {
-                overlay.boxNorm = best->boxNorm;
-            }
+                clip, selected->frame, track.frameDomain, m_interaction.renderSyncMarkers);
+            overlay.boxNorm = keyframeBoxNorm(*selected, clipFrameSize);
             if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
                 continue;
             }
-            overlay.confidence = best->confidence;
+            overlay.confidence = selected->confidence;
             overlays.push_back(overlay);
         }
     }

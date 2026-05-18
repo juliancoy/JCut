@@ -84,6 +84,26 @@ ctest --output-on-failure -R test_facestream_preview_smoke
 
 If the env var is not set, or no `DISPLAY` / `WAYLAND_DISPLAY` is available, the test skips cleanly.
 
+### Midpoint Detection Harness
+
+For manual profiling/debugging against a real file, build and run:
+
+```bash
+./build/tests/facestream_midpoint_detection_harness /path/to/video.mp4 \
+  --params-file /tmp/jcut_facestream_default.json \
+  --benchmark-frames 16 \
+  --warmup-frames 4 \
+  --repeat 3
+```
+
+The harness:
+- probes `durationFrames` with `DecoderContext`
+- computes the midpoint frame
+- can run a one-frame probe or a repeated midpoint throughput benchmark
+- writes an annotated midpoint PNG plus a raw source PNG
+- prints per-run summary metrics and a final median line
+- forwards the detector process logs directly to the terminal
+
 ### With Address Sanitizer
 
 ```bash

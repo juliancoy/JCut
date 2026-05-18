@@ -559,6 +559,60 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer, const QI
     return true;
 }
 
+bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer,
+                                         const render_detail::OverlayImage& image)
+{
+    if (!m_initialized || !commandBuffer || image.isNull()) {
+        return false;
+    }
+    const QSize size(image.width, image.height);
+    const VkDeviceSize bytes = static_cast<VkDeviceSize>(image.rgbaPremultiplied.size());
+    if (!ensureTextureSize(size) || !ensureStagingCapacity(bytes)) {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    if (m_funcs->vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+        return false;
+    }
+    std::memcpy(mapped, image.rgbaPremultiplied.constData(), static_cast<size_t>(bytes));
+    m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
+
+    transitionTextureImage(commandBuffer,
+                           m_textureLayout,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0,
+                           VK_ACCESS_TRANSFER_WRITE_BIT);
+    m_textureLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    VkBufferImageCopy region{};
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.layerCount = 1;
+    region.imageExtent = {static_cast<uint32_t>(size.width()),
+                          static_cast<uint32_t>(size.height()),
+                          1};
+    m_funcs->vkCmdCopyBufferToImage(commandBuffer,
+                                    m_stagingBuffer,
+                                    m_textureImage,
+                                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                    1,
+                                    &region);
+
+    transitionTextureImage(commandBuffer,
+                           m_textureLayout,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                           VK_ACCESS_TRANSFER_WRITE_BIT,
+                           VK_ACCESS_SHADER_READ_BIT);
+    m_textureLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    m_textureUploaded = true;
+    setSampledImage(m_textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return true;
+}
+
 bool VulkanResources::setSampledImage(VkImageView imageView, VkImageLayout imageLayout)
 {
     if (!m_initialized || imageView == VK_NULL_HANDLE || m_descriptorSet == VK_NULL_HANDLE) {

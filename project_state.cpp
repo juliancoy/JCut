@@ -1,5 +1,6 @@
 // project_state.cpp
 #include "editor.h"
+#include "json_io_utils.h"
 #include "speakers_table.h"
 #include "clip_serialization.h"
 #include "debug_controls.h"
@@ -93,7 +94,8 @@ void EditorWindow::loadState()
     markStartup(QStringLiteral("load_state.history_read.begin"));
     if (historyFile.open(QIODevice::ReadOnly))
     {
-        const QJsonObject historyRoot = QJsonDocument::fromJson(historyFile.readAll()).object();
+        QJsonObject historyRoot;
+        jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
         m_historyEntries = historyRoot.value(QStringLiteral("entries")).toArray();
         const bool historySanitized = sanitizeHistoryEntriesInPlace(&m_historyEntries);
         m_historyIndex = historyRoot.value(QStringLiteral("index")).toInt(m_historyEntries.size() - 1);
@@ -118,7 +120,7 @@ void EditorWindow::loadState()
         QFile file(stateFilePath());
         if (file.open(QIODevice::ReadOnly))
         {
-            root = QJsonDocument::fromJson(file.readAll()).object();
+            jcut::jsonio::parseObjectBytes(file.readAll(), &root);
         }
         markStartup(QStringLiteral("load_state.state_file_read.end"));
     }
@@ -495,13 +497,13 @@ void EditorWindow::saveProjectAs()
 
     const QString newProjectId = sanitizedProjectId(name);
     const QByteArray statePayload =
-        QJsonDocument(buildStateJson()).toJson(QJsonDocument::Indented);
+        jcut::jsonio::serializeIndented(buildStateJson());
 
     QJsonObject historyRoot;
     historyRoot[QStringLiteral("index")] = m_historyIndex;
     historyRoot[QStringLiteral("entries")] = m_historyEntries;
     const QByteArray historyPayload =
-        QJsonDocument(historyRoot).toJson(QJsonDocument::Indented);
+        jcut::jsonio::serializeIndented(historyRoot);
 
     if (!saveProjectPayload(newProjectId, statePayload, historyPayload))
     {
@@ -872,7 +874,7 @@ void EditorWindow::saveStateNow()
     QDir().mkpath(projectPath(currentProjectIdOrDefault()));
 
     const QByteArray serializedState =
-        QJsonDocument(buildStateJson()).toJson(QJsonDocument::Indented);
+        jcut::jsonio::serializeIndented(buildStateJson());
     if (serializedState == m_lastSavedState)
     {
         return;
@@ -918,7 +920,7 @@ void EditorWindow::saveHistoryNow()
     }
 
     const QByteArray payload =
-        QJsonDocument(root).toJson(QJsonDocument::Indented);
+        jcut::jsonio::serializeIndented(root);
     if (file.write(payload) != payload.size())
     {
         file.cancelWriting();
@@ -987,7 +989,7 @@ void EditorWindow::saveAutosaveBackup()
     const QString backupFileName = QStringLiteral("state_backup_%1.json").arg(now.toString(QStringLiteral("yyyy-MM-dd_HH-mm-ss")));
     const QString backupPath = QDir(projectDir).filePath(backupFileName);
 
-    const QByteArray serializedState = QJsonDocument(buildStateJson()).toJson(QJsonDocument::Indented);
+    const QByteArray serializedState = jcut::jsonio::serializeIndented(buildStateJson());
 
     QSaveFile file(backupPath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))

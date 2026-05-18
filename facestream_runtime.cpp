@@ -2,15 +2,14 @@
 
 #include "decoder_context.h"
 #include "frame_handle.h"
+#include "json_io_utils.h"
 #include "render_internal.h"
 #include "speakers_tab_internal.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
-#include <QDataStream>
 #include <QDateTime>
 #include <QFile>
-#include <QJsonDocument>
 #include <QPainter>
 #include <QPixmap>
 
@@ -111,9 +110,47 @@ QImage renderFrameWithVulkan(VulkanFrameProvider* provider,
                              const QSize& outputSize,
                              VulkanFrameStats* stats)
 {
-    if (!provider || !provider->ensureInitialized(outputSize)) {
+    VulkanRenderResult result;
+    if (!renderFrameWithVulkanResult(provider,
+                                     sourceClip,
+                                     mediaPath,
+                                     timelineFrame,
+                                     sourceFrame,
+                                     outputSize,
+                                     &result,
+                                     true,
+                                     stats,
+                                     nullptr)) {
         return {};
     }
+    return result.frame.cpuImage;
+}
+
+bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
+                                 const TimelineClip& sourceClip,
+                                 const QString& mediaPath,
+                                 int64_t timelineFrame,
+                                 int64_t sourceFrame,
+                                 const QSize& outputSize,
+                                 VulkanRenderResult* result,
+                                 bool readbackToCpuImage,
+                                 VulkanFrameStats* stats,
+                                 QString* errorMessage)
+{
+    if (!provider || !provider->ensureInitialized(outputSize)) {
+        if (errorMessage) {
+            *errorMessage = provider ? provider->failureReason
+                                     : QStringLiteral("Missing Vulkan frame provider.");
+        }
+        return false;
+    }
+    if (!result) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("Missing Vulkan render result output.");
+        }
+        return false;
+    }
+    *result = VulkanRenderResult{};
 
     const TimelineClip clip = buildFacestreamRenderClip(sourceClip, mediaPath, timelineFrame, sourceFrame);
     const RenderRequest request = buildFacestreamRenderRequest(clip, timelineFrame, outputSize);
@@ -122,30 +159,55 @@ QImage renderFrameWithVulkan(VulkanFrameProvider* provider,
     qint64 textureMs = 0;
     qint64 compositeMs = 0;
     qint64 readbackMs = 0;
-    QImage frame = provider->renderer->renderFrame(request,
-                                                   timelineFrame,
-                                                   provider->decoders,
-                                                   nullptr,
-                                                   &provider->asyncFrameCache,
-                                                   QVector<TimelineClip>{clip},
-                                                   nullptr,
-                                                   &decodeMs,
-                                                   &textureMs,
-                                                   &compositeMs,
-                                                   &readbackMs,
-                                                   nullptr,
-                                                   nullptr);
+    if (!provider->renderer->renderFrameToOutput(request,
+                                                 timelineFrame,
+                                                 provider->decoders,
+                                                 nullptr,
+                                                 &provider->asyncFrameCache,
+                                                 QVector<TimelineClip>{clip},
+                                                 &result->frame,
+                                                 readbackToCpuImage,
+                                                 nullptr,
+                                                 &decodeMs,
+                                                 &textureMs,
+                                                 &compositeMs,
+                                                 &readbackMs,
+                                                 nullptr,
+                                                 nullptr)) {
+        provider->failed = true;
+        provider->failureReason = errorMessage && !errorMessage->isEmpty()
+            ? *errorMessage
+            : QStringLiteral("Vulkan FaceStream render output request failed.");
+        if (errorMessage && errorMessage->isEmpty()) {
+            *errorMessage = provider->failureReason;
+        }
+        return false;
+    }
     if (stats) {
         stats->decodeMs = decodeMs;
         stats->textureMs = textureMs;
         stats->compositeMs = compositeMs;
         stats->readbackMs = readbackMs;
     }
-    if (frame.isNull()) {
+    if (readbackToCpuImage && result->frame.cpuImage.isNull()) {
         provider->failed = true;
         provider->failureReason = QStringLiteral("Vulkan FaceStream frame render returned null.");
+        if (errorMessage) {
+            *errorMessage = provider->failureReason;
+        }
+        return false;
     }
-    return frame;
+    if (!readbackToCpuImage && !result->frame.vulkanFrame.valid) {
+        provider->failed = true;
+        provider->failureReason = QStringLiteral("Vulkan FaceStream frame render returned no GPU image.");
+        if (errorMessage) {
+            *errorMessage = provider->failureReason;
+        }
+        return false;
+    }
+    provider->failed = false;
+    provider->failureReason.clear();
+    return true;
 }
 
 bool renderFrameToVulkan(VulkanFrameProvider* provider,
@@ -164,53 +226,22 @@ bool renderFrameToVulkan(VulkanFrameProvider* provider,
         }
         return false;
     }
-    frame->valid = false;
-    if (!provider || !provider->ensureInitialized(outputSize)) {
-        if (errorMessage) {
-            *errorMessage = provider ? provider->failureReason
-                                     : QStringLiteral("Missing Vulkan frame provider.");
-        }
+    VulkanRenderResult result;
+    if (!renderFrameWithVulkanResult(provider,
+                                     sourceClip,
+                                     mediaPath,
+                                     timelineFrame,
+                                     sourceFrame,
+                                     outputSize,
+                                     &result,
+                                     false,
+                                     stats,
+                                     errorMessage)) {
+        frame->valid = false;
         return false;
     }
-
-    const TimelineClip clip = buildFacestreamRenderClip(sourceClip, mediaPath, timelineFrame, sourceFrame);
-    const RenderRequest request = buildFacestreamRenderRequest(clip, timelineFrame, outputSize);
-    qint64 decodeMs = 0;
-    qint64 textureMs = 0;
-    qint64 compositeMs = 0;
-    provider->renderer->renderFrame(request,
-                                    timelineFrame,
-                                    provider->decoders,
-                                    nullptr,
-                                    &provider->asyncFrameCache,
-                                    QVector<TimelineClip>{clip},
-                                    nullptr,
-                                    &decodeMs,
-                                    &textureMs,
-                                    &compositeMs,
-                                    nullptr,
-                                    nullptr,
-                                    nullptr);
-    if (stats) {
-        stats->decodeMs = decodeMs;
-        stats->textureMs = textureMs;
-        stats->compositeMs = compositeMs;
-        stats->readbackMs = 0;
-    }
-    QString error;
-    if (!provider->renderer->lastRenderedVulkanFrame(frame, &error)) {
-        provider->failed = true;
-        provider->failureReason = error.isEmpty()
-            ? QStringLiteral("Vulkan FaceStream frame render returned no GPU image.")
-            : error;
-        if (errorMessage) {
-            *errorMessage = provider->failureReason;
-        }
-        return false;
-    }
-    provider->failed = false;
-    provider->failureReason.clear();
-    return true;
+    *frame = result.frame.vulkanFrame;
+    return frame->valid;
 }
 
 bool renderFrameToVulkanWithPreviewImage(VulkanFrameProvider* provider,
@@ -734,45 +765,7 @@ bool readBinaryJsonObject(const QString& path,
                           QJsonObject* objectOut,
                           QString* errorOut)
 {
-    if (objectOut) {
-        *objectOut = QJsonObject{};
-    }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to open %1").arg(path);
-        }
-        return false;
-    }
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_6_0);
-    quint32 magic = 0;
-    quint32 version = 0;
-    QByteArray compressed;
-    stream >> magic;
-    stream >> version;
-    stream >> compressed;
-    if (stream.status() != QDataStream::Ok || magic != 0x4A435554 || version != 1) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Invalid binary artifact header in %1").arg(path);
-        }
-        return false;
-    }
-
-    const QByteArray payload = qUncompress(compressed);
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to parse binary artifact %1: %2")
-                            .arg(path, parseError.errorString());
-        }
-        return false;
-    }
-    if (objectOut) {
-        *objectOut = doc.object();
-    }
-    return true;
+    return jcut::jsonio::readBinaryJsonObject(path, objectOut, 0x4A435554, 1, errorOut);
 }
 
 bool saveContinuityArtifact(const QString& transcriptPath,

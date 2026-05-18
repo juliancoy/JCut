@@ -1,8 +1,8 @@
 #include "project_manager.h"
+#include "json_io_utils.h"
 #include <QDir>
 #include <QFile>
 #include <QSaveFile>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QInputDialog>
@@ -277,7 +277,7 @@ void ProjectManager::saveProjectAs(const QString &currentName,
     QJsonObject historyRoot;
     historyRoot[QStringLiteral("index")] = historyIndex;
     historyRoot[QStringLiteral("entries")] = historyEntries;
-    const QByteArray historyPayload = QJsonDocument(historyRoot).toJson(QJsonDocument::Indented);
+    const QByteArray historyPayload = jcut::jsonio::serializeIndented(historyRoot);
 
     if (!saveProjectPayload(newProjectId, statePayload, historyPayload)) {
         QMessageBox::warning(nullptr,

@@ -397,12 +397,12 @@ QString transcriptOverlayTextureKey(const TimelineClip& clip,
     return QString::fromLatin1(digest.toHex());
 }
 
-QImage renderTranscriptOverlayImage(const TimelineClip& clip,
-                                    const QRectF& bounds,
-                                    const QRectF& textBounds,
-                                    qreal fontPixelSize,
-                                    const QString& shadowHtml,
-                                    const QString& textHtml)
+render_detail::OverlayImage renderTranscriptOverlay(const TimelineClip& clip,
+                                                    const QRectF& bounds,
+                                                    const QRectF& textBounds,
+                                                    qreal fontPixelSize,
+                                                    const QString& shadowHtml,
+                                                    const QString& textHtml)
 {
     const int imageWidth = qMax(1, qRound(bounds.width()));
     const int imageHeight = qMax(1, qRound(bounds.height()));
@@ -421,7 +421,13 @@ QImage renderTranscriptOverlayImage(const TimelineClip& clip,
 
     QFont font(clip.transcriptOverlay.fontFamily);
     if (fontPixelSize <= 0.0) {
-        return image;
+        render_detail::OverlayImage overlay;
+        overlay.width = image.width();
+        overlay.height = image.height();
+        overlay.rgbaPremultiplied = QByteArray(
+            reinterpret_cast<const char*>(image.constBits()),
+            static_cast<int>(image.sizeInBytes()));
+        return overlay;
     }
     setFontPixelSizeRobust(&font, fontPixelSize, painter.device());
     font.setBold(clip.transcriptOverlay.bold);
@@ -464,7 +470,13 @@ QImage renderTranscriptOverlayImage(const TimelineClip& clip,
     textDoc.drawContents(&painter);
     painter.end();
 
-    return image;
+    render_detail::OverlayImage overlay;
+    overlay.width = image.width();
+    overlay.height = image.height();
+    overlay.rgbaPremultiplied = QByteArray(
+        reinterpret_cast<const char*>(image.constBits()),
+        static_cast<int>(image.sizeInBytes()));
+    return overlay;
 }
 
 class DirectVulkanPreviewRenderer final : public QVulkanWindowRenderer {
@@ -3526,7 +3538,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                     shadowHtml,
                                     textHtml);
                                 Q_UNUSED(overlayKey);
-                                const QImage overlayImage = renderTranscriptOverlayImage(
+                                const render_detail::OverlayImage overlayImage = renderTranscriptOverlay(
                                     effectiveClip,
                                     localBounds,
                                     localTextBounds,

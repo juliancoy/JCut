@@ -1,7 +1,5 @@
 #include "control_server_http_utils.h"
-
-#include <QJsonDocument>
-#include <QJsonParseError>
+#include "json_io_utils.h"
 
 namespace control_server {
 
@@ -26,21 +24,15 @@ QString reasonPhrase(int statusCode) {
 }
 
 QByteArray jsonBytes(const QJsonObject& object) {
-    return QJsonDocument(object).toJson(QJsonDocument::Compact);
+    return jcut::jsonio::serializeCompact(object);
 }
 
 QJsonObject parseJsonObject(const QByteArray& body, QString* error) {
-    QJsonParseError parseError;
-    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        if (error) {
-            *error = parseError.error != QJsonParseError::NoError
-                ? parseError.errorString()
-                : QStringLiteral("request body must be a JSON object");
-        }
+    QJsonObject object;
+    if (!jcut::jsonio::parseObjectBytes(body, &object, error)) {
         return {};
     }
-    return document.object();
+    return object;
 }
 
 std::optional<Request> tryParseRequest(const QByteArray& data) {

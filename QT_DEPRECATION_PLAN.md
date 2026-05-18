@@ -2,301 +2,436 @@
 
 ## Goal
 
-Reduce and eventually remove Qt from the performance-critical runtime and editor shell without destabilizing the rendering pipeline.
+Reduce Qt usage in the runtime and rendering stack without destabilizing preview, export, or the editor shell.
 
-This is not a single-step port. The codebase currently uses Qt for:
+This is not a single-step "remove Qt" rewrite. The codebase still uses Qt for:
 
 - UI widgets and windowing
 - event loop, timers, and signal/slot messaging
 - IPC wrappers
 - strings, containers, and JSON
-- image/text rendering primitives
-- frame and overlay interchange types
+- image interchange and some preview compatibility paths
+- parts of title/transcript data models
 
-The high-risk area is not scheduling or messaging. The high-risk area is that render/compositor paths still use `QImage` and Qt text APIs as core data-path types.
+The important update is that the codebase is no longer at the "everything render-related is Qt-first" stage. Some of the hardest groundwork is already in progress.
 
-## Principles
+## Current Snapshot
 
-- Remove Qt from runtime boundaries before removing it from the app shell.
-- Prioritize zero-copy render paths over UI framework replacement.
-- Replace abstractions, not call sites, where possible.
-- Keep fallback compatibility paths during migration.
-- Do not mix “performance refactor” and “UI rewrite” into one step.
+As of the current tree:
 
-## Current Risk Areas
+- renderer output is partially dual-path, not purely `QImage`-first
+- overlay rendering now has an explicit backend abstraction
+- the non-Qt overlay backend already uses `fontconfig` + `freetype2`
+- Vulkan facestream/offscreen paths already emit zero-copy and fallback telemetry
+- targeted tests already exist for Vulkan subtitle/render parity work
 
-### 1. Renderer contracts are still Qt-shaped
+That means the plan should focus on finishing boundary cleanup, not re-describing already-completed groundwork as future work.
+
+## What Is Already True
+
+### 1. Renderer output has started moving away from a pure `QImage` contract
+
+Relevant files:
+
+- [render_internal.h](/home/julian/Documents/JCut/render_internal.h:205)
+- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h:24)
+- [facestream_runtime.cpp](/home/julian/Documents/JCut/facestream_runtime.cpp:106)
+
+Current status:
+
+- `render_detail::OffscreenRenderFrame` carries both `QImage cpuImage` and `OffscreenVulkanFrame vulkanFrame`
+- `OffscreenRenderer::renderFrameToOutput(...)` already exists beside the legacy `QImage renderFrame(...)` convenience API
+- facestream runtime has `VulkanRenderResult` and `renderFrameToVulkan(...)`-style entry points
+
+Implication:
+
+- the architecture has already started the right migration
+- the remaining job is to make the GPU-first path the default contract and demote `QImage` to compatibility/output only
+
+### 2. Overlay generation is no longer purely Qt text rendering
+
+Relevant files:
+
+- [overlay_render_backend.h](/home/julian/Documents/JCut/overlay_render_backend.h:12)
+- [overlay_render_backend.cpp](/home/julian/Documents/JCut/overlay_render_backend.cpp:1)
+- [titles.cpp](/home/julian/Documents/JCut/titles.cpp:106)
+- [render_decode.cpp](/home/julian/Documents/JCut/render_decode.cpp:237)
+
+Current status:
+
+- overlay generation now goes through `OverlayRenderBackend`
+- title/transcript overlay generation can return a neutral `OverlayImage` byte buffer
+- the backend implementation already uses FreeType/fontconfig rather than `QTextDocument`
+- `QImage` still appears at leaf compatibility boundaries via explicit overlay-image views for painter-based composition
+
+Implication:
+
+- the main remaining problem is not "invent a non-Qt overlay renderer from scratch"
+- the real task is to push `OverlayImage`/GPU upload paths deeper and stop converting back to `QImage` unless a legacy caller explicitly needs it
+
+### 3. Zero-copy and fallback observability already exist
+
+Relevant files:
+
+- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp:4200)
+- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp:4336)
+
+Current status:
+
+- facestream summary output already records hardware/direct handoff, CPU fallback, `qimage_materialized`, and zero-copy satisfaction flags
+- strictness knobs already exist such as `require_zero_copy` and `require_hardware_vulkan_frame_path`
+
+Implication:
+
+- Stage 0 should build on this instrumentation instead of starting from scratch
+
+### 4. The build and test graph already reflects the migration
+
+Relevant files:
+
+- [CMakeLists.txt](/home/julian/Documents/JCut/CMakeLists.txt:99)
+- [tests/CMakeLists.txt](/home/julian/Documents/JCut/tests/CMakeLists.txt:41)
+
+Current status:
+
+- `fontconfig` and `freetype2` are first-class dependencies
+- `test_vulkan_subtitle_render` exists
+- `test_opengl_vulkan_render_exactness` includes the overlay backend path
+
+Implication:
+
+- this work should now be driven by boundary enforcement and regression coverage, not just exploratory refactors
+
+## Remaining High-Risk Areas
+
+### 1. Public runtime/render interfaces still leak Qt types
 
 Examples:
 
-- `render_internal.h`: `QImage renderFrame(...)`
-- `facestream_runtime.h`: `renderFrameWithVulkan(...)`, `readLastRenderedVulkanFrameImage(...)`
-- `offscreen_vulkan_renderer.cpp`: layer composition still accepts CPU image layers and CPU text overlays
+- `QImage` remains part of renderer and runtime compatibility APIs
+- `QString`, `QHash`, `QVector`, `QJsonObject`, and `QSize` are still used throughout render-facing interfaces
+
+Relevant files:
+
+- [render_internal.h](/home/julian/Documents/JCut/render_internal.h:222)
+- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h:45)
+- [preview_surface.h](/home/julian/Documents/JCut/preview_surface.h:134)
 
 Impact:
 
-- Qt image types leak into runtime interfaces
-- zero-copy is optional instead of primary
-- preview/export helpers can silently force readback
+- even when the internal render path is GPU-native, boundary contracts still pin adjacent systems to Qt
+- replacing the editor shell alone would not remove these dependencies
 
-### 2. Overlay rendering is CPU/Qt based
+### 2. Vulkan composition still keeps CPU image compatibility paths alive
 
 Examples:
 
-- transcript overlays via `QPainter` / `QTextDocument`
-- title overlays via `QPainter`
-- preview image annotation paths
+- prepared image caches still use `QImage`
+- some layer preparation and compatibility paths can still materialize CPU images
+- readback helpers remain widely available and easy to call
+
+Relevant files:
+
+- [offscreen_vulkan_renderer.cpp](/home/julian/Documents/JCut/offscreen_vulkan_renderer.cpp:3155)
+- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h:80)
+- [render_internal.h](/home/julian/Documents/JCut/render_internal.h:214)
 
 Impact:
 
-- Vulkan mode still has CPU islands
-- UI toolkit and compositor remain coupled
+- zero-copy is available, but not yet the default discipline
+- performance regressions can still creep in through convenience code paths
 
-### 3. Qt core types are pervasive
+### 3. Overlay composition still falls back through Qt image helpers in legacy paths
 
 Examples:
 
-- `QString`, `QVector`, `QHash`, `QJsonObject`
-- Qt object ownership and lifecycle assumptions
+- painter-based leaf compatibility paths still expose overlay bytes to Qt as `QImage` views
+- some preview/export leaf consumers still terminate in Qt image composition
+
+Relevant files:
+
+- [render_decode.cpp](/home/julian/Documents/JCut/render_decode.cpp:237)
+- [titles.h](/home/julian/Documents/JCut/titles.h:57)
+- [overlay_render_backend.h](/home/julian/Documents/JCut/overlay_render_backend.h:29)
 
 Impact:
 
-- raises migration cost across nearly every subsystem
-- makes “just replace the UI” misleading
+- overlay generation itself is less coupled to Qt than before
+- legacy composition APIs still preserve Qt at the boundary
+
+### 4. QtCore remains pervasive across non-UI subsystems
+
+Examples:
+
+- strings, JSON, containers, ownership, and event assumptions remain Qt-shaped
+
+Relevant files:
+
+- [editor.h](/home/julian/Documents/JCut/editor.h:346)
+- [editor_editor_pane.cpp](/home/julian/Documents/JCut/editor_editor_pane.cpp:122)
+- [editor_inspector_bindings.cpp](/home/julian/Documents/JCut/editor_inspector_bindings.cpp:530)
+- [transcript_engine.cpp](/home/julian/Documents/JCut/transcript_engine.cpp:96)
+
+Impact:
+
+- full de-Qt remains a large cross-cutting effort
+- this should still come after render/runtime boundaries are stabilized
+
+## Revised Priorities
+
+### Priority 1: Finish the renderer boundary transition
+
+Primary files:
+
+- [render_internal.h](/home/julian/Documents/JCut/render_internal.h)
+- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h)
+- [facestream_runtime.cpp](/home/julian/Documents/JCut/facestream_runtime.cpp)
+
+Tasks:
+
+- make `OffscreenRenderFrame`/GPU-native output the primary contract
+- keep `QImage renderFrame(...)` only as a compatibility wrapper
+- make readback explicit at the call site rather than implicit in the default API
+- reduce render-facing public interfaces that expose `QImage` directly
+
+Exit criteria:
+
+- new render/runtime call sites do not need `QImage`
+- readback is opt-in and easy to audit
+
+### Priority 2: Eliminate silent CPU fallback in Vulkan mode
+
+Primary files:
+
+- [offscreen_vulkan_renderer.cpp](/home/julian/Documents/JCut/offscreen_vulkan_renderer.cpp)
+- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp)
+
+Tasks:
+
+- keep current telemetry
+- add stricter assertions or test coverage around "no unexpected materialization"
+- fail loudly in strict Vulkan modes when a path would fall back through CPU image materialization
+- surface per-frame fallback reasons in preview/export diagnostics where useful
+
+Exit criteria:
+
+- strict Vulkan mode cannot silently succeed after a CPU bounce
+- regressions are visible in tests or run summaries
+
+### Priority 3: Finish the overlay boundary cleanup
+
+Primary files:
+
+- [overlay_render_backend.h](/home/julian/Documents/JCut/overlay_render_backend.h)
+- [render_decode.cpp](/home/julian/Documents/JCut/render_decode.cpp)
+- [titles.h](/home/julian/Documents/JCut/titles.h)
+- [offscreen_vulkan_renderer.cpp](/home/julian/Documents/JCut/offscreen_vulkan_renderer.cpp)
+
+Tasks:
+
+- push `OverlayImage` as the main overlay interchange type
+- confine `QImage` conversion helpers to legacy callers
+- remove `QPainter` composition from paths that can consume raw RGBA overlay buffers directly
+- keep title/transcript layout/rendering behind the backend interface
+
+Exit criteria:
+
+- Vulkan preview/export overlay flow does not require `QPainter`
+- `QImage` overlay helpers are compatibility shims, not primary APIs
+
+### Priority 4: Extract preview/runtime shell boundaries
+
+Primary files:
+
+- [preview_surface.h](/home/julian/Documents/JCut/preview_surface.h)
+- [editor_pane.cpp](/home/julian/Documents/JCut/editor_pane.cpp:163)
+- [editor_editor_pane.cpp](/home/julian/Documents/JCut/editor_editor_pane.cpp:122)
+- [direct_vulkan_preview_presenter.cpp](/home/julian/Documents/JCut/direct_vulkan_preview_presenter.cpp)
+
+Tasks:
+
+- separate preview runtime state from widget ownership
+- isolate interaction callbacks from QWidget lifecycle
+- keep existing Qt preview shells behind an abstract runtime boundary
+
+Exit criteria:
+
+- preview runtime services can be driven without hard QWidget coupling
+
+### Priority 5: De-Qt IPC and core utility boundaries
+
+Primary files:
+
+- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp)
+- runtime/editor boundary modules that currently exchange `QString`/`QJsonObject`/`QVector`
+
+Tasks:
+
+- abstract `QLocalSocket`/`QLocalServer` usage
+- convert subsystem boundaries before converting internal implementation details
+- decide where neutral types are actually worth the churn versus where QtCore can remain tolerated
+
+Exit criteria:
+
+- core runtime/render modules compile with sharply reduced QtCore surface area
 
 ## Migration Stages
 
-## Stage 0: Inventory And Guardrails
+## Stage 0: Inventory, Metrics, and Guardrails
 
 Goal:
 
-Measure and constrain Qt usage before major refactors.
+Measure the remaining Qt-dependent boundaries and lock in strict definitions for fallback behavior.
 
 Tasks:
 
-- Add a dependency inventory for major Qt categories:
-  - UI/widgets
-  - eventing/messaging
+- inventory remaining Qt use by category:
+  - QtWidgets/UI shell
+  - eventing/scheduling
   - IPC
-  - image/text/rendering
-  - containers/core types
-- Mark performance-critical paths where Qt usage is forbidden.
-- Add runtime logging for readback/materialization in Vulkan mode.
-- Define a strict meaning of “zero-copy” and enforce it in summaries/tests.
+  - image/render interchange
+  - text/layout/rendering
+  - core/container types
+- document which render paths are allowed to read back and which are not
+- reuse existing facestream metrics as the baseline for zero-copy/fallback reporting
+- add tests or assertions for "unexpected `QImage` materialization"
 
 Exit criteria:
 
-- Known list of Qt dependencies by subsystem
-- Zero-copy contract documented and testable
+- remaining Qt surface is categorized by subsystem
+- zero-copy and compatibility-mode behavior are explicitly defined
 
-## Stage 1: Separate Runtime Services From Qt UI
+## Stage 1: GPU-First Renderer Boundary
 
 Goal:
 
-Make scheduling and messaging replaceable.
+Make GPU/native frame interchange the default render contract.
 
 Tasks:
 
-- Introduce interfaces for:
-  - task scheduler
-  - timers
-  - main-thread dispatch
-  - message bus / observer events
-  - IPC transport
-- Wrap existing Qt implementations behind these interfaces.
-- Remove direct widget/signal ownership assumptions from runtime code.
-
-Notes:
-
-- This stage is moderate effort.
-- None of this is conceptually hard, but it is spread across many call sites.
+- promote `renderFrameToOutput(...)`-style APIs over legacy `QImage` APIs
+- trim `QImage` from render/runtime boundaries wherever a GPU frame or neutral buffer is enough
+- make CPU readback an explicit compatibility/output request
 
 Exit criteria:
 
-- Runtime code can operate against non-Qt scheduler/messaging interfaces
-- Qt remains only as one backend implementation
+- primary renderer/runtime APIs no longer assume a CPU image result
 
-## Stage 2: Remove Qt Image Types From Renderer Boundaries
+## Stage 2: Overlay Boundary Cleanup
 
 Goal:
 
-Make GPU-native frame interchange primary.
+Finish the transition already started by `OverlayRenderBackend`.
 
 Tasks:
 
-- Replace `QImage`-first renderer contracts with GPU-native frame/layer contracts:
-  - decoded frame handle
-  - Vulkan external image
-  - explicit CPU fallback image
-- Keep CPU readback as an opt-in compatibility/output path.
-- Ensure Vulkan compositor accepts:
-  - hardware decoder frames
-  - GPU textures
-  - imported Vulkan images
-- Eliminate implicit “materialize to `QImage`” steps in render paths.
-
-Notes:
-
-- This is the most important stage for performance.
-- It is also the biggest architectural change in the rendering stack.
+- treat `OverlayImage` as the main overlay payload
+- remove legacy Qt-only composition assumptions from Vulkan-capable paths
+- keep font loading, shaping, and rasterization behind the backend interface
 
 Exit criteria:
 
-- Core compositor/render APIs do not require `QImage`
-- Zero-copy video layers work independently of the editor UI shell
+- overlay generation and Vulkan composition do not require `QPainter`, `QTextDocument`, or `QImage` as primary types
 
-## Stage 3: Replace Qt Overlay/Text Rendering
+## Stage 3: Preview Runtime Extraction
 
 Goal:
 
-Remove CPU/Qt overlay islands from Vulkan mode.
+Decouple runtime preview services from the Qt widget shell.
 
 Tasks:
 
-- Move transcript rendering to a GPU-friendly text pipeline
-- Move title rendering to GPU text/shape rendering
-- Replace `QPainter` overlay composition with:
-  - glyph atlas rendering, or
-  - prebuilt texture generation behind non-Qt interfaces
-- Isolate font loading, shaping, and layout behind renderer-agnostic services
-
-Notes:
-
-- This is harder than replacing timers or windows.
-- Likely requires HarfBuzz + FreeType or another dedicated text stack.
+- separate widget ownership from preview/render orchestration
+- isolate interaction and presentation contracts
+- preserve the current Qt shell as one backend during the transition
 
 Exit criteria:
 
-- Vulkan preview/export paths can render titles/transcripts without `QImage`, `QPainter`, or `QTextDocument`
+- preview runtime can be hosted by a non-Qt shell without render-path changes
 
-## Stage 4: De-Qt IPC And Core Utility Types
+## Stage 4: IPC and QtCore Reduction
 
 Goal:
 
-Reduce pervasive dependence on Qt core.
+Reduce pervasive reliance on QtCore at subsystem boundaries.
 
 Tasks:
 
-- Replace `QLocalSocket`/`QLocalServer` usage with a transport abstraction
-- Introduce neutral wrappers or alternate types for:
-  - strings
-  - vectors/maps
-  - JSON
-- Convert subsystem boundaries first, internals later
-
-Notes:
-
-- Full removal of `QString`/`QVector`/`QJsonObject` is a large codebase-wide effort.
-- This should happen only after runtime and render boundaries are stable.
+- abstract IPC transport
+- progressively replace or wrap boundary-facing `QString`, `QVector`, `QHash`, `QJsonObject`
+- leave deep internal substitutions for later unless a boundary refactor already touches them
 
 Exit criteria:
 
-- Core runtime/render modules can compile with minimal or no QtCore reliance
+- runtime/render subsystems are no longer broadly pinned to QtCore public types
 
-## Stage 5: Replace The Editor Shell
+## Stage 5: Editor Shell Replacement
 
 Goal:
 
-Make the UI framework swappable.
+Make the UI framework swappable after runtime/render boundaries are stable.
 
 Tasks:
 
-- Build a new shell using ImGui or another UI framework
-- Reimplement:
-  - panels
-  - timeline interactions
-  - preview controls
-  - settings editors
-  - diagnostics/profiling views
-- Keep runtime/render backends unchanged beneath the shell
-
-Notes:
-
-- This is where ImGui becomes realistic.
-- Doing this before Stages 1-3 would create a rewrite with weak payoff.
+- rehost panels, timeline interactions, preview controls, and settings editors behind stable runtime services
+- preserve rendering/runtime behavior beneath the shell swap
 
 Exit criteria:
 
-- Editor shell no longer depends on QtWidgets
-- Runtime/render path unchanged across shell swap
+- the shell can move off QtWidgets without reopening renderer/runtime architecture
 
 ## Recommended Order Of Work
 
-1. Finish zero-copy compositor work for video layers
-2. Introduce runtime service interfaces for scheduling/messaging
-3. Remove `QImage` from renderer/runtime boundaries
-4. Replace transcript/title overlay rendering
-5. Abstract IPC and reduce QtCore usage
-6. Replace the editor shell
+1. Finish promoting GPU-first frame contracts over `QImage` wrappers
+2. Enforce strict no-silent-fallback behavior in Vulkan paths
+3. Finish overlay boundary cleanup around `OverlayImage`
+4. Extract preview runtime services from Qt widget ownership
+5. Reduce IPC and QtCore boundary dependence
+6. Replace the editor shell last
 
-## What Is Easy To Replace
+## What Is Easier Now Than Before
 
-- timers
-- event dispatch
-- observer/message bus patterns
-- local IPC wrappers
-- top-level windows and panels
+- overlay generation no longer depends on inventing a brand-new non-Qt text stack
+- zero-copy observability already exists
+- renderer output already has a dual-path shape
+- regression tests for Vulkan subtitle/render behavior already exist
 
-## What Is Hard To Replace
+## What Is Still Hard
 
-- `QImage` as a frame interchange type
-- `QPainter`-based overlay rendering
-- `QTextDocument` text layout/rendering
-- broad use of Qt core/container types in public interfaces
+- removing `QImage` from public renderer/runtime boundaries without destabilizing callers
+- preventing convenience helpers from reintroducing silent CPU bounces
+- shrinking broad QtCore type usage without creating a long-lived half-converted API mess
+- replacing the shell without touching unstable runtime boundaries
 
 ## ImGui Assessment
 
-ImGui is viable as a future editor shell, but it should not be the first migration step.
+ImGui remains viable as a future shell, but it is still not the first move.
 
-If the goal is:
+The reason is the same as before, but the details are sharper now:
 
-- performance
-- zero-copy rendering
-- lower render latency
+- QtWidgets is no longer the dominant render blocker
+- the real remaining blockers are boundary types, fallback discipline, and QtCore-heavy subsystem contracts
+- shell replacement should wait until preview/runtime services are stable and render APIs are GPU-first by default
 
-Then replacing the UI shell first is the wrong priority.
+## Immediate Next Steps
 
-If the goal is:
-
-- simpler editor shell
-- easier tooling UI iteration
-- less dependence on QtWidgets
-
-Then ImGui makes sense after renderer/runtime boundaries stop depending on Qt image/text primitives.
-
-## Suggested Milestones
-
-### Milestone A
-
-Zero-copy Vulkan compositor for visual video layers, with explicit CPU fallback only.
-
-### Milestone B
-
-Renderer/runtime APIs no longer require `QImage`.
-
-### Milestone C
-
-Transcript/title rendering moved off Qt.
-
-### Milestone D
-
-Runtime scheduling/messaging/IPC can run with non-Qt backends.
-
-### Milestone E
-
-QtWidgets editor shell replaced.
-
-## Non-Goals For The First Pass
-
-- Removing every `QString` immediately
-- Replacing every Qt container in one sweep
-- Rewriting the full editor and renderer simultaneously
-- Sacrificing working preview/export behavior for purity
+1. Convert the main renderer/runtime call graph to prefer `OffscreenRenderFrame`/GPU output over `QImage` wrappers.
+2. Add tests or assertions that fail when strict Vulkan paths materialize through `QImage`.
+3. Change legacy title/transcript helpers so `OverlayImage` is the default return type and `QImage` is a shim.
+4. Audit preview/export callers that still rely on `QPainter` overlay composition and move Vulkan-capable paths off that helper.
+5. Split preview runtime orchestration from QWidget creation and ownership.
 
 ## Summary
 
-Qt scheduling and messaging infrastructure is replaceable.
+The original direction was mostly right, but the current tree is further along than the old draft suggested.
 
-Qt image and text primitives are the real blockers.
+Qt image and boundary types are still the main blockers, but overlay generation is already partially de-Qt'd, renderer output is already partially GPU-first, and zero-copy instrumentation already exists.
 
-The correct plan is to de-Qt the runtime and rendering boundaries first, then replace the editor shell last.
+The correct plan now is:
+
+1. finish the renderer boundary transition
+2. eliminate silent CPU fallback
+3. finish overlay boundary cleanup
+4. extract preview/runtime services
+5. reduce QtCore boundary dependence
+6. replace the editor shell last

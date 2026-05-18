@@ -3,6 +3,7 @@
 #include "frame_handle.h"
 #include "vulkan_zero_copy_face_detector.h"
 
+#include <QElapsedTimer>
 #include <QSize>
 #include <QString>
 #include <QtGlobal>
@@ -51,6 +52,8 @@ public:
                      bool allowCpuUploadFallback,
                      double* uploadMs = nullptr,
                      QString* errorMessage = nullptr);
+    bool finishPendingUpload(double* uploadMs = nullptr,
+                             QString* errorMessage = nullptr);
     bool importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
                               QString* errorMessage = nullptr);
     QString lastHardwareDirectAttemptReason() const { return m_lastHardwareDirectAttemptReason; }
@@ -129,6 +132,9 @@ private:
     VkDescriptorPool m_nv12DescriptorPool = VK_NULL_HANDLE;
     VkPipelineLayout m_nv12PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_nv12Pipeline = VK_NULL_HANDLE;
+    VkDescriptorSet m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
+    bool m_uploadPending = false;
+    QElapsedTimer m_pendingUploadTimer;
 
     FrameHandoffMode m_lastMode = FrameHandoffMode::Invalid;
     HardwareInteropProbeResult m_lastProbe;

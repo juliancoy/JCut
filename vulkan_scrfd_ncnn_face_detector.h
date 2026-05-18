@@ -49,6 +49,7 @@ public:
                                             int imageHeight,
                                             float threshold,
                                             QString* errorMessage = nullptr);
+    NcnnInferenceStats lastInferenceStats() const;
 
     QString backendId() const;
 

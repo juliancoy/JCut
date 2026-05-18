@@ -133,6 +133,7 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
 
 void VulkanDetectorFrameHandoff::release()
 {
+    finishPendingUpload(nullptr, nullptr);
     if (m_context.device != VK_NULL_HANDLE) {
 #if JCUT_HAS_CUDA_DRIVER
         destroyCudaExternalMemory(m_cudaExternalMemory, m_cudaExternalDevicePtr, m_cudaImportContext);
@@ -187,6 +188,8 @@ void VulkanDetectorFrameHandoff::release()
     m_nv12DescriptorPool = VK_NULL_HANDLE;
     m_nv12PipelineLayout = VK_NULL_HANDLE;
     m_nv12Pipeline = VK_NULL_HANDLE;
+    m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
+    m_uploadPending = false;
     m_initialized = false;
     m_lastMode = FrameHandoffMode::Invalid;
     m_context = VulkanDeviceContext{};
@@ -497,6 +500,9 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
                                                            int uvPitch,
                                                            QString* errorMessage)
 {
+    if (!finishPendingUpload(nullptr, errorMessage)) {
+        return false;
+    }
     if (!ensureNv12ConversionResources(errorMessage)) {
         return false;
     }
@@ -630,14 +636,15 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_commandBuffer;
-    const bool ok = vkQueueSubmit(m_context.queue, 1, &submit, m_fence) == VK_SUCCESS &&
-                    vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS;
-    vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &set);
-    if (!ok) {
+    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
+        vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &set);
         if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit/wait failed for NV12 conversion");
         return false;
     }
     m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    m_pendingNv12DescriptorSet = set;
+    m_uploadPending = true;
+    m_pendingUploadTimer.start();
     return true;
 }
 
@@ -731,6 +738,10 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
+    if (!finishPendingUpload(nullptr, errorMessage)) {
+        m_lastMode = FrameHandoffMode::Invalid;
+        return false;
+    }
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(rgba.width()) * rgba.height() * 4;
     if (!ensureStagingBuffer(bytes, errorMessage) ||
         !ensureImageResources(rgba.size(), VK_FORMAT_R8G8B8A8_UNORM, errorMessage)) {
@@ -775,12 +786,49 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_commandBuffer;
-    vkQueueSubmit(m_context.queue, 1, &submit, m_fence);
-    vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull);
+    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
+        if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit failed for frame handoff upload.");
+        m_lastMode = FrameHandoffMode::Invalid;
+        return false;
+    }
     m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     m_lastMode = FrameHandoffMode::CpuUpload;
+    m_uploadPending = true;
+    m_pendingUploadTimer.start();
     if (uploadMs) {
         *uploadMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+    }
+    return true;
+}
+
+bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, QString* errorMessage)
+{
+    if (uploadMs) {
+        *uploadMs = 0.0;
+    }
+    if (!m_uploadPending) {
+        if (m_pendingNv12DescriptorSet != VK_NULL_HANDLE &&
+            m_context.device != VK_NULL_HANDLE &&
+            m_nv12DescriptorPool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &m_pendingNv12DescriptorSet);
+            m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
+        }
+        return true;
+    }
+    if (vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("timed out waiting for Vulkan frame handoff upload");
+        }
+        return false;
+    }
+    if (m_pendingNv12DescriptorSet != VK_NULL_HANDLE &&
+        m_nv12DescriptorPool != VK_NULL_HANDLE) {
+        vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &m_pendingNv12DescriptorSet);
+        m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
+    }
+    m_uploadPending = false;
+    if (uploadMs) {
+        *uploadMs = static_cast<double>(m_pendingUploadTimer.nsecsElapsed()) / 1'000'000.0;
     }
     return true;
 }
@@ -847,6 +895,9 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
             ? VK_FORMAT_B8G8R8A8_UNORM
             : VK_FORMAT_R8G8B8A8_UNORM;
     if (!ensureImageResources(size, targetFormat, errorMessage)) {
+        return false;
+    }
+    if (!finishPendingUpload(nullptr, errorMessage)) {
         return false;
     }
 
@@ -1051,12 +1102,13 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_commandBuffer;
-    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS ||
-        vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
+    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
         if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit/wait failed for hardware-direct");
         return false;
     }
     m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    m_uploadPending = true;
+    m_pendingUploadTimer.start();
     if (uploadMs) {
         *uploadMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
     }
@@ -1188,6 +1240,9 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
 bool VulkanDetectorFrameHandoff::copyImportedFrameToLocal(VkImageLayout sourceLayout,
                                                           QString* errorMessage)
 {
+    if (!finishPendingUpload(nullptr, errorMessage)) {
+        return false;
+    }
     vkResetFences(m_context.device, 1, &m_fence);
     vkResetCommandBuffer(m_commandBuffer, 0);
     VkCommandBufferBeginInfo beginInfo{};
@@ -1270,13 +1325,13 @@ bool VulkanDetectorFrameHandoff::copyImportedFrameToLocal(VkImageLayout sourceLa
     Q_UNUSED(waitStage);
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_commandBuffer;
-    const bool submitOk =
-        vkQueueSubmit(m_context.queue, 1, &submit, m_fence) == VK_SUCCESS &&
-        vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) == VK_SUCCESS;
-    if (!submitOk) {
+    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
         if (errorMessage) *errorMessage = QStringLiteral("Failed to copy imported Vulkan preview image.");
         return false;
     }
+    m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    m_uploadPending = true;
+    m_pendingUploadTimer.start();
     return true;
 }
 

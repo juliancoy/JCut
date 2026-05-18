@@ -891,7 +891,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     }
     addArtefact(debugRun, cropsDir);
     setStageStatus(debugRun, kStageCrop, QStringLiteral("ok"),
-                   QStringLiteral("Extracted one representative crop for each generated FaceStream track."));
+                   QStringLiteral("Extracted representative FaceStream crops for identity clustering."));
     persistIndex(debugRun);
     if (candidates.isEmpty()) {
         progressDialog.close();
@@ -1074,7 +1074,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             nullptr,
             trackCandidates,
             QStringLiteral("ArcFace MobileFaceNet NCNN"),
-            QStringLiteral("%1 FaceStream representative crop(s) extracted from %2 generated track(s).")
+            QStringLiteral("%1 FaceStream crop sample(s) extracted from %2 generated track(s).")
                 .arg(trackCandidates.size())
                 .arg(streams.size()))) {
         setStageStatus(debugRun, kStageClustering, kStatusSkipped, kMsgCanceledClusteringPreflight);
@@ -1126,7 +1126,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         clustersRoot[QStringLiteral("embedding_available")] = clusterResult.embeddingReady;
         clustersRoot[QStringLiteral("embedding_error")] =
             clusterResult.embeddingReady ? QString() : clusterResult.embeddingError;
-        clustersRoot[QStringLiteral("track_count")] = trackCandidates.size();
+        clustersRoot[QStringLiteral("track_count")] = streams.size();
+        clustersRoot[QStringLiteral("crop_sample_count")] = trackCandidates.size();
         clustersRoot[QStringLiteral("embedded_track_count")] = clusterResult.embeddedTrackCount;
         clustersRoot[QStringLiteral("cluster_count")] = clusterCandidates.size();
         clustersRoot[QStringLiteral("auto_cluster_pair_count")] = clusterResult.autoClusterPairCount;
@@ -1159,19 +1160,21 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                        kStageClustering,
                        clusterResult.embeddingReady ? QStringLiteral("ok") : QStringLiteral("warn"),
                        clusterResult.embeddingReady
-                           ? QStringLiteral("Auto-cluster ran: %1 tracks -> %2 identity clusters; %3 auto-merge pair(s), %4 review pair(s).")
+                           ? QStringLiteral("Auto-cluster ran: %1 crop sample(s) across %2 tracks -> %3 identity clusters; %4 auto-merge pair(s), %5 review pair(s).")
                                  .arg(trackCandidates.size())
+                                 .arg(streams.size())
                                  .arg(clusterCandidates.size())
                                  .arg(clusterResult.autoClusterPairCount)
                                  .arg(clusterResult.reviewPairCount)
                            : QStringLiteral("Auto-cluster fallback: ArcFace unavailable; %1 tracks -> %2 singleton cluster(s).")
-                                 .arg(trackCandidates.size())
+                                 .arg(streams.size())
                                  .arg(clusterCandidates.size()));
         persistIndex(debugRun);
         updateProgress(streams.size() + 3, QStringLiteral("FaceStream identity preparation complete."));
         clusterSummaryText = clusterResult.embeddingReady
-            ? QStringLiteral("Auto-cluster ran: %1 FaceStream track(s) -> %2 identity cluster(s) using ArcFace NCNN. Auto-merge pairs: %3. Review pairs: %4. Thresholds: auto >= %5, review >= %6.")
+            ? QStringLiteral("Auto-cluster ran: %1 FaceStream crop sample(s) across %2 track(s) -> %3 identity cluster(s) using ArcFace NCNN. Auto-merge pairs: %4. Review pairs: %5. Thresholds: auto >= %6, review >= %7.")
                   .arg(trackCandidates.size())
+                  .arg(streams.size())
                   .arg(clusterCandidates.size())
                   .arg(clusterResult.autoClusterPairCount)
                   .arg(clusterResult.reviewPairCount)
@@ -1180,7 +1183,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             : QStringLiteral("Auto-cluster fallback: ArcFace NCNN unavailable (%1). %2 FaceStream track(s) are shown as %3 singleton cluster(s).")
                   .arg(clusterResult.embeddingError.trimmed().isEmpty() ? QStringLiteral("unknown error")
                                                                         : clusterResult.embeddingError)
-                  .arg(trackCandidates.size())
+                  .arg(streams.size())
                   .arg(clusterCandidates.size());
     }
     if (!clusterCandidates.isEmpty()) {
@@ -1260,97 +1263,39 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     QHash<QString, QVector<facefind::Candidate>> assignmentsBySpeaker;
 
     {
-        QJsonArray overrides;
-        QJsonArray auditLog;
-        QJsonArray resolvedMap;
-        QHash<int, facefind::Candidate> candidateByTrackId;
-        for (const facefind::Candidate& c : std::as_const(trackCandidates)) {
-            if (c.trackId < 0) {
-                continue;
-            }
-            const auto existing = candidateByTrackId.constFind(c.trackId);
-            if (existing == candidateByTrackId.constEnd() || c.score > existing->score) {
-                candidateByTrackId.insert(c.trackId, c);
-            }
-        }
-
-        for (const QJsonValue& value : assignmentTableRows) {
-            const QJsonObject row = value.toObject();
-            const QString decision = row.value(QStringLiteral("decision")).toString();
-            if (decision != QStringLiteral("accepted")) {
-                continue;
-            }
-            const QString resolvedSpeaker = row.value(QStringLiteral("resolved_speaker_id")).toString().trimmed();
-            if (resolvedSpeaker.isEmpty()) {
-                continue;
-            }
-            const QString manualOverride = row.value(QStringLiteral("manual_override")).toString().trimmed();
-            QJsonArray trackIds = row.value(QStringLiteral("track_ids")).toArray();
-            if (trackIds.isEmpty()) {
-                const int fallbackTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
-                if (fallbackTrackId >= 0) {
-                    trackIds.push_back(fallbackTrackId);
-                }
-            }
-            for (const QJsonValue& trackValue : trackIds) {
-                const int trackId = trackValue.toInt(-1);
-                if (trackId < 0) {
-                    continue;
-                }
-                QJsonObject overrideRow;
-                overrideRow[QStringLiteral("track_id")] = trackId;
-                overrideRow[QStringLiteral("cluster_id")] = row.value(QStringLiteral("cluster_id")).toString();
-                overrideRow[QStringLiteral("identity_id")] = resolvedSpeaker;
-                overrideRow[QStringLiteral("source")] =
-                    manualOverride.isEmpty() ? QStringLiteral("auto_selected") : QStringLiteral("human_override");
-                overrideRow[QStringLiteral("manual_override")] = !manualOverride.isEmpty();
-                overrides.push_back(overrideRow);
-
-                QJsonObject auditRow;
-                auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-                auditRow[QStringLiteral("action")] = QStringLiteral("track_identity_set");
-                auditRow[QStringLiteral("track_id")] = trackId;
-                auditRow[QStringLiteral("cluster_id")] = row.value(QStringLiteral("cluster_id")).toString();
-                auditRow[QStringLiteral("identity_id")] = resolvedSpeaker;
-                auditRow[QStringLiteral("source")] = overrideRow.value(QStringLiteral("source")).toString();
-                auditLog.push_back(auditRow);
-
-                QJsonObject resolvedRow;
-                resolvedRow[QStringLiteral("track_id")] = trackId;
-                resolvedRow[QStringLiteral("identity_id")] = resolvedSpeaker;
-                resolvedRow[QStringLiteral("cluster_id")] = row.value(QStringLiteral("cluster_id")).toString();
-                resolvedRow[QStringLiteral("resolution_source")] = overrideRow.value(QStringLiteral("source")).toString();
-                resolvedMap.push_back(resolvedRow);
-
-                const auto trackIt = candidateByTrackId.constFind(trackId);
-                if (trackIt != candidateByTrackId.constEnd()) {
-                    assignmentsBySpeaker[resolvedSpeaker].push_back(trackIt.value());
-                }
-            }
-        }
+        const QString timestampUtc = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        const auto resolution =
+            jcut::facestream_assignment::resolveTrackIdentityAssignments(
+                assignmentTableRows,
+                trackCandidates,
+                timestampUtc);
+        const QJsonArray overrides = resolution.overrides;
+        const QJsonArray auditLog = resolution.auditLog;
+        const QJsonArray resolvedMap = resolution.resolvedMap;
+        assignmentsBySpeaker = resolution.assignmentsBySpeaker;
         QJsonObject humanPayload;
         humanPayload[QStringLiteral("run_id")] = debugRun.runId;
-        humanPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        humanPayload[QStringLiteral("updated_at_utc")] = timestampUtc;
         humanPayload[QStringLiteral("assignment_table_rows")] = assignmentTableRows;
         humanPayload[QStringLiteral("track_identity_overrides")] = overrides;
         humanPayload[QStringLiteral("audit_log")] = auditLog;
 
         QJsonObject resolvedPayload;
         resolvedPayload[QStringLiteral("run_id")] = debugRun.runId;
-        resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        resolvedPayload[QStringLiteral("updated_at_utc")] = timestampUtc;
         resolvedPayload[QStringLiteral("track_identity_map")] = resolvedMap;
         QJsonObject identityRoot;
         transcriptEngine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
         QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
         QJsonObject assignmentRoot;
         assignmentRoot[QStringLiteral("run_id")] = debugRun.runId;
-        assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        assignmentRoot[QStringLiteral("updated_at_utc")] = timestampUtc;
         assignmentRoot[QStringLiteral("assignment_table_rows")] = assignmentTableRows;
         assignmentRoot[QStringLiteral("track_identity_overrides")] = overrides;
         assignmentRoot[QStringLiteral("track_identity_map")] = resolvedMap;
         assignmentsByClip[clipFlowId] = assignmentRoot;
         identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
-        identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        identityRoot[QStringLiteral("updated_at_utc")] = timestampUtc;
         identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
         if (transcriptEngine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot)) {
             addArtefact(debugRun, transcriptEngine.identityArtifactPath(m_loadedTranscriptPath));

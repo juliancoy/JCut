@@ -759,14 +759,14 @@ void PreviewWindow::drawTranscriptOverlay(QPainter* painter, const TimelineClip&
     if (textHtml.isEmpty()) return;
 
     painter->save();
-    const QImage image = renderTranscriptOverlayImage(
+    const render_detail::OverlayImage image = renderTranscriptOverlay(
         clip,
         localBounds,
         localTextBounds,
         clip.transcriptOverlay.fontPointSize,
         shadowHtml,
         textHtml);
-    painter->drawImage(bounds, image);
+    painter->drawImage(bounds, image.asQImageView());
     painter->restore();
 
     if (m_interaction.transcriptOverlayInteractionEnabled) {

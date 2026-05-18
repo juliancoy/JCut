@@ -21,6 +21,7 @@ inline constexpr float kDefaultDetectorThreshold = 0.30f;
 inline constexpr float kDefaultDetectorNmsIouThreshold = 0.35f;
 inline constexpr float kDefaultDetectorTrackMatchIouThreshold = 0.35f;
 inline constexpr float kDefaultDetectorNewTrackMinConfidence = 0.45f;
+inline constexpr const char* kDefaultScrfdModelVariant = "500m";
 inline constexpr bool kDefaultDetectorPrimaryFaceOnly = false;
 inline constexpr bool kDefaultDetectorSmallFaceFallback = false;
 inline constexpr bool kDefaultDetectorScrfdTiled = false;
@@ -38,6 +39,7 @@ struct DetectorRuntimeSettings {
     int maxDetections = kDefaultDetectorMaxDetections;
     int scrfdTargetSize = kDefaultDetectorScrfdTargetSize;
     int maxFacesPerFrame = kDefaultDetectorMaxFacesPerFrame;
+    QString scrfdModelVariant = QString::fromLatin1(kDefaultScrfdModelVariant);
     float threshold = kDefaultDetectorThreshold;
     float nmsIouThreshold = kDefaultDetectorNmsIouThreshold;
     float trackMatchIouThreshold = kDefaultDetectorTrackMatchIouThreshold;
@@ -62,9 +64,17 @@ struct DetectorSettingsProfileDefinition {
     DetectorRuntimeSettings settings;
 };
 
+struct ScrfdModelVariantDefinition {
+    QString id;
+    QString label;
+    QString description;
+    QString modelStem;
+};
+
 struct DetectorSettingsPanel {
     QWidget* widget = nullptr;
     QComboBox* profileCombo = nullptr;
+    QComboBox* scrfdModelVariant = nullptr;
     QSlider* stride = nullptr;
     QLabel* strideValue = nullptr;
     QSlider* maxDetections = nullptr;
@@ -116,16 +126,31 @@ struct FaceStreamPreflightDialogOptions {
     bool showApplyClipGradingToggle = false;
     bool applyClipGradingChecked = false;
     QString applyClipGradingLabel = QStringLiteral("Apply clip grading during detection");
+    bool showRestartFromScratchToggle = false;
+    bool restartFromScratchChecked = false;
+    QString restartFromScratchLabel = QStringLiteral("Restart from scratch (delete facestream.part)");
 };
 
 struct FaceStreamPreflightDialogResult {
     bool accepted = false;
     bool livePreview = true;
     bool applyClipGrading = false;
+    bool restartFromScratch = false;
     QString saveError;
 };
 
 QString detectorSettingsPathForVideo(const QString& videoPath);
+QVector<ScrfdModelVariantDefinition> supportedScrfdModelVariants();
+bool scrfdModelVariantById(const QString& id, ScrfdModelVariantDefinition* definitionOut);
+QString normalizeScrfdModelVariantId(const QString& id);
+bool ensureScrfdModelVariantAssets(const QString& variantId,
+                                   QString* paramPathOut,
+                                   QString* binPathOut,
+                                   QString* errorMessage = nullptr);
+bool ensureRes10FaceDnnModelAssets(const QString& baseDir,
+                                   QString* prototxtOut,
+                                   QString* modelOut,
+                                   QString* errorMessage = nullptr);
 QVector<DetectorSettingsProfileDefinition> builtInDetectorProfiles();
 bool builtInDetectorProfileById(const QString& id, DetectorRuntimeSettings* settingsOut);
 QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& settings,

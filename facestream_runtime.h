@@ -29,6 +29,13 @@ struct VulkanFrameStats {
     qint64 readbackMs = 0;
 };
 
+struct VulkanRenderResult {
+    render_detail::OffscreenRenderFrame frame;
+
+    bool hasCpuImage() const { return frame.hasCpuImage(); }
+    bool hasVulkanFrame() const { return frame.hasVulkanFrame(); }
+};
+
 struct VulkanFrameProvider {
     std::unique_ptr<render_detail::OffscreenVulkanRenderer> renderer;
     QHash<QString, editor::DecoderContext*> decoders;
@@ -49,6 +56,17 @@ QImage renderFrameWithVulkan(VulkanFrameProvider* provider,
                              int64_t sourceFrame,
                              const QSize& outputSize,
                              VulkanFrameStats* stats = nullptr);
+
+bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
+                                 const TimelineClip& sourceClip,
+                                 const QString& mediaPath,
+                                 int64_t timelineFrame,
+                                 int64_t sourceFrame,
+                                 const QSize& outputSize,
+                                 VulkanRenderResult* result,
+                                 bool readbackToCpuImage = false,
+                                 VulkanFrameStats* stats = nullptr,
+                                 QString* errorMessage = nullptr);
 
 bool renderFrameToVulkan(VulkanFrameProvider* provider,
                          const TimelineClip& sourceClip,

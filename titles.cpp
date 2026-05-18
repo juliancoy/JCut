@@ -1,4 +1,5 @@
 #include "titles.h"
+#include "overlay_render_backend.h"
 
 #include <QUuid>
 #include <cmath>
@@ -82,21 +83,9 @@ EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacit
     return composed;
 }
 
-TitleLayoutMetrics measureTitleLayout(const QFont& font, const QString& text)
+TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale)
 {
-    TitleLayoutMetrics metrics;
-    const QFontMetricsF fm(font);
-    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
-    metrics.lineCount = qMax(1, lines.size());
-    metrics.lineHeight = fm.lineSpacing();
-    metrics.height = metrics.lineHeight * metrics.lineCount;
-
-    qreal maxWidth = 0.0;
-    for (const QString& line : lines) {
-        maxWidth = qMax(maxWidth, fm.horizontalAdvance(line));
-    }
-    metrics.width = maxWidth;
-    return metrics;
+    return render_detail::measureOverlayTitleLayout(title, fontScale);
 }
 
 TimelineClip createDefaultTitleClip(int64_t startFrame, int trackIndex, int64_t durationFrames)
@@ -126,91 +115,9 @@ TimelineClip createDefaultTitleClip(int64_t startFrame, int trackIndex, int64_t 
     return clip;
 }
 
-void drawTitleOverlay(QPainter* painter, const QRect& canvasRect,
-                      const EvaluatedTitle& title, const QSize& outputSize)
+render_detail::OverlayImage renderTitleOverlay(const QSize& imageSize,
+                                               const EvaluatedTitle& title,
+                                               const QSize& outputSize)
 {
-    if (!painter || !title.valid || title.text.isEmpty()) {
-        return;
-    }
-    if (title.opacity <= 0.001) {
-        return;
-    }
-
-    painter->save();
-
-    // Scale from output-canvas coordinates to widget-pixel coordinates
-    const qreal scaleX = outputSize.width() > 0
-        ? static_cast<qreal>(canvasRect.width()) / outputSize.width() : 1.0;
-    const qreal scaleY = outputSize.height() > 0
-        ? static_cast<qreal>(canvasRect.height()) / outputSize.height() : 1.0;
-
-    QFont font(title.fontFamily);
-    font.setPointSizeF(title.fontSize * qMin(scaleX, scaleY));
-    font.setBold(title.bold);
-    font.setItalic(title.italic);
-    painter->setFont(font);
-
-    QColor textColor = title.color;
-    textColor.setAlphaF(title.opacity);
-    painter->setPen(textColor);
-
-    // Position is relative to the canvas center, stored in output-canvas units.
-    // Scale to widget pixels for rendering.
-    const qreal centerX = canvasRect.center().x() + title.x * scaleX;
-    const qreal centerY = canvasRect.center().y() + title.y * scaleY;
-
-    const TitleLayoutMetrics metrics = measureTitleLayout(font, title.text);
-    const QStringList lines = title.text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
-    const QFontMetricsF fm(font);
-    const qreal topY = centerY - (metrics.height / 2.0);
-    const qreal windowPaddingPx = qMax<qreal>(0.0, title.windowPadding * qMin(scaleX, scaleY));
-
-    const QRectF windowRect(centerX - (metrics.width / 2.0) - windowPaddingPx,
-                            topY - windowPaddingPx,
-                            metrics.width + (windowPaddingPx * 2.0),
-                            metrics.height + (windowPaddingPx * 2.0));
-
-    if (title.windowEnabled) {
-        QColor windowColor = title.windowColor;
-        windowColor.setAlphaF(qBound<qreal>(0.0, title.opacity * title.windowOpacity, 1.0));
-        painter->setPen(Qt::NoPen);
-        painter->setBrush(windowColor);
-        painter->drawRect(windowRect);
-    }
-
-    if (title.windowFrameEnabled) {
-        const qreal frameGapPx = qMax<qreal>(0.0, title.windowFrameGap * qMin(scaleX, scaleY));
-        const qreal frameWidthPx = qMax<qreal>(0.0, title.windowFrameWidth * qMin(scaleX, scaleY));
-        QColor frameColor = title.windowFrameColor;
-        frameColor.setAlphaF(qBound<qreal>(0.0, title.opacity * title.windowFrameOpacity, 1.0));
-        QPen framePen(frameColor);
-        framePen.setWidthF(frameWidthPx);
-        painter->setPen(framePen);
-        painter->setBrush(Qt::NoBrush);
-        painter->drawRect(windowRect.adjusted(-frameGapPx, -frameGapPx, frameGapPx, frameGapPx));
-    }
-
-    if (title.dropShadowEnabled) {
-        QColor shadowColor = title.dropShadowColor;
-        shadowColor.setAlphaF(qBound<qreal>(0.0, title.opacity * title.dropShadowOpacity, 1.0));
-        painter->setPen(shadowColor);
-        for (int i = 0; i < lines.size(); ++i) {
-            const QString& line = lines[i];
-            const qreal lineWidth = fm.horizontalAdvance(line);
-            const qreal baselineY = topY + (i * metrics.lineHeight) + fm.ascent();
-            painter->drawText(QPointF(centerX - (lineWidth / 2.0) + title.dropShadowOffsetX,
-                                      baselineY + title.dropShadowOffsetY),
-                              line);
-        }
-    }
-
-    painter->setPen(textColor);
-    for (int i = 0; i < lines.size(); ++i) {
-        const QString& line = lines[i];
-        const qreal lineWidth = fm.horizontalAdvance(line);
-        const qreal baselineY = topY + (i * metrics.lineHeight) + fm.ascent();
-        painter->drawText(QPointF(centerX - (lineWidth / 2.0), baselineY), line);
-    }
-
-    painter->restore();
+    return render_detail::overlayRenderBackend().renderTitleOverlay(imageSize, title, outputSize);
 }

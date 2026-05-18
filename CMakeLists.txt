@@ -23,6 +23,7 @@ if(EDITOR_ASAN)
 endif()
 
 find_package(PkgConfig REQUIRED)
+find_package(CURL REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
@@ -69,18 +70,24 @@ jcut_fix_qt_private_target(Qt6::GuiPrivate)
 jcut_fix_qt_private_target(Qt6::CorePrivate)
 
 option(JCUT_USE_SYSTEM_FFMPEG
-    "Use system FFmpeg libraries. Required when system FFmpeg provides encoders such as NVENC that the pinned build lacks."
+    "Deprecated escape hatch. This project now requires the bundled FFmpeg build."
     OFF)
 set(EDITOR_FFMPEG_PREFIX
     "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-install"
-    CACHE PATH "Pinned FFmpeg install prefix used when JCUT_USE_SYSTEM_FFMPEG is OFF")
+    CACHE PATH "Pinned FFmpeg install prefix. Bundled FFmpeg is mandatory.")
+
+if(JCUT_USE_SYSTEM_FFMPEG)
+    message(FATAL_ERROR
+        "JCUT_USE_SYSTEM_FFMPEG=ON is no longer supported. "
+        "This project now requires the bundled FFmpeg build at ${EDITOR_FFMPEG_PREFIX}.")
+endif()
 
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
     set(EDITOR_FFMPEG_PKGCONFIG_DIR "${EDITOR_FFMPEG_PREFIX}/lib/pkgconfig")
     if(NOT EXISTS "${EDITOR_FFMPEG_PKGCONFIG_DIR}/libavcodec.pc")
         message(FATAL_ERROR
             "Bundled FFmpeg pkg-config files not found at ${EDITOR_FFMPEG_PKGCONFIG_DIR}. "
-            "Run ./build.sh to bootstrap the pinned FFmpeg build or configure with -DJCUT_USE_SYSTEM_FFMPEG=ON.")
+            "Run ./build.sh to bootstrap the pinned FFmpeg build.")
     endif()
 
     set(_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
@@ -98,6 +105,13 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
     libswscale
     libswresample
 )
+pkg_check_modules(GLFW REQUIRED IMPORTED_TARGET
+    glfw3
+)
+pkg_check_modules(FONT_RENDER REQUIRED IMPORTED_TARGET
+    fontconfig
+    freetype2
+)
 
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
     set(_expected_ffmpeg_libdir "${EDITOR_FFMPEG_PREFIX}/lib")
@@ -108,6 +122,18 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
             "Expected ${_expected_ffmpeg_libdir}, got: ${FFMPEG_LIBRARY_DIRS}")
     endif()
 endif()
+
+function(jcut_force_bundled_ffmpeg_runtime target_name)
+    if(JCUT_USE_SYSTEM_FFMPEG OR NOT TARGET "${target_name}")
+        return()
+    endif()
+
+    set_target_properties("${target_name}" PROPERTIES
+        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
+    )
+    target_link_options("${target_name}" PRIVATE
+        "LINKER:--disable-new-dtags")
+endfunction()
 
 set(MOTIVE3D_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d")
 set(EDITOR_OPTIONAL_INCLUDE_DIRS "")
@@ -213,6 +239,7 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/playback_controller\\.cpp$"
     ".*/professional_example\\.cpp$"
     ".*/test[0-9]*\\.cpp$"
+    ".*/imgui_preview_window\\.cpp$"
     # 3D model import/runtime sources depend on motive3d engine files that are not
     # part of this repository build graph (eg. primitive/texture engine runtime).
     # Exclude them from the editor target so standard builds remain reproducible.
@@ -305,6 +332,7 @@ target_sources(editor_core PRIVATE
 target_include_directories(editor_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
         ${CMAKE_CURRENT_SOURCE_DIR}/loiacono
         ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${EDITOR_OPTIONAL_INCLUDE_DIRS}
@@ -322,7 +350,9 @@ target_link_libraries(editor_core
         OpenGL::GL
         Vulkan::Vulkan
         Threads::Threads
+        CURL::libcurl
         PkgConfig::FFMPEG
+        PkgConfig::FONT_RENDER
         rtaudio
 )
 if(CUDA_DRIVER_LIBRARY)
@@ -340,11 +370,7 @@ if(TARGET ncnn)
     target_link_libraries(editor_core PUBLIC ncnn)
 endif()
 
-if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    set_target_properties(editor_core PROPERTIES
-        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
-    )
-endif()
+jcut_force_bundled_ffmpeg_runtime(editor_core)
 
 if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_core PUBLIC Qt6::GuiPrivate)
@@ -376,6 +402,10 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_timing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_transcript.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_handle.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_assignment_services.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_tracking.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_time_mapping.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/identity_resolution.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/media_pipeline_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_budget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_frame_selection.cpp
@@ -403,6 +433,7 @@ target_sources(editor_test_support PRIVATE
 target_include_directories(editor_test_support
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
         ${CMAKE_CURRENT_BINARY_DIR}/generated
         ${EDITOR_OPTIONAL_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/rtaudio
@@ -418,7 +449,9 @@ target_link_libraries(editor_test_support
         Qt6::OpenGLWidgets
         OpenGL::GL
         Threads::Threads
+        CURL::libcurl
         PkgConfig::FFMPEG
+        PkgConfig::FONT_RENDER
         rtaudio
 )
 if(TARGET Qt6::GuiPrivate)
@@ -436,6 +469,8 @@ target_compile_definitions(editor_test_support
         JCUT_HAVE_OPENCV_CONTRIB=0
 )
 
+jcut_force_bundled_ffmpeg_runtime(editor_test_support)
+
 add_executable(editor
     ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_main.cpp
@@ -449,11 +484,7 @@ set_target_properties(editor PROPERTIES
     OUTPUT_NAME "jcut"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
-if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    set_target_properties(editor PROPERTIES
-        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
-    )
-endif()
+jcut_force_bundled_ffmpeg_runtime(editor)
 
 add_executable(project_roundtrip_cli
     ${CMAKE_CURRENT_SOURCE_DIR}/project_roundtrip_cli.cpp
@@ -475,6 +506,7 @@ add_executable(jcut_vulkan_zero_copy_video_preprocess
 )
 target_include_directories(jcut_vulkan_zero_copy_video_preprocess PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
@@ -496,22 +528,18 @@ set_target_properties(jcut_vulkan_zero_copy_video_preprocess PROPERTIES
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(jcut_vulkan_zero_copy_video_preprocess jcut_vulkan_shaders)
 endif()
-if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    set_target_properties(jcut_vulkan_zero_copy_video_preprocess PROPERTIES
-        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
-    )
-endif()
+jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_zero_copy_video_preprocess)
 
 add_executable(jcut_vulkan_facestream_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_preview_support.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facestream_offscreen_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_runtime.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/direct_vulkan_preview_presenter.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/direct_vulkan_preview_audio.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
@@ -527,14 +555,25 @@ add_executable(jcut_vulkan_facestream_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
 target_include_directories(jcut_vulkan_facestream_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(jcut_vulkan_facestream_offscreen PRIVATE
     editor_test_support
     Vulkan::Vulkan
+    PkgConfig::FONT_RENDER
+    PkgConfig::GLFW
 )
 if(CUDA_DRIVER_LIBRARY)
     target_link_libraries(jcut_vulkan_facestream_offscreen PRIVATE ${CUDA_DRIVER_LIBRARY})
@@ -565,11 +604,7 @@ set_target_properties(jcut_vulkan_facestream_offscreen PROPERTIES
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(jcut_vulkan_facestream_offscreen jcut_vulkan_shaders)
 endif()
-if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    set_target_properties(jcut_vulkan_facestream_offscreen PROPERTIES
-        BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
-    )
-endif()
+jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_facestream_offscreen)
 
 add_executable(jcut_headless_backend_compare
     ${CMAKE_CURRENT_SOURCE_DIR}/backend_headless_compare_main.cpp

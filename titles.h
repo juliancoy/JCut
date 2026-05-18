@@ -1,10 +1,9 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "overlay_render_backend.h"
 
 #include <QColor>
-#include <QFont>
-#include <QPainter>
 #include <QRect>
 #include <QString>
 
@@ -47,7 +46,7 @@ struct TitleLayoutMetrics {
 // Evaluate the title state for a clip at a given local frame (0-based within the clip).
 EvaluatedTitle evaluateTitleAtLocalFrame(const TimelineClip& clip, int64_t localFrame);
 EvaluatedTitle composeTitleWithOpacity(const EvaluatedTitle& title, qreal opacityMultiplier);
-TitleLayoutMetrics measureTitleLayout(const QFont& font, const QString& text);
+TitleLayoutMetrics measureTitleLayout(const EvaluatedTitle& title, qreal fontScale = 1.0);
 
 // Create a default title clip ready for insertion into the timeline.
 // Returns a TimelineClip with ClipMediaType::Title, one default TitleKeyframe,
@@ -55,9 +54,6 @@ TitleLayoutMetrics measureTitleLayout(const QFont& font, const QString& text);
 TimelineClip createDefaultTitleClip(int64_t startFrame, int trackIndex,
                                      int64_t durationFrames = 90);
 
-// Draw the evaluated title onto a QPainter at the given output rectangle.
-// The painter should already be set up for the composite canvas.
-// outputSize is the logical output resolution (e.g. 1080x1920) — title x/y
-// are stored in output-canvas coordinates and scaled to widget pixels at render time.
-void drawTitleOverlay(QPainter* painter, const QRect& canvasRect,
-                      const EvaluatedTitle& title, const QSize& outputSize);
+render_detail::OverlayImage renderTitleOverlay(const QSize& imageSize,
+                                               const EvaluatedTitle& title,
+                                               const QSize& outputSize);

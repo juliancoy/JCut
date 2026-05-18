@@ -1,5 +1,6 @@
 #include "vulkan_res10_ncnn_face_detector.h"
 
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 
@@ -59,6 +60,7 @@ struct VulkanRes10NcnnFaceDetector::Impl {
 #endif
     VulkanDeviceContext context;
     bool initialized = false;
+    NcnnInferenceStats lastStats;
 };
 
 VulkanRes10NcnnFaceDetector::VulkanRes10NcnnFaceDetector()
@@ -161,6 +163,7 @@ void VulkanRes10NcnnFaceDetector::release()
 #endif
     m_impl->context = {};
     m_impl->initialized = false;
+    m_impl->lastStats = {};
 }
 
 bool VulkanRes10NcnnFaceDetector::isInitialized() const
@@ -175,6 +178,7 @@ QVector<Res10Detection> VulkanRes10NcnnFaceDetector::inferFromTensor(const Vulka
                                                                      QString* errorMessage)
 {
     QVector<Res10Detection> out;
+    m_impl->lastStats = {};
     if (!m_impl->initialized) {
         setError(errorMessage, QStringLiteral("Res10 ncnn detector is not initialized"));
         return out;
@@ -192,6 +196,8 @@ QVector<Res10Detection> VulkanRes10NcnnFaceDetector::inferFromTensor(const Vulka
     setError(errorMessage, QStringLiteral("JCut was built without ncnn; Vulkan Res10 zero-copy detector is unavailable."));
     return out;
 #else
+    QElapsedTimer totalTimer;
+    totalTimer.start();
     m_impl->inputMemory.buffer = inputTensor.buffer;
     m_impl->inputMemory.offset = 0;
     m_impl->inputMemory.capacity = static_cast<size_t>(inputTensor.byteSize);
@@ -208,21 +214,30 @@ QVector<Res10Detection> VulkanRes10NcnnFaceDetector::inferFromTensor(const Vulka
     // ncnn light mode dereferences/refcounts intermediates, so keep it off
     // for this zero-copy bridge.
     ex.set_light_mode(false);
+    QElapsedTimer inputTimer;
+    inputTimer.start();
     if (ex.input("data", gpuInput) != 0) {
         setError(errorMessage, QStringLiteral("Res10 ncnn model does not expose expected input blob 'data'"));
         return out;
     }
+    m_impl->lastStats.inputMs = static_cast<double>(inputTimer.nsecsElapsed()) / 1'000'000.0;
 
     ncnn::Mat detections;
+    QElapsedTimer extractTimer;
+    extractTimer.start();
     if (ex.extract("detection_out", detections) != 0) {
         setError(errorMessage, QStringLiteral("Res10 ncnn model does not expose expected output blob 'detection_out'"));
         return out;
     }
+    m_impl->lastStats.extractMs = static_cast<double>(extractTimer.nsecsElapsed()) / 1'000'000.0;
 
     if (detections.empty()) {
+        m_impl->lastStats.totalMs = static_cast<double>(totalTimer.nsecsElapsed()) / 1'000'000.0;
         return out;
     }
 
+    QElapsedTimer postTimer;
+    postTimer.start();
     const int rows = detections.h > 0 ? detections.h : detections.total() / 7;
     const float* values = static_cast<const float*>(detections.data);
     for (int i = 0; i < rows; ++i) {
@@ -244,8 +259,15 @@ QVector<Res10Detection> VulkanRes10NcnnFaceDetector::inferFromTensor(const Vulka
     std::sort(out.begin(), out.end(), [](const Res10Detection& a, const Res10Detection& b) {
         return a.confidence > b.confidence;
     });
+    m_impl->lastStats.postMs = static_cast<double>(postTimer.nsecsElapsed()) / 1'000'000.0;
+    m_impl->lastStats.totalMs = static_cast<double>(totalTimer.nsecsElapsed()) / 1'000'000.0;
     return out;
 #endif
+}
+
+NcnnInferenceStats VulkanRes10NcnnFaceDetector::lastInferenceStats() const
+{
+    return m_impl->lastStats;
 }
 
 QString VulkanRes10NcnnFaceDetector::backendId() const

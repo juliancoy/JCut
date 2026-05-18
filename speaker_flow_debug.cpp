@@ -1,11 +1,11 @@
 #include "speaker_flow_debug.h"
+#include "json_io_utils.h"
 
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QPushButton>
@@ -197,13 +197,8 @@ void recordOverwriteDecision(const QString& decisionPath,
 {
     QJsonObject root;
     QFile f(decisionPath);
-    if (f.exists() && f.open(QIODevice::ReadOnly)) {
-        QJsonParseError parseError;
-        const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
-        if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
-            root = doc.object();
-        }
-        f.close();
+    if (f.exists()) {
+        jcut::jsonio::readJsonFile(decisionPath, &root);
     }
     QJsonArray decisions = root.value(QStringLiteral("decisions")).toArray();
     QJsonObject decision;
@@ -218,10 +213,7 @@ void recordOverwriteDecision(const QString& decisionPath,
     decision[QStringLiteral("files")] = fileArray;
     decisions.push_back(decision);
     root[QStringLiteral("decisions")] = decisions;
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-        f.close();
-    }
+    jcut::jsonio::writeJsonFile(decisionPath, root, true);
 }
 
 void persistIndex(const QString& indexPath,
@@ -236,13 +228,8 @@ void persistIndex(const QString& indexPath,
 {
     QJsonObject root;
     QFile f(indexPath);
-    if (f.exists() && f.open(QIODevice::ReadOnly)) {
-        QJsonParseError parseError;
-        const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &parseError);
-        if (parseError.error == QJsonParseError::NoError && doc.isObject()) {
-            root = doc.object();
-        }
-        f.close();
+    if (f.exists()) {
+        jcut::jsonio::readJsonFile(indexPath, &root);
     }
     root[QStringLiteral("schema_version")] = QStringLiteral("1.0");
     root[QStringLiteral("run_id")] = runId;
@@ -274,10 +261,7 @@ void persistIndex(const QString& indexPath,
     root[QStringLiteral("artefacts")] = artefactArray;
     root[QStringLiteral("completed_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 
-    if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-        f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-        f.close();
-    }
+    jcut::jsonio::writeJsonFile(indexPath, root, true);
 }
 
 } // namespace speaker_flow_debug

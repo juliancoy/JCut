@@ -60,14 +60,14 @@ Product sidecar: none.
 Product sidecar: `{transcript_basename}_facestream.bin`.
 
 1. In `Speakers`, click `Generate FaceStream`.
-2. The app detects and tracks face continuity, then writes one FaceStream per continuity track.
+2. The app first persists raw per-frame face detections, then forms continuity tracks from those detections, then writes one FaceStream per continuity track.
 3. Confirm the Overview shows the FaceStream sidecar as present.
 
 ### 6. Match FaceStreams to Speaker IDs
 Product sidecar: `{transcript_basename}_identity.bin`.
 
 1. In `Speakers`, click `Assign FaceStreams`.
-2. The app extracts one representative face crop per generated FaceStream track.
+2. The app extracts a small set of representative face crops per generated FaceStream track.
 3. The app clusters tracks that appear to belong to the same person.
 4. Review each identity cluster and its member FaceStream tracks.
 5. Preferred: keep `Assign To (Auto)` when correct.
@@ -222,18 +222,20 @@ Contents:
 1. Identity-agnostic mode metadata (`mode=continuity_identity_agnostic`).
 2. Scan range metadata and `only_dialogue` policy.
 3. Detector params (`detector`, stride, frame range, threshold, candidate caps, ROI, area, and aspect filters).
-4. Continuity tracks and per-track keyframe stream output.
-5. Track IDs that are stable within run for deterministic traceability.
-6. Native Vulkan runs may include live tuning metadata and runtime stats.
-7. Preview/debug artifacts are sampled separately from detector processing via preview stride.
+4. Raw per-frame face detections as observations, separate from track assignment.
+5. Continuity tracks formed from those detections, plus per-track keyframe stream output.
+6. Track IDs that are stable within run for deterministic traceability.
+7. Native Vulkan runs may include live tuning metadata and runtime stats.
+8. Preview/debug artifacts are sampled separately from detector processing via preview stride.
 
 Artifact roles:
 1. `{transcript_basename}_facestream.bin` is the durable product sidecar loaded by JCut runtime, preview overlay, speaker-aware tracking, and stabilization.
 2. `{transcript_basename}_facestream_processed.bin` is a derived runtime helper sidecar rebuilt from the raw continuity artefact plus transcript state. It is runtime-adjacent, not generator cache.
 3. `continuity_facestream.bin` is the generator-to-editor import payload. After successful import into `{transcript_basename}_facestream.bin`, it is redundant for normal runtime.
 4. `facestream.part` is a streaming checkpoint for resumable generation. It is useful while a run is active or interrupted, but redundant for normal runtime after successful import.
-5. `tracks.bin` is raw track/frame diagnostic output used to explain or rebuild the continuity result. It is not required by normal runtime after successful import.
-6. `summary.json` is profiling and run metadata. It is not required by normal runtime, but is useful for UI diagnostics and performance/debug review.
+5. `tracks.bin` is the tracking-stage output: continuity tracks formed from detections, with per-track detection assignments. It is used to explain or rebuild the continuity result and should remain conceptually distinct from raw detector observations.
+6. Raw detections and track formation are separate layers: detector output answers "what faces were seen in this frame", while tracks answer "which detections belong to the same continuity object over time".
+7. `summary.json` is profiling and run metadata. It is not required by normal runtime, but is useful for UI diagnostics and performance/debug review.
 
 Run reuse policy:
 1. Reusing the latest debug run is allowed only when the active transcript already has a FaceStream product sidecar and the existing run is not legacy-only.
@@ -249,7 +251,7 @@ Files:
 
 Contents:
 1. Source generated FaceStream artifact path.
-2. One representative crop per generated FaceStream track.
+2. A small set of representative crops per generated FaceStream track, typically selected from spaced high-confidence keyframes.
 3. Crop frame, source frame, normalized face box, score, `track_id`, and crop path.
 4. No independent face scan here; this stage consumes generated FaceStream tracks only.
 
@@ -262,9 +264,9 @@ Files:
 Contents:
 1. `schema = jcut_identity_v1`.
 2. `identity_clusters_by_clip.<clip_id>`.
-3. Visual embedding model and version used for each representative crop.
+3. Visual embedding model and version used for extracted representative crops.
 4. Per-track embedding metadata and crop provenance.
-5. Cluster rows containing `cluster_id`, member `track_id` values, representative crop, confidence, and conflict flags.
+5. Cluster rows containing `cluster_id`, member `track_id` values, representative crop, representative crop count, confidence, and conflict flags.
 6. Pairwise similarity or nearest-neighbor diagnostics sufficient to explain merge/split decisions.
 7. Manual split/merge overrides if the user corrects clustering before speaker assignment.
 
@@ -401,28 +403,29 @@ In `Assign FaceStreams` dialog:
 
 ## Simplified UX Flow (Current)
 1. User clicks `Generate FaceStream`.
-2. System generates identity-agnostic continuity FaceStreams for each track (`T<track_id>`).
-3. User clicks `Assign FaceStreams`.
-4. System extracts one representative crop per generated FaceStream track.
-5. System clusters tracks that likely belong to the same person.
-6. System loads persisted resolved mappings for this clip (if present) and marks their source explicitly.
-7. User assigns identity clusters to transcript speaker IDs and may split/merge clusters before applying.
-8. System persists:
+2. System runs face detection and persists raw per-frame observations.
+3. System forms identity-agnostic continuity tracks from those detections and generates one FaceStream per track (`T<track_id>`).
+4. User clicks `Assign FaceStreams`.
+5. System extracts several representative crops per generated FaceStream track and aggregates them to track-level identity evidence.
+6. System clusters tracks that likely belong to the same person.
+7. System loads persisted resolved mappings for this clip (if present) and marks their source explicitly.
+8. User assigns identity clusters to transcript speaker IDs and may split/merge clusters before applying.
+9. System persists:
    - immutable machine run output
    - immutable machine cluster output
    - human override run output
    - resolved current mapping (`track_id -> speaker_id`) when assignment is used
-9. Runtime tracking uses the resolved mapping to bind transcript speakers to the corresponding FaceStream tracks.
+10. Runtime tracking uses the resolved mapping to bind transcript speakers to the corresponding FaceStream tracks.
 
 ## Source Of Truth Contract
 1. `speaker_flow.clips.<clip_id>.machine_runs.<run_id>`:
-   - immutable machine tracks, representative crops, clusters, and suggestions.
+   - immutable machine detections, immutable machine continuity tracks derived from those detections, representative crops, clusters, and suggestions.
 2. `speaker_flow.clips.<clip_id>.human_runs.<run_id>`:
    - human cluster split/merge actions, assignment rows, override provenance, and audit log.
 3. `speaker_flow.clips.<clip_id>.resolved_current`:
    - authoritative `track_id -> speaker_id` mapping used by speaker-aware tracking and stabilization.
 4. Downstream steps must not infer identity directly from raw machine candidates if resolved mapping exists.
-5. Continuity FaceStreams are authoritative for motion, independent of identity mapping presence.
+5. Raw detections are authoritative for "what was observed"; continuity FaceStreams are authoritative for motion grouping over time; resolved identity mapping is authoritative for speaker binding.
 
 ## Overwrite Protection (Required)
 If a stage is about to overwrite one or more existing artefacts in the target run folder:
@@ -460,7 +463,7 @@ If a stage is about to overwrite one or more existing artefacts in the target ru
 1. Add run manager + `index.json` writer.
 2. Persist Stage 3 artefacts for FaceStream generation.
 3. Persist Stage 4/5/6 artefacts for `Assign FaceStreams` flow.
-4. Extract representative crops directly from generated FaceStream track keyframes.
+4. Extract multiple representative crops directly from generated FaceStream track keyframes.
 5. Emit FaceStream track output (`tracks` + representative `candidates` + identity `clusters`).
 6. Persist resolved current mapping as `track_id -> speaker_id`; clusters are review/grouping aids, not runtime motion sources.
 

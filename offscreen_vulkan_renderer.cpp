@@ -1,4 +1,5 @@
 #include "render_internal.h"
+#include "overlay_render_backend.h"
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
 
@@ -6,10 +7,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
-#include <QFontMetricsF>
 #include <QImage>
-#include <QPainter>
-#include <QRawFont>
 #include <QScopeGuard>
 
 #if JCUT_HAS_CUDA_DRIVER
@@ -142,6 +140,83 @@ QRectF alphaBoundsForImage(const QImage& image)
     return QRectF(QPointF(minX, minY), QPointF(maxX + 1, maxY + 1));
 }
 
+QRectF alphaBoundsForOverlayImage(const OverlayImage& image)
+{
+    if (image.isNull()) {
+        return QRectF();
+    }
+    int minX = image.width;
+    int minY = image.height;
+    int maxX = -1;
+    int maxY = -1;
+    const uchar* bits = reinterpret_cast<const uchar*>(image.rgbaPremultiplied.constData());
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            const int offset = ((y * image.width) + x) * 4;
+            if (bits[offset + 3] <= 8) {
+                continue;
+            }
+            minX = qMin(minX, x);
+            minY = qMin(minY, y);
+            maxX = qMax(maxX, x);
+            maxY = qMax(maxY, y);
+        }
+    }
+    if (maxX < minX || maxY < minY) {
+        return QRectF();
+    }
+    return QRectF(QPointF(minX, minY), QPointF(maxX + 1, maxY + 1));
+}
+
+OverlayImage scaledOverlayImage(const OverlayImage& image, const QSize& targetSize)
+{
+    if (image.isNull() || !targetSize.isValid()) {
+        return {};
+    }
+    if (image.width == targetSize.width() && image.height == targetSize.height()) {
+        return image;
+    }
+
+    OverlayImage scaled;
+    scaled.width = targetSize.width();
+    scaled.height = targetSize.height();
+    scaled.rgbaPremultiplied.resize(scaled.width * scaled.height * 4);
+
+    const uchar* src = reinterpret_cast<const uchar*>(image.rgbaPremultiplied.constData());
+    uchar* dst = reinterpret_cast<uchar*>(scaled.rgbaPremultiplied.data());
+    const qreal scaleX = static_cast<qreal>(image.width) / static_cast<qreal>(scaled.width);
+    const qreal scaleY = static_cast<qreal>(image.height) / static_cast<qreal>(scaled.height);
+
+    for (int y = 0; y < scaled.height; ++y) {
+        const qreal srcY = (static_cast<qreal>(y) + 0.5) * scaleY - 0.5;
+        const int y0 = qBound(0, static_cast<int>(std::floor(srcY)), image.height - 1);
+        const int y1 = qMin(y0 + 1, image.height - 1);
+        const qreal fy = qBound<qreal>(0.0, srcY - static_cast<qreal>(y0), 1.0);
+        for (int x = 0; x < scaled.width; ++x) {
+            const qreal srcX = (static_cast<qreal>(x) + 0.5) * scaleX - 0.5;
+            const int x0 = qBound(0, static_cast<int>(std::floor(srcX)), image.width - 1);
+            const int x1 = qMin(x0 + 1, image.width - 1);
+            const qreal fx = qBound<qreal>(0.0, srcX - static_cast<qreal>(x0), 1.0);
+
+            const int idx00 = ((y0 * image.width) + x0) * 4;
+            const int idx10 = ((y0 * image.width) + x1) * 4;
+            const int idx01 = ((y1 * image.width) + x0) * 4;
+            const int idx11 = ((y1 * image.width) + x1) * 4;
+            const int dstIdx = ((y * scaled.width) + x) * 4;
+
+            for (int c = 0; c < 4; ++c) {
+                const qreal top = (static_cast<qreal>(src[idx00 + c]) * (1.0 - fx)) +
+                                  (static_cast<qreal>(src[idx10 + c]) * fx);
+                const qreal bottom = (static_cast<qreal>(src[idx01 + c]) * (1.0 - fx)) +
+                                     (static_cast<qreal>(src[idx11 + c]) * fx);
+                dst[dstIdx + c] = static_cast<uchar>(qBound(0, qRound((top * (1.0 - fy)) + (bottom * fy)), 255));
+            }
+        }
+    }
+
+    return scaled;
+}
+
 QImage frameHandleToCpuImage(const editor::FrameHandle& frame)
 {
     if (frame.hasCpuImage()) {
@@ -228,81 +303,6 @@ void blendPixel(QImage* image, int x, int y, const QColor& color, int alpha)
     const qreal g = ((src.greenF() * sa) + (dst.greenF() * da * (1.0 - sa))) / outA;
     const qreal b = ((src.blueF() * sa) + (dst.blueF() * da * (1.0 - sa))) / outA;
     image->setPixelColor(x, y, QColor::fromRgbF(r, g, b, outA));
-}
-
-void fillRoundedRectSoftware(QImage* image, const QRectF& rect, qreal radius, const QColor& color)
-{
-    if (!image || image->isNull() || rect.isEmpty()) {
-        return;
-    }
-    const int left = qMax(0, static_cast<int>(std::floor(rect.left())));
-    const int top = qMax(0, static_cast<int>(std::floor(rect.top())));
-    const int right = qMin(image->width() - 1, static_cast<int>(std::ceil(rect.right())));
-    const int bottom = qMin(image->height() - 1, static_cast<int>(std::ceil(rect.bottom())));
-    const qreal r = qMax<qreal>(0.0, radius);
-    const qreal cxLeft = rect.left() + r;
-    const qreal cxRight = rect.right() - r;
-    const qreal cyTop = rect.top() + r;
-    const qreal cyBottom = rect.bottom() - r;
-    for (int y = top; y <= bottom; ++y) {
-        for (int x = left; x <= right; ++x) {
-            const qreal px = static_cast<qreal>(x) + 0.5;
-            const qreal py = static_cast<qreal>(y) + 0.5;
-            bool inside = true;
-            if (r > 0.0 && px < cxLeft && py < cyTop) {
-                inside = std::hypot(px - cxLeft, py - cyTop) <= r;
-            } else if (r > 0.0 && px > cxRight && py < cyTop) {
-                inside = std::hypot(px - cxRight, py - cyTop) <= r;
-            } else if (r > 0.0 && px < cxLeft && py > cyBottom) {
-                inside = std::hypot(px - cxLeft, py - cyBottom) <= r;
-            } else if (r > 0.0 && px > cxRight && py > cyBottom) {
-                inside = std::hypot(px - cxRight, py - cyBottom) <= r;
-            }
-            if (inside) {
-                blendPixel(image, x, y, color, color.alpha());
-            }
-        }
-    }
-}
-
-int alphaAt(const QImage& image, int x, int y)
-{
-    if (image.format() == QImage::Format_Alpha8 || image.format() == QImage::Format_Grayscale8) {
-        return static_cast<int>(image.constScanLine(y)[x]);
-    }
-    return image.pixelColor(x, y).alpha();
-}
-
-qreal drawGlyphText(QImage* image,
-                    const QRawFont& rawFont,
-                    qreal x,
-                    qreal baseline,
-                    const QString& text,
-                    const QColor& color)
-{
-    if (!image || !rawFont.isValid() || text.isEmpty()) {
-        return 0.0;
-    }
-    const QVector<quint32> glyphs = rawFont.glyphIndexesForString(text);
-    const QVector<QPointF> advances = rawFont.advancesForGlyphIndexes(glyphs);
-    qreal cursor = x;
-    for (int i = 0; i < glyphs.size(); ++i) {
-        const quint32 glyph = glyphs.at(i);
-        const QRectF bounds = rawFont.boundingRect(glyph);
-        const QImage alpha = rawFont.alphaMapForGlyph(glyph, QRawFont::PixelAntialiasing);
-        const int glyphX = static_cast<int>(std::floor(cursor + bounds.left()));
-        const int glyphY = static_cast<int>(std::floor(baseline + bounds.top()));
-        for (int gy = 0; gy < alpha.height(); ++gy) {
-            for (int gx = 0; gx < alpha.width(); ++gx) {
-                const int a = alphaAt(alpha, gx, gy);
-                if (a > 0) {
-                    blendPixel(image, glyphX + gx, glyphY + gy, color, (a * color.alpha()) / 255);
-                }
-            }
-        }
-        cursor += (i < advances.size()) ? advances.at(i).x() : bounds.width();
-    }
-    return cursor - x;
 }
 
 uint32_t findMemoryType(VkPhysicalDevice physicalDevice,
@@ -1884,6 +1884,7 @@ public:
 
 	    struct LayerInput {
 	        QImage image;
+            OverlayImage overlayImage;
             editor::FrameHandle frameHandle;
             QSize sourceSize;
             bool preferHardwareDirect = false;
@@ -2088,7 +2089,7 @@ public:
                 static_cast<VkDeviceSize>(m_outputSize.height()) * 4;
             const VkDeviceSize layerStagingSize = layerImageBytes + kCurveLutBytes;
             auto layerHasRenderableSource = [](const LayerInput& layer) {
-                return !layer.image.isNull() || !layer.frameHandle.isNull();
+                return !layer.overlayImage.isNull() || !layer.image.isNull() || !layer.frameHandle.isNull();
             };
             auto updateLayerDescriptorSet = [&](LayerTextureSlot& slot,
                                                 VkImageView sourceView,
@@ -2162,6 +2163,108 @@ public:
                 QImage rgba;
                 if (!layer.cacheKey.isEmpty()) {
                     rgba = m_preparedImageCache.value(layer.cacheKey);
+                }
+                if (rgba.isNull()) {
+                    if (!layer.overlayImage.isNull()) {
+                        if (layer.overlayImage.width == m_outputSize.width() &&
+                            layer.overlayImage.height == m_outputSize.height() &&
+                            m_stagingMapped) {
+                            const size_t bytes = static_cast<size_t>(layer.overlayImage.rgbaPremultiplied.size());
+                            std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset,
+                                        layer.overlayImage.rgbaPremultiplied.constData(),
+                                        bytes);
+                            if (!flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes))) {
+                                return false;
+                            }
+                            transitionImageLayout(
+                                m_commandBuffer,
+                                slot.image,
+                                slot.uploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                            VkBufferImageCopy uploadRegion{};
+                            uploadRegion.bufferOffset = stagingOffset;
+                            uploadRegion.bufferRowLength = 0;
+                            uploadRegion.bufferImageHeight = 0;
+                            uploadRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                            uploadRegion.imageSubresource.mipLevel = 0;
+                            uploadRegion.imageSubresource.baseArrayLayer = 0;
+                            uploadRegion.imageSubresource.layerCount = 1;
+                            uploadRegion.imageExtent = {
+                                static_cast<uint32_t>(m_outputSize.width()),
+                                static_cast<uint32_t>(m_outputSize.height()),
+                                1
+                            };
+                            vkCmdCopyBufferToImage(
+                                m_commandBuffer,
+                                m_stagingBuffer,
+                                slot.image,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                1,
+                                &uploadRegion);
+                            transitionImageLayout(
+                                m_commandBuffer,
+                                slot.image,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            slot.uploaded = true;
+                            if (sourceViewOut) {
+                                *sourceViewOut = slot.view;
+                            }
+                            if (sourceLayoutOut) {
+                                *sourceLayoutOut = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                            }
+                            return true;
+                        }
+                        const OverlayImage scaledOverlay =
+                            scaledOverlayImage(layer.overlayImage, m_outputSize);
+                        if (!scaledOverlay.isNull() && m_stagingMapped) {
+                            const size_t bytes = static_cast<size_t>(scaledOverlay.rgbaPremultiplied.size());
+                            std::memcpy(reinterpret_cast<uint8_t*>(m_stagingMapped) + stagingOffset,
+                                        scaledOverlay.rgbaPremultiplied.constData(),
+                                        bytes);
+                            if (!flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes))) {
+                                return false;
+                            }
+                            transitionImageLayout(
+                                m_commandBuffer,
+                                slot.image,
+                                slot.uploaded ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+                            VkBufferImageCopy uploadRegion{};
+                            uploadRegion.bufferOffset = stagingOffset;
+                            uploadRegion.bufferRowLength = 0;
+                            uploadRegion.bufferImageHeight = 0;
+                            uploadRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                            uploadRegion.imageSubresource.mipLevel = 0;
+                            uploadRegion.imageSubresource.baseArrayLayer = 0;
+                            uploadRegion.imageSubresource.layerCount = 1;
+                            uploadRegion.imageExtent = {
+                                static_cast<uint32_t>(m_outputSize.width()),
+                                static_cast<uint32_t>(m_outputSize.height()),
+                                1
+                            };
+                            vkCmdCopyBufferToImage(
+                                m_commandBuffer,
+                                m_stagingBuffer,
+                                slot.image,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                1,
+                                &uploadRegion);
+                            transitionImageLayout(
+                                m_commandBuffer,
+                                slot.image,
+                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                            slot.uploaded = true;
+                            if (sourceViewOut) {
+                                *sourceViewOut = slot.view;
+                            }
+                            if (sourceLayoutOut) {
+                                *sourceLayoutOut = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                            }
+                            return true;
+                        }
+                    }
                 }
                 if (rgba.isNull()) {
                     rgba = !layer.image.isNull() ? layer.image : frameHandleToCpuImage(layer.frameHandle);
@@ -3112,156 +3215,15 @@ public:
                m_cudaExportBuffersReady;
     }
 
-    void renderTranscriptLayer(QImage* layer,
-                               const RenderRequest& request,
-                               int64_t timelineFrame,
-                               const QVector<TimelineClip>& orderedClips)
+    OverlayImage buildTranscriptOverlayImage(const QSize& imageSize,
+                                             const RenderRequest& request,
+                                             int64_t timelineFrame,
+                                             const QVector<TimelineClip>& orderedClips)
     {
-        if (!layer) {
-            return;
-        }
-        renderTranscriptOverlays(layer, request, timelineFrame, orderedClips, m_transcriptCache);
+        return overlayRenderBackend().renderTranscriptOverlay(
+            imageSize, request, timelineFrame, orderedClips, m_transcriptCache);
     }
 
-    void renderTranscriptLayerVulkanText(QImage* layer,
-                                         const RenderRequest& request,
-                                         int64_t timelineFrame,
-                                         const QVector<TimelineClip>& orderedClips)
-    {
-        if (!layer || layer->isNull()) {
-            return;
-        }
-        const bool debugSubtitles = vulkanSubtitleDebugEnabled();
-        const bool dumpSubtitles = vulkanSubtitleDumpEnabled();
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const bool emitDiagnostics = debugSubtitles && (now - m_lastSubtitleDiagnosticMs >= 1000);
-        if (emitDiagnostics) {
-            m_lastSubtitleDiagnosticMs = now;
-        }
-        for (const TimelineClip& clip : orderedClips) {
-            if (timelineFrame < clip.startFrame || timelineFrame >= clip.startFrame + clip.durationFrames) {
-                continue;
-            }
-            if (!((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled)) {
-                continue;
-            }
-            const TranscriptOverlayLayout overlayLayout =
-                transcriptOverlayLayoutForFrame(clip, timelineFrame, request.renderSyncMarkers, m_transcriptCache);
-
-            const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-            const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
-                clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
-            const QVector<TranscriptSection> sections = loadTranscriptSections(transcriptPath);
-            const QRectF bounds = transcriptOverlayRectInOutputSpace(
-                clip, request.outputSize, transcriptPath, sections, sourceFrame);
-            if (overlayLayout.lines.isEmpty()) {
-                if (emitDiagnostics) {
-                    qWarning().noquote()
-                        << QStringLiteral("[vulkan-subtitle] frame=%1 clip=%2 media=%3 has_audio=%4 enabled=%5 path=\"%6\" sections=%7 source_frame=%8 lines=0 reason=empty_layout")
-                               .arg(timelineFrame)
-                               .arg(clip.id)
-                               .arg(clipMediaTypeLabel(clip.mediaType))
-                               .arg(clip.hasAudio)
-                               .arg(clip.transcriptOverlay.enabled)
-                               .arg(transcriptPath)
-                               .arg(sections.size())
-                               .arg(sourceFrame);
-                }
-                continue;
-            }
-            if (clip.transcriptOverlay.showBackground) {
-                fillRoundedRectSoftware(layer, bounds, 14.0, QColor(0, 0, 0, 120));
-            }
-
-            QFont font(clip.transcriptOverlay.fontFamily);
-            font.setPixelSize(clip.transcriptOverlay.fontPointSize);
-            font.setBold(clip.transcriptOverlay.bold);
-            font.setItalic(clip.transcriptOverlay.italic);
-            const QRawFont rawFont = QRawFont::fromFont(font);
-            if (!rawFont.isValid()) {
-                qWarning().noquote()
-                    << QStringLiteral("[vulkan-compose] transcript text skipped: invalid raw font \"%1\"")
-                           .arg(clip.transcriptOverlay.fontFamily);
-                continue;
-            }
-            int glyphCount = 0;
-            QFontMetricsF metrics(font);
-            const QRectF textBounds = bounds.adjusted(18.0, 14.0, -18.0, -14.0);
-            const qreal lineHeight = qMax<qreal>(1.0, metrics.lineSpacing());
-            const qreal totalHeight = lineHeight * static_cast<qreal>(overlayLayout.lines.size());
-            qreal baseline = textBounds.top() +
-                             qMax<qreal>(0.0, (textBounds.height() - totalHeight) / 2.0) +
-                             metrics.ascent();
-            const QColor textColor = clip.transcriptOverlay.textColor.isValid()
-                                         ? clip.transcriptOverlay.textColor
-                                         : QColor(Qt::white);
-            const QColor shadowColor(0, 0, 0, 200);
-            const QColor highlightFillColor(QStringLiteral("#fff2a8"));
-            const QColor highlightTextColor(QStringLiteral("#181818"));
-            for (const TranscriptOverlayLine& line : overlayLayout.lines) {
-                const QString lineText = line.words.join(QLatin1Char(' '));
-                const qreal lineWidth = metrics.horizontalAdvance(lineText);
-                const qreal startX = textBounds.left() + qMax<qreal>(0.0, (textBounds.width() - lineWidth) / 2.0);
-                qreal cursor = startX;
-                for (int wordIndex = 0; wordIndex < line.words.size(); ++wordIndex) {
-                    const QString word = line.words.at(wordIndex);
-                    const qreal wordWidth = metrics.horizontalAdvance(word);
-                    const bool active = wordIndex == line.activeWord;
-                    if (active) {
-                        const QRectF highlight(cursor - 5.0,
-                                               baseline - metrics.ascent() - 2.0,
-                                               wordWidth + 10.0,
-                                               lineHeight + 4.0);
-                        fillRoundedRectSoftware(layer, highlight, 8.0, highlightFillColor);
-                    }
-                    const QColor glyphColor = active ? highlightTextColor : textColor;
-                    glyphCount += rawFont.glyphIndexesForString(word).size();
-                    drawGlyphText(layer, rawFont, cursor + 3.0, baseline + 3.0, word, shadowColor);
-                    drawGlyphText(layer, rawFont, cursor, baseline, word, glyphColor);
-                    cursor += wordWidth;
-                    if (wordIndex + 1 < line.words.size()) {
-                        cursor += metrics.horizontalAdvance(QLatin1Char(' '));
-                    }
-                }
-                baseline += lineHeight;
-            }
-            const SubtitlePixelCounts counts = countSubtitlePixels(*layer, bounds);
-            if (emitDiagnostics) {
-                qWarning().noquote()
-                    << QStringLiteral("[vulkan-subtitle] frame=%1 clip=%2 media=%3 has_audio=%4 enabled=%5 path=\"%6\" sections=%7 source_frame=%8 lines=%9 glyphs=%10 font=\"%11\" raw_font=%12 bounds=(%13,%14 %15x%16) pixels_dark=%17 pixels_bright=%18 pixels_yellow=%19 pixels_alpha=%20")
-                           .arg(timelineFrame)
-                           .arg(clip.id)
-                           .arg(clipMediaTypeLabel(clip.mediaType))
-                           .arg(clip.hasAudio)
-                           .arg(clip.transcriptOverlay.enabled)
-                           .arg(transcriptPath)
-                           .arg(sections.size())
-                           .arg(sourceFrame)
-                           .arg(overlayLayout.lines.size())
-                           .arg(glyphCount)
-                           .arg(clip.transcriptOverlay.fontFamily)
-                           .arg(rawFont.isValid())
-                           .arg(bounds.x(), 0, 'f', 1)
-                           .arg(bounds.y(), 0, 'f', 1)
-                           .arg(bounds.width(), 0, 'f', 1)
-                           .arg(bounds.height(), 0, 'f', 1)
-                           .arg(counts.dark)
-                           .arg(counts.bright)
-                           .arg(counts.yellow)
-                           .arg(counts.nonTransparent);
-            }
-            if (dumpSubtitles && now - m_lastSubtitleDumpMs >= 1000) {
-                m_lastSubtitleDumpMs = now;
-                const QString baseName = QStringLiteral("jcut-vulkan-subtitle-layer-f%1-%2.png")
-                                             .arg(timelineFrame)
-                                             .arg(clip.id.left(8));
-                const QString path = QDir::temp().filePath(baseName);
-                layer->save(path);
-                qWarning().noquote()
-                    << QStringLiteral("[vulkan-subtitle] dumped_layer=\"%1\"").arg(path);
-            }
-        }
-    }
 
 private:
     QSize m_outputSize;
@@ -3317,8 +3279,6 @@ private:
     QVector<LayerTextureSlot> m_layerSlots;
     QHash<QString, QImage> m_preparedImageCache;
     QHash<QString, QVector<TranscriptSection>> m_transcriptCache;
-    qint64 m_lastSubtitleDiagnosticMs = 0;
-    qint64 m_lastSubtitleDumpMs = 0;
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
     void* m_stagingMapped = nullptr;
@@ -3453,17 +3413,12 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
                 continue;
             }
 
-            QImage titleImage(request.outputSize, QImage::Format_ARGB32_Premultiplied);
-            titleImage.fill(Qt::transparent);
-            QPainter titlePainter(&titleImage);
-            titlePainter.setRenderHint(QPainter::Antialiasing, true);
-            titlePainter.setRenderHint(QPainter::TextAntialiasing, true);
-            drawTitleOverlay(&titlePainter, QRect(QPoint(0, 0), request.outputSize), title, request.outputSize);
-            titlePainter.end();
+            const OverlayImage titleImage =
+                overlayRenderBackend().renderTitleOverlay(request.outputSize, title, request.outputSize);
 
             OffscreenVulkanRendererPrivate::LayerInput layer;
-            layer.image = titleImage;
-            layer.sourceSize = titleImage.size();
+            layer.overlayImage = titleImage;
+            layer.sourceSize = QSize(titleImage.width, titleImage.height);
             layer.opacity = 1.0f;
             layers.push_back(layer);
             continue;
@@ -3550,13 +3505,12 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         }
     }
     if (hasTranscriptCandidate) {
-        QImage transcriptLayer(request.outputSize, QImage::Format_ARGB32_Premultiplied);
-        transcriptLayer.fill(Qt::transparent);
-        d->renderTranscriptLayerVulkanText(&transcriptLayer, request, timelineFrame, orderedClips);
-        transcriptLayerBounds = alphaBoundsForImage(transcriptLayer);
+        const OverlayImage transcriptLayer =
+            d->buildTranscriptOverlayImage(request.outputSize, request, timelineFrame, orderedClips);
+        transcriptLayerBounds = alphaBoundsForOverlayImage(transcriptLayer);
         OffscreenVulkanRendererPrivate::LayerInput overlay;
-        overlay.image = transcriptLayer;
-        overlay.sourceSize = transcriptLayer.size();
+        overlay.overlayImage = transcriptLayer;
+        overlay.sourceSize = QSize(transcriptLayer.width, transcriptLayer.height);
         overlay.opacity = 1.0f;
         layers.push_back(overlay);
     }
@@ -3612,6 +3566,48 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         }
     }
     return output;
+}
+
+bool OffscreenVulkanRenderer::renderFrameToOutput(
+    const RenderRequest& request,
+    int64_t timelineFrame,
+    QHash<QString, editor::DecoderContext*>& decoders,
+    editor::AsyncDecoder* asyncDecoder,
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+    const QVector<TimelineClip>& orderedClips,
+    OffscreenRenderFrame* output,
+    bool readbackToCpuImage,
+    QHash<QString, RenderClipStageStats>* clipStageStats,
+    qint64* decodeMs,
+    qint64* textureMs,
+    qint64* compositeMs,
+    qint64* readbackMs,
+    QJsonArray* skippedClips,
+    QJsonObject* skippedReasonCounts)
+{
+    if (!output) {
+        return false;
+    }
+    *output = OffscreenRenderFrame{};
+    output->cpuImage = renderFrame(request,
+                                   timelineFrame,
+                                   decoders,
+                                   asyncDecoder,
+                                   asyncFrameCache,
+                                   orderedClips,
+                                   clipStageStats,
+                                   decodeMs,
+                                   textureMs,
+                                   compositeMs,
+                                   readbackToCpuImage ? readbackMs : nullptr,
+                                   skippedClips,
+                                   skippedReasonCounts);
+    QString error;
+    if (!lastRenderedVulkanFrame(&output->vulkanFrame, &error)) {
+        output->vulkanFrame.valid = false;
+        return readbackToCpuImage ? !output->cpuImage.isNull() : false;
+    }
+    return readbackToCpuImage ? !output->cpuImage.isNull() : output->vulkanFrame.valid;
 }
 
 bool OffscreenVulkanRenderer::convertLastFrameToNv12(AVFrame* frame,

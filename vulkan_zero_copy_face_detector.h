@@ -59,6 +59,16 @@ struct ScrfdTensorLayout {
     VkDeviceSize byteSize() const;
 };
 
+struct NcnnInferenceStats {
+    double inputMs = 0.0;
+    double extractMs = 0.0;
+    double extractLevel8Ms = 0.0;
+    double extractLevel16Ms = 0.0;
+    double extractLevel32Ms = 0.0;
+    double postMs = 0.0;
+    double totalMs = 0.0;
+};
+
 class VulkanZeroCopyFaceDetector {
 public:
     VulkanZeroCopyFaceDetector();
@@ -86,6 +96,7 @@ public:
                                  int targetSize,
                                  ScrfdTensorLayout* layout,
                                  QString* errorMessage = nullptr);
+    bool finishPendingPreprocess(QString* errorMessage = nullptr);
 
     bool inferFromTensor(const VulkanTensorBuffer& inputTensor,
                          const VulkanTensorBuffer& outputDetections,
@@ -132,6 +143,10 @@ private:
     VkCommandPool m_commandPool = VK_NULL_HANDLE;
     VkCommandBuffer m_commandBuffer = VK_NULL_HANDLE;
     VkFence m_fence = VK_NULL_HANDLE;
+    VkCommandBuffer m_preprocessCommandBuffer = VK_NULL_HANDLE;
+    VkFence m_preprocessFence = VK_NULL_HANDLE;
+    VkDescriptorSet m_pendingPreprocessDescriptorSet = VK_NULL_HANDLE;
+    bool m_preprocessPending = false;
     VkSampler m_sampler = VK_NULL_HANDLE;
     bool m_initialized = false;
 };
