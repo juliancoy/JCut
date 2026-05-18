@@ -401,8 +401,10 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_render_sync.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_timing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_transcript.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facefind_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_handle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_assignment_services.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_continuity_artifacts.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_tracking.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_time_mapping.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/identity_resolution.cpp

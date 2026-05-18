@@ -147,7 +147,7 @@ bool confirmClusteringPreflight(QWidget* parent,
     QVector<int> currentSampleIndexes;
 
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("FaceStream Clustering Preflight"));
+    dialog.setWindowTitle(QStringLiteral("Speaker Identity Clustering Preflight"));
     dialog.setModal(true);
     dialog.resize(760, 520);
     auto* root = new QVBoxLayout(&dialog);
@@ -155,14 +155,14 @@ bool confirmClusteringPreflight(QWidget* parent,
     root->setSpacing(8);
 
     auto* intro = new QLabel(
-        QStringLiteral("Review a random representative sample of cropped FaceStreams before identity clustering runs."),
+        QStringLiteral("Review a random representative sample of continuity-track identity crops before identity clustering runs."),
         &dialog);
     intro->setWordWrap(true);
     root->addWidget(intro);
 
     auto* details = new QLabel(
         QStringLiteral("%1\nModel: %2\nSample: %3 of %4 crop(s) (high-confidence biased)")
-            .arg(summary.trimmed().isEmpty() ? QStringLiteral("Ready to cluster FaceStream tracks.") : summary.trimmed())
+            .arg(summary.trimmed().isEmpty() ? QStringLiteral("Ready to cluster continuity tracks.") : summary.trimmed())
             .arg(modelLabel)
             .arg(qMin(kSampleTileCount, validIndexes.size()))
             .arg(validIndexes.size()),
@@ -382,8 +382,8 @@ void showArcFaceModelRequiredDialog(QWidget* parent,
 {
     QMessageBox dialog(parent);
     dialog.setIcon(QMessageBox::Warning);
-    dialog.setWindowTitle(QStringLiteral("Assign FaceStreams"));
-    dialog.setText(QStringLiteral("Identity clustering requires ArcFace NCNN before reviewing this many FaceStream tracks."));
+    dialog.setWindowTitle(QStringLiteral("Assign Speaker Identity"));
+    dialog.setText(QStringLiteral("Identity clustering requires ArcFace NCNN before reviewing this many continuity tracks."));
     QString details = QStringLiteral("Tracks: %1\n\nExpected files:\n%2\n%3")
         .arg(trackCount)
         .arg(paramPath, binPath);
@@ -391,7 +391,7 @@ void showArcFaceModelRequiredDialog(QWidget* parent,
         details += QStringLiteral("\n\nReason:\n%1").arg(reason.trimmed());
     }
     dialog.setInformativeText(
-        QStringLiteral("Download the model files now, then run Assign FaceStreams again.\n\n"
+        QStringLiteral("Download the model files now, then run Assign Speaker Identity again.\n\n"
                        "Source: liguiyuan/mobilefacenet-ncnn at revision 43631161ecef7567b9871bc711b9fb848629e9bc."));
     dialog.setDetailedText(details);
     auto* downloadButton = dialog.addButton(QStringLiteral("Download Model"), QMessageBox::AcceptRole);
@@ -406,12 +406,12 @@ void showArcFaceModelRequiredDialog(QWidget* parent,
     QString error;
     if (downloadArcFaceModelFiles(parent, paramPath, binPath, &error)) {
         QMessageBox::information(parent,
-                                 QStringLiteral("Assign FaceStreams"),
-                                 QStringLiteral("ArcFace NCNN model files were downloaded.\n\nRun Assign FaceStreams again."));
+                                 QStringLiteral("Assign Speaker Identity"),
+                                 QStringLiteral("ArcFace NCNN model files were downloaded.\n\nRun Assign Speaker Identity again."));
         return;
     }
     QMessageBox::warning(parent,
-                         QStringLiteral("Assign FaceStreams"),
+                         QStringLiteral("Assign Speaker Identity"),
                          QStringLiteral("Failed to download ArcFace NCNN model files.\n\n%1").arg(error));
 }
 
@@ -527,7 +527,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     const QString mediaPath = resolveMediaPath(*clip);
     if (mediaPath.isEmpty()) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("Assign FaceStreams"),
+                             QStringLiteral("Assign Speaker Identity"),
                              QStringLiteral("No playable media was found for this clip."));
         return;
     }
@@ -781,8 +781,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     }
     if (streams.isEmpty()) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Assign FaceStreams"),
-                                 QStringLiteral("No generated FaceStream tracks were found for this clip. Generate FaceStream first."));
+                                 QStringLiteral("Assign Speaker Identity"),
+                                 QStringLiteral("No generated continuity tracks were found for this clip. Generate FaceStream first."));
         return;
     }
     const int maxManualSingletonReviewRows = 200;
@@ -839,7 +839,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         0,
         qMax(1, streams.size() + 3),
         nullptr);
-    progressDialog.setWindowTitle(QStringLiteral("Assign FaceStreams"));
+    progressDialog.setWindowTitle(QStringLiteral("Assign Speaker Identity"));
     progressDialog.setWindowModality(Qt::ApplicationModal);
     progressDialog.setMinimumDuration(0);
     progressDialog.setAutoClose(false);
@@ -869,7 +869,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             persistIndex(debugRun);
             return;
         }
-        QMessageBox::warning(nullptr, QStringLiteral("Assign FaceStreams"), cropResult.errorMessage);
+        QMessageBox::warning(nullptr, QStringLiteral("Assign Speaker Identity"), cropResult.errorMessage);
         return;
     }
     QJsonArray candidateRows = cropResult.candidateRows;
@@ -891,7 +891,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     }
     addArtefact(debugRun, cropsDir);
     setStageStatus(debugRun, kStageCrop, QStringLiteral("ok"),
-                   QStringLiteral("Extracted representative FaceStream crops for identity clustering."));
+                   QStringLiteral("Extracted representative continuity-track crops for identity clustering."));
     persistIndex(debugRun);
     if (candidates.isEmpty()) {
         progressDialog.close();
@@ -899,8 +899,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                        QStringLiteral("No candidates produced."));
         persistIndex(debugRun);
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Assign FaceStreams"),
-                                 QStringLiteral("No usable FaceStream comparison crops could be extracted."));
+                                 QStringLiteral("Assign Speaker Identity"),
+                                 QStringLiteral("No usable identity comparison crops could be extracted."));
         return;
     }
 
@@ -931,8 +931,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     });
     if (speakerIds.isEmpty()) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Assign FaceStreams"),
-                                 QStringLiteral("No transcript speaker IDs were available to assign FaceStream tracks."));
+                                 QStringLiteral("Assign Speaker Identity"),
+                                 QStringLiteral("No transcript speaker IDs were available to assign the continuity tracks."));
         return;
     }
 

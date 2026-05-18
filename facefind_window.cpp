@@ -36,7 +36,7 @@ AssignmentDialogResult showFaceFindWindow(
     }
 
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("FaceFind: Assign FaceStream Clusters"));
+    dialog.setWindowTitle(QStringLiteral("Assign Speaker Identity"));
     dialog.resize(1040, 600);
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(12, 12, 12, 12);

@@ -8,10 +8,20 @@ Covers this end-to-end path:
 1. Transcript ingestion and speaker IDs
 2. AI name mining and speaker profile updates
 3. Continuity FaceStream generation (`Generate FaceStream`, identity-agnostic)
-4. FaceStream representative crop extraction (`Assign FaceStreams` / FaceFind)
+4. Representative identity crop extraction (`Assign Speaker Identity`)
 5. Same-person track clustering from representative crops
 6. Cluster-to-speaker assignment (auto + manual override)
 7. Runtime tracking and Face Stabilize application
+
+## Terminology
+Use these terms consistently:
+1. `Detection`: one face observation in one frame.
+2. `Continuity Track`: identity-agnostic grouping of detections over time.
+3. `Identity Cluster`: one or more continuity tracks believed to be the same person.
+4. `Speaker Assignment`: resolved mapping from continuity tracks to transcript speaker IDs.
+5. `Speaker Tracking`: runtime use of the resolved assignment for framing and stabilization.
+
+Avoid the bare word `tracking` when the distinction matters. Prefer `continuity tracking` for Stage 3 and `Speaker Tracking` for runtime behavior.
 
 ## Product Sidecars By Step
 Product sidecar means a durable clip/transcript companion file used by normal app behavior. Debug-run artifacts are listed separately under `Stage Artefacts`.
@@ -66,14 +76,14 @@ Product sidecar: `{transcript_basename}_facestream.bin`.
 ### 6. Match FaceStreams to Speaker IDs
 Product sidecar: `{transcript_basename}_identity.bin`.
 
-1. In `Speakers`, click `Assign FaceStreams`.
-2. The app extracts a small set of representative face crops per generated FaceStream track.
+1. In `Speakers`, click `Assign Speaker Identity`.
+2. The app extracts a small set of representative identity crops per generated continuity track.
 3. The app clusters tracks that appear to belong to the same person.
-4. Review each identity cluster and its member FaceStream tracks.
+4. Review each identity cluster and its member continuity tracks.
 5. Preferred: keep `Assign To (Auto)` when correct.
 6. Backup: enter `Manual Speaker ID (Override)` when auto is wrong or missing.
 7. Apply assignments.
-8. Result: resolved FaceStream tracks map to transcript speaker IDs for speaker-aware tracking.
+8. Result: resolved continuity tracks map to transcript speaker IDs for Speaker Tracking.
 
 ### 7. Refine FaceStream Generation (If Needed)
 Product sidecar: same as Step 5 when regenerated; none if only reviewing settings.
@@ -87,7 +97,7 @@ Product sidecar: same as Step 5 when regenerated; none if only reviewing setting
 ### 8. Enable Speaker Tracking
 Product sidecar: none.
 
-1. Turn on `Tracking` for the speaker (Tracking chip/button).
+1. Turn on `Speaker Tracking` for the speaker (`Speaker Tracking` chip/button).
 2. Confirm the state shows FaceStream ready/active.
 
 ### 9. Set FaceBox Target
@@ -108,7 +118,7 @@ Product sidecar: none; repeating generation or assignment updates the Step 5 or 
 
 1. Scrub and play through speaker changes.
 2. If tracking drifts:
-3. Tune detector settings, regenerate FaceStream, re-run `Assign FaceStreams`, and re-check target placement.
+3. Tune detector settings, regenerate FaceStream, re-run `Assign Speaker Identity`, and re-check target placement.
 
 ### 12. Render
 Product sidecar: none.
@@ -116,7 +126,7 @@ Product sidecar: none.
 1. Once tracking and framing behavior are stable, proceed to render/export.
 
 ### User Path Notes
-1. Preferred UX route: generate FaceStream once, then use `Assign FaceStreams` for track-to-speaker assignment.
+1. Preferred UX route: generate FaceStream once, then use `Assign Speaker Identity` for track-to-speaker assignment.
 2. Manual fallback is always available via `Manual Speaker ID (Override)`.
 3. FaceStream generation is valid without identity assignment, but speaker-specific tracking requires a resolved `track_id -> speaker_id` map.
 4. Speaker/face edits are intended for editable transcript cuts, not immutable original transcripts.
@@ -129,7 +139,7 @@ Product sidecar: none.
 5. UI exposes links to current run artefacts.
 6. Explicit is better than implicit: every auto/default mapping must show its source.
 7. Machine originals are immutable; human edits are layered as overrides.
-8. A resolved layer is the source used by speaker-aware tracking and stabilization.
+8. A resolved layer is the source used by Speaker Tracking and stabilization.
 
 ## Proposed Debug Artefact Root
 Preferred:
@@ -229,7 +239,7 @@ Contents:
 8. Preview/debug artifacts are sampled separately from detector processing via preview stride.
 
 Artifact roles:
-1. `{transcript_basename}_facestream.bin` is the durable product sidecar loaded by JCut runtime, preview overlay, speaker-aware tracking, and stabilization.
+1. `{transcript_basename}_facestream.bin` is the durable product sidecar loaded by JCut runtime, preview overlay, Speaker Tracking, and stabilization.
 2. `{transcript_basename}_facestream_processed.bin` is a derived runtime helper sidecar rebuilt from the raw continuity artefact plus transcript state. It is runtime-adjacent, not generator cache.
 3. `continuity_facestream.bin` is the generator-to-editor import payload. After successful import into `{transcript_basename}_facestream.bin`, it is redundant for normal runtime.
 4. `facestream.part` is a streaming checkpoint for resumable generation. It is useful while a run is active or interrupted, but redundant for normal runtime after successful import.
@@ -253,7 +263,7 @@ Contents:
 1. Source generated FaceStream artifact path.
 2. A small set of representative crops per generated FaceStream track, typically selected from spaced high-confidence keyframes.
 3. Crop frame, source frame, normalized face box, score, `track_id`, and crop path.
-4. No independent face scan here; this stage consumes generated FaceStream tracks only.
+4. No independent face scan here; this stage consumes generated continuity tracks only.
 
 ### Stage 5: Same-Person Track Clustering
 Product sidecar: `{transcript_basename}_identity.bin`.
@@ -387,8 +397,8 @@ Near existing status chips, show:
 3. Quick action: `Open Error Artefact`.
 
 ### C. Assignment Dialog Diagnostics
-In `Assign FaceStreams` dialog:
-1. Show FaceStream track source used.
+In `Assign Speaker Identity` dialog:
+1. Show continuity-track source used.
 2. Show auto-match basis (timing overlap/nearest distance).
 3. Show per-row validation reason for rejected manual IDs.
 4. Show `Cluster` and `Track` columns so one person with multiple tracks is visible.
@@ -399,14 +409,14 @@ In `Assign FaceStreams` dialog:
    - `Split Cluster`
    - `Merge Selected Clusters`
 7. Applying assignments is explicit; no background remap occurs without user confirmation.
-8. Assignment is optional for FaceStream generation, but required for transcript-speaker-specific tracking.
+8. Assignment is optional for FaceStream generation, but required for transcript-speaker-specific Speaker Tracking.
 
 ## Simplified UX Flow (Current)
 1. User clicks `Generate FaceStream`.
 2. System runs face detection and persists raw per-frame observations.
 3. System forms identity-agnostic continuity tracks from those detections and generates one FaceStream per track (`T<track_id>`).
-4. User clicks `Assign FaceStreams`.
-5. System extracts several representative crops per generated FaceStream track and aggregates them to track-level identity evidence.
+4. User clicks `Assign Speaker Identity`.
+5. System extracts several representative crops per generated continuity track and aggregates them to track-level identity evidence.
 6. System clusters tracks that likely belong to the same person.
 7. System loads persisted resolved mappings for this clip (if present) and marks their source explicitly.
 8. User assigns identity clusters to transcript speaker IDs and may split/merge clusters before applying.
@@ -415,7 +425,7 @@ In `Assign FaceStreams` dialog:
    - immutable machine cluster output
    - human override run output
    - resolved current mapping (`track_id -> speaker_id`) when assignment is used
-10. Runtime tracking uses the resolved mapping to bind transcript speakers to the corresponding FaceStream tracks.
+10. Runtime Speaker Tracking uses the resolved mapping to bind transcript speakers to the corresponding continuity tracks.
 
 ## Source Of Truth Contract
 1. `speaker_flow.clips.<clip_id>.machine_runs.<run_id>`:
@@ -423,7 +433,7 @@ In `Assign FaceStreams` dialog:
 2. `speaker_flow.clips.<clip_id>.human_runs.<run_id>`:
    - human cluster split/merge actions, assignment rows, override provenance, and audit log.
 3. `speaker_flow.clips.<clip_id>.resolved_current`:
-   - authoritative `track_id -> speaker_id` mapping used by speaker-aware tracking and stabilization.
+   - authoritative `track_id -> speaker_id` mapping used by Speaker Tracking and stabilization.
 4. Downstream steps must not infer identity directly from raw machine candidates if resolved mapping exists.
 5. Raw detections are authoritative for "what was observed"; continuity FaceStreams are authoritative for motion grouping over time; resolved identity mapping is authoritative for speaker binding.
 
@@ -462,7 +472,7 @@ If a stage is about to overwrite one or more existing artefacts in the target ru
 ### Phase 1 (Foundational)
 1. Add run manager + `index.json` writer.
 2. Persist Stage 3 artefacts for FaceStream generation.
-3. Persist Stage 4/5/6 artefacts for `Assign FaceStreams` flow.
+3. Persist Stage 4/5/6 artefacts for `Assign Speaker Identity` flow.
 4. Extract multiple representative crops directly from generated FaceStream track keyframes.
 5. Emit FaceStream track output (`tracks` + representative `candidates` + identity `clusters`).
 6. Persist resolved current mapping as `track_id -> speaker_id`; clusters are review/grouping aids, not runtime motion sources.

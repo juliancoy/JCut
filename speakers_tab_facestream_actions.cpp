@@ -136,9 +136,9 @@ void SpeakersTab::onSpeakerGuideClicked()
 {
     const QString guideText =
         QStringLiteral(
-            "Subtitle Face Tracking Guide\n\n"
+            "Speaker Flow Guide\n\n"
             "1. Generate FaceStream first.\n"
-            "2. Click Assign FaceStreams to extract one representative crop per FaceStream track.\n"
+            "2. Click Assign Speaker Identity to extract representative identity crops per continuity track.\n"
             "3. Review or auto-apply track-to-speaker assignments.\n"
             "4. The system detects and tracks face continuity across transcript time.\n"
             "5. Independent FaceStreams are created per continuity track (T<id>).\n"
@@ -155,9 +155,9 @@ void SpeakersTab::onSpeakerGuideClicked()
             "- It is not limited to the selected clip's source-in/source-out range.\n\n"
             "Tips\n"
             "- Square selection is required and enforced.\n"
-            "- Identity mapping can be done later in FaceFind; generation is identity-agnostic.\n"
+            "- Speaker identity assignment happens later in Assign Speaker Identity; generation is identity-agnostic.\n"
             "- Speaker metadata is editable only on derived cuts (not Original).");
-    QMessageBox::information(nullptr, QStringLiteral("Subtitle Face Tracking Guide"), guideText);
+    QMessageBox::information(nullptr, QStringLiteral("Speaker Flow Guide"), guideText);
 }
 
 void SpeakersTab::onSpeakerFramingTargetChanged()

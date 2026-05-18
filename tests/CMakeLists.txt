@@ -16,6 +16,8 @@ set(EDITOR_TEST_TARGETS
     test_facestream_tracking
     test_facestream_assignment
     test_facestream_flow
+    test_facestream_artifacts
+    test_facefind_window
     test_vulkan_direct_render_parity
     test_facestream_preview_smoke
 )
@@ -103,6 +105,26 @@ endif()
 jcut_force_bundled_ffmpeg_runtime(test_opengl_vulkan_render_exactness)
 add_test(NAME test_opengl_vulkan_render_exactness COMMAND test_opengl_vulkan_render_exactness)
 set_tests_properties(test_opengl_vulkan_render_exactness PROPERTIES
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_executable(test_facestream_processed_artifact
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_facestream_processed_artifact.cpp
+)
+target_link_libraries(test_facestream_processed_artifact
+    PRIVATE
+        editor_test_support
+        Qt6::Test
+)
+target_compile_definitions(test_facestream_processed_artifact
+    PRIVATE
+        JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+        JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
+        EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
+)
+jcut_force_bundled_ffmpeg_runtime(test_facestream_processed_artifact)
+add_test(NAME test_facestream_processed_artifact COMMAND test_facestream_processed_artifact)
+set_tests_properties(test_facestream_processed_artifact PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 

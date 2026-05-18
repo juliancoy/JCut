@@ -378,13 +378,13 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerFacestreamSettingsButton) {
         m_widgets.speakerFacestreamSettingsButton->setToolTip(
-            QStringLiteral("Open FaceStream-specific runtime smoothing options."));
+            QStringLiteral("Open continuity-track generation and smoothing options."));
         connect(m_widgets.speakerFacestreamSettingsButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerFaceStreamSettingsClicked);
     }
-    if (m_widgets.speakerTrackingChipButton) {
-        m_widgets.speakerTrackingChipButton->setToolTip(
-            QStringLiteral("Click to toggle Subtitle Face Tracking for the selected speaker."));
+        if (m_widgets.speakerTrackingChipButton) {
+            m_widgets.speakerTrackingChipButton->setToolTip(
+            QStringLiteral("Click to toggle Speaker Tracking for the selected speaker."));
         connect(m_widgets.speakerTrackingChipButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerTrackingChipClicked);
     }
@@ -402,7 +402,7 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerPrecropFacesButton) {
         m_widgets.speakerPrecropFacesButton->setToolTip(
-            QStringLiteral("Extract one comparison crop per generated FaceStream track and assign tracks to transcript speakers."));
+            QStringLiteral("Extract representative identity crops per continuity track and assign resolved speaker identity."));
         connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked, this, [this]() {
             // Keep REST/UI click handlers from blocking while the assignment preflight starts.
             QTimer::singleShot(0, this, &SpeakersTab::onSpeakerPrecropFacesClicked);
@@ -465,13 +465,13 @@ void SpeakersTab::wire()
         m_widgets.selectedSpeakerRef1ImageLabel->installEventFilter(this);
         m_widgets.selectedSpeakerRef1ImageLabel->setCursor(Qt::PointingHandCursor);
         m_widgets.selectedSpeakerRef1ImageLabel->setToolTip(
-            QStringLiteral("Click: open Ref 1 preview/FaceFind. Shift+Drag: adjust crop."));
+            QStringLiteral("Click: open Ref 1 preview/identity assignment. Shift+Drag: adjust crop."));
     }
     if (m_widgets.selectedSpeakerRef2ImageLabel) {
         m_widgets.selectedSpeakerRef2ImageLabel->installEventFilter(this);
         m_widgets.selectedSpeakerRef2ImageLabel->setCursor(Qt::PointingHandCursor);
         m_widgets.selectedSpeakerRef2ImageLabel->setToolTip(
-            QStringLiteral("Click: open Ref 2 preview/FaceFind. Shift+Drag: adjust crop."));
+            QStringLiteral("Click: open Ref 2 preview/identity assignment. Shift+Drag: adjust crop."));
     }
 }
 
@@ -2255,13 +2255,13 @@ QString SpeakersTab::speakerTrackingSummary(const QJsonObject& profile) const
 {
     const QJsonObject tracking = speakerFramingObject(profile);
     if (tracking.isEmpty()) {
-        return QStringLiteral("Subtitle Face Tracking: Off");
+        return QStringLiteral("Speaker Tracking: Off");
     }
     const QString mode = tracking.value(QString(kTranscriptSpeakerTrackingModeKey)).toString(QStringLiteral("Manual"));
     const bool enabled = transcriptTrackingEnabled(tracking);
     const QString autoState = tracking.value(QString(kTranscriptSpeakerTrackingAutoStateKey)).toString();
     const int keyframeCount = tracking.value(QString(kTranscriptSpeakerTrackingKeyframesKey)).toArray().size();
-    QString summary = QStringLiteral("Subtitle Face Tracking: %1 (%2)")
+    QString summary = QStringLiteral("Speaker Tracking: %1 (%2)")
         .arg(enabled ? QStringLiteral("On") : QStringLiteral("Off"))
         .arg(mode);
     if (keyframeCount > 0) {
@@ -2304,13 +2304,13 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     const bool canEditClipFraming = mutableCut && m_speakerDeps.updateClipById && selectedClip;
     if (m_widgets.speakerRefsChipLabel) {
-        m_widgets.speakerRefsChipLabel->setText(QStringLiteral("FaceStreams: 0"));
+        m_widgets.speakerRefsChipLabel->setText(QStringLiteral("Assigned Tracks: 0"));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
-        m_widgets.speakerPointstreamChipLabel->setText(QStringLiteral("FaceStream: None"));
+        m_widgets.speakerPointstreamChipLabel->setText(QStringLiteral("Continuity Tracks: None"));
     }
     if (m_widgets.speakerTrackingChipButton) {
-        m_widgets.speakerTrackingChipButton->setText(QStringLiteral("Tracking: OFF"));
+        m_widgets.speakerTrackingChipButton->setText(QStringLiteral("Speaker Tracking: OFF"));
         m_widgets.speakerTrackingChipButton->setChecked(false);
         m_widgets.speakerTrackingChipButton->setEnabled(false);
     }
@@ -2432,20 +2432,21 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         selectedClip ? resolvedAssignedTrackIdsForSpeaker(*selectedClip, streams, speakerId).size() : 0;
     if (m_widgets.speakerRefsChipLabel) {
         m_widgets.speakerRefsChipLabel->setText(
-            QStringLiteral("FaceStreams: %1").arg(assignedFaceStreamCount));
+            QStringLiteral("Assigned Tracks: %1").arg(assignedFaceStreamCount));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
         if (!hasClipWideFaceStream) {
             m_widgets.speakerPointstreamChipLabel->setText(
-                QStringLiteral("FaceStream: MISSING (All Speakers)"));
+                QStringLiteral("Continuity Tracks: MISSING (Clip)"));
         } else {
             m_widgets.speakerPointstreamChipLabel->setText(
-                QStringLiteral("FaceStream: ClipWide Ready"));
+                QStringLiteral("Continuity Tracks: Ready (Clip)"));
         }
     }
     if (m_widgets.speakerTrackingChipButton) {
         m_widgets.speakerTrackingChipButton->setText(
-            trackingEnabled ? QStringLiteral("Tracking: ON") : QStringLiteral("Tracking: OFF"));
+            trackingEnabled ? QStringLiteral("Speaker Tracking: ON")
+                            : QStringLiteral("Speaker Tracking: OFF"));
         m_widgets.speakerTrackingChipButton->setChecked(trackingEnabled);
         m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasClipWideFaceStream);
     }
@@ -2513,7 +2514,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
 
     m_widgets.speakerTrackingStatusLabel->setText(
-        QStringLiteral("Assigned FaceStreams: %1 | FaceStream: %2 | Tracking: %3 | Face Stabilize: %4")
+        QStringLiteral("Assigned Tracks: %1 | Continuity Tracks: %2 | Speaker Tracking: %3 | Face Stabilize: %4")
             .arg(assignedFaceStreamCount)
             .arg(QStringLiteral("ClipWide Ready"))
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))

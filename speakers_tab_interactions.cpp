@@ -1146,8 +1146,8 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     const bool hasTrackingModel = transcriptTrackingHasPointstream(tracking);
     const bool canMutate = activeCutMutable();
 
-    QAction* enableTrackingAction = menu.addAction(QStringLiteral("Enable Subtitle Face Tracking"));
-    QAction* disableTrackingAction = menu.addAction(QStringLiteral("Disable Subtitle Face Tracking"));
+    QAction* enableTrackingAction = menu.addAction(QStringLiteral("Enable Speaker Tracking"));
+    QAction* disableTrackingAction = menu.addAction(QStringLiteral("Disable Speaker Tracking"));
     QMenu* autoTrackMenu = menu.addMenu(QStringLiteral("FaceStream"));
     QAction* runAutoTrackAction = nullptr;
     QAction* viewAutoTrackAction = nullptr;
@@ -1454,7 +1454,7 @@ void SpeakersTab::onSpeakerTrackingChipClicked()
     if (!transcriptTrackingHasPointstream(tracking)) {
         if (m_widgets.speakerTrackingStatusLabel) {
             m_widgets.speakerTrackingStatusLabel->setText(
-                QStringLiteral("Cannot enable Tracking: no pointstream exists yet. Generate FaceStream first."));
+                QStringLiteral("Cannot enable Speaker Tracking: no pointstream exists yet. Generate FaceStream first."));
         }
         return;
     }
