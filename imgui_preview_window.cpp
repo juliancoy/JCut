@@ -60,6 +60,69 @@ bool hasExtension(const std::vector<VkExtensionProperties>& properties, const ch
     });
 }
 
+void drawAnimatedProgressBar(const char* id,
+                             float fraction,
+                             const QString& title,
+                             const QString& detail,
+                             float markerFraction = -1.0f)
+{
+    const ImVec2 cursor = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float height = 44.0f;
+    const ImVec2 size(width, height);
+    const ImVec2 rectMin = cursor;
+    const ImVec2 rectMax(cursor.x + width, cursor.y + height);
+    ImGui::InvisibleButton(id, size);
+
+    ImDrawList* drawList = ImGui::GetWindowDrawList();
+    const float rounding = 10.0f;
+    const float clampedFraction = std::clamp(fraction, 0.0f, 1.0f);
+    const float rectWidth = width;
+    const float fillWidth = rectWidth * clampedFraction;
+
+    drawList->AddRectFilled(rectMin, rectMax, IM_COL32(16, 22, 30, 235), rounding);
+    drawList->AddRect(rectMin, rectMax, IM_COL32(68, 90, 116, 255), rounding, 0, 1.0f);
+
+    if (fillWidth > 0.0f) {
+        const ImVec2 fillMax(rectMin.x + fillWidth, rectMax.y);
+        drawList->AddRectFilledMultiColor(rectMin,
+                                          fillMax,
+                                          IM_COL32(244, 181, 63, 255),
+                                          IM_COL32(255, 141, 48, 255),
+                                          IM_COL32(255, 98, 72, 255),
+                                          IM_COL32(245, 165, 70, 255));
+
+        const float t = static_cast<float>(ImGui::GetTime());
+        const float sweepWidth = std::max(18.0f, rectWidth * 0.14f);
+        const float sweepTravel = std::max(0.0f, fillWidth + sweepWidth);
+        const float sweepRight = rectMin.x + std::fmod(t * 140.0f, std::max(1.0f, sweepTravel));
+        const float sweepLeft = std::max(rectMin.x, sweepRight - sweepWidth);
+        const float sweepClampedRight = std::min(rectMin.x + fillWidth, sweepRight);
+        if (sweepClampedRight > sweepLeft) {
+            drawList->AddRectFilledMultiColor(ImVec2(sweepLeft, rectMin.y),
+                                              ImVec2(sweepClampedRight, rectMax.y),
+                                              IM_COL32(255, 255, 255, 0),
+                                              IM_COL32(255, 255, 255, 92),
+                                              IM_COL32(255, 255, 255, 38),
+                                              IM_COL32(255, 255, 255, 0));
+        }
+    }
+
+    if (markerFraction >= 0.0f) {
+        const float clampedMarker = std::clamp(markerFraction, 0.0f, 1.0f);
+        const float markerX = rectMin.x + rectWidth * clampedMarker;
+        drawList->AddLine(ImVec2(markerX, rectMin.y + 3.0f),
+                          ImVec2(markerX, rectMax.y - 3.0f),
+                          IM_COL32(186, 230, 255, 220),
+                          2.0f);
+    }
+
+    const ImVec2 titlePos(rectMin.x + 12.0f, rectMin.y + 7.0f);
+    const ImVec2 detailPos(rectMin.x + 12.0f, rectMin.y + 24.0f);
+    drawList->AddText(titlePos, IM_COL32(250, 252, 255, 255), title.toUtf8().constData());
+    drawList->AddText(detailPos, IM_COL32(188, 201, 219, 255), detail.toUtf8().constData());
+}
+
 } // namespace
 
 struct ImGuiPreviewWindow::Impl {
@@ -1100,6 +1163,34 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     }
     ImGui::Separator();
 
+    const int timelineMax = qMax(m_impl->minTimelineFrame, m_impl->maxTimelineFrame);
+    const int processedFrame = qBound(m_impl->minTimelineFrame, m_impl->latestProcessedFrame, timelineMax);
+    const int requestedFrame = clampFrameToRange(m_impl->requestedPreviewFrame,
+                                                 m_impl->minTimelineFrame,
+                                                 qMax(m_impl->minTimelineFrame, processedFrame));
+    const int totalSpan = qMax(1, timelineMax - m_impl->minTimelineFrame);
+    const float processedFraction =
+        static_cast<float>(processedFrame - m_impl->minTimelineFrame) / static_cast<float>(totalSpan);
+    const float requestedFraction =
+        static_cast<float>(requestedFrame - m_impl->minTimelineFrame) / static_cast<float>(totalSpan);
+    const QString progressTitle = QStringLiteral("%1  %2%")
+        .arg(m_impl->processingPausedRequested ? QStringLiteral("Processing Paused")
+                                              : QStringLiteral("Processing"))
+        .arg(QString::number(processedFraction * 100.0f, 'f', 1));
+    const QString progressDetail = QStringLiteral("processed %1 / %2 frames   preview %3   %4")
+        .arg(processedFrame)
+        .arg(timelineMax)
+        .arg(requestedFrame)
+        .arg(m_impl->followLatest ? QStringLiteral("follow latest")
+                                  : (m_impl->historyPlaying
+                                         ? QStringLiteral("history playback")
+                                         : QStringLiteral("manual inspect")));
+    drawAnimatedProgressBar("processing_progress_bar",
+                            processedFraction,
+                            progressTitle,
+                            progressDetail,
+                            requestedFraction);
+
     if (ImGui::Button(m_impl->processingPausedRequested ? "Resume Processing" : "Pause Processing")) {
         m_impl->processingPausedRequested = !m_impl->processingPausedRequested;
         m_impl->redrawRequested = true;
@@ -1129,15 +1220,15 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         m_impl->historyPlaying = false;
         m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
     }
-    const int timelineMax = qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame);
-    int requestedFrame = clampFrameToRange(m_impl->requestedPreviewFrame,
-                                           m_impl->minTimelineFrame,
-                                           timelineMax);
+    const int seekTimelineMax = qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame);
+    int requestedFrameSlider = clampFrameToRange(m_impl->requestedPreviewFrame,
+                                                 m_impl->minTimelineFrame,
+                                                 seekTimelineMax);
     ImGui::SetNextItemWidth(240.0f);
-    if (ImGui::SliderInt("Seek", &requestedFrame, m_impl->minTimelineFrame, timelineMax)) {
+    if (ImGui::SliderInt("Seek", &requestedFrameSlider, m_impl->minTimelineFrame, seekTimelineMax)) {
         m_impl->followLatest = false;
         m_impl->historyPlaying = false;
-        m_impl->requestedPreviewFrame = requestedFrame;
+        m_impl->requestedPreviewFrame = requestedFrameSlider;
         m_impl->redrawRequested = true;
     }
     ImGui::SameLine();

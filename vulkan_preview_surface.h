@@ -150,6 +150,8 @@ private:
     void refreshVulkanFrameStatuses();
     bool loadedFrameAffectsCurrentView(const QString& clipId, int64_t frame) const;
     void queueFrameStatusRefresh(bool requestVisibleFrames);
+    void applyAdaptivePlaybackTuning();
+    void updateAdaptivePlaybackTuning(qint64 nowMs);
     void refreshFacestreamOverlays();
     QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip);
     QVector<VulkanPreviewFacestreamOverlay> loadRawDetectionsForClip(const TimelineClip& clip);
@@ -170,6 +172,7 @@ private:
     std::unique_ptr<editor::AsyncDecoder> m_decoder;
     std::unique_ptr<editor::TimelineCache> m_cache;
     QSet<QString> m_registeredClips;
+    QHash<QString, QString> m_registeredClipRegistrationKeys;
     QHash<QString, FacestreamOverlayCacheEntry> m_facestreamOverlayCache;
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
@@ -188,7 +191,10 @@ private:
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
     bool m_useProxyMedia = false;
+    PlaybackTuning m_configuredPlaybackTuning;
     PlaybackTuning m_playbackTuning;
+    int m_adaptivePlaybackBoostLevel = 0;
+    qint64 m_lastAdaptivePlaybackTuningAdjustMs = 0;
     bool m_forcedPreviewDecodePreference = false;
     editor::DecodePreference m_previousDecodePreference = editor::DecodePreference::Hardware;
     bool m_bulkUpdating = false;

@@ -31,23 +31,8 @@
 using namespace jcut::facestream;
 
 namespace {
-QString resolveMediaPathForFaceStream(const TimelineClip& clip)
+QString faceStreamSourceMediaPath(const TimelineClip& clip)
 {
-    QString candidate = interactivePreviewMediaPathForClip(clip);
-    const QFileInfo candidateInfo(candidate);
-    const bool candidateIsSequenceDir =
-        !candidate.trimmed().isEmpty() &&
-        candidateInfo.exists() &&
-        candidateInfo.isDir() &&
-        isImageSequencePath(candidate);
-    const bool interactiveInvalid =
-        candidate.trimmed().isEmpty() ||
-        !candidateInfo.exists() ||
-        (candidateInfo.isDir() && !candidateIsSequenceDir);
-    if (!interactiveInvalid) {
-        return candidate;
-    }
-
     const QString sourcePath = clip.filePath.trimmed();
     const QFileInfo sourceInfo(sourcePath);
     if (!sourcePath.isEmpty() &&
@@ -58,9 +43,42 @@ QString resolveMediaPathForFaceStream(const TimelineClip& clip)
     return {};
 }
 
+QString faceStreamProxyMediaPath(const TimelineClip& clip)
+{
+    const QString proxyPath = playbackProxyPathForClip(clip);
+    const QFileInfo proxyInfo(proxyPath);
+    if (!proxyPath.trimmed().isEmpty() &&
+        proxyInfo.exists() &&
+        (proxyInfo.isFile() || isImageSequencePath(proxyPath))) {
+        return proxyPath;
+    }
+    return {};
+}
+
+QString resolveMediaPathForFaceStream(const TimelineClip& clip, bool useProxySource)
+{
+    return useProxySource ? faceStreamProxyMediaPath(clip) : faceStreamSourceMediaPath(clip);
+}
+
+bool runArtifactStateExists(const QString& artifactDir)
+{
+    const QDir dir(artifactDir);
+    return QFileInfo::exists(dir.filePath(QStringLiteral("facestream.part"))) ||
+           QFileInfo::exists(dir.filePath(QStringLiteral("tracks.bin"))) ||
+           QFileInfo::exists(dir.filePath(QStringLiteral("continuity_facestream.bin"))) ||
+           QFileInfo::exists(dir.filePath(QStringLiteral("summary.json")));
+}
+
 bool readJsonObject(const QString& path, QJsonObject* objectOut, QString* errorOut = nullptr)
 {
     return jcut::jsonio::readJsonFile(path, objectOut, errorOut);
+}
+
+QJsonObject existingFaceStreamRequest(const QString& requestPath)
+{
+    QJsonObject request;
+    readJsonObject(requestPath, &request, nullptr);
+    return request;
 }
 
 QString facestreamOffscreenExecutablePath()
@@ -100,7 +118,7 @@ FaceStreamProcessResult runFaceStreamGeneratorProcess(QWidget* parent,
     process.setProcessChannelMode(QProcess::SeparateChannels);
 
     QDialog progressDialog(parent);
-    progressDialog.setWindowTitle(QStringLiteral("JCut DNN FaceStream Generator"));
+    progressDialog.setWindowTitle(QStringLiteral("JCut DNN Detection + Continuity Generator"));
     progressDialog.setWindowFlag(Qt::Window, true);
     progressDialog.resize(760, 320);
 
@@ -110,8 +128,8 @@ FaceStreamProcessResult runFaceStreamGeneratorProcess(QWidget* parent,
 
     auto* statusLabel = new QLabel(
         livePreview
-            ? QStringLiteral("Running FaceStream generator with live preview in a background process...")
-            : QStringLiteral("Running FaceStream generator headless in a background process..."),
+            ? QStringLiteral("Running detection and continuity generation with live preview in a background process...")
+            : QStringLiteral("Running detection and continuity generation headless in a background process..."),
         &progressDialog);
     statusLabel->setWordWrap(true);
     progressLayout->addWidget(statusLabel);
@@ -145,7 +163,7 @@ FaceStreamProcessResult runFaceStreamGeneratorProcess(QWidget* parent,
 
     QObject::connect(cancelRunButton, &QPushButton::clicked, &progressDialog, [&]() {
         result.canceled = true;
-        statusLabel->setText(QStringLiteral("Canceling FaceStream generator..."));
+        statusLabel->setText(QStringLiteral("Canceling detection and continuity generation..."));
         cancelRunButton->setEnabled(false);
         if (process.state() != QProcess::NotRunning) {
             process.terminate();
@@ -201,52 +219,21 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!selectedClip) {
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), QStringLiteral("Select a clip first."));
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), QStringLiteral("Select a clip first."));
         return;
     }
 
-    const QString mediaPath = resolveMediaPathForFaceStream(*selectedClip);
-    if (mediaPath.isEmpty()) {
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"),
+    const QString sourceMediaPath = faceStreamSourceMediaPath(*selectedClip);
+    const QString proxyMediaPath = faceStreamProxyMediaPath(*selectedClip);
+    if (sourceMediaPath.isEmpty() && proxyMediaPath.isEmpty()) {
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"),
                              QStringLiteral("No playable media was found for this clip."));
         return;
     }
 
-    auto debugRun = speaker_flow_debug::openLatestOrCreateRun(
-        m_loadedTranscriptPath,
-        selectedClip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : selectedClip->id,
-        QFileInfo(mediaPath).completeBaseName());
-    if (debugRun.projectRoot.trimmed().isEmpty() || debugRun.runDir.trimmed().isEmpty()) {
-        QMessageBox::warning(
-            nullptr,
-            QStringLiteral("JCut DNN FaceStream Generator"),
-            QStringLiteral("Cannot create a FaceStream debug run because the active transcript path is unavailable."));
-        return;
-    }
-    const bool transcriptHasFacestreamSidecar =
-        facestreamSidecarExistsForClipFile(selectedClip->filePath);
-    const QDir initialRunDir(debugRun.runDir);
-    const QDir initialArtifactDir(initialRunDir.absoluteFilePath(QStringLiteral("facestream_artifact")));
-    const bool initialRunHasArtifactState =
-        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("facestream.part"))) ||
-        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("tracks.bin"))) ||
-        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("continuity_facestream.bin"))) ||
-        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("summary.json")));
-    const bool initialRunLooksLegacyOnly =
-        !initialRunHasArtifactState &&
-        !initialRunDir.entryList(QStringList{QStringLiteral("*_continuity_facestream_request.json")},
-                                 QDir::Files).isEmpty();
-    const bool shouldForceFreshRun =
-        debugRun.reusedExistingRun &&
-        (!transcriptHasFacestreamSidecar || initialRunLooksLegacyOnly);
-    if (shouldForceFreshRun) {
-        debugRun = speaker_flow_debug::createNewRunFrom(debugRun);
-    }
-    const QString artifactDir = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("facestream_artifact"));
-    QDir().mkpath(artifactDir);
-
     DetectorRuntimeSettings detectorSettings;
-    const QString detectorSettingsPath = detectorSettingsPathForVideo(mediaPath);
+    const QString detectorSettingsPath = detectorSettingsPathForVideo(
+        !sourceMediaPath.isEmpty() ? sourceMediaPath : proxyMediaPath);
     loadDetectorRuntimeSettingsFile(detectorSettingsPath, &detectorSettings, nullptr);
     const int64_t startFrame = qMax<int64_t>(0, selectedClip->sourceInFrame);
     const int64_t maxFrames = qMax<int64_t>(0, selectedClip->durationFrames);
@@ -258,10 +245,11 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             detectorSettings.scrfdTargetSize,
             detectorSettingsPath,
             FaceStreamPreflightDialogOptions{
-                QStringLiteral("JCut DNN FaceStream Generator"),
-                QStringLiteral("This flow launches the generated FaceStream detection artifact pipeline, then imports its raw face detections for the selected clip.\n\n"
+                QStringLiteral("JCut DNN Detection + Continuity Generator"),
+                QStringLiteral("This flow runs raw face detection, then forms identity-agnostic continuity tracks, then imports those artefacts for the selected clip.\n\n"
                                "Detector: SCRFD ncnn Vulkan only. CPU detector fallback is not used."),
-                QStringLiteral("Artifact: facestream.part + tracks.bin + continuity_facestream.bin. Interrupted runs resume from facestream.part. Track processing now runs in a later step."),
+                QStringLiteral("Input defaults to source media. Enable proxy input explicitly if you want detection and continuity generation to scan the proxy instead. "
+                               "Artifact: facestream.part + tracks.bin + continuity_facestream.bin. Interrupted runs resume only when the input path still matches the checkpointed run."),
                 QStringLiteral("Proceed"),
                 QStringLiteral("Cancel"),
                 QSize(760, 420),
@@ -273,7 +261,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 QStringLiteral("Apply selected clip grading during detection"),
                 true,
                 false,
-                QStringLiteral("Restart from scratch (delete facestream.part before launch)")
+                QStringLiteral("Restart from scratch (delete facestream.part before launch)"),
+                true,
+                detectorSettings.useProxySource,
+                QStringLiteral("Use proxy media as FaceStream input")
             });
     if (!preflight.accepted) {
         return;
@@ -281,12 +272,67 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     if (!preflight.saveError.trimmed().isEmpty()) {
         QMessageBox::warning(
             nullptr,
-            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
             preflight.saveError.isEmpty()
                 ? QStringLiteral("Failed to save detector settings before launch.")
                 : preflight.saveError);
         return;
     }
+
+    const QString mediaPath = resolveMediaPathForFaceStream(*selectedClip, preflight.useProxySource);
+    if (mediaPath.isEmpty()) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
+            preflight.useProxySource
+                ? QStringLiteral("Proxy media was requested for detection/continuity input, but no playable proxy media was found for this clip.")
+                : QStringLiteral("No playable source media was found for this clip."));
+        return;
+    }
+
+    auto debugRun = speaker_flow_debug::openLatestOrCreateRun(
+        m_loadedTranscriptPath,
+        selectedClip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : selectedClip->id,
+        QFileInfo(mediaPath).completeBaseName());
+    if (debugRun.projectRoot.trimmed().isEmpty() || debugRun.runDir.trimmed().isEmpty()) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
+            QStringLiteral("Cannot create a detection/continuity debug run because the active transcript path is unavailable."));
+        return;
+    }
+
+    const QDir initialRunDir(debugRun.runDir);
+    const QString initialRequestPath = initialRunDir.absoluteFilePath(
+        QStringLiteral("%1_facestream_request.json").arg(debugRun.videoStem));
+    const QJsonObject initialRequest = existingFaceStreamRequest(initialRequestPath);
+    const QString previousMediaPath = initialRequest.value(QStringLiteral("media_path")).toString().trimmed();
+    const QString currentMediaPath = QFileInfo(mediaPath).absoluteFilePath();
+    const bool initialRunMediaMismatch =
+        !previousMediaPath.isEmpty() &&
+        QFileInfo(previousMediaPath).absoluteFilePath() != currentMediaPath;
+    const QDir initialArtifactDir(initialRunDir.absoluteFilePath(QStringLiteral("facestream_artifact")));
+    const bool initialRunHasCheckpoint =
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("facestream.part")));
+    const bool initialRunHasCompletedOutputs =
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("detections.bin"))) ||
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("tracks.bin"))) ||
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("continuity_facestream.bin"))) ||
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("summary.json")));
+    const bool initialRunLooksLegacyOnly =
+        !runArtifactStateExists(initialArtifactDir.absolutePath()) &&
+        !initialRunDir.entryList(QStringList{QStringLiteral("*_continuity_facestream_request.json")},
+                                 QDir::Files).isEmpty();
+    const bool shouldForceFreshRun =
+        debugRun.reusedExistingRun &&
+        (initialRunMediaMismatch ||
+         initialRunLooksLegacyOnly ||
+         (initialRunHasCompletedOutputs && !initialRunHasCheckpoint));
+    if (shouldForceFreshRun) {
+        debugRun = speaker_flow_debug::createNewRunFrom(debugRun);
+    }
+    const QString artifactDir = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("facestream_artifact"));
+    QDir().mkpath(artifactDir);
 
     const QString requestPath = QDir(debugRun.runDir).absoluteFilePath(
         QStringLiteral("%1_facestream_request.json").arg(debugRun.videoStem));
@@ -301,7 +347,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     if (preflight.restartFromScratch && QFileInfo::exists(facestreamPartPath) && !QFile::remove(facestreamPartPath)) {
         QMessageBox::warning(
             nullptr,
-            QStringLiteral("JCut DNN FaceStream Generator"),
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
             QStringLiteral("Failed to delete restart checkpoint before launch.\n\n%1")
                 .arg(facestreamPartPath));
         return;
@@ -364,6 +410,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     request[QStringLiteral("execution_mode")] =
         QStringLiteral("inprocess_function");
     request[QStringLiteral("media_path")] = mediaPath;
+    request[QStringLiteral("media_source_mode")] =
+        preflight.useProxySource ? QStringLiteral("proxy") : QStringLiteral("source");
     request[QStringLiteral("clip_id")] = selectedClip->id;
     request[QStringLiteral("source_start_frame")] = static_cast<qint64>(startFrame);
     request[QStringLiteral("max_frames")] = static_cast<qint64>(maxFrames);
@@ -384,15 +432,15 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     request[QStringLiteral("arguments")] = args.join(QLatin1Char(' '));
     QString requestWriteError;
     if (!jcut::jsonio::writeJsonFile(requestPath, request, true, &requestWriteError)) {
-        qWarning().noquote() << "Failed to write FaceStream request file:" << requestWriteError;
+        qWarning().noquote() << "Failed to write detection/continuity request file:" << requestWriteError;
     }
 
     const QString generatorProgram = facestreamOffscreenExecutablePath();
     if (!QFileInfo::exists(generatorProgram)) {
         QMessageBox::warning(
             nullptr,
-            QStringLiteral("JCut DNN FaceStream Generator"),
-            QStringLiteral("FaceStream generator executable was not found.\n\nExpected: %1")
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
+            QStringLiteral("Detection/continuity generator executable was not found.\n\nExpected: %1")
                 .arg(generatorProgram));
         return;
     }
@@ -401,8 +449,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     if (!processResult.started) {
         QMessageBox::warning(
             nullptr,
-            QStringLiteral("JCut DNN FaceStream Generator"),
-            QStringLiteral("Failed to start FaceStream generator.\n\n%1")
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
+            QStringLiteral("Failed to start detection/continuity generator.\n\n%1")
                 .arg(processResult.standardError.trimmed().isEmpty()
                          ? QStringLiteral("Unknown process start failure.")
                          : processResult.standardError.trimmed()));
@@ -412,7 +460,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("canceled"),
-            QStringLiteral("FaceStream generation canceled by user."),
+            QStringLiteral("Detection and continuity generation canceled by user."),
             {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
         return;
     }
@@ -422,7 +470,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         processResult.exitCode == 0;
     if (!processOk) {
         const QString message =
-            QStringLiteral("JCut DNN FaceStream Generator failed (exit code %1).\n\n%2")
+            QStringLiteral("JCut DNN Detection + Continuity Generator failed (exit code %1).\n\n%2")
                 .arg(processResult.exitCode)
                 .arg(processResult.standardError.trimmed().isEmpty()
                          ? processResult.standardOutput.trimmed()
@@ -431,7 +479,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
             message, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), message);
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), message);
         return;
     }
 
@@ -443,7 +491,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
             parseError, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), parseError);
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), parseError);
         return;
     }
 
@@ -456,7 +504,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
             parseError, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), parseError);
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), parseError);
         return;
     }
     QJsonObject rawTracksArtifact;
@@ -466,7 +514,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
             parseError, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), parseError);
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), parseError);
         return;
     }
 
@@ -479,17 +527,25 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     continuityRoot[QStringLiteral("raw_frames")] = rawFrames;
     continuityRoot[QStringLiteral("raw_tracks_schema")] = rawTracksArtifact.value(QStringLiteral("schema")).toString();
     continuityRoot[QStringLiteral("raw_frames_schema")] = rawDetectionsArtifact.value(QStringLiteral("schema")).toString();
+    continuityRoot[QStringLiteral("raw_tracks_frame_domain")] =
+        rawTracksArtifact.value(QStringLiteral("frame_domain")).toString(
+            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute));
+    continuityRoot[QStringLiteral("raw_frames_frame_domain")] =
+        rawDetectionsArtifact.value(QStringLiteral("frame_domain")).toString(
+            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute));
+    continuityRoot[QStringLiteral("streams_frame_domain")] =
+        continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString();
     if (!continuityRoot.contains(QStringLiteral("detector_mode"))) {
         continuityRoot[QStringLiteral("detector_mode")] = rawTracksArtifact.value(QStringLiteral("backend")).toString();
     }
 
     if (rawTracks.isEmpty() && rawFrames.isEmpty()) {
-        const QString noDetectionsMessage = QStringLiteral("Generated FaceStream artifact contains no raw face detections for this clip.");
+        const QString noDetectionsMessage = QStringLiteral("Generated artifact contains no raw face detections for this clip.");
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
             m_loadedTranscriptPath, QStringLiteral("stage_6_facestream"), QStringLiteral("error"),
             noDetectionsMessage, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), noDetectionsMessage);
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), noDetectionsMessage);
         return;
     }
     continuityRoot[QStringLiteral("run_id")] = debugRun.runId;
@@ -518,13 +574,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             nullptr);
     }
     QString statusMessage = saved
-        ? QStringLiteral("Imported generated FaceStream detection artifact.")
-        : QStringLiteral("Generated FaceStream artifact, but failed to save transcript artifact.");
+        ? QStringLiteral("Imported generated detections and continuity tracks.")
+        : QStringLiteral("Generated detections and continuity tracks, but failed to save the transcript artifact.");
     if (saved && rawTracks.isEmpty()) {
         statusMessage += QStringLiteral(" Track processing now runs in a later step.");
     }
     if (saved && !savedProcessed) {
-        statusMessage += QStringLiteral(" Processed FaceStream sidecar rebuild failed.");
+        statusMessage += QStringLiteral(" Processed continuity sidecar rebuild failed.");
     }
     speaker_flow_debug::persistIndex(
         indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
@@ -533,7 +589,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         statusMessage, {requestPath, facestreamPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
 
     if (!saved) {
-        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN FaceStream Generator"), statusMessage);
+        QMessageBox::warning(nullptr, QStringLiteral("JCut DNN Detection + Continuity Generator"), statusMessage);
         refresh();
         return;
     }
@@ -547,8 +603,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
     QMessageBox::information(
         nullptr,
-        QStringLiteral("JCut DNN FaceStream Generator"),
-        QStringLiteral("Imported raw FaceStream detection artifact.\n\nFrames: %1\nTracks: %2\nArtifact: %3")
+        QStringLiteral("JCut DNN Detection + Continuity Generator"),
+        QStringLiteral("Imported raw detections and continuity tracks.\n\nFrames: %1\nTracks: %2\nArtifact: %3")
             .arg(rawFrames.size())
             .arg(rawTracks.size())
             .arg(artifactDir));

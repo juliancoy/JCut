@@ -111,7 +111,7 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
     auto* buttons = new QHBoxLayout;
     auto* rebuildProcessedButton = new QPushButton(QStringLiteral("Rebuild Continuity Tracks"), &dialog);
     rebuildProcessedButton->setToolTip(
-        QStringLiteral("Recreate processed continuity tracks from the raw FaceStream detections for the selected clip."));
+        QStringLiteral("Recreate processed continuity tracks from the raw detections for the selected clip."));
     buttons->addWidget(rebuildProcessedButton);
     buttons->addStretch(1);
     auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
@@ -141,7 +141,7 @@ void SpeakersTab::onSpeakerGuideClicked()
             "2. Click Assign Speaker Identity to extract representative identity crops per continuity track.\n"
             "3. Review or auto-apply track-to-speaker assignments.\n"
             "4. The system detects and tracks face continuity across transcript time.\n"
-            "5. Independent FaceStreams are created per continuity track (T<id>).\n"
+            "5. Independent continuity tracks are created with stable track IDs (T<id>).\n"
             "6. Optional: enable dialogue-only scanning in preflight.\n\n"
             "FaceBox Target\n"
             "- In Speakers, set Face X / Face Y for desired on-screen face position.\n"

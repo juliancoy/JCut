@@ -1,5 +1,6 @@
 #include "facestream_assignment_services.h"
 
+#include "facestream_artifact_utils.h"
 #include "facestream_time_mapping.h"
 #include "decoder_context.h"
 #include "identity_resolution.h"
@@ -202,6 +203,12 @@ CropExtractionResult extractRepresentativeCrops(
         if (trackId < 0 || keyframes.isEmpty()) {
             continue;
         }
+        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+        if (!parseFacestreamFrameDomainString(
+                streamObj.value(QStringLiteral("frame_domain")).toString(),
+                &frameDomain)) {
+            continue;
+        }
         int64_t streamFrameMin = std::numeric_limits<int64_t>::max();
         int64_t streamFrameMax = -1;
         for (const QJsonValue& keyframeValue : keyframes) {
@@ -213,9 +220,6 @@ CropExtractionResult extractRepresentativeCrops(
                 streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
             }
         }
-        const FacestreamFrameDomain frameDomain =
-            inferFacestreamFrameDomain(request.clip, streamFrameMin, streamFrameMax);
-
         const QVector<QJsonObject> selectedKeyframes =
             selectRepresentativeKeyframesForIdentity(keyframes, 3, 24);
         int sampleIndex = 0;

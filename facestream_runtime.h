@@ -124,7 +124,8 @@ QImage buildScanPreview(const QImage& source,
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,
                                   const QJsonObject& transcriptRoot,
                                   const QString& detectorMode,
-                                  bool onlyDialogue);
+                                  bool onlyDialogue,
+                                  const QString& frameDomain = QString{});
 
 QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
                                     const QJsonObject& transcriptRoot = QJsonObject{});

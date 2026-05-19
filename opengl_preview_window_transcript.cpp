@@ -169,6 +169,15 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
             continuityRoot,
             doc.object());
+        FacestreamFrameDomain explicitFrameDomain = FacestreamFrameDomain::SourceRelative;
+        const bool hasExplicitFrameDomain = continuityPayloadFrameDomain(
+            continuityRoot,
+            QStringLiteral("streams_frame_domain"),
+            &explicitFrameDomain);
+        if (!hasExplicitFrameDomain) {
+            it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
+            return it->points;
+        }
         const QString sourceFilter = m_facestreamOverlaySource.trimmed().toLower();
         for (const QJsonValue& streamValue : streams) {
             const QJsonObject streamObj = streamValue.toObject();
@@ -189,8 +198,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
                 streamFrameMin = qMin<int64_t>(streamFrameMin, frame);
                 streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
             }
-            const FacestreamFrameDomain streamFrameDomain =
-                inferFacestreamFrameDomain(clip, streamFrameMin, streamFrameMax);
+            const FacestreamFrameDomain streamFrameDomain = explicitFrameDomain;
             for (const QJsonValue& keyValue : keyframes) {
                 const QJsonObject obj = keyValue.toObject();
                 if (obj.isEmpty()) {
@@ -298,8 +306,14 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::rawDetectionPoin
             minFrame = qMin(minFrame, frame);
             maxFrame = qMax(maxFrame, frame);
         }
-        const FacestreamFrameDomain frameDomain =
-            inferFacestreamFrameDomain(clip, minFrame, maxFrame);
+        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+        if (!continuityPayloadFrameDomain(
+                continuityRoot,
+                QStringLiteral("raw_frames_frame_domain"),
+                &frameDomain)) {
+            it = m_rawDetectionPointsCache.insert(cacheKey, entry);
+            return it->points;
+        }
         for (const QJsonValue& frameValue : rawFrames) {
             const QJsonObject frameObj = frameValue.toObject();
             const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();

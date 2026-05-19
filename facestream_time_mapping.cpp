@@ -9,21 +9,32 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
 {
     const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
     const int64_t sourceEnd =
-        sourceStart + qMax<int64_t>(0, clip.sourceDurationFrames) + 2;
+        sourceStart + qMax<int64_t>(0, clip.sourceDurationFrames);
+    const int64_t clipTimelineEnd = qMax<int64_t>(0, clip.durationFrames);
     const bool likelySourceAbsolute =
         keyframeMax >= 0 &&
         keyframeMin >= qMax<int64_t>(0, sourceStart - 2) &&
-        keyframeMax <= sourceEnd;
-    if (likelySourceAbsolute) {
-        return FacestreamFrameDomain::SourceAbsolute;
-    }
-
+        keyframeMax <= (sourceEnd + 2);
     const bool likelyClipTimeline =
         keyframeMax >= 0 &&
         keyframeMin >= 0 &&
-        keyframeMax <= (qMax<int64_t>(0, clip.durationFrames) + 2);
-    return likelyClipTimeline ? FacestreamFrameDomain::ClipTimeline30Fps
-                              : FacestreamFrameDomain::SourceRelative;
+        keyframeMax <= (clipTimelineEnd + 2);
+
+    if (likelySourceAbsolute && likelyClipTimeline) {
+        const int64_t clipDistance = std::llabs(keyframeMax - clipTimelineEnd);
+        const int64_t sourceDistance = std::llabs(keyframeMax - sourceEnd);
+        if (clipDistance <= sourceDistance) {
+            return FacestreamFrameDomain::ClipTimeline30Fps;
+        }
+        return FacestreamFrameDomain::SourceAbsolute;
+    }
+    if (likelySourceAbsolute) {
+        return FacestreamFrameDomain::SourceAbsolute;
+    }
+    if (likelyClipTimeline) {
+        return FacestreamFrameDomain::ClipTimeline30Fps;
+    }
+    return FacestreamFrameDomain::SourceRelative;
 }
 
 int64_t facestreamLookupFrameForDomain(FacestreamFrameDomain domain,

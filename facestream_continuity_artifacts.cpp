@@ -22,7 +22,12 @@ QJsonArray deriveContinuityStreamsFromRawRoot(const QJsonObject& continuityRoot,
     const QString detectorMode =
         continuityRoot.value(QStringLiteral("detector_mode")).toString().trimmed();
     const bool onlyDialogue = continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false);
-    return buildContinuityStreams(rawTracks, transcriptRoot, detectorMode, onlyDialogue);
+    return buildContinuityStreams(
+        rawTracks,
+        transcriptRoot,
+        detectorMode,
+        onlyDialogue,
+        continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed());
 }
 
 } // namespace
@@ -30,7 +35,8 @@ QJsonArray deriveContinuityStreamsFromRawRoot(const QJsonObject& continuityRoot,
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,
                                   const QJsonObject& transcriptRoot,
                                   const QString& detectorMode,
-                                  bool onlyDialogue)
+                                  bool onlyDialogue,
+                                  const QString& frameDomain)
 {
     QJsonArray streams;
     const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
@@ -90,6 +96,9 @@ QJsonArray buildContinuityStreams(const QJsonArray& tracks,
         QJsonObject stream;
         stream[QStringLiteral("stream_id")] = QStringLiteral("T%1").arg(trackId);
         stream[QStringLiteral("track_id")] = trackId;
+        if (!frameDomain.trimmed().isEmpty()) {
+            stream[QStringLiteral("frame_domain")] = frameDomain.trimmed();
+        }
         stream[QStringLiteral("keyframes")] = keyframes;
         streams.push_back(stream);
     }
@@ -200,6 +209,17 @@ QJsonObject buildProcessedContinuityRoot(const QString& clipId,
             rawInfo.lastModified().toMSecsSinceEpoch();
     }
     processedRoot[QStringLiteral("streams")] = streams;
+    const QString streamsFrameDomain =
+        rawContinuityRoot.value(QStringLiteral("streams_frame_domain")).toString().trimmed();
+    if (!streamsFrameDomain.isEmpty()) {
+        processedRoot[QStringLiteral("streams_frame_domain")] = streamsFrameDomain;
+    } else {
+        const QString rawTracksFrameDomain =
+            rawContinuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
+        if (!rawTracksFrameDomain.isEmpty()) {
+            processedRoot[QStringLiteral("streams_frame_domain")] = rawTracksFrameDomain;
+        }
+    }
     return processedRoot;
 }
 
@@ -245,12 +265,18 @@ QJsonObject buildContinuityRoot(const QString& runId,
     root[QStringLiteral("scan_end_frame")] = static_cast<qint64>(scanEnd);
     if (!streams.isEmpty()) {
         root[QStringLiteral("streams")] = streams;
+        root[QStringLiteral("streams_frame_domain")] =
+            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
     }
     if (!rawTracks.isEmpty()) {
         root[QStringLiteral("raw_tracks")] = rawTracks;
+        root[QStringLiteral("raw_tracks_frame_domain")] =
+            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
     }
     if (!rawFrames.isEmpty()) {
         root[QStringLiteral("raw_frames")] = rawFrames;
+        root[QStringLiteral("raw_frames_frame_domain")] =
+            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
     }
     if (!detectorMode.trimmed().isEmpty()) {
         root[QStringLiteral("detector_mode")] = detectorMode.trimmed();

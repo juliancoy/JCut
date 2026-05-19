@@ -4771,7 +4771,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             }
             if (livePreviewWindow) {
                 livePreviewWindow->setTimelineRange(options.startFrame,
-                                                   qMax(options.startFrame, latestProcessedFrame),
+                                                   finalFrame,
                                                    qMax(options.startFrame, latestProcessedFrame));
                 livePreviewWindow->setProcessingPaused(runtimePaused);
                 syncDetectorPreviewPanel(&detectorControls,
@@ -4787,7 +4787,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 setPreviewStatusText(QStringLiteral(
                     "FaceStream detection paused. Resume from the runtime controls to continue."));
                 livePreviewWindow->setTimelineRange(options.startFrame,
-                                                   qMax(options.startFrame, latestProcessedFrame),
+                                                   finalFrame,
                                                    qMax(options.startFrame, latestProcessedFrame));
                 livePreviewWindow->setProcessingPaused(true);
                 syncDetectorPreviewPanel(&detectorControls,
@@ -5383,12 +5383,14 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         {QStringLiteral("schema"), QStringLiteral("jcut_facestream_offscreen_detections_v1")},
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("backend"), backend},
+        {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")},
         {QStringLiteral("frames"), rawDetectionFrames}
     });
     writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("tracks.bin")), QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_facestream_offscreen_tracks_v1")},
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("backend"), backend},
+        {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")},
         {QStringLiteral("tracks"), trackRows},
         {QStringLiteral("frame_summaries"), frameRows}
     });

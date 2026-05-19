@@ -372,7 +372,8 @@ bool detectorRuntimeSettingsEqual(const DetectorRuntimeSettings& lhs,
            lhs.minFaceAreaRatio == rhs.minFaceAreaRatio &&
            lhs.maxFaceAreaRatio == rhs.maxFaceAreaRatio &&
            lhs.minAspect == rhs.minAspect &&
-           lhs.maxAspect == rhs.maxAspect;
+           lhs.maxAspect == rhs.maxAspect &&
+           lhs.useProxySource == rhs.useProxySource;
 }
 
 void updateSettingsPathLabel(QLabel* label, const QString& settingsPath, bool fileExists)
@@ -547,7 +548,8 @@ QJsonObject detectorRuntimeSettingsToJson(const DetectorRuntimeSettings& s,
         {QStringLiteral("min_face_area_ratio"), s.minFaceAreaRatio},
         {QStringLiteral("max_face_area_ratio"), s.maxFaceAreaRatio},
         {QStringLiteral("min_aspect"), s.minAspect},
-        {QStringLiteral("max_aspect"), s.maxAspect}
+        {QStringLiteral("max_aspect"), s.maxAspect},
+        {QStringLiteral("use_proxy_source"), s.useProxySource}
     };
 }
 
@@ -583,6 +585,7 @@ bool applyDetectorRuntimeSettingsObject(const QJsonObject& o, DetectorRuntimeSet
     if (o.contains(QStringLiteral("min_aspect"))) s->minAspect = std::clamp(static_cast<float>(o.value(QStringLiteral("min_aspect")).toDouble(s->minAspect)), 0.0f, 100.0f);
     if (o.contains(QStringLiteral("max_aspect"))) s->maxAspect = std::clamp(static_cast<float>(o.value(QStringLiteral("max_aspect")).toDouble(s->maxAspect)), 0.0f, 100.0f);
     if (s->maxAspect < s->minAspect) std::swap(s->minAspect, s->maxAspect);
+    if (o.contains(QStringLiteral("use_proxy_source"))) s->useProxySource = o.value(QStringLiteral("use_proxy_source")).toBool(s->useProxySource);
     return true;
 }
 
@@ -1043,6 +1046,7 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
     result.livePreview = options.livePreviewChecked;
     result.applyClipGrading = options.applyClipGradingChecked;
     result.restartFromScratch = options.restartFromScratchChecked;
+    result.useProxySource = options.useProxySourceChecked;
     if (!settings) {
         result.saveError = QStringLiteral("Detector settings are unavailable.");
         return result;
@@ -1101,6 +1105,17 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
         layout->addWidget(restartFromScratchCheckbox);
     }
 
+    QCheckBox* useProxySourceCheckbox = nullptr;
+    if (options.showUseProxySourceToggle) {
+        useProxySourceCheckbox = new QCheckBox(
+            options.useProxySourceLabel.trimmed().isEmpty()
+                ? QStringLiteral("Use proxy media as FaceStream input")
+                : options.useProxySourceLabel,
+            &preflightDialog);
+        useProxySourceCheckbox->setChecked(options.useProxySourceChecked);
+        layout->addWidget(useProxySourceCheckbox);
+    }
+
     DetectorSettingsPanel detectorPanel =
         createDetectorSettingsPanel(settings,
                                     detector,
@@ -1135,6 +1150,9 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
         applyClipGradingCheckbox ? applyClipGradingCheckbox->isChecked() : options.applyClipGradingChecked;
     result.restartFromScratch =
         restartFromScratchCheckbox ? restartFromScratchCheckbox->isChecked() : options.restartFromScratchChecked;
+    result.useProxySource =
+        useProxySourceCheckbox ? useProxySourceCheckbox->isChecked() : options.useProxySourceChecked;
+    settings->useProxySource = result.useProxySource;
     if (QFileInfo::exists(settingsPath) ||
         !detectorRuntimeSettingsEqual(*settings, immutableDefaultDetectorSettings())) {
         saveDetectorRuntimeSettingsFile(settingsPath,

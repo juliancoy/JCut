@@ -33,6 +33,7 @@ inline constexpr float kDefaultDetectorMinFaceAreaRatio = 0.0f;
 inline constexpr float kDefaultDetectorMaxFaceAreaRatio = 0.18f;
 inline constexpr float kDefaultDetectorMinAspect = 0.50f;
 inline constexpr float kDefaultDetectorMaxAspect = 1.60f;
+inline constexpr bool kDefaultDetectorUseProxySource = false;
 
 struct DetectorRuntimeSettings {
     int stride = kDefaultDetectorStride;
@@ -55,6 +56,7 @@ struct DetectorRuntimeSettings {
     float maxFaceAreaRatio = kDefaultDetectorMaxFaceAreaRatio;
     float minAspect = kDefaultDetectorMinAspect;
     float maxAspect = kDefaultDetectorMaxAspect;
+    bool useProxySource = kDefaultDetectorUseProxySource;
 };
 
 struct DetectorSettingsProfileDefinition {
@@ -129,6 +131,9 @@ struct FaceStreamPreflightDialogOptions {
     bool showRestartFromScratchToggle = false;
     bool restartFromScratchChecked = false;
     QString restartFromScratchLabel = QStringLiteral("Restart from scratch (delete facestream.part)");
+    bool showUseProxySourceToggle = false;
+    bool useProxySourceChecked = false;
+    QString useProxySourceLabel = QStringLiteral("Use proxy media as FaceStream input");
 };
 
 struct FaceStreamPreflightDialogResult {
@@ -136,6 +141,7 @@ struct FaceStreamPreflightDialogResult {
     bool livePreview = true;
     bool applyClipGrading = false;
     bool restartFromScratch = false;
+    bool useProxySource = false;
     QString saveError;
 };
 

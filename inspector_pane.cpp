@@ -1327,7 +1327,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);
     selectedSpeakerTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     m_selectedSpeakerIdLabel = new QLabel(QStringLiteral("No speaker selected"), page);
-    auto *selectedFaceStreamsTitle = new QLabel(QStringLiteral("Assigned FaceStreams"), page);
+    auto *selectedFaceStreamsTitle = new QLabel(QStringLiteral("Assigned Tracks"), page);
     selectedFaceStreamsTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     m_selectedSpeakerFaceStreamsList = new QListWidget(page);
     m_selectedSpeakerFaceStreamsList->setViewMode(QListView::IconMode);
@@ -1367,7 +1367,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerRunAutoTrackButton->setObjectName(QStringLiteral("speakers.generate_facestream"));
     m_speakerRunAutoTrackButton->setMinimumHeight(32);
     m_speakerRunAutoTrackButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_speakerViewFacestreamButton = new QPushButton(QStringLiteral("View FaceStream"), page);
+    m_speakerViewFacestreamButton = new QPushButton(QStringLiteral("View Detection + Track Artifact"), page);
     m_speakerViewFacestreamButton->setObjectName(QStringLiteral("speakers.view_facestream"));
     m_speakerViewFacestreamButton->setMinimumHeight(32);
     m_speakerViewFacestreamButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
@@ -1458,10 +1458,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingZoomEnabledCheckBox =
         new QCheckBox(QStringLiteral("Show FaceBox"), page);
     m_speakerShowFaceStreamBoxesCheckBox =
-        new QCheckBox(QStringLiteral("Show All FaceStreams in Preview"), page);
+        new QCheckBox(QStringLiteral("Show Continuity Tracks in Preview"), page);
     m_speakerShowFaceStreamBoxesCheckBox->setChecked(false);
     m_speakerShowFaceStreamBoxesCheckBox->setToolTip(
-        QStringLiteral("Draw all FaceStream face boxes for active clips in Preview."));
+        QStringLiteral("Draw generated continuity-track boxes for active clips in Preview."));
     m_speakerShowRawDetectionsCheckBox =
         new QCheckBox(QStringLiteral("Show Raw Detections in Preview"), page);
     m_speakerShowRawDetectionsCheckBox->setChecked(false);
@@ -1533,7 +1533,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *identityTitle = new QLabel(QStringLiteral("Steps 4-6: Extract, Cluster, Assign Speaker Identity"), page);
     identityTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *identityHelp = new QLabel(
-        QStringLiteral("Extract several representative crops per FaceStream track, cluster tracks by same person, then assign each identity cluster to a transcript speaker."),
+        QStringLiteral("Extract representative crops per continuity track, cluster tracks by same person, then assign each identity cluster to a transcript speaker."),
         page);
     identityHelp->setWordWrap(true);
     identityHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
@@ -1541,7 +1541,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *trackingTitle = new QLabel(QStringLiteral("Step 7: Speaker Tracking + Face Stabilize"), page);
     trackingTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *trackingHelp = new QLabel(
-        QStringLiteral("Enable speaker tracking and face stabilization after a transcript speaker has an assigned FaceStream identity."),
+        QStringLiteral("Enable speaker tracking and face stabilization after a transcript speaker has assigned continuity tracks."),
         page);
     trackingHelp->setWordWrap(true);
     trackingHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
@@ -1618,7 +1618,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *facestreamPathsTitle = new QLabel(QStringLiteral("Generated Continuity Tracks"), facestreamPage);
     facestreamPathsTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *facestreamPathsHelp = new QLabel(
-        QStringLiteral("Inspect generated continuity tracks and preview overlay sources for the selected clip from speaker_flow.continuity_facestreams."),
+        QStringLiteral("Inspect generated continuity tracks, raw detections, and preview overlay sources for the selected clip."),
         facestreamPage);
     facestreamPathsHelp->setWordWrap(true);
     facestreamPathsHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
@@ -1642,18 +1642,18 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFaceStreamTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     m_speakerFaceStreamDetailsEdit = new QPlainTextEdit(facestreamPage);
     m_speakerFaceStreamDetailsEdit->setReadOnly(true);
-    m_speakerFaceStreamDetailsEdit->setPlaceholderText(QStringLiteral("Select a FaceStream path row to inspect full JSON."));
+    m_speakerFaceStreamDetailsEdit->setPlaceholderText(QStringLiteral("Select a continuity-track row to inspect full JSON."));
     m_speakerFaceStreamDetailsEdit->setMinimumHeight(160);
     auto *overlaySourceRow = new QHBoxLayout;
     overlaySourceRow->setContentsMargins(0, 0, 0, 0);
     overlaySourceRow->setSpacing(8);
-    auto *overlaySourceLabel = new QLabel(QStringLiteral("Preview Tracker"), facestreamPage);
+    auto *overlaySourceLabel = new QLabel(QStringLiteral("Preview Source Filter"), facestreamPage);
     m_speakerFaceStreamOverlaySourceCombo = new QComboBox(facestreamPage);
-    m_speakerFaceStreamOverlaySourceCombo->addItem(QStringLiteral("All FaceStreams"), QStringLiteral("all"));
+    m_speakerFaceStreamOverlaySourceCombo->addItem(QStringLiteral("All Continuity Tracks"), QStringLiteral("all"));
     m_speakerFaceStreamOverlaySourceCombo->addItem(QStringLiteral("SCRFD ncnn Vulkan"), QStringLiteral("scrfd"));
     m_speakerFaceStreamOverlaySourceCombo->setCurrentIndex(0);
     m_speakerFaceStreamOverlaySourceCombo->setToolTip(
-        QStringLiteral("Choose whether all generated SCRFD FaceStreams or only SCRFD-source paths are superimposed in Preview."));
+        QStringLiteral("Choose whether all generated continuity tracks or only SCRFD-source tracks are superimposed in Preview."));
     m_speakerFaceStreamOverlaySourceCombo->setStyleSheet(QStringLiteral(
         "QComboBox QAbstractItemView::item { padding: 3px 6px; }"));
     overlaySourceRow->addWidget(overlaySourceLabel);

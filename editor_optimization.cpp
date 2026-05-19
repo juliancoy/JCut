@@ -63,6 +63,37 @@ PreviewSurface::PlaybackTuning tuningFromJson(const QJsonObject& object,
     return tuning;
 }
 
+PreviewSurface::PlaybackTuning minimumPreviewTuningForBackend(const QString& backendFamily)
+{
+    PreviewSurface::PlaybackTuning tuning;
+    if (backendFamily == QStringLiteral("vulkan")) {
+        tuning.visibleBacklogLimit = 2;
+        tuning.sourceLookaheadFrames = 4;
+        tuning.proxyLookaheadFrames = 10;
+        return tuning;
+    }
+
+    tuning.visibleBacklogLimit = 4;
+    tuning.sourceLookaheadFrames = 5;
+    tuning.proxyLookaheadFrames = 8;
+    return tuning;
+}
+
+PreviewSurface::PlaybackTuning normalizedPreviewTuningForBackend(
+    const QString& backendFamily,
+    const PreviewSurface::PlaybackTuning& tuning)
+{
+    PreviewSurface::PlaybackTuning normalized = tuning;
+    const PreviewSurface::PlaybackTuning minimum = minimumPreviewTuningForBackend(backendFamily);
+    normalized.visibleBacklogLimit =
+        qMax(minimum.visibleBacklogLimit, normalized.visibleBacklogLimit);
+    normalized.sourceLookaheadFrames =
+        qMax(minimum.sourceLookaheadFrames, normalized.sourceLookaheadFrames);
+    normalized.proxyLookaheadFrames =
+        qMax(minimum.proxyLookaheadFrames, normalized.proxyLookaheadFrames);
+    return normalized;
+}
+
 EditorWindow::OptimizedPreviewProfile profileFromJson(
     const QJsonObject& object,
     const EditorWindow::OptimizedPreviewProfile& fallback)
@@ -95,14 +126,14 @@ QVector<OptimizationCandidate> candidatesForBackend(const QString& backendFamily
     QVector<OptimizationCandidate> candidates;
     if (backendFamily == QStringLiteral("vulkan")) {
         candidates.push_back({QStringLiteral("conservative"),
-                              {3, 900, {1, 2, 8}}});
+                              {3, 900, {2, 4, 10}}});
         candidates.push_back({QStringLiteral("balanced"),
-                              {4, 1100, {2, 4, 10}}});
+                              {4, 1100, {3, 6, 12}}});
         candidates.push_back({QStringLiteral("throughput"),
-                              {6, 1300, {3, 6, 12}}});
+                              {6, 1300, {4, 8, 14}}});
         if (coreCount >= 8) {
             candidates.push_back({QStringLiteral("aggressive"),
-                                  {8, 1600, {4, 8, 14}}});
+                                  {8, 1600, {5, 10, 16}}});
         }
     } else {
         candidates.push_back({QStringLiteral("balanced"),
@@ -142,22 +173,30 @@ EditorWindow::OptimizedPreviewProfile EditorWindow::defaultOptimizedPreviewProfi
     OptimizedPreviewProfile profile;
     profile.playbackStartLookaheadFrames = 5;
     profile.playbackStartLookaheadTimeoutMs = 1200;
+    const QString backendFamily =
+        m_preview ? backendFamilyForName(m_preview->backendName()) : QStringLiteral("unknown");
     if (m_preview) {
         profile.previewTuning = m_preview->playbackTuning();
     } else {
-        profile.previewTuning.visibleBacklogLimit = 4;
-        profile.previewTuning.sourceLookaheadFrames = 5;
-        profile.previewTuning.proxyLookaheadFrames = 8;
+        profile.previewTuning = minimumPreviewTuningForBackend(backendFamily);
     }
+    profile.previewTuning = normalizedPreviewTuningForBackend(backendFamily, profile.previewTuning);
     return profile;
 }
 
 void EditorWindow::applyOptimizedProfile(const OptimizedPreviewProfile& profile)
 {
-    m_playbackStartLookaheadFrames = qMax(1, profile.playbackStartLookaheadFrames);
-    m_playbackStartLookaheadTimeoutMs = qMax(100, profile.playbackStartLookaheadTimeoutMs);
+    OptimizedPreviewProfile normalized = profile;
+    normalized.playbackStartLookaheadFrames = qMax(1, normalized.playbackStartLookaheadFrames);
+    normalized.playbackStartLookaheadTimeoutMs = qMax(100, normalized.playbackStartLookaheadTimeoutMs);
+    const QString backendFamily =
+        m_preview ? backendFamilyForName(m_preview->backendName()) : QStringLiteral("unknown");
+    normalized.previewTuning =
+        normalizedPreviewTuningForBackend(backendFamily, normalized.previewTuning);
+    m_playbackStartLookaheadFrames = normalized.playbackStartLookaheadFrames;
+    m_playbackStartLookaheadTimeoutMs = normalized.playbackStartLookaheadTimeoutMs;
     if (m_preview) {
-        m_preview->setPlaybackTuning(profile.previewTuning);
+        m_preview->setPlaybackTuning(normalized.previewTuning);
     }
 }
 

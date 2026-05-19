@@ -40,6 +40,22 @@ constexpr size_t kVulkanPreviewCpuCacheBytes = 192ull * 1024ull * 1024ull;
 constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
 constexpr int kDefaultVulkanPreviewProxyLookaheadFrames = 8;
+constexpr qint64 kAdaptivePlaybackTuningMinAdjustIntervalMs = 1200;
+
+QString cacheRegistrationKeyForClip(const TimelineClip& clip)
+{
+    const QString decodePath = interactivePreviewMediaPathForClip(clip);
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8|%9")
+        .arg(decodePath)
+        .arg(clip.filePath)
+        .arg(static_cast<int>(clip.sourceKind))
+        .arg(clip.startFrame)
+        .arg(clip.durationFrames)
+        .arg(clip.sourceInFrame)
+        .arg(clip.sourceDurationFrames)
+        .arg(QString::number(clip.playbackRate, 'f', 6))
+        .arg(QString::number(clip.sourceFps, 'f', 6));
+}
 
 QString normalizedFacestreamOverlaySource(QString source)
 {
@@ -218,6 +234,7 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
     m_playbackTuning.visibleBacklogLimit = kDefaultMaxVisibleBacklog;
     m_playbackTuning.sourceLookaheadFrames = kDefaultVulkanPreviewSourceLookaheadFrames;
     m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
+    m_configuredPlaybackTuning = m_playbackTuning;
     m_previousDecodePreference = editor::debugDecodePreference();
     if (m_previousDecodePreference != editor::DecodePreference::Auto) {
         editor::setDebugDecodePreference(editor::DecodePreference::Auto);
@@ -333,6 +350,12 @@ void VulkanPreviewSurface::updateNativeTitle()
 void VulkanPreviewSurface::setPlaybackState(bool playing)
 {
     m_interaction.playing = playing;
+    if (!playing) {
+        m_playbackSmoothnessSamples.clear();
+        m_adaptivePlaybackBoostLevel = 0;
+        m_lastAdaptivePlaybackTuningAdjustMs = 0;
+        applyAdaptivePlaybackTuning();
+    }
     if (m_cache) {
         m_cache->setPlaybackState(playing ? editor::TimelineCache::PlaybackState::Playing
                                           : editor::TimelineCache::PlaybackState::Stopped);
@@ -436,6 +459,7 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
             m_cache->unregisterClip(clipId);
         }
         m_registeredClips.clear();
+        m_registeredClipRegistrationKeys.clear();
     }
     registerVisibleClips();
     requestFramesForCurrentPosition();
@@ -448,15 +472,13 @@ void VulkanPreviewSurface::setPlaybackTuning(const PlaybackTuning& tuning)
     normalized.visibleBacklogLimit = qBound(1, tuning.visibleBacklogLimit, 16);
     normalized.sourceLookaheadFrames = qBound(1, tuning.sourceLookaheadFrames, 32);
     normalized.proxyLookaheadFrames = qBound(1, tuning.proxyLookaheadFrames, 64);
-    if (m_playbackTuning.visibleBacklogLimit == normalized.visibleBacklogLimit &&
-        m_playbackTuning.sourceLookaheadFrames == normalized.sourceLookaheadFrames &&
-        m_playbackTuning.proxyLookaheadFrames == normalized.proxyLookaheadFrames) {
+    if (m_configuredPlaybackTuning.visibleBacklogLimit == normalized.visibleBacklogLimit &&
+        m_configuredPlaybackTuning.sourceLookaheadFrames == normalized.sourceLookaheadFrames &&
+        m_configuredPlaybackTuning.proxyLookaheadFrames == normalized.proxyLookaheadFrames) {
         return;
     }
-    m_playbackTuning = normalized;
-    if (m_cache) {
-        m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
-    }
+    m_configuredPlaybackTuning = normalized;
+    applyAdaptivePlaybackTuning();
 }
 
 PreviewSurface::PlaybackTuning VulkanPreviewSurface::playbackTuning() const
@@ -867,6 +889,7 @@ void VulkanPreviewSurface::registerVisibleClips()
     }
 
     QSet<QString> visible;
+    QHash<QString, QString> nextRegisteredClipRegistrationKeys;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (!clipVisualPlaybackEnabled(clip, m_interaction.tracks) ||
             clip.mediaType != ClipMediaType::Video ||
@@ -875,7 +898,15 @@ void VulkanPreviewSurface::registerVisibleClips()
             continue;
         }
         visible.insert(clip.id);
-        if (!m_registeredClips.contains(clip.id)) {
+        const QString registrationKey = cacheRegistrationKeyForClip(clip);
+        nextRegisteredClipRegistrationKeys.insert(clip.id, registrationKey);
+        const bool alreadyRegistered = m_registeredClips.contains(clip.id);
+        const bool registrationChanged =
+            m_registeredClipRegistrationKeys.value(clip.id) != registrationKey;
+        if (!alreadyRegistered || registrationChanged) {
+            if (alreadyRegistered) {
+                m_cache->unregisterClip(clip.id);
+            }
             m_cache->registerClip(clip);
             m_registeredClips.insert(clip.id);
         }
@@ -889,6 +920,7 @@ void VulkanPreviewSurface::registerVisibleClips()
             ++it;
         }
     }
+    m_registeredClipRegistrationKeys = nextRegisteredClipRegistrationKeys;
 }
 
 void VulkanPreviewSurface::requestFramesForCurrentPosition()
@@ -1208,6 +1240,14 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
 {
     QVector<FacestreamTrack> tracks;
     const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
+    FacestreamFrameDomain explicitFrameDomain = FacestreamFrameDomain::SourceRelative;
+    const bool hasExplicitFrameDomain = continuityPayloadFrameDomain(
+        continuityRoot,
+        QStringLiteral("streams_frame_domain"),
+        &explicitFrameDomain);
+    if (!hasExplicitFrameDomain) {
+        return tracks;
+    }
     const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
     tracks.reserve(streams.size());
     for (const QJsonValue& streamValue : streams) {
@@ -1257,7 +1297,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
                 track.keyframes.push_back(keyframe);
             }
         }
-        track.frameDomain = inferFacestreamFrameDomain(clip, streamFrameMin, streamFrameMax);
+        track.frameDomain = explicitFrameDomain;
         std::sort(track.keyframes.begin(), track.keyframes.end(), [](const FacestreamKeyframe& a, const FacestreamKeyframe& b) {
             return a.frame < b.frame;
         });
@@ -1325,7 +1365,13 @@ QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::parseRawDetections
             maxFrame = qMax(maxFrame, frame);
         }
     }
-    const FacestreamFrameDomain frameDomain = inferFacestreamFrameDomain(clip, minFrame, maxFrame);
+    FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+    if (!continuityPayloadFrameDomain(
+            continuityRoot,
+            QStringLiteral("raw_frames_frame_domain"),
+            &frameDomain)) {
+        return detections;
+    }
     for (const QJsonValue& frameValue : rawFrames) {
         const QJsonObject frameObj = frameValue.toObject();
         const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
@@ -1989,11 +2035,15 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     QJsonObject snapshot = m_presenter ? m_presenter->profilingSnapshot() : QJsonObject{};
     snapshot.insert(QStringLiteral("render_use_proxy_media"), m_useProxyMedia);
     snapshot.insert(QStringLiteral("vulkan_decode_preference"), editor::decodePreferenceToString(editor::debugDecodePreference()));
-    snapshot.insert(QStringLiteral("vulkan_cpu_upload_permitted"), false);
+    snapshot.insert(QStringLiteral("vulkan_cpu_upload_permitted"), true);
     snapshot.insert(QStringLiteral("vulkan_visible_backlog_limit"), m_playbackTuning.visibleBacklogLimit);
     snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), effectivePlaybackLookaheadFrames());
     snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), m_playbackTuning.sourceLookaheadFrames);
     snapshot.insert(QStringLiteral("vulkan_proxy_lookahead_frames"), m_playbackTuning.proxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_configured_visible_backlog_limit"), m_configuredPlaybackTuning.visibleBacklogLimit);
+    snapshot.insert(QStringLiteral("vulkan_configured_source_lookahead_frames"), m_configuredPlaybackTuning.sourceLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_configured_proxy_lookahead_frames"), m_configuredPlaybackTuning.proxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_adaptive_playback_boost_level"), m_adaptivePlaybackBoostLevel);
     if (m_decoder) {
         snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
         snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
@@ -2059,6 +2109,9 @@ void VulkanPreviewSurface::resetProfilingStats()
         m_presenter->resetProfilingStats();
     }
     m_playbackSmoothnessSamples.clear();
+    m_adaptivePlaybackBoostLevel = 0;
+    m_lastAdaptivePlaybackTuningAdjustMs = 0;
+    applyAdaptivePlaybackTuning();
 }
 
 void VulkanPreviewSurface::recordPlaybackSmoothnessSample(int exactCount,
@@ -2098,6 +2151,96 @@ void VulkanPreviewSurface::recordPlaybackSmoothnessSample(int exactCount,
             m_playbackSmoothnessSamples.size() > kMaxSamples)) {
         m_playbackSmoothnessSamples.removeFirst();
     }
+    updateAdaptivePlaybackTuning(nowMs);
+}
+
+void VulkanPreviewSurface::applyAdaptivePlaybackTuning()
+{
+    PlaybackTuning effective = m_configuredPlaybackTuning;
+    const int level = qBound(0, m_adaptivePlaybackBoostLevel, 3);
+    effective.visibleBacklogLimit =
+        qBound(1, effective.visibleBacklogLimit + level, 8);
+    effective.sourceLookaheadFrames =
+        qBound(1, effective.sourceLookaheadFrames + (level * 2), 16);
+    effective.proxyLookaheadFrames =
+        qBound(1, effective.proxyLookaheadFrames + (level * 2), 24);
+    if (m_playbackTuning.visibleBacklogLimit == effective.visibleBacklogLimit &&
+        m_playbackTuning.sourceLookaheadFrames == effective.sourceLookaheadFrames &&
+        m_playbackTuning.proxyLookaheadFrames == effective.proxyLookaheadFrames) {
+        return;
+    }
+    m_playbackTuning = effective;
+    if (m_cache) {
+        m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
+    }
+}
+
+void VulkanPreviewSurface::updateAdaptivePlaybackTuning(qint64 nowMs)
+{
+    if (!m_interaction.playing) {
+        return;
+    }
+    if (nowMs - m_lastAdaptivePlaybackTuningAdjustMs < kAdaptivePlaybackTuningMinAdjustIntervalMs) {
+        return;
+    }
+
+    constexpr qint64 kWindowMs = 5000;
+    int windowSamples = 0;
+    qint64 exactTotal = 0;
+    qint64 approxTotal = 0;
+    qint64 missingTotal = 0;
+    qint64 lateSamples = 0;
+    qint64 frameLagTotal = 0;
+    for (const PlaybackSmoothnessSample& sample : m_playbackSmoothnessSamples) {
+        if (!sample.playing || sample.timestampMs < nowMs - kWindowMs) {
+            continue;
+        }
+        ++windowSamples;
+        exactTotal += sample.exactCount;
+        approxTotal += sample.approxCount;
+        missingTotal += sample.missingCount;
+        frameLagTotal += sample.maxFrameLag;
+        if (sample.maxFrameLag > 0) {
+            ++lateSamples;
+        }
+    }
+    if (windowSamples < 24) {
+        return;
+    }
+
+    const qint64 frameSamples = exactTotal + approxTotal + missingTotal;
+    const qint64 availableSamples = exactTotal + approxTotal;
+    const double exactHitRate =
+        frameSamples > 0 ? static_cast<double>(exactTotal) / static_cast<double>(frameSamples) : 1.0;
+    const double lateSampleRate =
+        windowSamples > 0 ? static_cast<double>(lateSamples) / static_cast<double>(windowSamples) : 0.0;
+    const double avgFrameLag =
+        availableSamples > 0 ? static_cast<double>(frameLagTotal) / static_cast<double>(availableSamples) : 0.0;
+    const int decoderPending = m_decoder ? m_decoder->pendingRequestCount() : 0;
+    const int workerCount = m_decoder ? qMax(1, m_decoder->workerCount()) : 1;
+    const bool starved =
+        lateSampleRate > 0.35 ||
+        exactHitRate < 0.55 ||
+        avgFrameLag > 8.0 ||
+        decoderPending >= qMax(2, workerCount / 2);
+    const bool recovered =
+        lateSampleRate < 0.10 &&
+        exactHitRate > 0.90 &&
+        avgFrameLag < 2.0 &&
+        decoderPending == 0;
+
+    int nextLevel = m_adaptivePlaybackBoostLevel;
+    if (starved && nextLevel < 3) {
+        ++nextLevel;
+    } else if (recovered && nextLevel > 0) {
+        --nextLevel;
+    } else {
+        return;
+    }
+
+    m_adaptivePlaybackBoostLevel = nextLevel;
+    m_lastAdaptivePlaybackTuningAdjustMs = nowMs;
+    applyAdaptivePlaybackTuning();
 }
 
 QJsonObject VulkanPreviewSurface::playbackSmoothnessSnapshot(const QJsonObject& presenterSnapshot) const

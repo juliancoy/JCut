@@ -399,13 +399,13 @@ void SpeakersTab::wire()
             "  border:1px solid #6a5731;"
             "}"));
         m_widgets.speakerRunAutoTrackButton->setToolTip(
-            QStringLiteral("Run the default JCut continuity-track generator for all detected faces in the active transcript scope."));
+            QStringLiteral("Run raw face detection and continuity-track generation for the active transcript scope."));
         connect(m_widgets.speakerRunAutoTrackButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerRunAutoTrackClicked);
     }
     if (m_widgets.speakerViewFacestreamButton) {
         m_widgets.speakerViewFacestreamButton->setToolTip(
-            QStringLiteral("Open the selected FaceStream JSON and the latest generated artifact paths."));
+            QStringLiteral("Open the selected continuity-track payload and the latest generated artifact paths."));
         connect(m_widgets.speakerViewFacestreamButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerViewFaceStreamClicked);
     }
@@ -429,13 +429,13 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerGuideButton) {
         m_widgets.speakerGuideButton->setToolTip(
-            QStringLiteral("Open a quick guide for continuity FaceStream generation and mapping."));
+            QStringLiteral("Open a quick guide for detections, continuity tracks, and speaker assignment."));
         connect(m_widgets.speakerGuideButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerGuideClicked);
     }
     if (m_widgets.speakerPrecropFacesButton) {
         m_widgets.speakerPrecropFacesButton->setToolTip(
-            QStringLiteral("Extract representative identity crops per continuity track and assign resolved speaker identity."));
+            QStringLiteral("Extract representative identity crops per continuity track and assign them to transcript speakers."));
         connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked, this, [this]() {
             // Keep REST/UI click handlers from blocking while the assignment preflight starts.
             QTimer::singleShot(0, this, &SpeakersTab::onSpeakerPrecropFacesClicked);
@@ -894,6 +894,12 @@ QJsonObject SpeakersTab::resolveFaceStreamAssignmentRow(const TimelineClip& clip
 
         int64_t streamFrameMin = std::numeric_limits<int64_t>::max();
         int64_t streamFrameMax = -1;
+        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+        if (!parseFacestreamFrameDomainString(
+                streamObj.value(QStringLiteral("frame_domain")).toString(),
+                &frameDomain)) {
+            continue;
+        }
         for (const QJsonValue& keyframeValue : keyframes) {
             const QJsonObject keyframeObj = keyframeValue.toObject();
             const int64_t frame =
@@ -901,8 +907,6 @@ QJsonObject SpeakersTab::resolveFaceStreamAssignmentRow(const TimelineClip& clip
             streamFrameMin = qMin<int64_t>(streamFrameMin, frame);
             streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
         }
-        const FacestreamFrameDomain frameDomain =
-            inferFacestreamFrameDomain(clip, streamFrameMin, streamFrameMax);
 
         for (const QJsonValue& keyframeValue : keyframes) {
             const QJsonObject keyframeObj = keyframeValue.toObject();
@@ -1823,7 +1827,6 @@ void SpeakersTab::refreshRawDetectionsPanel(const QJsonObject& continuityRoot)
         return;
     }
 
-    const int64_t sourceFrame = currentSourceFrameForClip(*clip);
     const QJsonArray rawFrames = continuityRoot.value(QStringLiteral("raw_frames")).toArray();
     if (rawFrames.isEmpty()) {
         if (m_widgets.speakerRawDetectionDetailsEdit) {
@@ -1834,12 +1837,58 @@ void SpeakersTab::refreshRawDetectionsPanel(const QJsonObject& continuityRoot)
         return;
     }
 
+    int64_t minFrame = std::numeric_limits<int64_t>::max();
+    int64_t maxFrame = -1;
+    for (const QJsonValue& frameValue : rawFrames) {
+        const QJsonObject frameObj = frameValue.toObject();
+        const int64_t frameNumber =
+            frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+        if (frameNumber < 0) {
+            continue;
+        }
+        minFrame = qMin(minFrame, frameNumber);
+        maxFrame = qMax(maxFrame, frameNumber);
+    }
+
+    FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+    if (!continuityPayloadFrameDomain(
+            continuityRoot,
+            QStringLiteral("raw_frames_frame_domain"),
+            &frameDomain)) {
+        if (m_widgets.speakerRawDetectionDetailsEdit) {
+            m_widgets.speakerRawDetectionDetailsEdit->setPlainText(
+                QStringLiteral("Raw detections are present, but frame-domain metadata is missing. "
+                               "This artifact does not satisfy the current contract."));
+        }
+        finalizeRefreshTiming();
+        return;
+    }
+    const int64_t timelineFrame =
+        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip->startFrame;
+    const QVector<RenderSyncMarker> markers =
+        m_speakerDeps.getRenderSyncMarkers
+            ? m_speakerDeps.getRenderSyncMarkers()
+            : QVector<RenderSyncMarker>{};
+    const int64_t absoluteSourceFrame =
+        sourceFrameForClipAtTimelinePosition(*clip, static_cast<qreal>(timelineFrame), markers);
+    const int64_t localTimelineFrame = qMax<int64_t>(0, timelineFrame - clip->startFrame);
+    const int64_t localSourceFrame =
+        qMax<int64_t>(0, absoluteSourceFrame - qMax<int64_t>(0, clip->sourceInFrame));
+    const int64_t lookupFrame = facestreamLookupFrameForDomain(
+        frameDomain, localTimelineFrame, localSourceFrame, absoluteSourceFrame);
+    const QString frameLabel =
+        frameDomain == FacestreamFrameDomain::ClipTimeline30Fps
+            ? QStringLiteral("clip frame")
+            : (frameDomain == FacestreamFrameDomain::SourceRelative
+                   ? QStringLiteral("local source frame")
+                   : QStringLiteral("source frame"));
+
     QJsonArray detectionsForFrame;
     for (const QJsonValue& frameValue : rawFrames) {
         const QJsonObject frameObj = frameValue.toObject();
         const int64_t frameNumber =
             frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
-        if (frameNumber != sourceFrame) {
+        if (frameNumber != lookupFrame) {
             continue;
         }
         detectionsForFrame = frameObj.value(QStringLiteral("detections")).toArray();
@@ -1849,7 +1898,9 @@ void SpeakersTab::refreshRawDetectionsPanel(const QJsonObject& continuityRoot)
     if (detectionsForFrame.isEmpty()) {
         if (m_widgets.speakerRawDetectionDetailsEdit) {
             m_widgets.speakerRawDetectionDetailsEdit->setPlainText(
-                QStringLiteral("No raw detections at source frame %1.").arg(sourceFrame));
+                QStringLiteral("No raw detections at %1 %2.")
+                    .arg(frameLabel)
+                    .arg(lookupFrame));
         }
         finalizeRefreshTiming();
         return;
@@ -1885,8 +1936,9 @@ void SpeakersTab::refreshRawDetectionsPanel(const QJsonObject& continuityRoot)
     m_widgets.speakerRawDetectionTable->setCurrentCell(0, 0);
     if (m_widgets.speakerRawDetectionDetailsEdit) {
         m_widgets.speakerRawDetectionDetailsEdit->setPlainText(
-            QStringLiteral("Raw detections at source frame %1: %2\n\nSelect a row to inspect full JSON.")
-                .arg(sourceFrame)
+            QStringLiteral("Raw detections at %1 %2: %3\n\nSelect a row to inspect full JSON.")
+                .arg(frameLabel)
+                .arg(lookupFrame)
                 .arg(detectionsForFrame.size()));
     }
     finalizeRefreshTiming();

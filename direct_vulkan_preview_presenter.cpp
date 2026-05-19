@@ -3326,6 +3326,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!forceChecker && canDrawTexture && status && status->hasFrame && m_frameHandoff && m_frameHandoff->isInitialized()) {
                 QString handoffError;
                 double uploadMs = 0.0;
+                const bool allowCpuUploadFallback = status->cpuImage;
                 handoffAttempted = true;
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->handoffAttempts;
@@ -3348,7 +3349,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         return m_frameHandoff->importOffscreenFrame(offscreenFrame, &handoffError);
                     }
                     return m_frameHandoff->uploadFrame(status->frame,
-                                                       false,
+                                                       allowCpuUploadFallback,
                                                        &uploadMs,
                                                        &handoffError);
                 }();
