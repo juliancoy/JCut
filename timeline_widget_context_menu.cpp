@@ -1,4 +1,5 @@
 #include "timeline_widget.h"
+#include "facestream_artifact_utils.h"
 #include "facestream_runtime.h"
 #include "transcript_engine.h"
 #include "titles.h"
@@ -183,19 +184,17 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             editor::TranscriptEngine transcriptEngine;
             QJsonObject artifactRoot;
             if (transcriptEngine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
-                const QJsonObject byClip =
-                    artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
                 const QJsonObject continuityRoot =
-                    byClip.value(m_clips[clipIndex].id.trimmed()).toObject();
+                    continuityRootForClip(artifactRoot, m_clips[clipIndex].id);
                 hasFaceStream =
                     jcut::facestream::continuityRootHasTracks(continuityRoot) ||
                     jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
             }
         }
-        QMenu* boxStreamMenu = menu.addMenu(QStringLiteral("FaceStream"));
-        generateFaceStreamAction = boxStreamMenu->addAction(QStringLiteral("Generate FaceStream..."));
+        QMenu* faceStreamMenu = menu.addMenu(QStringLiteral("FaceStream"));
+        generateFaceStreamAction = faceStreamMenu->addAction(QStringLiteral("Generate FaceStream..."));
         generateFaceStreamAction->setEnabled(canFaceStream);
-        deleteFaceStreamAction = boxStreamMenu->addAction(QStringLiteral("Delete FaceStream..."));
+        deleteFaceStreamAction = faceStreamMenu->addAction(QStringLiteral("Delete FaceStream..."));
         deleteFaceStreamAction->setEnabled(canFaceStream && hasFaceStream);
         propertiesAction = menu.addAction(QStringLiteral("Properties"));
         menu.addSeparator();

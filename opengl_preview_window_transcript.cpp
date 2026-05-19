@@ -80,6 +80,7 @@ void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath
     if (clipFilePath.isEmpty()) {
         m_transcriptSectionsCache.clear();
         m_speakerTrackPointsCache.clear();
+        m_rawDetectionPointsCache.clear();
         invalidateTranscriptSpeakerProfileCache();
         for (auto it = m_transcriptTextureCache.begin(); it != m_transcriptTextureCache.end(); ++it) {
             editor::destroyGlTextureEntry(&it.value());
@@ -93,6 +94,13 @@ void PreviewWindow::invalidateTranscriptOverlayCache(const QString& clipFilePath
             for (auto it = m_speakerTrackPointsCache.begin(); it != m_speakerTrackPointsCache.end();) {
                 if (it.key() == transcriptPath || it.key().startsWith(keyPrefix)) {
                     it = m_speakerTrackPointsCache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            for (auto it = m_rawDetectionPointsCache.begin(); it != m_rawDetectionPointsCache.end();) {
+                if (it.key() == transcriptPath || it.key().startsWith(keyPrefix)) {
+                    it = m_rawDetectionPointsCache.erase(it);
                 } else {
                     ++it;
                 }
@@ -157,9 +165,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
     if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
-        const QJsonObject continuityByClip =
-            artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-        const QJsonObject continuityRoot = continuityByClip.value(clip.id).toObject();
+        const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
         const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
             continuityRoot,
             doc.object());
@@ -246,6 +252,106 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         return a.speakerId < b.speakerId;
     });
     it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
+    return it->points;
+}
+
+const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::rawDetectionPointsForClip(const TimelineClip& clip) const {
+    static const QVector<SpeakerTrackPoint> kEmpty;
+    if (!clipSupportsTranscript(clip) || clip.filePath.isEmpty()) {
+        return kEmpty;
+    }
+    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    if (transcriptPath.isEmpty()) {
+        return kEmpty;
+    }
+
+    const QFileInfo info(transcriptPath);
+    if (!info.exists() || !info.isFile()) {
+        return kEmpty;
+    }
+    const qint64 transcriptMtimeMs = info.lastModified().toMSecsSinceEpoch();
+    const qint64 artifactMtimeMs = facestreamArtifactRevisionMsForTranscript(transcriptPath);
+    const QString cacheKey = QStringLiteral("%1|raw|%2").arg(transcriptPath, clip.id.trimmed());
+    auto it = m_rawDetectionPointsCache.find(cacheKey);
+    if (it != m_rawDetectionPointsCache.end() &&
+        it->transcriptMtimeMs == transcriptMtimeMs &&
+        it->artifactMtimeMs == artifactMtimeMs) {
+        return it->points;
+    }
+
+    SpeakerTrackPointCacheEntry entry;
+    entry.transcriptMtimeMs = transcriptMtimeMs;
+    entry.artifactMtimeMs = artifactMtimeMs;
+    editor::TranscriptEngine engine;
+    QJsonObject artifactRoot;
+    if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
+        const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
+        const QJsonArray rawFrames = continuityRoot.value(QStringLiteral("raw_frames")).toArray();
+        int64_t minFrame = std::numeric_limits<int64_t>::max();
+        int64_t maxFrame = -1;
+        for (const QJsonValue& frameValue : rawFrames) {
+            const QJsonObject frameObj = frameValue.toObject();
+            const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            if (frame < 0) {
+                continue;
+            }
+            minFrame = qMin(minFrame, frame);
+            maxFrame = qMax(maxFrame, frame);
+        }
+        const FacestreamFrameDomain frameDomain =
+            inferFacestreamFrameDomain(clip, minFrame, maxFrame);
+        for (const QJsonValue& frameValue : rawFrames) {
+            const QJsonObject frameObj = frameValue.toObject();
+            const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            if (frame < 0) {
+                continue;
+            }
+            const QJsonArray detections = frameObj.value(QStringLiteral("detections")).toArray();
+            for (const QJsonValue& detValue : detections) {
+                const QJsonObject detObj = detValue.toObject();
+                SpeakerTrackPoint p;
+                p.frame = frame;
+                p.frameDomain = frameDomain;
+                const qreal frameWidth = qMax<qreal>(1.0, frameObj.value(QStringLiteral("frame_width")).toDouble(
+                    detObj.value(QStringLiteral("frame_width")).toDouble(0.0)));
+                const qreal frameHeight = qMax<qreal>(1.0, frameObj.value(QStringLiteral("frame_height")).toDouble(
+                    detObj.value(QStringLiteral("frame_height")).toDouble(0.0)));
+                p.x = qBound<qreal>(
+                    0.0,
+                    detObj.value(QStringLiteral("x_norm")).toDouble(
+                        detObj.value(QStringLiteral("x")).toDouble(0.0) / frameWidth),
+                    1.0);
+                p.y = qBound<qreal>(
+                    0.0,
+                    detObj.value(QStringLiteral("y_norm")).toDouble(
+                        detObj.value(QStringLiteral("y")).toDouble(0.0) / frameHeight),
+                    1.0);
+                const qreal width = qBound<qreal>(
+                    0.0,
+                    detObj.value(QStringLiteral("w_norm")).toDouble(
+                        detObj.value(QStringLiteral("w")).toDouble(0.0) / frameWidth),
+                    1.0);
+                const qreal height = qBound<qreal>(
+                    0.0,
+                    detObj.value(QStringLiteral("h_norm")).toDouble(
+                        detObj.value(QStringLiteral("h")).toDouble(0.0) / frameHeight),
+                    1.0);
+                if (width <= 0.0 || height <= 0.0) {
+                    continue;
+                }
+                p.hasBox = true;
+                p.boxLeft = p.x;
+                p.boxTop = p.y;
+                p.boxRight = qBound<qreal>(0.0, p.x + width, 1.0);
+                p.boxBottom = qBound<qreal>(0.0, p.y + height, 1.0);
+                p.boxSizeNorm = qMax(width, height);
+                p.speakerId = QStringLiteral("raw_detection");
+                p.streamId = QStringLiteral("raw_detection");
+                entry.points.push_back(p);
+            }
+        }
+    }
+    it = m_rawDetectionPointsCache.insert(cacheKey, entry);
     return it->points;
 }
 
@@ -409,6 +515,49 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         }
     }
 
+    painter->restore();
+}
+
+void PreviewWindow::drawRawDetectionOverlay(QPainter* painter, const QList<TimelineClip>& activeClips) {
+    if (!painter || activeClips.isEmpty()) {
+        return;
+    }
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    for (const TimelineClip& clip : activeClips) {
+        if (!clipSupportsTranscript(clip)) {
+            continue;
+        }
+        const PreviewOverlayInfo info = m_overlayModel.overlays.value(clip.id);
+        if (!info.bounds.isValid()) {
+            continue;
+        }
+        const QVector<SpeakerTrackPoint>& points = rawDetectionPointsForClip(clip);
+        if (points.isEmpty()) {
+            continue;
+        }
+        const int64_t currentSourceFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        for (const SpeakerTrackPoint& point : points) {
+            const int64_t pointSourceFrame = mapFacestreamFrameToSourceFrame(
+                clip, point.frame, point.frameDomain, m_interaction.renderSyncMarkers);
+            if (pointSourceFrame != currentSourceFrame || !point.hasBox) {
+                continue;
+            }
+            const QPointF p1 = mapNormalizedClipPointToScreen(info, QPointF(point.boxLeft, point.boxTop));
+            const QPointF p2 = mapNormalizedClipPointToScreen(info, QPointF(point.boxRight, point.boxTop));
+            const QPointF p3 = mapNormalizedClipPointToScreen(info, QPointF(point.boxRight, point.boxBottom));
+            const QPointF p4 = mapNormalizedClipPointToScreen(info, QPointF(point.boxLeft, point.boxBottom));
+            QPainterPath boxPath;
+            boxPath.moveTo(p1);
+            boxPath.lineTo(p2);
+            boxPath.lineTo(p3);
+            boxPath.lineTo(p4);
+            boxPath.closeSubpath();
+            painter->setPen(QPen(QColor(QStringLiteral("#4ade80")), 1.5));
+            painter->setBrush(QColor(74, 222, 128, 32));
+            painter->drawPath(boxPath);
+        }
+    }
     painter->restore();
 }
 

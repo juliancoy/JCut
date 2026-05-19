@@ -2,6 +2,7 @@
 #include "speaker_flow_debug.h"
 
 #include "clip_serialization.h"
+#include "facestream_artifact_utils.h"
 #include "facestream_runtime.h"
 #include "detector_settings.h"
 #include "editor_shared.h"
@@ -446,8 +447,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         return;
     }
 
-    const QJsonObject generatedByClip = generatedArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-    QJsonObject continuityRoot = generatedByClip.value(QStringLiteral("facestream-offscreen-source")).toObject();
+    QJsonObject continuityRoot = continuityRootForClip(generatedArtifact, QStringLiteral("facestream-offscreen-source"));
     QJsonObject rawDetectionsArtifact;
     if ((!jcut::facestream::readBinaryJsonObject(detectionsPath, &rawDetectionsArtifact, &parseError) &&
          !readJsonObject(detectionsPath, &rawDetectionsArtifact, &parseError)) &&

@@ -238,7 +238,7 @@ void PreviewWindow::paintGL() {
     painter.setRenderHint(QPainter::Antialiasing, true);
     bool drewAnyFrame = false;
     bool waitingForFrame = false;
-    if (m_interaction.viewMode == ViewMode::Video) {
+    if (m_interaction.viewMode != ViewMode::Audio) {
         renderCompositedPreviewGL(compositeRect, activeClips, drewAnyFrame, waitingForFrame);
     }
     drawCompositedPreviewOverlay(&painter, safeRect, compositeRect, activeClips, drewAnyFrame, waitingForFrame);

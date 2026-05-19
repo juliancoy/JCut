@@ -1,6 +1,7 @@
 #include "editor.h"
-#include "transcript_engine.h"
+#include "facestream_artifact_utils.h"
 #include "facestream_runtime.h"
+#include "transcript_engine.h"
 
 #include <QComboBox>
 #include <QDir>
@@ -107,8 +108,7 @@ int64_t firstFacestreamFrameForClip(const QString& transcriptPath, const QString
     }
 
     int64_t firstFrame = std::numeric_limits<int64_t>::max();
-    const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-    const QJsonObject continuityRoot = byClip.value(clipId.trimmed()).toObject();
+    const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clipId);
     const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject stream = streamValue.toObject();

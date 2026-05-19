@@ -125,6 +125,7 @@ public:
     QDoubleSpinBox *speakerFramingTargetBoxSpin() const { return m_speakerFramingTargetBoxSpin; }
     QCheckBox *speakerFramingZoomEnabledCheckBox() const { return m_speakerFramingZoomEnabledCheckBox; }
     QCheckBox *speakerShowFaceStreamBoxesCheckBox() const { return m_speakerShowFaceStreamBoxesCheckBox; }
+    QCheckBox *speakerShowRawDetectionsCheckBox() const { return m_speakerShowRawDetectionsCheckBox; }
     QCheckBox *speakerApplyFramingToClipCheckBox() const { return m_speakerApplyFramingToClipCheckBox; }
     QLabel *speakerClipFramingStatusLabel() const { return m_speakerClipFramingStatusLabel; }
     QLabel *speakerRefsChipLabel() const { return m_speakerRefsChipLabel; }
@@ -134,6 +135,10 @@ public:
     QTableWidget *speakerFaceStreamTable() const { return m_speakerFaceStreamTable; }
     QPlainTextEdit *speakerFaceStreamDetailsEdit() const { return m_speakerFaceStreamDetailsEdit; }
     QComboBox *speakerFaceStreamOverlaySourceCombo() const { return m_speakerFaceStreamOverlaySourceCombo; }
+    QCheckBox *speakerDetectionsAvailableCheckBox() const { return m_speakerDetectionsAvailableCheckBox; }
+    QCheckBox *speakerTracksAvailableCheckBox() const { return m_speakerTracksAvailableCheckBox; }
+    QTableWidget *speakerRawDetectionTable() const { return m_speakerRawDetectionTable; }
+    QPlainTextEdit *speakerRawDetectionDetailsEdit() const { return m_speakerRawDetectionDetailsEdit; }
 
     QLabel *gradingPathLabel() const { return m_gradingPathLabel; }
     QTableWidget *gradingKeyframeTable() const { return m_gradingKeyframeTable; }
@@ -639,6 +644,7 @@ private:
     QDoubleSpinBox *m_speakerFramingTargetBoxSpin = nullptr;
     QCheckBox *m_speakerFramingZoomEnabledCheckBox = nullptr;
     QCheckBox *m_speakerShowFaceStreamBoxesCheckBox = nullptr;
+    QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QCheckBox *m_speakerApplyFramingToClipCheckBox = nullptr;
     QLabel *m_speakerClipFramingStatusLabel = nullptr;
     QLabel *m_speakerRefsChipLabel = nullptr;
@@ -648,6 +654,10 @@ private:
     QTableWidget *m_speakerFaceStreamTable = nullptr;
     QPlainTextEdit *m_speakerFaceStreamDetailsEdit = nullptr;
     QComboBox *m_speakerFaceStreamOverlaySourceCombo = nullptr;
+    QCheckBox *m_speakerDetectionsAvailableCheckBox = nullptr;
+    QCheckBox *m_speakerTracksAvailableCheckBox = nullptr;
+    QTableWidget *m_speakerRawDetectionTable = nullptr;
+    QPlainTextEdit *m_speakerRawDetectionDetailsEdit = nullptr;
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;

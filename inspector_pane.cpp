@@ -1265,13 +1265,13 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *speakersSubtabs = new QTabWidget(page);
     m_speakersSubtabs = speakersSubtabs;
     speakersSubtabs->setObjectName(QStringLiteral("speakers.subtabs"));
-    speakersSubtabs->setTabPosition(QTabWidget::West);
+    speakersSubtabs->setTabPosition(QTabWidget::North);
     speakersSubtabs->setDocumentMode(true);
     speakersSubtabs->setElideMode(Qt::ElideNone);
     speakersSubtabs->setStyleSheet(QStringLiteral(
         "QTabWidget::pane { border: 1px solid #26384c; border-radius: 8px; }"
         "QTabBar::tab {"
-        " min-width: 118px;"
+        " min-width: 132px;"
         " min-height: 32px;"
         " padding: 7px 10px;"
         " margin: 2px;"
@@ -1363,7 +1363,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     facestreamActionGrid->setContentsMargins(0, 0, 0, 0);
     facestreamActionGrid->setHorizontalSpacing(6);
     facestreamActionGrid->setVerticalSpacing(6);
-    m_speakerRunAutoTrackButton = new QPushButton(QStringLiteral("Generate FaceStream"), page);
+    m_speakerRunAutoTrackButton = new QPushButton(QStringLiteral("Generate Continuity Tracks"), page);
     m_speakerRunAutoTrackButton->setObjectName(QStringLiteral("speakers.generate_facestream"));
     m_speakerRunAutoTrackButton->setMinimumHeight(32);
     m_speakerRunAutoTrackButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -1371,7 +1371,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerViewFacestreamButton->setObjectName(QStringLiteral("speakers.view_facestream"));
     m_speakerViewFacestreamButton->setMinimumHeight(32);
     m_speakerViewFacestreamButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
-    m_speakerFacestreamSettingsButton = new QPushButton(QStringLiteral("Continuity Track Settings"), page);
+    m_speakerFacestreamSettingsButton = new QPushButton(QStringLiteral("Continuity Track Tools"), page);
     m_speakerFacestreamSettingsButton->setObjectName(QStringLiteral("speakers.facestream_settings"));
     m_speakerFacestreamSettingsButton->setMinimumHeight(32);
     m_speakerFacestreamSettingsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
@@ -1462,6 +1462,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerShowFaceStreamBoxesCheckBox->setChecked(false);
     m_speakerShowFaceStreamBoxesCheckBox->setToolTip(
         QStringLiteral("Draw all FaceStream face boxes for active clips in Preview."));
+    m_speakerShowRawDetectionsCheckBox =
+        new QCheckBox(QStringLiteral("Show Raw Detections in Preview"), page);
+    m_speakerShowRawDetectionsCheckBox->setChecked(false);
+    m_speakerShowRawDetectionsCheckBox->setToolTip(
+        QStringLiteral("Draw raw detector observations for the current source frame in Preview."));
     auto *faceboxControlsRow = new QHBoxLayout;
     faceboxControlsRow->setContentsMargins(0, 0, 0, 0);
     faceboxControlsRow->setSpacing(8);
@@ -1517,10 +1522,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     mappingHelp->setWordWrap(true);
     mappingHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
-    auto *facestreamStageTitle = new QLabel(QStringLiteral("Step 3: Generate FaceStream"), page);
+    auto *facestreamStageTitle = new QLabel(QStringLiteral("Step 3: Generate Continuity Tracks"), page);
     facestreamStageTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *facestreamStageHelp = new QLabel(
-        QStringLiteral("Run identity-agnostic face detection and continuity tracking, then inspect generated FaceStream paths and overlay sources for the selected clip."),
+        QStringLiteral("Run identity-agnostic face detection and continuity tracking, then inspect generated continuity tracks and overlay sources for the selected clip."),
         page);
     facestreamStageHelp->setWordWrap(true);
     facestreamStageHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
@@ -1610,7 +1615,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *facestreamPage = new QWidget(speakersSubtabs);
     facestreamPage->setObjectName(QStringLiteral("speakers.subtab.facestream_paths"));
     auto *facestreamLayout = createTabLayout(facestreamPage);
-    auto *facestreamPathsTitle = new QLabel(QStringLiteral("Generated FaceStream Paths"), facestreamPage);
+    auto *facestreamPathsTitle = new QLabel(QStringLiteral("Generated Continuity Tracks"), facestreamPage);
     facestreamPathsTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
     auto *facestreamPathsHelp = new QLabel(
         QStringLiteral("Inspect generated continuity tracks and preview overlay sources for the selected clip from speaker_flow.continuity_facestreams."),
@@ -1653,18 +1658,66 @@ QWidget *InspectorPane::buildSpeakersTab()
         "QComboBox QAbstractItemView::item { padding: 3px 6px; }"));
     overlaySourceRow->addWidget(overlaySourceLabel);
     overlaySourceRow->addWidget(m_speakerFaceStreamOverlaySourceCombo, 1);
+    auto *artifactStatusRow = new QHBoxLayout;
+    artifactStatusRow->setContentsMargins(0, 0, 0, 0);
+    artifactStatusRow->setSpacing(10);
+    m_speakerDetectionsAvailableCheckBox =
+        new QCheckBox(QStringLiteral("Detections"), facestreamPage);
+    m_speakerTracksAvailableCheckBox =
+        new QCheckBox(QStringLiteral("Tracks"), facestreamPage);
+    for (QCheckBox* checkBox : {m_speakerDetectionsAvailableCheckBox, m_speakerTracksAvailableCheckBox}) {
+        checkBox->setEnabled(false);
+    }
+    artifactStatusRow->addWidget(m_speakerDetectionsAvailableCheckBox);
+    artifactStatusRow->addWidget(m_speakerTracksAvailableCheckBox);
+    artifactStatusRow->addStretch(1);
     facestreamLayout->addWidget(facestreamStageTitle);
     facestreamLayout->addWidget(facestreamStageHelp);
     facestreamLayout->addLayout(facestreamActionGrid);
     facestreamLayout->addWidget(facestreamPathsTitle);
     facestreamLayout->addWidget(facestreamPathsHelp);
     facestreamLayout->addLayout(overlaySourceRow);
+    facestreamLayout->addLayout(artifactStatusRow);
     facestreamLayout->addWidget(m_speakerShowFaceStreamBoxesCheckBox);
+    facestreamLayout->addWidget(m_speakerShowRawDetectionsCheckBox);
     facestreamLayout->addWidget(m_speakerFaceStreamTable, 1);
     facestreamLayout->addWidget(m_speakerFaceStreamDetailsEdit);
+    auto *rawDetectionsTitle = new QLabel(QStringLiteral("Raw Detections At Playhead"), facestreamPage);
+    rawDetectionsTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
+    auto *rawDetectionsHelp = new QLabel(
+        QStringLiteral("Shows detector observations from raw_frames for the selected clip at the current playhead source frame."),
+        facestreamPage);
+    rawDetectionsHelp->setWordWrap(true);
+    rawDetectionsHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
+    m_speakerRawDetectionTable = new QTableWidget(facestreamPage);
+    m_speakerRawDetectionTable->setColumnCount(6);
+    m_speakerRawDetectionTable->setHorizontalHeaderLabels(
+        {QStringLiteral("#"),
+         QStringLiteral("Conf"),
+         QStringLiteral("X"),
+         QStringLiteral("Y"),
+         QStringLiteral("W"),
+         QStringLiteral("H")});
+    m_speakerRawDetectionTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_speakerRawDetectionTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_speakerRawDetectionTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_speakerRawDetectionTable->verticalHeader()->setVisible(false);
+    m_speakerRawDetectionTable->horizontalHeader()->setStretchLastSection(false);
+    for (int column = 0; column < 6; ++column) {
+        m_speakerRawDetectionTable->horizontalHeader()->setSectionResizeMode(column, QHeaderView::ResizeToContents);
+    }
+    m_speakerRawDetectionDetailsEdit = new QPlainTextEdit(facestreamPage);
+    m_speakerRawDetectionDetailsEdit->setReadOnly(true);
+    m_speakerRawDetectionDetailsEdit->setPlaceholderText(
+        QStringLiteral("Select a detection row to inspect full JSON."));
+    m_speakerRawDetectionDetailsEdit->setMinimumHeight(120);
+    facestreamLayout->addWidget(rawDetectionsTitle);
+    facestreamLayout->addWidget(rawDetectionsHelp);
+    facestreamLayout->addWidget(m_speakerRawDetectionTable);
+    facestreamLayout->addWidget(m_speakerRawDetectionDetailsEdit);
 
     speakersSubtabs->addTab(mappingPage, QStringLiteral("Speakers"));
-    speakersSubtabs->addTab(facestreamPage, QStringLiteral("Generate FaceStream"));
+    speakersSubtabs->addTab(facestreamPage, QStringLiteral("Continuity Tracks"));
     speakersSubtabs->addTab(trackingPage, QStringLiteral("Speaker Tracking"));
     speakersSubtabs->addTab(debugPage, QStringLiteral("Debug"));
     layout->addWidget(speakersSubtabs, 1);

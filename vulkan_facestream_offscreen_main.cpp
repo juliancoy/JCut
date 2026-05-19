@@ -22,6 +22,7 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QApplication>
 #include <QImage>
 #include <QJsonArray>
@@ -208,6 +209,20 @@ struct RuntimeTuning {
     float maxAspect = jcut::facestream::kDefaultDetectorMaxAspect;
 };
 
+struct PreviewDebugSettings {
+    bool followLatest = true;
+    bool showDetections = true;
+    bool showTracks = true;
+    bool showLabels = true;
+    bool showConfirmedTracks = true;
+    bool showTentativeTracks = true;
+    bool showLostTracks = true;
+    float playbackSpeed = 1.0f;
+    float detectionLineThickness = 1.5f;
+    float trackLineThickness = 2.5f;
+    float overlayOpacity = 1.0f;
+};
+
 jcut::facestream::ContinuityTrackingTuning trackingTuningForRuntime(
     const RuntimeTuning& tuning)
 {
@@ -276,21 +291,80 @@ QJsonObject runtimeTuningToJson(const RuntimeTuning& tuning,
     };
 }
 
+QJsonObject previewDebugSettingsToJson(const PreviewDebugSettings& settings)
+{
+    return {
+        {QStringLiteral("follow_latest"), settings.followLatest},
+        {QStringLiteral("show_detections"), settings.showDetections},
+        {QStringLiteral("show_tracks"), settings.showTracks},
+        {QStringLiteral("show_labels"), settings.showLabels},
+        {QStringLiteral("show_confirmed_tracks"), settings.showConfirmedTracks},
+        {QStringLiteral("show_tentative_tracks"), settings.showTentativeTracks},
+        {QStringLiteral("show_lost_tracks"), settings.showLostTracks},
+        {QStringLiteral("playback_speed"), settings.playbackSpeed},
+        {QStringLiteral("detection_line_thickness"), settings.detectionLineThickness},
+        {QStringLiteral("track_line_thickness"), settings.trackLineThickness},
+        {QStringLiteral("overlay_opacity"), settings.overlayOpacity}
+    };
+}
+
+void applyPreviewDebugSettingsObject(const QJsonObject& object, PreviewDebugSettings* settings)
+{
+    if (!settings) {
+        return;
+    }
+    settings->followLatest = object.value(QStringLiteral("follow_latest")).toBool(settings->followLatest);
+    settings->showDetections = object.value(QStringLiteral("show_detections")).toBool(settings->showDetections);
+    settings->showTracks = object.value(QStringLiteral("show_tracks")).toBool(settings->showTracks);
+    settings->showLabels = object.value(QStringLiteral("show_labels")).toBool(settings->showLabels);
+    settings->showConfirmedTracks =
+        object.value(QStringLiteral("show_confirmed_tracks")).toBool(settings->showConfirmedTracks);
+    settings->showTentativeTracks =
+        object.value(QStringLiteral("show_tentative_tracks")).toBool(settings->showTentativeTracks);
+    settings->showLostTracks =
+        object.value(QStringLiteral("show_lost_tracks")).toBool(settings->showLostTracks);
+    settings->playbackSpeed = std::clamp(
+        static_cast<float>(object.value(QStringLiteral("playback_speed")).toDouble(settings->playbackSpeed)),
+        0.25f,
+        4.0f);
+    settings->detectionLineThickness = std::clamp(
+        static_cast<float>(object.value(QStringLiteral("detection_line_thickness"))
+                               .toDouble(settings->detectionLineThickness)),
+        1.0f,
+        4.0f);
+    settings->trackLineThickness = std::clamp(
+        static_cast<float>(object.value(QStringLiteral("track_line_thickness"))
+                               .toDouble(settings->trackLineThickness)),
+        1.0f,
+        5.0f);
+    settings->overlayOpacity = std::clamp(
+        static_cast<float>(object.value(QStringLiteral("overlay_opacity")).toDouble(settings->overlayOpacity)),
+        0.2f,
+        1.0f);
+}
+
 bool saveRuntimeTuningFile(const QString& path,
                            const RuntimeTuning& tuning,
                            const QString& detector,
                            int scrfdTargetSize,
+                           const PreviewDebugSettings* previewSettings,
                            QString* errorMessage = nullptr)
 {
     if (path.isEmpty()) {
         return false;
     }
+    QJsonObject root;
+    jcut::jsonio::readJsonFile(path, &root, nullptr);
+    root = runtimeTuningToJson(
+        tuning,
+        detector,
+        tuning.scrfdTargetSize > 0 ? tuning.scrfdTargetSize : scrfdTargetSize);
+    if (previewSettings) {
+        root.insert(QStringLiteral("preview_debug"), previewDebugSettingsToJson(*previewSettings));
+    }
     if (!jcut::jsonio::writeJsonFile(
             path,
-            runtimeTuningToJson(
-                tuning,
-                detector,
-                tuning.scrfdTargetSize > 0 ? tuning.scrfdTargetSize : scrfdTargetSize),
+            root,
             true,
             errorMessage)) {
         if (errorMessage && errorMessage->isEmpty()) {
@@ -945,6 +1019,7 @@ bool shouldRenderProgress(int frameOffset,
 bool applyRuntimeParamsFile(const QString& path,
                             const QFileInfo& info,
                             RuntimeTuning* tuning,
+                            PreviewDebugSettings* previewSettings,
                             QDateTime* lastAppliedMtime)
 {
     if (!tuning || !lastAppliedMtime || path.isEmpty()) {
@@ -1023,6 +1098,9 @@ bool applyRuntimeParamsFile(const QString& path,
     if (o.contains(QStringLiteral("min_aspect"))) tuning->minAspect = std::clamp(static_cast<float>(o.value(QStringLiteral("min_aspect")).toDouble(tuning->minAspect)), 0.0f, 100.0f);
     if (o.contains(QStringLiteral("max_aspect"))) tuning->maxAspect = std::clamp(static_cast<float>(o.value(QStringLiteral("max_aspect")).toDouble(tuning->maxAspect)), 0.0f, 100.0f);
     if (tuning->maxAspect < tuning->minAspect) std::swap(tuning->minAspect, tuning->maxAspect);
+    if (previewSettings) {
+        applyPreviewDebugSettingsObject(o.value(QStringLiteral("preview_debug")).toObject(), previewSettings);
+    }
     *lastAppliedMtime = mtime;
     return true;
 }
@@ -1068,6 +1146,24 @@ struct DetectorControlPanel {
     QCheckBox* scrfdTiled = nullptr;
     QCheckBox* applyClipGrading = nullptr;
     QPushButton* pauseButton = nullptr;
+    QPushButton* previewPlayButton = nullptr;
+    QCheckBox* previewFollowLatest = nullptr;
+    QCheckBox* previewShowDetections = nullptr;
+    QCheckBox* previewShowTracks = nullptr;
+    QCheckBox* previewShowLabels = nullptr;
+    QCheckBox* previewShowConfirmed = nullptr;
+    QCheckBox* previewShowTentative = nullptr;
+    QCheckBox* previewShowLost = nullptr;
+    QSlider* previewSeek = nullptr;
+    QLabel* previewSeekValue = nullptr;
+    QSlider* previewSpeed = nullptr;
+    QLabel* previewSpeedValue = nullptr;
+    QSlider* previewDetectionLine = nullptr;
+    QLabel* previewDetectionLineValue = nullptr;
+    QSlider* previewTrackLine = nullptr;
+    QLabel* previewTrackLineValue = nullptr;
+    QSlider* previewOpacity = nullptr;
+    QLabel* previewOpacityValue = nullptr;
     QProgressBar* runtimeProgress = nullptr;
     QLabel* runtimeFrame = nullptr;
     QLabel* runtimeFps = nullptr;
@@ -1176,13 +1272,93 @@ void syncDetectorControlPanel(DetectorControlPanel* panel, const RuntimeTuning& 
     *panel->syncing = false;
 }
 
+void syncDetectorPreviewPanel(DetectorControlPanel* panel,
+                              ImGuiPreviewWindow* previewWindow,
+                              int minFrame,
+                              int latestProcessedFrame)
+{
+    if (!panel || !panel->window || !previewWindow) {
+        return;
+    }
+    *panel->syncing = true;
+    if (panel->pauseButton) {
+        panel->pauseButton->setText(
+            previewWindow->processingPausedRequested()
+                ? QStringLiteral("Resume")
+                : QStringLiteral("Pause"));
+    }
+    if (panel->previewPlayButton) {
+        panel->previewPlayButton->setText(
+            previewWindow->previewPlaybackActive()
+                ? QStringLiteral("Pause Preview")
+                : QStringLiteral("Play Preview"));
+    }
+    if (panel->previewFollowLatest) {
+        panel->previewFollowLatest->setChecked(previewWindow->followLatest());
+    }
+    if (panel->previewShowDetections) {
+        panel->previewShowDetections->setChecked(previewWindow->showDetections());
+    }
+    if (panel->previewShowTracks) {
+        panel->previewShowTracks->setChecked(previewWindow->showTracks());
+    }
+    if (panel->previewShowLabels) {
+        panel->previewShowLabels->setChecked(previewWindow->showLabels());
+    }
+    if (panel->previewShowConfirmed) {
+        panel->previewShowConfirmed->setChecked(previewWindow->showConfirmedTracks());
+    }
+    if (panel->previewShowTentative) {
+        panel->previewShowTentative->setChecked(previewWindow->showTentativeTracks());
+    }
+    if (panel->previewShowLost) {
+        panel->previewShowLost->setChecked(previewWindow->showLostTracks());
+    }
+    if (panel->previewSeek) {
+        panel->previewSeek->setRange(minFrame, qMax(minFrame, latestProcessedFrame));
+        panel->previewSeek->setValue(previewWindow->requestedPreviewFrame());
+    }
+    if (panel->previewSeekValue) {
+        panel->previewSeekValue->setText(QString::number(previewWindow->requestedPreviewFrame()));
+    }
+    if (panel->previewSpeed) {
+        panel->previewSpeed->setValue(qRound(previewWindow->previewPlaybackSpeed() * 100.0f));
+    }
+    if (panel->previewSpeedValue) {
+        panel->previewSpeedValue->setText(
+            QStringLiteral("%1x").arg(previewWindow->previewPlaybackSpeed(), 0, 'f', 2));
+    }
+    if (panel->previewDetectionLine) {
+        panel->previewDetectionLine->setValue(qRound(previewWindow->detectionLineThickness() * 10.0f));
+    }
+    if (panel->previewDetectionLineValue) {
+        panel->previewDetectionLineValue->setText(
+            QStringLiteral("%1").arg(previewWindow->detectionLineThickness(), 0, 'f', 1));
+    }
+    if (panel->previewTrackLine) {
+        panel->previewTrackLine->setValue(qRound(previewWindow->trackLineThickness() * 10.0f));
+    }
+    if (panel->previewTrackLineValue) {
+        panel->previewTrackLineValue->setText(
+            QStringLiteral("%1").arg(previewWindow->trackLineThickness(), 0, 'f', 1));
+    }
+    if (panel->previewOpacity) {
+        panel->previewOpacity->setValue(qRound(previewWindow->overlayOpacity() * 100.0f));
+    }
+    if (panel->previewOpacityValue) {
+        panel->previewOpacityValue->setText(
+            QStringLiteral("%1").arg(previewWindow->overlayOpacity(), 0, 'f', 2));
+    }
+    *panel->syncing = false;
+}
+
 void updateDetectorRuntimeStats(DetectorControlPanel* panel,
                                 int frameOffset,
                                 int totalFrames,
                                 int frameNumber,
                                 int processed,
                                 int totalDetections,
-                                int currentFrameDetections,
+                                int currentLiveTracks,
                                 double elapsedSec,
                                 AdaptiveEtaTracker* etaTracker)
 {
@@ -1215,7 +1391,7 @@ void updateDetectorRuntimeStats(DetectorControlPanel* panel,
     panel->runtimeEta->setText(formatDuration(eta.etaSec));
     panel->runtimeElapsed->setText(formatDuration(elapsedSec));
     panel->runtimeDetections->setText(QStringLiteral("%1").arg(totalDetections));
-    panel->runtimeTracks->setText(QStringLiteral("%1").arg(currentFrameDetections));
+    panel->runtimeTracks->setText(QStringLiteral("%1").arg(currentLiveTracks));
 }
 
 DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
@@ -1224,6 +1400,7 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
                                                 const QString& settingsPath,
                                                 bool* applyClipGrading,
                                                 bool allowApplyClipGrading,
+                                                ImGuiPreviewWindow* previewWindow,
                                                 bool* paused)
 {
     DetectorControlPanel panel;
@@ -1233,13 +1410,31 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
     auto* root = new QVBoxLayout(panel.window);
     auto* form = new QFormLayout;
     root->addLayout(form);
+    const std::shared_ptr<bool> syncing = panel.syncing;
 
-    auto persist = [tuning, detector, scrfdTargetSize, settingsPath]() {
+    auto persist = [tuning, detector, scrfdTargetSize, settingsPath, previewWindow]() {
+        PreviewDebugSettings previewSettings;
+        PreviewDebugSettings* previewSettingsPtr = nullptr;
+        if (previewWindow) {
+            previewSettings.followLatest = previewWindow->followLatest();
+            previewSettings.showDetections = previewWindow->showDetections();
+            previewSettings.showTracks = previewWindow->showTracks();
+            previewSettings.showLabels = previewWindow->showLabels();
+            previewSettings.showConfirmedTracks = previewWindow->showConfirmedTracks();
+            previewSettings.showTentativeTracks = previewWindow->showTentativeTracks();
+            previewSettings.showLostTracks = previewWindow->showLostTracks();
+            previewSettings.playbackSpeed = previewWindow->previewPlaybackSpeed();
+            previewSettings.detectionLineThickness = previewWindow->detectionLineThickness();
+            previewSettings.trackLineThickness = previewWindow->trackLineThickness();
+            previewSettings.overlayOpacity = previewWindow->overlayOpacity();
+            previewSettingsPtr = &previewSettings;
+        }
         QString error;
         if (!saveRuntimeTuningFile(settingsPath,
                                    *tuning,
                                    detector,
                                    tuning && tuning->scrfdTargetSize > 0 ? tuning->scrfdTargetSize : scrfdTargetSize,
+                                   previewSettingsPtr,
                                    &error) &&
             !error.isEmpty()) {
             qWarning().noquote() << error;
@@ -1520,6 +1715,213 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
                          });
     }
 
+    if (previewWindow) {
+        auto* previewTitle = new QLabel(QStringLiteral("Preview transport"));
+        QFont previewFont = previewTitle->font();
+        previewFont.setBold(true);
+        previewTitle->setFont(previewFont);
+        root->addWidget(previewTitle);
+
+        auto* previewRow = new QHBoxLayout;
+        panel.previewPlayButton = new QPushButton(QStringLiteral("Play Preview"));
+        panel.previewFollowLatest = new QCheckBox(QStringLiteral("Follow Latest"));
+        previewRow->addWidget(panel.previewPlayButton);
+        previewRow->addWidget(panel.previewFollowLatest);
+        previewRow->addStretch(1);
+        root->addLayout(previewRow);
+
+        auto* seekRow = new QHBoxLayout;
+        panel.previewSeek = new QSlider(Qt::Horizontal);
+        panel.previewSeek->setRange(0, 0);
+        panel.previewSeekValue = new QLabel(QStringLiteral("0"));
+        panel.previewSeekValue->setMinimumWidth(72);
+        seekRow->addWidget(panel.previewSeek, 1);
+        seekRow->addWidget(panel.previewSeekValue);
+        root->addLayout(seekRow);
+
+        auto* speedRow = new QHBoxLayout;
+        auto* speedLabel = new QLabel(QStringLiteral("Preview speed"));
+        panel.previewSpeed = new QSlider(Qt::Horizontal);
+        panel.previewSpeed->setRange(25, 400);
+        panel.previewSpeedValue = new QLabel(QStringLiteral("1.00x"));
+        panel.previewSpeedValue->setMinimumWidth(72);
+        speedRow->addWidget(speedLabel);
+        speedRow->addWidget(panel.previewSpeed, 1);
+        speedRow->addWidget(panel.previewSpeedValue);
+        root->addLayout(speedRow);
+
+        auto* overlayRow1 = new QHBoxLayout;
+        panel.previewShowDetections = new QCheckBox(QStringLiteral("Detections"));
+        panel.previewShowTracks = new QCheckBox(QStringLiteral("Tracks"));
+        panel.previewShowLabels = new QCheckBox(QStringLiteral("Labels"));
+        overlayRow1->addWidget(panel.previewShowDetections);
+        overlayRow1->addWidget(panel.previewShowTracks);
+        overlayRow1->addWidget(panel.previewShowLabels);
+        overlayRow1->addStretch(1);
+        root->addLayout(overlayRow1);
+
+        auto* overlayRow2 = new QHBoxLayout;
+        panel.previewShowConfirmed = new QCheckBox(QStringLiteral("Confirmed"));
+        panel.previewShowTentative = new QCheckBox(QStringLiteral("Tentative"));
+        panel.previewShowLost = new QCheckBox(QStringLiteral("Lost"));
+        overlayRow2->addWidget(panel.previewShowConfirmed);
+        overlayRow2->addWidget(panel.previewShowTentative);
+        overlayRow2->addWidget(panel.previewShowLost);
+        overlayRow2->addStretch(1);
+        root->addLayout(overlayRow2);
+
+        auto* overlayKnobRow1 = new QHBoxLayout;
+        auto* detLineLabel = new QLabel(QStringLiteral("Det line"));
+        panel.previewDetectionLine = new QSlider(Qt::Horizontal);
+        panel.previewDetectionLine->setRange(10, 40);
+        panel.previewDetectionLineValue = new QLabel(QStringLiteral("1.5"));
+        panel.previewDetectionLineValue->setMinimumWidth(40);
+        overlayKnobRow1->addWidget(detLineLabel);
+        overlayKnobRow1->addWidget(panel.previewDetectionLine, 1);
+        overlayKnobRow1->addWidget(panel.previewDetectionLineValue);
+        root->addLayout(overlayKnobRow1);
+
+        auto* overlayKnobRow2 = new QHBoxLayout;
+        auto* trackLineLabel = new QLabel(QStringLiteral("Track line"));
+        panel.previewTrackLine = new QSlider(Qt::Horizontal);
+        panel.previewTrackLine->setRange(10, 50);
+        panel.previewTrackLineValue = new QLabel(QStringLiteral("2.5"));
+        panel.previewTrackLineValue->setMinimumWidth(40);
+        overlayKnobRow2->addWidget(trackLineLabel);
+        overlayKnobRow2->addWidget(panel.previewTrackLine, 1);
+        overlayKnobRow2->addWidget(panel.previewTrackLineValue);
+        root->addLayout(overlayKnobRow2);
+
+        auto* overlayKnobRow3 = new QHBoxLayout;
+        auto* opacityLabel = new QLabel(QStringLiteral("Opacity"));
+        panel.previewOpacity = new QSlider(Qt::Horizontal);
+        panel.previewOpacity->setRange(20, 100);
+        panel.previewOpacityValue = new QLabel(QStringLiteral("1.00"));
+        panel.previewOpacityValue->setMinimumWidth(40);
+        overlayKnobRow3->addWidget(opacityLabel);
+        overlayKnobRow3->addWidget(panel.previewOpacity, 1);
+        overlayKnobRow3->addWidget(panel.previewOpacityValue);
+        root->addLayout(overlayKnobRow3);
+
+        QObject::connect(panel.previewPlayButton,
+                         &QPushButton::clicked,
+                         panel.window,
+                         [syncing, previewWindow]() {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setPreviewPlaybackActive(!previewWindow->previewPlaybackActive());
+                         });
+        QObject::connect(panel.previewFollowLatest,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setFollowLatest(checked);
+                         });
+        QObject::connect(panel.previewSeek,
+                         &QSlider::valueChanged,
+                         panel.window,
+                         [syncing, previewWindow](int value) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setRequestedPreviewFrame(value);
+                         });
+        QObject::connect(panel.previewSpeed,
+                         &QSlider::valueChanged,
+                         panel.window,
+                         [syncing, previewWindow](int value) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setPreviewPlaybackSpeed(static_cast<float>(value) / 100.0f);
+                         });
+        QObject::connect(panel.previewShowDetections,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setShowDetections(checked);
+                         });
+        QObject::connect(panel.previewShowTracks,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setShowTracks(checked);
+                         });
+        QObject::connect(panel.previewShowLabels,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setShowLabels(checked);
+                         });
+        QObject::connect(panel.previewShowConfirmed,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setShowConfirmedTracks(checked);
+                         });
+        QObject::connect(panel.previewShowTentative,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setShowTentativeTracks(checked);
+                         });
+        QObject::connect(panel.previewShowLost,
+                         &QCheckBox::toggled,
+                         panel.window,
+                         [syncing, previewWindow](bool checked) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setShowLostTracks(checked);
+                         });
+        QObject::connect(panel.previewDetectionLine,
+                         &QSlider::valueChanged,
+                         panel.window,
+                         [syncing, previewWindow](int value) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setDetectionLineThickness(static_cast<float>(value) / 10.0f);
+                         });
+        QObject::connect(panel.previewTrackLine,
+                         &QSlider::valueChanged,
+                         panel.window,
+                         [syncing, previewWindow](int value) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setTrackLineThickness(static_cast<float>(value) / 10.0f);
+                         });
+        QObject::connect(panel.previewOpacity,
+                         &QSlider::valueChanged,
+                         panel.window,
+                         [syncing, previewWindow](int value) {
+                             if (!previewWindow || !syncing || *syncing) {
+                                 return;
+                             }
+                             previewWindow->setOverlayOpacity(static_cast<float>(value) / 100.0f);
+                         });
+    }
+
     auto* statsTitle = new QLabel(QStringLiteral("Runtime stats"));
     QFont statsFont = statsTitle->font();
     statsFont.setBold(true);
@@ -1546,7 +1948,7 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
     statsForm->addRow(QStringLiteral("ETA"), panel.runtimeEta);
     statsForm->addRow(QStringLiteral("Elapsed"), panel.runtimeElapsed);
     statsForm->addRow(QStringLiteral("Detections"), panel.runtimeDetections);
-    statsForm->addRow(QStringLiteral("Frame detections"), panel.runtimeTracks);
+    statsForm->addRow(QStringLiteral("Live tracks"), panel.runtimeTracks);
     root->addLayout(statsForm);
 
     panel.settingsPath = new QLabel(settingsPath);
@@ -2872,6 +3274,8 @@ struct FaceStreamResumeState {
     QSet<int> completedFrames;
     QJsonArray frameRows;
     QJsonArray rawDetectionFrames;
+    QHash<int, int> rawDetectionFrameIndexByFrame;
+    QHash<int, QJsonArray> trackDetectionsByFrame;
     int processed = 0;
     int totalDetections = 0;
     int appVulkanFramePathFrames = 0;
@@ -3017,6 +3421,7 @@ bool loadFaceStreamResume(const QString& path,
             {QStringLiteral("detection_count"), detectionCount},
             {QStringLiteral("detections"), detectionBoxes}
         });
+        state->trackDetectionsByFrame.insert(frameNumber, object.value(QStringLiteral("track_detections")).toArray());
 
     }
     return true;
@@ -3385,6 +3790,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     double ncnnTotalMsTotal = 0.0;
     QJsonArray frameRows;
     QJsonArray rawDetectionFrames;
+    QHash<int, int> rawDetectionFrameIndexByFrame;
+    QHash<int, QJsonArray> trackDetectionsByFrame;
     bool printedAppVulkanFailure = false;
     VulkanHarnessContext detectorContext;
     jcut::vulkan_detector::VulkanDetectorFrameHandoff decoderFrameHandoff;
@@ -3408,23 +3815,40 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         options.smallFaceFallback,
         options.scrfdTiled
     };
+    PreviewDebugSettings previewDebugSettings;
     QDateTime paramsMtime;
     const QString detectorSettingsPath = detectorSettingsPathForVideo(options.videoPath);
     QDateTime detectorSettingsMtime;
     QFileInfo detectorSettingsInfo(detectorSettingsPath);
-    if (applyRuntimeParamsFile(detectorSettingsPath, detectorSettingsInfo, &tuning, &detectorSettingsMtime) &&
+    if (applyRuntimeParamsFile(detectorSettingsPath,
+                               detectorSettingsInfo,
+                               &tuning,
+                               &previewDebugSettings,
+                               &detectorSettingsMtime) &&
         options.verbose) {
         std::cout << "loaded_detector_settings=\"" << detectorSettingsPath.toStdString() << "\"\n";
     }
     DetectorControlPanel detectorControls;
     bool runtimePaused = false;
     if (livePreviewWindow) {
+        livePreviewWindow->setFollowLatest(previewDebugSettings.followLatest);
+        livePreviewWindow->setPreviewPlaybackSpeed(previewDebugSettings.playbackSpeed);
+        livePreviewWindow->setShowDetections(previewDebugSettings.showDetections);
+        livePreviewWindow->setShowTracks(previewDebugSettings.showTracks);
+        livePreviewWindow->setShowLabels(previewDebugSettings.showLabels);
+        livePreviewWindow->setShowConfirmedTracks(previewDebugSettings.showConfirmedTracks);
+        livePreviewWindow->setShowTentativeTracks(previewDebugSettings.showTentativeTracks);
+        livePreviewWindow->setShowLostTracks(previewDebugSettings.showLostTracks);
+        livePreviewWindow->setDetectionLineThickness(previewDebugSettings.detectionLineThickness);
+        livePreviewWindow->setTrackLineThickness(previewDebugSettings.trackLineThickness);
+        livePreviewWindow->setOverlayOpacity(previewDebugSettings.overlayOpacity);
         detectorControls = createDetectorControlPanel(&tuning,
                                                       options.detector,
                                                       options.scrfdTargetSize,
                                                       detectorSettingsPath,
                                                       &options.applyClipGrading,
                                                       !options.clipJsonPath.trimmed().isEmpty(),
+                                                      livePreviewWindow.get(),
                                                       &runtimePaused);
         detectorControls.window->show();
         QString saveError;
@@ -3432,6 +3856,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                   tuning,
                                   options.detector,
                                   options.scrfdTargetSize,
+                                  &previewDebugSettings,
                                   &saveError)) {
             detectorSettingsMtime = QFileInfo(detectorSettingsPath).lastModified();
         } else if (!saveError.isEmpty()) {
@@ -3445,26 +3870,14 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                       (tuning.roiX2 - tuning.roiX1) * size.width(),
                       (tuning.roiY2 - tuning.roiY1) * size.height());
     };
-    auto previewBoxesForWindow = [&](const QVector<Track>& previewTracks,
-                                     const QVector<Detection>& previewDetections) {
-        QVector<QRectF> boxes;
-        if (!previewTracks.isEmpty()) {
-            boxes.reserve(previewTracks.size());
-            for (const Track& track : previewTracks) {
-                if (track.id < 0 || !track.box.isValid() || track.box.isEmpty()) {
-                    continue;
-                }
-                boxes.push_back(track.box);
-            }
-            return boxes;
-        }
-        boxes.reserve(previewDetections.size());
-        for (const Detection& detection : previewDetections) {
-            if (detection.box.isValid() && !detection.box.isEmpty()) {
-                boxes.push_back(detection.box);
+    auto liveTrackCount = [&](const QVector<Track>& tracks) {
+        int count = 0;
+        for (const Track& track : tracks) {
+            if (track.state != jcut::facestream::ContinuityTrackState::Removed) {
+                ++count;
             }
         }
-        return boxes;
+        return count;
     };
     auto presentLivePreviewWindow = [&](const render_detail::OffscreenVulkanFrame& frame,
                                         int frameNumber,
@@ -3477,14 +3890,16 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         livePreviewWindow->setWindowTitle(
             QStringLiteral("%1 - frame %2").arg(titlePrefix).arg(frameNumber));
         livePreviewWindow->setStatusText(
-            QStringLiteral("%1 | frame %2 | detections %3")
+            QStringLiteral("%1 | frame %2 | detections %3 | live tracks %4")
                 .arg(titlePrefix)
                 .arg(frameNumber)
-                .arg(previewDetections.size()));
+                .arg(previewDetections.size())
+                .arg(liveTrackCount(previewTracks)));
         const bool presented = livePreviewWindow->presentFrame(
             frame,
             frameNumber,
-            previewBoxesForWindow(previewTracks, previewDetections),
+            previewTracks,
+            previewDetections,
             currentRoiRect(frame.size),
             previewDetections.size());
         return presented;
@@ -3759,6 +4174,13 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     vulkanDetectMsTotal = resume.vulkanDetectMsTotal;
     frameRows = resume.frameRows;
     rawDetectionFrames = resume.rawDetectionFrames;
+    trackDetectionsByFrame = resume.trackDetectionsByFrame;
+    for (int i = 0; i < rawDetectionFrames.size(); ++i) {
+        const int frameNumber = rawDetectionFrames.at(i).toObject().value(QStringLiteral("frame")).toInt(-1);
+        if (frameNumber >= 0) {
+            rawDetectionFrameIndexByFrame.insert(frameNumber, i);
+        }
+    }
 
     QFile faceStreamFile(faceStreamPath);
     const bool faceStreamExists = QFileInfo::exists(faceStreamPath) && QFileInfo(faceStreamPath).size() > 0;
@@ -3788,10 +4210,89 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     int lastProgressPercent = -1;
     std::chrono::steady_clock::time_point lastProgressAt = wallStart;
     AdaptiveEtaTracker etaTracker;
+    int latestProcessedFrame = options.startFrame - 1;
+    for (int completedFrame : resume.completedFrames) {
+        latestProcessedFrame = qMax(latestProcessedFrame, completedFrame);
+    }
+    syncDetectorPreviewPanel(&detectorControls,
+                             livePreviewWindow.get(),
+                             options.startFrame,
+                             qMax(options.startFrame, latestProcessedFrame));
+    QVector<Track> runtimeTracks =
+        jcut::facestream::buildContinuityTracksFromDetectionFrames(
+            rawDetectionFrames,
+            trackingTuningForRuntime(tuning));
+    auto detectionsForFrame = [&](int frameNumber) {
+        QVector<Detection> frameDetections;
+        const int index = rawDetectionFrameIndexByFrame.value(frameNumber, -1);
+        if (index < 0 || index >= rawDetectionFrames.size()) {
+            return frameDetections;
+        }
+        const QJsonObject frameObject = rawDetectionFrames.at(index).toObject();
+        const QJsonArray detectionRows = frameObject.value(QStringLiteral("detections")).toArray();
+        frameDetections.reserve(detectionRows.size());
+        for (const QJsonValue& detectionValue : detectionRows) {
+            const QJsonObject detectionObject = detectionValue.toObject();
+            Detection detection;
+            detection.box = QRectF(detectionObject.value(QStringLiteral("x")).toDouble(),
+                                   detectionObject.value(QStringLiteral("y")).toDouble(),
+                                   detectionObject.value(QStringLiteral("w")).toDouble(),
+                                   detectionObject.value(QStringLiteral("h")).toDouble());
+            detection.confidence =
+                static_cast<float>(detectionObject.value(QStringLiteral("confidence")).toDouble());
+            if (detection.box.isValid() && !detection.box.isEmpty()) {
+                frameDetections.push_back(detection);
+            }
+        }
+        return frameDetections;
+    };
+    auto tracksForFrame = [&](int frameNumber) {
+        QVector<Track> frameTracks;
+        const QJsonArray trackRows = trackDetectionsByFrame.value(frameNumber);
+        frameTracks.reserve(trackRows.size());
+        for (const QJsonValue& trackValue : trackRows) {
+            const QJsonObject trackObject = trackValue.toObject();
+            Track track;
+            track.id = trackObject.value(QStringLiteral("track_id")).toInt(-1);
+            track.box = QRectF(trackObject.value(QStringLiteral("track_box_x")).toDouble(),
+                               trackObject.value(QStringLiteral("track_box_y")).toDouble(),
+                               trackObject.value(QStringLiteral("track_box_w")).toDouble(),
+                               trackObject.value(QStringLiteral("track_box_h")).toDouble());
+            track.firstFrame = trackObject.value(QStringLiteral("first_frame")).toInt(frameNumber);
+            track.lastFrame = trackObject.value(QStringLiteral("last_frame")).toInt(frameNumber);
+            track.hits = trackObject.value(QStringLiteral("hits")).toInt(0);
+            track.misses = trackObject.value(QStringLiteral("misses")).toInt(0);
+            const QString state = trackObject.value(QStringLiteral("track_state")).toString();
+            if (state == QStringLiteral("confirmed")) {
+                track.state = jcut::facestream::ContinuityTrackState::Confirmed;
+            } else if (state == QStringLiteral("lost")) {
+                track.state = jcut::facestream::ContinuityTrackState::Lost;
+            } else if (state == QStringLiteral("removed")) {
+                track.state = jcut::facestream::ContinuityTrackState::Removed;
+            } else {
+                track.state = jcut::facestream::ContinuityTrackState::Tentative;
+            }
+            if (track.id >= 0 && track.box.isValid() && !track.box.isEmpty()) {
+                frameTracks.push_back(track);
+            }
+        }
+        return frameTracks;
+    };
+    auto advanceRuntimeTracks = [&](int frameNumber,
+                                    const QVector<Detection>& detections,
+                                    const QSize& detectionFrameSize) -> QVector<Track> {
+        jcut::facestream::updateContinuityTracks(&runtimeTracks,
+                                                 detections,
+                                                 frameNumber,
+                                                 detectionFrameSize,
+                                                 trackingTuningForRuntime(tuning));
+        return runtimeTracks;
+    };
     auto recordProcessedFrame = [&](int frameOffset,
                                     int frameNumber,
                                     const jcut::facestream::VulkanFrameStats& renderStats,
                                     const QVector<Detection>& detections,
+                                    const QVector<Track>& tracks,
                                     const QSize& detectionFrameSize,
                                     bool appVulkanFrame,
                                     bool decoderVulkanUploadFallback,
@@ -3820,13 +4321,17 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         const QJsonObject rawDetectionFrame =
             buildRawDetectionFrameRecord(frameNumber, detectorId, detectionFrameSize, detections);
         rawDetectionFrames.append(rawDetectionFrame);
-        const QJsonArray trackDetections;
+        rawDetectionFrameIndexByFrame.insert(frameNumber, rawDetectionFrames.size() - 1);
+        const QJsonArray trackDetections =
+            jcut::facestream::frameTrackDetections(tracks, frameNumber);
+        trackDetectionsByFrame.insert(frameNumber, trackDetections);
+        latestProcessedFrame = qMax(latestProcessedFrame, frameNumber);
         const bool decoderDirectHandoff = !appVulkanFrame && hardwareDirectHandoff;
         const QJsonObject frameRow{
             {QStringLiteral("frame"), frameNumber},
             {QStringLiteral("detector"), detectorId},
             {QStringLiteral("detections"), detections.size()},
-            {QStringLiteral("tracks"), 0},
+            {QStringLiteral("tracks"), trackDetections.size()},
             {QStringLiteral("app_vulkan_frame_path"), appVulkanFrame},
             {QStringLiteral("app_render_decode_ms"), renderStats.decodeMs},
             {QStringLiteral("app_render_texture_ms"), renderStats.textureMs},
@@ -3922,7 +4427,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                        frameNumber,
                                        processed,
                                        totalDetections,
-                                       detections.size(),
+                                       liveTrackCount(tracks),
                                        elapsedSec,
                                        &etaTracker);
         }
@@ -4019,7 +4524,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 sanitizeStats,
                 rawDetections);
         }
-        const QVector<Track> detectionPreviewTracks;
+        const QVector<Track> detectionPreviewTracks =
+            advanceRuntimeTracks(slot.frameNumber, detections, slot.detectionFrameSize);
         if (!requireSynchronizedPreview(
                 slot.frameNumber,
                 slot.decodedFrame,
@@ -4044,6 +4550,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                                    slot.frameNumber,
                                                    emptyRenderStats,
                                                    detections,
+                                                   detectionPreviewTracks,
                                                    slot.detectionFrameSize,
                                                    false,
                                                    slot.decoderVulkanUploadFallback,
@@ -4167,7 +4674,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             const bool previewFrameDue =
                 !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
             if (livePreviewWindow && previewFrameDue) {
-                const QVector<Track> resumedTracks;
+                const QVector<Track>& resumedTracks = runtimeTracks;
                 const QVector<Detection> resumedDetections;
                 if (preferDecoderDirectDetection) {
                     const editor::FrameHandle resumedDecodedFrame = decoder.decodeFrame(frameNumber);
@@ -4263,15 +4770,49 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 detectorControls.window = nullptr;
             }
             if (livePreviewWindow) {
+                livePreviewWindow->setTimelineRange(options.startFrame,
+                                                   qMax(options.startFrame, latestProcessedFrame),
+                                                   qMax(options.startFrame, latestProcessedFrame));
+                livePreviewWindow->setProcessingPaused(runtimePaused);
+                syncDetectorPreviewPanel(&detectorControls,
+                                         livePreviewWindow.get(),
+                                         options.startFrame,
+                                         qMax(options.startFrame, latestProcessedFrame));
                 livePreviewWindow->pumpEvents();
+                runtimePaused = livePreviewWindow->processingPausedRequested();
             }
         }
         while (runtimePaused) {
             if (livePreviewWindow) {
                 setPreviewStatusText(QStringLiteral(
                     "FaceStream detection paused. Resume from the runtime controls to continue."));
+                livePreviewWindow->setTimelineRange(options.startFrame,
+                                                   qMax(options.startFrame, latestProcessedFrame),
+                                                   qMax(options.startFrame, latestProcessedFrame));
+                livePreviewWindow->setProcessingPaused(true);
+                syncDetectorPreviewPanel(&detectorControls,
+                                         livePreviewWindow.get(),
+                                         options.startFrame,
+                                         qMax(options.startFrame, latestProcessedFrame));
             }
             appPtr->processEvents(QEventLoop::AllEvents, 16);
+            if (livePreviewWindow) {
+                livePreviewWindow->pumpEvents();
+                syncDetectorPreviewPanel(&detectorControls,
+                                         livePreviewWindow.get(),
+                                         options.startFrame,
+                                         qMax(options.startFrame, latestProcessedFrame));
+                runtimePaused = livePreviewWindow->processingPausedRequested();
+                const int previewFrame = livePreviewWindow->requestedPreviewFrame();
+                if (previewFrame >= options.startFrame && previewFrame <= latestProcessedFrame &&
+                    (livePreviewWindow->lastPresentedSourceFrame() != previewFrame ||
+                     livePreviewWindow->previewRefreshRequested())) {
+                    renderAndPresentLivePreviewWindow(previewFrame,
+                                                     tracksForFrame(previewFrame),
+                                                     detectionsForFrame(previewFrame),
+                                                     QStringLiteral("JCut DNN FaceStream Generator (History Preview)"));
+                }
+            }
             if (detectorControls.window && !detectorControls.window->isVisible()) {
                 detectorControls.window = nullptr;
                 runtimePaused = false;
@@ -4282,7 +4823,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         syncSourceClipGrading();
         if (!options.paramsFile.isEmpty()) {
             QFileInfo paramsInfo(options.paramsFile);
-            if (applyRuntimeParamsFile(options.paramsFile, paramsInfo, &tuning, &paramsMtime)) {
+            if (applyRuntimeParamsFile(options.paramsFile, paramsInfo, &tuning, nullptr, &paramsMtime)) {
                 tuning.scrfdModelVariant = options.scrfdModelVariant;
                 syncDetectorControlPanel(&detectorControls, tuning);
                 if (options.verbose) {
@@ -4302,9 +4843,26 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             }
         }
         QFileInfo liveSettingsInfo(detectorSettingsPath);
-        if (applyRuntimeParamsFile(detectorSettingsPath, liveSettingsInfo, &tuning, &detectorSettingsMtime)) {
+        if (applyRuntimeParamsFile(detectorSettingsPath,
+                                   liveSettingsInfo,
+                                   &tuning,
+                                   &previewDebugSettings,
+                                   &detectorSettingsMtime)) {
             tuning.scrfdModelVariant = options.scrfdModelVariant;
             syncDetectorControlPanel(&detectorControls, tuning);
+            if (livePreviewWindow) {
+                livePreviewWindow->setFollowLatest(previewDebugSettings.followLatest);
+                livePreviewWindow->setPreviewPlaybackSpeed(previewDebugSettings.playbackSpeed);
+                livePreviewWindow->setShowDetections(previewDebugSettings.showDetections);
+                livePreviewWindow->setShowTracks(previewDebugSettings.showTracks);
+                livePreviewWindow->setShowLabels(previewDebugSettings.showLabels);
+                livePreviewWindow->setShowConfirmedTracks(previewDebugSettings.showConfirmedTracks);
+                livePreviewWindow->setShowTentativeTracks(previewDebugSettings.showTentativeTracks);
+                livePreviewWindow->setShowLostTracks(previewDebugSettings.showLostTracks);
+                livePreviewWindow->setDetectionLineThickness(previewDebugSettings.detectionLineThickness);
+                livePreviewWindow->setTrackLineThickness(previewDebugSettings.trackLineThickness);
+                livePreviewWindow->setOverlayOpacity(previewDebugSettings.overlayOpacity);
+            }
             if (options.verbose) {
                 std::cout << "detector_settings"
                           << " scrfd_model_variant=" << tuning.scrfdModelVariant.toStdString()
@@ -4471,7 +5029,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                         sanitizeStats,
                         rawDetections);
                 }
-                const QVector<Track> detectionPreviewTracks;
+                const QVector<Track> detectionPreviewTracks =
+                    advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
                 if (!requireSynchronizedPreview(
                         frameNumber,
                         decodedFrame,
@@ -4611,7 +5170,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                         sanitizeStats,
                         rawDetections);
                 }
-                const QVector<Track> detectionPreviewTracks;
+                const QVector<Track> detectionPreviewTracks =
+                    advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
                 const bool previewFrameDue =
                     !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
                 const bool needsPreviewFrame =
@@ -4756,7 +5316,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     sanitizeStats,
                     rawDetections);
             }
-            const QVector<Track> detectionPreviewTracks;
+            const QVector<Track> detectionPreviewTracks =
+                advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
 
             const bool previewFrameDue =
                 !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
@@ -4785,108 +5346,21 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             }
 #endif
         }
-        ++processed;
-        totalDetections += detections.size();
-        renderDecodeMsTotal += renderStats.decodeMs;
-        renderCompositeMsTotal += renderStats.compositeMs;
-        renderReadbackMsTotal += renderStats.readbackMs;
-        vulkanDetectMsTotal += vulkanDetectMs;
-        const QString detectorId = backend;
-        const bool qimageMaterialized = options.materializedGenerateFacestream;
-        const QJsonObject rawDetectionFrame =
-            buildRawDetectionFrameRecord(frameNumber, detectorId, detectionFrameSize, detections);
-        rawDetectionFrames.append(rawDetectionFrame);
-        const QJsonArray trackDetections;
-        const bool decoderDirectHandoff = !appVulkanFrame && hardwareDirectHandoff;
-        const QJsonObject frameRow{
-            {QStringLiteral("frame"), frameNumber},
-            {QStringLiteral("detector"), detectorId},
-            {QStringLiteral("detections"), detections.size()},
-            {QStringLiteral("tracks"), 0},
-            {QStringLiteral("app_vulkan_frame_path"), appVulkanFrame},
-            {QStringLiteral("app_render_decode_ms"), renderStats.decodeMs},
-            {QStringLiteral("app_render_texture_ms"), renderStats.textureMs},
-            {QStringLiteral("app_render_composite_ms"), renderStats.compositeMs},
-            {QStringLiteral("app_render_readback_ms"), renderStats.readbackMs},
-            {QStringLiteral("vulkan_zero_copy_detection_ms"), vulkanDetectMs},
-            {QStringLiteral("decoder_vulkan_upload_ms"), decoderUploadMs},
-            {QStringLiteral("decoder_vulkan_upload_fallback"), decoderVulkanUploadFallback},
-            {QStringLiteral("hardware_direct_handoff"), hardwareDirectHandoff},
-            {QStringLiteral("hardware_direct_attempt_reason"), decoderFrameHandoff.lastHardwareDirectAttemptReason()},
-            {QStringLiteral("qimage_materialized"), qimageMaterialized}
-        };
-        frameRows.append(frameRow);
-        QJsonObject streamRow = frameRow;
-        streamRow.insert(QStringLiteral("type"), QStringLiteral("frame"));
-        streamRow.insert(QStringLiteral("schema"), QStringLiteral("jcut_facestream_frame_v1"));
-        streamRow.insert(QStringLiteral("video"), options.videoPath);
-        streamRow.insert(QStringLiteral("backend"), backend);
-        streamRow.insert(QStringLiteral("decoder_direct_handoff"), decoderDirectHandoff);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_supported"), decoderFrameHandoff.lastProbe().supported);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_failed"), !decoderFrameHandoff.lastProbe().path.isEmpty() && !decoderFrameHandoff.lastProbe().supported);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_path"), decoderFrameHandoff.lastProbe().path);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_reason"), decoderFrameHandoff.lastProbe().reason);
-        streamRow.insert(QStringLiteral("hardware_frame"), appVulkanFrame || hardwareDirectHandoff);
-        streamRow.insert(QStringLiteral("cpu_frame"), qimageMaterialized || decoderVulkanUploadFallback);
-        streamRow.insert(QStringLiteral("detection_boxes"),
-                         rawDetectionFrame.value(QStringLiteral("detections")).toArray());
-        streamRow.insert(QStringLiteral("track_detections"), trackDetections);
-        if (!appendBinaryJsonRecord(&faceStreamFile, streamRow)) {
-            std::cerr << "Failed to append streaming facestream checkpoint: "
-                      << faceStreamPath.toStdString() << "\n";
+        if (!recordProcessedFrame(frameOffset,
+                                  frameNumber,
+                                  renderStats,
+                                  detections,
+                                  runtimeTracks,
+                                  detectionFrameSize,
+                                  appVulkanFrame,
+                                  decoderVulkanUploadFallback,
+                                  hardwareDirectHandoff,
+                                  decoderUploadMs,
+                                  vulkanDetectMs,
+                                  emptyNcnnStats,
+                                  decoderFrameHandoff.lastProbe(),
+                                  decoderFrameHandoff.lastHardwareDirectAttemptReason())) {
             return 2;
-        }
-        resume.completedFrames.insert(frameNumber);
-        const bool logThisFrame =
-            options.verbose ||
-            (options.logInterval > 0 && (processed % options.logInterval) == 0);
-        if (logThisFrame) {
-            std::cout << "frame=" << frameNumber
-                      << " detector=" << detectorId.toStdString()
-                      << " detections=" << detections.size()
-                      << " app_vulkan_frame_path=" << (appVulkanFrame ? 1 : 0)
-                      << " render_decode_ms=" << renderStats.decodeMs
-                      << " render_texture_ms=" << renderStats.textureMs
-                      << " render_composite_ms=" << renderStats.compositeMs
-                      << " render_readback_ms=" << renderStats.readbackMs
-                      << " vulkan_zero_copy_detection_ms=" << vulkanDetectMs
-                      << " decoder_vulkan_upload_ms=" << decoderUploadMs
-                      << " decoder_vulkan_upload_fallback=" << (decoderVulkanUploadFallback ? 1 : 0)
-                      << " hardware_direct_handoff=" << (hardwareDirectHandoff ? 1 : 0)
-                      << " hardware_direct_attempt_reason=\"" << decoderFrameHandoff.lastHardwareDirectAttemptReason().toStdString() << "\""
-                      << " qimage_materialized=" << (qimageMaterialized ? 1 : 0)
-                      << "\n";
-        }
-        if (options.progress && !logThisFrame &&
-            shouldRenderProgress(frameOffset,
-                                 totalFrames,
-                                 processed,
-                                 &lastProgressPercent,
-                                 &lastProgressAt)) {
-            const auto now = std::chrono::steady_clock::now();
-            const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
-            renderProgressLine(frameOffset,
-                               totalFrames,
-                               frameNumber,
-                               processed,
-                               totalDetections,
-                               detections.size(),
-                               elapsedSec,
-                               processed > 0 ? vulkanDetectMsTotal / processed : 0.0,
-                               &etaTracker);
-        }
-        if (detectorControls.window) {
-            const auto now = std::chrono::steady_clock::now();
-            const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
-            updateDetectorRuntimeStats(&detectorControls,
-                                       frameOffset,
-                                       totalFrames,
-                                       frameNumber,
-                                       processed,
-                                       totalDetections,
-                                       detections.size(),
-                                       elapsedSec,
-                                       &etaTracker);
         }
     }
     while (!pendingDecoderDirectSlots.empty()) {

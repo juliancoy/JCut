@@ -120,6 +120,10 @@ EditorWindow::EditorWindow(quint16 controlPort)
 
     setupPlaybackTimers();
     startupProfileMark(QStringLiteral("setup.playback_timers.done"));
+    m_deferredInspectorRefreshTimer.setSingleShot(true);
+    connect(&m_deferredInspectorRefreshTimer, &QTimer::timeout, this, [this]() {
+        refreshCurrentInspectorTab();
+    });
     m_transcriptNormalizeRefreshTimer.setSingleShot(true);
     m_transcriptNormalizeRefreshTimer.setTimerType(Qt::CoarseTimer);
     connect(&m_transcriptNormalizeRefreshTimer, &QTimer::timeout,
@@ -148,6 +152,34 @@ EditorWindow::EditorWindow(quint16 controlPort)
     connect(&m_transcriptTextCompanionBackfillWatcher, &QFutureWatcher<QJsonObject>::finished, this, [this]() {
         const QJsonObject result = m_transcriptTextCompanionBackfillWatcher.result();
         startupProfileMark(QStringLiteral("load_state.transcript_txt_backfill.complete"), result);
+    });
+    connect(&m_deferredHistoryLoadWatcher, &QFutureWatcher<QJsonObject>::finished, this, [this]() {
+        const QJsonObject result = m_deferredHistoryLoadWatcher.result();
+        const QString projectId = result.value(QStringLiteral("project_id")).toString();
+        const int entryCount = result.value(QStringLiteral("entry_count")).toInt(0);
+        const int index = result.value(QStringLiteral("history_index")).toInt(-1);
+        const QJsonArray entries = result.value(QStringLiteral("entries")).toArray();
+        if (projectId.isEmpty() ||
+            projectId != currentProjectIdOrDefault() ||
+            projectId != m_deferredHistoryLoadProjectId) {
+            return;
+        }
+        if (!m_historyEntries.isEmpty()) {
+            startupProfileMark(QStringLiteral("load_state.history_deferred.skipped"),
+                               QJsonObject{{QStringLiteral("project_id"), projectId},
+                                           {QStringLiteral("reason"), QStringLiteral("history_already_initialized")},
+                                           {QStringLiteral("entry_count"), entryCount}});
+            return;
+        }
+        m_historyEntries = entries;
+        m_historyIndex = (entryCount > 0) ? qBound(0, index, entryCount - 1) : -1;
+        if (m_historyEntries.isEmpty() && m_timeline) {
+            pushHistorySnapshot();
+        }
+        startupProfileMark(QStringLiteral("load_state.history_deferred.complete"),
+                           QJsonObject{{QStringLiteral("project_id"), projectId},
+                                       {QStringLiteral("entry_count"), entryCount},
+                                       {QStringLiteral("history_index"), m_historyIndex}});
     });
     setupShortcuts();
     startupProfileMark(QStringLiteral("setup.shortcuts.done"));
@@ -306,6 +338,233 @@ void EditorWindow::scheduleTranscriptTextCompanionBackfill()
         };
     }));
 }
+
+void EditorWindow::applyDeferredStartupPanelState(const QJsonObject& root,
+                                                  const QStringList& expandedExplorerPaths)
+{
+    if (m_explorerPane) {
+        m_explorerPane->restoreExpandedExplorerPaths(expandedExplorerPaths);
+    }
+
+    const QJsonArray transcriptColumnHidden =
+        root.value(QStringLiteral("transcriptColumnHidden")).toArray();
+    const QJsonArray speakersColumnHidden =
+        root.value(QStringLiteral("speakersColumnHidden")).toArray();
+    const QString transcriptSpeakerFilterValue =
+        root.value(QStringLiteral("transcriptSpeakerFilterValue")).toString();
+    const QString transcriptActiveCutPath =
+        root.value(QStringLiteral("transcriptActiveCutPath")).toString();
+    const int selectedInspectorTab = root.value(QStringLiteral("selectedInspectorTab")).toInt(0);
+    const QString selectedInspectorTabLabel =
+        root.value(QStringLiteral("selectedInspectorTabLabel")).toString().trimmed();
+
+    if (m_inspectorPane && m_inspectorPane->transcriptSpeakerFilterCombo()) {
+        m_inspectorPane->transcriptSpeakerFilterCombo()->setProperty(
+            "pendingSpeakerFilterValue", transcriptSpeakerFilterValue);
+    }
+    if (m_inspectorPane && m_inspectorPane->transcriptScriptVersionCombo()) {
+        m_inspectorPane->transcriptScriptVersionCombo()->setProperty(
+            "pendingCutPath", transcriptActiveCutPath);
+    }
+    if (m_transcriptTable && !transcriptColumnHidden.isEmpty()) {
+        const int limit = qMin(m_transcriptTable->columnCount(), transcriptColumnHidden.size());
+        for (int i = 0; i < limit; ++i) {
+            if (i == 5) {
+                m_transcriptTable->setColumnHidden(i, false);
+                continue;
+            }
+            m_transcriptTable->setColumnHidden(i, transcriptColumnHidden.at(i).toBool(false));
+        }
+    }
+    if (m_inspectorPane) {
+        if (SpeakersTable* speakersTable =
+                qobject_cast<SpeakersTable*>(m_inspectorPane->speakersTable());
+            speakersTable && !speakersColumnHidden.isEmpty()) {
+            speakersTable->applyHiddenColumns(speakersColumnHidden);
+        }
+    }
+
+    if (m_inspectorTabs && m_inspectorTabs->count() > 0) {
+        const auto isTabNamed = [this](const QString& name) -> bool {
+            if (!m_inspectorTabs) {
+                return false;
+            }
+            const int index = m_inspectorTabs->currentIndex();
+            return index >= 0 && m_inspectorTabs->tabText(index).compare(name, Qt::CaseInsensitive) == 0;
+        };
+        int targetInspectorTab = qBound(0, selectedInspectorTab, m_inspectorTabs->count() - 1);
+        if (!selectedInspectorTabLabel.isEmpty()) {
+            for (int i = 0; i < m_inspectorTabs->count(); ++i) {
+                if (m_inspectorTabs->tabText(i).compare(selectedInspectorTabLabel, Qt::CaseInsensitive) == 0) {
+                    targetInspectorTab = i;
+                    break;
+                }
+            }
+        }
+        QSignalBlocker block(m_inspectorTabs);
+        m_inspectorTabs->setCurrentIndex(targetInspectorTab);
+        if (m_preview) {
+            const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
+            const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
+            const bool titleOverlayOnly = isTabNamed(QStringLiteral("Titles"));
+            m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
+            m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
+            m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
+            if (!showCorrectionOverlays && m_correctionsTab) {
+                m_correctionsTab->stopDrawing();
+            }
+            if (m_inspectorTabs->tabText(targetInspectorTab).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
+                applyPreviewViewMode(QStringLiteral("audio"));
+                if (m_previewModeCombo) {
+                    QSignalBlocker comboBlock(m_previewModeCombo);
+                    const int audioIndex =
+                        m_previewModeCombo->findData(QStringLiteral("audio"), Qt::MatchFixedString);
+                    if (audioIndex >= 0) {
+                        m_previewModeCombo->setCurrentIndex(audioIndex);
+                    }
+                }
+            }
+        }
+    }
+}
+
+bool EditorWindow::reconcileMissingMediaForClips(QVector<TimelineClip>* clips,
+                                                 const QString& rootPath)
+{
+    if (!clips || clips->isEmpty() || m_restoringHistory) {
+        return false;
+    }
+
+    const auto clipSourceExists = [](const TimelineClip& clip) {
+        if (clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title) {
+            return true;
+        }
+        const QFileInfo info(clip.filePath);
+        return info.exists() &&
+               (info.isFile() || (info.isDir() && isImageSequencePath(info.absoluteFilePath())));
+    };
+
+    QHash<QString, QString> relocatedByOriginalPath;
+    QHash<QString, QString> relocatedDirByOriginalDir;
+    bool skipRelocatePrompts = false;
+    int relocatedCount = 0;
+    int unresolvedCount = 0;
+
+    for (TimelineClip& clip : *clips) {
+        if (clipSourceExists(clip)) {
+            continue;
+        }
+
+        const QString originalPath = QFileInfo(clip.filePath).absoluteFilePath();
+        const QFileInfo originalInfo(originalPath);
+        QString relocatedPath = relocatedByOriginalPath.value(originalPath);
+
+        if (relocatedPath.isEmpty()) {
+            const QString mappedDir = relocatedDirByOriginalDir.value(originalInfo.absolutePath());
+            if (!mappedDir.isEmpty()) {
+                const QString candidatePath = QDir(mappedDir).filePath(originalInfo.fileName());
+                const QFileInfo candidateInfo(candidatePath);
+                if (candidateInfo.exists() &&
+                    (candidateInfo.isFile() ||
+                     (candidateInfo.isDir() && isImageSequencePath(candidateInfo.absoluteFilePath())))) {
+                    relocatedPath = candidateInfo.absoluteFilePath();
+                }
+            }
+        }
+
+        if (relocatedPath.isEmpty() && !skipRelocatePrompts) {
+            QMessageBox prompt(this);
+            prompt.setIcon(QMessageBox::Warning);
+            prompt.setWindowTitle(QStringLiteral("Missing Media"));
+            prompt.setText(QStringLiteral("Could not find media file:\n%1")
+                               .arg(QDir::toNativeSeparators(originalPath)));
+            prompt.setInformativeText(QStringLiteral("Relocate this clip to a new file or folder?"));
+            QPushButton* relocateButton =
+                prompt.addButton(QStringLiteral("Relocate"), QMessageBox::AcceptRole);
+            QPushButton* skipButton =
+                prompt.addButton(QStringLiteral("Skip"), QMessageBox::RejectRole);
+            QPushButton* skipAllButton =
+                prompt.addButton(QStringLiteral("Skip All"), QMessageBox::DestructiveRole);
+            Q_UNUSED(skipButton);
+            prompt.setDefaultButton(relocateButton);
+            prompt.exec();
+
+            if (prompt.clickedButton() == skipAllButton) {
+                skipRelocatePrompts = true;
+                ++unresolvedCount;
+                continue;
+            }
+            if (prompt.clickedButton() != relocateButton) {
+                ++unresolvedCount;
+                continue;
+            }
+
+            const QString startDir = originalInfo.dir().exists()
+                ? originalInfo.absolutePath()
+                : rootPath;
+            QString selectedPath;
+            if (clip.sourceKind == MediaSourceKind::ImageSequence) {
+                selectedPath = QFileDialog::getExistingDirectory(
+                    this,
+                    QStringLiteral("Locate Image Sequence Folder"),
+                    startDir,
+                    QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+            } else {
+                selectedPath = QFileDialog::getOpenFileName(
+                    this,
+                    QStringLiteral("Locate Media File"),
+                    startDir);
+            }
+
+            if (selectedPath.isEmpty()) {
+                ++unresolvedCount;
+                continue;
+            }
+            relocatedPath = QFileInfo(selectedPath).absoluteFilePath();
+        }
+
+        if (relocatedPath.isEmpty()) {
+            ++unresolvedCount;
+            continue;
+        }
+
+        const QFileInfo relocatedInfo(relocatedPath);
+        const bool relocatedValid =
+            relocatedInfo.exists() &&
+            (relocatedInfo.isFile() ||
+             (relocatedInfo.isDir() && isImageSequencePath(relocatedInfo.absoluteFilePath())));
+        if (!relocatedValid) {
+            ++unresolvedCount;
+            continue;
+        }
+
+        const QString oldFileName = originalInfo.fileName();
+        if (clip.label.trimmed().isEmpty() || clip.label == oldFileName) {
+            clip.label = relocatedInfo.fileName();
+        }
+        clip.filePath = relocatedInfo.absoluteFilePath();
+        clip.proxyPath.clear();
+
+        relocatedByOriginalPath.insert(originalPath, clip.filePath);
+        relocatedDirByOriginalDir.insert(originalInfo.absolutePath(), relocatedInfo.absolutePath());
+        ++relocatedCount;
+    }
+
+    if (relocatedCount > 0) {
+        m_pendingSaveAfterLoad = true;
+    }
+    if (relocatedCount > 0 || unresolvedCount > 0) {
+        QString summary = QStringLiteral("Relocated %1 clip source(s).").arg(relocatedCount);
+        if (unresolvedCount > 0) {
+            summary += QStringLiteral("\n%1 clip source(s) are still missing.")
+                           .arg(unresolvedCount);
+        }
+        QMessageBox::information(this, QStringLiteral("Media Relocation"), summary);
+    }
+
+    return relocatedCount > 0;
+}
+
 
 void EditorWindow::syncTranscriptTableToPlayhead()
 {
@@ -546,6 +805,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
+    const bool previewShowRawDetections =
+        root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
     const QString previewFacestreamOverlaySource = normalizedPreviewFacestreamOverlaySource(
         root.value(QStringLiteral("previewFacestreamOverlaySource")).toString(QStringLiteral("all")));
     const int autosaveIntervalMinutes = qBound(
@@ -787,143 +1048,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     markStartup(QStringLiteral("apply_state.timeline_parse.end"),
                 QJsonObject{{QStringLiteral("loaded_clip_count"), loadedClips.size()}});
 
-    if (!m_restoringHistory && !loadedClips.isEmpty()) {
+    if (!startupMarking && !m_restoringHistory && !loadedClips.isEmpty()) {
         QElapsedTimer relocateTimer;
         relocateTimer.start();
         markStartup(QStringLiteral("apply_state.media_relocate.begin"),
                     QJsonObject{{QStringLiteral("candidate_clip_count"), loadedClips.size()}});
-        const auto clipSourceExists = [](const TimelineClip& clip) {
-            if (clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title) {
-                return true;
-            }
-            const QFileInfo info(clip.filePath);
-            return info.exists() &&
-                   (info.isFile() || (info.isDir() && isImageSequencePath(info.absoluteFilePath())));
-        };
-
-        QHash<QString, QString> relocatedByOriginalPath;
-        QHash<QString, QString> relocatedDirByOriginalDir;
-        bool skipRelocatePrompts = false;
-        int relocatedCount = 0;
-        int unresolvedCount = 0;
-
-        for (TimelineClip& clip : loadedClips) {
-            if (clipSourceExists(clip)) {
-                continue;
-            }
-
-            const QString originalPath = QFileInfo(clip.filePath).absoluteFilePath();
-            const QFileInfo originalInfo(originalPath);
-            QString relocatedPath = relocatedByOriginalPath.value(originalPath);
-
-            if (relocatedPath.isEmpty()) {
-                const QString mappedDir = relocatedDirByOriginalDir.value(originalInfo.absolutePath());
-                if (!mappedDir.isEmpty()) {
-                    const QString candidatePath = QDir(mappedDir).filePath(originalInfo.fileName());
-                    const QFileInfo candidateInfo(candidatePath);
-                    if (candidateInfo.exists() &&
-                        (candidateInfo.isFile() ||
-                         (candidateInfo.isDir() && isImageSequencePath(candidateInfo.absoluteFilePath())))) {
-                        relocatedPath = candidateInfo.absoluteFilePath();
-                    }
-                }
-            }
-
-            if (relocatedPath.isEmpty() && !skipRelocatePrompts) {
-                QMessageBox prompt(this);
-                prompt.setIcon(QMessageBox::Warning);
-                prompt.setWindowTitle(QStringLiteral("Missing Media"));
-                prompt.setText(QStringLiteral("Could not find media file:\n%1")
-                                   .arg(QDir::toNativeSeparators(originalPath)));
-                prompt.setInformativeText(QStringLiteral("Relocate this clip to a new file or folder?"));
-                QPushButton* relocateButton =
-                    prompt.addButton(QStringLiteral("Relocate"), QMessageBox::AcceptRole);
-                QPushButton* skipButton =
-                    prompt.addButton(QStringLiteral("Skip"), QMessageBox::RejectRole);
-                QPushButton* skipAllButton =
-                    prompt.addButton(QStringLiteral("Skip All"), QMessageBox::DestructiveRole);
-                Q_UNUSED(skipButton);
-                prompt.setDefaultButton(relocateButton);
-                prompt.exec();
-
-                if (prompt.clickedButton() == skipAllButton) {
-                    skipRelocatePrompts = true;
-                    ++unresolvedCount;
-                    continue;
-                }
-                if (prompt.clickedButton() != relocateButton) {
-                    ++unresolvedCount;
-                    continue;
-                }
-
-                const QString startDir = originalInfo.dir().exists()
-                    ? originalInfo.absolutePath()
-                    : rootPath;
-                QString selectedPath;
-                if (clip.sourceKind == MediaSourceKind::ImageSequence) {
-                    selectedPath = QFileDialog::getExistingDirectory(
-                        this,
-                        QStringLiteral("Locate Image Sequence Folder"),
-                        startDir,
-                        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-                } else {
-                    selectedPath = QFileDialog::getOpenFileName(
-                        this,
-                        QStringLiteral("Locate Media File"),
-                        startDir);
-                }
-
-                if (selectedPath.isEmpty()) {
-                    ++unresolvedCount;
-                    continue;
-                }
-                relocatedPath = QFileInfo(selectedPath).absoluteFilePath();
-            }
-
-            if (relocatedPath.isEmpty()) {
-                ++unresolvedCount;
-                continue;
-            }
-
-            const QFileInfo relocatedInfo(relocatedPath);
-            const bool relocatedValid =
-                relocatedInfo.exists() &&
-                (relocatedInfo.isFile() ||
-                 (relocatedInfo.isDir() && isImageSequencePath(relocatedInfo.absoluteFilePath())));
-            if (!relocatedValid) {
-                ++unresolvedCount;
-                continue;
-            }
-
-            const QString oldFileName = originalInfo.fileName();
-            if (clip.label.trimmed().isEmpty() || clip.label == oldFileName) {
-                clip.label = relocatedInfo.fileName();
-            }
-            clip.filePath = relocatedInfo.absoluteFilePath();
-            clip.proxyPath.clear();
-
-            relocatedByOriginalPath.insert(originalPath, clip.filePath);
-            relocatedDirByOriginalDir.insert(originalInfo.absolutePath(), relocatedInfo.absolutePath());
-            ++relocatedCount;
-        }
-
-        if (relocatedCount > 0) {
-            m_pendingSaveAfterLoad = true;
-        }
-
-        if (relocatedCount > 0 || unresolvedCount > 0) {
-            QString summary = QStringLiteral("Relocated %1 clip source(s).").arg(relocatedCount);
-            if (unresolvedCount > 0) {
-                summary += QStringLiteral("\n%1 clip source(s) are still missing.")
-                               .arg(unresolvedCount);
-            }
-            QMessageBox::information(this, QStringLiteral("Media Relocation"), summary);
-        }
+        const bool relocated = reconcileMissingMediaForClips(&loadedClips, rootPath);
         markStartup(QStringLiteral("apply_state.media_relocate.end"),
                     QJsonObject{
                         {QStringLiteral("elapsed_ms"), relocateTimer.elapsed()},
-                        {QStringLiteral("relocated_count"), relocatedCount},
-                        {QStringLiteral("unresolved_count"), unresolvedCount}
+                        {QStringLiteral("relocated"), relocated}
                     });
     }
 
@@ -967,7 +1101,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const QString resolvedRootPath = QDir(rootPath).absolutePath();
     if (m_explorerPane) {
         m_explorerPane->setInitialRootPath(resolvedRootPath);
-        m_explorerPane->restoreExpandedExplorerPaths(expandedExplorerPaths);
+        if (!startupMarking) {
+            m_explorerPane->restoreExpandedExplorerPaths(expandedExplorerPaths);
+        }
     }
     
     if (m_outputWidthSpin) { QSignalBlocker block(m_outputWidthSpin); m_outputWidthSpin->setValue(outputWidth); }
@@ -1043,6 +1179,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (m_speakerShowFaceStreamBoxesCheckBox) {
         QSignalBlocker block(m_speakerShowFaceStreamBoxesCheckBox);
         m_speakerShowFaceStreamBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
+    }
+    if (m_speakerShowRawDetectionsCheckBox) {
+        QSignalBlocker block(m_speakerShowRawDetectionsCheckBox);
+        m_speakerShowRawDetectionsCheckBox->setChecked(previewShowRawDetections);
     }
     if (m_speakerFaceStreamOverlaySourceCombo) {
         QSignalBlocker block(m_speakerFaceStreamOverlaySourceCombo);
@@ -1172,29 +1312,31 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_inspectorPane->transcriptShowExcludedLinesCheckBox());
         m_inspectorPane->transcriptShowExcludedLinesCheckBox()->setChecked(transcriptShowExcludedLines);
     }
-    if (m_inspectorPane && m_inspectorPane->transcriptSpeakerFilterCombo()) {
-        m_inspectorPane->transcriptSpeakerFilterCombo()->setProperty(
-            "pendingSpeakerFilterValue", transcriptSpeakerFilterValue);
-    }
-    if (m_inspectorPane && m_inspectorPane->transcriptScriptVersionCombo()) {
-        m_inspectorPane->transcriptScriptVersionCombo()->setProperty(
-            "pendingCutPath", transcriptActiveCutPath);
-    }
-    if (m_transcriptTable && !transcriptColumnHidden.isEmpty()) {
-        const int limit = qMin(m_transcriptTable->columnCount(), transcriptColumnHidden.size());
-        for (int i = 0; i < limit; ++i) {
-            if (i == 5) { // Text column must always be visible
-                m_transcriptTable->setColumnHidden(i, false);
-                continue;
-            }
-            m_transcriptTable->setColumnHidden(i, transcriptColumnHidden.at(i).toBool(false));
+    if (!startupMarking) {
+        if (m_inspectorPane && m_inspectorPane->transcriptSpeakerFilterCombo()) {
+            m_inspectorPane->transcriptSpeakerFilterCombo()->setProperty(
+                "pendingSpeakerFilterValue", transcriptSpeakerFilterValue);
         }
-    }
-    if (m_inspectorPane) {
-        if (SpeakersTable* speakersTable =
-                qobject_cast<SpeakersTable*>(m_inspectorPane->speakersTable());
-            speakersTable && !speakersColumnHidden.isEmpty()) {
-            speakersTable->applyHiddenColumns(speakersColumnHidden);
+        if (m_inspectorPane && m_inspectorPane->transcriptScriptVersionCombo()) {
+            m_inspectorPane->transcriptScriptVersionCombo()->setProperty(
+                "pendingCutPath", transcriptActiveCutPath);
+        }
+        if (m_transcriptTable && !transcriptColumnHidden.isEmpty()) {
+            const int limit = qMin(m_transcriptTable->columnCount(), transcriptColumnHidden.size());
+            for (int i = 0; i < limit; ++i) {
+                if (i == 5) { // Text column must always be visible
+                    m_transcriptTable->setColumnHidden(i, false);
+                    continue;
+                }
+                m_transcriptTable->setColumnHidden(i, transcriptColumnHidden.at(i).toBool(false));
+            }
+        }
+        if (m_inspectorPane) {
+            if (SpeakersTable* speakersTable =
+                    qobject_cast<SpeakersTable*>(m_inspectorPane->speakersTable());
+                speakersTable && !speakersColumnHidden.isEmpty()) {
+                speakersTable->applyHiddenColumns(speakersColumnHidden);
+            }
         }
     }
     
@@ -1213,7 +1355,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setCorrectionsEnabled(m_correctionsEnabled);
     }
     
-    if (m_inspectorTabs && m_inspectorTabs->count() > 0) {
+    if (!startupMarking && m_inspectorTabs && m_inspectorTabs->count() > 0) {
         const auto isTabNamed = [this](const QString& name) -> bool {
             if (!m_inspectorTabs) {
                 return false;
@@ -1252,6 +1394,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setHideOutsideOutputWindow(previewHideOutsideOutput);
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
+        m_preview->setShowRawDetections(previewShowRawDetections);
         m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;
@@ -1270,7 +1413,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                                            ? QStringLiteral("Switch preview between video composition and audio waveform view.")
                                            : QStringLiteral("Audio preview mode disabled by feature flag."));
     }
-    if (m_inspectorTabs) {
+    if (!startupMarking && m_inspectorTabs) {
         const int index = m_inspectorTabs->currentIndex();
         if (index >= 0 &&
             m_inspectorTabs->tabText(index).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
@@ -1525,7 +1668,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         ? projectsRoot 
         : resolvedRootPath;
     
-    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking, selectedClipId, playbackRanges]() {
+    QTimer::singleShot(0, this, [this, mediaRoot, currentFrame, startupMarking, selectedClipId, playbackRanges, root, expandedExplorerPaths]() {
         if (m_explorerPane) {
             m_explorerPane->setInitialRootPath(mediaRoot);
         }
@@ -1533,6 +1676,20 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             refreshCurrentInspectorTab();
         }
         if (startupMarking) {
+            applyDeferredStartupPanelState(root, expandedExplorerPaths);
+            QTimer::singleShot(0, this, [this, mediaRoot]() {
+                if (!m_timeline) {
+                    return;
+                }
+                QVector<TimelineClip> clips = m_timeline->clips();
+                if (!reconcileMissingMediaForClips(&clips, mediaRoot)) {
+                    return;
+                }
+                m_loadingState = true;
+                m_timeline->setClips(clips);
+                m_loadingState = false;
+                scheduleSaveState();
+            });
             QTimer::singleShot(0, this, [this, currentFrame, selectedClipId, playbackRanges]() {
                 bindTimelineMediaState(selectedClipId, playbackRanges, currentFrame, true);
             });

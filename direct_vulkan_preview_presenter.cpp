@@ -1656,7 +1656,7 @@ protected:
             QWidget::wheelEvent(event);
             return;
         }
-        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
+        if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
             QWidget::wheelEvent(event);
             return;
         }
@@ -1785,6 +1785,14 @@ VkClearValue clipColorForStatus(const TimelineClip& clip,
 VkClearValue facestreamOverlayColor(const PreviewInteractionState* state,
                                    const VulkanPreviewFacestreamOverlay& overlay)
 {
+    if (overlay.source.compare(QStringLiteral("raw_detection"), Qt::CaseInsensitive) == 0) {
+        VkClearValue raw{};
+        raw.color.float32[0] = 0.29f;
+        raw.color.float32[1] = 0.87f;
+        raw.color.float32[2] = 0.50f;
+        raw.color.float32[3] = 0.90f;
+        return raw;
+    }
     if (overlay.source.compare(QStringLiteral("roi"), Qt::CaseInsensitive) == 0) {
         VkClearValue roi{};
         roi.color.float32[0] = 1.0f;
@@ -1976,7 +1984,7 @@ protected:
             QVulkanWindow::wheelEvent(event);
             return;
         }
-        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
+        if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
             QVulkanWindow::wheelEvent(event);
             return;
         }
@@ -1999,7 +2007,7 @@ protected:
         const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
         m_state->transient.lastMousePos = surfacePosition;
-        if (m_state->viewMode != PreviewSurface::ViewMode::Video) {
+        if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
             if (m_state->viewMode == PreviewSurface::ViewMode::Audio && m_playbackSampleRequested) {
                 int64_t targetSample = 0;
                 if (audioSeekSampleAtSurfacePosition(*m_state, surfaceRect, surfacePosition, &targetSample)) {
@@ -3607,6 +3615,19 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 swapSize);
             clearBoxOutline(m_devFuncs, cb, facestreamOverlayColor(state, overlay), boxRect, thickness);
         }
+        for (const VulkanPreviewFacestreamOverlay& overlay : state->rawDetectionOverlays) {
+            const auto it = activeClipGeometry.constFind(overlay.clipId);
+            if (it == activeClipGeometry.constEnd() || !overlay.boxNorm.isValid()) {
+                continue;
+            }
+            const PreviewClipGeometry& geometry = it.value();
+            const VkClearRect boxRect = normalizedBoxToSwapchainRect(
+                overlay.boxNorm,
+                geometry.clipToScreen,
+                geometry.localRect,
+                swapSize);
+            clearBoxOutline(m_devFuncs, cb, facestreamOverlayColor(state, overlay), boxRect, qMax(1, thickness - 1));
+        }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
 
@@ -3954,7 +3975,13 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
         return;
     }
 
-    const bool showOverlayLabel = !m_failureReason.trimmed().isEmpty();
+    const bool waitingForDecode = m_active &&
+        m_failureReason.trimmed().isEmpty() &&
+        m_stats.textureDraws <= 0 &&
+        m_stats.explicitFailureDraws <= 0 &&
+        m_state &&
+        !m_state->vulkanFrameStatuses.isEmpty();
+    const bool showOverlayLabel = !m_failureReason.trimmed().isEmpty() || waitingForDecode;
     if (!vulkanPreviewDebugChromeEnabled() && !showOverlayLabel) {
         m_placeholder->setStyleSheet(QStringLiteral("background:#05080d; border:0;"));
         if (m_statusLabel) {
@@ -4023,10 +4050,14 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
     }
 
     const QString error = m_stats.lastHandoffError.trimmed();
-    m_statusLabel->setText(
-        error.isEmpty()
-            ? QStringLiteral("Vulkan preview failure: %1").arg(state)
-            : QStringLiteral("Vulkan preview failure: %1 | %2").arg(state, error));
+    if (waitingForDecode) {
+        m_statusLabel->setText(QStringLiteral("⌛ Loading media..."));
+    } else {
+        m_statusLabel->setText(
+            error.isEmpty()
+                ? QStringLiteral("Vulkan preview failure: %1").arg(state)
+                : QStringLiteral("Vulkan preview failure: %1 | %2").arg(state, error));
+    }
 }
 
 void DirectVulkanPreviewPresenter::updateAudioOverlay()
@@ -4171,6 +4202,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
         {QStringLiteral("decode_status_details"), statusDetails},
         {QStringLiteral("facestream_overlay_boxes"), m_state ? m_state->facestreamOverlays.size() : 0},
+        {QStringLiteral("raw_detection_overlay_boxes"), m_state ? m_state->rawDetectionOverlays.size() : 0},
         {QStringLiteral("timeline_texture_composition"), hasTimelineFrameGeometry && readyStatuses > 0},
         {QStringLiteral("timeline_texture_draw_pipeline"), texturePipelineReady},
         {QStringLiteral("vulkan_matches_opengl_grading_scalars"), true},

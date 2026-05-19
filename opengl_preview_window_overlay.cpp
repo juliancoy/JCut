@@ -452,7 +452,7 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         const TimelineClip& primaryClip = activeClips.constFirst();
         drawFramePlaceholder(painter, compositeRect, primaryClip,
                              waitingForFrame
-                                 ? QStringLiteral("Frame loading...")
+                                 ? QStringLiteral("⌛ Loading media...")
                                  : QStringLiteral("No composited frame available"));
     } else if (showLoadingBadge) {
         painter->save();
@@ -463,7 +463,7 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         painter->setPen(QColor(QStringLiteral("#edf3f8")));
         painter->drawText(badgeRect.adjusted(12, 0, -12, 0),
                           Qt::AlignLeft | Qt::AlignVCenter,
-                          QStringLiteral("Overlay loading..."));
+                          QStringLiteral("⌛ Loading media..."));
         painter->restore();
     }
 
@@ -478,6 +478,9 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         m_showSpeakerTrackBoxes ||
         m_interaction.faceStreamAssignmentInteractionEnabled) {
         drawSpeakerTrackPointsOverlay(painter, activeClips);
+    }
+    if (m_showRawDetections) {
+        drawRawDetectionOverlay(painter, activeClips);
     }
     drawSpeakerFramingTargetOverlay(painter, activeClips, compositeRect);
 
@@ -820,7 +823,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         const TimelineClip& primaryClip = activeClips.constFirst();
         drawFramePlaceholder(painter, compositeRect, primaryClip,
                              waitingForFrame
-                                 ? QStringLiteral("Frame loading...")
+                                 ? QStringLiteral("⌛ Loading media...")
                                  : QStringLiteral("No composited frame available"));
     } else if (waitingForFrame) {
         painter->save();
@@ -831,7 +834,7 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         painter->setPen(QColor(QStringLiteral("#edf3f8")));
         painter->drawText(badgeRect.adjusted(12, 0, -12, 0),
                           Qt::AlignLeft | Qt::AlignVCenter,
-                          QStringLiteral("Overlay loading..."));
+                          QStringLiteral("⌛ Loading media..."));
         painter->restore();
     }
 

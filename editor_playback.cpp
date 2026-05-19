@@ -531,7 +531,7 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
             m_lastPlaybackUiSyncMs = tickNowMs;
         }
     } else {
-        refreshCurrentInspectorTab();
+        scheduleDeferredInspectorRefresh();
         syncTranscriptTableToPlayhead();
         syncKeyframeTableToPlayhead();
         syncGradingTableToPlayhead();

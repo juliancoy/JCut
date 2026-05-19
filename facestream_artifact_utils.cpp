@@ -4,6 +4,11 @@
 #include <QFileInfo>
 #include <QStringList>
 
+namespace {
+constexpr auto kContinuityFacestreamsByClipKey = "continuity_facestreams_by_clip";
+constexpr auto kLegacyContinuityFacestreamsByClipKey = "continuity_boxstreams_by_clip";
+}
+
 qint64 facestreamArtifactRevisionMsForTranscript(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
@@ -26,4 +31,32 @@ qint64 facestreamArtifactRevisionMsForTranscript(const QString& transcriptPath)
         }
     }
     return revisionMs;
+}
+
+QString continuityFacestreamsByClipKey()
+{
+    return QString(QLatin1StringView(kContinuityFacestreamsByClipKey));
+}
+
+QJsonObject continuityFacestreamsByClipObject(const QJsonObject& artifactRoot)
+{
+    QJsonObject byClip = artifactRoot.value(QLatin1StringView(kContinuityFacestreamsByClipKey)).toObject();
+    if (!byClip.isEmpty()) {
+        return byClip;
+    }
+    return artifactRoot.value(QLatin1StringView(kLegacyContinuityFacestreamsByClipKey)).toObject();
+}
+
+QJsonObject continuityRootForClip(const QJsonObject& artifactRoot, const QString& clipId)
+{
+    return continuityFacestreamsByClipObject(artifactRoot).value(clipId.trimmed()).toObject();
+}
+
+void setContinuityFacestreamsByClipObject(QJsonObject* artifactRoot, const QJsonObject& byClip)
+{
+    if (!artifactRoot) {
+        return;
+    }
+    artifactRoot->remove(QLatin1StringView(kLegacyContinuityFacestreamsByClipKey));
+    (*artifactRoot)[QString(QLatin1StringView(kContinuityFacestreamsByClipKey))] = byClip;
 }

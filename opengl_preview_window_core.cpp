@@ -493,6 +493,15 @@ void PreviewWindow::setShowSpeakerTrackBoxes(bool show) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setShowRawDetections(bool show) {
+    if (m_showRawDetections == show) {
+        return;
+    }
+    m_showRawDetections = show;
+    m_rawDetectionPointsCache.clear();
+    scheduleRepaint();
+}
+
 void PreviewWindow::setFacestreamOverlaySource(const QString& source) {
     const QString normalized = source.trimmed().isEmpty()
         ? QStringLiteral("all")
@@ -526,7 +535,7 @@ void PreviewWindow::setViewMode(ViewMode mode) {
         return;
     }
     m_interaction.viewMode = mode;
-    if (m_interaction.viewMode == ViewMode::Video) {
+    if (m_interaction.viewMode != ViewMode::Audio) {
         m_interaction.previewZoom = qBound<qreal>(0.1, m_interaction.previewZoom, 20.0);
     }
     scheduleRepaint();

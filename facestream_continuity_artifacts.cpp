@@ -1,5 +1,6 @@
 #include "facestream_runtime.h"
 
+#include "facestream_artifact_utils.h"
 #include "json_io_utils.h"
 #include "speakers_tab_internal.h"
 #include "transcript_engine.h"
@@ -109,9 +110,7 @@ QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
     if (!processedArtifactPath.isEmpty() && !clipId.isEmpty()) {
         QJsonObject processedArtifact;
         if (readBinaryJsonObject(processedArtifactPath, &processedArtifact, nullptr)) {
-            const QJsonObject byClip =
-                processedArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-            const QJsonObject processedRoot = byClip.value(clipId).toObject();
+            const QJsonObject processedRoot = continuityRootForClip(processedArtifact, clipId);
             const QJsonArray processedStreams =
                 processedRoot.value(QStringLiteral("streams")).toArray();
             if (!processedStreams.isEmpty()) {
@@ -137,9 +136,7 @@ bool continuityRootHasTracks(const QJsonObject& continuityRoot,
         if (!clipId.isEmpty()) {
             QJsonObject processedArtifact;
             if (readBinaryJsonObject(processedArtifactPath, &processedArtifact, nullptr)) {
-                const QJsonObject byClip =
-                    processedArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-                const QJsonObject processedRoot = byClip.value(clipId).toObject();
+                const QJsonObject processedRoot = continuityRootForClip(processedArtifact, clipId);
                 if (!processedRoot.value(QStringLiteral("streams")).toArray().isEmpty()) {
                     return true;
                 }
@@ -220,11 +217,11 @@ bool saveProcessedContinuityArtifact(const QString& transcriptPath,
     const QJsonObject processedRoot =
         buildProcessedContinuityRoot(clipId, rawContinuityRoot, transcriptRoot, rawArtifactPath);
 
-    QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+    QJsonObject byClip = continuityFacestreamsByClipObject(artifactRoot);
     byClip[clipId] = processedRoot;
     artifactRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facestream_processed_v1");
     artifactRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    artifactRoot[QStringLiteral("continuity_facestreams_by_clip")] = byClip;
+    setContinuityFacestreamsByClipObject(&artifactRoot, byClip);
     if (artifactRootOut) {
         *artifactRootOut = artifactRoot;
     }
@@ -276,10 +273,10 @@ bool saveContinuityArtifact(const QString& transcriptPath,
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
     engine.loadFacestreamArtifact(transcriptPath, &artifactRoot);
-    QJsonObject continuityByClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+    QJsonObject continuityByClip = continuityFacestreamsByClipObject(artifactRoot);
     continuityByClip[clipId] = continuityRoot;
     artifactRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facestream_v1");
-    artifactRoot[QStringLiteral("continuity_facestreams_by_clip")] = continuityByClip;
+    setContinuityFacestreamsByClipObject(&artifactRoot, continuityByClip);
     if (artifactRootOut) {
         *artifactRootOut = artifactRoot;
     }

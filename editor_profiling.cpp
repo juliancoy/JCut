@@ -119,6 +119,21 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("live"), m_liveRenderProfile},
         {QStringLiteral("last"), m_lastRenderProfile}};
     snapshot[QStringLiteral("speaker_tracking")] = transcriptSpeakerTrackingProfilingSnapshot();
+    snapshot[QStringLiteral("speakers_refresh")] = m_speakersTab
+        ? QJsonObject{
+              {QStringLiteral("last_speakers_table_refresh_duration_ms"),
+               m_speakersTab->lastSpeakersTableRefreshDurationMs()},
+              {QStringLiteral("max_speakers_table_refresh_duration_ms"),
+               m_speakersTab->maxSpeakersTableRefreshDurationMs()},
+              {QStringLiteral("last_facestream_panel_refresh_duration_ms"),
+               m_speakersTab->lastFaceStreamPanelRefreshDurationMs()},
+              {QStringLiteral("max_facestream_panel_refresh_duration_ms"),
+               m_speakersTab->maxFaceStreamPanelRefreshDurationMs()},
+              {QStringLiteral("last_raw_detections_panel_refresh_duration_ms"),
+               m_speakersTab->lastRawDetectionsPanelRefreshDurationMs()},
+              {QStringLiteral("max_raw_detections_panel_refresh_duration_ms"),
+               m_speakersTab->maxRawDetectionsPanelRefreshDurationMs()}}
+        : QJsonObject{};
 
     return snapshot;
 }

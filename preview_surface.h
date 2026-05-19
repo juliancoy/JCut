@@ -98,6 +98,7 @@ public:
     virtual void setPreviewZoom(qreal zoom) = 0;
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;
+    virtual void setShowRawDetections(bool show) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;
     virtual void setAudioSpeakerHoverModalEnabled(bool enabled) = 0;
     virtual void setAudioWaveformVisible(bool visible) = 0;

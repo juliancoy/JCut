@@ -119,6 +119,7 @@ struct PreviewInteractionState {
     QVector<TimelineTrack> tracks;
     QVector<VulkanPreviewClipFrameStatus> vulkanFrameStatuses;
     QVector<VulkanPreviewFacestreamOverlay> facestreamOverlays;
+    QVector<VulkanPreviewFacestreamOverlay> rawDetectionOverlays;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;
     QString selectedClipId;

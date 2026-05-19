@@ -18,6 +18,7 @@
 #include <QSignalBlocker>
 #include <QStandardPaths>
 #include <QCoreApplication>
+#include <QtConcurrent/QtConcurrentRun>
 
 using namespace editor;
 
@@ -70,6 +71,40 @@ bool sanitizeHistoryEntriesInPlace(QJsonArray* entries)
 
 } // namespace
 
+void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
+{
+    if (projectId.trimmed().isEmpty() || m_deferredHistoryLoadWatcher.isRunning()) {
+        return;
+    }
+    m_deferredHistoryLoadProjectId = projectId.trimmed();
+    const QString historyPath = historyFilePathForProject(m_deferredHistoryLoadProjectId);
+    startupProfileMark(QStringLiteral("load_state.history_deferred.begin"),
+                       QJsonObject{{QStringLiteral("project_id"), m_deferredHistoryLoadProjectId}});
+    m_deferredHistoryLoadWatcher.setFuture(QtConcurrent::run([historyPath, projectId = m_deferredHistoryLoadProjectId]() {
+        QJsonObject result{
+            {QStringLiteral("project_id"), projectId},
+            {QStringLiteral("entry_count"), 0},
+            {QStringLiteral("history_index"), -1}
+        };
+        QFile historyFile(historyPath);
+        if (!historyFile.open(QIODevice::ReadOnly)) {
+            return result;
+        }
+        QJsonObject historyRoot;
+        jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
+        QJsonArray entries = historyRoot.value(QStringLiteral("entries")).toArray();
+        sanitizeHistoryEntriesInPlace(&entries);
+        const int entryCount = entries.size();
+        const int index = entryCount > 0
+            ? qBound(0, historyRoot.value(QStringLiteral("index")).toInt(entryCount - 1), entryCount - 1)
+            : -1;
+        result[QStringLiteral("entries")] = entries;
+        result[QStringLiteral("entry_count")] = entryCount;
+        result[QStringLiteral("history_index")] = index;
+        return result;
+    }));
+}
+
 void EditorWindow::loadState()
 {
     const bool startupMarking = !m_startupProfileCompleted;
@@ -90,46 +125,52 @@ void EditorWindow::loadState()
     m_lastSavedState.clear();
 
     QJsonObject root;
-    QFile historyFile(historyFilePath());
-    markStartup(QStringLiteral("load_state.history_read.begin"));
-    if (historyFile.open(QIODevice::ReadOnly))
-    {
-        QJsonObject historyRoot;
-        jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
-        m_historyEntries = historyRoot.value(QStringLiteral("entries")).toArray();
-        const bool historySanitized = sanitizeHistoryEntriesInPlace(&m_historyEntries);
-        m_historyIndex = historyRoot.value(QStringLiteral("index")).toInt(m_historyEntries.size() - 1);
-        if (!m_historyEntries.isEmpty())
-        {
-            m_historyIndex = qBound(0, m_historyIndex, m_historyEntries.size() - 1);
-            root = m_historyEntries.at(m_historyIndex).toObject();
-        }
-        if (historySanitized) {
-            saveHistoryNow();
-        }
-    }
-    markStartup(QStringLiteral("load_state.history_read.end"),
-                QJsonObject{
-                    {QStringLiteral("history_entry_count"), m_historyEntries.size()},
-                    {QStringLiteral("history_index"), m_historyIndex}
-                });
-
-    if (root.isEmpty())
-    {
+    bool deferHistoryLoad = false;
+    if (startupMarking) {
         markStartup(QStringLiteral("load_state.state_file_read.begin"));
         QFile file(stateFilePath());
-        if (file.open(QIODevice::ReadOnly))
-        {
+        if (file.open(QIODevice::ReadOnly)) {
             jcut::jsonio::parseObjectBytes(file.readAll(), &root);
         }
         markStartup(QStringLiteral("load_state.state_file_read.end"));
+        if (!root.isEmpty()) {
+            deferHistoryLoad = true;
+            markStartup(QStringLiteral("load_state.history_read.deferred"),
+                        QJsonObject{{QStringLiteral("project_id"), currentProjectIdOrDefault()}});
+        }
+    }
+
+    if (root.isEmpty()) {
+        QFile historyFile(historyFilePath());
+        markStartup(QStringLiteral("load_state.history_read.begin"));
+        if (historyFile.open(QIODevice::ReadOnly))
+        {
+            QJsonObject historyRoot;
+            jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
+            m_historyEntries = historyRoot.value(QStringLiteral("entries")).toArray();
+            const bool historySanitized = sanitizeHistoryEntriesInPlace(&m_historyEntries);
+            m_historyIndex = historyRoot.value(QStringLiteral("index")).toInt(m_historyEntries.size() - 1);
+            if (!m_historyEntries.isEmpty())
+            {
+                m_historyIndex = qBound(0, m_historyIndex, m_historyEntries.size() - 1);
+                root = m_historyEntries.at(m_historyIndex).toObject();
+            }
+            if (historySanitized) {
+                saveHistoryNow();
+            }
+        }
+        markStartup(QStringLiteral("load_state.history_read.end"),
+                    QJsonObject{
+                        {QStringLiteral("history_entry_count"), m_historyEntries.size()},
+                        {QStringLiteral("history_index"), m_historyIndex}
+                    });
     }
 
     markStartup(QStringLiteral("load_state.apply_state.begin"));
     applyStateJson(root);
     markStartup(QStringLiteral("load_state.apply_state.end"));
 
-    if (m_historyEntries.isEmpty())
+    if (m_historyEntries.isEmpty() && !deferHistoryLoad)
     {
         pushHistorySnapshot();
     }
@@ -142,6 +183,11 @@ void EditorWindow::loadState()
     else
     {
         scheduleSaveState();
+    }
+    if (deferHistoryLoad) {
+        QTimer::singleShot(0, this, [this, projectId = currentProjectIdOrDefault()]() {
+            scheduleDeferredHistoryLoad(projectId);
+        });
     }
     QTimer::singleShot(0, this, [this]() {
         scheduleTranscriptTextCompanionBackfill();
@@ -578,6 +624,8 @@ QJsonObject EditorWindow::buildStateJson() const
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
         m_speakerShowFaceStreamBoxesCheckBox ? m_speakerShowFaceStreamBoxesCheckBox->isChecked() : false;
+    root[QStringLiteral("previewShowRawDetections")] =
+        m_speakerShowRawDetectionsCheckBox ? m_speakerShowRawDetectionsCheckBox->isChecked() : false;
     root[QStringLiteral("previewFacestreamOverlaySource")] =
         m_speakerFaceStreamOverlaySourceCombo
             ? m_speakerFaceStreamOverlaySourceCombo->currentData().toString()
@@ -932,7 +980,11 @@ void EditorWindow::setupAutosaveTimer()
     m_autosaveTimer.setInterval(m_autosaveIntervalMinutes * 60 * 1000);
     connect(&m_autosaveTimer, &QTimer::timeout, this, [this]() { saveAutosaveBackup(); });
     m_autosaveTimer.start();
-    saveAutosaveBackup();
+    if (m_startupProfileCompleted) {
+        saveAutosaveBackup();
+    } else {
+        QTimer::singleShot(5000, this, [this]() { saveAutosaveBackup(); });
+    }
 }
 
 void EditorWindow::saveAutosaveBackup()

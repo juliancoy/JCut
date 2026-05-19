@@ -55,6 +55,8 @@ void EditorWindow::refreshInspectorTabByName(const QString& tabName)
 
 void EditorWindow::refreshCurrentInspectorTab()
 {
+    QElapsedTimer timer;
+    timer.start();
     if (!m_inspectorPane || !m_inspectorPane->tabs()) {
         return;
     }
@@ -63,6 +65,21 @@ void EditorWindow::refreshCurrentInspectorTab()
         return;
     }
     refreshInspectorTabByName(m_inspectorPane->tabs()->tabText(index));
+    const qint64 elapsedMs = timer.elapsed();
+    m_lastInspectorRefreshDurationMs.store(elapsedMs);
+    qint64 maxDuration = m_maxInspectorRefreshDurationMs.load();
+    while (elapsedMs > maxDuration &&
+           !m_maxInspectorRefreshDurationMs.compare_exchange_weak(maxDuration, elapsedMs)) {
+    }
+    if (elapsedMs >= m_slowSeekWarnThresholdMs) {
+        m_inspectorRefreshSlowCount.fetch_add(1);
+    }
+}
+
+void EditorWindow::scheduleDeferredInspectorRefresh(int delayMs)
+{
+    const int normalizedDelayMs = qBound(0, delayMs, 1000);
+    m_deferredInspectorRefreshTimer.start(normalizedDelayMs);
 }
 
 void EditorWindow::refreshAudioInspectorViews()
@@ -462,7 +479,11 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerTrackingChipButton(),
             m_inspectorPane->speakerStabilizeChipButton(),
             m_inspectorPane->speakerFaceStreamTable(),
-            m_inspectorPane->speakerFaceStreamDetailsEdit()},
+            m_inspectorPane->speakerFaceStreamDetailsEdit(),
+            m_inspectorPane->speakerDetectionsAvailableCheckBox(),
+            m_inspectorPane->speakerTracksAvailableCheckBox(),
+            m_inspectorPane->speakerRawDetectionTable(),
+            m_inspectorPane->speakerRawDetectionDetailsEdit()},
         SpeakersTab::Dependencies{
             [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
             [this]() { scheduleSaveState(); },
@@ -486,6 +507,7 @@ void EditorWindow::createSpeakersTab()
                 m_preview->setTimelineClips(m_timeline->clips());
                 m_preview->asWidget()->update();
             },
+            {},
             [this](QString* errorOut) -> bool {
                 refreshAiIntegrationState();
                 if (!m_featureAiSpeakerCleanup) {
@@ -986,7 +1008,7 @@ void EditorWindow::setupTabs()
                     if (m_previewViewMode.compare(QStringLiteral("audio"), Qt::CaseInsensitive) != 0) {
                         applyPreviewViewMode(QStringLiteral("audio"));
                     }
-                } else if (m_previewViewMode.compare(QStringLiteral("video"), Qt::CaseInsensitive) != 0) {
+                } else if (m_previewViewMode.compare(QStringLiteral("audio"), Qt::CaseInsensitive) == 0) {
                     applyPreviewViewMode(QStringLiteral("video"));
                 }
                 if (m_previewModeCombo) {
@@ -1009,9 +1031,14 @@ void EditorWindow::setupTabs()
             if (!m_inspectorPane || !m_inspectorPane->tabs()) {
                 return;
             }
-            const QString tabName = m_inspectorPane->tabs()->tabText(m_inspectorPane->tabs()->currentIndex());
-            if (tabName.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0 && m_speakersTab) {
-                m_speakersTab->refresh();
+            const QString inspectorTabName =
+                m_inspectorPane->tabs()->tabText(m_inspectorPane->tabs()->currentIndex());
+            if (inspectorTabName.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0 &&
+                m_speakersTab) {
+                const QString speakersSubtabName =
+                    m_inspectorPane->speakersSubtabs()->tabText(
+                        m_inspectorPane->speakersSubtabs()->currentIndex());
+                m_speakersTab->refreshForSubtab(speakersSubtabName);
             }
         });
     }

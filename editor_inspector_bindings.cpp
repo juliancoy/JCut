@@ -41,6 +41,7 @@ void EditorWindow::bindInspectorWidgets()
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
     m_speakerShowFaceStreamBoxesCheckBox = m_inspectorPane->speakerShowFaceStreamBoxesCheckBox();
+    m_speakerShowRawDetectionsCheckBox = m_inspectorPane->speakerShowRawDetectionsCheckBox();
     m_speakerFaceStreamOverlaySourceCombo = m_inspectorPane->speakerFaceStreamOverlaySourceCombo();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
@@ -548,6 +549,15 @@ void EditorWindow::setupPreviewControls()
         connect(m_speakerShowFaceStreamBoxesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
             if (m_preview) {
                 m_preview->setShowSpeakerTrackBoxes(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
+    if (m_speakerShowRawDetectionsCheckBox) {
+        connect(m_speakerShowRawDetectionsCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setShowRawDetections(checked);
             }
             scheduleSaveState();
             pushHistorySnapshot();

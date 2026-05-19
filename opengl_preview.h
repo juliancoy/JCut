@@ -72,6 +72,7 @@ public:
     void setPreviewZoom(qreal zoom);
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
+    void setShowRawDetections(bool show);
     void setFacestreamOverlaySource(const QString& source);
     void setAudioSpeakerHoverModalEnabled(bool enabled);
     void setAudioWaveformVisible(bool visible);
@@ -180,10 +181,12 @@ private:
     };
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
+    const QVector<SpeakerTrackPoint>& rawDetectionPointsForClip(const TimelineClip& clip) const;
     bool dispatchFaceStreamBoxAtPosition(const QPointF& position);
     bool updateHoveredFaceStreamBox(const QPointF& position);
     void clearHoveredFaceStreamBox();
     void drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
+    void drawRawDetectionOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
     void drawSpeakerFramingTargetOverlay(QPainter* painter,
                                          const QList<TimelineClip>& activeClips,
                                          const QRect& compositeRect);
@@ -295,12 +298,14 @@ private:
     bool m_hideOutsideOutputWindow = false;
     bool m_showSpeakerTrackPoints = false;
     bool m_showSpeakerTrackBoxes = false;
+    bool m_showRawDetections = false;
     bool m_useProxyMedia = false;
     QString m_facestreamOverlaySource = QStringLiteral("all");
         PreviewOverlayModel m_overlayModel;
     mutable QHash<QString, qreal> m_audioDisplayPeakCache;
     mutable QHash<QString, std::shared_ptr<const TranscriptRuntimeDocument>> m_transcriptSectionsCache;
     mutable QHash<QString, SpeakerTrackPointCacheEntry> m_speakerTrackPointsCache;
+    mutable QHash<QString, SpeakerTrackPointCacheEntry> m_rawDetectionPointsCache;
     QHash<QString, editor::GlTextureCacheEntry> m_textureCache;
     GLuint m_curveLutTextureId = 0;
     QHash<QString, editor::GlTextureCacheEntry> m_transcriptTextureCache;

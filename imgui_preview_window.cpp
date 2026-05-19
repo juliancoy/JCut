@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -42,6 +43,14 @@ VkClearValue makeClearValue()
     clearValue.color.float32[2] = 0.06f;
     clearValue.color.float32[3] = 1.0f;
     return clearValue;
+}
+
+int clampFrameToRange(int frame, int minFrame, int maxFrame)
+{
+    if (maxFrame < minFrame) {
+        return minFrame;
+    }
+    return std::clamp(frame, minFrame, maxFrame);
 }
 
 bool hasExtension(const std::vector<VkExtensionProperties>& properties, const char* name)
@@ -82,6 +91,30 @@ struct ImGuiPreviewWindow::Impl {
     VkImageLayout boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     QSize boundImageSize;
     VkDescriptorSet textureSet = VK_NULL_HANDLE;
+
+    bool showDetections = true;
+    bool showTracks = true;
+    bool showRoi = true;
+    bool showTrackLabels = true;
+    bool showConfirmedTracks = true;
+    bool showTentativeTracks = true;
+    bool showLostTracks = true;
+    float detectionLineThickness = 1.5f;
+    float trackLineThickness = 2.5f;
+    float overlayOpacity = 1.0f;
+
+    bool processingPausedRequested = false;
+    bool processingPaused = false;
+    bool followLatest = true;
+    bool historyPlaying = false;
+    float historyPlaybackSpeed = 1.0f;
+    int minTimelineFrame = 0;
+    int maxTimelineFrame = 0;
+    int latestProcessedFrame = 0;
+    int requestedPreviewFrame = 0;
+    double lastUiTickSec = 0.0;
+    double previewFrameAccumulator = 0.0;
+    bool redrawRequested = true;
 };
 
 ImGuiPreviewWindow::ImGuiPreviewWindow()
@@ -750,11 +783,235 @@ void ImGuiPreviewWindow::setWindowTitle(const QString& title)
     glfwSetWindowTitle(m_impl->window, titleUtf8.constData());
 }
 
+void ImGuiPreviewWindow::setTimelineRange(int minFrame, int maxFrame, int latestProcessedFrame)
+{
+    m_impl->minTimelineFrame = minFrame;
+    m_impl->maxTimelineFrame = qMax(minFrame, maxFrame);
+    m_impl->latestProcessedFrame = clampFrameToRange(latestProcessedFrame,
+                                                     m_impl->minTimelineFrame,
+                                                     m_impl->maxTimelineFrame);
+    if (m_impl->followLatest) {
+        m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
+        m_impl->redrawRequested = true;
+    } else {
+        m_impl->requestedPreviewFrame =
+            clampFrameToRange(m_impl->requestedPreviewFrame,
+                              m_impl->minTimelineFrame,
+                              m_impl->latestProcessedFrame);
+    }
+}
+
+void ImGuiPreviewWindow::setProcessingPaused(bool paused)
+{
+    m_impl->processingPaused = paused;
+    m_impl->processingPausedRequested = paused;
+    if (!paused) {
+        m_impl->historyPlaying = false;
+        m_impl->followLatest = true;
+        m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
+    }
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setFollowLatest(bool followLatest)
+{
+    m_impl->followLatest = followLatest;
+    if (followLatest) {
+        m_impl->historyPlaying = false;
+        m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
+    }
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setRequestedPreviewFrame(int frameNumber)
+{
+    m_impl->followLatest = false;
+    m_impl->historyPlaying = false;
+    m_impl->requestedPreviewFrame =
+        clampFrameToRange(frameNumber,
+                          m_impl->minTimelineFrame,
+                          qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setPreviewPlaybackActive(bool active)
+{
+    m_impl->historyPlaying = active;
+    if (active) {
+        m_impl->followLatest = false;
+        m_impl->requestedPreviewFrame =
+            clampFrameToRange(m_impl->requestedPreviewFrame,
+                              m_impl->minTimelineFrame,
+                              qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
+    }
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setPreviewPlaybackSpeed(float speed)
+{
+    m_impl->historyPlaybackSpeed = std::clamp(speed, 0.25f, 4.0f);
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setShowDetections(bool show)
+{
+    m_impl->showDetections = show;
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setShowTracks(bool show)
+{
+    m_impl->showTracks = show;
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setShowLabels(bool show)
+{
+    m_impl->showTrackLabels = show;
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setShowConfirmedTracks(bool show)
+{
+    m_impl->showConfirmedTracks = show;
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setShowTentativeTracks(bool show)
+{
+    m_impl->showTentativeTracks = show;
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setShowLostTracks(bool show)
+{
+    m_impl->showLostTracks = show;
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setDetectionLineThickness(float value)
+{
+    m_impl->detectionLineThickness = std::clamp(value, 1.0f, 4.0f);
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setTrackLineThickness(float value)
+{
+    m_impl->trackLineThickness = std::clamp(value, 1.0f, 5.0f);
+    m_impl->redrawRequested = true;
+}
+
+void ImGuiPreviewWindow::setOverlayOpacity(float value)
+{
+    m_impl->overlayOpacity = std::clamp(value, 0.2f, 1.0f);
+    m_impl->redrawRequested = true;
+}
+
+bool ImGuiPreviewWindow::processingPausedRequested() const
+{
+    return m_impl->processingPausedRequested;
+}
+
+bool ImGuiPreviewWindow::followLatest() const
+{
+    return m_impl->followLatest;
+}
+
+bool ImGuiPreviewWindow::previewPlaybackActive() const
+{
+    return m_impl->historyPlaying;
+}
+
+float ImGuiPreviewWindow::previewPlaybackSpeed() const
+{
+    return m_impl->historyPlaybackSpeed;
+}
+
+bool ImGuiPreviewWindow::showDetections() const
+{
+    return m_impl->showDetections;
+}
+
+bool ImGuiPreviewWindow::showTracks() const
+{
+    return m_impl->showTracks;
+}
+
+bool ImGuiPreviewWindow::showLabels() const
+{
+    return m_impl->showTrackLabels;
+}
+
+bool ImGuiPreviewWindow::showConfirmedTracks() const
+{
+    return m_impl->showConfirmedTracks;
+}
+
+bool ImGuiPreviewWindow::showTentativeTracks() const
+{
+    return m_impl->showTentativeTracks;
+}
+
+bool ImGuiPreviewWindow::showLostTracks() const
+{
+    return m_impl->showLostTracks;
+}
+
+float ImGuiPreviewWindow::detectionLineThickness() const
+{
+    return m_impl->detectionLineThickness;
+}
+
+float ImGuiPreviewWindow::trackLineThickness() const
+{
+    return m_impl->trackLineThickness;
+}
+
+float ImGuiPreviewWindow::overlayOpacity() const
+{
+    return m_impl->overlayOpacity;
+}
+
+int ImGuiPreviewWindow::requestedPreviewFrame() const
+{
+    return m_impl->requestedPreviewFrame;
+}
+
+bool ImGuiPreviewWindow::previewRefreshRequested() const
+{
+    return m_impl->redrawRequested;
+}
+
 void ImGuiPreviewWindow::pumpEvents()
 {
     if (!m_impl->window) {
         return;
     }
+    const double nowSec = glfwGetTime();
+    if (m_impl->lastUiTickSec <= 0.0) {
+        m_impl->lastUiTickSec = nowSec;
+    }
+    const double deltaSec = std::max(0.0, nowSec - m_impl->lastUiTickSec);
+    m_impl->lastUiTickSec = nowSec;
+    if (m_impl->followLatest) {
+        m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
+    } else if (m_impl->historyPlaying && m_impl->latestProcessedFrame > m_impl->minTimelineFrame) {
+        m_impl->previewFrameAccumulator += deltaSec * (30.0 * m_impl->historyPlaybackSpeed);
+        while (m_impl->previewFrameAccumulator >= 1.0) {
+            m_impl->previewFrameAccumulator -= 1.0;
+            if (m_impl->requestedPreviewFrame < m_impl->latestProcessedFrame) {
+                ++m_impl->requestedPreviewFrame;
+                m_impl->redrawRequested = true;
+            } else {
+                m_impl->historyPlaying = false;
+                break;
+            }
+        }
+    }
+    m_impl->requestedPreviewFrame =
+        clampFrameToRange(m_impl->requestedPreviewFrame,
+                          m_impl->minTimelineFrame,
+                          qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
     glfwPollEvents();
     if (glfwWindowShouldClose(m_impl->window) && m_impl->failureReason.trimmed().isEmpty()) {
         markFailure(QStringLiteral("Dear ImGui preview window was closed."));
@@ -763,7 +1020,8 @@ void ImGuiPreviewWindow::pumpEvents()
 
 bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                                       int64_t frameNumber,
-                                      const QVector<QRectF>& boxes,
+                                      const QVector<jcut::facestream::ContinuityTrack>& tracks,
+                                      const QVector<jcut::facestream::Detection>& detections,
                                       const QRectF& roiRect,
                                       int detectionCount)
 {
@@ -842,9 +1100,106 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     }
     ImGui::Separator();
 
-    const ImVec2 avail = ImGui::GetContentRegionAvail();
-    const ImVec2 fitted = fitImageIntoRegion(external.size, avail);
-    const float offsetX = std::max(0.0f, (avail.x - fitted.x) * 0.5f);
+    if (ImGui::Button(m_impl->processingPausedRequested ? "Resume Processing" : "Pause Processing")) {
+        m_impl->processingPausedRequested = !m_impl->processingPausedRequested;
+        m_impl->redrawRequested = true;
+        if (!m_impl->processingPausedRequested) {
+            m_impl->followLatest = true;
+            m_impl->historyPlaying = false;
+            m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(m_impl->historyPlaying ? "Pause Preview" : "Play Preview")) {
+        m_impl->historyPlaying = !m_impl->historyPlaying;
+        m_impl->redrawRequested = true;
+        if (m_impl->historyPlaying) {
+            m_impl->followLatest = false;
+            m_impl->requestedPreviewFrame =
+                clampFrameToRange(m_impl->requestedPreviewFrame,
+                                  m_impl->minTimelineFrame,
+                                  m_impl->latestProcessedFrame);
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Follow Latest", &m_impl->followLatest)) {
+        m_impl->redrawRequested = true;
+    }
+    if (m_impl->followLatest) {
+        m_impl->historyPlaying = false;
+        m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
+    }
+    const int timelineMax = qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame);
+    int requestedFrame = clampFrameToRange(m_impl->requestedPreviewFrame,
+                                           m_impl->minTimelineFrame,
+                                           timelineMax);
+    ImGui::SetNextItemWidth(240.0f);
+    if (ImGui::SliderInt("Seek", &requestedFrame, m_impl->minTimelineFrame, timelineMax)) {
+        m_impl->followLatest = false;
+        m_impl->historyPlaying = false;
+        m_impl->requestedPreviewFrame = requestedFrame;
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    if (ImGui::SliderFloat("Speed", &m_impl->historyPlaybackSpeed, 0.25f, 4.0f, "%.2fx")) {
+        m_impl->redrawRequested = true;
+    }
+    m_impl->historyPlaybackSpeed = std::clamp(m_impl->historyPlaybackSpeed, 0.25f, 4.0f);
+
+    if (ImGui::Checkbox("Detections", &m_impl->showDetections)) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Tracks", &m_impl->showTracks)) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("ROI", &m_impl->showRoi)) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Labels", &m_impl->showTrackLabels)) {
+        m_impl->redrawRequested = true;
+    }
+    if (ImGui::Checkbox("Confirmed", &m_impl->showConfirmedTracks)) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Tentative", &m_impl->showTentativeTracks)) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Lost", &m_impl->showLostTracks)) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("Det Line", &m_impl->detectionLineThickness, 1.0f, 4.0f, "%.1f")) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("Track Line", &m_impl->trackLineThickness, 1.0f, 5.0f, "%.1f")) {
+        m_impl->redrawRequested = true;
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(140.0f);
+    if (ImGui::SliderFloat("Opacity", &m_impl->overlayOpacity, 0.2f, 1.0f, "%.2f")) {
+        m_impl->redrawRequested = true;
+    }
+    m_impl->detectionLineThickness = std::clamp(m_impl->detectionLineThickness, 1.0f, 4.0f);
+    m_impl->trackLineThickness = std::clamp(m_impl->trackLineThickness, 1.0f, 5.0f);
+    m_impl->overlayOpacity = std::clamp(m_impl->overlayOpacity, 0.2f, 1.0f);
+    ImGui::Separator();
+
+    const ImVec2 panelAvail = ImGui::GetContentRegionAvail();
+    constexpr float kTrackPanelWidth = 320.0f;
+    const bool showTrackPanel = panelAvail.x > 720.0f;
+    const ImVec2 imageAvail(
+        std::max(1.0f, panelAvail.x - (showTrackPanel ? (kTrackPanelWidth + 12.0f) : 0.0f)),
+        panelAvail.y);
+    const ImVec2 fitted = fitImageIntoRegion(external.size, imageAvail);
+    const float offsetX = std::max(0.0f, (imageAvail.x - fitted.x) * 0.5f);
     if (offsetX > 0.0f) {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offsetX);
     }
@@ -854,32 +1209,158 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     const float scaleX = fitted.x / static_cast<float>(std::max(1, external.size.width()));
     const float scaleY = fitted.y / static_cast<float>(std::max(1, external.size.height()));
-    const ImU32 roiColor = IM_COL32(255, 170, 51, 255);
-    const ImU32 detColor = IM_COL32(102, 255, 102, 255);
-    if (roiRect.isValid() && !roiRect.isEmpty()) {
+    const int alpha = static_cast<int>(std::round(255.0f * m_impl->overlayOpacity));
+    const ImU32 roiColor = IM_COL32(255, 170, 51, alpha);
+    const ImU32 detColor = IM_COL32(102, 255, 102, alpha);
+    auto trackColor = [alpha](jcut::facestream::ContinuityTrackState state) {
+        switch (state) {
+        case jcut::facestream::ContinuityTrackState::Confirmed:
+            return IM_COL32(78, 196, 255, alpha);
+        case jcut::facestream::ContinuityTrackState::Tentative:
+            return IM_COL32(255, 215, 77, alpha);
+        case jcut::facestream::ContinuityTrackState::Lost:
+            return IM_COL32(255, 124, 124, alpha);
+        case jcut::facestream::ContinuityTrackState::Removed:
+        default:
+            return IM_COL32(160, 160, 160, qMin(alpha, 220));
+        }
+    };
+    auto trackStateLabel = [](jcut::facestream::ContinuityTrackState state) -> const char* {
+        switch (state) {
+        case jcut::facestream::ContinuityTrackState::Confirmed:
+            return "Confirmed";
+        case jcut::facestream::ContinuityTrackState::Tentative:
+            return "Tentative";
+        case jcut::facestream::ContinuityTrackState::Lost:
+            return "Lost";
+        case jcut::facestream::ContinuityTrackState::Removed:
+        default:
+            return "Removed";
+        }
+    };
+    if (m_impl->showRoi && roiRect.isValid() && !roiRect.isEmpty()) {
         const ImVec2 roiMin(imagePos.x + static_cast<float>(roiRect.left()) * scaleX,
                             imagePos.y + static_cast<float>(roiRect.top()) * scaleY);
         const ImVec2 roiMax(imagePos.x + static_cast<float>(roiRect.right()) * scaleX,
                             imagePos.y + static_cast<float>(roiRect.bottom()) * scaleY);
         drawList->AddRect(roiMin, roiMax, roiColor, 0.0f, 0, 2.0f);
     }
-    for (const QRectF& box : boxes) {
-        if (!box.isValid() || box.isEmpty()) {
+    if (m_impl->showDetections) {
+        for (const jcut::facestream::Detection& detection : detections) {
+            const QRectF& box = detection.box;
+            if (!box.isValid() || box.isEmpty()) {
+                continue;
+            }
+            const ImVec2 boxMin(imagePos.x + static_cast<float>(box.left()) * scaleX,
+                                imagePos.y + static_cast<float>(box.top()) * scaleY);
+            const ImVec2 boxMax(imagePos.x + static_cast<float>(box.right()) * scaleX,
+                                imagePos.y + static_cast<float>(box.bottom()) * scaleY);
+            drawList->AddRect(boxMin, boxMax, detColor, 0.0f, 0, m_impl->detectionLineThickness);
+        }
+    }
+
+    int confirmedCount = 0;
+    int tentativeCount = 0;
+    int lostCount = 0;
+    for (const jcut::facestream::ContinuityTrack& track : tracks) {
+        if (track.state == jcut::facestream::ContinuityTrackState::Removed ||
+            !track.box.isValid() ||
+            track.box.isEmpty()) {
             continue;
         }
-        const ImVec2 boxMin(imagePos.x + static_cast<float>(box.left()) * scaleX,
-                            imagePos.y + static_cast<float>(box.top()) * scaleY);
-        const ImVec2 boxMax(imagePos.x + static_cast<float>(box.right()) * scaleX,
-                            imagePos.y + static_cast<float>(box.bottom()) * scaleY);
-        drawList->AddRect(boxMin, boxMax, detColor, 0.0f, 0, 2.0f);
+        if ((track.state == jcut::facestream::ContinuityTrackState::Confirmed && !m_impl->showConfirmedTracks) ||
+            (track.state == jcut::facestream::ContinuityTrackState::Tentative && !m_impl->showTentativeTracks) ||
+            (track.state == jcut::facestream::ContinuityTrackState::Lost && !m_impl->showLostTracks)) {
+            continue;
+        }
+        switch (track.state) {
+        case jcut::facestream::ContinuityTrackState::Confirmed:
+            ++confirmedCount;
+            break;
+        case jcut::facestream::ContinuityTrackState::Tentative:
+            ++tentativeCount;
+            break;
+        case jcut::facestream::ContinuityTrackState::Lost:
+            ++lostCount;
+            break;
+        case jcut::facestream::ContinuityTrackState::Removed:
+            break;
+        }
+        const ImU32 color = trackColor(track.state);
+        if (m_impl->showTracks) {
+            const ImVec2 boxMin(imagePos.x + static_cast<float>(track.box.left()) * scaleX,
+                                imagePos.y + static_cast<float>(track.box.top()) * scaleY);
+            const ImVec2 boxMax(imagePos.x + static_cast<float>(track.box.right()) * scaleX,
+                                imagePos.y + static_cast<float>(track.box.bottom()) * scaleY);
+            drawList->AddRect(boxMin, boxMax, color, 0.0f, 0, m_impl->trackLineThickness);
+            if (m_impl->showTrackLabels) {
+                const QString labelText =
+                    QStringLiteral("T%1  %2").arg(track.id).arg(QString::fromLatin1(trackStateLabel(track.state)));
+                const ImVec2 labelSize = ImGui::CalcTextSize(labelText.toUtf8().constData());
+                const ImVec2 labelMin(boxMin.x, std::max(imagePos.y, boxMin.y - labelSize.y - 6.0f));
+                const ImVec2 labelMax(labelMin.x + labelSize.x + 10.0f, labelMin.y + labelSize.y + 4.0f);
+                drawList->AddRectFilled(labelMin, labelMax, IM_COL32(0, 0, 0, qMin(alpha, 180)), 5.0f);
+                drawList->AddText(ImVec2(labelMin.x + 5.0f, labelMin.y + 2.0f), color, labelText.toUtf8().constData());
+            }
+        }
     }
 
     const ImVec2 panelMin(imagePos.x + 8.0f, imagePos.y + 8.0f);
-    const ImVec2 panelMax(panelMin.x + 220.0f, panelMin.y + 34.0f);
+    const ImVec2 panelMax(panelMin.x + 270.0f, panelMin.y + 58.0f);
     drawList->AddRectFilled(panelMin, panelMax, IM_COL32(0, 0, 0, 160), 6.0f);
     drawList->AddText(ImVec2(panelMin.x + 10.0f, panelMin.y + 9.0f),
                       IM_COL32(255, 255, 255, 255),
                       QStringLiteral("Detections: %1").arg(detectionCount).toUtf8().constData());
+    drawList->AddText(ImVec2(panelMin.x + 10.0f, panelMin.y + 30.0f),
+                      IM_COL32(255, 255, 255, 255),
+                      QStringLiteral("Tracks: %1  C:%2  T:%3  L:%4")
+                          .arg(tracks.size())
+                          .arg(confirmedCount)
+                          .arg(tentativeCount)
+                          .arg(lostCount)
+                          .toUtf8()
+                          .constData());
+
+    if (showTrackPanel) {
+        ImGui::SameLine();
+        ImGui::BeginChild("Tracking Inspector",
+                          ImVec2(kTrackPanelWidth, 0.0f),
+                          true,
+                          ImGuiWindowFlags_NoScrollWithMouse);
+        ImGui::TextUnformatted("Tracking");
+        ImGui::Separator();
+        ImGui::Text("Frame: %lld", static_cast<long long>(frameNumber));
+        ImGui::Text("Detections: %d", detectionCount);
+        ImGui::Text("Tracks: %d", static_cast<int>(tracks.size()));
+        ImGui::Text("Confirmed: %d", confirmedCount);
+        ImGui::Text("Tentative: %d", tentativeCount);
+        ImGui::Text("Lost: %d", lostCount);
+        ImGui::Separator();
+        ImGui::TextUnformatted("Active Tracks");
+        ImGui::BeginChild("Track Rows", ImVec2(0.0f, 0.0f), false);
+        for (const jcut::facestream::ContinuityTrack& track : tracks) {
+            if (track.state == jcut::facestream::ContinuityTrackState::Removed) {
+                continue;
+            }
+            const ImU32 color = trackColor(track.state);
+            ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color));
+            ImGui::Text("T%d  %s", track.id, trackStateLabel(track.state));
+            ImGui::PopStyleColor();
+            ImGui::TextDisabled("frames %d-%d | hits %d | misses %d",
+                                track.firstFrame,
+                                track.lastFrame,
+                                track.hits,
+                                track.misses);
+            ImGui::TextDisabled("box %.0f, %.0f  %.0fx%.0f",
+                                std::round(track.box.x()),
+                                std::round(track.box.y()),
+                                std::round(track.box.width()),
+                                std::round(track.box.height()));
+            ImGui::Separator();
+        }
+        ImGui::EndChild();
+        ImGui::EndChild();
+    }
 
     ImGui::End();
     ImGui::PopStyleVar(2);
@@ -893,6 +1374,7 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     }
 
     m_impl->lastPresentedSourceFrame = frameNumber;
+    m_impl->redrawRequested = false;
     m_impl->updatePending = false;
     return true;
 }

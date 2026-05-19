@@ -69,6 +69,10 @@ public:
         QPushButton* speakerStabilizeChipButton = nullptr;
         QTableWidget* speakerFaceStreamTable = nullptr;
         QPlainTextEdit* speakerFaceStreamDetailsEdit = nullptr;
+        QCheckBox* speakerDetectionsAvailableCheckBox = nullptr;
+        QCheckBox* speakerTracksAvailableCheckBox = nullptr;
+        QTableWidget* speakerRawDetectionTable = nullptr;
+        QPlainTextEdit* speakerRawDetectionDetailsEdit = nullptr;
     };
 
     struct Dependencies : public TableTabBase::Dependencies {
@@ -76,6 +80,7 @@ public:
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
         std::function<QSize()> getOutputSize;
         std::function<void()> refreshPreview;
+        std::function<void(const QString&)> setPreviewMode;
         std::function<bool(QString*)> ensureAiSession;
         std::function<void(const QStringList&)> exportSpeakersVideo;
     };
@@ -85,6 +90,7 @@ public:
 
     void wire();
     void refresh();
+    void refreshForSubtab(const QString& subtabName);
     bool generateFaceStreamForSelectedClip();
     bool deleteFaceStreamForSelectedClip(bool confirmDialog = true,
                                          QString* errorOut = nullptr);
@@ -103,6 +109,12 @@ public:
     bool runAiFindOrganizations();
     bool runAiCleanSpuriousAssignments();
     bool rebuildProcessedFaceStreamForSelectedClip(bool interactive = true);
+    qint64 lastSpeakersTableRefreshDurationMs() const { return m_lastSpeakersTableRefreshDurationMs; }
+    qint64 maxSpeakersTableRefreshDurationMs() const { return m_maxSpeakersTableRefreshDurationMs; }
+    qint64 lastFaceStreamPanelRefreshDurationMs() const { return m_lastFaceStreamPanelRefreshDurationMs; }
+    qint64 maxFaceStreamPanelRefreshDurationMs() const { return m_maxFaceStreamPanelRefreshDurationMs; }
+    qint64 lastRawDetectionsPanelRefreshDurationMs() const { return m_lastRawDetectionsPanelRefreshDurationMs; }
+    qint64 maxRawDetectionsPanelRefreshDurationMs() const { return m_maxRawDetectionsPanelRefreshDurationMs; }
 
 signals:
     void transcriptDocumentChanged();
@@ -166,6 +178,7 @@ private:
 
     bool eventFilter(QObject* watched, QEvent* event) override;
     void refreshFaceStreamPathsPanel();
+    void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
     bool openReferencePreviewWindow(int referenceIndex);
     QPixmap referenceFullFramePreview(const TimelineClip& clip,
                                       const QString& speakerId,
@@ -271,11 +284,18 @@ private:
     QString m_lastSelectionSeekSpeakerId;
     QString m_lastSelectionSeekClipId;
     bool m_refreshingFaceStreamPathsPanel = false;
-    bool m_boxStreamPanelRefreshQueued = false;
-    QTimer* m_boxStreamPanelRefreshTimer = nullptr;
-    QString m_boxStreamPanelRefreshSignature;
-    QJsonArray m_boxStreamPanelRows;
+    bool m_faceStreamPanelRefreshQueued = false;
+    QTimer* m_faceStreamPanelRefreshTimer = nullptr;
+    QString m_speakersTableRefreshSignature;
+    QString m_faceStreamPanelRefreshSignature;
+    QJsonArray m_faceStreamPanelRows;
     mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
+    qint64 m_lastSpeakersTableRefreshDurationMs = 0;
+    qint64 m_maxSpeakersTableRefreshDurationMs = 0;
+    qint64 m_lastFaceStreamPanelRefreshDurationMs = 0;
+    qint64 m_maxFaceStreamPanelRefreshDurationMs = 0;
+    qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
+    qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
     QFutureWatcher<TranscriptLoadResult> m_transcriptLoadWatcher;
     QFutureWatcher<TranscriptSaveResult> m_transcriptSaveWatcher;
     qint64 m_transcriptSaveRevision = 0;

@@ -250,9 +250,9 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/model_import_shared\\.cpp$"
     ".*/model_runtime\\.cpp$"
     ".*/backend_headless_compare_main\\.cpp$"
-    ".*/vulkan_boxstream_offscreen_main\\.cpp$"
-    ".*/vulkan_boxstream_preview_main\\.cpp$"
-    ".*/vulkan_boxstream_test_ui_main\\.cpp$"
+    ".*/vulkan_facestream_offscreen_main\\.cpp$"
+    ".*/vulkan_facestream_preview_main\\.cpp$"
+    ".*/vulkan_facestream_test_ui_main\\.cpp$"
     ".*/vulkan_zero_copy_video_preprocess_main\\.cpp$"
 )
 

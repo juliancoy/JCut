@@ -729,10 +729,6 @@ void EditorWindow::updateTransportLabels()
     if (m_preview && m_timeline) {
         m_preview->setSelectedClipId(m_timeline->selectedClipId());
     }
-    if (m_previewInfo) {
-        m_previewInfo->clear();
-        m_previewInfo->setVisible(false);
-    }
     m_playButton->setText(QString());
     m_playButton->setToolTip(playing ? QStringLiteral("Pause") : QStringLiteral("Play"));
     m_playButton->setIcon(editor::playPauseTransportIcon(playing));

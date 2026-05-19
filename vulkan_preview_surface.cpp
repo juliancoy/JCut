@@ -594,6 +594,16 @@ void VulkanPreviewSurface::setShowSpeakerTrackBoxes(bool show)
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setShowRawDetections(bool show)
+{
+    if (m_showRawDetections == show) {
+        return;
+    }
+    m_showRawDetections = show;
+    refreshFacestreamOverlays();
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setFacestreamOverlaySource(const QString& source)
 {
     m_facestreamOverlaySource = normalizedFacestreamOverlaySource(source);
@@ -840,9 +850,11 @@ void VulkanPreviewSurface::ensureFramePipeline()
     QObject::connect(m_cache.get(),
                      &editor::TimelineCache::frameLoaded,
                      m_pipelineOwner.get(),
-                     [this](const QString&, int64_t, FrameHandle) {
-                         refreshVulkanFrameStatuses();
-                         requestNativeUpdate();
+                     [this](const QString& clipId, int64_t frame, FrameHandle) {
+                         if (!loadedFrameAffectsCurrentView(clipId, frame)) {
+                             return;
+                         }
+                         queueFrameStatusRefresh(false);
                      });
     registerVisibleClips();
     m_cache->startPrefetching();
@@ -978,17 +990,76 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                 QMetaObject::invokeMethod(
                     m_pipelineOwner.get(),
                     [this]() {
-                        refreshVulkanFrameStatuses();
-                        if (m_cache) {
-                            m_cache->trimCache();
-                        }
-                        requestFramesForCurrentPosition();
-                        requestNativeUpdate();
+                        queueFrameStatusRefresh(true);
                     },
                     Qt::QueuedConnection);
             });
     }
     refreshVulkanFrameStatuses();
+}
+
+bool VulkanPreviewSurface::loadedFrameAffectsCurrentView(const QString& clipId, int64_t frame) const
+{
+    if (clipId.trimmed().isEmpty()) {
+        return false;
+    }
+
+    const int lookaheadFrames = qMax(0, effectivePlaybackLookaheadFrames());
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (clip.id != clipId ||
+            clip.mediaType != ClipMediaType::Video ||
+            clip.sourceKind == MediaSourceKind::ImageSequence ||
+            clip.filePath.isEmpty()) {
+            continue;
+        }
+        if (!visualClipActiveAtSample(clip,
+                                      m_interaction.tracks,
+                                      m_interaction.currentSample,
+                                      m_interaction.currentFramePosition,
+                                      m_bypassGrading)) {
+            continue;
+        }
+        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        if (frame == localFrame) {
+            return true;
+        }
+        if (m_interaction.playing &&
+            frame > localFrame &&
+            frame <= (localFrame + lookaheadFrames)) {
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+void VulkanPreviewSurface::queueFrameStatusRefresh(bool requestVisibleFrames)
+{
+    if (!m_pipelineOwner) {
+        return;
+    }
+    m_frameStatusRefreshNeedsVisibleRequest =
+        m_frameStatusRefreshNeedsVisibleRequest || requestVisibleFrames;
+    if (m_frameStatusRefreshQueued) {
+        return;
+    }
+    m_frameStatusRefreshQueued = true;
+    QMetaObject::invokeMethod(
+        m_pipelineOwner.get(),
+        [this]() {
+            m_frameStatusRefreshQueued = false;
+            const bool requestVisibleFrames = m_frameStatusRefreshNeedsVisibleRequest;
+            m_frameStatusRefreshNeedsVisibleRequest = false;
+            refreshVulkanFrameStatuses();
+            if (requestVisibleFrames) {
+                if (m_cache) {
+                    m_cache->trimCache();
+                }
+                requestFramesForCurrentPosition();
+            }
+            requestNativeUpdate();
+        },
+        Qt::QueuedConnection);
 }
 
 void VulkanPreviewSurface::refreshVulkanFrameStatuses()
@@ -1136,8 +1207,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
     const QJsonObject& artifactRoot) const
 {
     QVector<FacestreamTrack> tracks;
-    const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-    const QJsonObject continuityRoot = byClip.value(clip.id.trimmed()).toObject();
+    const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
     const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
     tracks.reserve(streams.size());
     for (const QJsonValue& streamValue : streams) {
@@ -1233,15 +1303,100 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     QJsonObject artifactRoot;
     if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
         entry.tracks += parseContinuityTracksForClip(clip, artifactRoot);
+        entry.rawDetections += parseRawDetectionsForClip(clip, artifactRoot);
     }
     return entry.tracks;
+}
+
+QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::parseRawDetectionsForClip(
+    const TimelineClip& clip,
+    const QJsonObject& artifactRoot) const
+{
+    QVector<VulkanPreviewFacestreamOverlay> detections;
+    const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
+    const QJsonArray rawFrames = continuityRoot.value(QStringLiteral("raw_frames")).toArray();
+    int64_t minFrame = std::numeric_limits<int64_t>::max();
+    int64_t maxFrame = -1;
+    for (const QJsonValue& frameValue : rawFrames) {
+        const QJsonObject frameObj = frameValue.toObject();
+        const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+        if (frame >= 0) {
+            minFrame = qMin(minFrame, frame);
+            maxFrame = qMax(maxFrame, frame);
+        }
+    }
+    const FacestreamFrameDomain frameDomain = inferFacestreamFrameDomain(clip, minFrame, maxFrame);
+    for (const QJsonValue& frameValue : rawFrames) {
+        const QJsonObject frameObj = frameValue.toObject();
+        const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+        if (frame < 0) {
+            continue;
+        }
+        const QJsonArray rows = frameObj.value(QStringLiteral("detections")).toArray();
+        for (const QJsonValue& detValue : rows) {
+            const QJsonObject detObj = detValue.toObject();
+            const qreal frameWidth = qMax<qreal>(1.0, frameObj.value(QStringLiteral("frame_width")).toDouble(
+                detObj.value(QStringLiteral("frame_width")).toDouble(0.0)));
+            const qreal frameHeight = qMax<qreal>(1.0, frameObj.value(QStringLiteral("frame_height")).toDouble(
+                detObj.value(QStringLiteral("frame_height")).toDouble(0.0)));
+            const qreal x = qBound<qreal>(
+                0.0,
+                detObj.value(QStringLiteral("x_norm")).toDouble(
+                    detObj.value(QStringLiteral("x")).toDouble(0.0) / frameWidth),
+                1.0);
+            const qreal y = qBound<qreal>(
+                0.0,
+                detObj.value(QStringLiteral("y_norm")).toDouble(
+                    detObj.value(QStringLiteral("y")).toDouble(0.0) / frameHeight),
+                1.0);
+            const qreal w = qBound<qreal>(
+                0.0,
+                detObj.value(QStringLiteral("w_norm")).toDouble(
+                    detObj.value(QStringLiteral("w")).toDouble(0.0) / frameWidth),
+                1.0);
+            const qreal h = qBound<qreal>(
+                0.0,
+                detObj.value(QStringLiteral("h_norm")).toDouble(
+                    detObj.value(QStringLiteral("h")).toDouble(0.0) / frameHeight),
+                1.0);
+            if (w <= 0.0 || h <= 0.0) {
+                continue;
+            }
+            VulkanPreviewFacestreamOverlay overlay;
+            overlay.clipId = clip.id;
+            overlay.streamId = QStringLiteral("raw_detection");
+            overlay.source = QStringLiteral("raw_detection");
+            overlay.trackId = -1;
+            overlay.sourceFrame = mapFacestreamFrameToSourceFrame(
+                clip, frame, frameDomain, m_interaction.renderSyncMarkers);
+            overlay.boxNorm = QRectF(x, y, w, h).intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+            overlay.confidence = qBound<qreal>(
+                0.0,
+                detObj.value(QStringLiteral("confidence")).toDouble(detObj.value(QStringLiteral("score")).toDouble(0.0)),
+                1.0);
+            if (overlay.boxNorm.isValid() && !overlay.boxNorm.isEmpty()) {
+                detections.push_back(overlay);
+            }
+        }
+    }
+    return detections;
+}
+
+QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::loadRawDetectionsForClip(
+    const TimelineClip& clip)
+{
+    loadFacestreamTracksForClip(clip);
+    const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
+    return m_facestreamOverlayCache.value(clipPath).rawDetections;
 }
 
 void VulkanPreviewSurface::refreshFacestreamOverlays()
 {
     QVector<VulkanPreviewFacestreamOverlay> overlays;
-    if (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled) {
+    QVector<VulkanPreviewFacestreamOverlay> rawDetections;
+    if (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled && !m_showRawDetections) {
         m_interaction.facestreamOverlays = overlays;
+        m_interaction.rawDetectionOverlays = rawDetections;
         return;
     }
     auto keyframeBoxNorm = [](const FacestreamKeyframe& keyframe,
@@ -1284,6 +1439,16 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
         }
         const QVector<FacestreamTrack> tracks = loadFacestreamTracksForClip(clip);
+        if (m_showRawDetections) {
+            const QVector<VulkanPreviewFacestreamOverlay> clipDetections = loadRawDetectionsForClip(clip);
+            for (const VulkanPreviewFacestreamOverlay& detection : clipDetections) {
+                if (detection.sourceFrame == localFrame &&
+                    detection.boxNorm.isValid() &&
+                    !detection.boxNorm.isEmpty()) {
+                    rawDetections.push_back(detection);
+                }
+            }
+        }
         for (const FacestreamTrack& track : tracks) {
             if (track.keyframes.isEmpty()) {
                 continue;
@@ -1371,6 +1536,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         }
     }
     m_interaction.facestreamOverlays = overlays;
+    m_interaction.rawDetectionOverlays = rawDetections;
 }
 
 bool VulkanPreviewSurface::preparePlaybackAdvance(int64_t targetFrame)
@@ -1402,16 +1568,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         if (!m_cache->isVisibleRequestPending(clip.id, localFrame) &&
             m_cache->pendingVisibleRequestCount() < m_playbackTuning.visibleBacklogLimit) {
             m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
-                if (!m_pipelineOwner) {
-                    return;
-                }
-                QMetaObject::invokeMethod(
-                    m_pipelineOwner.get(),
-                    [this]() {
-                        refreshVulkanFrameStatuses();
-                        requestNativeUpdate();
-                    },
-                    Qt::QueuedConnection);
+                queueFrameStatusRefresh(false);
             });
         }
     }

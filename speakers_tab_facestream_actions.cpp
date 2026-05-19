@@ -73,7 +73,7 @@ using namespace jcut::facestream;
 void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
 {
     QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("JCut Detector Settings"));
+    dialog.setWindowTitle(QStringLiteral("Continuity Track Tools"));
     dialog.setWindowFlag(Qt::Window, true);
     dialog.resize(520, 230);
     auto* layout = new QVBoxLayout(&dialog);
@@ -81,9 +81,9 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
     layout->setSpacing(8);
 
     auto* infoLabel = new QLabel(
-        QStringLiteral("Configure FaceStream-related smoothing options.\n\n"
-                       "These are not part of FaceStream preflight so run setup stays minimal.\n"
-                       "Generate FaceStream itself does not apply clip transforms."),
+        QStringLiteral("Configure continuity-track smoothing options.\n\n"
+                       "These are not part of detector preflight so run setup stays minimal.\n"
+                       "Generating continuity tracks itself does not apply clip transforms."),
         &dialog);
     infoLabel->setWordWrap(true);
     layout->addWidget(infoLabel);
@@ -109,9 +109,9 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
     layout->addWidget(noteLabel);
 
     auto* buttons = new QHBoxLayout;
-    auto* rebuildProcessedButton = new QPushButton(QStringLiteral("Rebuild Processed Sidecar"), &dialog);
+    auto* rebuildProcessedButton = new QPushButton(QStringLiteral("Rebuild Continuity Tracks"), &dialog);
     rebuildProcessedButton->setToolTip(
-        QStringLiteral("Recreate the FaceStreamProcessed sidecar from the raw FaceStream detections for the selected clip."));
+        QStringLiteral("Recreate processed continuity tracks from the raw FaceStream detections for the selected clip."));
     buttons->addWidget(rebuildProcessedButton);
     buttons->addStretch(1);
     auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
@@ -137,7 +137,7 @@ void SpeakersTab::onSpeakerGuideClicked()
     const QString guideText =
         QStringLiteral(
             "Speaker Flow Guide\n\n"
-            "1. Generate FaceStream first.\n"
+            "1. Generate Continuity Tracks first.\n"
             "2. Click Assign Speaker Identity to extract representative identity crops per continuity track.\n"
             "3. Review or auto-apply track-to-speaker assignments.\n"
             "4. The system detects and tracks face continuity across transcript time.\n"
@@ -151,7 +151,7 @@ void SpeakersTab::onSpeakerGuideClicked()
             "- Face Stabilize is a separate clip-level toggle.\n"
             "- It applies generated face keyframes to the selected clip.\n\n"
             "Range Policy\n"
-            "- Generate FaceStream scans transcript-global continuity by default.\n"
+            "- Generate Continuity Tracks scans transcript-global continuity by default.\n"
             "- It is not limited to the selected clip's source-in/source-out range.\n\n"
             "Tips\n"
             "- Square selection is required and enforced.\n"
@@ -440,7 +440,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
     identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
     engine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot);
 
-    m_boxStreamPanelRefreshSignature.clear();
+    m_faceStreamPanelRefreshSignature.clear();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();

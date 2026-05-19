@@ -416,6 +416,10 @@ QJsonArray frameTrackDetections(const QVector<ContinuityTrack>& tracks, int fram
         row.insert(QStringLiteral("track_box_w"), track.box.width());
         row.insert(QStringLiteral("track_box_h"), track.box.height());
         row.insert(QStringLiteral("track_state"), trackStateString(track.state));
+        row.insert(QStringLiteral("first_frame"), track.firstFrame);
+        row.insert(QStringLiteral("last_frame"), track.lastFrame);
+        row.insert(QStringLiteral("hits"), track.hits);
+        row.insert(QStringLiteral("misses"), track.misses);
         rows.append(row);
     }
     return rows;

@@ -112,6 +112,11 @@ private:
     void loadState();
     void openTranscriptionWindow(const QString &filePath, const QString &label);
     void scheduleTranscriptTextCompanionBackfill();
+    void scheduleDeferredHistoryLoad(const QString& projectId);
+    void applyDeferredStartupPanelState(const QJsonObject& root,
+                                        const QStringList& expandedExplorerPaths);
+    bool reconcileMissingMediaForClips(QVector<TimelineClip>* clips,
+                                       const QString& rootPath);
 
     QString defaultProxyOutputPath(const TimelineClip &clip,
                                    const MediaProbeResult *knownProbe = nullptr,
@@ -312,6 +317,7 @@ private:
     void connectTimelineSignals();
     void connectPreviewSignals();
     void refreshCurrentInspectorTab();
+    void scheduleDeferredInspectorRefresh(int delayMs = 75);
     void refreshInspectorTabByName(const QString& tabName);
     void refreshAudioInspectorViews();
     void refreshTimelineStructureInspectorViews();
@@ -441,6 +447,7 @@ private:
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
     QCheckBox *m_speakerShowFaceStreamBoxesCheckBox = nullptr;
+    QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QComboBox *m_speakerFaceStreamOverlaySourceCombo = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
@@ -613,8 +620,10 @@ private:
     QTimer m_historySaveTimer;
     QTimer m_autosaveTimer;
     QTimer m_transcriptNormalizeRefreshTimer;
+    QTimer m_deferredInspectorRefreshTimer;
     QFutureWatcher<QVector<ExportRangeSegment>> m_transcriptNormalizeRefreshWatcher;
     QFutureWatcher<QJsonObject> m_transcriptTextCompanionBackfillWatcher;
+    QFutureWatcher<QJsonObject> m_deferredHistoryLoadWatcher;
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;
@@ -731,6 +740,7 @@ private:
     bool m_optimizedProfileLoaded = false;
     bool m_optimizedProfileGeneratedThisRun = false;
     bool m_optimizedProfileEnsureScheduled = false;
+    QString m_deferredHistoryLoadProjectId;
 };
 
 } // namespace editor

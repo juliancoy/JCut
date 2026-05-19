@@ -59,6 +59,7 @@ public:
     void setPreviewZoom(qreal zoom) override;
     void setShowSpeakerTrackPoints(bool show) override;
     void setShowSpeakerTrackBoxes(bool show) override;
+    void setShowRawDetections(bool show) override;
     void setFacestreamOverlaySource(const QString& source) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
     void setAudioWaveformVisible(bool visible) override;
@@ -120,6 +121,7 @@ private:
     struct FacestreamOverlayCacheEntry {
         QString signature;
         QVector<FacestreamTrack> tracks;
+        QVector<VulkanPreviewFacestreamOverlay> rawDetections;
     };
     struct PlaybackSmoothnessSample {
         qint64 timestampMs = 0;
@@ -146,10 +148,15 @@ private:
     void registerVisibleClips();
     void requestFramesForCurrentPosition();
     void refreshVulkanFrameStatuses();
+    bool loadedFrameAffectsCurrentView(const QString& clipId, int64_t frame) const;
+    void queueFrameStatusRefresh(bool requestVisibleFrames);
     void refreshFacestreamOverlays();
     QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip);
+    QVector<VulkanPreviewFacestreamOverlay> loadRawDetectionsForClip(const TimelineClip& clip);
     QVector<FacestreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
                                                          const QJsonObject& artifactRoot) const;
+    QVector<VulkanPreviewFacestreamOverlay> parseRawDetectionsForClip(const TimelineClip& clip,
+                                                                      const QJsonObject& artifactRoot) const;
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
     void recordPlaybackSmoothnessSample(int exactCount,
@@ -177,6 +184,7 @@ private:
     bool m_showCorrectionOverlays = true;
     bool m_showSpeakerTrackPoints = true;
     bool m_showSpeakerTrackBoxes = true;
+    bool m_showRawDetections = false;
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;
     bool m_useProxyMedia = false;
@@ -206,4 +214,6 @@ private:
     int64_t m_visibleRequestNullCallbacks = 0;
     QString m_lastVisibleRequestCallbackPayload;
     QVector<PlaybackSmoothnessSample> m_playbackSmoothnessSamples;
+    bool m_frameStatusRefreshQueued = false;
+    bool m_frameStatusRefreshNeedsVisibleRequest = false;
 };

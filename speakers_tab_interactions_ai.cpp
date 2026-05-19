@@ -2,6 +2,7 @@
 #include "speakers_tab_internal.h"
 
 #include "facestream_assignment_services.h"
+#include "facestream_artifact_utils.h"
 #include "facestream_runtime.h"
 #include "facefind_window.h"
 #include "identity_resolution.h"
@@ -760,8 +761,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     QString importedArtifactDir;
     QString facestreamPath;
     if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
-        const QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
-        const QJsonObject continuityRoot = byClip.value(clip->id.trimmed()).toObject();
+        const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip->id);
         streams = jcut::facestream::continuityStreamsForRoot(
             continuityRoot,
             m_loadedTranscriptDoc.object());
