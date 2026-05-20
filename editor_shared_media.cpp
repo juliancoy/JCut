@@ -27,6 +27,7 @@ extern "C" {
 
 namespace {
 QStringList collectSequenceFrames(const QString& path);
+bool cachedIsImageSequencePathImpl(const QString& path);
 
 bool isImageSuffix(const QString& suffix) {
     static const QSet<QString> kImageSuffixes = {
@@ -142,6 +143,52 @@ QString proxyResolutionKey(const ProxyResolutionInput& input) {
         .arg(input.sourceMtimeMs)
         .arg(input.sourceDirMtimeMs)
         .arg(input.proxyPath);
+}
+
+bool interactivePreviewPathAllowedCachedImpl(const QString& path, int durationFrames) {
+    if (path.isEmpty()) {
+        return false;
+    }
+    if (cachedIsImageSequencePathImpl(path)) {
+        return true;
+    }
+
+    static QMutex cacheMutex;
+    static QHash<QString, bool> cachedResultByKey;
+
+    const QFileInfo info(path);
+    const QFileInfo parentInfo(info.absolutePath());
+    const qint64 pathMtime =
+        (info.exists() && info.isFile()) ? info.lastModified().toMSecsSinceEpoch() : -1;
+    const qint64 parentMtime =
+        parentInfo.exists() ? parentInfo.lastModified().toMSecsSinceEpoch() : -1;
+    const QString key = info.absoluteFilePath() + QLatin1Char('|') +
+                        QString::number(pathMtime) + QLatin1Char('|') +
+                        QString::number(parentMtime) + QLatin1Char('|') +
+                        QString::number(durationFrames);
+
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto it = cachedResultByKey.constFind(key);
+        if (it != cachedResultByKey.cend()) {
+            return it.value();
+        }
+    }
+
+    const MediaProbeResult probe = probeMediaFile(path, durationFrames / kTimelineFps);
+    const QString suffix = info.suffix().toLower();
+    const bool disallowAlphaProresMov =
+        probe.mediaType == ClipMediaType::Video &&
+        probe.hasAlpha &&
+        probe.codecName == QStringLiteral("prores") &&
+        suffix == QStringLiteral("mov");
+    const bool allowed = !disallowAlphaProresMov;
+
+    {
+        QMutexLocker locker(&cacheMutex);
+        cachedResultByKey.insert(key, allowed);
+    }
+    return allowed;
 }
 
 bool cachedIsImageSequencePathImpl(const QString& path) {
@@ -1134,32 +1181,19 @@ bool playbackUsesAlternateAudioSource(const TimelineClip& clip) {
 }
 
 QString interactivePreviewMediaPathForClip(const TimelineClip& clip) {
-    const auto interactivePathAllowed = [durationFrames = clip.durationFrames](const QString& path) {
-        if (path.isEmpty()) {
-            return false;
-        }
-        if (isImageSequencePath(path)) {
-            return true;
-        }
-        const MediaProbeResult probe = probeMediaFile(path, durationFrames / kTimelineFps);
-        const QString suffix = QFileInfo(path).suffix().toLower();
-        const bool disallowAlphaProresMov =
-            probe.mediaType == ClipMediaType::Video &&
-            probe.hasAlpha &&
-            probe.codecName == QStringLiteral("prores") &&
-            suffix == QStringLiteral("mov");
-        return !disallowAlphaProresMov;
-    };
-
     const QString proxyPath = playbackProxyPathForClip(clip);
     if (!proxyPath.isEmpty()) {
-        return interactivePathAllowed(proxyPath) ? proxyPath : QString();
+        return interactivePreviewPathAllowedCachedImpl(proxyPath, clip.durationFrames)
+            ? proxyPath
+            : QString();
     }
     if (!clipHasVisuals(clip) || clip.filePath.isEmpty()) {
         return QString();
     }
 
-    return interactivePathAllowed(clip.filePath) ? clip.filePath : QString();
+    return interactivePreviewPathAllowedCachedImpl(clip.filePath, clip.durationFrames)
+        ? clip.filePath
+        : QString();
 }
 
 bool isImageSequencePath(const QString& path) {

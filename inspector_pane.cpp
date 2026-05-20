@@ -1285,9 +1285,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *mappingPage = new QWidget(speakersSubtabs);
     mappingPage->setObjectName(QStringLiteral("speakers.subtab.speakers"));
     auto *mappingLayout = createTabLayout(mappingPage);
-    auto *trackingPage = new QWidget(speakersSubtabs);
-    trackingPage->setObjectName(QStringLiteral("speakers.subtab.tracking"));
-    auto *trackingLayout = createTabLayout(trackingPage);
     auto *debugPage = new QWidget(speakersSubtabs);
     debugPage->setObjectName(QStringLiteral("speakers.subtab.debug"));
     auto *debugLayout = createTabLayout(debugPage);
@@ -1297,13 +1294,14 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersInspectorDetailsLabel->setWordWrap(true);
 
     m_speakersTable = new SpeakersTable(page);
-    m_speakersTable->setColumnCount(5);
+    m_speakersTable->setColumnCount(6);
     m_speakersTable->setHorizontalHeaderLabels(
         {QStringLiteral("Avatar"),
          QStringLiteral("Speaker"),
          QStringLiteral("X"),
          QStringLiteral("Y"),
-         QStringLiteral("Speaker Tracking")});
+         QStringLiteral("Speaker Tracking"),
+         QStringLiteral("+")});
     m_speakersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakersTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_speakersTable->setEditTriggers(QAbstractItemView::DoubleClicked |
@@ -1323,6 +1321,37 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_speakerShowContiguousSectionsCheckBox =
+        new QCheckBox(QStringLiteral("Show Contiguous Transcript Sections"), page);
+    m_speakerShowContiguousSectionsCheckBox->setChecked(false);
+    m_speakerShowContiguousSectionsCheckBox->setToolTip(
+        QStringLiteral("Replace the speaker roster with transcript-ordered contiguous speaker sections."));
+    m_speakerSectionsTable = new QTableWidget(page);
+    m_speakerSectionsTable->setColumnCount(5);
+    m_speakerSectionsTable->setHorizontalHeaderLabels(
+        {QStringLiteral("#"),
+         QStringLiteral("Speaker"),
+         QStringLiteral("Range"),
+         QStringLiteral("Words"),
+         QStringLiteral("Transcript")});
+    m_speakerSectionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_speakerSectionsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_speakerSectionsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_speakerSectionsTable->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
+    m_speakerSectionsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    m_speakerSectionsTable->setMinimumHeight(0);
+    m_speakerSectionsTable->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_speakerSectionsTable->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_speakerSectionsTable->setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_speakerSectionsTable->setHorizontalScrollMode(QAbstractItemView::ScrollPerPixel);
+    m_speakerSectionsTable->verticalHeader()->setVisible(false);
+    m_speakerSectionsTable->horizontalHeader()->setStretchLastSection(false);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_speakerSectionsTable->hide();
 
     auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);
     selectedSpeakerTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
@@ -1407,56 +1436,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerTranscriptAiRow->addWidget(m_speakerAiFindOrganizationsButton);
     speakerTranscriptAiRow->addWidget(m_speakerAiCleanAssignmentsButton);
 
-    auto *stateTitle = new QLabel(QStringLiteral("State"), page);
-    stateTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
-    auto makeStateChip = [page](const QString& text) {
-        auto *chip = new QLabel(text, page);
-        chip->setStyleSheet(QStringLiteral(
-            "QLabel {"
-            " border: 1px solid #314459;"
-            " border-radius: 9px;"
-            " background: #142234;"
-            " color: #d8e6f5;"
-            " padding: 3px 8px;"
-            " font-size: 11px;"
-            "}"));
-        return chip;
-    };
-    auto makeToggleChip = [page](const QString& text) {
-        auto *chip = new QPushButton(text, page);
-        chip->setCheckable(true);
-        chip->setCursor(Qt::PointingHandCursor);
-        chip->setStyleSheet(QStringLiteral(
-            "QPushButton {"
-            " border: 1px solid #314459;"
-            " border-radius: 9px;"
-            " background: #142234;"
-            " color: #d8e6f5;"
-            " padding: 3px 8px;"
-            " font-size: 11px;"
-            "}"
-            "QPushButton:hover { background: #1b2b3f; }"
-            "QPushButton:checked { border-color: #4ea1ff; background: #1d324a; color: #eef6ff; }"));
-        return chip;
-    };
-    m_speakerRefsChipLabel = makeStateChip(QStringLiteral("Assigned Tracks: 0"));
-    m_speakerPointstreamChipLabel = makeStateChip(QStringLiteral("Continuity Tracks: None"));
-    m_speakerTrackingChipButton = makeToggleChip(QStringLiteral("Speaker Tracking: OFF"));
-    m_speakerStabilizeChipButton = makeToggleChip(QStringLiteral("Face Stabilize: OFF"));
-    m_speakerTrackingChipButton->setObjectName(QStringLiteral("speakers.tracking_toggle"));
-    m_speakerStabilizeChipButton->setObjectName(QStringLiteral("speakers.stabilize_toggle"));
-    auto *stateChipsRow = new QHBoxLayout;
-    stateChipsRow->setContentsMargins(0, 0, 0, 0);
-    stateChipsRow->setSpacing(6);
-    stateChipsRow->addWidget(m_speakerRefsChipLabel);
-    stateChipsRow->addWidget(m_speakerPointstreamChipLabel);
-    stateChipsRow->addWidget(m_speakerTrackingChipButton);
-    stateChipsRow->addStretch(1);
-
-    auto *targetTitle = new QLabel(QStringLiteral("FaceBox (Yellow Box)"), page);
-    targetTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
-    m_speakerFramingZoomEnabledCheckBox =
-        new QCheckBox(QStringLiteral("Show FaceBox"), page);
+    m_speakerRefsChipLabel = nullptr;
+    m_speakerPointstreamChipLabel = nullptr;
+    m_speakerTrackingChipButton = nullptr;
+    m_speakerStabilizeChipButton = nullptr;
+    m_speakerFramingZoomEnabledCheckBox = nullptr;
     m_speakerShowFaceStreamBoxesCheckBox =
         new QCheckBox(QStringLiteral("Show Continuity Tracks in Preview"), page);
     m_speakerShowFaceStreamBoxesCheckBox->setChecked(false);
@@ -1467,40 +1451,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerShowRawDetectionsCheckBox->setChecked(false);
     m_speakerShowRawDetectionsCheckBox->setToolTip(
         QStringLiteral("Draw raw detector observations for the current source frame in Preview."));
-    auto *faceboxControlsRow = new QHBoxLayout;
-    faceboxControlsRow->setContentsMargins(0, 0, 0, 0);
-    faceboxControlsRow->setSpacing(8);
-    faceboxControlsRow->addWidget(m_speakerFramingZoomEnabledCheckBox);
-    faceboxControlsRow->addWidget(m_speakerStabilizeChipButton);
-    faceboxControlsRow->addStretch(1);
-    m_speakerFramingTargetXSpin = new QDoubleSpinBox(page);
-    m_speakerFramingTargetXSpin->setDecimals(3);
-    m_speakerFramingTargetXSpin->setRange(0.0, 1.0);
-    m_speakerFramingTargetXSpin->setSingleStep(0.01);
-    m_speakerFramingTargetXSpin->setValue(0.5);
-    m_speakerFramingTargetXSpin->setToolTip(
-        QStringLiteral("Target horizontal face position in output space (0.0 left, 1.0 right)."));
-    m_speakerFramingTargetYSpin = new QDoubleSpinBox(page);
-    m_speakerFramingTargetYSpin->setDecimals(3);
-    m_speakerFramingTargetYSpin->setRange(0.0, 1.0);
-    m_speakerFramingTargetYSpin->setSingleStep(0.01);
-    m_speakerFramingTargetYSpin->setValue(0.35);
-    m_speakerFramingTargetYSpin->setToolTip(
-        QStringLiteral("Target vertical face position in output space (0.0 top, 1.0 bottom)."));
-    m_speakerFramingTargetBoxSpin = new QDoubleSpinBox(page);
-    m_speakerFramingTargetBoxSpin->setDecimals(3);
-    m_speakerFramingTargetBoxSpin->setRange(0.01, 1.0);
-    m_speakerFramingTargetBoxSpin->setSingleStep(0.01);
-    m_speakerFramingTargetBoxSpin->setValue(0.20);
-    m_speakerFramingTargetBoxSpin->setToolTip(
-        QStringLiteral("FaceBox normalized side length used during continuity track generation and framing."));
-    auto *targetForm = new QFormLayout;
-    targetForm->addRow(QStringLiteral("Yellow Box X"), m_speakerFramingTargetXSpin);
-    targetForm->addRow(QStringLiteral("Yellow Box Y"), m_speakerFramingTargetYSpin);
-    targetForm->addRow(QStringLiteral("Yellow Box Size"), m_speakerFramingTargetBoxSpin);
+    m_speakerFramingTargetXSpin = nullptr;
+    m_speakerFramingTargetYSpin = nullptr;
+    m_speakerFramingTargetBoxSpin = nullptr;
     m_speakerApplyFramingToClipCheckBox = nullptr;
-    m_speakerClipFramingStatusLabel = new QLabel(QStringLiteral("Face Stabilize: OFF | 0 keys"), page);
-    m_speakerClipFramingStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
+    m_speakerClipFramingStatusLabel = nullptr;
 
     auto *currentSentenceTitle = new QLabel(QStringLiteral("Current Speaker Sentence"), page);
     currentSentenceTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
@@ -1537,14 +1492,6 @@ QWidget *InspectorPane::buildSpeakersTab()
         page);
     identityHelp->setWordWrap(true);
     identityHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
-
-    auto *trackingTitle = new QLabel(QStringLiteral("Step 7: Speaker Tracking + Face Stabilize"), page);
-    trackingTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
-    auto *trackingHelp = new QLabel(
-        QStringLiteral("Enable speaker tracking and face stabilization after a transcript speaker has assigned continuity tracks."),
-        page);
-    trackingHelp->setWordWrap(true);
-    trackingHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
     auto *debugTitle = new QLabel(QStringLiteral("Speaker Flow Debug Artefacts"), page);
     debugTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
@@ -1592,19 +1539,16 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *mappingContentRow = new QHBoxLayout;
     mappingContentRow->setContentsMargins(0, 0, 0, 0);
     mappingContentRow->setSpacing(8);
-    mappingContentRow->addWidget(m_speakersTable, 1);
+    auto *speakerListPanel = new QWidget(mappingPage);
+    auto *speakerListLayout = new QVBoxLayout(speakerListPanel);
+    speakerListLayout->setContentsMargins(0, 0, 0, 0);
+    speakerListLayout->setSpacing(6);
+    speakerListLayout->addWidget(m_speakerShowContiguousSectionsCheckBox);
+    speakerListLayout->addWidget(m_speakersTable, 1);
+    speakerListLayout->addWidget(m_speakerSectionsTable, 1);
+    mappingContentRow->addWidget(speakerListPanel, 1);
     mappingContentRow->addWidget(identityPanel);
     mappingLayout->addLayout(mappingContentRow, 1);
-
-    trackingLayout->addWidget(trackingTitle);
-    trackingLayout->addWidget(trackingHelp);
-    trackingLayout->addWidget(stateTitle);
-    trackingLayout->addLayout(stateChipsRow);
-    trackingLayout->addWidget(targetTitle);
-    trackingLayout->addLayout(faceboxControlsRow);
-    trackingLayout->addLayout(targetForm);
-    trackingLayout->addWidget(m_speakerClipFramingStatusLabel);
-    trackingLayout->addStretch(1);
 
     debugLayout->addWidget(debugTitle);
     debugLayout->addWidget(m_speakerDebugCaptureCheckBox);
@@ -1718,7 +1662,6 @@ QWidget *InspectorPane::buildSpeakersTab()
 
     speakersSubtabs->addTab(mappingPage, QStringLiteral("Speakers"));
     speakersSubtabs->addTab(facestreamPage, QStringLiteral("Continuity Tracks"));
-    speakersSubtabs->addTab(trackingPage, QStringLiteral("Speaker Tracking"));
     speakersSubtabs->addTab(debugPage, QStringLiteral("Debug"));
     layout->addWidget(speakersSubtabs, 1);
     return page;

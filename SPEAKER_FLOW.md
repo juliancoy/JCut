@@ -66,11 +66,13 @@ Product sidecar: none.
 3. Optionally run `Find Organizations` and `Clean Assignments`.
 4. Apply accepted suggestions so speaker profiles are populated.
 
-### 5. Generate FaceStream (Tracking Data)
+### 5. Generate FaceStream (Detections + Continuity Tracks)
 Product sidecar: `{transcript_basename}_facestream.bin`.
 
 1. In `Speakers`, click `Generate FaceStream`.
-2. The app first persists raw per-frame face detections, then forms continuity tracks from those detections, then writes one FaceStream per continuity track.
+2. That Stage 3 run generates raw per-frame face detections and continuity tracks together in one pass.
+3. The app persists both layers from that same run, then writes one FaceStream per continuity track.
+4. `Rebuild Continuity Tracks` is a secondary maintenance path. It rebuilds the processed continuity sidecar from existing raw Stage 3 artefacts and does not replace the normal first-run generator flow.
 3. Confirm the Overview shows the FaceStream sidecar as present.
 
 ### 6. Match FaceStreams to Speaker IDs
@@ -233,7 +235,7 @@ Contents:
 2. Scan range metadata and `only_dialogue` policy.
 3. Detector params (`detector`, stride, frame range, threshold, candidate caps, ROI, area, and aspect filters).
 4. Raw per-frame face detections as observations, separate from track assignment.
-5. Continuity tracks formed from those detections, plus per-track keyframe stream output.
+5. Continuity tracks formed from those detections in the same Stage 3 run, plus per-track keyframe stream output.
 6. Track IDs that are stable within run for deterministic traceability.
 7. Native Vulkan runs may include live tuning metadata and runtime stats.
 8. Preview/debug artifacts are sampled separately from detector processing via preview stride.
@@ -243,9 +245,14 @@ Artifact roles:
 2. `{transcript_basename}_facestream_processed.bin` is a derived runtime helper sidecar rebuilt from the raw continuity artefact plus transcript state. It is runtime-adjacent, not generator cache.
 3. `continuity_facestream.bin` is the generator-to-editor import payload. After successful import into `{transcript_basename}_facestream.bin`, it is redundant for normal runtime.
 4. `facestream.part` is a streaming checkpoint for resumable generation. It is useful while a run is active or interrupted, but redundant for normal runtime after successful import.
-5. `tracks.bin` is the tracking-stage output: continuity tracks formed from detections, with per-track detection assignments. It is used to explain or rebuild the continuity result and should remain conceptually distinct from raw detector observations.
-6. Raw detections and track formation are separate layers: detector output answers "what faces were seen in this frame", while tracks answer "which detections belong to the same continuity object over time".
+5. `tracks.bin` is the Stage 3 continuity-track output: continuity tracks formed from detections during the same generator run, with per-track detection assignments. It is used to explain or rebuild the continuity result and should remain conceptually distinct from raw detector observations.
+6. Raw detections and track formation are separate layers inside the same Stage 3 run: detector output answers "what faces were seen in this frame", while tracks answer "which detections belong to the same continuity object over time".
 7. `summary.json` is profiling and run metadata. It is not required by normal runtime, but is useful for UI diagnostics and performance/debug review.
+
+Stage 3 execution contract:
+1. Initial generation is simultaneous: one generator run produces both raw detections and continuity tracks.
+2. Continuity tracking is not a separate first-run stage after detection; it is part of the same Stage 3 execution.
+3. Rebuild operations are secondary: they consume existing raw Stage 3 artefacts to regenerate processed continuity output without rerunning detection.
 
 Run reuse policy:
 1. Reusing the latest debug run is allowed only when the active transcript already has a FaceStream product sidecar and the existing run is not legacy-only.
@@ -263,7 +270,7 @@ Contents:
 1. Source generated FaceStream artifact path.
 2. A small set of representative crops per generated FaceStream track, typically selected from spaced high-confidence keyframes.
 3. Crop frame, source frame, normalized face box, score, `track_id`, and crop path.
-4. No independent face scan here; this stage consumes generated continuity tracks only.
+4. No independent face scan here; this stage consumes continuity tracks already produced during Stage 3.
 
 ### Stage 5: Same-Person Track Clustering
 Product sidecar: `{transcript_basename}_identity.bin`.
@@ -413,8 +420,8 @@ In `Assign Speaker Identity` dialog:
 
 ## Simplified UX Flow (Current)
 1. User clicks `Generate FaceStream`.
-2. System runs face detection and persists raw per-frame observations.
-3. System forms identity-agnostic continuity tracks from those detections and generates one FaceStream per track (`T<track_id>`).
+2. System runs Stage 3 once and, in that same run, persists raw per-frame detections and generates identity-agnostic continuity tracks.
+3. System writes one FaceStream per generated continuity track (`T<track_id>`).
 4. User clicks `Assign Speaker Identity`.
 5. System extracts several representative crops per generated continuity track and aggregates them to track-level identity evidence.
 6. System clusters tracks that likely belong to the same person.
@@ -435,7 +442,7 @@ In `Assign Speaker Identity` dialog:
 3. `speaker_flow.clips.<clip_id>.resolved_current`:
    - authoritative `track_id -> speaker_id` mapping used by Speaker Tracking and stabilization.
 4. Downstream steps must not infer identity directly from raw machine candidates if resolved mapping exists.
-5. Raw detections are authoritative for "what was observed"; continuity FaceStreams are authoritative for motion grouping over time; resolved identity mapping is authoritative for speaker binding.
+5. Raw detections are authoritative for "what was observed"; continuity FaceStreams generated during Stage 3 are authoritative for motion grouping over time; resolved identity mapping is authoritative for speaker binding.
 
 ## Overwrite Protection (Required)
 If a stage is about to overwrite one or more existing artefacts in the target run folder:

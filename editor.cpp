@@ -1619,9 +1619,16 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                     {QStringLiteral("timeline_track_count"), m_timeline->tracks().size()}
                 });
 
-    const QVector<ExportRangeSegment> playbackRanges = effectivePlaybackRanges();
-    setTransformSkipAwareTimelineRanges(
-        speechFilterPlaybackEnabled() ? playbackRanges : QVector<ExportRangeSegment>{});
+    const QVector<ExportRangeSegment> playbackRanges =
+        startupMarking
+            ? m_timeline->exportRanges()
+            : effectivePlaybackRanges();
+    if (startupMarking) {
+        setTransformSkipAwareTimelineRanges({});
+    } else {
+        setTransformSkipAwareTimelineRanges(
+            speechFilterPlaybackEnabled() ? playbackRanges : QVector<ExportRangeSegment>{});
+    }
     
     if (!startupMarking) {
         markStartup(QStringLiteral("apply_state.preview_bind.begin"));
@@ -1690,8 +1697,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                 m_loadingState = false;
                 scheduleSaveState();
             });
-            QTimer::singleShot(0, this, [this, currentFrame, selectedClipId, playbackRanges]() {
-                bindTimelineMediaState(selectedClipId, playbackRanges, currentFrame, true);
+            QTimer::singleShot(0, this, [this, currentFrame, selectedClipId]() {
+                const QVector<ExportRangeSegment> deferredPlaybackRanges = effectivePlaybackRanges();
+                setTransformSkipAwareTimelineRanges(
+                    speechFilterPlaybackEnabled()
+                        ? deferredPlaybackRanges
+                        : QVector<ExportRangeSegment>{});
+                bindTimelineMediaState(selectedClipId, deferredPlaybackRanges, currentFrame, true);
             });
         }
     });

@@ -1344,6 +1344,9 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
         entry.tracks += parseContinuityTracksForClip(clip, artifactRoot);
         entry.rawDetections += parseRawDetectionsForClip(clip, artifactRoot);
+        for (const VulkanPreviewFacestreamOverlay& detection : entry.rawDetections) {
+            entry.rawDetectionsBySourceFrame[detection.sourceFrame].push_back(detection);
+        }
     }
     return entry.tracks;
 }
@@ -1428,12 +1431,13 @@ QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::parseRawDetections
     return detections;
 }
 
-QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::loadRawDetectionsForClip(
-    const TimelineClip& clip)
+QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::rawDetectionsForClipFrame(
+    const TimelineClip& clip,
+    int64_t sourceFrame)
 {
     loadFacestreamTracksForClip(clip);
     const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-    return m_facestreamOverlayCache.value(clipPath).rawDetections;
+    return m_facestreamOverlayCache.value(clipPath).rawDetectionsBySourceFrame.value(sourceFrame);
 }
 
 void VulkanPreviewSurface::refreshFacestreamOverlays()
@@ -1486,11 +1490,10 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         }
         const QVector<FacestreamTrack> tracks = loadFacestreamTracksForClip(clip);
         if (m_showRawDetections) {
-            const QVector<VulkanPreviewFacestreamOverlay> clipDetections = loadRawDetectionsForClip(clip);
+            const QVector<VulkanPreviewFacestreamOverlay> clipDetections =
+                rawDetectionsForClipFrame(clip, localFrame);
             for (const VulkanPreviewFacestreamOverlay& detection : clipDetections) {
-                if (detection.sourceFrame == localFrame &&
-                    detection.boxNorm.isValid() &&
-                    !detection.boxNorm.isEmpty()) {
+                if (detection.boxNorm.isValid() && !detection.boxNorm.isEmpty()) {
                     rawDetections.push_back(detection);
                 }
             }

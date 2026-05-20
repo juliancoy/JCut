@@ -22,7 +22,11 @@ class QDoubleSpinBox;
 class QCheckBox;
 class QPlainTextEdit;
 class QTimer;
+class QToolButton;
 class SpeakersTable;
+namespace editor {
+class DecoderContext;
+}
 
 class SpeakersTab : public TableTabBase {
     Q_OBJECT
@@ -32,6 +36,8 @@ public:
         QLabel* speakersInspectorClipLabel = nullptr;
         QLabel* speakersInspectorDetailsLabel = nullptr;
         QTableWidget* speakersTable = nullptr;
+        QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
+        QTableWidget* speakerSectionsTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
         QListWidget* selectedSpeakerFaceStreamsList = nullptr;
         QLabel* selectedSpeakerRef1ImageLabel = nullptr;
@@ -178,6 +184,9 @@ private:
 
     bool eventFilter(QObject* watched, QEvent* event) override;
     void refreshFaceStreamPathsPanel();
+    void refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot);
+    void syncSpeakerListMode();
+    bool selectSpeakerRowById(const QString& speakerId);
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
     bool openReferencePreviewWindow(int referenceIndex);
     QPixmap referenceFullFramePreview(const TimelineClip& clip,
@@ -188,6 +197,13 @@ private:
                                     const QString& speakerId,
                                     const QJsonObject& keyframeObj,
                                     int size = 72) const;
+    QPixmap faceStreamPreviewAvatarWithDecoder(const TimelineClip& clip,
+                                               const QString& speakerId,
+                                               const QJsonObject& keyframeObj,
+                                               int size,
+                                               editor::DecoderContext* decoderCtx,
+                                               QHash<int64_t, QImage>* frameImageCache,
+                                               qreal sourceFps) const;
     QVector<QPixmap> assignedFaceStreamPreviewPixmaps(const TimelineClip& clip,
                                                       const QString& speakerId) const;
     QString assignedFaceStreamPreviewTooltipHtml(const TimelineClip& clip,
@@ -231,7 +247,11 @@ private:
                                 const QJsonObject& transcriptRoot,
                                 const QJsonObject& profile,
                                 const QJsonArray& streams,
-                                const QString& speakerId);
+                                const QString& speakerId,
+                                const QVector<int>& assignedTrackIds = {},
+                                editor::DecoderContext* decoderCtx = nullptr,
+                                QHash<int64_t, QImage>* frameImageCache = nullptr,
+                                qreal sourceFps = 0.0);
     QPixmap speakerReferenceAvatar(const TimelineClip& clip,
                                    const QString& speakerId,
                                    const QJsonObject& refObj,
@@ -246,6 +266,15 @@ private:
                                         qreal yNorm,
                                         qreal boxSizeNorm = -1.0);
     bool saveSpeakerTrackingReference(const QString& speakerId, int referenceIndex);
+    bool assignTrackToSpeaker(const QString& speakerId,
+                              int trackId,
+                              const QString& streamId,
+                              int64_t sourceFrame,
+                              qreal xNorm,
+                              qreal yNorm,
+                              qreal boxSizeNorm,
+                              const QString& resolutionSource);
+    void openTrackPickerForSpeaker(const QString& speakerId);
     bool armReferencePickForSpeaker(const QString& speakerId, int referenceIndex);
     bool clearSpeakerTrackingReferences(const QString& speakerId);
     bool deleteSpeakerAutoTrackPointstream(const QString& speakerId);

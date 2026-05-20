@@ -95,6 +95,8 @@ public:
     QLabel *speakersInspectorClipLabel() const { return m_speakersInspectorClipLabel; }
     QLabel *speakersInspectorDetailsLabel() const { return m_speakersInspectorDetailsLabel; }
     QTableWidget *speakersTable() const { return m_speakersTable; }
+    QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
+    QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QListWidget *selectedSpeakerFaceStreamsList() const { return m_selectedSpeakerFaceStreamsList; }
     QLabel *selectedSpeakerRef1ImageLabel() const { return m_selectedSpeakerRef1ImageLabel; }
@@ -610,6 +612,8 @@ private:
     QLabel *m_speakersInspectorClipLabel = nullptr;
     QLabel *m_speakersInspectorDetailsLabel = nullptr;
     SpeakersTable *m_speakersTable = nullptr;
+    QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
+    QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QListWidget *m_selectedSpeakerFaceStreamsList = nullptr;
     QLabel *m_selectedSpeakerRef1ImageLabel = nullptr;

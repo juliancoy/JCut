@@ -122,6 +122,7 @@ private:
         QString signature;
         QVector<FacestreamTrack> tracks;
         QVector<VulkanPreviewFacestreamOverlay> rawDetections;
+        QHash<int64_t, QVector<VulkanPreviewFacestreamOverlay>> rawDetectionsBySourceFrame;
     };
     struct PlaybackSmoothnessSample {
         qint64 timestampMs = 0;
@@ -154,7 +155,8 @@ private:
     void updateAdaptivePlaybackTuning(qint64 nowMs);
     void refreshFacestreamOverlays();
     QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip);
-    QVector<VulkanPreviewFacestreamOverlay> loadRawDetectionsForClip(const TimelineClip& clip);
+    QVector<VulkanPreviewFacestreamOverlay> rawDetectionsForClipFrame(const TimelineClip& clip,
+                                                                      int64_t sourceFrame);
     QVector<FacestreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
                                                          const QJsonObject& artifactRoot) const;
     QVector<VulkanPreviewFacestreamOverlay> parseRawDetectionsForClip(const TimelineClip& clip,

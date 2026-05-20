@@ -443,6 +443,8 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakersInspectorClipLabel(),
             m_inspectorPane->speakersInspectorDetailsLabel(),
             m_inspectorPane->speakersTable(),
+            m_inspectorPane->speakerShowContiguousSectionsCheckBox(),
+            m_inspectorPane->speakerSectionsTable(),
             m_inspectorPane->selectedSpeakerIdLabel(),
             m_inspectorPane->selectedSpeakerFaceStreamsList(),
             m_inspectorPane->selectedSpeakerRef1ImageLabel(),
