@@ -13,8 +13,15 @@
 #include <QSplitter>
 #include <QToolTip>
 #include <QWidget>
+#include <QtConcurrent/QtConcurrentRun>
 
 using namespace editor;
+
+namespace editor_startup {
+QJsonObject loadStartupStatePayload(const QString& projectId,
+                                    const QString& statePath,
+                                    const QString& historyPath);
+}
 
 namespace {
 bool restVulkanDiagnosticsModeEnabled()
@@ -494,17 +501,20 @@ void EditorWindow::setupStartupLoad()
             m_projectManager->loadProjectsFromFolders();
         }
         startupProfileMark(QStringLiteral("startup_load.projects_loaded"));
-        loadState();
-        startupProfileMark(QStringLiteral("startup_load.state_loaded"));
-        setupAutosaveTimer();
-        startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
-        m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
-            ? m_startupProfileTimer.elapsed()
-            : 0;
-        startupProfileMark(QStringLiteral("startup_load.complete"),
-                           QJsonObject{{QStringLiteral("total_ms"), m_startupProfileCompletedMs}});
-        m_startupProfileCompleted = true;
-        scheduleDeferredStartupUiWarmup(true);
-        scheduleOptimizedProfileEnsure();
+        const QString projectId = m_projectManager
+            ? m_projectManager->currentProjectIdOrDefault()
+            : QStringLiteral("default");
+        const QString statePath = m_projectManager ? m_projectManager->stateFilePath() : QString();
+        const QString historyPath = m_projectManager ? m_projectManager->historyFilePath() : QString();
+        startupProfileMark(QStringLiteral("startup_load.state_parse.begin"),
+                           QJsonObject{{QStringLiteral("project_id"), projectId}});
+        m_startupStateLoadWatcher.setFuture(QtConcurrent::run([projectId, statePath, historyPath]() {
+            return editor_startup::loadStartupStatePayload(projectId, statePath, historyPath);
+        }));
     });
+}
+namespace editor_startup {
+QJsonObject loadStartupStatePayload(const QString& projectId,
+                                    const QString& statePath,
+                                    const QString& historyPath);
 }

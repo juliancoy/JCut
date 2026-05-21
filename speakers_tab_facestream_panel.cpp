@@ -63,7 +63,7 @@ QPixmap SpeakersTab::faceStreamPreviewAvatarWithDecoder(const TimelineClip& clip
     const qreal boxRight = keyframeObj.value(QStringLiteral("box_right")).toDouble(-1.0);
     const qreal boxBottom = keyframeObj.value(QStringLiteral("box_bottom")).toDouble(-1.0);
     const QString cacheKey = QStringLiteral("facestream|%1|%2|%3|%4|%5|%6|%7|%8|%9")
-        .arg(m_loadedTranscriptPath)
+        .arg(m_transcriptSession.transcriptPath())
         .arg(clip.id)
         .arg(speakerId)
         .arg(sourceFrame30)
@@ -160,12 +160,12 @@ QVector<QPixmap> SpeakersTab::assignedFaceStreamPreviewPixmaps(const TimelineCli
                                                                const QString& speakerId) const
 {
     QVector<QPixmap> pixmaps;
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
         return pixmaps;
     }
 
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonArray faceRefs = speakerFaceRefs(profiles.value(speakerId).toObject());
     for (const QJsonValue& faceRefValue : faceRefs) {
         const QJsonObject previewKeyframe = previewKeyframeFromSpeakerFaceRef(faceRefValue.toObject());
@@ -208,7 +208,7 @@ QVector<QPixmap> SpeakersTab::assignedFaceStreamPreviewPixmaps(const TimelineCli
 
 QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
 {
-    const QString cacheKey = m_loadedTranscriptPath + QLatin1Char('\n') + clip.id.trimmed();
+    const QString cacheKey = m_transcriptSession.transcriptPath() + QLatin1Char('\n') + clip.id.trimmed();
     const auto cached = m_continuityStreamsCache.constFind(cacheKey);
     if (cached != m_continuityStreamsCache.cend()) {
         return cached.value();
@@ -217,17 +217,17 @@ QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
     QJsonArray streams;
     editor::TranscriptEngine transcriptEngine;
     QJsonObject artifactRoot;
-    if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+    if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
         streams = jcut::facestream::continuityStreamsForRoot(
             continuityRoot,
-            m_loadedTranscriptDoc.object());
+            m_transcriptSession.rootObject());
         if (!streams.isEmpty()) {
             m_continuityStreamsCache.insert(cacheKey, streams);
             return streams;
         }
     }
-    const QJsonObject root = m_loadedTranscriptDoc.object();
+    const QJsonObject root = m_transcriptSession.rootObject();
     const QJsonObject speakerFlow = root.value(QStringLiteral("speaker_flow")).toObject();
     const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
@@ -331,7 +331,7 @@ QHash<int, QString> SpeakersTab::resolvedIdentityByTrackId(const TimelineClip& c
                                                            const QJsonArray& streams) const
 {
     QHash<int, QString> identityByTrackId;
-    const QJsonObject speakerFlow = m_loadedTranscriptDoc.object().value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject speakerFlow = m_transcriptSession.rootObject().value(QStringLiteral("speaker_flow")).toObject();
     const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
     const QJsonObject resolvedCurrent = clipFlow.value(QStringLiteral("resolved_current")).toObject();
@@ -352,7 +352,7 @@ QVector<int> SpeakersTab::resolvedAssignedTrackIdsForSpeaker(const TimelineClip&
                                                              const QString& speakerId) const
 {
     QVector<int> trackIds;
-    const QJsonObject speakerFlow = m_loadedTranscriptDoc.object().value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject speakerFlow = m_transcriptSession.rootObject().value(QStringLiteral("speaker_flow")).toObject();
     const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     const QJsonObject clipFlow = clipsRoot.value(clip.id.trimmed()).toObject();
     const QJsonObject resolvedCurrent = clipFlow.value(QStringLiteral("resolved_current")).toObject();
@@ -373,8 +373,8 @@ QVector<int> SpeakersTab::resolvedAssignedTrackIdsForSpeaker(const TimelineClip&
 QString SpeakersTab::assignedFaceStreamPreviewTooltipHtml(const TimelineClip& clip,
                                                           const QString& speakerId) const
 {
-    const QFileInfo transcriptInfo(m_loadedTranscriptPath);
-    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_loadedTranscriptPath);
+    const QFileInfo transcriptInfo(m_transcriptSession.transcriptPath());
+    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_transcriptSession.transcriptPath());
     const QString cacheKey = QStringLiteral("%1|%2|%3|%4")
         .arg(clip.id)
         .arg(speakerId)
@@ -502,18 +502,18 @@ void SpeakersTab::refreshFaceStreamPathsPanel()
         m_widgets.speakerRawDetectionTable->clearContents();
         m_widgets.speakerRawDetectionTable->setRowCount(0);
     }
-    if (!m_loadedTranscriptDoc.isObject()) {
+    if (!m_transcriptSession.hasObjectDocument()) {
         return;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip) {
         return;
     }
-    const QFileInfo transcriptInfo(m_loadedTranscriptPath);
-    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_loadedTranscriptPath);
+    const QFileInfo transcriptInfo(m_transcriptSession.transcriptPath());
+    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_transcriptSession.transcriptPath());
     const QString refreshSignature =
         clip->id + QLatin1Char('|') +
-        m_loadedTranscriptPath + QLatin1Char('|') +
+        m_transcriptSession.transcriptPath() + QLatin1Char('|') +
         QString::number(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0) +
         QLatin1Char('|') +
         QString::number(artifactRevisionMs);
@@ -524,7 +524,7 @@ void SpeakersTab::refreshFaceStreamPathsPanel()
     editor::TranscriptEngine transcriptEngine;
     QJsonObject artifactRoot;
     QJsonObject continuityRoot;
-    if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+    if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         continuityRoot = continuityRootForClip(artifactRoot, clip->id);
     }
     if (m_widgets.speakerDetectionsAvailableCheckBox) {

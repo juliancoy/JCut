@@ -112,9 +112,17 @@ bool SpeakersTable::viewportEvent(QEvent* event)
     };
 
     switch (event->type()) {
-    case QEvent::MouseMove:
-        updateAvatarHover(static_cast<QMouseEvent*>(event)->pos());
+    case QEvent::MouseMove: {
+        auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        updateAvatarHover(mouseEvent->pos());
+        // Passive hover is only used for avatar preview. Letting the base
+        // QTableWidget handle no-button mouse moves can cause current-row
+        // churn on some platforms/styles.
+        if (mouseEvent->buttons() == Qt::NoButton) {
+            return true;
+        }
         break;
+    }
     case QEvent::ToolTip: {
         const QPoint pos = static_cast<QHelpEvent*>(event)->pos();
         updateAvatarHover(pos);

@@ -1358,6 +1358,9 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_selectedSpeakerIdLabel = new QLabel(QStringLiteral("No speaker selected"), page);
     auto *selectedFaceStreamsTitle = new QLabel(QStringLiteral("Assigned Tracks"), page);
     selectedFaceStreamsTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
+    auto *selectedFaceStreamsHeaderRow = new QHBoxLayout;
+    selectedFaceStreamsHeaderRow->setContentsMargins(0, 0, 0, 0);
+    selectedFaceStreamsHeaderRow->setSpacing(6);
     m_selectedSpeakerFaceStreamsList = new QListWidget(page);
     m_selectedSpeakerFaceStreamsList->setViewMode(QListView::IconMode);
     m_selectedSpeakerFaceStreamsList->setFlow(QListView::LeftToRight);
@@ -1413,11 +1416,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *speakerTranscriptAiRow = new QHBoxLayout;
     speakerTranscriptAiRow->setContentsMargins(0, 0, 0, 0);
     speakerTranscriptAiRow->setSpacing(6);
-    auto *speakerAssignmentRow = new QHBoxLayout;
-    speakerAssignmentRow->setContentsMargins(0, 0, 0, 0);
-    speakerAssignmentRow->setSpacing(6);
     m_speakerAiFindNamesButton = new QPushButton(QStringLiteral("Mine Transcript (AI)"), page);
-    m_speakerPrecropFacesButton = new QPushButton(QStringLiteral("Assign Speaker Identity"), page);
+    m_speakerPrecropFacesButton = new QPushButton(QStringLiteral("Add Tracks..."), page);
     m_speakerAiFindOrganizationsButton = new QPushButton(QStringLiteral("Find Organizations"), page);
     m_speakerAiCleanAssignmentsButton = new QPushButton(QStringLiteral("Clean Assignments"), page);
     m_speakerPrecropFacesButton->setObjectName(QStringLiteral("speakers.assign_facestreams"));
@@ -1429,9 +1429,9 @@ QWidget *InspectorPane::buildSpeakersTab()
         button->setMinimumHeight(30);
         button->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     }
-    m_speakerPrecropFacesButton->setMinimumHeight(34);
-    speakerAssignmentRow->addWidget(m_speakerPrecropFacesButton);
-    speakerAssignmentRow->addStretch(1);
+    selectedFaceStreamsHeaderRow->addWidget(selectedFaceStreamsTitle);
+    selectedFaceStreamsHeaderRow->addStretch(1);
+    selectedFaceStreamsHeaderRow->addWidget(m_speakerPrecropFacesButton);
     speakerTranscriptAiRow->addWidget(m_speakerAiFindNamesButton);
     speakerTranscriptAiRow->addWidget(m_speakerAiFindOrganizationsButton);
     speakerTranscriptAiRow->addWidget(m_speakerAiCleanAssignmentsButton);
@@ -1485,14 +1485,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     facestreamStageHelp->setWordWrap(true);
     facestreamStageHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
-    auto *identityTitle = new QLabel(QStringLiteral("Steps 4-6: Extract, Cluster, Assign Speaker Identity"), page);
-    identityTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
-    auto *identityHelp = new QLabel(
-        QStringLiteral("Extract representative crops per continuity track, cluster tracks by same person, then assign each identity cluster to a transcript speaker."),
-        page);
-    identityHelp->setWordWrap(true);
-    identityHelp->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
-
     auto *debugTitle = new QLabel(QStringLiteral("Speaker Flow Debug Artefacts"), page);
     debugTitle->setStyleSheet(QStringLiteral("font-weight: 600; color: #8fa3b8;"));
 
@@ -1524,12 +1516,9 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *identityPanelLayout = new QVBoxLayout(identityPanel);
     identityPanelLayout->setContentsMargins(0, 0, 0, 0);
     identityPanelLayout->setSpacing(6);
-    identityPanelLayout->addWidget(identityTitle);
-    identityPanelLayout->addWidget(identityHelp);
-    identityPanelLayout->addLayout(speakerAssignmentRow);
     identityPanelLayout->addWidget(selectedSpeakerTitle);
     identityPanelLayout->addWidget(m_selectedSpeakerIdLabel);
-    identityPanelLayout->addWidget(selectedFaceStreamsTitle);
+    identityPanelLayout->addLayout(selectedFaceStreamsHeaderRow);
     identityPanelLayout->addWidget(m_selectedSpeakerFaceStreamsList);
     identityPanelLayout->addLayout(selectedActionsRow);
     identityPanelLayout->addWidget(currentSentenceTitle);

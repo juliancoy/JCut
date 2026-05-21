@@ -568,6 +568,167 @@ ClusterResult clusterFaceTracks(
     return clustered;
 }
 
+SeedTrackMatchResult matchFaceTracksToSeed(
+    const SeedTrackMatchRequest& request,
+    const std::function<bool(int, const QString&)>& progress)
+{
+    SeedTrackMatchResult result;
+    result.autoMatchThreshold = request.autoMatchThreshold;
+    result.reviewThreshold = request.reviewThreshold;
+
+    QHash<int, QVector<facefind::Candidate>> candidatesByTrackId;
+    for (const facefind::Candidate& candidate : request.trackCandidates) {
+        if (candidate.trackId < 0) {
+            continue;
+        }
+        candidatesByTrackId[candidate.trackId].push_back(candidate);
+    }
+    if (request.seedTrackId < 0 || !candidatesByTrackId.contains(request.seedTrackId)) {
+        result.embeddingError = QStringLiteral("Selected seed track was not available for identity matching.");
+        return result;
+    }
+
+    QVector<int> trackIds = candidatesByTrackId.keys().toVector();
+    std::sort(trackIds.begin(), trackIds.end());
+
+    jcut::identity_resolution::ArcFaceNcnnEmbedder embedder;
+    result.embeddingReady =
+        embedder.initialize(request.arcfaceParamPath, request.arcfaceBinPath, &result.embeddingError);
+
+    QVector<TrackIdentityEvidence> evidence;
+    evidence.reserve(trackIds.size());
+    if (result.embeddingReady) {
+        for (int i = 0; i < trackIds.size(); ++i) {
+            if ((i % 25) == 0 &&
+                !progress(1,
+                          QStringLiteral("Embedding FaceStream track crops: %1 / %2")
+                              .arg(i)
+                              .arg(trackIds.size()))) {
+                result.cancelStageMessage = QStringLiteral("User canceled seeded FaceStream identity matching.");
+                return result;
+            }
+            TrackIdentityEvidence row;
+            row.trackId = trackIds.at(i);
+            row.cropSamples = candidatesByTrackId.value(row.trackId);
+            QVector<std::vector<float>> cropEmbeddings;
+            for (const facefind::Candidate& candidate : row.cropSamples) {
+                if (candidate.cropPath.trimmed().isEmpty()) {
+                    continue;
+                }
+                std::vector<float> embedding;
+                if (embedder.embedFaceCrop(candidate.cropPath, &embedding)) {
+                    cropEmbeddings.push_back(std::move(embedding));
+                }
+            }
+            row.embedding = averageNormalizedEmbeddings(cropEmbeddings);
+            row.hasEmbedding = !row.embedding.empty();
+            if (row.hasEmbedding) {
+                ++result.embeddedTrackCount;
+            }
+            evidence.push_back(row);
+        }
+    } else {
+        for (int trackId : trackIds) {
+            TrackIdentityEvidence row;
+            row.trackId = trackId;
+            row.cropSamples = candidatesByTrackId.value(trackId);
+            evidence.push_back(row);
+        }
+    }
+
+    int seedIndex = -1;
+    for (int i = 0; i < evidence.size(); ++i) {
+        if (evidence.at(i).trackId == request.seedTrackId) {
+            seedIndex = i;
+            break;
+        }
+    }
+    if (seedIndex < 0) {
+        result.embeddingError = QStringLiteral("Selected seed track was not available for identity matching.");
+        return result;
+    }
+    if (!result.embeddingReady) {
+        return result;
+    }
+    const TrackIdentityEvidence& seedEvidence = evidence.at(seedIndex);
+    if (!seedEvidence.hasEmbedding || seedEvidence.embedding.empty()) {
+        result.embeddingError = QStringLiteral("Could not compute an identity embedding for the selected seed track.");
+        return result;
+    }
+
+    result.ok = true;
+    for (const TrackIdentityEvidence& row : std::as_const(evidence)) {
+        SeedTrackMatch match;
+        match.trackId = row.trackId;
+        match.cropSamples = row.cropSamples;
+        match.embedding = row.embedding;
+        match.hasEmbedding = row.hasEmbedding;
+        QVector<facefind::Candidate> representativeSamples = row.cropSamples;
+        std::sort(representativeSamples.begin(), representativeSamples.end(), [](const facefind::Candidate& a,
+                                                                                const facefind::Candidate& b) {
+            return a.score > b.score;
+        });
+        match.representativeCandidate =
+            representativeSamples.isEmpty() ? facefind::Candidate{} : representativeSamples.first();
+        match.representativeCandidate.trackId = row.trackId;
+        if (row.trackId == request.seedTrackId) {
+            match.cosine = 1.0;
+            match.decision = QStringLiteral("seed");
+        } else if (!row.hasEmbedding || row.embedding.empty()) {
+            match.decision = QStringLiteral("no_embedding");
+        } else {
+            match.cosine =
+                jcut::identity_resolution::cosineSimilarity(seedEvidence.embedding, row.embedding);
+            if (match.cosine >= result.autoMatchThreshold) {
+                match.decision = QStringLiteral("auto_match");
+            } else if (match.cosine >= result.reviewThreshold) {
+                match.decision = QStringLiteral("review");
+            } else {
+                match.decision = QStringLiteral("different");
+            }
+        }
+        QJsonObject rowJson;
+        rowJson[QStringLiteral("seed_track_id")] = request.seedTrackId;
+        rowJson[QStringLiteral("track_id")] = match.trackId;
+        rowJson[QStringLiteral("cosine")] = match.cosine;
+        rowJson[QStringLiteral("decision")] = match.decision;
+        rowJson[QStringLiteral("has_embedding")] = match.hasEmbedding;
+        rowJson[QStringLiteral("crop_count")] = match.cropSamples.size();
+        rowJson[QStringLiteral("representative_crop")] = match.representativeCandidate.cropPath;
+        result.matchRows.push_back(rowJson);
+        result.matches.push_back(match);
+    }
+
+    std::sort(result.matches.begin(), result.matches.end(), [seedTrackId = request.seedTrackId](const SeedTrackMatch& a,
+                                                                                                 const SeedTrackMatch& b) {
+        auto rank = [seedTrackId](const SeedTrackMatch& match) {
+            if (match.trackId == seedTrackId) {
+                return 0;
+            }
+            if (match.decision == QLatin1StringView("auto_match")) {
+                return 1;
+            }
+            if (match.decision == QLatin1StringView("review")) {
+                return 2;
+            }
+            if (match.decision == QLatin1StringView("no_embedding")) {
+                return 3;
+            }
+            return 4;
+        };
+        const int rankA = rank(a);
+        const int rankB = rank(b);
+        if (rankA != rankB) {
+            return rankA < rankB;
+        }
+        if (std::abs(a.cosine - b.cosine) > 0.0001) {
+            return a.cosine > b.cosine;
+        }
+        return a.trackId < b.trackId;
+    });
+    return result;
+}
+
 AssignmentResolutionResult resolveTrackIdentityAssignments(
     const QJsonArray& assignmentTableRows,
     const QVector<facefind::Candidate>& trackCandidates,

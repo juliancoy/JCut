@@ -111,7 +111,7 @@ QPixmap SpeakersTab::speakerReferenceAvatar(const TimelineClip& clip,
         -1.0, refObj.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(-1.0), 1.0);
 
     const QString cacheKey = QStringLiteral("ref|%1|%2|%3|%4|%5|%6")
-        .arg(m_loadedTranscriptPath)
+        .arg(m_transcriptSession.transcriptPath())
         .arg(speakerId)
         .arg(sourceFrame30)
         .arg(static_cast<int>(std::round(locX * 1000.0)))

@@ -193,10 +193,10 @@ bool TranscriptTab::rebuildInMemoryTranscriptDocument(const QJsonDocument& docum
 
 QJsonDocument TranscriptTab::serializeInMemoryTranscriptDocument() const
 {
-    if (!m_loadedTranscriptDoc.isObject()) {
+    if (!m_transcriptSession.hasObjectDocument()) {
         return QJsonDocument();
     }
-    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject root = m_transcriptSession.rootObject();
     QJsonArray segments;
     for (const TranscriptDocumentSegment& segment : m_transcriptDocumentSegments) {
         QJsonObject segmentObject = segment.metadata;
@@ -296,7 +296,10 @@ void TranscriptTab::normalizeTranscriptRenderOrder()
 
 void TranscriptTab::rehydrateLoadedTranscriptDocumentFromMemory()
 {
-    m_loadedTranscriptDoc = serializeInMemoryTranscriptDocument();
+    m_transcriptSession.assign(
+        m_transcriptSession.clipFilePath(),
+        m_transcriptSession.transcriptPath(),
+        serializeInMemoryTranscriptDocument());
 }
 
 void TranscriptTab::rebuildTranscriptWordAddressIndex()
@@ -330,9 +333,8 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
     setActiveTranscriptPathForClipFile(clip.filePath, transcriptPath);
 
     const bool canReuseLoadedDoc =
-        m_loadedTranscriptDoc.isObject() &&
-        m_loadedClipFilePath == clip.filePath &&
-        m_loadedTranscriptPath == transcriptPath;
+        m_transcriptSession.hasObjectDocument() &&
+        m_transcriptSession.matches(clip.filePath, transcriptPath);
 
     if (!canReuseLoadedDoc) {
         if (!QFileInfo::exists(transcriptPath)) {
@@ -348,9 +350,7 @@ void TranscriptTab::loadTranscriptFile(const TimelineClip& clip)
             }
         }
 
-        m_loadedClipFilePath = clip.filePath;
-        m_loadedTranscriptPath = transcriptPath;
-        m_loadedTranscriptDoc = QJsonDocument();
+        m_transcriptSession.assign(clip.filePath, transcriptPath, QJsonDocument());
         startTranscriptLoadRequest(clip.filePath, transcriptPath);
         return;
     }
@@ -372,13 +372,13 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
         ~UpdatingGuard() { flag = previous; }
     } updatingGuard(m_updating);
 
-    if (!m_loadedTranscriptDoc.isObject()) {
+    if (!m_transcriptSession.hasObjectDocument()) {
         if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
         }
         return;
     }
-    if (!rebuildInMemoryTranscriptDocument(m_loadedTranscriptDoc)) {
+    if (!rebuildInMemoryTranscriptDocument(m_transcriptSession.document())) {
         if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(QStringLiteral("Invalid transcript JSON file."));
         }
@@ -396,14 +396,16 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
         }
     }
     const int deletedEdits =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
+        m_transcriptSession.rootObject().value(QString(kTranscriptDeletedEditsCountKey)).toInt(0);
     const bool mutableCut = activeCutMutable();
     const QString activeCutName =
         m_widgets.transcriptScriptVersionCombo
             ? m_widgets.transcriptScriptVersionCombo->currentText().trimmed()
             : QString();
     const QString resolvedCutName =
-        activeCutName.isEmpty() ? scriptVersionLabelForPath(m_loadedTranscriptPath, clip.filePath) : activeCutName;
+        activeCutName.isEmpty()
+            ? scriptVersionLabelForPath(m_transcriptSession.transcriptPath(), clip.filePath)
+            : activeCutName;
     const bool followEnabled =
         m_widgets.transcriptFollowCurrentWordCheckBox &&
         m_widgets.transcriptFollowCurrentWordCheckBox->isChecked();
@@ -453,14 +455,16 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
     adjustOverlappingRows(allRows);
     insertGapRows(&allRows);
     computeRenderFrames(&allRows);
-    if (showOutsideCutLinesEnabled() && m_loadedTranscriptPath != originalPath && QFileInfo::exists(originalPath)) {
+    if (showOutsideCutLinesEnabled() &&
+        m_transcriptSession.transcriptPath() != originalPath &&
+        QFileInfo::exists(originalPath)) {
         QJsonDocument originalDoc;
         if (loadTranscriptJsonCached(originalPath, &originalDoc) && originalDoc.isObject()) {
             QVector<TranscriptDocumentSegment> savedSegments = m_transcriptDocumentSegments;
             QHash<int, TranscriptWordAddress> savedAddresses = m_transcriptWordAddressById;
             QVector<int> savedRenderOrder = m_renderOrderedWordIds;
             const int savedNextWordId = m_nextTranscriptWordId;
-            QJsonDocument savedDoc = m_loadedTranscriptDoc;
+            QJsonDocument savedDoc = m_transcriptSession.document();
             rebuildInMemoryTranscriptDocument(originalDoc);
             const QVector<TranscriptRow> originalRows = parseTranscriptRows(
                 m_transcriptPrependMs,
@@ -469,7 +473,10 @@ void TranscriptTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, 
             m_transcriptWordAddressById = std::move(savedAddresses);
             m_renderOrderedWordIds = std::move(savedRenderOrder);
             m_nextTranscriptWordId = savedNextWordId;
-            m_loadedTranscriptDoc = savedDoc;
+            m_transcriptSession.assign(
+                m_transcriptSession.clipFilePath(),
+                m_transcriptSession.transcriptPath(),
+                savedDoc);
             QSet<QString> activeKeys;
             for (const TranscriptRow& row : std::as_const(allRows)) {
                 activeKeys.insert(originalWordKey(row));
@@ -914,12 +921,12 @@ QString TranscriptTab::activeSpeakerFilter() const
 QString TranscriptTab::speakerDisplayLabel(const QString& speakerId) const
 {
     const QString trimmedSpeakerId = speakerId.trimmed();
-    if (trimmedSpeakerId.isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (trimmedSpeakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         return trimmedSpeakerId;
     }
 
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QString displayName =
         profiles.value(trimmedSpeakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
     return displayName.isEmpty() ? trimmedSpeakerId : displayName;
@@ -1138,10 +1145,11 @@ QString TranscriptTab::originalTranscriptPathForClip(const QString& clipFilePath
 
 bool TranscriptTab::activeCutMutable() const
 {
-    if (m_loadedTranscriptPath.isEmpty() || m_loadedClipFilePath.isEmpty()) {
+    if (m_transcriptSession.transcriptPath().isEmpty() || m_transcriptSession.clipFilePath().isEmpty()) {
         return false;
     }
-    return m_loadedTranscriptPath != originalTranscriptPathForClip(m_loadedClipFilePath);
+    return m_transcriptSession.transcriptPath() !=
+           originalTranscriptPathForClip(m_transcriptSession.clipFilePath());
 }
 
 bool TranscriptTab::showOutsideCutLinesEnabled() const
@@ -1203,7 +1211,8 @@ void TranscriptTab::computeRenderFrames(QVector<TranscriptRow>* rows) const
 
 void TranscriptTab::persistRenderOrderFromTable()
 {
-    if (!m_widgets.transcriptTable || m_loadedTranscriptPath.isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (!m_widgets.transcriptTable || m_transcriptSession.transcriptPath().isEmpty() ||
+        !m_transcriptSession.hasObjectDocument()) {
         return;
     }
     if (!activeCutMutable()) {
@@ -1268,12 +1277,13 @@ void TranscriptTab::onTranscriptScriptVersionChanged(int index)
     if (m_updating || m_updatingScriptVersionSelector || !m_widgets.transcriptScriptVersionCombo) {
         return;
     }
-    if (m_widgets.transcriptDeleteVersionButton && !m_loadedClipFilePath.isEmpty()) {
+    if (m_widgets.transcriptDeleteVersionButton && !m_transcriptSession.clipFilePath().isEmpty()) {
         const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
         m_widgets.transcriptDeleteVersionButton->setEnabled(
-            !selectedPath.isEmpty() && selectedPath != originalTranscriptPathForClip(m_loadedClipFilePath));
+            !selectedPath.isEmpty() &&
+            selectedPath != originalTranscriptPathForClip(m_transcriptSession.clipFilePath()));
     }
-    if (!m_loadedClipFilePath.isEmpty()) {
+    if (!m_transcriptSession.clipFilePath().isEmpty()) {
         refresh();
         emit transcriptDocumentChanged();
         if (m_deps.scheduleSaveState) {
@@ -1290,9 +1300,9 @@ void TranscriptTab::onTranscriptScriptVersionContextMenu(const QPoint& pos)
 
     const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
     const bool canDeleteSelection =
-        !m_loadedClipFilePath.isEmpty() &&
+        !m_transcriptSession.clipFilePath().isEmpty() &&
         !selectedPath.isEmpty() &&
-        selectedPath != originalTranscriptPathForClip(m_loadedClipFilePath);
+        selectedPath != originalTranscriptPathForClip(m_transcriptSession.clipFilePath());
 
     QMenu menu;
     QAction* deleteCurrentTranscription = menu.addAction(QStringLiteral("Delete Current Transcription"));
@@ -1310,10 +1320,10 @@ void TranscriptTab::onTranscriptScriptVersionContextMenu(const QPoint& pos)
 
 void TranscriptTab::onTranscriptCreateVersion()
 {
-    if (m_loadedTranscriptPath.isEmpty() || m_loadedClipFilePath.isEmpty()) {
+    if (m_transcriptSession.transcriptPath().isEmpty() || m_transcriptSession.clipFilePath().isEmpty()) {
         return;
     }
-    const QString nextPath = nextScriptVersionPathForClip(m_loadedClipFilePath);
+    const QString nextPath = nextScriptVersionPathForClip(m_transcriptSession.clipFilePath());
     QJsonDocument nextDoc = serializeInMemoryTranscriptDocument();
     if (!nextDoc.isObject()) {
         return;
@@ -1344,7 +1354,7 @@ void TranscriptTab::onTranscriptCreateVersion()
         return;
     }
 
-    refreshScriptVersionSelector(m_loadedClipFilePath, nextPath);
+    refreshScriptVersionSelector(m_transcriptSession.clipFilePath(), nextPath);
     refresh();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) {
@@ -1357,7 +1367,7 @@ void TranscriptTab::onTranscriptCreateVersion()
 
 void TranscriptTab::onTranscriptCutLabelEdited()
 {
-    if (!m_widgets.transcriptScriptVersionCombo || m_loadedClipFilePath.isEmpty()) {
+    if (!m_widgets.transcriptScriptVersionCombo || m_transcriptSession.clipFilePath().isEmpty()) {
         return;
     }
     const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
@@ -1369,13 +1379,13 @@ void TranscriptTab::onTranscriptCutLabelEdited()
         // Revert to auto-generated label
         m_widgets.transcriptScriptVersionCombo->setItemText(
             m_widgets.transcriptScriptVersionCombo->currentIndex(),
-            scriptVersionLabelForPath(selectedPath, m_loadedClipFilePath));
+            scriptVersionLabelForPath(selectedPath, m_transcriptSession.clipFilePath()));
         return;
     }
 
     // Persist the custom label into the transcript JSON's root as "cut_label"
     QJsonDocument doc;
-    if (selectedPath == m_loadedTranscriptPath) {
+    if (selectedPath == m_transcriptSession.transcriptPath()) {
         doc = serializeInMemoryTranscriptDocument();
     } else {
         loadTranscriptJsonCached(selectedPath, &doc);
@@ -1384,8 +1394,11 @@ void TranscriptTab::onTranscriptCutLabelEdited()
         QJsonObject root = doc.object();
         root[QStringLiteral("cut_label")] = newLabel;
         if (saveTranscriptDocumentToPath(&m_transcriptEngine, selectedPath, root) &&
-            selectedPath == m_loadedTranscriptPath) {
-            m_loadedTranscriptDoc.setObject(root);
+            selectedPath == m_transcriptSession.transcriptPath()) {
+            m_transcriptSession.assign(
+                m_transcriptSession.clipFilePath(),
+                m_transcriptSession.transcriptPath(),
+                QJsonDocument(root));
         }
     }
 
@@ -1400,11 +1413,12 @@ void TranscriptTab::onTranscriptCutLabelEdited()
 
 void TranscriptTab::onTranscriptDeleteVersion()
 {
-    if (!m_widgets.transcriptScriptVersionCombo || m_loadedClipFilePath.isEmpty()) {
+    if (!m_widgets.transcriptScriptVersionCombo || m_transcriptSession.clipFilePath().isEmpty()) {
         return;
     }
     const QString selectedPath = m_widgets.transcriptScriptVersionCombo->currentData().toString();
-    if (selectedPath.isEmpty() || selectedPath == originalTranscriptPathForClip(m_loadedClipFilePath)) {
+    if (selectedPath.isEmpty() ||
+        selectedPath == originalTranscriptPathForClip(m_transcriptSession.clipFilePath())) {
         return;
     }
     const QString selectedLabel = m_widgets.transcriptScriptVersionCombo->currentText().trimmed();
@@ -1422,8 +1436,8 @@ void TranscriptTab::onTranscriptDeleteVersion()
         }
     }
     QFile::remove(selectedPath);
-    const QString basePath = defaultEditablePathForClip(m_loadedClipFilePath);
-    refreshScriptVersionSelector(m_loadedClipFilePath, basePath);
+    const QString basePath = defaultEditablePathForClip(m_transcriptSession.clipFilePath());
+    refreshScriptVersionSelector(m_transcriptSession.clipFilePath(), basePath);
     refresh();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) {

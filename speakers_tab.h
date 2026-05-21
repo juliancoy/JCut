@@ -15,7 +15,7 @@
 #include "editor_timeline_types.h"
 #include "table_tab_base.h"
 #include "transcript_document_io.h"
-#include "transcript_document_save_controller.h"
+#include "transcript_document_session.h"
 
 class QLabel;
 class QListWidget;
@@ -154,6 +154,8 @@ private slots:
     void onSpeakerFramingTargetChanged();
     void onSpeakerFramingZoomEnabledChanged(bool checked);
     void onSpeakerApplyFramingToClipChanged(bool checked);
+    void onSpeakerFaceStreamTableContextMenuRequested(const QPoint& pos);
+    void onSpeakerFindMatchingTracksClicked();
 
 private:
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
@@ -262,6 +264,10 @@ private:
                               qreal yNorm,
                               qreal boxSizeNorm,
                               const QString& resolutionSource);
+    bool assignTrackAnchorsToSpeakerBatch(const QString& speakerId,
+                                          const QJsonArray& trackAnchors,
+                                          const QString& resolutionSource,
+                                          const QString& auditAction);
     void openTrackPickerForSpeaker(const QString& speakerId);
     bool armReferencePickForSpeaker(const QString& speakerId, int referenceIndex);
     bool clearSpeakerTrackingReferences(const QString& speakerId);
@@ -284,9 +290,7 @@ private:
 
     Widgets m_widgets;
     Dependencies m_speakerDeps;
-    QString m_loadedTranscriptPath;
-    QString m_loadedClipFilePath;
-    QJsonDocument m_loadedTranscriptDoc;
+    TranscriptDocumentSession m_transcriptSession{QStringLiteral("speakers")};
     mutable QHash<QString, QPixmap> m_avatarCache;
     mutable QHash<QString, QJsonArray> m_continuityStreamsCache;
     int m_pendingReferencePick = 0;
@@ -314,6 +318,5 @@ private:
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
-    TranscriptDocumentSaveController m_transcriptSaveController{QStringLiteral("speakers")};
     QString m_pendingPreferredSpeakerId;
 };

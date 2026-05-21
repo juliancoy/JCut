@@ -606,6 +606,7 @@ private:
     QFutureWatcher<QVector<ExportRangeSegment>> m_transcriptNormalizeRefreshWatcher;
     QFutureWatcher<QJsonObject> m_transcriptTextCompanionBackfillWatcher;
     QFutureWatcher<QJsonObject> m_deferredHistoryLoadWatcher;
+    QFutureWatcher<QJsonObject> m_startupStateLoadWatcher;
 
     bool m_ignoreSeekSignal = false;
     bool m_loadingState = false;

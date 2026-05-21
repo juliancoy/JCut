@@ -7,7 +7,6 @@
 #include "facestream_artifact_utils.h"
 #include "decoder_context.h"
 #include "speaker_flow_debug.h"
-#include "transcript_document_edit_service.h"
 #include "transcript_engine.h"
 
 #include <QBuffer>
@@ -67,8 +66,7 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
     connect(&m_transcriptLoadWatcher, &QFutureWatcher<TranscriptDocumentLoadResult>::finished, this, [this]() {
         const TranscriptDocumentLoadResult result = m_transcriptLoadWatcher.result();
         if (!result.ok) {
-            if (result.transcriptPath == m_loadedTranscriptPath &&
-                result.clipFilePath == m_loadedClipFilePath &&
+            if (m_transcriptSession.matches(result.clipFilePath, result.transcriptPath) &&
                 m_widgets.speakersInspectorDetailsLabel) {
                 m_widgets.speakersInspectorDetailsLabel->setText(
                     result.error.isEmpty() ? QStringLiteral("Unable to load transcript JSON file.") : result.error);
@@ -78,18 +76,10 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
             updateSpeakerTrackingStatusLabel();
             return;
         }
-        if (result.transcriptPath != m_loadedTranscriptPath || result.clipFilePath != m_loadedClipFilePath) {
+        if (!m_transcriptSession.matches(result.clipFilePath, result.transcriptPath)) {
             return;
         }
-        assignLoadedTranscriptState(
-            LoadedTranscriptDocumentStateRef{
-                .transcriptPath = &m_loadedTranscriptPath,
-                .clipFilePath = &m_loadedClipFilePath,
-                .document = &m_loadedTranscriptDoc,
-            },
-            result.clipFilePath,
-            result.transcriptPath,
-            result.document);
+        m_transcriptSession.assign(result.clipFilePath, result.transcriptPath, result.document);
         const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
         if (!clip || clip->filePath != result.clipFilePath) {
             return;
@@ -100,13 +90,7 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
 
 bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
 {
-    if (!mutateLoadedTranscriptRoot(
-            LoadedTranscriptDocumentStateRef{
-                .transcriptPath = &m_loadedTranscriptPath,
-                .clipFilePath = &m_loadedClipFilePath,
-                .document = &m_loadedTranscriptDoc,
-            },
-            mutator)) {
+    if (!m_transcriptSession.mutateRoot(mutator)) {
         return false;
     }
     clearFaceStreamDerivedCaches();
@@ -115,7 +99,7 @@ bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonO
 
 bool SpeakersTab::saveLoadedTranscriptDocument()
 {
-    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (m_transcriptSession.transcriptPath().trimmed().isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         return false;
     }
     queueLoadedTranscriptDocumentSave();
@@ -124,12 +108,10 @@ bool SpeakersTab::saveLoadedTranscriptDocument()
 
 void SpeakersTab::queueLoadedTranscriptDocumentSave()
 {
-    if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (m_transcriptSession.transcriptPath().trimmed().isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         return;
     }
-    m_transcriptSaveController.queueSave(
-        m_loadedTranscriptPath,
-        m_loadedTranscriptDoc,
+    m_transcriptSession.queueSave(
         shouldUseSynchronousTranscriptIo(),
         [](const QString& path, const QJsonDocument& doc) {
             editor::TranscriptEngine engine;
@@ -151,7 +133,7 @@ void SpeakersTab::startTranscriptLoadRequest(const QString& clipFilePath,
             transcriptPath,
             QStringLiteral("Unable to load transcript JSON file."));
         if (result.ok) {
-            m_loadedTranscriptDoc = result.document;
+            m_transcriptSession.assign(clipFilePath, transcriptPath, result.document);
             const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
             if (clip && clip->filePath == clipFilePath) {
                 applyLoadedTranscriptDocumentData(*clip, preferredSpeakerId);
@@ -194,8 +176,8 @@ void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, co
                          : QStringLiteral("Missing")));
     }
 
-    refreshSpeakersTable(m_loadedTranscriptDoc.object(), preferredSpeakerId);
-    refreshSpeakerSectionsTable(m_loadedTranscriptDoc.object());
+    refreshSpeakersTable(m_transcriptSession.rootObject(), preferredSpeakerId);
+    refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
     requestRefreshFaceStreamPathsPanel();
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->setEnabled(activeCutMutable());
@@ -229,7 +211,8 @@ bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
                                        qreal boxSizeNorm,
                                        const QString& resolutionSource)
 {
-    if (!activeCutMutable() || trackId < 0 || speakerId.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (!activeCutMutable() || trackId < 0 || speakerId.trimmed().isEmpty() ||
+        !m_transcriptSession.hasObjectDocument()) {
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -238,7 +221,7 @@ bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
     }
 
     editor::TranscriptEngine engine;
-    QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
     speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
     QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
@@ -352,7 +335,7 @@ bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
     m_avatarHoverTooltipHtmlCache.clear();
 
     QJsonObject identityRoot;
-    engine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
+    engine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
     QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
     QJsonObject assignmentRoot = assignmentsByClip.value(clip->id).toObject();
     assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -361,8 +344,213 @@ bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
     identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
     identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-    engine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot);
+    engine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot);
 
+    m_speakersTableRefreshSignature.clear();
+    m_faceStreamPanelRefreshSignature.clear();
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
+    }
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
+    refresh();
+    return true;
+}
+
+bool SpeakersTab::assignTrackAnchorsToSpeakerBatch(const QString& speakerId,
+                                                   const QJsonArray& trackAnchors,
+                                                   const QString& resolutionSource,
+                                                   const QString& auditAction)
+{
+    if (!activeCutMutable() || speakerId.trimmed().isEmpty() || trackAnchors.isEmpty() ||
+        !m_transcriptSession.hasObjectDocument()) {
+        return false;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return false;
+    }
+
+    QHash<int, QJsonObject> anchorByTrackId;
+    for (const QJsonValue& value : trackAnchors) {
+        const QJsonObject row = value.toObject();
+        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId < 0) {
+            continue;
+        }
+        anchorByTrackId.insert(trackId, row);
+    }
+    if (anchorByTrackId.isEmpty()) {
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
+    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
+    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    QJsonObject clipRoot = clipsRoot.value(clip->id).toObject();
+    clipRoot[QStringLiteral("clip_id")] = clip->id;
+    clipRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+
+    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
+    resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
+    QJsonArray nextResolvedMap;
+    QSet<int> appliedTrackIds;
+    for (const QJsonValue& value : resolvedMap) {
+        QJsonObject row = value.toObject();
+        const int rowTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        const auto anchorIt = anchorByTrackId.constFind(rowTrackId);
+        if (anchorIt != anchorByTrackId.constEnd()) {
+            const QJsonObject anchor = anchorIt.value();
+            row[QStringLiteral("identity_id")] = speakerId;
+            row[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
+            row[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+                static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
+            row[QString(kSpeakerFlowAnchorXKey)] =
+                qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+            row[QString(kSpeakerFlowAnchorYKey)] =
+                qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+            row[QString(kSpeakerFlowAnchorBoxSizeKey)] =
+                qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
+            row[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
+                ? QStringLiteral("speaker_track_picker")
+                : resolutionSource.trimmed();
+            row[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            appliedTrackIds.insert(rowTrackId);
+        }
+        nextResolvedMap.push_back(row);
+    }
+    for (auto it = anchorByTrackId.constBegin(); it != anchorByTrackId.constEnd(); ++it) {
+        if (appliedTrackIds.contains(it.key())) {
+            continue;
+        }
+        const QJsonObject anchor = it.value();
+        QJsonObject row;
+        row[QStringLiteral("track_id")] = it.key();
+        row[QStringLiteral("identity_id")] = speakerId;
+        row[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
+        row[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+            static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
+        row[QString(kSpeakerFlowAnchorXKey)] =
+            qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+        row[QString(kSpeakerFlowAnchorYKey)] =
+            qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+        row[QString(kSpeakerFlowAnchorBoxSizeKey)] =
+            qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
+        row[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
+            ? QStringLiteral("speaker_track_picker")
+            : resolutionSource.trimmed();
+        row[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        nextResolvedMap.push_back(row);
+    }
+    resolvedPayload[QStringLiteral("track_identity_map")] = nextResolvedMap;
+    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
+
+    QJsonObject humanRuns = clipRoot.value(QStringLiteral("human_runs")).toObject();
+    const QString runId = QStringLiteral("track_batch_%1").arg(
+        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddTHHmmsszzz")));
+    QJsonObject humanPayload;
+    humanPayload[QStringLiteral("run_id")] = runId;
+    humanPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    QJsonArray auditLog;
+    for (const QJsonValue& value : trackAnchors) {
+        const QJsonObject anchor = value.toObject();
+        const int trackId = anchor.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId < 0) {
+            continue;
+        }
+        QJsonObject auditRow;
+        auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        auditRow[QStringLiteral("action")] = auditAction.trimmed().isEmpty()
+            ? QStringLiteral("speaker_track_picker_identity_set")
+            : auditAction.trimmed();
+        auditRow[QStringLiteral("track_id")] = trackId;
+        auditRow[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
+        auditRow[QStringLiteral("identity_id")] = speakerId;
+        auditRow[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+            static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
+        auditRow[QString(kSpeakerFlowAnchorXKey)] =
+            qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+        auditRow[QString(kSpeakerFlowAnchorYKey)] =
+            qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+        auditRow[QString(kSpeakerFlowAnchorBoxSizeKey)] =
+            qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
+        auditLog.push_back(auditRow);
+    }
+    humanPayload[QStringLiteral("audit_log")] = auditLog;
+    humanRuns[runId] = humanPayload;
+    clipRoot[QStringLiteral("human_runs")] = humanRuns;
+    clipRoot[QStringLiteral("latest_human_run_id")] = runId;
+
+    QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+    QJsonObject profile = profiles.value(speakerId).toObject();
+    QJsonArray faceRefs = speakerFaceRefs(profile);
+    for (const QJsonValue& value : trackAnchors) {
+        const QJsonObject anchor = value.toObject();
+        const int trackId = anchor.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId < 0) {
+            continue;
+        }
+        bool faceRefExists = false;
+        for (const QJsonValue& faceRefValue : faceRefs) {
+            const QJsonObject faceRef = faceRefValue.toObject();
+            if (faceRef.value(QStringLiteral("track_id")).toInt(-1) == trackId) {
+                faceRefExists = true;
+                break;
+            }
+        }
+        if (faceRefExists) {
+            continue;
+        }
+        QJsonObject faceRef;
+        faceRef[QStringLiteral("track_id")] = trackId;
+        faceRef[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
+        faceRef[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+            static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
+        faceRef[QString(kSpeakerFlowAnchorXKey)] =
+            qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+        faceRef[QString(kSpeakerFlowAnchorYKey)] =
+            qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+        faceRef[QString(kSpeakerFlowAnchorBoxSizeKey)] =
+            qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
+        faceRef[QStringLiteral("source")] = resolutionSource.trimmed().isEmpty()
+            ? QStringLiteral("speaker_track_picker")
+            : resolutionSource.trimmed();
+        faceRefs.push_back(faceRef);
+    }
+    profile[QString(kTranscriptSpeakerFaceRefsKey)] = faceRefs;
+    profiles[speakerId] = profile;
+    transcriptRoot[QString(kTranscriptSpeakerProfilesKey)] = profiles;
+
+    clipsRoot[clip->id] = clipRoot;
+    speakerFlow[QStringLiteral("clips")] = clipsRoot;
+    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
+            root = transcriptRoot;
+            return true;
+        }) || !saveLoadedTranscriptDocument()) {
+        refresh();
+        return false;
+    }
+    m_avatarHoverTooltipHtmlCache.clear();
+
+    QJsonObject identityRoot;
+    engine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
+    QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
+    QJsonObject assignmentRoot = assignmentsByClip.value(clip->id).toObject();
+    assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    assignmentRoot[QStringLiteral("track_identity_map")] = nextResolvedMap;
+    assignmentsByClip[clip->id] = assignmentRoot;
+    identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
+    identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
+    engine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot);
+
+    m_speakersTableRefreshSignature.clear();
     m_faceStreamPanelRefreshSignature.clear();
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) {
@@ -379,7 +567,7 @@ void SpeakersTab::openTrackPickerForSpeaker(const QString& speakerId)
 {
     const QString trimmedSpeakerId = speakerId.trimmed();
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (trimmedSpeakerId.isEmpty() || !clip || !m_loadedTranscriptDoc.isObject()) {
+    if (trimmedSpeakerId.isEmpty() || !clip || !m_transcriptSession.hasObjectDocument()) {
         return;
     }
     const QJsonArray streams = continuityStreamsForClip(*clip);
@@ -517,7 +705,7 @@ bool SpeakersTab::rebuildProcessedFaceStreamForSelectedClip(bool interactive)
         }
         return false;
     }
-    if (m_loadedTranscriptPath.trimmed().isEmpty()) {
+    if (m_transcriptSession.transcriptPath().trimmed().isEmpty()) {
         if (interactive) {
             QMessageBox::warning(nullptr,
                                  QStringLiteral("Rebuild Processed FaceStream"),
@@ -528,7 +716,7 @@ bool SpeakersTab::rebuildProcessedFaceStreamForSelectedClip(bool interactive)
 
     editor::TranscriptEngine engine;
     QJsonObject rawArtifactRoot;
-    if (!engine.loadFacestreamArtifact(m_loadedTranscriptPath, &rawArtifactRoot)) {
+    if (!engine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &rawArtifactRoot)) {
         if (interactive) {
             QMessageBox::warning(nullptr,
                                  QStringLiteral("Rebuild Processed FaceStream"),
@@ -551,10 +739,10 @@ bool SpeakersTab::rebuildProcessedFaceStreamForSelectedClip(bool interactive)
 
     continuityRoot[QStringLiteral("clip_id")] = clipId;
     continuityRoot[QStringLiteral("processed_artifact_path")] =
-        engine.facestreamProcessedArtifactPath(m_loadedTranscriptPath);
+        engine.facestreamProcessedArtifactPath(m_transcriptSession.transcriptPath());
     byClip[clipId] = continuityRoot;
     setContinuityFacestreamsByClipObject(&rawArtifactRoot, byClip);
-    if (!engine.saveFacestreamArtifact(m_loadedTranscriptPath, rawArtifactRoot)) {
+    if (!engine.saveFacestreamArtifact(m_transcriptSession.transcriptPath(), rawArtifactRoot)) {
         if (interactive) {
             QMessageBox::warning(nullptr,
                                  QStringLiteral("Rebuild Processed FaceStream"),
@@ -564,10 +752,10 @@ bool SpeakersTab::rebuildProcessedFaceStreamForSelectedClip(bool interactive)
     }
 
     if (!jcut::facestream::saveProcessedContinuityArtifact(
-            m_loadedTranscriptPath,
+            m_transcriptSession.transcriptPath(),
             clipId,
             continuityRoot,
-            m_loadedTranscriptDoc.object(),
+            m_transcriptSession.rootObject(),
             nullptr)) {
         if (interactive) {
             QMessageBox::warning(nullptr,
@@ -592,10 +780,11 @@ QString SpeakersTab::originalTranscriptPathForClip(const QString& clipFilePath) 
 
 bool SpeakersTab::activeCutMutable() const
 {
-    if (m_loadedTranscriptPath.isEmpty() || m_loadedClipFilePath.isEmpty()) {
+    if (m_transcriptSession.transcriptPath().isEmpty() || m_transcriptSession.clipFilePath().isEmpty()) {
         return false;
     }
-    return m_loadedTranscriptPath != originalTranscriptPathForClip(m_loadedClipFilePath);
+    return m_transcriptSession.transcriptPath() !=
+           originalTranscriptPathForClip(m_transcriptSession.clipFilePath());
 }
 
 void SpeakersTab::refresh()
@@ -605,8 +794,8 @@ void SpeakersTab::refresh()
     const QString selectedSpeakerBeforeClear = selectedSpeakerId();
     const QString preferredSpeakerId =
         selectedSpeakerBeforeClear.isEmpty() ? m_lastSelectedSpeakerIdHint : selectedSpeakerBeforeClear;
-    const QString previousTranscriptPath = m_loadedTranscriptPath;
-    const QString previousClipFilePath = m_loadedClipFilePath;
+    const QString previousTranscriptPath = m_transcriptSession.transcriptPath();
+    const QString previousClipFilePath = m_transcriptSession.clipFilePath();
     m_lastSelectionSeekSpeakerId.clear();
     m_lastSelectionSeekClipId.clear();
     m_pendingReferencePick = 0;
@@ -621,12 +810,7 @@ void SpeakersTab::refresh()
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !clipSupportsTranscript(*clip)) {
-        clearLoadedTranscriptState(
-            LoadedTranscriptDocumentStateRef{
-                .transcriptPath = &m_loadedTranscriptPath,
-                .clipFilePath = &m_loadedClipFilePath,
-                .document = &m_loadedTranscriptDoc,
-            });
+        m_transcriptSession.clear();
         m_speakersTableRefreshSignature.clear();
         if (m_widgets.speakersInspectorClipLabel) {
             m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("No transcript cut selected"));
@@ -650,19 +834,10 @@ void SpeakersTab::refresh()
     }
 
     const bool canReuseLoadedDoc =
-        m_loadedTranscriptDoc.isObject() &&
-        m_loadedTranscriptPath == transcriptPath &&
-        m_loadedClipFilePath == clip->filePath;
+        m_transcriptSession.hasObjectDocument() &&
+        m_transcriptSession.matches(clip->filePath, transcriptPath);
     if (!canReuseLoadedDoc) {
-        assignLoadedTranscriptState(
-            LoadedTranscriptDocumentStateRef{
-                .transcriptPath = &m_loadedTranscriptPath,
-                .clipFilePath = &m_loadedClipFilePath,
-                .document = &m_loadedTranscriptDoc,
-            },
-            clip->filePath,
-            transcriptPath,
-            QJsonDocument());
+        m_transcriptSession.assign(clip->filePath, transcriptPath, QJsonDocument());
         startTranscriptLoadRequest(clip->filePath, transcriptPath, preferredSpeakerId);
         return;
     }
@@ -672,9 +847,8 @@ void SpeakersTab::refresh()
 void SpeakersTab::refreshForSubtab(const QString& subtabName)
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip || !clipSupportsTranscript(*clip) || !m_loadedTranscriptDoc.isObject() ||
-        m_loadedTranscriptPath != activeTranscriptPathForClipFile(clip->filePath) ||
-        m_loadedClipFilePath != clip->filePath) {
+    if (!clip || !clipSupportsTranscript(*clip) || !m_transcriptSession.hasObjectDocument() ||
+        !m_transcriptSession.matches(clip->filePath, activeTranscriptPathForClipFile(clip->filePath))) {
         refresh();
         return;
     }
@@ -691,13 +865,13 @@ void SpeakersTab::refreshForSubtab(const QString& subtabName)
     }
 
     if (m_widgets.speakersTable && m_widgets.speakersTable->rowCount() == 0) {
-        refreshSpeakersTable(m_loadedTranscriptDoc.object());
+        refreshSpeakersTable(m_transcriptSession.rootObject());
     }
     if (m_widgets.speakerShowContiguousSectionsCheckBox &&
         m_widgets.speakerShowContiguousSectionsCheckBox->isChecked() &&
         m_widgets.speakerSectionsTable &&
         m_widgets.speakerSectionsTable->rowCount() == 0) {
-        refreshSpeakerSectionsTable(m_loadedTranscriptDoc.object());
+        refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
     }
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
@@ -969,13 +1143,13 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
 
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
-    engine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    engine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
     QJsonObject continuityByClip = continuityFacestreamsByClipObject(artifactRoot);
     const QString clipId = clip->id.trimmed();
     const QJsonObject continuityRoot = continuityByClip.value(clipId).toObject();
     const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
         continuityRoot,
-        m_loadedTranscriptDoc.object());
+        m_transcriptSession.rootObject());
     const bool hasStoredPayload =
         jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
     QString facestreamPartPath = continuityRoot.value(QStringLiteral("facestream_part")).toString().trimmed();
@@ -1003,27 +1177,27 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
     bool deleteFacestreamPart = false;
     if (confirmDialog) {
         QStringList affectedPaths;
-        const QString facestreamArtifactPath = engine.facestreamArtifactPath(m_loadedTranscriptPath);
+        const QString facestreamArtifactPath = engine.facestreamArtifactPath(m_transcriptSession.transcriptPath());
         if (!facestreamArtifactPath.trimmed().isEmpty()) {
             affectedPaths.push_back(facestreamArtifactPath);
         }
-        const QString processedArtifactPath = engine.facestreamProcessedArtifactPath(m_loadedTranscriptPath);
+        const QString processedArtifactPath = engine.facestreamProcessedArtifactPath(m_transcriptSession.transcriptPath());
         QJsonObject processedArtifactRoot;
         const bool hasProcessedClipPayload =
-            engine.loadFacestreamProcessedArtifact(m_loadedTranscriptPath, &processedArtifactRoot) &&
+            engine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &processedArtifactRoot) &&
             jcut::facestream::continuityRootHasStoredPayload(
                 continuityRootForClip(processedArtifactRoot, clipId));
         if (hasProcessedClipPayload && !processedArtifactPath.trimmed().isEmpty()) {
             affectedPaths.push_back(processedArtifactPath);
         }
-        const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
         const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
         const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
         const QJsonObject clipFlow = clipsRoot.value(clipId).toObject();
         const bool hasLegacyTranscriptPayload =
             clipFlow.contains(QStringLiteral("continuity_facestreams"));
-        if (hasLegacyTranscriptPayload && !m_loadedTranscriptPath.trimmed().isEmpty()) {
-            affectedPaths.push_back(m_loadedTranscriptPath);
+        if (hasLegacyTranscriptPayload && !m_transcriptSession.transcriptPath().trimmed().isEmpty()) {
+            affectedPaths.push_back(m_transcriptSession.transcriptPath());
         }
         affectedPaths.removeDuplicates();
 
@@ -1087,7 +1261,7 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
 
     continuityByClip.remove(clipId);
     setContinuityFacestreamsByClipObject(&artifactRoot, continuityByClip);
-    const bool savedArtifact = engine.saveFacestreamArtifact(m_loadedTranscriptPath, artifactRoot);
+    const bool savedArtifact = engine.saveFacestreamArtifact(m_transcriptSession.transcriptPath(), artifactRoot);
     if (!savedArtifact) {
         return fail(
             QStringLiteral("save_failed"),
@@ -1101,17 +1275,17 @@ editor::ActionResult SpeakersTab::deleteFaceStreamForSelectedClipResult(bool con
     }
 
     QJsonObject processedArtifactRoot;
-    if (engine.loadFacestreamProcessedArtifact(m_loadedTranscriptPath, &processedArtifactRoot)) {
+    if (engine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &processedArtifactRoot)) {
         QJsonObject processedByClip = continuityFacestreamsByClipObject(processedArtifactRoot);
         if (processedByClip.contains(clipId)) {
             processedByClip.remove(clipId);
             setContinuityFacestreamsByClipObject(&processedArtifactRoot, processedByClip);
-            engine.saveFacestreamProcessedArtifact(m_loadedTranscriptPath, processedArtifactRoot);
+            engine.saveFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), processedArtifactRoot);
         }
     }
 
     // Keep legacy transcript-side continuity fallback in sync if present.
-    QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     bool transcriptChanged = false;
     QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
     QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
@@ -1172,13 +1346,13 @@ bool SpeakersTab::deleteFaceStreamForSelectedClip(bool confirmDialog, QString* e
 bool SpeakersTab::selectedClipHasFaceStreamSidecars() const
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip || m_loadedTranscriptPath.trimmed().isEmpty()) {
+    if (!clip || m_transcriptSession.transcriptPath().trimmed().isEmpty()) {
         return false;
     }
 
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
-    if (engine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+    if (engine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip->id);
         if (jcut::facestream::continuityRootHasStoredPayload(continuityRoot)) {
             return true;
@@ -1186,14 +1360,14 @@ bool SpeakersTab::selectedClipHasFaceStreamSidecars() const
     }
 
     QJsonObject processedArtifactRoot;
-    if (engine.loadFacestreamProcessedArtifact(m_loadedTranscriptPath, &processedArtifactRoot)) {
+    if (engine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &processedArtifactRoot)) {
         if (jcut::facestream::continuityRootHasStoredPayload(
                 continuityRootForClip(processedArtifactRoot, clip->id))) {
             return true;
         }
     }
 
-    const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+    const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
     const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
@@ -1210,18 +1384,18 @@ void SpeakersTab::onSpeakerViewFaceStreamClicked()
 
     QString text;
     text += QStringLiteral("Selected clip: %1\n").arg(clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
-    text += QStringLiteral("Transcript artifact: %1\n\n").arg(m_loadedTranscriptPath);
+    text += QStringLiteral("Transcript artifact: %1\n\n").arg(m_transcriptSession.transcriptPath());
 
     editor::TranscriptEngine transcriptEngine;
     QJsonObject artifactRoot;
-    const bool loadedArtifact = transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot);
+    const bool loadedArtifact = transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
     QJsonObject continuityRoot;
     if (loadedArtifact) {
         continuityRoot = continuityRootForClip(artifactRoot, clip->id);
     }
     const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
         continuityRoot,
-        m_loadedTranscriptDoc.object());
+        m_transcriptSession.rootObject());
     text += QStringLiteral("Imported streams: %1\n").arg(streams.size());
     text += QStringLiteral("Raw tracks: %1\n")
                 .arg(continuityRoot.value(QStringLiteral("raw_tracks")).toArray().size());
@@ -1242,7 +1416,7 @@ void SpeakersTab::onSpeakerViewFaceStreamClicked()
                     .arg(facestreamPath)
                     .arg(streamInfo.exists() ? streamInfo.size() : -1);
     }
-    const QString processedPath = transcriptEngine.facestreamProcessedArtifactPath(m_loadedTranscriptPath);
+    const QString processedPath = transcriptEngine.facestreamProcessedArtifactPath(m_transcriptSession.transcriptPath());
     if (!processedPath.isEmpty()) {
         const QFileInfo processedInfo(processedPath);
         text += QStringLiteral("processed sidecar: %1 (%2 bytes)\n")
@@ -1253,7 +1427,7 @@ void SpeakersTab::onSpeakerViewFaceStreamClicked()
     if (!summaryPath.isEmpty()) {
         text += QStringLiteral("summary.json: %1\n").arg(summaryPath);
     }
-    const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_loadedTranscriptPath);
+    const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_transcriptSession.transcriptPath());
     if (!identitySidecarPath.isEmpty()) {
         const QFileInfo identityInfo(identitySidecarPath);
         text += QStringLiteral("identity sidecar: %1")
@@ -1266,7 +1440,7 @@ void SpeakersTab::onSpeakerViewFaceStreamClicked()
 
     const QString clipToken = speaker_flow_debug::sanitizeToken(
         clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
-    const QString projectRoot = speaker_flow_debug::deriveProjectRootFromTranscriptPath(m_loadedTranscriptPath);
+    const QString projectRoot = speaker_flow_debug::deriveProjectRootFromTranscriptPath(m_transcriptSession.transcriptPath());
     const QString debugRoot = QDir(projectRoot).absoluteFilePath(QStringLiteral("debug/speaker_flow/%1").arg(clipToken));
     const QString latestRun = speaker_flow_debug::latestRunIdWithArtifact(debugRoot);
     if (!latestRun.isEmpty()) {
@@ -1350,11 +1524,11 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         finalizeRefreshTiming();
         return;
     }
-    const QFileInfo transcriptInfo(m_loadedTranscriptPath);
-    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_loadedTranscriptPath);
+    const QFileInfo transcriptInfo(m_transcriptSession.transcriptPath());
+    const qint64 artifactRevisionMs = facestreamArtifactRevisionMsForTranscript(m_transcriptSession.transcriptPath());
     const QString refreshSignature =
         clip->id + QLatin1Char('|') +
-        m_loadedTranscriptPath + QLatin1Char('|') +
+        m_transcriptSession.transcriptPath() + QLatin1Char('|') +
         QString::number(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0) +
         QLatin1Char('|') +
         QString::number(artifactRevisionMs);
@@ -1544,34 +1718,59 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
 
 QString SpeakersTab::selectedSpeakerId() const
 {
-    if (!m_widgets.speakersTable || !m_widgets.speakersTable->selectionModel()) {
-        return QString();
+    const auto speakerIdFromRow = [](QTableWidget* table, int row) {
+        if (!table || row < 0) {
+            return QString();
+        }
+        QTableWidgetItem* speakerItem = table->item(row, 1);
+        return speakerItem ? speakerItem->data(Qt::UserRole).toString().trimmed() : QString();
+    };
+
+    if (m_widgets.speakersTable && m_widgets.speakersTable->selectionModel()) {
+        const QModelIndexList selectedRows = m_widgets.speakersTable->selectionModel()->selectedRows();
+        if (!selectedRows.isEmpty()) {
+            const QString selectedId =
+                speakerIdFromRow(m_widgets.speakersTable, selectedRows.constFirst().row());
+            if (!selectedId.isEmpty()) {
+                return selectedId;
+            }
+        }
+
+        const QString currentId =
+            speakerIdFromRow(m_widgets.speakersTable, m_widgets.speakersTable->currentRow());
+        if (!currentId.isEmpty()) {
+            return currentId;
+        }
     }
-    int row = -1;
-    const QModelIndexList selectedRows = m_widgets.speakersTable->selectionModel()->selectedRows();
-    if (!selectedRows.isEmpty()) {
-        row = selectedRows.constFirst().row();
-    } else {
-        row = m_widgets.speakersTable->currentRow();
+
+    if (m_widgets.speakerSectionsTable && m_widgets.speakerSectionsTable->selectionModel()) {
+        const QModelIndexList selectedRows = m_widgets.speakerSectionsTable->selectionModel()->selectedRows();
+        if (!selectedRows.isEmpty()) {
+            const QString selectedId =
+                speakerIdFromRow(m_widgets.speakerSectionsTable, selectedRows.constFirst().row());
+            if (!selectedId.isEmpty()) {
+                return selectedId;
+            }
+        }
+
+        const QString currentId =
+            speakerIdFromRow(m_widgets.speakerSectionsTable, m_widgets.speakerSectionsTable->currentRow());
+        if (!currentId.isEmpty()) {
+            return currentId;
+        }
     }
-    if (row < 0) {
-        return QString();
-    }
-    QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(row, 1);
-    if (!speakerItem) {
-        return QString();
-    }
-    return speakerItem->data(Qt::UserRole).toString().trimmed();
+
+    return m_lastSelectedSpeakerIdHint.trimmed();
 }
 
 QString SpeakersTab::speakerDisplayName(const QString& speakerId) const
 {
     const QString trimmedSpeakerId = speakerId.trimmed();
-    if (trimmedSpeakerId.isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (trimmedSpeakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         return QString();
     }
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     return profiles.value(trimmedSpeakerId).toObject().value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
 }
 
@@ -1699,7 +1898,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerGuideButton->setEnabled(true);
     }
     if (m_widgets.speakerPrecropFacesButton) {
-        m_widgets.speakerPrecropFacesButton->setEnabled(canEdit);
+        m_widgets.speakerPrecropFacesButton->setEnabled(canEdit && !speakerId.isEmpty());
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setEnabled(canEdit);
@@ -1763,7 +1962,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         return;
     }
     if (speakerId.isEmpty()) {
-        if (!hasClipWideFaceStream && m_loadedTranscriptDoc.isObject()) {
+        if (!hasClipWideFaceStream && m_transcriptSession.hasObjectDocument()) {
             m_widgets.speakerTrackingStatusLabel->setText(
                 QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created."));
         } else {
@@ -1771,14 +1970,14 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         }
         return;
     }
-    if (!m_loadedTranscriptDoc.isObject()) {
+    if (!m_transcriptSession.hasObjectDocument()) {
         m_widgets.speakerTrackingStatusLabel->setText(
             QStringLiteral("Transcript not loaded."));
         return;
     }
 
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QJsonObject tracking = speakerFramingObject(profile);
     const bool trackingEnabled = transcriptTrackingEnabled(tracking);

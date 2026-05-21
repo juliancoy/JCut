@@ -1,5 +1,6 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
+#include "speaker_document_edit_ops.h"
 
 #include "transcript_engine.h"
 
@@ -136,10 +137,10 @@ bool SpeakersTab::runAiFindSpeakerNames()
     if (!ensureAiActionReady(QStringLiteral("Mine Transcript (AI)"))) {
         return false;
     }
-    if (!m_loadedTranscriptDoc.isObject() || m_loadedTranscriptPath.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || m_transcriptSession.transcriptPath().isEmpty()) {
         return false;
     }
-    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject root = m_transcriptSession.rootObject();
     QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
@@ -216,17 +217,15 @@ bool SpeakersTab::runAiFindSpeakerNames()
     QVector<AiProposalRow> appliedProposals = autoApplyUnnamedProposals;
     appliedProposals += overwriteExistingNameProposals;
 
+    QVector<SpeakerFieldValueUpdate> updates;
+    updates.reserve(appliedProposals.size());
     for (const AiProposalRow& proposal : std::as_const(appliedProposals)) {
-        QJsonObject profile = profiles.value(proposal.targetId).toObject();
-        profile[QString(kTranscriptSpeakerNameKey)] = proposal.proposedValue;
-        profiles[proposal.targetId] = profile;
+        updates.push_back(SpeakerFieldValueUpdate{proposal.targetId, proposal.proposedValue});
     }
-    root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    const bool updated = updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-            loadedRoot = root;
-            return true;
-        });
-    if (!updated || !saveLoadedTranscriptDocument()) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::applyProfileStringFieldUpdates(
+            m_transcriptSession, QString(kTranscriptSpeakerNameKey), updates);
+    if (!result.ok || !result.changed || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Speaker Names"),
                              QStringLiteral("Failed to save transcript after AI speaker-name pass."));
@@ -255,10 +254,10 @@ bool SpeakersTab::runAiFindOrganizations()
     if (!ensureAiActionReady(QStringLiteral("Find Organizations (AI)"))) {
         return false;
     }
-    if (!m_loadedTranscriptDoc.isObject() || m_loadedTranscriptPath.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || m_transcriptSession.transcriptPath().isEmpty()) {
         return false;
     }
-    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject root = m_transcriptSession.rootObject();
     QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
@@ -319,17 +318,15 @@ bool SpeakersTab::runAiFindOrganizations()
         return false;
     }
 
+    QVector<SpeakerFieldValueUpdate> updates;
+    updates.reserve(proposals.size());
     for (const AiProposalRow& proposal : std::as_const(proposals)) {
-        QJsonObject profile = profiles.value(proposal.targetId).toObject();
-        profile[QStringLiteral("organization")] = proposal.proposedValue;
-        profiles[proposal.targetId] = profile;
+        updates.push_back(SpeakerFieldValueUpdate{proposal.targetId, proposal.proposedValue});
     }
-    root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    const bool updated = updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
-            loadedRoot = root;
-            return true;
-        });
-    if (!updated || !saveLoadedTranscriptDocument()) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::applyProfileStringFieldUpdates(
+            m_transcriptSession, QStringLiteral("organization"), updates);
+    if (!result.ok || !result.changed || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Organizations"),
                              QStringLiteral("Failed to save transcript after organization pass."));
@@ -351,10 +348,10 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
     if (!ensureAiActionReady(QStringLiteral("Clean Assignments (AI)"))) {
         return false;
     }
-    if (!m_loadedTranscriptDoc.isObject() || m_loadedTranscriptPath.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || m_transcriptSession.transcriptPath().isEmpty()) {
         return false;
     }
-    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject root = m_transcriptSession.rootObject();
     QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     QHash<QString, int> wordCountBySpeaker;
     for (const QJsonValue& segValue : segments) {
@@ -505,3 +502,4 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
                                  .arg(reassignedCount));
     return true;
 }
+#include "speaker_document_edit_ops.h"

@@ -58,8 +58,8 @@ void SpeakersTab::wire()
                 [this]() {
                     syncSpeakerListMode();
                     if (m_widgets.speakerShowContiguousSectionsCheckBox->isChecked() &&
-                        m_loadedTranscriptDoc.isObject()) {
-                        refreshSpeakerSectionsTable(m_loadedTranscriptDoc.object());
+                        m_transcriptSession.hasObjectDocument()) {
+                        refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
                     }
                 });
     }
@@ -92,6 +92,11 @@ void SpeakersTab::wire()
                 });
     }
     if (m_widgets.speakerFaceStreamTable) {
+        m_widgets.speakerFaceStreamTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.speakerFaceStreamTable,
+                &QWidget::customContextMenuRequested,
+                this,
+                &SpeakersTab::onSpeakerFaceStreamTableContextMenuRequested);
         connect(m_widgets.speakerFaceStreamTable, &QTableWidget::itemSelectionChanged, this, [this]() {
             if (!m_widgets.speakerFaceStreamTable || !m_widgets.speakerFaceStreamDetailsEdit) {
                 return;
@@ -233,9 +238,9 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerPrecropFacesButton) {
         m_widgets.speakerPrecropFacesButton->setToolTip(
-            QStringLiteral("Extract representative identity crops per continuity track and assign them to transcript speakers."));
+            QStringLiteral("Show continuity tracks at the current playhead and add the selected tracks to the current speaker."));
         connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked, this, [this]() {
-            // Keep REST/UI click handlers from blocking while the assignment preflight starts.
+            // Keep REST/UI click handlers from blocking while the add-tracks dialog prepares.
             QTimer::singleShot(0, this, &SpeakersTab::onSpeakerPrecropFacesClicked);
         });
     }

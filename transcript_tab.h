@@ -19,7 +19,7 @@
 
 #include "editor_shared.h"
 #include "transcript_document_io.h"
-#include "transcript_document_save_controller.h"
+#include "transcript_document_session.h"
 #include "transcript_engine.h"
 
 class TranscriptTab : public QObject
@@ -252,9 +252,7 @@ private:
     Dependencies m_deps;
     editor::TranscriptEngine m_transcriptEngine;
     bool m_updating = false;
-    QString m_loadedTranscriptPath;
-    QString m_loadedClipFilePath;
-    QJsonDocument m_loadedTranscriptDoc;
+    TranscriptDocumentSession m_transcriptSession{QStringLiteral("transcript")};
     QVector<TranscriptDocumentSegment> m_transcriptDocumentSegments;
     QVector<TranscriptRow> m_allTranscriptRows;
     QHash<int, TranscriptWordAddress> m_transcriptWordAddressById;
@@ -283,6 +281,5 @@ private:
     QTimer m_refreshDebounceTimer;
     bool m_refreshQueued = false;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
-    TranscriptDocumentSaveController m_transcriptSaveController{QStringLiteral("transcript")};
     qint64 m_transcriptLoadRequestId = 0;
 };

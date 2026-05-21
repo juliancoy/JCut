@@ -71,6 +71,58 @@ bool sanitizeHistoryEntriesInPlace(QJsonArray* entries)
 
 } // namespace
 
+namespace editor_startup {
+
+QJsonObject loadStartupStatePayload(const QString& projectId,
+                                    const QString& statePath,
+                                    const QString& historyPath)
+{
+    QJsonObject result{
+        {QStringLiteral("project_id"), projectId},
+        {QStringLiteral("history_index"), -1},
+        {QStringLiteral("defer_history"), false},
+        {QStringLiteral("history_sanitized"), false}
+    };
+
+    QJsonObject root;
+    QFile file(statePath);
+    if (file.open(QIODevice::ReadOnly)) {
+        jcut::jsonio::parseObjectBytes(file.readAll(), &root);
+    }
+    if (!root.isEmpty()) {
+        result[QStringLiteral("root")] = root;
+        result[QStringLiteral("defer_history")] = true;
+        return result;
+    }
+
+    QFile historyFile(historyPath);
+    if (!historyFile.open(QIODevice::ReadOnly)) {
+        result[QStringLiteral("root")] = QJsonObject{};
+        result[QStringLiteral("history_entries")] = QJsonArray{};
+        return result;
+    }
+
+    QJsonObject historyRoot;
+    jcut::jsonio::parseObjectBytes(historyFile.readAll(), &historyRoot);
+    QJsonArray entries = historyRoot.value(QStringLiteral("entries")).toArray();
+    const bool historySanitized = sanitizeHistoryEntriesInPlace(&entries);
+    const int entryCount = entries.size();
+    const int historyIndex = entryCount > 0
+        ? qBound(0, historyRoot.value(QStringLiteral("index")).toInt(entryCount - 1), entryCount - 1)
+        : -1;
+    if (entryCount > 0) {
+        root = entries.at(historyIndex).toObject();
+    }
+
+    result[QStringLiteral("root")] = root;
+    result[QStringLiteral("history_entries")] = entries;
+    result[QStringLiteral("history_index")] = historyIndex;
+    result[QStringLiteral("history_sanitized")] = historySanitized;
+    return result;
+}
+
+} // namespace editor_startup
+
 void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
 {
     if (projectId.trimmed().isEmpty() || m_deferredHistoryLoadWatcher.isRunning()) {

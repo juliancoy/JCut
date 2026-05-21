@@ -545,18 +545,14 @@ void EditorWindow::createSpeakersTab()
     }
 
     auto syncFaceStreamAssignmentMode = [this]() {
-        if (!m_preview || !m_inspectorPane || !m_inspectorPane->tabs() || !m_inspectorPane->speakersSubtabs()) {
+        if (!m_preview || !m_inspectorPane || !m_inspectorPane->tabs()) {
             return;
         }
         QTabWidget* inspectorTabs = m_inspectorPane->tabs();
-        QTabWidget* speakersSubtabs = m_inspectorPane->speakersSubtabs();
         const bool speakersTabSelected =
             inspectorTabs->tabText(inspectorTabs->currentIndex())
                 .compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
-        const bool speakersSubtabSelected =
-            speakersSubtabs->tabText(speakersSubtabs->currentIndex())
-                .compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
-        m_preview->setFaceStreamAssignmentInteractionEnabled(speakersTabSelected && speakersSubtabSelected);
+        m_preview->setFaceStreamAssignmentInteractionEnabled(speakersTabSelected);
     };
     if (m_inspectorPane && m_inspectorPane->tabs()) {
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,

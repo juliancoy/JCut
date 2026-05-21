@@ -300,13 +300,13 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
         return false;
     }
     const QString speakerId = selectedSpeakerId();
-    if (speakerId.isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         updateSpeakerTrackingStatusLabel();
         return false;
     }
 
     editor::TranscriptEngine engine;
-    QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
     speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
     QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
@@ -429,7 +429,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
     m_avatarHoverTooltipHtmlCache.clear();
 
     QJsonObject identityRoot;
-    engine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
+    engine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
     QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
     QJsonObject assignmentRoot = assignmentsByClip.value(clipId).toObject();
     assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -438,7 +438,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
     identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
     identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-    engine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot);
+    engine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot);
 
     m_faceStreamPanelRefreshSignature.clear();
     emit transcriptDocumentChanged();

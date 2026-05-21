@@ -4,7 +4,7 @@
 
 bool SpeakersTab::seekToSpeakerSegmentRelative(const QString& speakerId, int direction)
 {
-    if (speakerId.isEmpty() || direction == 0 || !m_loadedTranscriptDoc.isObject() || !m_deps.seekToTimelineFrame) {
+    if (speakerId.isEmpty() || direction == 0 || !m_transcriptSession.hasObjectDocument() || !m_deps.seekToTimelineFrame) {
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -14,7 +14,7 @@ bool SpeakersTab::seekToSpeakerSegmentRelative(const QString& speakerId, int dir
 
     const int64_t currentTimeline = m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip->startFrame;
     const int64_t currentSourceFrame = qMax<int64_t>(0, clip->sourceInFrame + (currentTimeline - clip->startFrame));
-    QVector<int64_t> speakerFrames = speakerSourceFrames(m_loadedTranscriptDoc.object(), speakerId);
+    QVector<int64_t> speakerFrames = speakerSourceFrames(m_transcriptSession.rootObject(), speakerId);
     if (speakerFrames.isEmpty()) {
         return false;
     }
@@ -66,14 +66,14 @@ bool SpeakersTab::seekToSpeakerSegmentRelative(const QString& speakerId, int dir
 
 bool SpeakersTab::seekToSpeakerRandomSentence(const QString& speakerId)
 {
-    if (speakerId.isEmpty() || !m_loadedTranscriptDoc.isObject() || !m_deps.seekToTimelineFrame) {
+    if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument() || !m_deps.seekToTimelineFrame) {
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip) {
         return false;
     }
-    const QVector<int64_t> speakerFrames = speakerSourceFrames(m_loadedTranscriptDoc.object(), speakerId);
+    const QVector<int64_t> speakerFrames = speakerSourceFrames(m_transcriptSession.rootObject(), speakerId);
     if (speakerFrames.isEmpty()) {
         return false;
     }

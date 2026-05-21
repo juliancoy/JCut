@@ -183,6 +183,65 @@ EditorWindow::EditorWindow(quint16 controlPort)
                                        {QStringLiteral("entry_count"), entryCount},
                                        {QStringLiteral("history_index"), m_historyIndex}});
     });
+    connect(&m_startupStateLoadWatcher, &QFutureWatcher<QJsonObject>::finished, this, [this]() {
+        const QJsonObject result = m_startupStateLoadWatcher.result();
+        const QString projectId = result.value(QStringLiteral("project_id")).toString();
+        const QString activeProjectId = m_projectManager
+            ? m_projectManager->currentProjectIdOrDefault()
+            : QStringLiteral("default");
+        if (projectId.isEmpty() || projectId != activeProjectId) {
+            return;
+        }
+
+        startupProfileMark(QStringLiteral("startup_load.state_parse.complete"),
+                           QJsonObject{
+                               {QStringLiteral("project_id"), projectId},
+                               {QStringLiteral("defer_history"), result.value(QStringLiteral("defer_history")).toBool(false)},
+                               {QStringLiteral("history_entry_count"), result.value(QStringLiteral("history_entries")).toArray().size()}
+                           });
+
+        m_historyEntries = result.value(QStringLiteral("history_entries")).toArray();
+        m_historyIndex = result.value(QStringLiteral("history_index")).toInt(-1);
+        if (result.value(QStringLiteral("history_sanitized")).toBool(false)) {
+            saveHistoryNow();
+        }
+
+        startupProfileMark(QStringLiteral("load_state.apply_state.begin"));
+        applyStateJson(result.value(QStringLiteral("root")).toObject());
+        startupProfileMark(QStringLiteral("load_state.apply_state.end"));
+
+        const bool deferHistoryLoad = result.value(QStringLiteral("defer_history")).toBool(false);
+        if (m_historyEntries.isEmpty() && !deferHistoryLoad) {
+            pushHistorySnapshot();
+        }
+
+        if (m_pendingSaveAfterLoad) {
+            m_pendingSaveAfterLoad = false;
+            scheduleSaveState();
+        } else {
+            scheduleSaveState();
+        }
+        if (deferHistoryLoad) {
+            QTimer::singleShot(0, this, [this, projectId]() {
+                scheduleDeferredHistoryLoad(projectId);
+            });
+        }
+        QTimer::singleShot(0, this, [this]() {
+            scheduleTranscriptTextCompanionBackfill();
+        });
+
+        startupProfileMark(QStringLiteral("startup_load.state_loaded"));
+        setupAutosaveTimer();
+        startupProfileMark(QStringLiteral("startup_load.autosave_ready"));
+        m_startupProfileCompletedMs = m_startupProfileTimer.isValid()
+            ? m_startupProfileTimer.elapsed()
+            : 0;
+        startupProfileMark(QStringLiteral("startup_load.complete"),
+                           QJsonObject{{QStringLiteral("total_ms"), m_startupProfileCompletedMs}});
+        m_startupProfileCompleted = true;
+        scheduleDeferredStartupUiWarmup(true);
+        scheduleOptimizedProfileEnsure();
+    });
     setupShortcuts();
     startupProfileMark(QStringLiteral("setup.shortcuts.done"));
     setupHeartbeat();

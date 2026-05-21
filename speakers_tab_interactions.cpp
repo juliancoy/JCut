@@ -1,6 +1,7 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
 #include "editor_tab_edit_effects.h"
+#include "speaker_document_edit_ops.h"
 
 #include "decoder_context.h"
 #include "transcript_engine.h"
@@ -144,7 +145,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
 
     const QString speakerId = selectedSpeakerId();
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (speakerId.isEmpty() || !clip || !m_loadedTranscriptDoc.isObject()) {
+    if (speakerId.isEmpty() || !clip || !m_transcriptSession.hasObjectDocument()) {
         if (m_widgets.selectedSpeakerIdLabel) {
             m_widgets.selectedSpeakerIdLabel->setText(QStringLiteral("No speaker selected"));
             m_widgets.selectedSpeakerIdLabel->setToolTip(QString());
@@ -168,7 +169,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
         return;
     }
 
-    const QJsonObject root = m_loadedTranscriptDoc.object();
+    const QJsonObject root = m_transcriptSession.rootObject();
     const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QString displayName = speakerDisplayLabel(speakerId);
@@ -388,11 +389,11 @@ QString SpeakersTab::currentSpeakerSentenceAtCurrentFrame(const QString& speaker
         return QStringLiteral("No sentence available.");
     }
     const int64_t sourceFrame = currentSourceFrameForClip(*clip);
-    if (m_loadedTranscriptPath.trimmed().isEmpty()) {
+    if (m_transcriptSession.transcriptPath().trimmed().isEmpty()) {
         return QStringLiteral("No sentence available.");
     }
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
-        loadTranscriptRuntimeDocument(m_loadedTranscriptPath);
+        loadTranscriptRuntimeDocument(m_transcriptSession.transcriptPath());
     if (!runtimeDocument) {
         return QStringLiteral("No sentence found for this speaker.");
     }
@@ -472,7 +473,7 @@ QVector<int64_t> SpeakersTab::speakerSourceFrames(const QJsonObject& transcriptR
 
 bool SpeakersTab::saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText)
 {
-    if (!m_widgets.speakersTable || !m_loadedTranscriptDoc.isObject()) {
+    if (!m_widgets.speakersTable || !m_transcriptSession.hasObjectDocument()) {
         return false;
     }
     QTableWidgetItem* speakerItem = m_widgets.speakersTable->item(tableRow, 1);
@@ -484,35 +485,9 @@ bool SpeakersTab::saveSpeakerProfileEdit(int tableRow, int column, const QString
         return false;
     }
 
-    bool ok = true;
-    const double parsed = (column == 2 || column == 3) ? valueText.toDouble(&ok) : 0.0;
-    if ((column == 2 || column == 3) && !ok) {
-        return false;
-    }
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-            QJsonObject profile = profiles.value(speakerId).toObject();
-            QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
-
-            if (column == 1) {
-                profile[QString(kTranscriptSpeakerNameKey)] =
-                    valueText.trimmed().isEmpty() ? speakerId : valueText.trimmed();
-            } else if (column == 2 || column == 3) {
-                const double bounded = qBound(0.0, parsed, 1.0);
-                if (column == 2) {
-                    location[QString(kTranscriptSpeakerLocationXKey)] = bounded;
-                } else {
-                    location[QString(kTranscriptSpeakerLocationYKey)] = bounded;
-                }
-                profile[QString(kTranscriptSpeakerLocationKey)] = location;
-            } else {
-                return false;
-            }
-
-            profiles[speakerId] = profile;
-            root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-            return true;
-        })) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::applyProfileCellEdit(m_transcriptSession, speakerId, column, valueText);
+    if (!result.ok || !result.changed) {
         return false;
     }
     return saveLoadedTranscriptDocument();
@@ -525,47 +500,14 @@ bool SpeakersTab::saveSpeakerTrackingReferenceAt(const QString& speakerId,
                                                  qreal yNorm,
                                                  qreal boxSizeNorm)
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
         return false;
     }
 
-    const double x = qBound(0.0, static_cast<double>(xNorm), 1.0);
-    const double y = qBound(0.0, static_cast<double>(yNorm), 1.0);
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-            QJsonObject profile = profiles.value(speakerId).toObject();
-            QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
-            location[QString(kTranscriptSpeakerLocationXKey)] = x;
-            location[QString(kTranscriptSpeakerLocationYKey)] = y;
-            profile[QString(kTranscriptSpeakerLocationKey)] = location;
-
-            QJsonObject tracking = speakerFramingObject(profile);
-            const bool previouslyEnabled =
-                tracking.value(QString(kTranscriptSpeakerTrackingEnabledKey)).toBool(false);
-            tracking[QString(kTranscriptSpeakerTrackingModeKey)] = QStringLiteral("ReferencePoints");
-            tracking[QString(kTranscriptSpeakerTrackingEnabledKey)] = previouslyEnabled;
-            tracking[QString(kTranscriptSpeakerTrackingAutoStateKey)] = QStringLiteral("refs_updated");
-
-            QJsonObject refObj;
-            refObj[QString(kTranscriptSpeakerTrackingFrameKey)] = static_cast<qint64>(frame);
-            refObj[QString(kTranscriptSpeakerLocationXKey)] = x;
-            refObj[QString(kTranscriptSpeakerLocationYKey)] = y;
-            if (boxSizeNorm > 0.0) {
-                const qreal normalizedSize = qBound(0.01, static_cast<double>(boxSizeNorm), 1.0);
-                refObj[QString(kTranscriptSpeakerTrackingBoxSizeKey)] = normalizedSize;
-                writeNormalizedFaceBox(refObj, xNorm, yNorm, normalizedSize);
-            }
-            if (referenceIndex == 1) {
-                tracking[QString(kTranscriptSpeakerTrackingRef1Key)] = refObj;
-            } else {
-                tracking[QString(kTranscriptSpeakerTrackingRef2Key)] = refObj;
-            }
-
-            setSpeakerFramingObject(profile, tracking);
-            profiles[speakerId] = profile;
-            root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-            return true;
-        })) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::saveTrackingReferenceAt(
+            m_transcriptSession, speakerId, referenceIndex, frame, xNorm, yNorm, boxSizeNorm);
+    if (!result.ok || !result.changed) {
         return false;
     }
     return saveLoadedTranscriptDocument();
@@ -573,7 +515,7 @@ bool SpeakersTab::saveSpeakerTrackingReferenceAt(const QString& speakerId,
 
 bool SpeakersTab::saveSpeakerTrackingReference(const QString& speakerId, int referenceIndex)
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -583,7 +525,7 @@ bool SpeakersTab::saveSpeakerTrackingReference(const QString& speakerId, int ref
 
     const int64_t frame = currentSourceFrameForClip(*clip);
 
-    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject root = m_transcriptSession.rootObject();
     const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QJsonObject location = profile.value(QString(kTranscriptSpeakerLocationKey)).toObject();
@@ -605,134 +547,68 @@ bool SpeakersTab::armReferencePickForSpeaker(const QString& speakerId, int refer
 
 bool SpeakersTab::clearSpeakerTrackingReferences(const QString& speakerId)
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
         return false;
     }
 
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-            QJsonObject profile = profiles.value(speakerId).toObject();
-            profile.remove(QString(kTranscriptSpeakerFramingKey));
-            profile.remove(QString(kTranscriptSpeakerTrackingKey));
-            profiles[speakerId] = profile;
-            root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-            return true;
-        })) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::clearTrackingReferences(m_transcriptSession, speakerId);
+    if (!result.ok) {
         return false;
+    }
+    if (!result.changed) {
+        return true;
     }
     return saveLoadedTranscriptDocument();
 }
 
 bool SpeakersTab::setSpeakerTrackingEnabled(const QString& speakerId, bool enabled)
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
         return false;
     }
 
-    const QJsonObject profiles = m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    const QJsonObject profile = profiles.value(speakerId).toObject();
-    const QJsonObject tracking = speakerFramingObject(profile);
-    if (tracking.isEmpty()) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::setTrackingEnabled(m_transcriptSession, speakerId, enabled);
+    if (!result.ok) {
         return false;
     }
-    if (enabled && !transcriptTrackingHasPointstream(tracking)) {
-        return false;
-    }
-
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-            QJsonObject profile = profiles.value(speakerId).toObject();
-            QJsonObject tracking = speakerFramingObject(profile);
-            tracking[QString(kTranscriptSpeakerTrackingEnabledKey)] = enabled;
-            setSpeakerFramingObject(profile, tracking);
-            profiles[speakerId] = profile;
-            root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-            return true;
-        })) {
-        return false;
+    if (!result.changed) {
+        return true;
     }
     return saveLoadedTranscriptDocument();
 }
 
 bool SpeakersTab::deleteSpeakerAutoTrackPointstream(const QString& speakerId)
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.trimmed().isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.trimmed().isEmpty()) {
         return false;
     }
 
-    const QJsonObject root = m_loadedTranscriptDoc.object();
-    const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    const QJsonObject profile = profiles.value(speakerId).toObject();
-    const QJsonObject tracking = speakerFramingObject(profile);
-    if (tracking.isEmpty()) {
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::deleteAutoTrackPointstream(m_transcriptSession, speakerId);
+    if (!result.ok) {
         return false;
     }
-    if (!transcriptTrackingHasPointstream(tracking)) {
+    if (!result.changed) {
         return true;
-    }
-
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-            QJsonObject profile = profiles.value(speakerId).toObject();
-            QJsonObject tracking = speakerFramingObject(profile);
-            tracking[QString(kTranscriptSpeakerTrackingKeyframesKey)] = QJsonArray();
-            tracking[QString(kTranscriptSpeakerTrackingEnabledKey)] = false;
-            tracking[QString(kTranscriptSpeakerTrackingModeKey)] = QStringLiteral("ReferencePoints");
-            tracking[QString(kTranscriptSpeakerTrackingAutoStateKey)] = QStringLiteral("deleted_pointstream");
-            setSpeakerFramingObject(profile, tracking);
-            profiles[speakerId] = profile;
-            root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-            return true;
-        })) {
-        return false;
     }
     return saveLoadedTranscriptDocument();
 }
 
 bool SpeakersTab::setSpeakerSkipped(const QString& speakerId, bool skipped)
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.trimmed().isEmpty()) {
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.trimmed().isEmpty()) {
         return false;
     }
 
-    const QString targetSpeaker = speakerId.trimmed();
-    bool changed = false;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-            for (int segIndex = 0; segIndex < segments.size(); ++segIndex) {
-                QJsonObject segmentObj = segments.at(segIndex).toObject();
-                const QString segmentSpeaker =
-                    segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-                QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-                for (int wordIndex = 0; wordIndex < words.size(); ++wordIndex) {
-                    QJsonObject wordObj = words.at(wordIndex).toObject();
-                    QString wordSpeaker = wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
-                    if (wordSpeaker.isEmpty()) {
-                        wordSpeaker = segmentSpeaker;
-                    }
-                    if (wordSpeaker != targetSpeaker) {
-                        continue;
-                    }
-                    if (wordObj.value(QStringLiteral("word")).toString().trimmed().isEmpty()) {
-                        continue;
-                    }
-                    const bool previous = wordObj.value(QStringLiteral("skipped")).toBool(false);
-                    if (previous != skipped) {
-                        wordObj[QStringLiteral("skipped")] = skipped;
-                        words.replace(wordIndex, wordObj);
-                        changed = true;
-                    }
-                }
-                segmentObj[QStringLiteral("words")] = words;
-                segments.replace(segIndex, segmentObj);
-            }
-            if (!changed) {
-                return false;
-            }
-            root[QStringLiteral("segments")] = segments;
-            return true;
-        })) {
-        return !changed;
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::setSpeakerSkipped(m_transcriptSession, speakerId, skipped);
+    if (!result.ok) {
+        return !result.changed;
+    }
+    if (!result.changed) {
+        return true;
     }
     return saveLoadedTranscriptDocument();
 }
@@ -745,11 +621,11 @@ bool SpeakersTab::selectedSpeakerReferenceObject(int referenceIndex,
         return false;
     }
     const QString speakerId = selectedSpeakerId();
-    if (speakerId.isEmpty() || !m_loadedTranscriptDoc.isObject()) {
+    if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         return false;
     }
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QJsonObject framing = speakerFramingObject(profile);
     const QJsonObject refObj = framing.value(
@@ -984,7 +860,7 @@ void SpeakersTab::onSpeakersSelectionChanged()
 
 void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
 {
-    if (!m_widgets.speakersTable || !m_loadedTranscriptDoc.isObject()) {
+    if (!m_widgets.speakersTable || !m_transcriptSession.hasObjectDocument()) {
         return;
     }
 
@@ -1039,7 +915,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
 
     int wordCount = 0;
     int skippedCount = 0;
-    const QJsonArray segments = m_loadedTranscriptDoc.object().value(QStringLiteral("segments")).toArray();
+    const QJsonArray segments = m_transcriptSession.rootObject().value(QStringLiteral("segments")).toArray();
     for (const QJsonValue& segValue : segments) {
         const QJsonObject segmentObj = segValue.toObject();
         const QString segmentSpeaker =
@@ -1069,7 +945,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
     QAction* unskipAction = menu.addAction(QStringLiteral("Unskip Speaker"));
     menu.addSeparator();
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QJsonObject tracking = speakerFramingObject(profile);
     const bool trackingEnabled = transcriptTrackingEnabled(tracking);
@@ -1223,7 +1099,7 @@ void SpeakersTab::onSpeakersTableItemClicked(QTableWidgetItem* item)
 
 void SpeakersTab::seekToSpeakerFirstWord(const QString& speakerId)
 {
-    if (speakerId.isEmpty() || !m_loadedTranscriptDoc.isObject() || !m_deps.seekToTimelineFrame) {
+    if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument() || !m_deps.seekToTimelineFrame) {
         return;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -1236,7 +1112,7 @@ void SpeakersTab::seekToSpeakerFirstWord(const QString& speakerId)
         return;
     }
 
-    const QJsonArray segments = m_loadedTranscriptDoc.object().value(QStringLiteral("segments")).toArray();
+    const QJsonArray segments = m_transcriptSession.rootObject().value(QStringLiteral("segments")).toArray();
     double earliestStartSeconds = std::numeric_limits<double>::max();
     bool found = false;
     for (const QJsonValue& segValue : segments) {
@@ -1348,7 +1224,7 @@ void SpeakersTab::onSpeakerTrackingChipClicked()
         return;
     }
     const QJsonObject profiles =
-        m_loadedTranscriptDoc.object().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+        m_transcriptSession.rootObject().value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QJsonObject tracking = speakerFramingObject(profile);
     if (!transcriptTrackingHasPointstream(tracking)) {

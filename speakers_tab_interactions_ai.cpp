@@ -4,11 +4,13 @@
 #include "facestream_assignment_services.h"
 #include "facestream_artifact_utils.h"
 #include "facestream_runtime.h"
+#include "facestream_time_mapping.h"
 #include "facefind_window.h"
 #include "identity_resolution.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCryptographicHash>
@@ -20,12 +22,14 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHeaderView>
+#include <QIcon>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -37,6 +41,7 @@
 #include <QSet>
 #include <QScopedPointer>
 #include <QTableWidget>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QUrl>
 #include <QUuid>
@@ -49,6 +54,29 @@
 #include <cmath>
 
 namespace {
+class ClickableTileWidget : public QFrame
+{
+public:
+    std::function<void()> onClick;
+
+    explicit ClickableTileWidget(QWidget* parent = nullptr)
+        : QFrame(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (event && event->button() == Qt::LeftButton && onClick) {
+            onClick();
+            event->accept();
+            return;
+        }
+        QFrame::mousePressEvent(event);
+    }
+};
+
 struct AiProposalRow {
     QString targetId;
     QString field;
@@ -122,10 +150,172 @@ bool confirmAiProposals(QWidget* parent,
     return dialog.exec() == QDialog::Accepted;
 }
 
+struct SeedTrackMatchDialogResult {
+    bool accepted = false;
+    QSet<int> chosenTrackIds;
+};
+
+SeedTrackMatchDialogResult reviewSeedTrackMatches(QWidget* parent,
+                                                  const QString& speakerLabel,
+                                                  int seedTrackId,
+                                                  const QVector<jcut::facestream_assignment::SeedTrackMatch>& matches,
+                                                  double autoMatchThreshold,
+                                                  double reviewThreshold)
+{
+    SeedTrackMatchDialogResult result;
+    if (matches.isEmpty()) {
+        return result;
+    }
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral("Assign Matching Continuity Tracks"));
+    dialog.resize(980, 620);
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+    auto* intro = new QLabel(
+        QStringLiteral("Review ArcFace identity matches for seed track T%1, then assign the checked tracks to %2.\n"
+                       "Auto matches are prechecked. Review matches are shown unchecked.")
+            .arg(seedTrackId)
+            .arg(speakerLabel),
+        &dialog);
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+
+    auto* summary = new QLabel(
+        QStringLiteral("Thresholds: auto >= %1, review >= %2")
+            .arg(autoMatchThreshold, 0, 'f', 2)
+            .arg(reviewThreshold, 0, 'f', 2),
+        &dialog);
+    summary->setWordWrap(true);
+    summary->setStyleSheet(QStringLiteral(
+        "QLabel { background: #142234; border: 1px solid #314459; border-radius: 8px; color: #d8e6f5; padding: 8px; }"));
+    layout->addWidget(summary);
+
+    auto* table = new QTableWidget(&dialog);
+    table->setColumnCount(6);
+    table->setHorizontalHeaderLabels(
+        QStringList{
+            QStringLiteral("Use"),
+            QStringLiteral("Crop"),
+            QStringLiteral("Track"),
+            QStringLiteral("Cosine"),
+            QStringLiteral("Decision"),
+            QStringLiteral("Samples")});
+    table->setRowCount(matches.size());
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->verticalHeader()->setVisible(false);
+    table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+
+    QVector<QCheckBox*> checkboxes;
+    checkboxes.reserve(matches.size());
+    for (int row = 0; row < matches.size(); ++row) {
+        const auto& match = matches.at(row);
+        auto* useCheck = new QCheckBox(table);
+        const bool isSeed = match.trackId == seedTrackId;
+        const bool isAuto = match.decision == QLatin1StringView("auto_match");
+        useCheck->setChecked(isSeed || isAuto);
+        useCheck->setEnabled(isSeed || match.decision == QLatin1StringView("auto_match") ||
+                             match.decision == QLatin1StringView("review"));
+        if (isSeed) {
+            useCheck->setToolTip(QStringLiteral("Seed track is always included."));
+        } else if (match.decision == QLatin1StringView("different")) {
+            useCheck->setToolTip(QStringLiteral("Below the review threshold."));
+        } else if (match.decision == QLatin1StringView("no_embedding")) {
+            useCheck->setToolTip(QStringLiteral("No embedding could be computed for this track."));
+        }
+        table->setCellWidget(row, 0, useCheck);
+        checkboxes.push_back(useCheck);
+
+        auto* cropItem = new QTableWidgetItem;
+        cropItem->setTextAlignment(Qt::AlignCenter);
+        if (!match.representativeCandidate.cropPath.isEmpty()) {
+            QPixmap crop(match.representativeCandidate.cropPath);
+            if (!crop.isNull()) {
+                cropItem->setIcon(QIcon(crop.scaled(84, 84, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+            }
+        }
+        cropItem->setSizeHint(QSize(88, 88));
+        table->setItem(row, 1, cropItem);
+        table->setItem(row, 2, new QTableWidgetItem(QStringLiteral("T%1").arg(match.trackId)));
+        table->setItem(
+            row,
+            3,
+            new QTableWidgetItem(match.cosine < 0.0 ? QStringLiteral("—")
+                                                    : QString::number(match.cosine, 'f', 3)));
+        table->setItem(row, 4, new QTableWidgetItem(match.decision));
+        table->setItem(row, 5, new QTableWidgetItem(
+            QStringLiteral("%1 crop(s)").arg(match.cropSamples.size())));
+        table->setRowHeight(row, 92);
+    }
+    layout->addWidget(table, 1);
+
+    auto* actions = new QHBoxLayout;
+    auto* autoOnlyButton = new QPushButton(QStringLiteral("Select Auto Matches"), &dialog);
+    auto* allReviewButton = new QPushButton(QStringLiteral("Select Review Matches Too"), &dialog);
+    actions->addWidget(autoOnlyButton);
+    actions->addWidget(allReviewButton);
+    actions->addStretch(1);
+    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
+    auto* applyButton = new QPushButton(QStringLiteral("Assign Checked Tracks"), &dialog);
+    actions->addWidget(cancelButton);
+    actions->addWidget(applyButton);
+    layout->addLayout(actions);
+
+    QObject::connect(autoOnlyButton, &QPushButton::clicked, &dialog, [&]() {
+        for (int row = 0; row < matches.size(); ++row) {
+            QCheckBox* check = checkboxes.value(row, nullptr);
+            if (!check || !check->isEnabled()) {
+                continue;
+            }
+            const bool isSeed = matches.at(row).trackId == seedTrackId;
+            check->setChecked(isSeed || matches.at(row).decision == QLatin1StringView("auto_match"));
+        }
+    });
+    QObject::connect(allReviewButton, &QPushButton::clicked, &dialog, [&]() {
+        for (int row = 0; row < matches.size(); ++row) {
+            QCheckBox* check = checkboxes.value(row, nullptr);
+            if (!check || !check->isEnabled()) {
+                continue;
+            }
+            const QString decision = matches.at(row).decision;
+            check->setChecked(decision == QLatin1StringView("seed") ||
+                              decision == QLatin1StringView("auto_match") ||
+                              decision == QLatin1StringView("review"));
+        }
+    });
+    QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return result;
+    }
+    for (int row = 0; row < matches.size(); ++row) {
+        QCheckBox* check = checkboxes.value(row, nullptr);
+        if (check && check->isChecked()) {
+            result.chosenTrackIds.insert(matches.at(row).trackId);
+        }
+    }
+    if (result.chosenTrackIds.isEmpty()) {
+        return result;
+    }
+    result.accepted = true;
+    return result;
+}
+
 bool confirmClusteringPreflight(QWidget* parent,
                                 const QVector<facefind::Candidate>& candidates,
-                                const QString& modelLabel,
-                                const QString& summary)
+                                const QString& speakerLabel,
+                                const QString& summary,
+                                const QVector<int>& preferredSampleIndexes,
+                                QSet<int>* selectedTrackIdsOut = nullptr)
 {
     if (candidates.isEmpty()) {
         return false;
@@ -143,12 +333,11 @@ bool confirmClusteringPreflight(QWidget* parent,
         return false;
     }
 
-    std::mt19937 rng(std::random_device{}());
-    constexpr int kSampleTileCount = 8;
     QVector<int> currentSampleIndexes;
+    QSet<int> selectedTrackIds;
 
     QDialog dialog(parent);
-    dialog.setWindowTitle(QStringLiteral("Speaker Identity Clustering Preflight"));
+    dialog.setWindowTitle(QStringLiteral("Add Continuity Tracks"));
     dialog.setModal(true);
     dialog.resize(760, 520);
     auto* root = new QVBoxLayout(&dialog);
@@ -156,17 +345,17 @@ bool confirmClusteringPreflight(QWidget* parent,
     root->setSpacing(8);
 
     auto* intro = new QLabel(
-        QStringLiteral("Review a random representative sample of continuity-track identity crops before identity clustering runs."),
+        QStringLiteral("Review the continuity tracks active at the current playhead, then add the selected tracks to %1.\n"
+                       "Click a tile to select that track only. Ctrl/Cmd-click toggles multiple tracks.")
+            .arg(speakerLabel),
         &dialog);
     intro->setWordWrap(true);
     root->addWidget(intro);
 
     auto* details = new QLabel(
-        QStringLiteral("%1\nModel: %2\nSample: %3 of %4 crop(s) (high-confidence biased)")
-            .arg(summary.trimmed().isEmpty() ? QStringLiteral("Ready to cluster continuity tracks.") : summary.trimmed())
-            .arg(modelLabel)
-            .arg(qMin(kSampleTileCount, validIndexes.size()))
-            .arg(validIndexes.size()),
+        QStringLiteral("%1\nShowing: %2 track(s)")
+            .arg(summary.trimmed().isEmpty() ? QStringLiteral("Ready to add continuity tracks.") : summary.trimmed())
+            .arg(currentSampleIndexes.size() > 0 ? currentSampleIndexes.size() : preferredSampleIndexes.size()),
         &dialog);
     details->setWordWrap(true);
     details->setStyleSheet(QStringLiteral(
@@ -177,21 +366,50 @@ bool confirmClusteringPreflight(QWidget* parent,
     auto* grid = new QGridLayout(gridWidget);
     grid->setContentsMargins(0, 0, 0, 0);
     grid->setSpacing(8);
+    auto* selectionSummaryLabel = new QLabel(&dialog);
+    selectionSummaryLabel->setWordWrap(true);
+    selectionSummaryLabel->setStyleSheet(QStringLiteral("color:#9fb3c8; font-size:11px;"));
+    root->addWidget(selectionSummaryLabel);
 
-    const auto rebuildSample = [&]() {
-        QVector<int> pool = validIndexes;
-        std::sort(pool.begin(), pool.end(), [&](int lhs, int rhs) {
-            return candidates.at(lhs).score > candidates.at(rhs).score;
-        });
+    QPushButton* proceedButton = nullptr;
+    QHash<int, ClickableTileWidget*> tileButtonsBySampleIndex;
 
-        const int preferredPoolSize = qMax(1, static_cast<int>(std::ceil(static_cast<double>(pool.size()) * 0.60)));
-        pool.resize(preferredPoolSize);
-        std::shuffle(pool.begin(), pool.end(), rng);
-        pool.resize(qMin(kSampleTileCount, pool.size()));
-        currentSampleIndexes = pool;
+    const auto updateSelectionUi = [&]() {
+        for (auto it = tileButtonsBySampleIndex.begin(); it != tileButtonsBySampleIndex.end(); ++it) {
+            const int sampleIndex = it.key();
+            ClickableTileWidget* button = it.value();
+            if (!button) {
+                continue;
+            }
+            const facefind::Candidate& candidate = candidates.at(currentSampleIndexes.at(sampleIndex));
+            const bool selected = selectedTrackIds.contains(candidate.trackId);
+            button->setStyleSheet(selected
+                ? QStringLiteral(
+                    "QFrame { background: #18344f; border: 2px solid #4ade80; border-radius: 8px; }"
+                    "QFrame:hover { background: #21425f; }")
+                : QStringLiteral(
+                    "QFrame { background: #101c2b; border: 1px solid #2f4358; border-radius: 8px; }"
+                    "QFrame:hover { background: #162536; border-color: #4b6983; }"));
+        }
+
+        if (selectionSummaryLabel) {
+            if (selectedTrackIds.isEmpty()) {
+                selectionSummaryLabel->setText(QStringLiteral("Selection: none. Choose at least one track to add."));
+            } else {
+                selectionSummaryLabel->setText(
+                    QStringLiteral("Selection: %1 track(s) will be added to %2.")
+                        .arg(selectedTrackIds.size())
+                        .arg(speakerLabel));
+            }
+        }
+        if (proceedButton) {
+            proceedButton->setEnabled(!selectedTrackIds.isEmpty());
+            proceedButton->setText(QStringLiteral("Add %1 Selected Track(s)").arg(selectedTrackIds.size()));
+        }
     };
 
     const auto redrawTiles = [&]() {
+        tileButtonsBySampleIndex.clear();
         while (QLayoutItem* item = grid->takeAt(0)) {
             if (QWidget* widget = item->widget()) {
                 widget->deleteLater();
@@ -201,16 +419,17 @@ bool confirmClusteringPreflight(QWidget* parent,
 
         for (int sampleIndex = 0; sampleIndex < currentSampleIndexes.size(); ++sampleIndex) {
             const facefind::Candidate& c = candidates.at(currentSampleIndexes.at(sampleIndex));
-            auto* tile = new QWidget(gridWidget);
+            auto* tile = new ClickableTileWidget(gridWidget);
+            tile->setMinimumSize(170, 165);
+            tile->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
             auto* tileLayout = new QVBoxLayout(tile);
             tileLayout->setContentsMargins(6, 6, 6, 6);
             tileLayout->setSpacing(4);
-            tile->setStyleSheet(QStringLiteral(
-                "QWidget { background: #101c2b; border: 1px solid #2f4358; border-radius: 8px; }"));
 
             auto* imageLabel = new QLabel(tile);
             imageLabel->setMinimumSize(140, 120);
             imageLabel->setAlignment(Qt::AlignCenter);
+            imageLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
             QPixmap crop(c.cropPath);
             if (!crop.isNull()) {
                 imageLabel->setPixmap(crop.scaled(140, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation));
@@ -226,34 +445,65 @@ bool confirmClusteringPreflight(QWidget* parent,
                     .arg(c.score, 0, 'f', 2),
                 tile);
             caption->setAlignment(Qt::AlignCenter);
+            caption->setAttribute(Qt::WA_TransparentForMouseEvents, true);
             caption->setStyleSheet(
                 QStringLiteral("QLabel { color: #b8c7d8; border: none; background: transparent; font-size: 11px; }"));
             tileLayout->addWidget(caption);
 
+            tile->onClick = [&, sampleIndex]() {
+                const facefind::Candidate& candidate = candidates.at(currentSampleIndexes.at(sampleIndex));
+                const Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
+                const bool additive =
+                    modifiers.testFlag(Qt::ControlModifier) || modifiers.testFlag(Qt::MetaModifier);
+                if (!additive) {
+                    if (selectedTrackIds.size() == 1 && selectedTrackIds.contains(candidate.trackId)) {
+                        selectedTrackIds.clear();
+                    } else {
+                        selectedTrackIds = QSet<int>{candidate.trackId};
+                    }
+                } else {
+                    if (selectedTrackIds.contains(candidate.trackId)) {
+                        selectedTrackIds.remove(candidate.trackId);
+                    } else {
+                        selectedTrackIds.insert(candidate.trackId);
+                    }
+                }
+                updateSelectionUi();
+            };
+            tileButtonsBySampleIndex.insert(sampleIndex, tile);
             grid->addWidget(tile, sampleIndex / 4, sampleIndex % 4);
         }
+        updateSelectionUi();
     };
 
-    rebuildSample();
+    currentSampleIndexes = preferredSampleIndexes;
+    if (currentSampleIndexes.isEmpty()) {
+        currentSampleIndexes = validIndexes;
+    }
+    if (details) {
+        details->setText(
+            QStringLiteral("%1\nShowing: %2 track(s)")
+                .arg(summary.trimmed().isEmpty() ? QStringLiteral("Ready to add continuity tracks.") : summary.trimmed())
+                .arg(currentSampleIndexes.size()));
+    }
     redrawTiles();
     root->addWidget(gridWidget, 1);
 
     auto* actions = new QHBoxLayout;
-    auto* randomizeButton = new QPushButton(QStringLiteral("Randomize"), &dialog);
-    actions->addWidget(randomizeButton);
     actions->addStretch(1);
     auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
-    auto* proceedButton = new QPushButton(QStringLiteral("Proceed With Clustering"), &dialog);
+    proceedButton = new QPushButton(QStringLiteral("Add Selected Tracks"), &dialog);
     actions->addWidget(cancelButton);
     actions->addWidget(proceedButton);
     root->addLayout(actions);
     QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
     QObject::connect(proceedButton, &QPushButton::clicked, &dialog, &QDialog::accept);
-    QObject::connect(randomizeButton, &QPushButton::clicked, &dialog, [&]() {
-        rebuildSample();
-        redrawTiles();
-    });
-    return dialog.exec() == QDialog::Accepted;
+    updateSelectionUi();
+    const bool accepted = dialog.exec() == QDialog::Accepted;
+    if (accepted && selectedTrackIdsOut) {
+        *selectedTrackIdsOut = selectedTrackIds;
+    }
+    return accepted;
 }
 
 bool downloadFileBlocking(QWidget* parent,
@@ -490,9 +740,326 @@ void SpeakersTab::onSpeakerDeletePointstreamClicked()
     refresh();
 }
 
+void SpeakersTab::onSpeakerFaceStreamTableContextMenuRequested(const QPoint& pos)
+{
+    if (!m_widgets.speakerFaceStreamTable) {
+        return;
+    }
+    const int row = m_widgets.speakerFaceStreamTable->rowAt(pos.y());
+    if (row < 0) {
+        return;
+    }
+    if (m_widgets.speakerFaceStreamTable->currentRow() != row) {
+        m_widgets.speakerFaceStreamTable->setCurrentCell(row, 0);
+    }
+    const QString speakerId = selectedSpeakerId();
+    QMenu menu(m_widgets.speakerFaceStreamTable);
+    QAction* matchAction =
+        menu.addAction(QStringLiteral("Find Matching Tracks for %1").arg(
+            speakerId.isEmpty() ? QStringLiteral("Selected Speaker") : speakerDisplayLabel(speakerId)));
+    matchAction->setEnabled(activeCutMutable() && !speakerId.isEmpty());
+    QAction* chosen =
+        menu.exec(m_widgets.speakerFaceStreamTable->viewport()->mapToGlobal(pos));
+    if (chosen == matchAction) {
+        onSpeakerFindMatchingTracksClicked();
+    }
+}
+
+void SpeakersTab::onSpeakerFindMatchingTracksClicked()
+{
+    if (!activeCutMutable() || !m_transcriptSession.hasObjectDocument() ||
+        m_transcriptSession.transcriptPath().trimmed().isEmpty()) {
+        return;
+    }
+    const QString speakerId = selectedSpeakerId();
+    if (speakerId.isEmpty()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Find Matching Tracks"),
+                                 QStringLiteral("Select a speaker first."));
+        return;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return;
+    }
+    if (!m_widgets.speakerFaceStreamTable) {
+        return;
+    }
+    const int tableRow = m_widgets.speakerFaceStreamTable->currentRow();
+    if (tableRow < 0) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Find Matching Tracks"),
+                                 QStringLiteral("Select a continuity track first."));
+        return;
+    }
+    QTableWidgetItem* streamItem = m_widgets.speakerFaceStreamTable->item(tableRow, 0);
+    if (!streamItem) {
+        return;
+    }
+    const int rowIndex = streamItem->data(Qt::UserRole + 1).toInt();
+    if (rowIndex < 0 || rowIndex >= m_faceStreamPanelRows.size()) {
+        return;
+    }
+    const QJsonObject seedStream = m_faceStreamPanelRows.at(rowIndex).toObject();
+    const int seedTrackId = seedStream.value(QStringLiteral("track_id")).toInt(-1);
+    if (seedTrackId < 0) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Find Matching Tracks"),
+                             QStringLiteral("The selected row does not contain a valid continuity track."));
+        return;
+    }
+
+    auto resolveMediaPath = [&](const TimelineClip& currentClip) {
+        QString candidate = interactivePreviewMediaPathForClip(currentClip);
+        const QFileInfo candidateInfo(candidate);
+        const bool candidateIsSequenceDir =
+            !candidate.trimmed().isEmpty() &&
+            candidateInfo.exists() &&
+            candidateInfo.isDir() &&
+            isImageSequencePath(candidate);
+        const bool interactiveInvalid =
+            candidate.trimmed().isEmpty() ||
+            !candidateInfo.exists() ||
+            (candidateInfo.isDir() && !candidateIsSequenceDir);
+        if (!interactiveInvalid) {
+            return candidate;
+        }
+        const QString sourcePath = currentClip.filePath.trimmed();
+        const QFileInfo sourceInfo(sourcePath);
+        if (!sourcePath.isEmpty() &&
+            sourceInfo.exists() &&
+            (sourceInfo.isFile() || isImageSequencePath(sourcePath))) {
+            return sourcePath;
+        }
+        return QString();
+    };
+
+    const QString mediaPath = resolveMediaPath(*clip);
+    if (mediaPath.isEmpty()) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Find Matching Tracks"),
+                             QStringLiteral("No playable media was found for this clip."));
+        return;
+    }
+
+    const QJsonArray streams = continuityStreamsForClip(*clip);
+    if (streams.isEmpty()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Find Matching Tracks"),
+                                 QStringLiteral("No continuity tracks are available for this clip."));
+        return;
+    }
+
+    const QString arcfaceParamPath =
+        jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.param"));
+    const QString arcfaceBinPath =
+        jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.bin"));
+    if (!QFileInfo::exists(arcfaceParamPath) || !QFileInfo::exists(arcfaceBinPath)) {
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Find Matching Tracks"),
+            QStringLiteral("ArcFace model files are required for seeded identity matching.\n\nExpected:\n%1\n%2")
+                .arg(arcfaceParamPath, arcfaceBinPath));
+        return;
+    }
+
+    QTemporaryDir tempDir;
+    if (!tempDir.isValid()) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Find Matching Tracks"),
+                             QStringLiteral("Could not create a temporary directory for identity crops."));
+        return;
+    }
+
+    QProgressDialog progressDialog(
+        QStringLiteral("Preparing seeded identity matching..."),
+        QStringLiteral("Cancel"),
+        0,
+        qMax(1, streams.size() + 3),
+        nullptr);
+    progressDialog.setWindowTitle(QStringLiteral("Find Matching Tracks"));
+    progressDialog.setWindowModality(Qt::ApplicationModal);
+    progressDialog.setMinimumDuration(0);
+    progressDialog.setAutoClose(false);
+    progressDialog.setAutoReset(false);
+    progressDialog.setValue(0);
+    progressDialog.show();
+    QApplication::processEvents(QEventLoop::AllEvents, 50);
+    bool canceled = false;
+    auto updateProgress = [&](int value, const QString& message) {
+        progressDialog.setLabelText(message);
+        progressDialog.setValue(qBound(0, value, progressDialog.maximum()));
+        QApplication::processEvents(QEventLoop::AllEvents, 50);
+        canceled = canceled || progressDialog.wasCanceled();
+        return !canceled;
+    };
+
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+    const auto cropResult = jcut::facestream_assignment::extractRepresentativeCrops(
+        jcut::facestream_assignment::CropExtractionRequest{
+            *clip,
+            renderSyncMarkers,
+            mediaPath,
+            tempDir.path(),
+            QStringLiteral("seed_track_%1").arg(seedTrackId),
+            streams},
+        updateProgress);
+    if (!cropResult.ok) {
+        progressDialog.close();
+        if (!cropResult.canceled) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Find Matching Tracks"),
+                                 cropResult.errorMessage.trimmed().isEmpty()
+                                     ? QStringLiteral("Could not extract representative identity crops.")
+                                     : cropResult.errorMessage);
+        }
+        return;
+    }
+    if (cropResult.candidates.isEmpty()) {
+        progressDialog.close();
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Find Matching Tracks"),
+                                 QStringLiteral("No usable identity comparison crops could be extracted."));
+        return;
+    }
+
+    const auto matchResult = jcut::facestream_assignment::matchFaceTracksToSeed(
+        jcut::facestream_assignment::SeedTrackMatchRequest{
+            cropResult.candidates, seedTrackId, arcfaceParamPath, arcfaceBinPath},
+        [&](int value, const QString& message) {
+            return updateProgress(streams.size() + value, message);
+        });
+    progressDialog.close();
+    if (!matchResult.ok) {
+        if (!matchResult.cancelStageMessage.trimmed().isEmpty()) {
+            return;
+        }
+        QMessageBox::warning(
+            nullptr,
+            QStringLiteral("Find Matching Tracks"),
+            matchResult.embeddingError.trimmed().isEmpty()
+                ? QStringLiteral("Seeded identity matching could not be completed.")
+                : matchResult.embeddingError);
+        return;
+    }
+
+    QVector<jcut::facestream_assignment::SeedTrackMatch> candidateMatches;
+    candidateMatches.reserve(matchResult.matches.size());
+    for (const auto& match : matchResult.matches) {
+        if (match.decision == QLatin1StringView("seed") ||
+            match.decision == QLatin1StringView("auto_match") ||
+            match.decision == QLatin1StringView("review")) {
+            candidateMatches.push_back(match);
+        }
+    }
+    if (candidateMatches.size() <= 1) {
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Find Matching Tracks"),
+            QStringLiteral("No additional continuity tracks cleared the review threshold for T%1.")
+                .arg(seedTrackId));
+        return;
+    }
+
+    const auto dialogResult = reviewSeedTrackMatches(
+        nullptr,
+        speakerDisplayLabel(speakerId),
+        seedTrackId,
+        candidateMatches,
+        matchResult.autoMatchThreshold,
+        matchResult.reviewThreshold);
+    if (!dialogResult.accepted) {
+        return;
+    }
+
+    QHash<int, QJsonObject> streamByTrackId;
+    for (const QJsonValue& value : streams) {
+        const QJsonObject streamObj = value.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            streamByTrackId.insert(trackId, streamObj);
+        }
+    }
+
+    QJsonArray assignmentAnchors;
+    for (const auto& match : candidateMatches) {
+        if (!dialogResult.chosenTrackIds.contains(match.trackId)) {
+            continue;
+        }
+        const QJsonObject streamObj = streamByTrackId.value(match.trackId);
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+        if (streamObj.isEmpty() || keyframes.isEmpty()) {
+            continue;
+        }
+        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+        if (!parseFacestreamFrameDomainString(
+                streamObj.value(QStringLiteral("frame_domain")).toString(),
+                &frameDomain)) {
+            continue;
+        }
+        const QJsonObject keyframe = keyframes.first().toObject();
+        const int64_t streamFrame =
+            qMax<int64_t>(0, keyframe.value(QStringLiteral("frame")).toVariant().toLongLong());
+        const int64_t sourceFrame = mapFacestreamFrameToSourceFrame(
+            *clip, streamFrame, frameDomain, renderSyncMarkers);
+        const qreal xNorm = qBound<qreal>(
+            0.0,
+            keyframe.value(QStringLiteral("x")).toDouble(match.representativeCandidate.x),
+            1.0);
+        const qreal yNorm = qBound<qreal>(
+            0.0,
+            keyframe.value(QStringLiteral("y")).toDouble(match.representativeCandidate.y),
+            1.0);
+        const qreal boxNorm = qBound<qreal>(
+            0.01,
+            keyframe.value(QStringLiteral("box_size")).toDouble(match.representativeCandidate.box),
+            1.0);
+        QJsonObject row;
+        row[QStringLiteral("track_id")] = match.trackId;
+        row[QStringLiteral("stream_id")] =
+            streamObj.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(match.trackId));
+        row[QStringLiteral("source_frame")] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
+        row[QStringLiteral("x")] = xNorm;
+        row[QStringLiteral("y")] = yNorm;
+        row[QStringLiteral("box")] = boxNorm;
+        assignmentAnchors.push_back(row);
+    }
+
+    if (assignmentAnchors.isEmpty()) {
+        QMessageBox::warning(nullptr,
+                             QStringLiteral("Find Matching Tracks"),
+                             QStringLiteral("No valid continuity-track anchors were available to assign."));
+        return;
+    }
+    if (!assignTrackAnchorsToSpeakerBatch(
+            speakerId,
+            assignmentAnchors,
+            QStringLiteral("seed_identity_match_arcface"),
+            QStringLiteral("seed_identity_match_arcface_set"))) {
+        return;
+    }
+
+    QMessageBox::information(
+        nullptr,
+        QStringLiteral("Find Matching Tracks"),
+        QStringLiteral("Assigned %1 continuity track(s) to %2 from seed track T%3.")
+            .arg(assignmentAnchors.size())
+            .arg(speakerDisplayLabel(speakerId))
+            .arg(seedTrackId));
+}
+
 void SpeakersTab::onSpeakerPrecropFacesClicked()
 {
-    if (!activeCutMutable() || !m_loadedTranscriptDoc.isObject() || m_loadedTranscriptPath.isEmpty()) {
+    if (!activeCutMutable() || !m_transcriptSession.hasObjectDocument() ||
+        m_transcriptSession.transcriptPath().isEmpty()) {
+        return;
+    }
+    const QString targetSpeakerId = selectedSpeakerId().trimmed();
+    if (targetSpeakerId.isEmpty()) {
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Add Tracks"),
+                                 QStringLiteral("Select a speaker first, then add continuity tracks to that speaker."));
         return;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -528,7 +1095,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     const QString mediaPath = resolveMediaPath(*clip);
     if (mediaPath.isEmpty()) {
         QMessageBox::warning(nullptr,
-                             QStringLiteral("Assign Speaker Identity"),
+                             QStringLiteral("Add Tracks"),
                              QStringLiteral("No playable media was found for this clip."));
         return;
     }
@@ -585,7 +1152,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         return m.captured(1).trimmed();
     };
 
-    const QString projectId = sanitizedToken(deriveProjectId(m_loadedTranscriptPath));
+    const QString projectId = sanitizedToken(deriveProjectId(m_transcriptSession.transcriptPath()));
     const QString clipId = sanitizedToken(clip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : clip->id);
     const QString videoStem = sanitizedToken(QFileInfo(mediaPath).completeBaseName());
 
@@ -598,7 +1165,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
 
         QString baseRoot;
         const QRegularExpression re(QStringLiteral("(.*/projects/[^/]+)/.*"));
-        const QRegularExpressionMatch m = re.match(m_loadedTranscriptPath);
+        const QRegularExpressionMatch m = re.match(m_transcriptSession.transcriptPath());
         if (m.hasMatch()) {
             baseRoot = m.captured(1);
         } else {
@@ -635,7 +1202,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         root[QStringLiteral("project_id")] = run.projectId;
         root[QStringLiteral("clip_id")] = run.clipId;
         root[QStringLiteral("video_filename")] = QFileInfo(mediaPath).fileName();
-        root[QStringLiteral("transcript_path")] = m_loadedTranscriptPath;
+        root[QStringLiteral("transcript_path")] = m_transcriptSession.transcriptPath();
         root[QStringLiteral("completed_at_utc")] =
             QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         root[QStringLiteral("stage_status")] = run.stageStatus;
@@ -760,11 +1327,11 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     QJsonArray streams;
     QString importedArtifactDir;
     QString facestreamPath;
-    if (transcriptEngine.loadFacestreamArtifact(m_loadedTranscriptPath, &artifactRoot)) {
+    if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip->id);
         streams = jcut::facestream::continuityStreamsForRoot(
             continuityRoot,
-            m_loadedTranscriptDoc.object());
+            m_transcriptSession.rootObject());
         importedArtifactDir = continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString();
         facestreamPath = continuityRoot.value(QStringLiteral("facestream_part")).toString();
         if (facestreamPath.isEmpty()) {
@@ -772,7 +1339,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         }
     }
     if (streams.isEmpty()) {
-        const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
         const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
         const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
         const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
@@ -798,16 +1365,6 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.param"));
     const QString arcfaceBinPath =
         jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.bin"));
-    if (streams.size() > maxManualSingletonReviewRows &&
-        (!QFileInfo::exists(arcfaceParamPath) || !QFileInfo::exists(arcfaceBinPath))) {
-        showArcFaceModelRequiredDialog(nullptr,
-                                       streams.size(),
-                                       QString(),
-                                       arcfaceParamPath,
-                                       arcfaceBinPath);
-        return;
-    }
-
     QString cropsDir = QDir(debugRun.runDir).absoluteFilePath(
         QStringLiteral("%1_facestream_track_crops").arg(debugRun.videoStem));
     QString outputJsonPath = QDir(debugRun.runDir).absoluteFilePath(
@@ -839,7 +1396,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         0,
         qMax(1, streams.size() + 3),
         nullptr);
-    progressDialog.setWindowTitle(QStringLiteral("Assign Speaker Identity"));
+    progressDialog.setWindowTitle(QStringLiteral("Add Tracks"));
     progressDialog.setWindowModality(Qt::ApplicationModal);
     progressDialog.setMinimumDuration(0);
     progressDialog.setAutoClose(false);
@@ -869,7 +1426,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             persistIndex(debugRun);
             return;
         }
-        QMessageBox::warning(nullptr, QStringLiteral("Assign Speaker Identity"), cropResult.errorMessage);
+        QMessageBox::warning(nullptr, QStringLiteral("Add Tracks"), cropResult.errorMessage);
         return;
     }
     QJsonArray candidateRows = cropResult.candidateRows;
@@ -899,12 +1456,12 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                        QStringLiteral("No candidates produced."));
         persistIndex(debugRun);
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Assign Speaker Identity"),
+                                 QStringLiteral("Add Tracks"),
                                  QStringLiteral("No usable identity comparison crops could be extracted."));
         return;
     }
 
-    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject root = m_transcriptSession.rootObject();
     const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     QStringList speakerIds;
     for (auto it = profiles.constBegin(); it != profiles.constEnd(); ++it) {
@@ -931,7 +1488,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     });
     if (speakerIds.isEmpty()) {
         QMessageBox::information(nullptr,
-                                 QStringLiteral("Assign Speaker Identity"),
+                                 QStringLiteral("Add Tracks"),
                                  QStringLiteral("No transcript speaker IDs were available to assign the continuity tracks."));
         return;
     }
@@ -980,7 +1537,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         (clip && !clip->id.trimmed().isEmpty()) ? clip->id.trimmed() : QStringLiteral("unknown_clip");
     QHash<int, QString> persistedIdentityByTrackId;
     {
-        const QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
         const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
         const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
         const QJsonObject clipFlowRoot = clipsRoot.value(clipFlowId).toObject();
@@ -999,7 +1556,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     auto persistSpeakerFlowSnapshot = [&](const QJsonObject& machinePayload,
                                           const QJsonObject& humanPayload,
                                           const QJsonObject& resolvedPayload) {
-        QJsonObject transcriptRoot = m_loadedTranscriptDoc.object();
+        QJsonObject transcriptRoot = m_transcriptSession.rootObject();
         QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
         speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
 
@@ -1068,23 +1625,155 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         persistSpeakerFlowSnapshot(machinePayload, QJsonObject(), QJsonObject());
     }
 
-    const QVector<facefind::Candidate> trackCandidates = candidates;
+    QVector<facefind::Candidate> trackCandidates = candidates;
     progressDialog.close();
+    QSet<int> selectedTrackIds;
+    QVector<int> playheadSampleIndexes;
+    bool usedPlayheadTrackFallback = false;
+    QHash<int, QJsonObject> previewAnchorByTrackId;
+    {
+        const int64_t playheadTimelineFrame =
+            m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip->startFrame;
+        const int64_t playheadSourceFrame =
+            sourceFrameForClipAtTimelinePosition(*clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
+
+        QHash<int, int> bestCandidateIndexByTrackId;
+        auto registerCandidateIndex = [&](int trackId, int candidateIndex) {
+            if (trackId < 0 || candidateIndex < 0 || candidateIndex >= candidates.size()) {
+                return;
+            }
+            const auto existing = bestCandidateIndexByTrackId.constFind(trackId);
+            if (existing == bestCandidateIndexByTrackId.constEnd()) {
+                bestCandidateIndexByTrackId.insert(trackId, candidateIndex);
+                return;
+            }
+            const facefind::Candidate& current = candidates.at(candidateIndex);
+            const facefind::Candidate& prior = candidates.at(existing.value());
+            const qint64 currentDistance = std::llabs(current.frame - playheadTimelineFrame);
+            const qint64 priorDistance = std::llabs(prior.frame - playheadTimelineFrame);
+            if (currentDistance < priorDistance ||
+                (currentDistance == priorDistance && current.score > prior.score)) {
+                bestCandidateIndexByTrackId.insert(trackId, candidateIndex);
+            }
+        };
+
+        for (int candidateIndex = 0; candidateIndex < candidates.size(); ++candidateIndex) {
+            const int trackId = candidates.at(candidateIndex).trackId;
+            registerCandidateIndex(trackId, candidateIndex);
+        }
+
+        QVector<int> activeTrackIds;
+        activeTrackIds.reserve(streams.size());
+        QHash<int, QString> streamIdByTrackId;
+        for (const QJsonValue& value : streams) {
+            const QJsonObject streamObj = value.toObject();
+            const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+            streamIdByTrackId.insert(
+                trackId,
+                streamObj.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId)));
+            const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+            if (trackId < 0 || keyframes.isEmpty()) {
+                continue;
+            }
+            FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+            if (!parseFacestreamFrameDomainString(
+                    streamObj.value(QStringLiteral("frame_domain")).toString(),
+                    &frameDomain)) {
+                continue;
+            }
+            int64_t minSourceFrame = std::numeric_limits<int64_t>::max();
+            int64_t maxSourceFrame = std::numeric_limits<int64_t>::min();
+            for (const QJsonValue& keyframeValue : keyframes) {
+                const QJsonObject keyframeObj = keyframeValue.toObject();
+                const int64_t streamFrame =
+                    keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+                const int64_t sourceFrame =
+                    mapFacestreamFrameToSourceFrame(*clip, streamFrame, frameDomain, renderSyncMarkers);
+                minSourceFrame = qMin(minSourceFrame, sourceFrame);
+                maxSourceFrame = qMax(maxSourceFrame, sourceFrame);
+            }
+            if (minSourceFrame <= playheadSourceFrame && playheadSourceFrame <= maxSourceFrame) {
+                activeTrackIds.push_back(trackId);
+            }
+        }
+
+        usedPlayheadTrackFallback = activeTrackIds.isEmpty();
+        const QVector<int> trackIdsForPreview = activeTrackIds.isEmpty()
+            ? bestCandidateIndexByTrackId.keys().toVector()
+            : activeTrackIds;
+        playheadSampleIndexes.reserve(trackIdsForPreview.size());
+        for (int trackId : trackIdsForPreview) {
+            const auto it = bestCandidateIndexByTrackId.constFind(trackId);
+            if (it != bestCandidateIndexByTrackId.constEnd()) {
+                playheadSampleIndexes.push_back(it.value());
+                if (it.value() >= 0 && it.value() < candidateRows.size()) {
+                    QJsonObject anchor = candidateRows.at(it.value()).toObject();
+                    anchor[QStringLiteral("stream_id")] = streamIdByTrackId.value(
+                        trackId,
+                        QStringLiteral("T%1").arg(trackId));
+                    previewAnchorByTrackId.insert(trackId, anchor);
+                }
+            }
+        }
+        std::sort(playheadSampleIndexes.begin(), playheadSampleIndexes.end(), [&](int lhs, int rhs) {
+            const facefind::Candidate& a = candidates.at(lhs);
+            const facefind::Candidate& b = candidates.at(rhs);
+            const qint64 distA = std::llabs(a.frame - playheadTimelineFrame);
+            const qint64 distB = std::llabs(b.frame - playheadTimelineFrame);
+            if (distA != distB) {
+                return distA < distB;
+            }
+            return a.trackId < b.trackId;
+        });
+    }
     if (!confirmClusteringPreflight(
             nullptr,
             trackCandidates,
-            QStringLiteral("ArcFace MobileFaceNet NCNN"),
-            QStringLiteral("%1 FaceStream crop sample(s) extracted from %2 generated track(s).")
-                .arg(trackCandidates.size())
-                .arg(streams.size()))) {
+            speakerDisplayLabel(targetSpeakerId),
+            usedPlayheadTrackFallback
+                ? QStringLiteral("No continuity tracks span the current playhead. Showing the nearest representative crop for each track (%1 total generated track(s)).")
+                      .arg(streams.size())
+                : QStringLiteral("%1 active continuity track(s) shown from playhead context (%2 total generated track(s)).")
+                      .arg(playheadSampleIndexes.size())
+                .arg(streams.size()),
+            playheadSampleIndexes,
+            &selectedTrackIds)) {
         setStageStatus(debugRun, kStageClustering, kStatusSkipped, kMsgCanceledClusteringPreflight);
         persistIndex(debugRun);
         return;
     }
-    progressDialog.setLabelText(QStringLiteral("Preparing FaceStream identity clustering..."));
-    progressDialog.setValue(qMin(progressDialog.maximum(), streams.size()));
-    progressDialog.show();
-    QApplication::processEvents(QEventLoop::AllEvents, 50);
+    QJsonArray assignmentAnchors;
+    for (int trackId : std::as_const(selectedTrackIds)) {
+        const auto it = previewAnchorByTrackId.constFind(trackId);
+        if (it != previewAnchorByTrackId.constEnd()) {
+            assignmentAnchors.push_back(it.value());
+        }
+    }
+    if (assignmentAnchors.isEmpty()) {
+        setStageStatus(debugRun, kStageAssignment, QStringLiteral("warn"),
+                       QStringLiteral("No continuity-track anchors were selected."));
+        persistIndex(debugRun);
+        return;
+    }
+    if (!assignTrackAnchorsToSpeakerBatch(
+            targetSpeakerId,
+            assignmentAnchors,
+            QStringLiteral("playhead_track_picker"),
+            QStringLiteral("playhead_track_picker_set"))) {
+        setStageStatus(debugRun, kStageAssignment, QStringLiteral("warn"),
+                       QStringLiteral("Selected continuity-track anchors could not be assigned."));
+        persistIndex(debugRun);
+        return;
+    }
+    setStageStatus(debugRun, kStageAssignment, QStringLiteral("ok"),
+                   QStringLiteral("Selected continuity tracks were assigned directly to the chosen speaker."));
+    persistIndex(debugRun);
+    QMessageBox::information(nullptr,
+                             QStringLiteral("Add Tracks"),
+                             QStringLiteral("Assigned %1 continuity track(s) to %2.")
+                                 .arg(assignmentAnchors.size())
+                                 .arg(speakerDisplayLabel(targetSpeakerId)));
+    return;
 
     QVector<facefind::Candidate> clusterCandidates;
     QJsonArray clusterRows;
@@ -1113,9 +1802,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         embeddingReadyForDialog = clusterResult.embeddingReady;
         embeddingErrorForDialog = clusterResult.embeddingError;
 
-        const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_loadedTranscriptPath);
+        const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_transcriptSession.transcriptPath());
         QJsonObject identityRoot;
-        transcriptEngine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
+        transcriptEngine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
         QJsonObject clustersRoot;
         clustersRoot[QStringLiteral("run_id")] = debugRun.runId;
         clustersRoot[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -1146,7 +1835,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
         identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         identityRoot[QStringLiteral("identity_clusters_by_clip")] = clustersByClip;
-        if (transcriptEngine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot)) {
+        if (transcriptEngine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot)) {
             addArtefact(debugRun, identitySidecarPath);
         } else {
             setStageStatus(debugRun,
@@ -1285,7 +1974,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         resolvedPayload[QStringLiteral("updated_at_utc")] = timestampUtc;
         resolvedPayload[QStringLiteral("track_identity_map")] = resolvedMap;
         QJsonObject identityRoot;
-        transcriptEngine.loadIdentityArtifact(m_loadedTranscriptPath, &identityRoot);
+        transcriptEngine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
         QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
         QJsonObject assignmentRoot;
         assignmentRoot[QStringLiteral("run_id")] = debugRun.runId;
@@ -1297,11 +1986,14 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
         identityRoot[QStringLiteral("updated_at_utc")] = timestampUtc;
         identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-        if (transcriptEngine.saveIdentityArtifact(m_loadedTranscriptPath, identityRoot)) {
-            addArtefact(debugRun, transcriptEngine.identityArtifactPath(m_loadedTranscriptPath));
+        if (transcriptEngine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot)) {
+            addArtefact(debugRun, transcriptEngine.identityArtifactPath(m_transcriptSession.transcriptPath()));
         }
         persistSpeakerFlowSnapshot(QJsonObject(), humanPayload, resolvedPayload);
     }
+
+    m_speakersTableRefreshSignature.clear();
+    m_faceStreamPanelRefreshSignature.clear();
 
     if (assignmentsBySpeaker.isEmpty()) {
         setStageStatus(debugRun, QStringLiteral("stage_6_assignment"), QStringLiteral("warn"),

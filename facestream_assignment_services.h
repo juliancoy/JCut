@@ -58,6 +58,37 @@ struct ClusterResult {
     double reviewThreshold = 0.55;
 };
 
+struct SeedTrackMatch {
+    int trackId = -1;
+    QVector<facefind::Candidate> cropSamples;
+    facefind::Candidate representativeCandidate;
+    std::vector<float> embedding;
+    bool hasEmbedding = false;
+    double cosine = -1.0;
+    QString decision;
+};
+
+struct SeedTrackMatchRequest {
+    QVector<facefind::Candidate> trackCandidates;
+    int seedTrackId = -1;
+    QString arcfaceParamPath;
+    QString arcfaceBinPath;
+    double autoMatchThreshold = 0.70;
+    double reviewThreshold = 0.55;
+};
+
+struct SeedTrackMatchResult {
+    bool ok = false;
+    QString cancelStageMessage;
+    bool embeddingReady = false;
+    QString embeddingError;
+    int embeddedTrackCount = 0;
+    double autoMatchThreshold = 0.70;
+    double reviewThreshold = 0.55;
+    QVector<SeedTrackMatch> matches;
+    QJsonArray matchRows;
+};
+
 struct AssignmentResolutionResult {
     QJsonArray overrides;
     QJsonArray auditLog;
@@ -86,6 +117,10 @@ AssignmentResolutionResult resolveTrackIdentityAssignments(
 
 ClusterResult clusterFaceTracks(
     const ClusterRequest& request,
+    const std::function<bool(int, const QString&)>& progress);
+
+SeedTrackMatchResult matchFaceTracksToSeed(
+    const SeedTrackMatchRequest& request,
     const std::function<bool(int, const QString&)>& progress);
 
 } // namespace jcut::facestream_assignment
