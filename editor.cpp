@@ -468,9 +468,11 @@ void EditorWindow::applyDeferredStartupPanelState(const QJsonObject& root,
             const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
             const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
             const bool titleOverlayOnly = isTabNamed(QStringLiteral("Titles"));
+            const bool faceStreamAssignmentInteractive = isTabNamed(QStringLiteral("Speakers"));
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
+            m_preview->setFaceStreamAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }
@@ -1441,9 +1443,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
             const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
             const bool titleOverlayOnly = isTabNamed(QStringLiteral("Titles"));
+            const bool faceStreamAssignmentInteractive = isTabNamed(QStringLiteral("Speakers"));
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
+            m_preview->setFaceStreamAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }

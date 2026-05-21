@@ -29,6 +29,7 @@
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QNetworkAccessManager>
@@ -1051,6 +1052,61 @@ void SpeakersTab::onSpeakerFindMatchingTracksClicked()
 
 void SpeakersTab::onSpeakerPrecropFacesClicked()
 {
+    {
+        const QString inlineTargetSpeakerId = selectedSpeakerId().trimmed();
+        if (inlineTargetSpeakerId.isEmpty() || !m_widgets.speakerPlayheadFaceStreamsList) {
+            QMessageBox::information(nullptr,
+                                     QStringLiteral("Add Tracks"),
+                                     QStringLiteral("Select a speaker and one or more playhead tracks first."));
+            return;
+        }
+        const QList<QListWidgetItem*> selectedPlayheadItems =
+            m_widgets.speakerPlayheadFaceStreamsList->selectedItems();
+        if (selectedPlayheadItems.isEmpty()) {
+            QMessageBox::information(nullptr,
+                                     QStringLiteral("Add Tracks"),
+                                     QStringLiteral("Select one or more tracks from the Tracks At Playhead list first."));
+            return;
+        }
+        QJsonArray inlineAssignmentAnchors;
+        for (QListWidgetItem* item : selectedPlayheadItems) {
+            if (!item) {
+                continue;
+            }
+            const int trackId = item->data(Qt::UserRole).toInt();
+            if (trackId < 0) {
+                continue;
+            }
+            QJsonObject anchor;
+            anchor[QStringLiteral("track_id")] = trackId;
+            anchor[QStringLiteral("stream_id")] = item->data(Qt::UserRole + 1).toString().trimmed();
+            anchor[QStringLiteral("source_frame")] = item->data(Qt::UserRole + 2).toLongLong();
+            anchor[QStringLiteral("x")] = item->data(Qt::UserRole + 3).toDouble();
+            anchor[QStringLiteral("y")] = item->data(Qt::UserRole + 4).toDouble();
+            anchor[QStringLiteral("box")] = item->data(Qt::UserRole + 5).toDouble();
+            inlineAssignmentAnchors.push_back(anchor);
+        }
+        if (inlineAssignmentAnchors.isEmpty()) {
+            QMessageBox::warning(nullptr,
+                                 QStringLiteral("Add Tracks"),
+                                 QStringLiteral("The selected playhead tracks did not contain usable assignment anchors."));
+            return;
+        }
+        if (!assignTrackAnchorsToSpeakerBatch(
+                inlineTargetSpeakerId,
+                inlineAssignmentAnchors,
+                QStringLiteral("playhead_sidebar_picker"),
+                QStringLiteral("playhead_sidebar_picker_set"))) {
+            return;
+        }
+        QMessageBox::information(nullptr,
+                                 QStringLiteral("Add Tracks"),
+                                 QStringLiteral("Assigned %1 continuity track(s) to %2.")
+                                     .arg(inlineAssignmentAnchors.size())
+                                     .arg(speakerDisplayLabel(inlineTargetSpeakerId)));
+        return;
+    }
+
     if (!activeCutMutable() || !m_transcriptSession.hasObjectDocument() ||
         m_transcriptSession.transcriptPath().isEmpty()) {
         return;

@@ -459,8 +459,11 @@ void EditorWindow::setupAudioEngine()
     // first playback doesn't pay full initialization/decode startup latency.
     if (!restVulkanDiagnosticsModeEnabled()) {
         QTimer::singleShot(0, this, [this]() {
-            if (m_audioEngine) {
-                m_audioEngine->initialize();
+            AudioEngine* const audioEngine = m_audioEngine.get();
+            if (audioEngine) {
+                (void)QtConcurrent::run([audioEngine]() {
+                    audioEngine->initialize();
+                });
             }
         });
     } else {

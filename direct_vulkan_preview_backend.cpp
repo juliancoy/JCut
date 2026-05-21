@@ -734,6 +734,8 @@ bool dispatchFaceStreamBoxAtPosition(const PreviewInteractionState* state,
     if (!state || !callback) {
         return false;
     }
+    const VulkanPreviewFacestreamOverlay* nearestOverlay = nullptr;
+    qreal nearestDistanceSq = std::numeric_limits<qreal>::max();
     for (int overlayIndex = state->facestreamOverlays.size() - 1; overlayIndex >= 0; --overlayIndex) {
         const VulkanPreviewFacestreamOverlay& overlay = state->facestreamOverlays.at(overlayIndex);
         if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
@@ -753,7 +755,28 @@ bool dispatchFaceStreamBoxAtPosition(const PreviewInteractionState* state,
         boxPath.lineTo(p3);
         boxPath.lineTo(p4);
         boxPath.closeSubpath();
-        if (!boxPath.contains(surfacePosition)) {
+        QPainterPath hitPath = boxPath;
+        const QRectF hitBounds = boxPath.boundingRect();
+        constexpr qreal kMinOverlayHitSizePx = 18.0;
+        constexpr qreal kNearestOverlayRadiusPx = 28.0;
+        if (hitBounds.width() < kMinOverlayHitSizePx || hitBounds.height() < kMinOverlayHitSizePx) {
+            const QPointF center = hitBounds.center();
+            const QRectF expandedRect(center.x() - (kMinOverlayHitSizePx * 0.5),
+                                      center.y() - (kMinOverlayHitSizePx * 0.5),
+                                      kMinOverlayHitSizePx,
+                                      kMinOverlayHitSizePx);
+            hitPath.addRect(expandedRect);
+        }
+        if (!hitPath.contains(surfacePosition)) {
+            const QPointF center = hitBounds.center();
+            const qreal dx = surfacePosition.x() - center.x();
+            const qreal dy = surfacePosition.y() - center.y();
+            const qreal distanceSq = dx * dx + dy * dy;
+            if (distanceSq <= (kNearestOverlayRadiusPx * kNearestOverlayRadiusPx) &&
+                distanceSq < nearestDistanceSq) {
+                nearestDistanceSq = distanceSq;
+                nearestOverlay = &overlay;
+            }
             continue;
         }
         const QPointF center = overlay.boxNorm.center();
@@ -763,6 +786,19 @@ bool dispatchFaceStreamBoxAtPosition(const PreviewInteractionState* state,
                  overlay.trackId,
                  overlay.streamId,
                  overlay.sourceFrame,
+                 center.x(),
+                 center.y(),
+                 boxSideNorm);
+        return true;
+    }
+    if (nearestOverlay) {
+        const QPointF center = nearestOverlay->boxNorm.center();
+        const qreal boxSideNorm =
+            qBound<qreal>(0.01, qMax(nearestOverlay->boxNorm.width(), nearestOverlay->boxNorm.height()), 1.0);
+        callback(nearestOverlay->clipId,
+                 nearestOverlay->trackId,
+                 nearestOverlay->streamId,
+                 nearestOverlay->sourceFrame,
                  center.x(),
                  center.y(),
                  boxSideNorm);
@@ -785,6 +821,10 @@ bool updateHoveredFaceStreamBox(const PreviewInteractionState* state,
     QString hoveredClipId;
     QString hoveredStreamId;
     int hoveredTrackId = -1;
+    QString nearestClipId;
+    QString nearestStreamId;
+    int nearestTrackId = -1;
+    qreal nearestDistanceSq = std::numeric_limits<qreal>::max();
     for (int overlayIndex = state->facestreamOverlays.size() - 1; overlayIndex >= 0; --overlayIndex) {
         const VulkanPreviewFacestreamOverlay& overlay = state->facestreamOverlays.at(overlayIndex);
         if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
@@ -800,13 +840,41 @@ bool updateHoveredFaceStreamBox(const PreviewInteractionState* state,
         boxPath.lineTo(mapNormalizedClipPointToScreenForVulkan(info, overlay.boxNorm.bottomRight()));
         boxPath.lineTo(mapNormalizedClipPointToScreenForVulkan(info, overlay.boxNorm.bottomLeft()));
         boxPath.closeSubpath();
-        if (!boxPath.contains(surfacePosition)) {
+        QPainterPath hitPath = boxPath;
+        const QRectF hitBounds = boxPath.boundingRect();
+        constexpr qreal kMinOverlayHitSizePx = 18.0;
+        constexpr qreal kNearestOverlayRadiusPx = 28.0;
+        if (hitBounds.width() < kMinOverlayHitSizePx || hitBounds.height() < kMinOverlayHitSizePx) {
+            const QPointF center = hitBounds.center();
+            const QRectF expandedRect(center.x() - (kMinOverlayHitSizePx * 0.5),
+                                      center.y() - (kMinOverlayHitSizePx * 0.5),
+                                      kMinOverlayHitSizePx,
+                                      kMinOverlayHitSizePx);
+            hitPath.addRect(expandedRect);
+        }
+        if (!hitPath.contains(surfacePosition)) {
+            const QPointF center = hitBounds.center();
+            const qreal dx = surfacePosition.x() - center.x();
+            const qreal dy = surfacePosition.y() - center.y();
+            const qreal distanceSq = dx * dx + dy * dy;
+            if (distanceSq <= (kNearestOverlayRadiusPx * kNearestOverlayRadiusPx) &&
+                distanceSq < nearestDistanceSq) {
+                nearestDistanceSq = distanceSq;
+                nearestClipId = overlay.clipId;
+                nearestStreamId = overlay.streamId;
+                nearestTrackId = overlay.trackId;
+            }
             continue;
         }
         hoveredClipId = overlay.clipId;
         hoveredStreamId = overlay.streamId;
         hoveredTrackId = overlay.trackId;
         break;
+    }
+    if (hoveredTrackId < 0 && nearestTrackId >= 0) {
+        hoveredClipId = nearestClipId;
+        hoveredStreamId = nearestStreamId;
+        hoveredTrackId = nearestTrackId;
     }
 
     PreviewInteractionTransientState& transient =
@@ -3055,4 +3123,53 @@ void directVulkanPreviewWindowSetTitle(DirectVulkanPreviewWindow* window, const 
 bool directVulkanPreviewWindowIsVisible(DirectVulkanPreviewWindow* window)
 {
     return window && window->isVisible();
+}
+
+QString directVulkanPreviewWindowCursorShape(DirectVulkanPreviewWindow* window)
+{
+    if (!window) {
+        return QString();
+    }
+    switch (window->cursor().shape()) {
+    case Qt::ArrowCursor:
+        return QStringLiteral("arrow");
+    case Qt::UpArrowCursor:
+        return QStringLiteral("up_arrow");
+    case Qt::CrossCursor:
+        return QStringLiteral("cross");
+    case Qt::WaitCursor:
+        return QStringLiteral("wait");
+    case Qt::IBeamCursor:
+        return QStringLiteral("ibeam");
+    case Qt::SizeVerCursor:
+        return QStringLiteral("size_ver");
+    case Qt::SizeHorCursor:
+        return QStringLiteral("size_hor");
+    case Qt::SizeBDiagCursor:
+        return QStringLiteral("size_bdiag");
+    case Qt::SizeFDiagCursor:
+        return QStringLiteral("size_fdiag");
+    case Qt::SizeAllCursor:
+        return QStringLiteral("size_all");
+    case Qt::BlankCursor:
+        return QStringLiteral("blank");
+    case Qt::SplitVCursor:
+        return QStringLiteral("split_v");
+    case Qt::SplitHCursor:
+        return QStringLiteral("split_h");
+    case Qt::PointingHandCursor:
+        return QStringLiteral("pointing_hand");
+    case Qt::ForbiddenCursor:
+        return QStringLiteral("forbidden");
+    case Qt::OpenHandCursor:
+        return QStringLiteral("open_hand");
+    case Qt::ClosedHandCursor:
+        return QStringLiteral("closed_hand");
+    case Qt::WhatsThisCursor:
+        return QStringLiteral("whats_this");
+    case Qt::BusyCursor:
+        return QStringLiteral("busy");
+    default:
+        return QStringLiteral("other");
+    }
 }

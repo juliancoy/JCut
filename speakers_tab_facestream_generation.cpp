@@ -527,14 +527,15 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     continuityRoot[QStringLiteral("raw_frames")] = rawFrames;
     continuityRoot[QStringLiteral("raw_tracks_schema")] = rawTracksArtifact.value(QStringLiteral("schema")).toString();
     continuityRoot[QStringLiteral("raw_frames_schema")] = rawDetectionsArtifact.value(QStringLiteral("schema")).toString();
-    continuityRoot[QStringLiteral("raw_tracks_frame_domain")] =
-        rawTracksArtifact.value(QStringLiteral("frame_domain")).toString(
-            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute));
-    continuityRoot[QStringLiteral("raw_frames_frame_domain")] =
+    const QString rawFramesFrameDomain =
         rawDetectionsArtifact.value(QStringLiteral("frame_domain")).toString(
             facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute));
+    const QString rawTracksFrameDomain =
+        rawTracksArtifact.value(QStringLiteral("frame_domain")).toString(rawFramesFrameDomain);
+    continuityRoot[QStringLiteral("raw_tracks_frame_domain")] = rawTracksFrameDomain;
+    continuityRoot[QStringLiteral("raw_frames_frame_domain")] = rawFramesFrameDomain;
     continuityRoot[QStringLiteral("streams_frame_domain")] =
-        continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString();
+        rawTracksFrameDomain;
     if (!continuityRoot.contains(QStringLiteral("detector_mode"))) {
         continuityRoot[QStringLiteral("detector_mode")] = rawTracksArtifact.value(QStringLiteral("backend")).toString();
     }

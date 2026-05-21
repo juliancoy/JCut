@@ -1371,7 +1371,8 @@ bool SpeakersTab::selectedClipHasFaceStreamSidecars() const
     const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
     const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
     const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
-    return !clipFlow.value(QStringLiteral("continuity_facestreams")).toArray().isEmpty();
+    const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_facestreams")).toObject();
+    return jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
 }
 
 void SpeakersTab::onSpeakerViewFaceStreamClicked()
@@ -1858,6 +1859,9 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     const bool canEdit = mutableCut && !speakerId.isEmpty();
     const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     const bool canEditClipFraming = mutableCut && m_speakerDeps.updateClipById && selectedClip;
+    const bool hasPlayheadTrackSelection =
+        m_widgets.speakerPlayheadFaceStreamsList &&
+        !m_widgets.speakerPlayheadFaceStreamsList->selectedItems().isEmpty();
     if (m_widgets.speakerRefsChipLabel) {
         m_widgets.speakerRefsChipLabel->setText(QStringLiteral("Assigned Tracks: 0"));
     }
@@ -1898,7 +1902,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerGuideButton->setEnabled(true);
     }
     if (m_widgets.speakerPrecropFacesButton) {
-        m_widgets.speakerPrecropFacesButton->setEnabled(canEdit && !speakerId.isEmpty());
+        m_widgets.speakerPrecropFacesButton->setEnabled(canEdit && !speakerId.isEmpty() && hasPlayheadTrackSelection);
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setEnabled(canEdit);
@@ -1952,19 +1956,26 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
                 : QStringLiteral("Pick Ref 2 (Shift+Drag)"));
     }
 
-    const bool hasClipWideFaceStream =
+    const bool hasClipWideFramingBinding =
         selectedClip &&
         (!selectedClip->speakerFramingKeyframes.isEmpty() ||
          !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty());
+    const bool hasContinuityArtifact =
+        selectedClip && selectedClipHasFaceStreamSidecars();
+    const QJsonArray streams = selectedClip ? continuityStreamsForClip(*selectedClip) : QJsonArray{};
+    const bool hasContinuityTracks = !streams.isEmpty();
 
     if (!mutableCut) {
         m_widgets.speakerTrackingStatusLabel->setText(QString());
         return;
     }
     if (speakerId.isEmpty()) {
-        if (!hasClipWideFaceStream && m_transcriptSession.hasObjectDocument()) {
+        if (!hasContinuityArtifact && m_transcriptSession.hasObjectDocument()) {
             m_widgets.speakerTrackingStatusLabel->setText(
                 QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created."));
+        } else if (!hasContinuityTracks && m_transcriptSession.hasObjectDocument()) {
+            m_widgets.speakerTrackingStatusLabel->setText(
+                QStringLiteral("No continuity tracks are available for the selected clip."));
         } else {
             m_widgets.speakerTrackingStatusLabel->setText(QString());
         }
@@ -1982,7 +1993,6 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     const QJsonObject tracking = speakerFramingObject(profile);
     const bool trackingEnabled = transcriptTrackingEnabled(tracking);
     const bool hasPointstream = transcriptTrackingHasPointstream(tracking);
-    const QJsonArray streams = selectedClip ? continuityStreamsForClip(*selectedClip) : QJsonArray{};
     const int assignedFaceStreamCount =
         selectedClip ? resolvedAssignedTrackIdsForSpeaker(*selectedClip, streams, speakerId).size() : 0;
     if (m_widgets.speakerRefsChipLabel) {
@@ -1990,9 +2000,12 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             QStringLiteral("Assigned Tracks: %1").arg(assignedFaceStreamCount));
     }
     if (m_widgets.speakerPointstreamChipLabel) {
-        if (!hasClipWideFaceStream) {
+        if (!hasContinuityArtifact) {
             m_widgets.speakerPointstreamChipLabel->setText(
                 QStringLiteral("Continuity Tracks: MISSING (Clip)"));
+        } else if (!hasContinuityTracks) {
+            m_widgets.speakerPointstreamChipLabel->setText(
+                QStringLiteral("Continuity Tracks: Ready (0 tracks)"));
         } else {
             m_widgets.speakerPointstreamChipLabel->setText(
                 QStringLiteral("Continuity Tracks: Ready (Clip)"));
@@ -2003,7 +2016,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             trackingEnabled ? QStringLiteral("Speaker Tracking: ON")
                             : QStringLiteral("Speaker Tracking: OFF"));
         m_widgets.speakerTrackingChipButton->setChecked(trackingEnabled);
-        m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasClipWideFaceStream);
+        m_widgets.speakerTrackingChipButton->setEnabled(canEdit && hasContinuityArtifact);
     }
     if (selectedClip) {
         const bool hasRuntimeBinding = !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty();
@@ -2061,17 +2074,22 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE FACESTREAM (CONTINUITY)"));
     }
 
-    if (!hasClipWideFaceStream) {
+    if (!hasContinuityArtifact) {
         m_widgets.speakerTrackingStatusLabel->setText(
             QStringLiteral("[MISSING] All-speakers FaceStream artefact has not been created. "
                            "Run JCut DNN FaceStream Generator to create it."));
+        return;
+    }
+    if (!hasContinuityTracks) {
+        m_widgets.speakerTrackingStatusLabel->setText(
+            QStringLiteral("Continuity artifact exists, but no processed continuity tracks are available for this clip."));
         return;
     }
 
     m_widgets.speakerTrackingStatusLabel->setText(
         QStringLiteral("Assigned Tracks: %1 | Continuity Tracks: %2 | Speaker Tracking: %3 | Face Stabilize: %4")
             .arg(assignedFaceStreamCount)
-            .arg(QStringLiteral("ClipWide Ready"))
+            .arg(streams.size())
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
             .arg((selectedClip && selectedClip->speakerFramingEnabled) ? QStringLiteral("ON") : QStringLiteral("OFF")));
 }

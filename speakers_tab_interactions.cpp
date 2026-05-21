@@ -4,6 +4,7 @@
 #include "speaker_document_edit_ops.h"
 
 #include "decoder_context.h"
+#include "facestream_time_mapping.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
@@ -134,10 +135,132 @@ bool confirmAiProposals(QWidget* parent,
 }
 } // namespace
 
+void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, const QString& speakerId)
+{
+    if (!m_widgets.speakerPlayheadFaceStreamsList) {
+        return;
+    }
+
+    m_widgets.speakerPlayheadFaceStreamsList->clear();
+    const QJsonArray streams = continuityStreamsForClip(clip);
+    if (streams.isEmpty()) {
+        auto* item = new QListWidgetItem(QStringLiteral("No Continuity Tracks"));
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+        item->setSizeHint(QSize(140, 40));
+        m_widgets.speakerPlayheadFaceStreamsList->addItem(item);
+        return;
+    }
+
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+    const int64_t playheadTimelineFrame =
+        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
+    const int64_t playheadSourceFrame =
+        sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
+    const QHash<int, QString> assignedIdentityByTrackId = resolvedIdentityByTrackId(clip, streams);
+    const qreal sourceFps = resolvedSourceFps(clip);
+
+    for (const QJsonValue& value : streams) {
+        const QJsonObject streamObj = value.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+        if (trackId < 0 || keyframes.isEmpty()) {
+            continue;
+        }
+
+        int64_t minSourceFrame = std::numeric_limits<int64_t>::max();
+        int64_t maxSourceFrame = std::numeric_limits<int64_t>::min();
+        int64_t minKeyframeFrame = std::numeric_limits<int64_t>::max();
+        int64_t maxKeyframeFrame = std::numeric_limits<int64_t>::min();
+        QJsonObject bestKeyframe;
+        int64_t bestDistance = std::numeric_limits<int64_t>::max();
+        int64_t bestKeyframeSourceFrame = -1;
+        for (const QJsonValue& keyframeValue : keyframes) {
+            const QJsonObject keyframeObj = keyframeValue.toObject();
+            const int64_t streamFrame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            minKeyframeFrame = qMin(minKeyframeFrame, streamFrame);
+            maxKeyframeFrame = qMax(maxKeyframeFrame, streamFrame);
+        }
+        const FacestreamFrameDomain frameDomain =
+            inferFacestreamFrameDomain(clip, minKeyframeFrame, maxKeyframeFrame);
+        for (const QJsonValue& keyframeValue : keyframes) {
+            const QJsonObject keyframeObj = keyframeValue.toObject();
+            const int64_t streamFrame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            const int64_t sourceFrame =
+                mapFacestreamFrameToSourceFrame(clip, streamFrame, frameDomain, renderSyncMarkers);
+            minSourceFrame = qMin(minSourceFrame, sourceFrame);
+            maxSourceFrame = qMax(maxSourceFrame, sourceFrame);
+            const int64_t distance = std::llabs(sourceFrame - playheadSourceFrame);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestKeyframe = keyframeObj;
+                bestKeyframeSourceFrame = sourceFrame;
+            }
+        }
+
+        if (minSourceFrame > playheadSourceFrame || playheadSourceFrame > maxSourceFrame || bestKeyframe.isEmpty()) {
+            continue;
+        }
+
+        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId));
+        const QString assignedSpeakerId = assignedIdentityByTrackId.value(trackId).trimmed();
+        const QString assignedLabel =
+            assignedSpeakerId.isEmpty() ? QStringLiteral("Unassigned") : speakerDisplayLabel(assignedSpeakerId);
+        QJsonObject previewKeyframe;
+        previewKeyframe[QString(kTranscriptSpeakerTrackingFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, bestKeyframeSourceFrame));
+        previewKeyframe[QString(kTranscriptSpeakerLocationXKey)] =
+            qBound<qreal>(0.0, bestKeyframe.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0);
+        previewKeyframe[QString(kTranscriptSpeakerLocationYKey)] =
+            qBound<qreal>(0.0, bestKeyframe.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.5), 1.0);
+        previewKeyframe[QString(kTranscriptSpeakerTrackingBoxSizeKey)] =
+            qBound<qreal>(0.01, bestKeyframe.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(0.2), 1.0);
+        QListWidgetItem* item = new QListWidgetItem(
+            QIcon(faceStreamPreviewAvatarWithDecoder(
+                clip,
+                speakerId,
+                previewKeyframe,
+                72,
+                nullptr,
+                nullptr,
+                sourceFps)),
+            QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
+        item->setData(Qt::UserRole, trackId);
+        item->setData(Qt::UserRole + 1, streamId);
+        item->setData(Qt::UserRole + 2, QVariant::fromValue<qlonglong>(bestKeyframeSourceFrame));
+        item->setData(
+            Qt::UserRole + 3,
+            qBound<qreal>(0.0, previewKeyframe.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0));
+        item->setData(
+            Qt::UserRole + 4,
+            qBound<qreal>(0.0, previewKeyframe.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.5), 1.0));
+        item->setData(
+            Qt::UserRole + 5,
+            qBound<qreal>(0.01, previewKeyframe.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(0.2), 1.0));
+        item->setToolTip(
+            QStringLiteral("Track %1 | Frame %2 | Current assignment: %3")
+                .arg(trackId)
+                .arg(bestKeyframeSourceFrame)
+                .arg(assignedLabel));
+        item->setSizeHint(QSize(100, 96));
+        if (assignedSpeakerId == speakerId) {
+            item->setSelected(true);
+        }
+        m_widgets.speakerPlayheadFaceStreamsList->addItem(item);
+    }
+
+    if (m_widgets.speakerPlayheadFaceStreamsList->count() == 0) {
+        auto* item = new QListWidgetItem(QStringLiteral("No Tracks At Playhead"));
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+        item->setSizeHint(QSize(150, 40));
+        m_widgets.speakerPlayheadFaceStreamsList->addItem(item);
+    }
+}
+
 void SpeakersTab::updateSelectedSpeakerPanel()
 {
     if (!m_widgets.selectedSpeakerIdLabel &&
         !m_widgets.selectedSpeakerFaceStreamsList &&
+        !m_widgets.speakerPlayheadFaceStreamsList &&
         !m_widgets.selectedSpeakerRef1ImageLabel &&
         !m_widgets.selectedSpeakerRef2ImageLabel) {
         return;
@@ -156,6 +279,9 @@ void SpeakersTab::updateSelectedSpeakerPanel()
         }
         if (m_widgets.selectedSpeakerFaceStreamsList) {
             m_widgets.selectedSpeakerFaceStreamsList->clear();
+        }
+        if (m_widgets.speakerPlayheadFaceStreamsList) {
+            m_widgets.speakerPlayheadFaceStreamsList->clear();
         }
         if (m_widgets.selectedSpeakerRef1ImageLabel) {
             m_widgets.selectedSpeakerRef1ImageLabel->clear();
@@ -215,6 +341,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             m_widgets.selectedSpeakerFaceStreamsList->addItem(item);
         }
     }
+    refreshPlayheadTrackCandidatesList(*clip, speakerId);
     if (m_widgets.selectedSpeakerRef1ImageLabel) {
         m_widgets.selectedSpeakerRef1ImageLabel->clear();
         m_widgets.selectedSpeakerRef1ImageLabel->hide();
@@ -403,16 +530,22 @@ QString SpeakersTab::currentSpeakerSentenceAtCurrentFrame(const QString& speaker
 void SpeakersTab::syncCurrentSpeakerSentenceToPlayhead()
 {
     QLabel* const sentenceLabel = m_widgets.speakerCurrentSentenceLabel;
-    if (!sentenceLabel || m_updating) {
+    if (m_updating) {
         return;
     }
 
     const QString speakerId = selectedSpeakerId();
-    const QString nextText = speakerId.isEmpty()
-        ? QStringLiteral("Select a speaker to view sentence context.")
-        : currentSpeakerSentenceAtCurrentFrame(speakerId);
-    if (sentenceLabel->text() != nextText) {
-        sentenceLabel->setText(nextText);
+    if (sentenceLabel) {
+        const QString nextText = speakerId.isEmpty()
+            ? QStringLiteral("Select a speaker to view sentence context.")
+            : currentSpeakerSentenceAtCurrentFrame(speakerId);
+        if (sentenceLabel->text() != nextText) {
+            sentenceLabel->setText(nextText);
+        }
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (clip && !speakerId.isEmpty() && m_transcriptSession.hasObjectDocument()) {
+        refreshPlayheadTrackCandidatesList(*clip, speakerId);
     }
 }
 

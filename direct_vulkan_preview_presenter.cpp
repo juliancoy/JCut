@@ -1,6 +1,7 @@
 #include "direct_vulkan_preview_presenter.h"
 #include "direct_vulkan_preview_backend.h"
 #include "direct_vulkan_preview_audio.h"
+#include "preview_view_transform.h"
 
 #include <QByteArray>
 #include <QDebug>
@@ -9,6 +10,7 @@
 #include <QLabel>
 #include <QJsonArray>
 #include <QStackedLayout>
+#include <QTransform>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QVersionNumber>
@@ -451,6 +453,105 @@ void DirectVulkanPreviewPresenter::updateAudioOverlay()
 
 QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
 {
+    auto rectToJson = [](const QRectF& rect) {
+        return QJsonObject{
+            {QStringLiteral("x"), rect.x()},
+            {QStringLiteral("y"), rect.y()},
+            {QStringLiteral("width"), rect.width()},
+            {QStringLiteral("height"), rect.height()}
+        };
+    };
+    auto findSourceSize = [this](const QString& clipId) {
+        if (!m_state) {
+            return QSize();
+        }
+        for (const TimelineClip& clip : m_state->clips) {
+            if (clip.id == clipId) {
+                return clip.sourceFrameSize;
+            }
+        }
+        return QSize();
+    };
+    auto transformWithTransientOverride = [this](const QString& clipId,
+                                                 const TimelineClip::TransformKeyframe& fallback) {
+        if (m_state &&
+            m_state->transient.transformOverrideActive &&
+            m_state->transient.transformOverrideClipId == clipId) {
+            return m_state->transient.transformOverride;
+        }
+        return fallback;
+    };
+
+    struct OverlayGeometry {
+        QTransform clipToScreen;
+        QRectF localRect;
+    };
+
+    const qreal devicePixelRatio = m_windowContainer
+        ? qMax<qreal>(0.0001, m_windowContainer->devicePixelRatioF())
+        : 1.0;
+    const QRectF deviceSurfaceRect = m_windowContainer
+        ? PreviewViewTransform::rectForWidget(m_windowContainer, PreviewSurfaceCoordinateSpace::DeviceSurface)
+        : QRectF();
+    const QRectF logicalSurfaceRect = m_windowContainer
+        ? PreviewViewTransform::rectForWidget(m_windowContainer, PreviewSurfaceCoordinateSpace::LogicalWidget)
+        : QRectF();
+    QHash<QString, OverlayGeometry> activeClipGeometry;
+    if (m_state && !deviceSurfaceRect.isEmpty()) {
+        const PreviewViewTransform viewTransform(
+            deviceSurfaceRect,
+            m_state->outputSize,
+            36.0,
+            m_state->previewZoom,
+            m_state->previewPanOffset);
+        const QPointF previewScale = viewTransform.outputScale();
+        for (const VulkanPreviewClipFrameStatus& status : m_state->vulkanFrameStatuses) {
+            if (!status.active || status.drawSuppressed) {
+                continue;
+            }
+            const QRectF fitted =
+                viewTransform.fittedClipRect(findSourceSize(status.clipId), status.frameSize);
+            const TimelineClip::TransformKeyframe transform =
+                transformWithTransientOverride(status.clipId, status.transform);
+            PreviewClipGeometry geometry = PreviewViewTransform::clipGeometry(
+                fitted,
+                previewScale,
+                QPointF(transform.translationX, transform.translationY),
+                transform.rotation,
+                QPointF(transform.scaleX, transform.scaleY));
+            if (status.sampledFrameNeedsYFlip) {
+                geometry.clipToScreen.scale(1.0, -1.0);
+                geometry.bounds = geometry.clipToScreen.mapRect(geometry.localRect);
+            }
+            activeClipGeometry.insert(status.clipId, OverlayGeometry{geometry.clipToScreen, geometry.localRect});
+        }
+    }
+
+    auto overlayToJson = [&](const VulkanPreviewFacestreamOverlay& overlay) {
+        QJsonObject object{
+            {QStringLiteral("clip_id"), overlay.clipId},
+            {QStringLiteral("stream_id"), overlay.streamId},
+            {QStringLiteral("source"), overlay.source},
+            {QStringLiteral("track_id"), overlay.trackId},
+            {QStringLiteral("source_frame"), static_cast<double>(overlay.sourceFrame)},
+            {QStringLiteral("confidence"), overlay.confidence},
+            {QStringLiteral("box_norm"), rectToJson(overlay.boxNorm)}
+        };
+        const auto geometryIt = activeClipGeometry.constFind(overlay.clipId);
+        if (geometryIt != activeClipGeometry.constEnd() && overlay.boxNorm.isValid()) {
+            const QRectF localBox =
+                PreviewViewTransform::localRectForNormalizedRect(overlay.boxNorm, geometryIt->localRect);
+            const QRectF deviceBox = geometryIt->clipToScreen.mapRect(localBox);
+            const QRectF logicalBox(deviceBox.x() / devicePixelRatio,
+                                    deviceBox.y() / devicePixelRatio,
+                                    deviceBox.width() / devicePixelRatio,
+                                    deviceBox.height() / devicePixelRatio);
+            object.insert(QStringLiteral("box_device"), rectToJson(deviceBox));
+            object.insert(QStringLiteral("box_logical"), rectToJson(logicalBox));
+        }
+        return object;
+    };
+
     int activeStatuses = 0;
     int readyStatuses = 0;
     int exactStatuses = 0;
@@ -461,6 +562,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     bool correctionsApplied = false;
     bool curveLutApplied = false;
     QJsonArray statusDetails;
+    QJsonArray facestreamOverlays;
+    QJsonArray rawDetectionOverlays;
     const bool texturePipelineReady = m_active && m_window != nullptr;
     const bool windowValid = directVulkanPreviewWindowIsValid(m_window);
     if (m_state) {
@@ -521,6 +624,13 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                 {QStringLiteral("missing_reason"), status.missingReason}
             });
         }
+
+        for (const VulkanPreviewFacestreamOverlay& overlay : m_state->facestreamOverlays) {
+            facestreamOverlays.append(overlayToJson(overlay));
+        }
+        for (const VulkanPreviewFacestreamOverlay& overlay : m_state->rawDetectionOverlays) {
+            rawDetectionOverlays.append(overlayToJson(overlay));
+        }
     }
     const bool cpuUploadPath = false;
     return QJsonObject{
@@ -528,6 +638,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
         {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
         {QStringLiteral("visible_path"), directVulkanPreviewVisiblePathLabel()},
+        {QStringLiteral("preview_cursor"), directVulkanPreviewWindowCursorShape(m_window)},
         {QStringLiteral("optimal_present_requested"), directVulkanPreviewOptimalPresentEnabled()},
         {QStringLiteral("readback_mirror_enabled"), false},
         {QStringLiteral("swapchain_readback_enabled"), false},
@@ -542,9 +653,16 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("materialized_frame_path"), cpuUploadPath},
         {QStringLiteral("current_frame"), m_state ? static_cast<double>(m_state->currentFrame) : 0.0},
         {QStringLiteral("clip_count"), m_state ? m_state->clipCount : 0},
+        {QStringLiteral("device_pixel_ratio"), devicePixelRatio},
+        {QStringLiteral("preview_surface_rect_device"), rectToJson(deviceSurfaceRect)},
+        {QStringLiteral("preview_surface_rect_logical"), rectToJson(logicalSurfaceRect)},
         {QStringLiteral("preview_zoom"), m_state ? m_state->previewZoom : 1.0},
         {QStringLiteral("preview_pan_x"), m_state ? m_state->previewPanOffset.x() : 0.0},
         {QStringLiteral("preview_pan_y"), m_state ? m_state->previewPanOffset.y() : 0.0},
+        {QStringLiteral("face_stream_assignment_interaction_enabled"),
+         m_state ? m_state->faceStreamAssignmentInteractionEnabled : false},
+        {QStringLiteral("hovered_facestream_track_id"),
+         m_state ? m_state->transient.hoveredFaceStreamTrackId : -1},
         {QStringLiteral("direct_preview_frame_image"), false},
         {QStringLiteral("direct_preview_frame_size"), QString()},
         {QStringLiteral("pipeline_thumbnail_readback_pending"), false},
@@ -569,7 +687,9 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
         {QStringLiteral("decode_status_details"), statusDetails},
         {QStringLiteral("facestream_overlay_boxes"), m_state ? m_state->facestreamOverlays.size() : 0},
+        {QStringLiteral("facestream_overlays"), facestreamOverlays},
         {QStringLiteral("raw_detection_overlay_boxes"), m_state ? m_state->rawDetectionOverlays.size() : 0},
+        {QStringLiteral("raw_detection_overlays"), rawDetectionOverlays},
         {QStringLiteral("timeline_texture_composition"), hasTimelineFrameGeometry && readyStatuses > 0},
         {QStringLiteral("timeline_texture_draw_pipeline"), texturePipelineReady},
         {QStringLiteral("vulkan_matches_opengl_grading_scalars"), true},

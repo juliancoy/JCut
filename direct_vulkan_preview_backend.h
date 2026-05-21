@@ -54,3 +54,4 @@ void directVulkanPreviewWindowRaise(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowHide(DirectVulkanPreviewWindow* window);
 void directVulkanPreviewWindowSetTitle(DirectVulkanPreviewWindow* window, const QString& title);
 bool directVulkanPreviewWindowIsVisible(DirectVulkanPreviewWindow* window);
+QString directVulkanPreviewWindowCursorShape(DirectVulkanPreviewWindow* window);

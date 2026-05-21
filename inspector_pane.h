@@ -99,6 +99,7 @@ public:
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QListWidget *selectedSpeakerFaceStreamsList() const { return m_selectedSpeakerFaceStreamsList; }
+    QListWidget *speakerPlayheadFaceStreamsList() const { return m_speakerPlayheadFaceStreamsList; }
     QLabel *selectedSpeakerRef1ImageLabel() const { return m_selectedSpeakerRef1ImageLabel; }
     QLabel *selectedSpeakerRef2ImageLabel() const { return m_selectedSpeakerRef2ImageLabel; }
     QPushButton *selectedSpeakerPreviousSentenceButton() const { return m_selectedSpeakerPreviousSentenceButton; }
@@ -616,6 +617,7 @@ private:
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QListWidget *m_selectedSpeakerFaceStreamsList = nullptr;
+    QListWidget *m_speakerPlayheadFaceStreamsList = nullptr;
     QLabel *m_selectedSpeakerRef1ImageLabel = nullptr;
     QLabel *m_selectedSpeakerRef2ImageLabel = nullptr;
     QPushButton *m_selectedSpeakerPreviousSentenceButton = nullptr;

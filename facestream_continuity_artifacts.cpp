@@ -11,6 +11,56 @@
 namespace jcut::facestream {
 namespace {
 
+QString resolvedRawTrackFrameDomain(const QJsonObject& continuityRoot)
+{
+    const QString rawTracksFrameDomain =
+        continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
+    const QString rawFramesFrameDomain =
+        continuityRoot.value(QStringLiteral("raw_frames_frame_domain")).toString().trimmed();
+    if (rawTracksFrameDomain.isEmpty()) {
+        return rawFramesFrameDomain;
+    }
+    if (rawTracksFrameDomain == facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute) &&
+        !rawFramesFrameDomain.isEmpty() &&
+        rawFramesFrameDomain != rawTracksFrameDomain) {
+        const QJsonArray rawTracks = continuityRoot.value(QStringLiteral("raw_tracks")).toArray();
+        const QJsonArray rawFrames = continuityRoot.value(QStringLiteral("raw_frames")).toArray();
+        auto frameRangeForTrackDetections = [](const QJsonArray& tracks) {
+            qint64 minFrame = std::numeric_limits<qint64>::max();
+            qint64 maxFrame = std::numeric_limits<qint64>::min();
+            for (const QJsonValue& trackValue : tracks) {
+                for (const QJsonValue& detValue : trackValue.toObject().value(QStringLiteral("detections")).toArray()) {
+                    const qint64 frame = detValue.toObject().value(QStringLiteral("frame")).toVariant().toLongLong();
+                    minFrame = qMin(minFrame, frame);
+                    maxFrame = qMax(maxFrame, frame);
+                }
+            }
+            return qMakePair(minFrame, maxFrame);
+        };
+        auto frameRangeForRawFrames = [](const QJsonArray& frames) {
+            qint64 minFrame = std::numeric_limits<qint64>::max();
+            qint64 maxFrame = std::numeric_limits<qint64>::min();
+            for (const QJsonValue& frameValue : frames) {
+                const qint64 frame = frameValue.toObject().value(QStringLiteral("frame")).toVariant().toLongLong();
+                minFrame = qMin(minFrame, frame);
+                maxFrame = qMax(maxFrame, frame);
+            }
+            return qMakePair(minFrame, maxFrame);
+        };
+        const auto trackRange = frameRangeForTrackDetections(rawTracks);
+        const auto rawFrameRange = frameRangeForRawFrames(rawFrames);
+        if (trackRange.first != std::numeric_limits<qint64>::max() &&
+            rawFrameRange.first != std::numeric_limits<qint64>::max()) {
+            const qint64 minDelta = std::llabs(trackRange.first - rawFrameRange.first);
+            const qint64 maxDelta = std::llabs(trackRange.second - rawFrameRange.second);
+            if (minDelta <= 2 && maxDelta <= 2) {
+                return rawFramesFrameDomain;
+            }
+        }
+    }
+    return rawTracksFrameDomain;
+}
+
 QJsonArray deriveContinuityStreamsFromRawRoot(const QJsonObject& continuityRoot,
                                               const QJsonObject& transcriptRoot)
 {
@@ -27,7 +77,7 @@ QJsonArray deriveContinuityStreamsFromRawRoot(const QJsonObject& continuityRoot,
         transcriptRoot,
         detectorMode,
         onlyDialogue,
-        continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed());
+        resolvedRawTrackFrameDomain(continuityRoot));
 }
 
 } // namespace
@@ -214,8 +264,7 @@ QJsonObject buildProcessedContinuityRoot(const QString& clipId,
     if (!streamsFrameDomain.isEmpty()) {
         processedRoot[QStringLiteral("streams_frame_domain")] = streamsFrameDomain;
     } else {
-        const QString rawTracksFrameDomain =
-            rawContinuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
+        const QString rawTracksFrameDomain = resolvedRawTrackFrameDomain(rawContinuityRoot);
         if (!rawTracksFrameDomain.isEmpty()) {
             processedRoot[QStringLiteral("streams_frame_domain")] = rawTracksFrameDomain;
         }

@@ -10,6 +10,7 @@
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QListWidget>
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QTableWidgetItem>
@@ -238,10 +239,21 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerPrecropFacesButton) {
         m_widgets.speakerPrecropFacesButton->setToolTip(
-            QStringLiteral("Show continuity tracks at the current playhead and add the selected tracks to the current speaker."));
+            QStringLiteral("Assign the selected continuity tracks from the playhead list to the current speaker."));
         connect(m_widgets.speakerPrecropFacesButton, &QPushButton::clicked, this, [this]() {
-            // Keep REST/UI click handlers from blocking while the add-tracks dialog prepares.
+            // Keep REST/UI click handlers from blocking while the inline add-tracks action runs.
             QTimer::singleShot(0, this, &SpeakersTab::onSpeakerPrecropFacesClicked);
+        });
+    }
+    if (m_widgets.speakerPlayheadFaceStreamsList) {
+        connect(m_widgets.speakerPlayheadFaceStreamsList, &QListWidget::itemSelectionChanged, this, [this]() {
+            const bool hasSpeaker = !selectedSpeakerId().trimmed().isEmpty();
+            const bool hasSelection =
+                m_widgets.speakerPlayheadFaceStreamsList &&
+                !m_widgets.speakerPlayheadFaceStreamsList->selectedItems().isEmpty();
+            if (m_widgets.speakerPrecropFacesButton) {
+                m_widgets.speakerPrecropFacesButton->setEnabled(activeCutMutable() && hasSpeaker && hasSelection);
+            }
         });
     }
     if (m_widgets.speakerAiFindNamesButton) {

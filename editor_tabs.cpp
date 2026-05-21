@@ -446,6 +446,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerSectionsTable(),
             m_inspectorPane->selectedSpeakerIdLabel(),
             m_inspectorPane->selectedSpeakerFaceStreamsList(),
+            m_inspectorPane->speakerPlayheadFaceStreamsList(),
             m_inspectorPane->selectedSpeakerRef1ImageLabel(),
             m_inspectorPane->selectedSpeakerRef2ImageLabel(),
             m_inspectorPane->selectedSpeakerPreviousSentenceButton(),

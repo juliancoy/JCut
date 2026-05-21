@@ -42,6 +42,7 @@ public:
         QTableWidget* speakerSectionsTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
         QListWidget* selectedSpeakerFaceStreamsList = nullptr;
+        QListWidget* speakerPlayheadFaceStreamsList = nullptr;
         QLabel* selectedSpeakerRef1ImageLabel = nullptr;
         QLabel* selectedSpeakerRef2ImageLabel = nullptr;
         QPushButton* selectedSpeakerPreviousSentenceButton = nullptr;
@@ -166,6 +167,7 @@ private:
                                     const QString& preferredSpeakerId);
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId);
     void requestRefreshFaceStreamPathsPanel();
+    void refreshPlayheadTrackCandidatesList(const TimelineClip& clip, const QString& speakerId);
     enum class SentenceNavAction {
         Previous,
         Next,

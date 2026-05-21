@@ -77,14 +77,11 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
 {
     QVector<FacestreamTrack> tracks;
     const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
-    FacestreamFrameDomain explicitFrameDomain = FacestreamFrameDomain::SourceRelative;
-    const bool hasExplicitFrameDomain = continuityPayloadFrameDomain(
+    FacestreamFrameDomain fallbackFrameDomain = FacestreamFrameDomain::SourceRelative;
+    const bool hasFallbackFrameDomain = continuityPayloadFrameDomain(
         continuityRoot,
         QStringLiteral("streams_frame_domain"),
-        &explicitFrameDomain);
-    if (!hasExplicitFrameDomain) {
-        return tracks;
-    }
+        &fallbackFrameDomain);
     const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
     tracks.reserve(streams.size());
     for (const QJsonValue& streamValue : streams) {
@@ -128,7 +125,14 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
                 track.keyframes.push_back(keyframe);
             }
         }
-        track.frameDomain = explicitFrameDomain;
+        if (!parseFacestreamFrameDomainString(
+                streamObj.value(QStringLiteral("frame_domain")).toString().trimmed(),
+                &track.frameDomain)) {
+            if (!hasFallbackFrameDomain) {
+                continue;
+            }
+            track.frameDomain = fallbackFrameDomain;
+        }
         std::sort(track.keyframes.begin(), track.keyframes.end(), [](const FacestreamKeyframe& a, const FacestreamKeyframe& b) {
             return a.frame < b.frame;
         });
@@ -310,7 +314,9 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
         }
         const QVector<FacestreamTrack> tracks = loadFacestreamTracksForClip(clip);
-        if (m_showRawDetections) {
+        const bool showRawDetectionsForPreview =
+            m_showRawDetections && !m_interaction.faceStreamAssignmentInteractionEnabled;
+        if (showRawDetectionsForPreview) {
             const QVector<VulkanPreviewFacestreamOverlay> clipDetections =
                 rawDetectionsForClipFrame(clip, localFrame);
             for (const VulkanPreviewFacestreamOverlay& detection : clipDetections) {
