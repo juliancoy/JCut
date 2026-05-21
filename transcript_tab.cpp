@@ -3,6 +3,7 @@
 #include "clip_serialization.h"
 #include "editor_shared.h"
 #include "editor_tab_edit_effects.h"
+#include "transcript_document_edit_service.h"
 
 #include <QApplication>
 #include <QAbstractItemView>
@@ -149,7 +150,15 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         if (result.transcriptPath != m_loadedTranscriptPath || result.clipFilePath != m_loadedClipFilePath) {
             return;
         }
-        m_loadedTranscriptDoc = result.document;
+        assignLoadedTranscriptState(
+            LoadedTranscriptDocumentStateRef{
+                .transcriptPath = &m_loadedTranscriptPath,
+                .clipFilePath = &m_loadedClipFilePath,
+                .document = &m_loadedTranscriptDoc,
+            },
+            result.clipFilePath,
+            result.transcriptPath,
+            result.document);
         const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
         if (!clip || clip->filePath != result.clipFilePath) {
             return;
@@ -160,17 +169,13 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
 
 bool TranscriptTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
 {
-    if (!m_loadedTranscriptDoc.isObject() || !mutator) {
-        return false;
-    }
-
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    if (!mutator(root)) {
-        return false;
-    }
-
-    m_loadedTranscriptDoc.setObject(root);
-    return true;
+    return mutateLoadedTranscriptRoot(
+        LoadedTranscriptDocumentStateRef{
+            .transcriptPath = &m_loadedTranscriptPath,
+            .clipFilePath = &m_loadedClipFilePath,
+            .document = &m_loadedTranscriptDoc,
+        },
+        mutator);
 }
 
 bool TranscriptTab::saveLoadedTranscriptDocument()
@@ -465,9 +470,12 @@ void TranscriptTab::refresh()
 
     if (!clip || !clipSupportsTranscript(*clip)) {
         clearActiveTranscriptPathForClipFile(previousClipFilePath);
-        m_loadedTranscriptPath.clear();
-        m_loadedClipFilePath.clear();
-        m_loadedTranscriptDoc = QJsonDocument();
+        clearLoadedTranscriptState(
+            LoadedTranscriptDocumentStateRef{
+                .transcriptPath = &m_loadedTranscriptPath,
+                .clipFilePath = &m_loadedClipFilePath,
+                .document = &m_loadedTranscriptDoc,
+            });
         m_transcriptDocumentSegments.clear();
         m_transcriptWordAddressById.clear();
         m_renderOrderedWordIds.clear();

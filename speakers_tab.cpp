@@ -7,6 +7,7 @@
 #include "facestream_artifact_utils.h"
 #include "decoder_context.h"
 #include "speaker_flow_debug.h"
+#include "transcript_document_edit_service.h"
 #include "transcript_engine.h"
 
 #include <QBuffer>
@@ -80,7 +81,15 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
         if (result.transcriptPath != m_loadedTranscriptPath || result.clipFilePath != m_loadedClipFilePath) {
             return;
         }
-        m_loadedTranscriptDoc = result.document;
+        assignLoadedTranscriptState(
+            LoadedTranscriptDocumentStateRef{
+                .transcriptPath = &m_loadedTranscriptPath,
+                .clipFilePath = &m_loadedClipFilePath,
+                .document = &m_loadedTranscriptDoc,
+            },
+            result.clipFilePath,
+            result.transcriptPath,
+            result.document);
         const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
         if (!clip || clip->filePath != result.clipFilePath) {
             return;
@@ -91,16 +100,15 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
 
 bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
 {
-    if (!m_loadedTranscriptDoc.isObject() || !mutator) {
+    if (!mutateLoadedTranscriptRoot(
+            LoadedTranscriptDocumentStateRef{
+                .transcriptPath = &m_loadedTranscriptPath,
+                .clipFilePath = &m_loadedClipFilePath,
+                .document = &m_loadedTranscriptDoc,
+            },
+            mutator)) {
         return false;
     }
-
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    if (!mutator(root)) {
-        return false;
-    }
-
-    m_loadedTranscriptDoc.setObject(root);
     clearFaceStreamDerivedCaches();
     return true;
 }
@@ -613,9 +621,12 @@ void SpeakersTab::refresh()
 
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || !clipSupportsTranscript(*clip)) {
-        m_loadedTranscriptPath.clear();
-        m_loadedClipFilePath.clear();
-        m_loadedTranscriptDoc = QJsonDocument();
+        clearLoadedTranscriptState(
+            LoadedTranscriptDocumentStateRef{
+                .transcriptPath = &m_loadedTranscriptPath,
+                .clipFilePath = &m_loadedClipFilePath,
+                .document = &m_loadedTranscriptDoc,
+            });
         m_speakersTableRefreshSignature.clear();
         if (m_widgets.speakersInspectorClipLabel) {
             m_widgets.speakersInspectorClipLabel->setText(QStringLiteral("No transcript cut selected"));
@@ -643,9 +654,15 @@ void SpeakersTab::refresh()
         m_loadedTranscriptPath == transcriptPath &&
         m_loadedClipFilePath == clip->filePath;
     if (!canReuseLoadedDoc) {
-        m_loadedTranscriptPath = transcriptPath;
-        m_loadedClipFilePath = clip->filePath;
-        m_loadedTranscriptDoc = QJsonDocument();
+        assignLoadedTranscriptState(
+            LoadedTranscriptDocumentStateRef{
+                .transcriptPath = &m_loadedTranscriptPath,
+                .clipFilePath = &m_loadedClipFilePath,
+                .document = &m_loadedTranscriptDoc,
+            },
+            clip->filePath,
+            transcriptPath,
+            QJsonDocument());
         startTranscriptLoadRequest(clip->filePath, transcriptPath, preferredSpeakerId);
         return;
     }
