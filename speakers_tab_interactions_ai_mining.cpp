@@ -90,19 +90,9 @@ bool confirmAiProposals(QWidget* parent,
     QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     return dialog.exec() == QDialog::Accepted;
 }
-} // namespace
 
-bool SpeakersTab::runAiFindSpeakerNames()
+QHash<QString, QStringList> transcriptWordsBySpeaker(const QJsonArray& segments)
 {
-    if (!ensureAiActionReady(QStringLiteral("Mine Transcript (AI)"))) {
-        return false;
-    }
-    if (!m_loadedTranscriptDoc.isObject() || m_loadedTranscriptPath.isEmpty()) {
-        return false;
-    }
-    QJsonObject root = m_loadedTranscriptDoc.object();
-    QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
     QHash<QString, QStringList> wordsBySpeaker;
     for (const QJsonValue& segValue : segments) {
         const QJsonObject segObj = segValue.toObject();
@@ -123,6 +113,36 @@ bool SpeakersTab::runAiFindSpeakerNames()
             }
         }
     }
+    return wordsBySpeaker;
+}
+
+QString replacementSpeakerForCleanup(const QString& segmentSpeaker,
+                                     const QSet<QString>& spuriousSpeakers,
+                                     const QString& dominantSpeaker,
+                                     const QString& currentSpeaker) {
+    const QString replacement =
+        !segmentSpeaker.isEmpty() && !spuriousSpeakers.contains(segmentSpeaker)
+            ? segmentSpeaker
+            : dominantSpeaker;
+    if (replacement.isEmpty() || replacement == currentSpeaker) {
+        return QString();
+    }
+    return replacement;
+}
+} // namespace
+
+bool SpeakersTab::runAiFindSpeakerNames()
+{
+    if (!ensureAiActionReady(QStringLiteral("Mine Transcript (AI)"))) {
+        return false;
+    }
+    if (!m_loadedTranscriptDoc.isObject() || m_loadedTranscriptPath.isEmpty()) {
+        return false;
+    }
+    QJsonObject root = m_loadedTranscriptDoc.object();
+    QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
+    const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
+    const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
     const QRegularExpression nameRe(QStringLiteral("\\b([A-Z][a-z]{1,20}\\s+[A-Z][a-z]{1,20})\\b"));
     QVector<AiProposalRow> proposals;
     for (auto it = wordsBySpeaker.constBegin(); it != wordsBySpeaker.constEnd(); ++it) {
@@ -202,10 +222,11 @@ bool SpeakersTab::runAiFindSpeakerNames()
         profiles[proposal.targetId] = profile;
     }
     root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+    const bool updated = updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
             loadedRoot = root;
             return true;
-        }) || !saveLoadedTranscriptDocument()) {
+        });
+    if (!updated || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Speaker Names"),
                              QStringLiteral("Failed to save transcript after AI speaker-name pass."));
@@ -240,26 +261,7 @@ bool SpeakersTab::runAiFindOrganizations()
     QJsonObject root = m_loadedTranscriptDoc.object();
     QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonArray segments = root.value(QStringLiteral("segments")).toArray();
-    QHash<QString, QStringList> wordsBySpeaker;
-    for (const QJsonValue& segValue : segments) {
-        const QJsonObject segObj = segValue.toObject();
-        const QString segmentSpeaker = segObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-        const QJsonArray words = segObj.value(QStringLiteral("words")).toArray();
-        for (const QJsonValue& wordValue : words) {
-            const QJsonObject wordObj = wordValue.toObject();
-            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
-                continue;
-            }
-            QString speaker = wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
-            if (speaker.isEmpty()) {
-                speaker = segmentSpeaker;
-            }
-            const QString token = wordObj.value(QStringLiteral("word")).toString().trimmed();
-            if (!speaker.isEmpty() && !token.isEmpty()) {
-                wordsBySpeaker[speaker].push_back(token);
-            }
-        }
-    }
+    const QHash<QString, QStringList> wordsBySpeaker = transcriptWordsBySpeaker(segments);
     const QRegularExpression orgRe(QStringLiteral(
         "\\b([A-Z][A-Za-z&]{2,}(?:\\s+[A-Z][A-Za-z&]{2,}){0,4}\\s+"
         "(Council|Committee|Party|University|College|County|City|Campaign|Association))\\b"));
@@ -323,10 +325,11 @@ bool SpeakersTab::runAiFindOrganizations()
         profiles[proposal.targetId] = profile;
     }
     root[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+    const bool updated = updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
             loadedRoot = root;
             return true;
-        }) || !saveLoadedTranscriptDocument()) {
+        });
+    if (!updated || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Find Organizations"),
                              QStringLiteral("Failed to save transcript after organization pass."));
@@ -414,11 +417,9 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
             if (!spuriousSpeakers.contains(currentSpeaker)) {
                 continue;
             }
-            const QString replacement =
-                !segmentSpeaker.isEmpty() && !spuriousSpeakers.contains(segmentSpeaker)
-                    ? segmentSpeaker
-                    : dominantSpeaker;
-            if (replacement.isEmpty() || replacement == currentSpeaker) {
+            const QString replacement = replacementSpeakerForCleanup(
+                segmentSpeaker, spuriousSpeakers, dominantSpeaker, currentSpeaker);
+            if (replacement.isEmpty()) {
                 continue;
             }
             const qreal confidence = qBound<qreal>(
@@ -466,11 +467,9 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
             if (!spuriousSpeakers.contains(currentSpeaker)) {
                 continue;
             }
-            const QString replacement =
-                !segmentSpeaker.isEmpty() && !spuriousSpeakers.contains(segmentSpeaker)
-                    ? segmentSpeaker
-                    : dominantSpeaker;
-            if (replacement.isEmpty() || replacement == currentSpeaker) {
+            const QString replacement = replacementSpeakerForCleanup(
+                segmentSpeaker, spuriousSpeakers, dominantSpeaker, currentSpeaker);
+            if (replacement.isEmpty()) {
                 continue;
             }
             wordObj[QString(kTranscriptWordSpeakerKey)] = replacement;
@@ -482,10 +481,11 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
     }
 
     root[QStringLiteral("segments")] = segments;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
+    const bool updated = updateLoadedTranscriptDocument([&](QJsonObject& loadedRoot) {
             loadedRoot = root;
             return true;
-        }) || !saveLoadedTranscriptDocument()) {
+        });
+    if (!updated || !saveLoadedTranscriptDocument()) {
         QMessageBox::warning(nullptr,
                              QStringLiteral("Clean Assignments"),
                              QStringLiteral("Failed to save transcript after assignment cleanup."));

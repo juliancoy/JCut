@@ -1,4 +1,4 @@
-#include "editor_shared.h"
+#include "editor_shared_transcript.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -209,6 +209,76 @@ QVector<TranscriptSection> buildTranscriptSectionsFromDocument(const QJsonDocume
         sections.push_back(current);
     }
     return sections;
+}
+
+QHash<QString, QVector<TranscriptSentenceRun>> buildSpeakerSentenceRunsFromDocument(
+    const QJsonDocument& transcriptDoc)
+{
+    QHash<QString, QVector<TranscriptSentenceRun>> sentenceRunsBySpeaker;
+    const QJsonArray segments = transcriptDoc.object().value(QStringLiteral("segments")).toArray();
+    for (const QJsonValue& segValue : segments) {
+        const QJsonObject segmentObj = segValue.toObject();
+        const QString segmentSpeaker = segmentObj.value(QStringLiteral("speaker")).toString().trimmed();
+        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
+
+        bool runActive = false;
+        QString runSpeakerId;
+        TranscriptSentenceRun run;
+        QStringList runWords;
+        auto flushRun = [&sentenceRunsBySpeaker, &runActive, &runSpeakerId, &run, &runWords]() {
+            if (!runActive || runSpeakerId.isEmpty() || runWords.isEmpty()) {
+                runActive = false;
+                runSpeakerId.clear();
+                runWords.clear();
+                return;
+            }
+            run.text = runWords.join(QStringLiteral(" "));
+            sentenceRunsBySpeaker[runSpeakerId].push_back(run);
+            runActive = false;
+            runSpeakerId.clear();
+            runWords.clear();
+        };
+
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                flushRun();
+                continue;
+            }
+
+            QString wordSpeaker = wordObj.value(QStringLiteral("speaker")).toString().trimmed();
+            if (wordSpeaker.isEmpty()) {
+                wordSpeaker = segmentSpeaker;
+            }
+            const QString wordText = wordObj.value(QStringLiteral("word")).toString().trimmed();
+            const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
+            if (wordSpeaker.isEmpty() || wordText.isEmpty() || startSeconds < 0.0 || endSeconds < startSeconds) {
+                flushRun();
+                continue;
+            }
+
+            const int64_t wordStartFrame =
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
+            const int64_t wordEndFrame =
+                qMax<int64_t>(wordStartFrame, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)) - 1);
+            if (!runActive || runSpeakerId != wordSpeaker) {
+                flushRun();
+                run = TranscriptSentenceRun{};
+                run.startFrame = wordStartFrame;
+                run.endFrame = wordEndFrame;
+                runSpeakerId = wordSpeaker;
+                runWords.push_back(wordText);
+                runActive = true;
+                continue;
+            }
+
+            run.endFrame = qMax<int64_t>(run.endFrame, wordEndFrame);
+            runWords.push_back(wordText);
+        }
+        flushRun();
+    }
+    return sentenceRunsBySpeaker;
 }
 
 bool loadTranscriptJsonWithCache(const QString& transcriptPath, QJsonDocument* documentOut)
@@ -776,6 +846,7 @@ std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(c
     runtimeDocument->mtimeMs = mtimeMs;
     runtimeDocument->fileSize = fileSize;
     runtimeDocument->sections = buildTranscriptSectionsFromDocument(transcriptDoc);
+    runtimeDocument->sentenceRunsBySpeaker = buildSpeakerSentenceRunsFromDocument(transcriptDoc);
 
     {
         QMutexLocker locker(&transcriptRuntimeCacheMutex());
@@ -949,6 +1020,45 @@ QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
         return title;
     }
     return speakerId;
+}
+
+QString transcriptSpeakerSentenceForSourceFrame(const TranscriptRuntimeDocument& runtimeDocument,
+                                                const QString& speakerId,
+                                                int64_t sourceFrame)
+{
+    const QString normalizedSpeakerId = speakerId.trimmed();
+    if (normalizedSpeakerId.isEmpty()) {
+        return QStringLiteral("No sentence available.");
+    }
+
+    const QVector<TranscriptSentenceRun> runs =
+        runtimeDocument.sentenceRunsBySpeaker.value(normalizedSpeakerId);
+    if (runs.isEmpty()) {
+        return QStringLiteral("No sentence found for this speaker.");
+    }
+
+    int bestIndex = -1;
+    int64_t bestDistance = std::numeric_limits<int64_t>::max();
+    for (int i = 0; i < runs.size(); ++i) {
+        const TranscriptSentenceRun& run = runs.at(i);
+        if (sourceFrame >= run.startFrame && sourceFrame <= run.endFrame) {
+            bestIndex = i;
+            break;
+        }
+        const int64_t distance =
+            (sourceFrame < run.startFrame)
+                ? (run.startFrame - sourceFrame)
+                : (sourceFrame - run.endFrame);
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            bestIndex = i;
+        }
+    }
+
+    if (bestIndex < 0 || bestIndex >= runs.size()) {
+        return QStringLiteral("No sentence found for this speaker.");
+    }
+    return runs.at(bestIndex).text;
 }
 
 SpeakerProfile transcriptSpeakerProfileForSourceFrame(const QString& transcriptPath,

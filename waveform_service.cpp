@@ -48,34 +48,20 @@ QString WaveformService::canonicalPath(const QString& mediaPath) const {
     return QFileInfo(mediaPath).absoluteFilePath();
 }
 
-bool WaveformService::queryEnvelope(const QString& mediaPath,
-                                    int64_t sampleStart,
-                                    int64_t sampleEnd,
-                                    int columns,
-                                    QVector<float>* minOut,
-                                    QVector<float>* maxOut,
-                                    const QString& variantKey,
-                                    const WaveformProcessSettings* processSettings) {
-    if (!minOut || !maxOut) {
-        return false;
-    }
-    const int safeColumns = qBound(1, columns, 16384);
-    minOut->fill(0.0f, safeColumns);
-    maxOut->fill(0.0f, safeColumns);
-
+WaveformService::Entry* WaveformService::prepareEntryLocked(const QString& mediaPath,
+                                                            QString* canonicalPathOut) {
     const QString path = canonicalPath(mediaPath);
     if (path.isEmpty()) {
-        return false;
+        return nullptr;
     }
 
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
-        return false;
+        return nullptr;
     }
+
     const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
-
-    QMutexLocker locker(&m_mutex);
     Entry& entry = m_entries[path];
     const bool fingerprintChanged =
         entry.fileMtimeMs != mtimeMs || entry.fileSize != fileSize;
@@ -99,40 +85,68 @@ bool WaveformService::queryEnvelope(const QString& mediaPath,
         entry.processedVariants.clear();
     }
 
-    if (!entry.ready) {
-        ensureDecodeScheduledLocked(path, &entry);
+    if (canonicalPathOut) {
+        *canonicalPathOut = path;
+    }
+    return &entry;
+}
+
+bool WaveformService::queryEnvelope(const QString& mediaPath,
+                                    int64_t sampleStart,
+                                    int64_t sampleEnd,
+                                    int columns,
+                                    QVector<float>* minOut,
+                                    QVector<float>* maxOut,
+                                    const QString& variantKey,
+                                    const WaveformProcessSettings* processSettings) {
+    if (!minOut || !maxOut) {
         return false;
     }
-    if (entry.levels.isEmpty() || entry.totalSamples <= 0) {
+    const int safeColumns = qBound(1, columns, 16384);
+    minOut->fill(0.0f, safeColumns);
+    maxOut->fill(0.0f, safeColumns);
+
+    QMutexLocker locker(&m_mutex);
+    QString path;
+    Entry* entry = prepareEntryLocked(mediaPath, &path);
+    if (!entry) {
         return false;
     }
 
-    const int64_t boundedStart = qBound<int64_t>(0, sampleStart, entry.totalSamples);
-    const int64_t boundedEnd = qBound<int64_t>(boundedStart, sampleEnd, entry.totalSamples);
+    if (!entry->ready) {
+        ensureDecodeScheduledLocked(path, entry);
+        return false;
+    }
+    if (entry->levels.isEmpty() || entry->totalSamples <= 0) {
+        return false;
+    }
+
+    const int64_t boundedStart = qBound<int64_t>(0, sampleStart, entry->totalSamples);
+    const int64_t boundedEnd = qBound<int64_t>(boundedStart, sampleEnd, entry->totalSamples);
     const int64_t spanSamples = qMax<int64_t>(1, boundedEnd - boundedStart);
     const double samplesPerColumn =
         static_cast<double>(spanSamples) / static_cast<double>(safeColumns);
 
-    const QVector<WaveformLevel>* levelsPtr = &entry.levels;
+    const QVector<WaveformLevel>* levelsPtr = &entry->levels;
     if (processSettings && !variantKey.trimmed().isEmpty()) {
-        auto processedIt = entry.processedVariants.find(variantKey);
-        if (processedIt == entry.processedVariants.end()) {
+        auto processedIt = entry->processedVariants.find(variantKey);
+        if (processedIt == entry->processedVariants.end()) {
             Entry::ProcessedVariant processed;
-            processed.levels = buildProcessedLevels(entry.levels, entry.sampleRate, *processSettings);
+            processed.levels = buildProcessedLevels(entry->levels, entry->sampleRate, *processSettings);
             if (processed.levels.isEmpty()) {
                 return false;
             }
-            processed.lastAccessMs = entry.lastAccessMs;
-            processedIt = entry.processedVariants.insert(variantKey, std::move(processed));
+            processed.lastAccessMs = entry->lastAccessMs;
+            processedIt = entry->processedVariants.insert(variantKey, std::move(processed));
         } else {
-            processedIt->lastAccessMs = entry.lastAccessMs;
+            processedIt->lastAccessMs = entry->lastAccessMs;
         }
         levelsPtr = &processedIt->levels;
 
         constexpr int kMaxProcessedVariantsPerEntry = 8;
-        if (entry.processedVariants.size() > kMaxProcessedVariantsPerEntry) {
-            auto oldest = entry.processedVariants.begin();
-            for (auto it = entry.processedVariants.begin(); it != entry.processedVariants.end(); ++it) {
+        if (entry->processedVariants.size() > kMaxProcessedVariantsPerEntry) {
+            auto oldest = entry->processedVariants.begin();
+            for (auto it = entry->processedVariants.begin(); it != entry->processedVariants.end(); ++it) {
                 if (it.key() == variantKey) {
                     continue;
                 }
@@ -140,8 +154,8 @@ bool WaveformService::queryEnvelope(const QString& mediaPath,
                     oldest = it;
                 }
             }
-            if (oldest != entry.processedVariants.end() && oldest.key() != variantKey) {
-                entry.processedVariants.erase(oldest);
+            if (oldest != entry->processedVariants.end() && oldest.key() != variantKey) {
+                entry->processedVariants.erase(oldest);
             }
         }
     }
@@ -234,51 +248,22 @@ bool WaveformService::queryTotalSamples(const QString& mediaPath, int64_t* total
     }
     *totalSamplesOut = 0;
 
-    const QString path = canonicalPath(mediaPath);
-    if (path.isEmpty()) {
-        return false;
-    }
-
-    const QFileInfo info(path);
-    if (!info.exists() || !info.isFile()) {
-        return false;
-    }
-    const qint64 mtimeMs = info.lastModified().toMSecsSinceEpoch();
-    const qint64 fileSize = info.size();
-
     QMutexLocker locker(&m_mutex);
-    Entry& entry = m_entries[path];
-    const bool fingerprintChanged =
-        entry.fileMtimeMs != mtimeMs || entry.fileSize != fileSize;
-    if (fingerprintChanged) {
-        entry = Entry{};
-        entry.fileMtimeMs = mtimeMs;
-        entry.fileSize = fileSize;
-    }
-    entry.lastAccessMs = QDateTime::currentMSecsSinceEpoch();
-
-    const int desiredBaseWindow =
-        qBound(kMinBaseWindowSamples,
-               debugTimelineAudioEnvelopeGranularity(),
-               kMaxBaseWindowSamples);
-    const bool needsRebuildForGranularity =
-        entry.baseWindowSamples > 0 && entry.baseWindowSamples != desiredBaseWindow;
-    if (needsRebuildForGranularity) {
-        entry.ready = false;
-        entry.failed = false;
-        entry.levels.clear();
-        entry.processedVariants.clear();
-    }
-
-    if (!entry.ready) {
-        ensureDecodeScheduledLocked(path, &entry);
-        return false;
-    }
-    if (entry.totalSamples <= 0) {
+    QString path;
+    Entry* entry = prepareEntryLocked(mediaPath, &path);
+    if (!entry) {
         return false;
     }
 
-    *totalSamplesOut = entry.totalSamples;
+    if (!entry->ready) {
+        ensureDecodeScheduledLocked(path, entry);
+        return false;
+    }
+    if (entry->totalSamples <= 0) {
+        return false;
+    }
+
+    *totalSamplesOut = entry->totalSamples;
     return true;
 }
 
@@ -664,6 +649,27 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
         }
     };
 
+    auto appendConvertedFrameSamples = [&](AVFrame* decodedFrame) {
+        const int outSamples = swr_get_out_samples(swr, decodedFrame->nb_samples);
+        if (outSamples <= 0) {
+            av_frame_unref(decodedFrame);
+            return;
+        }
+        std::vector<float> mono(static_cast<size_t>(outSamples), 0.0f);
+        uint8_t* outData[1] = {reinterpret_cast<uint8_t*>(mono.data())};
+        const int converted = swr_convert(swr,
+                                          outData,
+                                          outSamples,
+                                          const_cast<const uint8_t**>(decodedFrame->extended_data),
+                                          decodedFrame->nb_samples);
+        if (converted > 0) {
+            for (int i = 0; i < converted; ++i) {
+                appendSample(mono[static_cast<size_t>(i)]);
+            }
+        }
+        av_frame_unref(decodedFrame);
+    };
+
     while (av_read_frame(formatCtx, packet) >= 0) {
         if (packet->stream_index != streamIndex) {
             av_packet_unref(packet);
@@ -675,45 +681,13 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
         }
         av_packet_unref(packet);
         while (avcodec_receive_frame(codecCtx, frame) == 0) {
-            const int outSamples = swr_get_out_samples(swr, frame->nb_samples);
-            if (outSamples <= 0) {
-                av_frame_unref(frame);
-                continue;
-            }
-            std::vector<float> mono(static_cast<size_t>(outSamples), 0.0f);
-            uint8_t* outData[1] = {reinterpret_cast<uint8_t*>(mono.data())};
-            const int converted = swr_convert(swr,
-                                              outData,
-                                              outSamples,
-                                              const_cast<const uint8_t**>(frame->extended_data),
-                                              frame->nb_samples);
-            if (converted > 0) {
-                for (int i = 0; i < converted; ++i) {
-                    appendSample(mono[static_cast<size_t>(i)]);
-                }
-            }
-            av_frame_unref(frame);
+            appendConvertedFrameSamples(frame);
         }
     }
 
     avcodec_send_packet(codecCtx, nullptr);
     while (avcodec_receive_frame(codecCtx, frame) == 0) {
-        const int outSamples = swr_get_out_samples(swr, frame->nb_samples);
-        if (outSamples > 0) {
-            std::vector<float> mono(static_cast<size_t>(outSamples), 0.0f);
-            uint8_t* outData[1] = {reinterpret_cast<uint8_t*>(mono.data())};
-            const int converted = swr_convert(swr,
-                                              outData,
-                                              outSamples,
-                                              const_cast<const uint8_t**>(frame->extended_data),
-                                              frame->nb_samples);
-            if (converted > 0) {
-                for (int i = 0; i < converted; ++i) {
-                    appendSample(mono[static_cast<size_t>(i)]);
-                }
-            }
-        }
-        av_frame_unref(frame);
+        appendConvertedFrameSamples(frame);
     }
 
     if (windowCount > 0) {

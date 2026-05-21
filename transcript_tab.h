@@ -18,6 +18,7 @@
 #include <functional>
 
 #include "editor_shared.h"
+#include "transcript_document_io.h"
 #include "transcript_engine.h"
 
 class TranscriptTab : public QObject
@@ -173,21 +174,6 @@ private:
         int renderOrder = -1;
         QString speaker;
     };
-    struct TranscriptLoadResult
-    {
-        QString clipFilePath;
-        QString transcriptPath;
-        QJsonDocument document;
-        QString error;
-        bool ok = false;
-    };
-    struct TranscriptSaveResult
-    {
-        QString transcriptPath;
-        QString error;
-        qint64 revision = 0;
-        bool ok = false;
-    };
     struct TranscriptDocumentWord
     {
         int wordId = -1;
@@ -295,8 +281,8 @@ private:
     bool m_updatingScriptVersionSelector = false;
     QTimer m_refreshDebounceTimer;
     bool m_refreshQueued = false;
-    QFutureWatcher<TranscriptLoadResult> m_transcriptLoadWatcher;
-    QFutureWatcher<TranscriptSaveResult> m_transcriptSaveWatcher;
+    QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
+    QFutureWatcher<TranscriptDocumentSaveResult> m_transcriptSaveWatcher;
     qint64 m_transcriptLoadRequestId = 0;
     qint64 m_transcriptSaveRevision = 0;
     qint64 m_pendingTranscriptSaveRevision = 0;

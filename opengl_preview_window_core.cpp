@@ -49,44 +49,6 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip) {
 bool suppressBridgeFallbackLogs() {
     return qEnvironmentVariableIntValue("JCUT_PREVIEW_SUPPRESS_BRIDGE_LOG") == 1;
 }
-
-bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state)
-{
-    if (!state ||
-        !state->playing ||
-        state->viewMode != PreviewSurface::ViewMode::Audio) {
-        return false;
-    }
-
-    const TimelineClip* audioClip = nullptr;
-    for (const TimelineClip& clip : state->clips) {
-        const int64_t clipStartSample = clipTimelineStartSamples(clip);
-        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
-        const bool withinClip = state->currentSample >= clipStartSample && state->currentSample < clipEndSample;
-        const bool includeForAudioView =
-            clipAudioPlaybackEnabled(clip) &&
-            (clip.id == state->selectedClipId || withinClip);
-        const bool includeAsFallback = clipIsAudioOnly(clip) && withinClip;
-        if (includeForAudioView || includeAsFallback) {
-            audioClip = &clip;
-            break;
-        }
-    }
-    if (!audioClip) {
-        return false;
-    }
-
-    const AudioPreviewViewport viewport = resolveAudioPreviewViewport(
-        *audioClip, 2, state->previewZoom, state->previewPanOffset.x(), state->currentSample);
-    if (!viewport.playheadVisible) {
-        return false;
-    }
-    if (qAbs(viewport.startNorm - state->previewPanOffset.x()) < 0.000001) {
-        return false;
-    }
-    state->previewPanOffset.setX(viewport.startNorm);
-    return true;
-}
 } // namespace
 
 PreviewWindow::PreviewWindow(QWidget* parent)

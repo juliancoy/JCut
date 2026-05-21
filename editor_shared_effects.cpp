@@ -1,4 +1,7 @@
-#include "editor_shared.h"
+#include "editor_shared_effects.h"
+#include "editor_shared_keyframes.h"
+#include "editor_shared_media.h"
+#include "editor_shared_render_sync.h"
 
 #include <QPainter>
 #include <QPainterPath>

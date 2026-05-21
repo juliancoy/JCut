@@ -25,36 +25,6 @@ bool clipSupportsTranscript(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
 }
 
-QString activeSpeakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame) {
-    for (const TranscriptSection& section : sections) {
-        if (sourceFrame < section.startFrame) {
-            return QString();
-        }
-        if (sourceFrame > section.endFrame) {
-            continue;
-        }
-        int bestIndex = -1;
-        for (int i = 0; i < section.words.size(); ++i) {
-            const TranscriptWord& word = section.words.at(i);
-            if (sourceFrame >= word.startFrame && sourceFrame <= word.endFrame) {
-                bestIndex = i;
-                break;
-            }
-            if (sourceFrame > word.endFrame) {
-                bestIndex = i;
-            }
-        }
-        if (bestIndex < 0 && !section.words.isEmpty()) {
-            bestIndex = 0;
-        }
-        if (bestIndex >= 0 && bestIndex < section.words.size()) {
-            return section.words.at(bestIndex).speaker.trimmed();
-        }
-        return QString();
-    }
-    return QString();
-}
-
 QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
     const QString safeTitle = title.trimmed().toHtmlEscaped();
     if (safeTitle.isEmpty()) {

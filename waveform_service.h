@@ -81,6 +81,7 @@ private:
     };
 
     QString canonicalPath(const QString& mediaPath) const;
+    Entry* prepareEntryLocked(const QString& mediaPath, QString* canonicalPathOut = nullptr);
     void ensureDecodeScheduledLocked(const QString& path, Entry* entry);
     void finishDecode(const QString& path,
                       qint64 fileMtimeMs,

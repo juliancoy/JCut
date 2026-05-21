@@ -520,6 +520,9 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
             syncKeyframeTableToPlayhead();
             syncGradingTableToPlayhead();
             m_titlesTab->syncTableToPlayhead();
+            if (m_speakersTab) {
+                m_speakersTab->syncCurrentSpeakerSentenceToPlayhead();
+            }
             if (m_inspectorPane && m_inspectorPane->tabs()) {
                 const int inspectorIndex = m_inspectorPane->tabs()->currentIndex();
                 if (inspectorIndex >= 0 &&
@@ -536,6 +539,9 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
         syncKeyframeTableToPlayhead();
         syncGradingTableToPlayhead();
         m_titlesTab->syncTableToPlayhead();
+        if (m_speakersTab) {
+            m_speakersTab->syncCurrentSpeakerSentenceToPlayhead();
+        }
         m_lastPlaybackUiSyncMs = tickNowMs;
     }
     if (!duringPlayback || (tickNowMs - m_lastPlaybackStateSaveMs) >= m_playbackStateSaveMinIntervalMs) {

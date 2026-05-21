@@ -14,6 +14,7 @@
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
 #include "table_tab_base.h"
+#include "transcript_document_io.h"
 
 class QLabel;
 class QListWidget;
@@ -97,6 +98,7 @@ public:
     void wire();
     void refresh();
     void refreshForSubtab(const QString& subtabName);
+    void syncCurrentSpeakerSentenceToPlayhead();
     bool generateFaceStreamForSelectedClip();
     bool deleteFaceStreamForSelectedClip(bool confirmDialog = true,
                                          QString* errorOut = nullptr);
@@ -153,21 +155,6 @@ private slots:
     void onSpeakerApplyFramingToClipChanged(bool checked);
 
 private:
-    struct TranscriptLoadResult
-    {
-        QString clipFilePath;
-        QString transcriptPath;
-        QJsonDocument document;
-        QString error;
-        bool ok = false;
-    };
-    struct TranscriptSaveResult
-    {
-        QString transcriptPath;
-        QString error;
-        qint64 revision = 0;
-        bool ok = false;
-    };
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
     bool saveLoadedTranscriptDocument();
     void queueLoadedTranscriptDocumentSave();
@@ -325,8 +312,8 @@ private:
     qint64 m_maxFaceStreamPanelRefreshDurationMs = 0;
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
-    QFutureWatcher<TranscriptLoadResult> m_transcriptLoadWatcher;
-    QFutureWatcher<TranscriptSaveResult> m_transcriptSaveWatcher;
+    QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
+    QFutureWatcher<TranscriptDocumentSaveResult> m_transcriptSaveWatcher;
     qint64 m_transcriptSaveRevision = 0;
     qint64 m_pendingTranscriptSaveRevision = 0;
     QString m_pendingTranscriptSavePath;

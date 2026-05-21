@@ -1,5 +1,6 @@
 #include "profile_tab.h"
 #include "async_decoder.h"
+#include "decoder_benchmark_utils.h"
 #include "decoder_context.h"
 #include "frame_handle.h"
 #include "editor_shared.h"
@@ -120,40 +121,22 @@ void ProfileTab::runDecodeBenchmark()
         {QStringLiteral("path"), QDir::toNativeSeparators(mediaPath)}
     };
 
-    editor::DecoderContext ctx(mediaPath);
-    if (!ctx.initialize()) {
+    const editor::DecodeBenchmarkResult result = editor::benchmarkDecodeFrames(mediaPath);
+    if (!result.success) {
         benchmark[QStringLiteral("error")] = QStringLiteral("Failed to initialize decoder context.");
         m_lastDecodeBenchmark = benchmark;
         m_deps.refreshInspector();
         return;
     }
 
-    const editor::VideoStreamInfo info = ctx.info();
-    const int64_t durationFrames = qMax<int64_t>(1, info.durationFrames);
-    const int framesToBenchmark = static_cast<int>(qMin<int64_t>(90, durationFrames));
-    int decodedFrames = 0;
-    int nullFrames = 0;
-
-    QElapsedTimer timer;
-    timer.start();
-    for (int i = 0; i < framesToBenchmark; ++i) {
-        editor::FrameHandle frame = ctx.decodeFrame(i);
-        if (frame.isNull()) {
-            ++nullFrames;
-        } else {
-            ++decodedFrames;
-        }
-    }
-    const qint64 elapsedMs = qMax<qint64>(1, timer.elapsed());
-    const double fps = (1000.0 * decodedFrames) / static_cast<double>(elapsedMs);
-
     benchmark[QStringLiteral("success")] = true;
-    benchmark[QStringLiteral("codec")] = info.codecName;
-    benchmark[QStringLiteral("decode_path")] = ctx.isHardwareAccelerated() ? QStringLiteral("hardware") : QStringLiteral("software");
-    benchmark[QStringLiteral("frames_decoded")] = decodedFrames;
-    benchmark[QStringLiteral("null_frames")] = nullFrames;
-    benchmark[QStringLiteral("elapsed_ms")] = static_cast<qint64>(elapsedMs);
-    benchmark[QStringLiteral("fps")] = fps;
+    benchmark[QStringLiteral("codec")] = result.info.codecName;
+    benchmark[QStringLiteral("decode_path")] =
+        result.hardwareAccelerated ? QStringLiteral("hardware") : QStringLiteral("software");
+    benchmark[QStringLiteral("frames_decoded")] = result.decodedFrames;
+    benchmark[QStringLiteral("null_frames")] = result.nullFrames;
+    benchmark[QStringLiteral("elapsed_ms")] = static_cast<qint64>(result.elapsedMs);
+    benchmark[QStringLiteral("fps")] = result.fps;
     m_lastDecodeBenchmark = benchmark;
     m_deps.refreshInspector();
 }

@@ -1,4 +1,5 @@
-#include "editor_shared.h"
+#include "editor_shared_render_sync.h"
+#include "editor_shared_timing.h"
 
 #include <QHash>
 #include <QtGlobal>

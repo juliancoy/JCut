@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "preview_interaction_state.h"
 #include "preview_surface.h"
 
 #include <QVector>
@@ -24,6 +25,9 @@ AudioPreviewViewport resolveAudioPreviewViewport(const TimelineClip& clip,
                                                 qreal previewZoom,
                                                 qreal previewPanNorm,
                                                 int64_t currentSample);
+
+bool syncAudioPreviewPanToPlayhead(PreviewInteractionState* state,
+                                   int rowCount = 2);
 
 bool queryAudioWaveformEnvelopeForClip(const TimelineClip& clip,
                                        const PreviewSurface::AudioDynamicsSettings& settings,

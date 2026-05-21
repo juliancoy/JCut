@@ -1,4 +1,4 @@
-#include "editor_shared.h"
+#include "editor_shared_media.h"
 #include "debug_controls.h"
 
 #include <QDateTime>

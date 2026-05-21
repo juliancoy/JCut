@@ -1,4 +1,5 @@
 #include "timeline_cache.h"
+#include "frame_buffer_utils.h"
 
 #include <QDateTime>
 #include <QMutexLocker>
@@ -37,26 +38,7 @@ FrameHandle TimelineCache::PlaybackBuffer::get(int64_t frameNumber) {
 
 FrameHandle TimelineCache::PlaybackBuffer::getBest(int64_t frameNumber) {
     QMutexLocker lock(&m_mutex);
-
-    auto exact = m_frames.find(frameNumber);
-    if (exact != m_frames.end()) {
-        return exact.value().frame;
-    }
-
-    qint64 bestDistance = std::numeric_limits<qint64>::max();
-    qint64 bestInsertedAt = std::numeric_limits<qint64>::min();
-    auto best = m_frames.end();
-    for (auto it = m_frames.begin(); it != m_frames.end(); ++it) {
-        const qint64 distance = qAbs(it.key() - frameNumber);
-        if (distance < bestDistance ||
-            (distance == bestDistance && it.value().insertedAt > bestInsertedAt)) {
-            bestDistance = distance;
-            bestInsertedAt = it.value().insertedAt;
-            best = it;
-        }
-    }
-
-    return best == m_frames.end() ? FrameHandle() : best.value().frame;
+    return closestBufferedFrame(m_frames, frameNumber);
 }
 
 FrameHandle TimelineCache::PlaybackBuffer::getLatestAtOrBefore(int64_t frameNumber) {
@@ -88,22 +70,7 @@ bool TimelineCache::PlaybackBuffer::contains(int64_t frameNumber) const {
 }
 
 void TimelineCache::PlaybackBuffer::trimLocked() {
-    while (m_frames.size() > kMaxFrames) {
-        auto oldest = m_frames.end();
-        qint64 oldestInsertedAt = std::numeric_limits<qint64>::max();
-
-        for (auto it = m_frames.begin(); it != m_frames.end(); ++it) {
-            if (it.value().insertedAt < oldestInsertedAt) {
-                oldestInsertedAt = it.value().insertedAt;
-                oldest = it;
-            }
-        }
-
-        if (oldest == m_frames.end()) {
-            break;
-        }
-        m_frames.erase(oldest);
-    }
+    trimOldestBufferedFrames(&m_frames, kMaxFrames);
 }
 
 // ============================================================================

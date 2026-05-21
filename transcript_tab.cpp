@@ -95,15 +95,6 @@ bool clipSupportsTranscript(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
 }
 
-bool shouldUseSynchronousTranscriptIo()
-{
-    if (qEnvironmentVariableIntValue("JCUT_SYNC_TRANSCRIPT_IO") == 1) {
-        return true;
-    }
-    const QString appName = QCoreApplication::applicationName().trimmed().toLower();
-    return appName.startsWith(QStringLiteral("test_")) || appName.contains(QStringLiteral("qtest"));
-}
-
 QString transcriptCutStateLabel(bool mutableCut)
 {
     return mutableCut ? QStringLiteral("Editable Cut") : QStringLiteral("Original (Immutable)");
@@ -134,8 +125,8 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         m_refreshQueued = false;
         refresh();
     });
-    connect(&m_transcriptLoadWatcher, &QFutureWatcher<TranscriptLoadResult>::finished, this, [this]() {
-        const TranscriptLoadResult result = m_transcriptLoadWatcher.result();
+    connect(&m_transcriptLoadWatcher, &QFutureWatcher<TranscriptDocumentLoadResult>::finished, this, [this]() {
+        const TranscriptDocumentLoadResult result = m_transcriptLoadWatcher.result();
         if (!result.ok) {
             if (result.transcriptPath == m_loadedTranscriptPath &&
                 result.clipFilePath == m_loadedClipFilePath &&
@@ -155,8 +146,8 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         }
         applyLoadedTranscriptDocumentData(*clip, originalTranscriptPathForClip(result.clipFilePath));
     });
-    connect(&m_transcriptSaveWatcher, &QFutureWatcher<TranscriptSaveResult>::finished, this, [this]() {
-        const TranscriptSaveResult result = m_transcriptSaveWatcher.result();
+    connect(&m_transcriptSaveWatcher, &QFutureWatcher<TranscriptDocumentSaveResult>::finished, this, [this]() {
+        const TranscriptDocumentSaveResult result = m_transcriptSaveWatcher.result();
         if (!result.ok) {
             qWarning().noquote()
                 << QStringLiteral("[transcript] async save failed for %1: %2")
@@ -170,19 +161,7 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
             const QJsonDocument doc = m_pendingTranscriptSaveDoc;
             const qint64 revision = m_pendingTranscriptSaveRevision;
             m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
-                TranscriptSaveResult next;
-                next.transcriptPath = path;
-                next.revision = revision;
-                if (path.trimmed().isEmpty() || !doc.isObject()) {
-                    next.error = QStringLiteral("Invalid transcript save payload.");
-                    return next;
-                }
-                editor::TranscriptEngine engine;
-                next.ok = engine.saveTranscriptJson(path, doc);
-                if (!next.ok) {
-                    next.error = QStringLiteral("saveTranscriptJson returned false.");
-                }
-                return next;
+                return saveTranscriptDocumentResult(path, doc, revision);
             }));
         }
     });
@@ -236,19 +215,7 @@ void TranscriptTab::queueLoadedTranscriptDocumentSave()
     const QJsonDocument doc = m_pendingTranscriptSaveDoc;
     const qint64 revision = m_pendingTranscriptSaveRevision;
     m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
-        TranscriptSaveResult result;
-        result.transcriptPath = path;
-        result.revision = revision;
-        if (path.trimmed().isEmpty() || !doc.isObject()) {
-            result.error = QStringLiteral("Invalid transcript save payload.");
-            return result;
-        }
-        editor::TranscriptEngine engine;
-        result.ok = engine.saveTranscriptJson(path, doc);
-        if (!result.ok) {
-            result.error = QStringLiteral("saveTranscriptJson returned false.");
-        }
-        return result;
+        return saveTranscriptDocumentResult(path, doc, revision);
     }));
 }
 
@@ -258,17 +225,19 @@ void TranscriptTab::startTranscriptLoadRequest(const QString& clipFilePath, cons
         return;
     }
     if (shouldUseSynchronousTranscriptIo()) {
-        QString error;
-        QJsonDocument document;
-        if (m_transcriptEngine.loadTranscriptJson(transcriptPath, &document, &error)) {
-            m_loadedTranscriptDoc = document;
+        const TranscriptDocumentLoadResult result = loadTranscriptDocumentResultWithEngine(
+            clipFilePath,
+            transcriptPath,
+            QStringLiteral("Invalid transcript JSON file."));
+        if (result.ok) {
+            m_loadedTranscriptDoc = result.document;
             const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
             if (clip && clip->filePath == clipFilePath) {
                 applyLoadedTranscriptDocumentData(*clip, originalTranscriptPathForClip(clipFilePath));
             }
         } else if (m_widgets.transcriptInspectorDetailsLabel) {
             m_widgets.transcriptInspectorDetailsLabel->setText(
-                error.isEmpty() ? QStringLiteral("Invalid transcript JSON file.") : error);
+                result.error);
         }
         return;
     }
@@ -279,16 +248,10 @@ void TranscriptTab::startTranscriptLoadRequest(const QString& clipFilePath, cons
     }
     m_transcriptLoadWatcher.setFuture(QtConcurrent::run([clipFilePath, transcriptPath, requestId]() {
         Q_UNUSED(requestId);
-        TranscriptLoadResult result;
-        result.clipFilePath = clipFilePath;
-        result.transcriptPath = transcriptPath;
-        editor::TranscriptEngine engine;
-        QString error;
-        result.ok = engine.loadTranscriptJson(transcriptPath, &result.document, &error);
-        if (!result.ok) {
-            result.error = error.isEmpty() ? QStringLiteral("Invalid transcript JSON file.") : error;
-        }
-        return result;
+        return loadTranscriptDocumentResultWithEngine(
+            clipFilePath,
+            transcriptPath,
+            QStringLiteral("Invalid transcript JSON file."));
     }));
 }
 

@@ -367,7 +367,7 @@ bool SpeakersTab::saveClipSpeakerFramingEnabledFromControls()
 
 QString SpeakersTab::currentSpeakerSentenceAtCurrentFrame(const QString& speakerId) const
 {
-    if (!m_loadedTranscriptDoc.isObject() || speakerId.trimmed().isEmpty()) {
+    if (speakerId.trimmed().isEmpty()) {
         return QStringLiteral("No sentence available.");
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
@@ -375,110 +375,31 @@ QString SpeakersTab::currentSpeakerSentenceAtCurrentFrame(const QString& speaker
         return QStringLiteral("No sentence available.");
     }
     const int64_t sourceFrame = currentSourceFrameForClip(*clip);
-    const QString targetSpeaker = speakerId.trimmed();
-
-    struct SentenceRun {
-        int64_t startFrame = 0;
-        int64_t endFrame = 0;
-        QString text;
-    };
-    QVector<SentenceRun> runs;
-
-    const QJsonArray segments = m_loadedTranscriptDoc.object().value(QStringLiteral("segments")).toArray();
-    for (const QJsonValue& segValue : segments) {
-        const QJsonObject segmentObj = segValue.toObject();
-        const QString segmentSpeaker =
-            segmentObj.value(QString(kTranscriptSegmentSpeakerKey)).toString().trimmed();
-        const QJsonArray words = segmentObj.value(QStringLiteral("words")).toArray();
-
-        bool runActive = false;
-        SentenceRun run;
-        QStringList runWords;
-        for (const QJsonValue& wordValue : words) {
-            const QJsonObject wordObj = wordValue.toObject();
-            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
-                if (runActive && !runWords.isEmpty()) {
-                    run.text = runWords.join(QStringLiteral(" "));
-                    runs.push_back(run);
-                }
-                runActive = false;
-                runWords.clear();
-                continue;
-            }
-            QString wordSpeaker = wordObj.value(QString(kTranscriptWordSpeakerKey)).toString().trimmed();
-            if (wordSpeaker.isEmpty()) {
-                wordSpeaker = segmentSpeaker;
-            }
-            const QString wordText = wordObj.value(QStringLiteral("word")).toString().trimmed();
-            const double startSeconds = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
-            const double endSeconds = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
-            if (wordText.isEmpty() || startSeconds < 0.0 || endSeconds < startSeconds) {
-                if (runActive && !runWords.isEmpty()) {
-                    run.text = runWords.join(QStringLiteral(" "));
-                    runs.push_back(run);
-                }
-                runActive = false;
-                runWords.clear();
-                continue;
-            }
-            const int64_t wordStartFrame =
-                qMax<int64_t>(0, static_cast<int64_t>(std::floor(startSeconds * kTimelineFps)));
-            const int64_t wordEndFrame =
-                qMax<int64_t>(wordStartFrame, static_cast<int64_t>(std::ceil(endSeconds * kTimelineFps)) - 1);
-            if (wordSpeaker != targetSpeaker) {
-                if (runActive && !runWords.isEmpty()) {
-                    run.text = runWords.join(QStringLiteral(" "));
-                    runs.push_back(run);
-                }
-                runActive = false;
-                runWords.clear();
-                continue;
-            }
-
-            if (!runActive) {
-                run = SentenceRun{};
-                run.startFrame = wordStartFrame;
-                run.endFrame = wordEndFrame;
-                runWords.clear();
-                runWords.push_back(wordText);
-                runActive = true;
-            } else {
-                run.endFrame = qMax<int64_t>(run.endFrame, wordEndFrame);
-                runWords.push_back(wordText);
-            }
-        }
-        if (runActive && !runWords.isEmpty()) {
-            run.text = runWords.join(QStringLiteral(" "));
-            runs.push_back(run);
-        }
+    if (m_loadedTranscriptPath.trimmed().isEmpty()) {
+        return QStringLiteral("No sentence available.");
     }
-
-    if (runs.isEmpty()) {
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(m_loadedTranscriptPath);
+    if (!runtimeDocument) {
         return QStringLiteral("No sentence found for this speaker.");
     }
+    return transcriptSpeakerSentenceForSourceFrame(*runtimeDocument, speakerId, sourceFrame);
+}
 
-    int bestIndex = -1;
-    int64_t bestDistance = std::numeric_limits<int64_t>::max();
-    for (int i = 0; i < runs.size(); ++i) {
-        const SentenceRun& run = runs.at(i);
-        if (sourceFrame >= run.startFrame && sourceFrame <= run.endFrame) {
-            bestIndex = i;
-            break;
-        }
-        const int64_t distance =
-            (sourceFrame < run.startFrame)
-                ? (run.startFrame - sourceFrame)
-                : (sourceFrame - run.endFrame);
-        if (distance < bestDistance) {
-            bestDistance = distance;
-            bestIndex = i;
-        }
+void SpeakersTab::syncCurrentSpeakerSentenceToPlayhead()
+{
+    QLabel* const sentenceLabel = m_widgets.speakerCurrentSentenceLabel;
+    if (!sentenceLabel || m_updating) {
+        return;
     }
 
-    if (bestIndex < 0 || bestIndex >= runs.size()) {
-        return QStringLiteral("No sentence found for this speaker.");
+    const QString speakerId = selectedSpeakerId();
+    const QString nextText = speakerId.isEmpty()
+        ? QStringLiteral("Select a speaker to view sentence context.")
+        : currentSpeakerSentenceAtCurrentFrame(speakerId);
+    if (sentenceLabel->text() != nextText) {
+        sentenceLabel->setText(nextText);
     }
-    return runs.at(bestIndex).text;
 }
 
 int64_t SpeakersTab::currentSourceFrameForClip(const TimelineClip& clip) const

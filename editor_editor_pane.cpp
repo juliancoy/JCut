@@ -15,6 +15,130 @@ bool clipSupportsTranscriptOverlay(const TimelineClip& clip) {
     return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
 }
 
+int64_t previewDragKeyframeTimelineFrame(QHash<QString, int64_t>& anchorFrames,
+                                         const QString& clipId,
+                                         int64_t currentFrame,
+                                         bool playing,
+                                         bool finalize) {
+    int64_t keyframeTimelineFrame = currentFrame;
+    if (playing) {
+        if (finalize) {
+            keyframeTimelineFrame = anchorFrames.value(clipId, currentFrame);
+            anchorFrames.remove(clipId);
+        } else {
+            keyframeTimelineFrame = anchorFrames.value(clipId, currentFrame);
+            anchorFrames.insert(clipId, keyframeTimelineFrame);
+        }
+    } else if (finalize) {
+        anchorFrames.remove(clipId);
+    }
+    return keyframeTimelineFrame;
+}
+
+void refreshPreviewTimeline(PreviewSurface* preview,
+                            TimelineWidget* timeline,
+                            const QVector<TimelineClip>& clips) {
+    if (!preview || !timeline) {
+        return;
+    }
+    preview->setTimelineTracks(timeline->tracks());
+    preview->setTimelineClips(clips);
+    preview->setRenderSyncMarkers(timeline->renderSyncMarkers());
+}
+
+bool upsertVisualTransformKeyframe(
+    TimelineClip& clip,
+    int64_t keyframeTimelineFrame,
+    const std::function<void(TimelineClip::TransformKeyframe&)>& mutate) {
+    if (!clipHasVisuals(clip)) {
+        return false;
+    }
+    const TimelineClip::TransformKeyframe offset =
+        evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
+    const int64_t keyframeFrame =
+        qBound<int64_t>(0,
+                        keyframeTimelineFrame - clip.startFrame,
+                        qMax<int64_t>(0, clip.durationFrames - 1));
+    TimelineClip::TransformKeyframe keyframe = offset;
+    keyframe.frame = keyframeFrame;
+    mutate(keyframe);
+
+    bool replaced = false;
+    for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
+        if (existing.frame == keyframeFrame) {
+            existing = keyframe;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced) {
+        clip.transformKeyframes.push_back(keyframe);
+    }
+    normalizeClipTransformKeyframes(clip);
+    return true;
+}
+
+bool upsertPreviewTitleMoveKeyframe(TimelineClip& clip,
+                                    int64_t keyframeTimelineFrame,
+                                    qreal translationX,
+                                    qreal translationY) {
+    if (clip.mediaType != ClipMediaType::Title) {
+        return false;
+    }
+    const int64_t localFrame =
+        qBound<int64_t>(0,
+                        keyframeTimelineFrame - clip.startFrame,
+                        qMax<int64_t>(0, clip.durationFrames - 1));
+    bool replaced = false;
+    for (TimelineClip::TitleKeyframe& kf : clip.titleKeyframes) {
+        if (kf.frame == localFrame) {
+            kf.translationX = translationX;
+            kf.translationY = translationY;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced && !clip.titleKeyframes.isEmpty()) {
+        TimelineClip::TitleKeyframe keyframe = clip.titleKeyframes.constFirst();
+        keyframe.frame = localFrame;
+        keyframe.translationX = translationX;
+        keyframe.translationY = translationY;
+        clip.titleKeyframes.push_back(keyframe);
+    }
+    normalizeClipTitleKeyframes(clip);
+    return true;
+}
+
+void applyCommittedTitleMoveKeyframe(TimelineClip& clip,
+                                     int64_t keyframeTimelineFrame,
+                                     qreal translationX,
+                                     qreal translationY) {
+    const int64_t localFrame =
+        qBound<int64_t>(0,
+                        keyframeTimelineFrame - clip.startFrame,
+                        qMax<int64_t>(0, clip.durationFrames - 1));
+    bool replaced = false;
+    for (auto& kf : clip.titleKeyframes) {
+        if (kf.frame == localFrame) {
+            kf.translationX = translationX;
+            kf.translationY = translationY;
+            replaced = true;
+            break;
+        }
+    }
+    if (!replaced && !clip.titleKeyframes.isEmpty()) {
+        int bestIdx = 0;
+        for (int i = 0; i < clip.titleKeyframes.size(); ++i) {
+            if (clip.titleKeyframes[i].frame <= localFrame) {
+                bestIdx = i;
+            }
+        }
+        clip.titleKeyframes[bestIdx].translationX = translationX;
+        clip.titleKeyframes[bestIdx].translationY = translationY;
+    }
+    normalizeClipTitleKeyframes(clip);
+}
+
 }
 
 void EditorWindow::bindEditorPaneWidgets(EditorPane *pane)
@@ -452,18 +576,9 @@ void EditorWindow::connectPreviewSignals()
         if (!m_timeline) return;
         const int64_t currentFrame = m_timeline->currentFrame();
         const bool playing = playbackActive();
-        int64_t keyframeTimelineFrame = currentFrame;
-        if (playing) {
-            if (finalize) {
-                keyframeTimelineFrame = m_previewDragAnchorFrameByClip.value(clipId, currentFrame);
-                m_previewDragAnchorFrameByClip.remove(clipId);
-            } else {
-                keyframeTimelineFrame = m_previewDragAnchorFrameByClip.value(clipId, currentFrame);
-                m_previewDragAnchorFrameByClip.insert(clipId, keyframeTimelineFrame);
-            }
-        } else if (finalize) {
-            m_previewDragAnchorFrameByClip.remove(clipId);
-        }
+        const int64_t keyframeTimelineFrame =
+            previewDragKeyframeTimelineFrame(
+                m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
         const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
         if (playing && !finalize && !transcriptOverlaySelected) {
             QVector<TimelineClip> previewClips = m_timeline->clips();
@@ -472,39 +587,19 @@ void EditorWindow::connectPreviewSignals()
                 if (clip.id != clipId) {
                     continue;
                 }
-                if (!clipHasVisuals(clip)) {
-                    break;
-                }
-                const TimelineClip::TransformKeyframe offset =
-                    evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
-                const int64_t keyframeFrame =
-                    qBound<int64_t>(0,
-                                    keyframeTimelineFrame - clip.startFrame,
-                                    qMax<int64_t>(0, clip.durationFrames - 1));
-                TimelineClip::TransformKeyframe keyframe = offset;
-                keyframe.frame = keyframeFrame;
-                keyframe.scaleX = sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
-                keyframe.scaleY = sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
-
-                bool replaced = false;
-                for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-                    if (existing.frame == keyframeFrame) {
-                        existing = keyframe;
-                        replaced = true;
-                        break;
-                    }
-                }
-                if (!replaced) {
-                    clip.transformKeyframes.push_back(keyframe);
-                }
-                normalizeClipTransformKeyframes(clip);
-                previewUpdated = true;
+                previewUpdated = upsertVisualTransformKeyframe(
+                    clip,
+                    keyframeTimelineFrame,
+                    [&](TimelineClip::TransformKeyframe& keyframe) {
+                        keyframe.scaleX =
+                            sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
+                        keyframe.scaleY =
+                            sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
+                    });
                 break;
             }
             if (!previewUpdated) return;
-            m_preview->setTimelineTracks(m_timeline->tracks());
-            m_preview->setTimelineClips(previewClips);
-            m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+            refreshPreviewTimeline(m_preview, m_timeline, previewClips);
             return;
         }
 
@@ -514,30 +609,18 @@ void EditorWindow::connectPreviewSignals()
                 clip.transcriptOverlay.boxHeight = qMax<qreal>(40.0, scaleY);
                 return;
             }
-            if (!clipHasVisuals(clip)) return;
-            const TimelineClip::TransformKeyframe offset = evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
-            const int64_t keyframeFrame = qBound<int64_t>(0, keyframeTimelineFrame - clip.startFrame, qMax<int64_t>(0, clip.durationFrames - 1));
-            TimelineClip::TransformKeyframe keyframe = offset;
-            keyframe.frame = keyframeFrame;
-            keyframe.scaleX = sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
-            keyframe.scaleY = sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
-            bool replaced = false;
-            for (TimelineClip::TransformKeyframe &existing : clip.transformKeyframes) {
-                if (existing.frame == keyframeFrame) {
-                    existing = keyframe;
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) {
-                clip.transformKeyframes.push_back(keyframe);
-            }
-            normalizeClipTransformKeyframes(clip);
+            upsertVisualTransformKeyframe(
+                clip,
+                keyframeTimelineFrame,
+                [&](TimelineClip::TransformKeyframe& keyframe) {
+                    keyframe.scaleX =
+                        sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
+                    keyframe.scaleY =
+                        sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
+                });
         });
         if (!updated) return;
-        m_preview->setTimelineTracks(m_timeline->tracks());
-        m_preview->setTimelineClips(m_timeline->clips());
-        m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+        refreshPreviewTimeline(m_preview, m_timeline, m_timeline->clips());
         refreshPreviewTransformInspectorViews();
         scheduleSaveState();
         if (finalize) pushHistorySnapshot();
@@ -546,18 +629,9 @@ void EditorWindow::connectPreviewSignals()
         if (!m_timeline) return;
         const int64_t currentFrame = m_timeline->currentFrame();
         const bool playing = playbackActive();
-        int64_t keyframeTimelineFrame = currentFrame;
-        if (playing) {
-            if (finalize) {
-                keyframeTimelineFrame = m_previewDragAnchorFrameByClip.value(clipId, currentFrame);
-                m_previewDragAnchorFrameByClip.remove(clipId);
-            } else {
-                keyframeTimelineFrame = m_previewDragAnchorFrameByClip.value(clipId, currentFrame);
-                m_previewDragAnchorFrameByClip.insert(clipId, keyframeTimelineFrame);
-            }
-        } else if (finalize) {
-            m_previewDragAnchorFrameByClip.remove(clipId);
-        }
+        const int64_t keyframeTimelineFrame =
+            previewDragKeyframeTimelineFrame(
+                m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
         const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
         if (playing && !finalize && !transcriptOverlaySelected) {
             QVector<TimelineClip> previewClips = m_timeline->clips();
@@ -567,62 +641,21 @@ void EditorWindow::connectPreviewSignals()
                     continue;
                 }
                 if (clip.mediaType == ClipMediaType::Title) {
-                    const int64_t localFrame =
-                        qBound<int64_t>(0,
-                                        keyframeTimelineFrame - clip.startFrame,
-                                        qMax<int64_t>(0, clip.durationFrames - 1));
-                    bool replaced = false;
-                    for (TimelineClip::TitleKeyframe& kf : clip.titleKeyframes) {
-                        if (kf.frame == localFrame) {
-                            kf.translationX = translationX;
-                            kf.translationY = translationY;
-                            replaced = true;
-                            break;
-                        }
-                    }
-                    if (!replaced && !clip.titleKeyframes.isEmpty()) {
-                        TimelineClip::TitleKeyframe keyframe = clip.titleKeyframes.constFirst();
-                        keyframe.frame = localFrame;
-                        keyframe.translationX = translationX;
-                        keyframe.translationY = translationY;
-                        clip.titleKeyframes.push_back(keyframe);
-                    }
-                    normalizeClipTitleKeyframes(clip);
-                    previewUpdated = true;
-                    break;
+                    previewUpdated = upsertPreviewTitleMoveKeyframe(
+                        clip, keyframeTimelineFrame, translationX, translationY);
+                } else {
+                    previewUpdated = upsertVisualTransformKeyframe(
+                        clip,
+                        keyframeTimelineFrame,
+                        [&](TimelineClip::TransformKeyframe& keyframe) {
+                            keyframe.translationX = translationX - clip.baseTranslationX;
+                            keyframe.translationY = translationY - clip.baseTranslationY;
+                        });
                 }
-                if (!clipHasVisuals(clip)) {
-                    break;
-                }
-                const TimelineClip::TransformKeyframe offset =
-                    evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
-                const int64_t keyframeFrame =
-                    qBound<int64_t>(0,
-                                    keyframeTimelineFrame - clip.startFrame,
-                                    qMax<int64_t>(0, clip.durationFrames - 1));
-                TimelineClip::TransformKeyframe keyframe = offset;
-                keyframe.frame = keyframeFrame;
-                keyframe.translationX = translationX - clip.baseTranslationX;
-                keyframe.translationY = translationY - clip.baseTranslationY;
-                bool replaced = false;
-                for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-                    if (existing.frame == keyframeFrame) {
-                        existing = keyframe;
-                        replaced = true;
-                        break;
-                    }
-                }
-                if (!replaced) {
-                    clip.transformKeyframes.push_back(keyframe);
-                }
-                normalizeClipTransformKeyframes(clip);
-                previewUpdated = true;
                 break;
             }
             if (!previewUpdated) return;
-            m_preview->setTimelineTracks(m_timeline->tracks());
-            m_preview->setTimelineClips(previewClips);
-            m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+            refreshPreviewTimeline(m_preview, m_timeline, previewClips);
             return;
         }
 
@@ -634,52 +667,20 @@ void EditorWindow::connectPreviewSignals()
                 return;
             }
             if (clip.mediaType == ClipMediaType::Title) {
-                const int64_t localFrame = qBound<int64_t>(0, keyframeTimelineFrame - clip.startFrame,
-                    qMax<int64_t>(0, clip.durationFrames - 1));
-                bool replaced = false;
-                for (auto &kf : clip.titleKeyframes) {
-                    if (kf.frame == localFrame) {
-                        kf.translationX = translationX;
-                        kf.translationY = translationY;
-                        replaced = true;
-                        break;
-                    }
-                }
-                if (!replaced && !clip.titleKeyframes.isEmpty()) {
-                    int bestIdx = 0;
-                    for (int i = 0; i < clip.titleKeyframes.size(); ++i) {
-                        if (clip.titleKeyframes[i].frame <= localFrame) bestIdx = i;
-                    }
-                    clip.titleKeyframes[bestIdx].translationX = translationX;
-                    clip.titleKeyframes[bestIdx].translationY = translationY;
-                }
-                normalizeClipTitleKeyframes(clip);
+                applyCommittedTitleMoveKeyframe(
+                    clip, keyframeTimelineFrame, translationX, translationY);
                 return;
             }
-            if (!clipHasVisuals(clip)) return;
-            const TimelineClip::TransformKeyframe offset = evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
-            const int64_t keyframeFrame = qBound<int64_t>(0, keyframeTimelineFrame - clip.startFrame, qMax<int64_t>(0, clip.durationFrames - 1));
-            TimelineClip::TransformKeyframe keyframe = offset;
-            keyframe.frame = keyframeFrame;
-            keyframe.translationX = translationX - clip.baseTranslationX;
-            keyframe.translationY = translationY - clip.baseTranslationY;
-            bool replaced = false;
-            for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-                if (existing.frame == keyframeFrame) {
-                    existing = keyframe;
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) {
-                clip.transformKeyframes.push_back(keyframe);
-            }
-            normalizeClipTransformKeyframes(clip);
+            upsertVisualTransformKeyframe(
+                clip,
+                keyframeTimelineFrame,
+                [&](TimelineClip::TransformKeyframe& keyframe) {
+                    keyframe.translationX = translationX - clip.baseTranslationX;
+                    keyframe.translationY = translationY - clip.baseTranslationY;
+                });
         });
         if (!updated) return;
-        m_preview->setTimelineTracks(m_timeline->tracks());
-        m_preview->setTimelineClips(m_timeline->clips());
-        m_preview->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
+        refreshPreviewTimeline(m_preview, m_timeline, m_timeline->clips());
         refreshPreviewTransformInspectorViews();
         scheduleSaveState();
         if (finalize) pushHistorySnapshot();
