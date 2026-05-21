@@ -152,7 +152,11 @@ QVector<OptimizationCandidate> candidatesForBackend(const QString& backendFamily
 
 QString EditorWindow::optimizedProfilePath() const
 {
-    return QDir(projectPath(currentProjectIdOrDefault())).filePath(QStringLiteral("optimized_profile.json"));
+    const QString projectId = m_projectManager
+        ? m_projectManager->currentProjectIdOrDefault()
+        : QStringLiteral("default");
+    const QString projectPath = m_projectManager ? m_projectManager->projectPath(projectId) : QString();
+    return QDir(projectPath).filePath(QStringLiteral("optimized_profile.json"));
 }
 
 QJsonObject EditorWindow::optimizedProfileSnapshot() const
@@ -257,7 +261,7 @@ QJsonObject EditorWindow::runStartupOptimizationPass()
         const QJsonObject root{
             {QStringLiteral("version"), 1},
             {QStringLiteral("generated_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-            {QStringLiteral("project_id"), currentProjectIdOrDefault()},
+            {QStringLiteral("project_id"), m_projectManager ? m_projectManager->currentProjectIdOrDefault() : QStringLiteral("default")},
             {QStringLiteral("backend"), backendFamily},
             {QStringLiteral("reason"), QStringLiteral("preview_unavailable")},
             {QStringLiteral("selected_name"), QStringLiteral("default")},
@@ -327,7 +331,7 @@ QJsonObject EditorWindow::runStartupOptimizationPass()
     const QJsonObject root{
         {QStringLiteral("version"), 1},
         {QStringLiteral("generated_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
-        {QStringLiteral("project_id"), currentProjectIdOrDefault()},
+        {QStringLiteral("project_id"), m_projectManager ? m_projectManager->currentProjectIdOrDefault() : QStringLiteral("default")},
         {QStringLiteral("backend"), backendFamily},
         {QStringLiteral("system"), QJsonObject{
              {QStringLiteral("ideal_thread_count"), coreCount},
@@ -361,7 +365,12 @@ QJsonObject EditorWindow::ensureOptimizedProfile()
     }
 
     const QJsonObject generated = runStartupOptimizationPass();
-    QDir().mkpath(projectPath(currentProjectIdOrDefault()));
+    const QString projectId = m_projectManager
+        ? m_projectManager->currentProjectIdOrDefault()
+        : QStringLiteral("default");
+    if (m_projectManager) {
+        QDir().mkpath(m_projectManager->projectPath(projectId));
+    }
     QSaveFile file(optimizedProfilePath());
     bool saved = false;
     QString error;

@@ -459,16 +459,7 @@ void GradingTab::applyGradeFromInspector(bool pushHistory)
 
     m_selectedKeyframeFrame = targetFrame;
     m_selectedKeyframeFrames = {targetFrame};
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
-    if (pushHistory) {
-        m_deps.refreshInspector();
-    }
-    m_deps.scheduleSaveState();
-    if (pushHistory) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyPostEditEffects({.refreshInspector = pushHistory, .pushHistory = pushHistory});
     emit gradeApplied();
 }
 
@@ -775,12 +766,8 @@ void GradingTab::onAutoOpposeGradeChangesClicked()
 
     m_selectedKeyframeFrame = events.constFirst().localFrame;
     m_selectedKeyframeFrames = {m_selectedKeyframeFrame};
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
+    applyPostEditEffects({.refreshInspector = false});
     refresh();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
 
     QMessageBox::information(
         nullptr,
@@ -981,15 +968,14 @@ void GradingTab::onTableItemChanged(QTableWidgetItem* changedItem)
 
     m_selectedKeyframeFrame = edited.frame;
     m_selectedKeyframeFrames = {edited.frame};
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
+    applyPostEditEffects({.refreshInspector = false, .pushHistory = false});
     if (m_deps.onKeyframeItemChanged) {
         m_deps.onKeyframeItemChanged(changedItem);
     }
     refresh();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
 }
 
 void GradingTab::onTableItemClicked(QTableWidgetItem* item)

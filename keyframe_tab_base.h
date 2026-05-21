@@ -16,6 +16,13 @@ class KeyframeTabBase : public QObject
     Q_OBJECT
 
 public:
+    struct PostEditEffects {
+        bool updatePreview = true;
+        bool refreshInspector = true;
+        bool scheduleSave = true;
+        bool pushHistory = true;
+    };
+
     struct Dependencies {
         std::function<const TimelineClip*()> getSelectedClip;
         std::function<const TimelineClip*()> getSelectedClipConst;
@@ -90,6 +97,8 @@ signals:
     void keyframeSelectionChanged();
 
 protected:
+    void applyPostEditEffects();
+    void applyPostEditEffects(const PostEditEffects& effects);
     bool eventFilter(QObject* watched, QEvent* event) override;
     Dependencies m_deps;
     bool m_updating = false;

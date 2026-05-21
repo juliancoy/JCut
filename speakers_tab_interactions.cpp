@@ -1,5 +1,6 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
+#include "editor_tab_edit_effects.h"
 
 #include "decoder_context.h"
 #include "transcript_engine.h"
@@ -46,6 +47,18 @@
 #include <limits>
 
 namespace {
+TabEditCallbacks speakerEditCallbacks(const TableTabBase::Dependencies& deps) {
+    return TabEditCallbacks{
+        .scheduleSave = deps.scheduleSaveState,
+        .pushHistory = deps.pushHistorySnapshot,
+    };
+}
+
+void applySpeakerDocumentEffects(const TableTabBase::Dependencies& deps) {
+    applyTabEditEffects(speakerEditCallbacks(deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
+}
+
 struct AiProposalRow {
     QString targetId;
     QString field;
@@ -786,12 +799,8 @@ bool SpeakersTab::adjustSelectedReferenceAvatarZoom(int referenceIndex, int whee
     }
 
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyTabEditEffects(speakerEditCallbacks(m_deps),
+                        TabEditEffects{.refreshInspector = false});
     refresh();
     return true;
 }
@@ -1139,12 +1148,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
             return;
         }
         emit transcriptDocumentChanged();
-        if (m_deps.scheduleSaveState) {
-            m_deps.scheduleSaveState();
-        }
-        if (m_deps.pushHistorySnapshot) {
-            m_deps.pushHistorySnapshot();
-        }
+        applySpeakerDocumentEffects(m_deps);
         refresh();
         return;
     }
@@ -1156,12 +1160,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
             return;
         }
         emit transcriptDocumentChanged();
-        if (m_deps.scheduleSaveState) {
-            m_deps.scheduleSaveState();
-        }
-        if (m_deps.pushHistorySnapshot) {
-            m_deps.pushHistorySnapshot();
-        }
+        applySpeakerDocumentEffects(m_deps);
         refresh();
         return;
     }
@@ -1182,12 +1181,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
         return;
     }
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applySpeakerDocumentEffects(m_deps);
     refresh();
 }
 
@@ -1213,12 +1207,7 @@ void SpeakersTab::onSpeakersTableItemClicked(QTableWidgetItem* item)
             return;
         }
         emit transcriptDocumentChanged();
-        if (m_deps.scheduleSaveState) {
-            m_deps.scheduleSaveState();
-        }
-        if (m_deps.pushHistorySnapshot) {
-            m_deps.pushHistorySnapshot();
-        }
+        applySpeakerDocumentEffects(m_deps);
         refresh();
         return;
     }
@@ -1305,12 +1294,7 @@ void SpeakersTab::onSpeakerSetReference1Clicked()
     }
 
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applySpeakerDocumentEffects(m_deps);
     refresh();
 }
 
@@ -1330,12 +1314,7 @@ void SpeakersTab::onSpeakerSetReference2Clicked()
     }
 
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applySpeakerDocumentEffects(m_deps);
     refresh();
 }
 
@@ -1385,12 +1364,7 @@ void SpeakersTab::onSpeakerTrackingChipClicked()
         return;
     }
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applySpeakerDocumentEffects(m_deps);
     refresh();
 }
 
@@ -1423,14 +1397,12 @@ void SpeakersTab::onSpeakerStabilizeChipClicked()
         updateSpeakerTrackingStatusLabel();
         return;
     }
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-    if (m_speakerDeps.refreshPreview) {
-        m_speakerDeps.refreshPreview();
-    }
+    applyTabEditEffects(
+        TabEditCallbacks{
+            .updatePreview = m_speakerDeps.refreshPreview,
+            .scheduleSave = m_deps.scheduleSaveState,
+            .pushHistory = m_deps.pushHistorySnapshot,
+        },
+        TabEditEffects{.refreshInspector = false});
     refresh();
 }

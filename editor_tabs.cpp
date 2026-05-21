@@ -330,13 +330,12 @@ void EditorWindow::createProjectsTab()
             m_saveProjectAsButton,
             m_renameProjectButton},
         ProjectsTab::Dependencies{
-            [this]() { return availableProjectIds(); },
-            [this]() { return currentProjectName(); },
-            [this](const QString& projectId) { return projectPath(projectId); },
+            m_projectManager.get(),
             [this](const QString& projectId) { switchToProject(projectId); },
             [this]() { createProject(); },
             [this]() { saveProjectAs(); },
-            [this](const QString& projectId) { renameProject(projectId); }});
+            [this](const QString& projectId) { renameProject(projectId); },
+        });
     m_projectsTab->wire();
 }
 

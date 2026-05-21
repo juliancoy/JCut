@@ -8,6 +8,7 @@
 class QLabel;
 class QListWidget;
 class QPushButton;
+class ProjectManager;
 
 class ProjectsTab : public QObject
 {
@@ -25,9 +26,7 @@ public:
 
     struct Dependencies
     {
-        std::function<QStringList()> availableProjectIds;
-        std::function<QString()> currentProjectName;
-        std::function<QString(const QString&)> projectPath;
+        ProjectManager* projectManager = nullptr;
         std::function<void(const QString&)> switchToProject;
         std::function<void()> createProject;
         std::function<void()> saveProjectAs;

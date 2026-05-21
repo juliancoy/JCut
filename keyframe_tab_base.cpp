@@ -234,6 +234,27 @@ KeyframeTabBase::ContextMenuActions KeyframeTabBase::buildStandardContextMenu(
     return actions;
 }
 
+void KeyframeTabBase::applyPostEditEffects()
+{
+    applyPostEditEffects(PostEditEffects{});
+}
+
+void KeyframeTabBase::applyPostEditEffects(const PostEditEffects& effects)
+{
+    if (effects.updatePreview && m_deps.setPreviewTimelineClips) {
+        m_deps.setPreviewTimelineClips();
+    }
+    if (effects.refreshInspector && m_deps.refreshInspector) {
+        m_deps.refreshInspector();
+    }
+    if (effects.scheduleSave && m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
+    }
+    if (effects.pushHistory && m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
+}
+
 bool KeyframeTabBase::eventFilter(QObject* watched, QEvent* event)
 {
     if (event->type() == QEvent::KeyPress) {

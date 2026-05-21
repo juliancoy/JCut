@@ -1,6 +1,6 @@
 #include "editor.h"
+#include "editor_preview_edit_helpers.h"
 #include "transport_icons.h"
-#include "titles.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -11,30 +11,6 @@
 using namespace editor;
 
 namespace {
-bool clipSupportsTranscriptOverlay(const TimelineClip& clip) {
-    return (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled;
-}
-
-int64_t previewDragKeyframeTimelineFrame(QHash<QString, int64_t>& anchorFrames,
-                                         const QString& clipId,
-                                         int64_t currentFrame,
-                                         bool playing,
-                                         bool finalize) {
-    int64_t keyframeTimelineFrame = currentFrame;
-    if (playing) {
-        if (finalize) {
-            keyframeTimelineFrame = anchorFrames.value(clipId, currentFrame);
-            anchorFrames.remove(clipId);
-        } else {
-            keyframeTimelineFrame = anchorFrames.value(clipId, currentFrame);
-            anchorFrames.insert(clipId, keyframeTimelineFrame);
-        }
-    } else if (finalize) {
-        anchorFrames.remove(clipId);
-    }
-    return keyframeTimelineFrame;
-}
-
 void refreshPreviewTimeline(PreviewSurface* preview,
                             TimelineWidget* timeline,
                             const QVector<TimelineClip>& clips) {
@@ -44,99 +20,6 @@ void refreshPreviewTimeline(PreviewSurface* preview,
     preview->setTimelineTracks(timeline->tracks());
     preview->setTimelineClips(clips);
     preview->setRenderSyncMarkers(timeline->renderSyncMarkers());
-}
-
-bool upsertVisualTransformKeyframe(
-    TimelineClip& clip,
-    int64_t keyframeTimelineFrame,
-    const std::function<void(TimelineClip::TransformKeyframe&)>& mutate) {
-    if (!clipHasVisuals(clip)) {
-        return false;
-    }
-    const TimelineClip::TransformKeyframe offset =
-        evaluateClipKeyframeOffsetAtFrame(clip, keyframeTimelineFrame);
-    const int64_t keyframeFrame =
-        qBound<int64_t>(0,
-                        keyframeTimelineFrame - clip.startFrame,
-                        qMax<int64_t>(0, clip.durationFrames - 1));
-    TimelineClip::TransformKeyframe keyframe = offset;
-    keyframe.frame = keyframeFrame;
-    mutate(keyframe);
-
-    bool replaced = false;
-    for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-        if (existing.frame == keyframeFrame) {
-            existing = keyframe;
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced) {
-        clip.transformKeyframes.push_back(keyframe);
-    }
-    normalizeClipTransformKeyframes(clip);
-    return true;
-}
-
-bool upsertPreviewTitleMoveKeyframe(TimelineClip& clip,
-                                    int64_t keyframeTimelineFrame,
-                                    qreal translationX,
-                                    qreal translationY) {
-    if (clip.mediaType != ClipMediaType::Title) {
-        return false;
-    }
-    const int64_t localFrame =
-        qBound<int64_t>(0,
-                        keyframeTimelineFrame - clip.startFrame,
-                        qMax<int64_t>(0, clip.durationFrames - 1));
-    bool replaced = false;
-    for (TimelineClip::TitleKeyframe& kf : clip.titleKeyframes) {
-        if (kf.frame == localFrame) {
-            kf.translationX = translationX;
-            kf.translationY = translationY;
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced && !clip.titleKeyframes.isEmpty()) {
-        TimelineClip::TitleKeyframe keyframe = clip.titleKeyframes.constFirst();
-        keyframe.frame = localFrame;
-        keyframe.translationX = translationX;
-        keyframe.translationY = translationY;
-        clip.titleKeyframes.push_back(keyframe);
-    }
-    normalizeClipTitleKeyframes(clip);
-    return true;
-}
-
-void applyCommittedTitleMoveKeyframe(TimelineClip& clip,
-                                     int64_t keyframeTimelineFrame,
-                                     qreal translationX,
-                                     qreal translationY) {
-    const int64_t localFrame =
-        qBound<int64_t>(0,
-                        keyframeTimelineFrame - clip.startFrame,
-                        qMax<int64_t>(0, clip.durationFrames - 1));
-    bool replaced = false;
-    for (auto& kf : clip.titleKeyframes) {
-        if (kf.frame == localFrame) {
-            kf.translationX = translationX;
-            kf.translationY = translationY;
-            replaced = true;
-            break;
-        }
-    }
-    if (!replaced && !clip.titleKeyframes.isEmpty()) {
-        int bestIdx = 0;
-        for (int i = 0; i < clip.titleKeyframes.size(); ++i) {
-            if (clip.titleKeyframes[i].frame <= localFrame) {
-                bestIdx = i;
-            }
-        }
-        clip.titleKeyframes[bestIdx].translationX = translationX;
-        clip.titleKeyframes[bestIdx].translationY = translationY;
-    }
-    normalizeClipTitleKeyframes(clip);
 }
 
 }
@@ -468,102 +351,10 @@ void EditorWindow::connectPreviewSignals()
         if (!m_timeline) return;
 
         const int64_t currentFrame = m_timeline->currentFrame();
-        const bool updated = m_timeline->updateClipById(clipId, [currentFrame](TimelineClip &clip) {
-            const int64_t localFrame = qBound<int64_t>(
-                0,
-                currentFrame - clip.startFrame,
-                qMax<int64_t>(0, clip.durationFrames - 1));
-
-            if (clip.mediaType == ClipMediaType::Title) {
-                if (clip.titleKeyframes.isEmpty()) {
-                    return;
-                }
-
-                const EvaluatedTitle evaluated = evaluateTitleAtLocalFrame(clip, localFrame);
-                if (!evaluated.valid) {
-                    return;
-                }
-
-                TimelineClip::TitleKeyframe keyframe = clip.titleKeyframes.constFirst();
-                keyframe.frame = localFrame;
-                keyframe.text = evaluated.text;
-                keyframe.translationX = evaluated.x;
-                keyframe.translationY = evaluated.y;
-                keyframe.fontSize = evaluated.fontSize;
-                keyframe.opacity = evaluated.opacity;
-                keyframe.fontFamily = evaluated.fontFamily;
-                keyframe.bold = evaluated.bold;
-                keyframe.italic = evaluated.italic;
-                keyframe.color = evaluated.color;
-                keyframe.dropShadowEnabled = evaluated.dropShadowEnabled;
-                keyframe.dropShadowColor = evaluated.dropShadowColor;
-                keyframe.dropShadowOpacity = evaluated.dropShadowOpacity;
-                keyframe.dropShadowOffsetX = evaluated.dropShadowOffsetX;
-                keyframe.dropShadowOffsetY = evaluated.dropShadowOffsetY;
-                keyframe.windowEnabled = evaluated.windowEnabled;
-                keyframe.windowColor = evaluated.windowColor;
-                keyframe.windowOpacity = evaluated.windowOpacity;
-                keyframe.windowPadding = evaluated.windowPadding;
-                keyframe.windowFrameEnabled = evaluated.windowFrameEnabled;
-                keyframe.windowFrameColor = evaluated.windowFrameColor;
-                keyframe.windowFrameOpacity = evaluated.windowFrameOpacity;
-                keyframe.windowFrameWidth = evaluated.windowFrameWidth;
-                keyframe.windowFrameGap = evaluated.windowFrameGap;
-                for (const TimelineClip::TitleKeyframe &existing : clip.titleKeyframes) {
-                    if (existing.frame > localFrame) {
-                        keyframe.linearInterpolation = existing.linearInterpolation;
-                        break;
-                    }
-                }
-
-                bool replaced = false;
-                for (TimelineClip::TitleKeyframe &existing : clip.titleKeyframes) {
-                    if (existing.frame == localFrame) {
-                        existing = keyframe;
-                        replaced = true;
-                        break;
-                    }
-                }
-                if (!replaced) {
-                    clip.titleKeyframes.push_back(keyframe);
-                }
-                normalizeClipTitleKeyframes(clip);
-                return;
-            }
-
-            if (!clipHasVisuals(clip)) return;
-
-            const TimelineClip::TransformKeyframe evaluated =
-                evaluateClipTransformAtFrame(clip, currentFrame);
-            TimelineClip::TransformKeyframe keyframe;
-            keyframe.frame = localFrame;
-            keyframe.translationX = evaluated.translationX - clip.baseTranslationX;
-            keyframe.translationY = evaluated.translationY - clip.baseTranslationY;
-            keyframe.rotation = evaluated.rotation - clip.baseRotation;
-            keyframe.scaleX =
-                sanitizeScaleValue(evaluated.scaleX / sanitizeScaleValue(clip.baseScaleX));
-            keyframe.scaleY =
-                sanitizeScaleValue(evaluated.scaleY / sanitizeScaleValue(clip.baseScaleY));
-            for (const TimelineClip::TransformKeyframe &existing : clip.transformKeyframes) {
-                if (existing.frame > localFrame) {
-                    keyframe.linearInterpolation = existing.linearInterpolation;
-                    break;
-                }
-            }
-
-            bool replaced = false;
-            for (TimelineClip::TransformKeyframe &existing : clip.transformKeyframes) {
-                if (existing.frame == localFrame) {
-                    existing = keyframe;
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) {
-                clip.transformKeyframes.push_back(keyframe);
-            }
-            normalizeClipTransformKeyframes(clip);
-        });
+        const bool updated =
+            m_timeline->updateClipById(clipId, [currentFrame](TimelineClip& clip) {
+                createPreviewKeyframeAtTimelineFrame(clip, currentFrame);
+            });
         if (!updated) return;
         m_preview->setTimelineTracks(m_timeline->tracks());
         m_preview->setTimelineClips(m_timeline->clips());
@@ -577,7 +368,7 @@ void EditorWindow::connectPreviewSignals()
         const int64_t currentFrame = m_timeline->currentFrame();
         const bool playing = playbackActive();
         const int64_t keyframeTimelineFrame =
-            previewDragKeyframeTimelineFrame(
+            resolvePreviewDragKeyframeTimelineFrame(
                 m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
         const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
         if (playing && !finalize && !transcriptOverlaySelected) {
@@ -587,15 +378,8 @@ void EditorWindow::connectPreviewSignals()
                 if (clip.id != clipId) {
                     continue;
                 }
-                previewUpdated = upsertVisualTransformKeyframe(
-                    clip,
-                    keyframeTimelineFrame,
-                    [&](TimelineClip::TransformKeyframe& keyframe) {
-                        keyframe.scaleX =
-                            sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
-                        keyframe.scaleY =
-                            sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
-                    });
+                previewUpdated = stagePreviewResize(
+                    clip, keyframeTimelineFrame, scaleX, scaleY);
                 break;
             }
             if (!previewUpdated) return;
@@ -603,21 +387,13 @@ void EditorWindow::connectPreviewSignals()
             return;
         }
 
-        const bool updated = m_timeline->updateClipById(clipId, [this, keyframeTimelineFrame, scaleX, scaleY, transcriptOverlaySelected](TimelineClip &clip) {
-            if (transcriptOverlaySelected && clipSupportsTranscriptOverlay(clip)) {
-                clip.transcriptOverlay.boxWidth = qMax<qreal>(80.0, scaleX);
-                clip.transcriptOverlay.boxHeight = qMax<qreal>(40.0, scaleY);
-                return;
-            }
-            upsertVisualTransformKeyframe(
+        const bool updated = m_timeline->updateClipById(clipId, [keyframeTimelineFrame, scaleX, scaleY, transcriptOverlaySelected](TimelineClip &clip) {
+            commitPreviewResize(
                 clip,
                 keyframeTimelineFrame,
-                [&](TimelineClip::TransformKeyframe& keyframe) {
-                    keyframe.scaleX =
-                        sanitizeScaleValue(scaleX / sanitizeScaleValue(clip.baseScaleX));
-                    keyframe.scaleY =
-                        sanitizeScaleValue(scaleY / sanitizeScaleValue(clip.baseScaleY));
-                });
+                scaleX,
+                scaleY,
+                transcriptOverlaySelected);
         });
         if (!updated) return;
         refreshPreviewTimeline(m_preview, m_timeline, m_timeline->clips());
@@ -630,7 +406,7 @@ void EditorWindow::connectPreviewSignals()
         const int64_t currentFrame = m_timeline->currentFrame();
         const bool playing = playbackActive();
         const int64_t keyframeTimelineFrame =
-            previewDragKeyframeTimelineFrame(
+            resolvePreviewDragKeyframeTimelineFrame(
                 m_previewDragAnchorFrameByClip, clipId, currentFrame, playing, finalize);
         const bool transcriptOverlaySelected = m_preview && m_preview->selectedOverlayIsTranscript();
         if (playing && !finalize && !transcriptOverlaySelected) {
@@ -640,18 +416,8 @@ void EditorWindow::connectPreviewSignals()
                 if (clip.id != clipId) {
                     continue;
                 }
-                if (clip.mediaType == ClipMediaType::Title) {
-                    previewUpdated = upsertPreviewTitleMoveKeyframe(
-                        clip, keyframeTimelineFrame, translationX, translationY);
-                } else {
-                    previewUpdated = upsertVisualTransformKeyframe(
-                        clip,
-                        keyframeTimelineFrame,
-                        [&](TimelineClip::TransformKeyframe& keyframe) {
-                            keyframe.translationX = translationX - clip.baseTranslationX;
-                            keyframe.translationY = translationY - clip.baseTranslationY;
-                        });
-                }
+                previewUpdated = stagePreviewMove(
+                    clip, keyframeTimelineFrame, translationX, translationY);
                 break;
             }
             if (!previewUpdated) return;
@@ -659,25 +425,13 @@ void EditorWindow::connectPreviewSignals()
             return;
         }
 
-        const bool updated = m_timeline->updateClipById(clipId, [this, keyframeTimelineFrame, translationX, translationY, transcriptOverlaySelected](TimelineClip &clip) {
-            if (transcriptOverlaySelected && clipSupportsTranscriptOverlay(clip)) {
-                clip.transcriptOverlay.translationX = translationX;
-                clip.transcriptOverlay.translationY = translationY;
-                clip.transcriptOverlay.useManualPlacement = true;
-                return;
-            }
-            if (clip.mediaType == ClipMediaType::Title) {
-                applyCommittedTitleMoveKeyframe(
-                    clip, keyframeTimelineFrame, translationX, translationY);
-                return;
-            }
-            upsertVisualTransformKeyframe(
+        const bool updated = m_timeline->updateClipById(clipId, [keyframeTimelineFrame, translationX, translationY, transcriptOverlaySelected](TimelineClip &clip) {
+            commitPreviewMove(
                 clip,
                 keyframeTimelineFrame,
-                [&](TimelineClip::TransformKeyframe& keyframe) {
-                    keyframe.translationX = translationX - clip.baseTranslationX;
-                    keyframe.translationY = translationY - clip.baseTranslationY;
-                });
+                translationX,
+                translationY,
+                transcriptOverlaySelected);
         });
         if (!updated) return;
         refreshPreviewTimeline(m_preview, m_timeline, m_timeline->clips());

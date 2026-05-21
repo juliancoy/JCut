@@ -87,25 +87,6 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
         }
         applyLoadedTranscriptDocumentData(*clip, m_pendingPreferredSpeakerId);
     });
-    connect(&m_transcriptSaveWatcher, &QFutureWatcher<TranscriptDocumentSaveResult>::finished, this, [this]() {
-        const TranscriptDocumentSaveResult result = m_transcriptSaveWatcher.result();
-        if (!result.ok) {
-            qWarning().noquote()
-                << QStringLiteral("[speakers] async save failed for %1: %2")
-                       .arg(result.transcriptPath,
-                            result.error.isEmpty() ? QStringLiteral("unknown error") : result.error);
-        }
-        if (m_pendingTranscriptSaveRevision > result.revision &&
-            !m_pendingTranscriptSavePath.trimmed().isEmpty() &&
-            m_pendingTranscriptSaveDoc.isObject()) {
-            const QString path = m_pendingTranscriptSavePath;
-            const QJsonDocument doc = m_pendingTranscriptSaveDoc;
-            const qint64 revision = m_pendingTranscriptSaveRevision;
-            m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
-                return saveTranscriptDocumentResult(path, doc, revision);
-            }));
-        }
-    });
 }
 
 bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
@@ -138,24 +119,14 @@ void SpeakersTab::queueLoadedTranscriptDocumentSave()
     if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
         return;
     }
-    ++m_transcriptSaveRevision;
-    m_pendingTranscriptSaveRevision = m_transcriptSaveRevision;
-    m_pendingTranscriptSavePath = m_loadedTranscriptPath;
-    m_pendingTranscriptSaveDoc = m_loadedTranscriptDoc;
-    if (shouldUseSynchronousTranscriptIo()) {
-        editor::TranscriptEngine engine;
-        engine.saveTranscriptJson(m_pendingTranscriptSavePath, m_pendingTranscriptSaveDoc);
-        return;
-    }
-    if (m_transcriptSaveWatcher.isRunning()) {
-        return;
-    }
-    const QString path = m_pendingTranscriptSavePath;
-    const QJsonDocument doc = m_pendingTranscriptSaveDoc;
-    const qint64 revision = m_pendingTranscriptSaveRevision;
-    m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
-        return saveTranscriptDocumentResult(path, doc, revision);
-    }));
+    m_transcriptSaveController.queueSave(
+        m_loadedTranscriptPath,
+        m_loadedTranscriptDoc,
+        shouldUseSynchronousTranscriptIo(),
+        [](const QString& path, const QJsonDocument& doc) {
+            editor::TranscriptEngine engine;
+            engine.saveTranscriptJson(path, doc);
+        });
 }
 
 void SpeakersTab::startTranscriptLoadRequest(const QString& clipFilePath,
@@ -1888,4 +1859,3 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
             .arg((selectedClip && selectedClip->speakerFramingEnabled) ? QStringLiteral("ON") : QStringLiteral("OFF")));
 }
-

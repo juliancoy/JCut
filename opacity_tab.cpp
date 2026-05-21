@@ -1,6 +1,7 @@
 #include "opacity_tab.h"
 
 #include "editor_shared.h"
+#include "editor_title_opacity_keyframe_ops.h"
 #include "keyframe_table_shared.h"
 
 #include <QDir>
@@ -139,42 +140,15 @@ void OpacityTab::applyOpacityFromInspector(bool pushHistory)
     }
 
     const bool updated = m_deps.updateClipById(selectedClip->id, [this, targetFrame](TimelineClip& clip) {
-        TimelineClip::OpacityKeyframe keyframe;
-        keyframe.frame = targetFrame;
-        keyframe.opacity = m_widgets.opacitySpin->value();
-        keyframe.linearInterpolation = true;
-
-        bool replaced = false;
-        for (TimelineClip::OpacityKeyframe& existing : clip.opacityKeyframes) {
-            if (existing.frame == targetFrame) {
-                keyframe.linearInterpolation = existing.linearInterpolation;
-                existing = keyframe;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            for (const TimelineClip::OpacityKeyframe& existing : clip.opacityKeyframes) {
-                if (existing.frame > targetFrame) {
-                    keyframe.linearInterpolation = existing.linearInterpolation;
-                    break;
-                }
-            }
-            clip.opacityKeyframes.push_back(keyframe);
-        }
-        normalizeClipOpacityKeyframes(clip);
+        upsertOpacityKeyframePreservingInterpolation(
+            clip, targetFrame, m_widgets.opacitySpin->value());
     });
 
     if (!updated) return;
 
     m_selectedKeyframeFrame = targetFrame;
     m_selectedKeyframeFrames = {targetFrame};
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    if (pushHistory) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyPostEditEffects({.pushHistory = pushHistory});
 }
 
 void OpacityTab::upsertKeyframeAtPlayhead()
@@ -287,18 +261,7 @@ void OpacityTab::onTableItemChanged(QTableWidgetItem* changedItem)
         keyframe.frame = frame;
         keyframe.opacity = opacity;
         keyframe.linearInterpolation = linearInterpolation;
-        bool replaced = false;
-        for (TimelineClip::OpacityKeyframe& existing : clip.opacityKeyframes) {
-            if (existing.frame == originalFrame) {
-                existing = keyframe;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            clip.opacityKeyframes.push_back(keyframe);
-        }
-        normalizeClipOpacityKeyframes(clip);
+        replaceStoredOpacityKeyframeAtFrame(clip, originalFrame, keyframe);
     });
     if (!updated) {
         refresh();
@@ -306,13 +269,14 @@ void OpacityTab::onTableItemChanged(QTableWidgetItem* changedItem)
     }
     m_selectedKeyframeFrame = frame;
     m_selectedKeyframeFrames = {frame};
-    m_deps.setPreviewTimelineClips();
+    applyPostEditEffects({.refreshInspector = false, .pushHistory = false});
     if (m_deps.onKeyframeItemChanged) {
         m_deps.onKeyframeItemChanged(changedItem);
     }
     refresh();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
 }
 
 void OpacityTab::onTableItemClicked(QTableWidgetItem* item)
@@ -468,17 +432,6 @@ void OpacityTab::applyOpacityFadeFromPlayhead(bool fadeIn)
     const double endOpacity = evaluateDisplayedOpacity(*clip, localEndFrame).opacity;
 
     const bool updated = m_deps.updateClipById(clip->id, [=](TimelineClip& updatedClip) {
-        auto upsertFrame = [](QVector<TimelineClip::OpacityKeyframe>& keyframes,
-                              const TimelineClip::OpacityKeyframe& keyframe) {
-            for (TimelineClip::OpacityKeyframe& existing : keyframes) {
-                if (existing.frame == keyframe.frame) {
-                    existing = keyframe;
-                    return;
-                }
-            }
-            keyframes.push_back(keyframe);
-        };
-
         TimelineClip::OpacityKeyframe startKeyframe;
         startKeyframe.frame = localStartFrame;
         startKeyframe.opacity = fadeIn ? 0.0 : qBound(0.0, startOpacity, 1.0);
@@ -489,16 +442,12 @@ void OpacityTab::applyOpacityFadeFromPlayhead(bool fadeIn)
         endKeyframe.opacity = fadeIn ? 1.0 : 0.0;
         endKeyframe.linearInterpolation = true;
 
-        upsertFrame(updatedClip.opacityKeyframes, startKeyframe);
-        upsertFrame(updatedClip.opacityKeyframes, endKeyframe);
-        normalizeClipOpacityKeyframes(updatedClip);
+        upsertStoredOpacityKeyframe(updatedClip, startKeyframe);
+        upsertStoredOpacityKeyframe(updatedClip, endKeyframe);
     });
 
     if (!updated) return;
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void OpacityTab::removeSelectedKeyframes()
@@ -508,21 +457,12 @@ void OpacityTab::removeSelectedKeyframes()
 
     const QList<int64_t> selectedFrames = selectedKeyframeFramesForClip(*clip);
     const bool updated = m_deps.updateClipById(clip->id, [&selectedFrames](TimelineClip& editableClip) {
-        editableClip.opacityKeyframes.erase(
-            std::remove_if(editableClip.opacityKeyframes.begin(),
-                           editableClip.opacityKeyframes.end(),
-                           [&selectedFrames](const TimelineClip::OpacityKeyframe& keyframe) {
-                               return keyframe.frame > 0 && selectedFrames.contains(keyframe.frame);
-                           }),
-            editableClip.opacityKeyframes.end());
-        normalizeClipOpacityKeyframes(editableClip);
+        removeStoredOpacityKeyframes(editableClip, selectedFrames, true);
     });
 
     if (!updated) return;
     m_selectedKeyframeFrame = 0;
     m_selectedKeyframeFrames = {0};
-    m_deps.setPreviewTimelineClips();
+    applyPostEditEffects({.refreshInspector = false});
     refresh();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
 }

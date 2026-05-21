@@ -2,6 +2,7 @@
 
 #include "clip_serialization.h"
 #include "editor_shared.h"
+#include "editor_tab_edit_effects.h"
 
 #include <QApplication>
 #include <QAbstractItemView>
@@ -29,6 +30,15 @@
 #include <limits>
 
 namespace {
+TabEditCallbacks transcriptEditCallbacks(const TranscriptTab::Dependencies& deps) {
+    return TabEditCallbacks{
+        .updatePreview = deps.setPreviewTimelineClips,
+        .refreshInspector = deps.refreshInspector,
+        .scheduleSave = deps.scheduleSaveState,
+        .pushHistory = deps.pushHistorySnapshot,
+    };
+}
+
 const QLatin1String kTranscriptWordSkippedKey("skipped");
 const QLatin1String kTranscriptWordSpeakerKey("speaker");
 const QLatin1String kTranscriptSegmentSpeakerKey("speaker");
@@ -146,25 +156,6 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         }
         applyLoadedTranscriptDocumentData(*clip, originalTranscriptPathForClip(result.clipFilePath));
     });
-    connect(&m_transcriptSaveWatcher, &QFutureWatcher<TranscriptDocumentSaveResult>::finished, this, [this]() {
-        const TranscriptDocumentSaveResult result = m_transcriptSaveWatcher.result();
-        if (!result.ok) {
-            qWarning().noquote()
-                << QStringLiteral("[transcript] async save failed for %1: %2")
-                       .arg(result.transcriptPath,
-                            result.error.isEmpty() ? QStringLiteral("unknown error") : result.error);
-        }
-        if (m_pendingTranscriptSaveRevision > result.revision &&
-            !m_pendingTranscriptSavePath.trimmed().isEmpty() &&
-            m_pendingTranscriptSaveDoc.isObject()) {
-            const QString path = m_pendingTranscriptSavePath;
-            const QJsonDocument doc = m_pendingTranscriptSaveDoc;
-            const qint64 revision = m_pendingTranscriptSaveRevision;
-            m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
-                return saveTranscriptDocumentResult(path, doc, revision);
-            }));
-        }
-    });
 }
 
 bool TranscriptTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
@@ -200,23 +191,13 @@ void TranscriptTab::queueLoadedTranscriptDocumentSave()
     if (m_loadedTranscriptPath.trimmed().isEmpty() || !m_loadedTranscriptDoc.isObject()) {
         return;
     }
-    ++m_transcriptSaveRevision;
-    m_pendingTranscriptSaveRevision = m_transcriptSaveRevision;
-    m_pendingTranscriptSavePath = m_loadedTranscriptPath;
-    m_pendingTranscriptSaveDoc = m_loadedTranscriptDoc;
-    if (shouldUseSynchronousTranscriptIo()) {
-        m_transcriptEngine.saveTranscriptJson(m_pendingTranscriptSavePath, m_pendingTranscriptSaveDoc);
-        return;
-    }
-    if (m_transcriptSaveWatcher.isRunning()) {
-        return;
-    }
-    const QString path = m_pendingTranscriptSavePath;
-    const QJsonDocument doc = m_pendingTranscriptSaveDoc;
-    const qint64 revision = m_pendingTranscriptSaveRevision;
-    m_transcriptSaveWatcher.setFuture(QtConcurrent::run([path, doc, revision]() {
-        return saveTranscriptDocumentResult(path, doc, revision);
-    }));
+    m_transcriptSaveController.queueSave(
+        m_loadedTranscriptPath,
+        m_loadedTranscriptDoc,
+        shouldUseSynchronousTranscriptIo(),
+        [this](const QString& path, const QJsonDocument& doc) {
+            m_transcriptEngine.saveTranscriptJson(path, doc);
+        });
 }
 
 void TranscriptTab::startTranscriptLoadRequest(const QString& clipFilePath, const QString& transcriptPath)
@@ -285,15 +266,8 @@ void TranscriptTab::wire()
             m_deps.updateClipById(clip->id, [&newLabel](TimelineClip& editableClip) {
                 editableClip.label = newLabel;
             });
-            if (m_deps.scheduleSaveState) {
-                m_deps.scheduleSaveState();
-            }
-            if (m_deps.pushHistorySnapshot) {
-                m_deps.pushHistorySnapshot();
-            }
-            if (m_deps.refreshInspector) {
-                m_deps.refreshInspector();
-            }
+            applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                                TabEditEffects{.updatePreview = false});
         });
     }
 
@@ -588,10 +562,8 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
 
     if (!updated) return;
 
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (pushHistory && m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.pushHistory = pushHistory});
 }
 
 void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
@@ -847,7 +819,8 @@ void TranscriptTab::applyTableEdit(QTableWidgetItem* item)
     saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false, .pushHistory = false});
 }
 
 void TranscriptTab::deleteSelectedRows()
@@ -909,8 +882,8 @@ void TranscriptTab::deleteSelectedRows()
     saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 void TranscriptTab::setSelectedRowsSkipped(bool skipped)
@@ -972,8 +945,8 @@ void TranscriptTab::setSelectedRowsSkipped(bool skipped)
     saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 void TranscriptTab::scheduleSeekToTranscriptRow(int row)
@@ -1120,8 +1093,8 @@ void TranscriptTab::onFollowCurrentWordToggled(bool checked)
 {
     Q_UNUSED(checked);
     if (m_updating) return;
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .pushHistory = false});
 }
 
 void TranscriptTab::onOverlaySettingChanged()
@@ -1164,8 +1137,8 @@ void TranscriptTab::onPrependMsChanged(int value)
     m_transcriptPrependMs = qMax(0, value);
     refresh();
     emit speechFilterParametersChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 void TranscriptTab::onPostpendMsChanged(int value)
@@ -1173,24 +1146,24 @@ void TranscriptTab::onPostpendMsChanged(int value)
     m_transcriptPostpendMs = qMax(0, value);
     refresh();
     emit speechFilterParametersChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 void TranscriptTab::onSpeechFilterEnabledToggled(bool enabled)
 {
     m_speechFilterEnabled = enabled;
     emit speechFilterParametersChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 void TranscriptTab::onSpeechFilterFadeSamplesChanged(int value)
 {
     m_speechFilterFadeSamples = qMax(0, value);
     emit speechFilterParametersChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
@@ -1441,8 +1414,8 @@ void TranscriptTab::insertWordAtRow(int row, bool above)
         saveLoadedTranscriptDocument();
         refresh();
         emit transcriptDocumentChanged();
-        if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-        if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+        applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                            TabEditEffects{.updatePreview = false, .refreshInspector = false});
     }
 }
 
@@ -1499,8 +1472,8 @@ void TranscriptTab::expandSelectedRow(int row)
     saveLoadedTranscriptDocument();
     refresh();
     emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyTabEditEffects(transcriptEditCallbacks(m_deps),
+                        TabEditEffects{.updatePreview = false, .refreshInspector = false});
 }
 
 bool TranscriptTab::eventFilter(QObject* watched, QEvent* event)

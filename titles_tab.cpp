@@ -1,4 +1,5 @@
 #include "titles_tab.h"
+#include "editor_title_opacity_keyframe_ops.h"
 #include "keyframe_table_shared.h"
 
 #include <QApplication>
@@ -502,103 +503,10 @@ void TitlesTab::applyKeyframeFromInspector()
     if (clipId.isEmpty() || !clip || clip->mediaType != ClipMediaType::Title) return;
 
     const int64_t targetFrame = preferredEditFrame(*clip);
-    const QString text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->toPlainText() : QString();
-    const double x = m_widgets.titleXSpin ? m_widgets.titleXSpin->value() : 0.0;
-    const double y = m_widgets.titleYSpin ? m_widgets.titleYSpin->value() : 0.0;
-    const double fontSize = m_widgets.titleFontSizeSpin ? m_widgets.titleFontSizeSpin->value() : 48.0;
-    const double opacity = m_widgets.titleOpacitySpin ? m_widgets.titleOpacitySpin->value() : 1.0;
-    const QString fontFamily = m_widgets.titleFontCombo
-        ? m_widgets.titleFontCombo->currentFont().family() : kDefaultFontFamily;
-    const bool bold = m_widgets.titleBoldCheck ? m_widgets.titleBoldCheck->isChecked() : true;
-    const bool italic = m_widgets.titleItalicCheck ? m_widgets.titleItalicCheck->isChecked() : false;
-    QColor color = m_selectedTitleColor;
-    const bool dropShadowEnabled =
-        m_widgets.titleShadowEnabledCheck ? m_widgets.titleShadowEnabledCheck->isChecked() : true;
-    QColor dropShadowColor = m_selectedShadowColor;
-    const double dropShadowOpacity =
-        m_widgets.titleShadowOpacitySpin ? m_widgets.titleShadowOpacitySpin->value() : 0.6;
-    const double dropShadowOffsetX =
-        m_widgets.titleShadowOffsetXSpin ? m_widgets.titleShadowOffsetXSpin->value() : 2.0;
-    const double dropShadowOffsetY =
-        m_widgets.titleShadowOffsetYSpin ? m_widgets.titleShadowOffsetYSpin->value() : 2.0;
-    const bool windowEnabled =
-        m_widgets.titleWindowEnabledCheck ? m_widgets.titleWindowEnabledCheck->isChecked() : false;
-    QColor windowColor = m_selectedWindowColor;
-    const double windowOpacity =
-        m_widgets.titleWindowOpacitySpin ? m_widgets.titleWindowOpacitySpin->value() : 0.35;
-    const double windowPadding =
-        m_widgets.titleWindowPaddingSpin ? m_widgets.titleWindowPaddingSpin->value() : 16.0;
-    const bool windowFrameEnabled =
-        m_widgets.titleWindowFrameEnabledCheck ? m_widgets.titleWindowFrameEnabledCheck->isChecked() : false;
-    QColor windowFrameColor = m_selectedWindowFrameColor;
-    const double windowFrameOpacity =
-        m_widgets.titleWindowFrameOpacitySpin ? m_widgets.titleWindowFrameOpacitySpin->value() : 1.0;
-    const double windowFrameWidth =
-        m_widgets.titleWindowFrameWidthSpin ? m_widgets.titleWindowFrameWidthSpin->value() : 2.0;
-    const double windowFrameGap =
-        m_widgets.titleWindowFrameGapSpin ? m_widgets.titleWindowFrameGapSpin->value() : 4.0;
     bool updated = false;
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
-            bool replaced = false;
-            for (auto &kf : clip.titleKeyframes) {
-                if (kf.frame == targetFrame) {
-                    kf.text = text;
-                    kf.translationX = x;
-                    kf.translationY = y;
-                    kf.fontSize = fontSize;
-                    kf.opacity = opacity;
-                    kf.fontFamily = fontFamily;
-                    kf.bold = bold;
-                    kf.italic = italic;
-                    kf.color = color;
-                    kf.dropShadowEnabled = dropShadowEnabled;
-                    kf.dropShadowColor = dropShadowColor;
-                    kf.dropShadowOpacity = dropShadowOpacity;
-                    kf.dropShadowOffsetX = dropShadowOffsetX;
-                    kf.dropShadowOffsetY = dropShadowOffsetY;
-                    kf.windowEnabled = windowEnabled;
-                    kf.windowColor = windowColor;
-                    kf.windowOpacity = windowOpacity;
-                    kf.windowPadding = windowPadding;
-                    kf.windowFrameEnabled = windowFrameEnabled;
-                    kf.windowFrameColor = windowFrameColor;
-                    kf.windowFrameOpacity = windowFrameOpacity;
-                    kf.windowFrameWidth = windowFrameWidth;
-                    kf.windowFrameGap = windowFrameGap;
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) {
-                TimelineClip::TitleKeyframe kf;
-                kf.frame = targetFrame;
-                kf.text = text;
-                kf.translationX = x;
-                kf.translationY = y;
-                kf.fontSize = fontSize;
-                kf.opacity = opacity;
-                kf.fontFamily = fontFamily;
-                kf.bold = bold;
-                kf.italic = italic;
-                kf.color = color;
-                kf.dropShadowEnabled = dropShadowEnabled;
-                kf.dropShadowColor = dropShadowColor;
-                kf.dropShadowOpacity = dropShadowOpacity;
-                kf.dropShadowOffsetX = dropShadowOffsetX;
-                kf.dropShadowOffsetY = dropShadowOffsetY;
-                kf.windowEnabled = windowEnabled;
-                kf.windowColor = windowColor;
-                kf.windowOpacity = windowOpacity;
-                kf.windowPadding = windowPadding;
-                kf.windowFrameEnabled = windowFrameEnabled;
-                kf.windowFrameColor = windowFrameColor;
-                kf.windowFrameOpacity = windowFrameOpacity;
-                kf.windowFrameWidth = windowFrameWidth;
-                kf.windowFrameGap = windowFrameGap;
-                clip.titleKeyframes.push_back(kf);
-            }
-            normalizeClipTitleKeyframes(clip);
+            upsertStoredTitleKeyframe(clip, buildStoredKeyframeFromInspector(targetFrame));
             updated = true;
         });
     }
@@ -607,10 +515,7 @@ void TitlesTab::applyKeyframeFromInspector()
     }
     m_selectedKeyframeFrame = targetFrame;
     m_selectedKeyframeFrames = {targetFrame};
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void TitlesTab::applyKeyframeFromInspectorLive()
@@ -625,104 +530,10 @@ void TitlesTab::applyKeyframeFromInspectorLive()
     }
 
     const int64_t targetFrame = preferredEditFrame(*clip);
-    const QString text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->toPlainText() : QString();
-    const double x = m_widgets.titleXSpin ? m_widgets.titleXSpin->value() : 0.0;
-    const double y = m_widgets.titleYSpin ? m_widgets.titleYSpin->value() : 0.0;
-    const double fontSize = m_widgets.titleFontSizeSpin ? m_widgets.titleFontSizeSpin->value() : 48.0;
-    const double opacity = m_widgets.titleOpacitySpin ? m_widgets.titleOpacitySpin->value() : 1.0;
-    const QString fontFamily = m_widgets.titleFontCombo
-        ? m_widgets.titleFontCombo->currentFont().family() : kDefaultFontFamily;
-    const bool bold = m_widgets.titleBoldCheck ? m_widgets.titleBoldCheck->isChecked() : true;
-    const bool italic = m_widgets.titleItalicCheck ? m_widgets.titleItalicCheck->isChecked() : false;
-    QColor color = m_selectedTitleColor;
-    const bool dropShadowEnabled =
-        m_widgets.titleShadowEnabledCheck ? m_widgets.titleShadowEnabledCheck->isChecked() : true;
-    QColor dropShadowColor = m_selectedShadowColor;
-    const double dropShadowOpacity =
-        m_widgets.titleShadowOpacitySpin ? m_widgets.titleShadowOpacitySpin->value() : 0.6;
-    const double dropShadowOffsetX =
-        m_widgets.titleShadowOffsetXSpin ? m_widgets.titleShadowOffsetXSpin->value() : 2.0;
-    const double dropShadowOffsetY =
-        m_widgets.titleShadowOffsetYSpin ? m_widgets.titleShadowOffsetYSpin->value() : 2.0;
-    const bool windowEnabled =
-        m_widgets.titleWindowEnabledCheck ? m_widgets.titleWindowEnabledCheck->isChecked() : false;
-    QColor windowColor = m_selectedWindowColor;
-    const double windowOpacity =
-        m_widgets.titleWindowOpacitySpin ? m_widgets.titleWindowOpacitySpin->value() : 0.35;
-    const double windowPadding =
-        m_widgets.titleWindowPaddingSpin ? m_widgets.titleWindowPaddingSpin->value() : 16.0;
-    const bool windowFrameEnabled =
-        m_widgets.titleWindowFrameEnabledCheck ? m_widgets.titleWindowFrameEnabledCheck->isChecked() : false;
-    QColor windowFrameColor = m_selectedWindowFrameColor;
-    const double windowFrameOpacity =
-        m_widgets.titleWindowFrameOpacitySpin ? m_widgets.titleWindowFrameOpacitySpin->value() : 1.0;
-    const double windowFrameWidth =
-        m_widgets.titleWindowFrameWidthSpin ? m_widgets.titleWindowFrameWidthSpin->value() : 2.0;
-    const double windowFrameGap =
-        m_widgets.titleWindowFrameGapSpin ? m_widgets.titleWindowFrameGapSpin->value() : 4.0;
-
     bool updated = false;
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &editable) {
-            bool replaced = false;
-            for (auto &kf : editable.titleKeyframes) {
-                if (kf.frame == targetFrame) {
-                    kf.text = text;
-                    kf.translationX = x;
-                    kf.translationY = y;
-                    kf.fontSize = fontSize;
-                    kf.opacity = opacity;
-                    kf.fontFamily = fontFamily;
-                    kf.bold = bold;
-                    kf.italic = italic;
-                    kf.color = color;
-                    kf.dropShadowEnabled = dropShadowEnabled;
-                    kf.dropShadowColor = dropShadowColor;
-                    kf.dropShadowOpacity = dropShadowOpacity;
-                    kf.dropShadowOffsetX = dropShadowOffsetX;
-                    kf.dropShadowOffsetY = dropShadowOffsetY;
-                    kf.windowEnabled = windowEnabled;
-                    kf.windowColor = windowColor;
-                    kf.windowOpacity = windowOpacity;
-                    kf.windowPadding = windowPadding;
-                    kf.windowFrameEnabled = windowFrameEnabled;
-                    kf.windowFrameColor = windowFrameColor;
-                    kf.windowFrameOpacity = windowFrameOpacity;
-                    kf.windowFrameWidth = windowFrameWidth;
-                    kf.windowFrameGap = windowFrameGap;
-                    replaced = true;
-                    break;
-                }
-            }
-            if (!replaced) {
-                TimelineClip::TitleKeyframe kf;
-                kf.frame = targetFrame;
-                kf.text = text;
-                kf.translationX = x;
-                kf.translationY = y;
-                kf.fontSize = fontSize;
-                kf.opacity = opacity;
-                kf.fontFamily = fontFamily;
-                kf.bold = bold;
-                kf.italic = italic;
-                kf.color = color;
-                kf.dropShadowEnabled = dropShadowEnabled;
-                kf.dropShadowColor = dropShadowColor;
-                kf.dropShadowOpacity = dropShadowOpacity;
-                kf.dropShadowOffsetX = dropShadowOffsetX;
-                kf.dropShadowOffsetY = dropShadowOffsetY;
-                kf.windowEnabled = windowEnabled;
-                kf.windowColor = windowColor;
-                kf.windowOpacity = windowOpacity;
-                kf.windowPadding = windowPadding;
-                kf.windowFrameEnabled = windowFrameEnabled;
-                kf.windowFrameColor = windowFrameColor;
-                kf.windowFrameOpacity = windowFrameOpacity;
-                kf.windowFrameWidth = windowFrameWidth;
-                kf.windowFrameGap = windowFrameGap;
-                editable.titleKeyframes.push_back(kf);
-            }
-            normalizeClipTitleKeyframes(editable);
+            upsertStoredTitleKeyframe(editable, buildStoredKeyframeFromInspector(targetFrame));
             updated = true;
         });
     }
@@ -732,8 +543,49 @@ void TitlesTab::applyKeyframeFromInspectorLive()
 
     m_selectedKeyframeFrame = targetFrame;
     m_selectedKeyframeFrames = {targetFrame};
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    applyPostEditEffects({.refreshInspector = false, .pushHistory = false});
+}
+
+TimelineClip::TitleKeyframe TitlesTab::buildStoredKeyframeFromInspector(int64_t targetFrame) const
+{
+    TimelineClip::TitleKeyframe keyframe;
+    keyframe.frame = targetFrame;
+    keyframe.text = m_widgets.titleTextEdit ? m_widgets.titleTextEdit->toPlainText() : QString();
+    keyframe.translationX = m_widgets.titleXSpin ? m_widgets.titleXSpin->value() : 0.0;
+    keyframe.translationY = m_widgets.titleYSpin ? m_widgets.titleYSpin->value() : 0.0;
+    keyframe.fontSize = m_widgets.titleFontSizeSpin ? m_widgets.titleFontSizeSpin->value() : 48.0;
+    keyframe.opacity = m_widgets.titleOpacitySpin ? m_widgets.titleOpacitySpin->value() : 1.0;
+    keyframe.fontFamily = m_widgets.titleFontCombo
+        ? m_widgets.titleFontCombo->currentFont().family() : kDefaultFontFamily;
+    keyframe.bold = m_widgets.titleBoldCheck ? m_widgets.titleBoldCheck->isChecked() : true;
+    keyframe.italic = m_widgets.titleItalicCheck ? m_widgets.titleItalicCheck->isChecked() : false;
+    keyframe.color = m_selectedTitleColor;
+    keyframe.dropShadowEnabled =
+        m_widgets.titleShadowEnabledCheck ? m_widgets.titleShadowEnabledCheck->isChecked() : true;
+    keyframe.dropShadowColor = m_selectedShadowColor;
+    keyframe.dropShadowOpacity =
+        m_widgets.titleShadowOpacitySpin ? m_widgets.titleShadowOpacitySpin->value() : 0.6;
+    keyframe.dropShadowOffsetX =
+        m_widgets.titleShadowOffsetXSpin ? m_widgets.titleShadowOffsetXSpin->value() : 2.0;
+    keyframe.dropShadowOffsetY =
+        m_widgets.titleShadowOffsetYSpin ? m_widgets.titleShadowOffsetYSpin->value() : 2.0;
+    keyframe.windowEnabled =
+        m_widgets.titleWindowEnabledCheck ? m_widgets.titleWindowEnabledCheck->isChecked() : false;
+    keyframe.windowColor = m_selectedWindowColor;
+    keyframe.windowOpacity =
+        m_widgets.titleWindowOpacitySpin ? m_widgets.titleWindowOpacitySpin->value() : 0.35;
+    keyframe.windowPadding =
+        m_widgets.titleWindowPaddingSpin ? m_widgets.titleWindowPaddingSpin->value() : 16.0;
+    keyframe.windowFrameEnabled =
+        m_widgets.titleWindowFrameEnabledCheck ? m_widgets.titleWindowFrameEnabledCheck->isChecked() : false;
+    keyframe.windowFrameColor = m_selectedWindowFrameColor;
+    keyframe.windowFrameOpacity =
+        m_widgets.titleWindowFrameOpacitySpin ? m_widgets.titleWindowFrameOpacitySpin->value() : 1.0;
+    keyframe.windowFrameWidth =
+        m_widgets.titleWindowFrameWidthSpin ? m_widgets.titleWindowFrameWidthSpin->value() : 2.0;
+    keyframe.windowFrameGap =
+        m_widgets.titleWindowFrameGapSpin ? m_widgets.titleWindowFrameGapSpin->value() : 4.0;
+    return keyframe;
 }
 
 void TitlesTab::upsertKeyframeAtPlayhead()
@@ -749,71 +601,14 @@ void TitlesTab::upsertKeyframeAtPlayhead()
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
             const int64_t clampedFrame = qBound<int64_t>(0, localFrame, qMax<int64_t>(0, clip.durationFrames - 1));
-            for (auto &kf : clip.titleKeyframes) {
-                if (kf.frame == clampedFrame) {
-                    m_selectedKeyframeFrame = clampedFrame;
-                    m_selectedKeyframeFrames = {clampedFrame};
-                    return;
-                }
+            if (findTitleKeyframeIndex(clip, clampedFrame) < 0) {
+                upsertStoredTitleKeyframe(clip, buildStoredKeyframeFromInspector(clampedFrame));
             }
-            TimelineClip::TitleKeyframe newKf;
-            newKf.frame = clampedFrame;
-            if (m_widgets.titleTextEdit)
-                newKf.text = m_widgets.titleTextEdit->toPlainText();
-            if (m_widgets.titleXSpin)
-                newKf.translationX = m_widgets.titleXSpin->value();
-            if (m_widgets.titleYSpin)
-                newKf.translationY = m_widgets.titleYSpin->value();
-            if (m_widgets.titleFontSizeSpin)
-                newKf.fontSize = m_widgets.titleFontSizeSpin->value();
-            if (m_widgets.titleOpacitySpin)
-                newKf.opacity = m_widgets.titleOpacitySpin->value();
-            if (m_widgets.titleFontCombo)
-                newKf.fontFamily = m_widgets.titleFontCombo->currentFont().family();
-            if (m_widgets.titleBoldCheck)
-                newKf.bold = m_widgets.titleBoldCheck->isChecked();
-            if (m_widgets.titleItalicCheck)
-                newKf.italic = m_widgets.titleItalicCheck->isChecked();
-            if (m_widgets.titleColorButton)
-                newKf.color = m_selectedTitleColor;
-            if (m_widgets.titleShadowEnabledCheck)
-                newKf.dropShadowEnabled = m_widgets.titleShadowEnabledCheck->isChecked();
-            if (m_widgets.titleShadowColorButton)
-                newKf.dropShadowColor = m_selectedShadowColor;
-            if (m_widgets.titleShadowOpacitySpin)
-                newKf.dropShadowOpacity = m_widgets.titleShadowOpacitySpin->value();
-            if (m_widgets.titleShadowOffsetXSpin)
-                newKf.dropShadowOffsetX = m_widgets.titleShadowOffsetXSpin->value();
-            if (m_widgets.titleShadowOffsetYSpin)
-                newKf.dropShadowOffsetY = m_widgets.titleShadowOffsetYSpin->value();
-            if (m_widgets.titleWindowEnabledCheck)
-                newKf.windowEnabled = m_widgets.titleWindowEnabledCheck->isChecked();
-            if (m_widgets.titleWindowColorButton)
-                newKf.windowColor = m_selectedWindowColor;
-            if (m_widgets.titleWindowOpacitySpin)
-                newKf.windowOpacity = m_widgets.titleWindowOpacitySpin->value();
-            if (m_widgets.titleWindowPaddingSpin)
-                newKf.windowPadding = m_widgets.titleWindowPaddingSpin->value();
-            if (m_widgets.titleWindowFrameEnabledCheck)
-                newKf.windowFrameEnabled = m_widgets.titleWindowFrameEnabledCheck->isChecked();
-            if (m_widgets.titleWindowFrameColorButton)
-                newKf.windowFrameColor = m_selectedWindowFrameColor;
-            if (m_widgets.titleWindowFrameOpacitySpin)
-                newKf.windowFrameOpacity = m_widgets.titleWindowFrameOpacitySpin->value();
-            if (m_widgets.titleWindowFrameWidthSpin)
-                newKf.windowFrameWidth = m_widgets.titleWindowFrameWidthSpin->value();
-            if (m_widgets.titleWindowFrameGapSpin)
-                newKf.windowFrameGap = m_widgets.titleWindowFrameGapSpin->value();
-            clip.titleKeyframes.push_back(newKf);
-            normalizeClipTitleKeyframes(clip);
             m_selectedKeyframeFrame = clampedFrame;
             m_selectedKeyframeFrames = {clampedFrame};
         });
     }
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void TitlesTab::removeSelectedKeyframes()
@@ -827,21 +622,12 @@ void TitlesTab::removeSelectedKeyframes()
 
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
-            clip.titleKeyframes.erase(
-                std::remove_if(clip.titleKeyframes.begin(), clip.titleKeyframes.end(),
-                    [&](const TimelineClip::TitleKeyframe &kf) {
-                        return framesToRemove.contains(kf.frame);
-                    }),
-                clip.titleKeyframes.end());
-            normalizeClipTitleKeyframes(clip);
+            removeStoredTitleKeyframes(clip, framesToRemove);
         });
     }
     m_selectedKeyframeFrame = -1;
     m_selectedKeyframeFrames.clear();
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void TitlesTab::centerHorizontal()
@@ -854,22 +640,16 @@ void TitlesTab::centerHorizontal()
     const int64_t targetFrame = m_selectedKeyframeFrame;
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [targetFrame](TimelineClip &clip) {
-            for (auto &kf : clip.titleKeyframes) {
-                if (kf.frame == targetFrame) {
-                    kf.translationX = 0.0;
-                    break;
-                }
-            }
+            updateStoredTitleKeyframeAtFrame(clip, targetFrame, [](TimelineClip::TitleKeyframe& keyframe) {
+                keyframe.translationX = 0.0;
+            });
         });
     }
     if (m_widgets.titleXSpin) {
         const QSignalBlocker b(m_widgets.titleXSpin);
         m_widgets.titleXSpin->setValue(0.0);
     }
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void TitlesTab::centerVertical()
@@ -882,22 +662,16 @@ void TitlesTab::centerVertical()
     const int64_t targetFrame = m_selectedKeyframeFrame;
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [targetFrame](TimelineClip &clip) {
-            for (auto &kf : clip.titleKeyframes) {
-                if (kf.frame == targetFrame) {
-                    kf.translationY = 0.0;
-                    break;
-                }
-            }
+            updateStoredTitleKeyframeAtFrame(clip, targetFrame, [](TimelineClip::TitleKeyframe& keyframe) {
+                keyframe.translationY = 0.0;
+            });
         });
     }
     if (m_widgets.titleYSpin) {
         const QSignalBlocker b(m_widgets.titleYSpin);
         m_widgets.titleYSpin->setValue(0.0);
     }
-    if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
-    if (m_deps.refreshInspector) m_deps.refreshInspector();
-    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void TitlesTab::syncTableToPlayhead()
@@ -1036,31 +810,24 @@ void TitlesTab::onTableItemChanged(QTableWidgetItem *item)
     if (m_deps.updateClipById) {
         m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
             const int64_t originalNextFrame = nextFrame;
-            for (auto &kf : clip.titleKeyframes) {
-                if (kf.frame == originalFrame) {
-                    kf.frame = updatedCurrentFrame;
-                    kf.text = text;
-                    kf.translationX = x;
-                    kf.translationY = y;
-                    kf.fontSize = fontSize;
-                    kf.opacity = opacity;
-                    break;
-                }
-            }
+            TimelineClip::TitleKeyframe updatedKeyframe = clip.titleKeyframes.value(row);
+            updatedKeyframe.frame = updatedCurrentFrame;
+            updatedKeyframe.text = text;
+            updatedKeyframe.translationX = x;
+            updatedKeyframe.translationY = y;
+            updatedKeyframe.fontSize = fontSize;
+            updatedKeyframe.opacity = opacity;
+            replaceStoredTitleKeyframeAtFrame(clip, originalFrame, updatedKeyframe);
             if (changedColumn == 1 && originalNextFrame >= 0) {
-                for (auto &kf : clip.titleKeyframes) {
-                    if (kf.frame == originalNextFrame) {
-                        kf.frame = updatedNextFrame;
-                        break;
-                    }
-                }
+                updateStoredTitleKeyframeAtFrame(clip, originalNextFrame, [updatedNextFrame](TimelineClip::TitleKeyframe& keyframe) {
+                    keyframe.frame = updatedNextFrame;
+                });
             } else if (changedColumn == 1) {
                 clip.durationFrames = qMax<int64_t>(1, updatedClipEndFrame + 1);
                 if (clip.mediaType == ClipMediaType::Title) {
                     clip.sourceDurationFrames = clip.durationFrames;
                 }
             }
-            normalizeClipTitleKeyframes(clip);
         });
     }
     m_selectedKeyframeFrame = updatedCurrentFrame;
@@ -1216,44 +983,16 @@ void TitlesTab::onTableCustomContextMenu(const QPoint &pos)
             }
             
             if (kfA && kfB && m_deps.updateClipById) {
-                const double t = static_cast<double>(midpointFrame - frameA) / static_cast<double>(frameB - frameA);
-                TimelineClip::TitleKeyframe midpoint;
-                midpoint.frame = midpointFrame;
-                midpoint.text = kfA->text;
-                midpoint.translationX = kfA->translationX + (kfB->translationX - kfA->translationX) * t;
-                midpoint.translationY = kfA->translationY + (kfB->translationY - kfA->translationY) * t;
-                midpoint.fontSize = kfA->fontSize + (kfB->fontSize - kfA->fontSize) * t;
-                midpoint.opacity = kfA->opacity + (kfB->opacity - kfA->opacity) * t;
-                midpoint.fontFamily = kfA->fontFamily;
-                midpoint.bold = kfA->bold;
-                midpoint.italic = kfA->italic;
-                midpoint.color = kfA->color;
-                midpoint.dropShadowEnabled = kfA->dropShadowEnabled;
-                midpoint.dropShadowColor = kfA->dropShadowColor;
-                midpoint.dropShadowOpacity = kfA->dropShadowOpacity;
-                midpoint.dropShadowOffsetX = kfA->dropShadowOffsetX;
-                midpoint.dropShadowOffsetY = kfA->dropShadowOffsetY;
-                midpoint.windowEnabled = kfA->windowEnabled;
-                midpoint.windowColor = kfA->windowColor;
-                midpoint.windowOpacity = kfA->windowOpacity;
-                midpoint.windowPadding = kfA->windowPadding;
-                midpoint.windowFrameEnabled = kfA->windowFrameEnabled;
-                midpoint.windowFrameColor = kfA->windowFrameColor;
-                midpoint.windowFrameOpacity = kfA->windowFrameOpacity;
-                midpoint.windowFrameWidth = kfA->windowFrameWidth;
-                midpoint.windowFrameGap = kfA->windowFrameGap;
-                midpoint.linearInterpolation = kfB->linearInterpolation;
-                
+                const TimelineClip::TitleKeyframe midpoint =
+                    interpolateStoredTitleKeyframe(*kfA, *kfB, midpointFrame);
+
                 m_deps.updateClipById(clipId, [&](TimelineClip &clip) {
-                    clip.titleKeyframes.push_back(midpoint);
-                    normalizeClipTitleKeyframes(clip);
+                    upsertStoredTitleKeyframe(clip, midpoint);
                 });
                 m_selectedKeyframeFrame = midpointFrame;
                 m_selectedKeyframeFrames = {midpointFrame};
-                if (m_deps.setPreviewTimelineClips) m_deps.setPreviewTimelineClips();
+                applyPostEditEffects({.refreshInspector = false});
                 refresh();
-                if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
-                if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
             }
         }
     }

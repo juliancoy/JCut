@@ -14,6 +14,7 @@
 #include "output_tab.h"
 #include "profile_tab.h"
 #include "pipeline_tab.h"
+#include "project_manager.h"
 #include "projects.h"
 #include "transcript_tab.h"
 #include "grading_tab.h"
@@ -165,26 +166,6 @@ private:
     QJsonObject runStartupOptimizationPass();
     OptimizedPreviewProfile defaultOptimizedPreviewProfile() const;
 
-    // Root directory configuration (stored near executable in editor.config)
-    QString configFilePath() const;
-    QString rootDirPath() const;
-    void setRootDirPath(const QString& path);
-
-    QString projectsDirPath() const;
-    QString currentProjectMarkerPath() const;
-    QString currentProjectIdOrDefault() const;
-    QString projectPath(const QString &projectId) const;
-    QString stateFilePathForProject(const QString &projectId) const;
-    QString historyFilePathForProject(const QString &projectId) const;
-    QString stateFilePath() const;
-    QString historyFilePath() const;
-    QString sanitizedProjectId(const QString &name) const;
-    void ensureProjectsDirectory() const;
-    QStringList availableProjectIds() const;
-    void ensureDefaultProjectExists() const;
-    void loadProjectsFromFolders();
-    void saveCurrentProjectMarker();
-    QString currentProjectName() const;
     void refreshProjectsList();
     void switchToProject(const QString &projectId);
     void createProject();
@@ -602,6 +583,7 @@ private:
     std::unique_ptr<OutputTab> m_outputTab;
     std::unique_ptr<PipelineTab> m_pipelineTab;
     std::unique_ptr<ProfileTab> m_profileTab;
+    std::unique_ptr<ProjectManager> m_projectManager;
     std::unique_ptr<ProjectsTab> m_projectsTab;
     std::unique_ptr<ClipsTab> m_clipsTab;
     std::unique_ptr<HistoryTab> m_historyTab;
@@ -654,8 +636,6 @@ private:
     int64_t m_pendingGradingClickTimelineFrame = -1;
     QTimer m_syncClickSeekTimer;
     int64_t m_pendingSyncClickTimelineFrame = -1;
-
-    QString m_currentProjectId;
 
     QByteArray m_lastSavedState;
     QJsonArray m_historyEntries;

@@ -77,7 +77,9 @@ void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
         return;
     }
     m_deferredHistoryLoadProjectId = projectId.trimmed();
-    const QString historyPath = historyFilePathForProject(m_deferredHistoryLoadProjectId);
+    const QString historyPath = m_projectManager
+        ? m_projectManager->historyFilePathForProject(m_deferredHistoryLoadProjectId)
+        : QString();
     startupProfileMark(QStringLiteral("load_state.history_deferred.begin"),
                        QJsonObject{{QStringLiteral("project_id"), m_deferredHistoryLoadProjectId}});
     m_deferredHistoryLoadWatcher.setFuture(QtConcurrent::run([historyPath, projectId = m_deferredHistoryLoadProjectId]() {
@@ -115,11 +117,18 @@ void EditorWindow::loadState()
         startupProfileMark(phase, extra);
     };
     markStartup(QStringLiteral("load_state.begin"));
-    loadProjectsFromFolders();
+    if (m_projectManager) {
+        m_projectManager->loadProjectsFromFolders();
+    }
     markStartup(QStringLiteral("load_state.projects_loaded"));
-    qDebug() << "[PROJECT] Loading project:" << currentProjectIdOrDefault();
-    qDebug() << "[PROJECT] State file:" << stateFilePath();
-    qDebug() << "[PROJECT] History file:" << historyFilePath();
+    const QString projectId = m_projectManager
+        ? m_projectManager->currentProjectIdOrDefault()
+        : QStringLiteral("default");
+    const QString statePath = m_projectManager ? m_projectManager->stateFilePath() : QString();
+    const QString historyPath = m_projectManager ? m_projectManager->historyFilePath() : QString();
+    qDebug() << "[PROJECT] Loading project:" << projectId;
+    qDebug() << "[PROJECT] State file:" << statePath;
+    qDebug() << "[PROJECT] History file:" << historyPath;
     m_historyEntries = QJsonArray();
     m_historyIndex = -1;
     m_lastSavedState.clear();
@@ -128,7 +137,7 @@ void EditorWindow::loadState()
     bool deferHistoryLoad = false;
     if (startupMarking) {
         markStartup(QStringLiteral("load_state.state_file_read.begin"));
-        QFile file(stateFilePath());
+        QFile file(statePath);
         if (file.open(QIODevice::ReadOnly)) {
             jcut::jsonio::parseObjectBytes(file.readAll(), &root);
         }
@@ -136,12 +145,12 @@ void EditorWindow::loadState()
         if (!root.isEmpty()) {
             deferHistoryLoad = true;
             markStartup(QStringLiteral("load_state.history_read.deferred"),
-                        QJsonObject{{QStringLiteral("project_id"), currentProjectIdOrDefault()}});
+                        QJsonObject{{QStringLiteral("project_id"), projectId}});
         }
     }
 
     if (root.isEmpty()) {
-        QFile historyFile(historyFilePath());
+        QFile historyFile(historyPath);
         markStartup(QStringLiteral("load_state.history_read.begin"));
         if (historyFile.open(QIODevice::ReadOnly))
         {
@@ -185,7 +194,7 @@ void EditorWindow::loadState()
         scheduleSaveState();
     }
     if (deferHistoryLoad) {
-        QTimer::singleShot(0, this, [this, projectId = currentProjectIdOrDefault()]() {
+        QTimer::singleShot(0, this, [this, projectId]() {
             scheduleDeferredHistoryLoad(projectId);
         });
     }
@@ -195,213 +204,22 @@ void EditorWindow::loadState()
     markStartup(QStringLiteral("load_state.end"));
 }
 
-QString EditorWindow::configFilePath() const
-{
-    // Config file stored near the executable
-    return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("editor.config"));
-}
-
-QString EditorWindow::rootDirPath() const
-{
-    // Read root directory from config file, or default to executable directory
-    QFile configFile(configFilePath());
-    if (configFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QString path = QString::fromUtf8(configFile.readAll()).trimmed();
-        if (!path.isEmpty() && QDir(path).exists()) {
-            return path;
-        }
-    }
-    // Default to executable directory if no valid config
-    return QCoreApplication::applicationDirPath();
-}
-
-void EditorWindow::setRootDirPath(const QString& path)
-{
-    if (path.isEmpty()) {
-        return;
-    }
-    QSaveFile config(configFilePath());
-    if (config.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        config.write(path.toUtf8());
-        config.commit();
-    }
-}
-
-QString EditorWindow::projectsDirPath() const
-{
-    // Projects are stored in a "projects" subfolder of the Root directory
-    return QDir(rootDirPath()).filePath(QStringLiteral("projects"));
-}
-
-QString EditorWindow::currentProjectMarkerPath() const
-{
-    return QDir(projectsDirPath()).filePath(QStringLiteral(".current_project"));
-}
-
-QString EditorWindow::currentProjectIdOrDefault() const
-{
-    return m_currentProjectId.isEmpty() ? QStringLiteral("default") : m_currentProjectId;
-}
-
-QString EditorWindow::projectPath(const QString &projectId) const
-{
-    return QDir(projectsDirPath()).filePath(projectId.isEmpty() ? QStringLiteral("default") : projectId);
-}
-
-QString EditorWindow::stateFilePathForProject(const QString &projectId) const
-{
-    return QDir(projectPath(projectId)).filePath(QStringLiteral("state.json"));
-}
-
-QString EditorWindow::historyFilePathForProject(const QString &projectId) const
-{
-    return QDir(projectPath(projectId)).filePath(QStringLiteral("history.json"));
-}
-
-QString EditorWindow::stateFilePath() const
-{
-    return stateFilePathForProject(currentProjectIdOrDefault());
-}
-
-QString EditorWindow::historyFilePath() const
-{
-    return historyFilePathForProject(currentProjectIdOrDefault());
-}
-
-QString EditorWindow::sanitizedProjectId(const QString &name) const
-{
-    QString id = name.trimmed().toLower();
-    for (QChar &ch : id)
-    {
-        if (!(ch.isLetterOrNumber() || ch == QLatin1Char('_') || ch == QLatin1Char('-')))
-        {
-            ch = QLatin1Char('-');
-        }
-    }
-
-    while (id.contains(QStringLiteral("--")))
-    {
-        id.replace(QStringLiteral("--"), QStringLiteral("-"));
-    }
-
-    id.remove(QRegularExpression(QStringLiteral("^-+|-+$")));
-    if (id.isEmpty())
-    {
-        id = QStringLiteral("project");
-    }
-
-    QString uniqueId = id;
-    int suffix = 2;
-    while (QFileInfo::exists(projectPath(uniqueId)))
-    {
-        uniqueId = QStringLiteral("%1-%2").arg(id).arg(suffix++);
-    }
-    return uniqueId;
-}
-
-void EditorWindow::ensureProjectsDirectory() const
-{
-    QDir().mkpath(projectsDirPath());
-}
-
-QStringList EditorWindow::availableProjectIds() const
-{
-    ensureProjectsDirectory();
-    const QFileInfoList entries =
-        QDir(projectsDirPath()).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot,
-                                             QDir::Name | QDir::IgnoreCase);
-
-    QStringList ids;
-    ids.reserve(entries.size());
-    for (const QFileInfo &entry : entries)
-    {
-        ids.push_back(entry.fileName());
-    }
-    return ids;
-}
-
-void EditorWindow::ensureDefaultProjectExists() const
-{
-    ensureProjectsDirectory();
-    QDir().mkpath(projectPath(QStringLiteral("default")));
-}
-
-void EditorWindow::loadProjectsFromFolders()
-{
-    ensureDefaultProjectExists();
-
-    QFile markerFile(currentProjectMarkerPath());
-    if (markerFile.open(QIODevice::ReadOnly))
-    {
-        m_currentProjectId = QString::fromUtf8(markerFile.readAll()).trimmed();
-    }
-
-    const QStringList projectIds = availableProjectIds();
-    if (projectIds.isEmpty())
-    {
-        m_currentProjectId = QStringLiteral("default");
-        return;
-    }
-
-    if (m_currentProjectId.isEmpty() || !projectIds.contains(m_currentProjectId))
-    {
-        m_currentProjectId = projectIds.contains(QStringLiteral("default"))
-                                 ? QStringLiteral("default")
-                                 : projectIds.constFirst();
-    }
-
-    QSaveFile marker(currentProjectMarkerPath());
-    if (marker.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        const QByteArray payload = m_currentProjectId.toUtf8();
-        if (marker.write(payload) == payload.size())
-        {
-            marker.commit();
-        }
-        else
-        {
-            marker.cancelWriting();
-        }
-    }
-}
-
-void EditorWindow::saveCurrentProjectMarker()
-{
-    ensureProjectsDirectory();
-
-    QSaveFile file(currentProjectMarkerPath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        return;
-    }
-
-    const QByteArray payload = currentProjectIdOrDefault().toUtf8();
-    if (file.write(payload) != payload.size())
-    {
-        file.cancelWriting();
-        return;
-    }
-
-    file.commit();
-}
-
-QString EditorWindow::currentProjectName() const
-{
-    return currentProjectIdOrDefault();
-}
-
 void EditorWindow::refreshProjectsList()
 {
     if (!m_projectsTab) {
         return;
     }
-    loadProjectsFromFolders();
+    if (m_projectManager) {
+        m_projectManager->loadProjectsFromFolders();
+    }
     m_projectsTab->refresh();
 }
 
 void EditorWindow::switchToProject(const QString &projectId)
 {
-    if (projectId.isEmpty() || projectId == currentProjectIdOrDefault())
+    if (projectId.isEmpty() ||
+        projectId == (m_projectManager ? m_projectManager->currentProjectIdOrDefault()
+                                       : QStringLiteral("default")))
     {
         refreshProjectsList();
         return;
@@ -410,12 +228,13 @@ void EditorWindow::switchToProject(const QString &projectId)
     saveStateNow();
     saveHistoryNow();
 
-    m_currentProjectId = projectId;
     m_lastSavedState.clear();
     m_historyEntries = QJsonArray();
     m_historyIndex = -1;
 
-    saveCurrentProjectMarker();
+    if (m_projectManager) {
+        m_projectManager->switchToProject(projectId);
+    }
     loadState();
     refreshProjectsList();
     refreshCurrentInspectorTab();
@@ -423,58 +242,30 @@ void EditorWindow::switchToProject(const QString &projectId)
 
 void EditorWindow::createProject()
 {
-    bool accepted = false;
-    const QString name = QInputDialog::getText(this,
-                                               QStringLiteral("New Project"),
-                                               QStringLiteral("Project name"),
-                                               QLineEdit::Normal,
-                                               QStringLiteral("Untitled Project"),
-                                               &accepted)
-                             .trimmed();
-    if (!accepted || name.isEmpty())
-    {
+    if (!m_projectManager) {
         return;
     }
-
-    const QString projectId = sanitizedProjectId(name);
-    QDir().mkpath(projectPath(projectId));
-    switchToProject(projectId);
+    const QString beforeProjectId = m_projectManager
+        ? m_projectManager->currentProjectIdOrDefault()
+        : QStringLiteral("default");
+    m_projectManager->createProject();
+    if ((m_projectManager ? m_projectManager->currentProjectIdOrDefault()
+                          : QStringLiteral("default")) != beforeProjectId) {
+        m_lastSavedState.clear();
+        m_historyEntries = QJsonArray();
+        m_historyIndex = -1;
+        loadState();
+        refreshCurrentInspectorTab();
+    }
+    refreshProjectsList();
 }
 
 bool EditorWindow::saveProjectPayload(const QString &projectId,
                                       const QByteArray &statePayload,
                                       const QByteArray &historyPayload)
 {
-    ensureProjectsDirectory();
-    QDir().mkpath(projectPath(projectId));
-
-    QSaveFile stateFile(stateFilePathForProject(projectId));
-    if (!stateFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        return false;
-    }
-    if (stateFile.write(statePayload) != statePayload.size())
-    {
-        stateFile.cancelWriting();
-        return false;
-    }
-    if (!stateFile.commit())
-    {
-        return false;
-    }
-
-    QSaveFile historyFile(historyFilePathForProject(projectId));
-    if (!historyFile.open(QIODevice::WriteOnly | QIODevice::Truncate))
-    {
-        return false;
-    }
-    if (historyFile.write(historyPayload) != historyPayload.size())
-    {
-        historyFile.cancelWriting();
-        return false;
-    }
-
-    return historyFile.commit();
+    return m_projectManager &&
+           m_projectManager->saveProjectPayload(projectId, statePayload, historyPayload);
 }
 
 void EditorWindow::saveProjectAs()
@@ -489,9 +280,9 @@ void EditorWindow::saveProjectAs()
                                                QStringLiteral("Save Project As"),
                                                QStringLiteral("Project name"),
                                                QLineEdit::Normal,
-                                               currentProjectName() == QStringLiteral("Default Project")
+                                               (m_projectManager ? m_projectManager->currentProjectName() : QString()) == QStringLiteral("Default Project")
                                                    ? QStringLiteral("Untitled Project")
-                                                   : currentProjectName(),
+                                                   : (m_projectManager ? m_projectManager->currentProjectName() : QString()),
                                                &accepted)
                              .trimmed();
     if (!accepted || name.isEmpty())
@@ -502,7 +293,7 @@ void EditorWindow::saveProjectAs()
     saveStateNow();
     saveHistoryNow();
 
-    const QString newProjectId = sanitizedProjectId(name);
+    const QString newProjectId = m_projectManager ? m_projectManager->sanitizedProjectId(name) : QString();
     const QByteArray statePayload =
         jcut::jsonio::serializeIndented(buildStateJson());
 
@@ -525,45 +316,11 @@ void EditorWindow::saveProjectAs()
 
 void EditorWindow::renameProject(const QString &projectId)
 {
-    if (projectId.isEmpty() || !QFileInfo::exists(projectPath(projectId)))
+    if (!m_projectManager || projectId.isEmpty() || !QFileInfo::exists(m_projectManager->projectPath(projectId)))
     {
         return;
     }
-
-    bool accepted = false;
-    const QString name = QInputDialog::getText(this,
-                                               QStringLiteral("Rename Project"),
-                                               QStringLiteral("Project name"),
-                                               QLineEdit::Normal,
-                                               projectId,
-                                               &accepted)
-                             .trimmed();
-    if (!accepted || name.isEmpty())
-    {
-        return;
-    }
-
-    const QString renamedProjectId = sanitizedProjectId(name);
-    if (renamedProjectId == projectId)
-    {
-        return;
-    }
-
-    QDir projectsDir(projectsDirPath());
-    if (!projectsDir.rename(projectId, renamedProjectId))
-    {
-        QMessageBox::warning(this,
-                             QStringLiteral("Rename Project Failed"),
-                             QStringLiteral("Could not rename the project folder."));
-        return;
-    }
-
-    if (m_currentProjectId == projectId)
-    {
-        m_currentProjectId = renamedProjectId;
-        saveCurrentProjectMarker();
-    }
-
+    m_projectManager->renameProject(projectId);
     refreshProjectsList();
 }
 
@@ -879,8 +636,10 @@ void EditorWindow::saveStateNow()
     }
 
     m_stateSaveTimer.stop();
-    ensureProjectsDirectory();
-    QDir().mkpath(projectPath(currentProjectIdOrDefault()));
+    if (m_projectManager) {
+        m_projectManager->ensureProjectsDirectory();
+        QDir().mkpath(m_projectManager->projectPath(m_projectManager->currentProjectIdOrDefault()));
+    }
 
     const QByteArray serializedState =
         jcut::jsonio::serializeIndented(buildStateJson());
@@ -889,7 +648,7 @@ void EditorWindow::saveStateNow()
         return;
     }
 
-    QSaveFile file(stateFilePath());
+    QSaveFile file(m_projectManager ? m_projectManager->stateFilePath() : QString());
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
         return;
@@ -912,8 +671,10 @@ void EditorWindow::saveStateNow()
 
 void EditorWindow::saveHistoryNow()
 {
-    ensureProjectsDirectory();
-    QDir().mkpath(projectPath(currentProjectIdOrDefault()));
+    if (m_projectManager) {
+        m_projectManager->ensureProjectsDirectory();
+        QDir().mkpath(m_projectManager->projectPath(m_projectManager->currentProjectIdOrDefault()));
+    }
 
     QJsonObject root;
     root[QStringLiteral("index")] = m_historyIndex;
@@ -922,7 +683,7 @@ void EditorWindow::saveHistoryNow()
     m_historyEntries = sanitizedEntries;
     root[QStringLiteral("entries")] = sanitizedEntries;
 
-    QSaveFile file(historyFilePath());
+    QSaveFile file(m_projectManager ? m_projectManager->historyFilePath() : QString());
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
     {
         return;
@@ -994,8 +755,12 @@ void EditorWindow::saveAutosaveBackup()
         return;
     }
 
-    ensureProjectsDirectory();
-    const QString projectDir = projectPath(currentProjectIdOrDefault());
+    if (m_projectManager) {
+        m_projectManager->ensureProjectsDirectory();
+    }
+    const QString projectDir = m_projectManager
+        ? m_projectManager->projectPath(m_projectManager->currentProjectIdOrDefault())
+        : QString();
     QDir().mkpath(projectDir);
 
     const QDateTime now = QDateTime::currentDateTime();

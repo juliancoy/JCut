@@ -99,6 +99,7 @@ void EditorWindow::startupProfileMark(const QString& phase, const QJsonObject& e
 // ============================================================================
 EditorWindow::EditorWindow(quint16 controlPort)
 {
+    m_projectManager = std::make_unique<ProjectManager>(this);
     QElapsedTimer ctorTimer;
     ctorTimer.start();
     m_startupProfileTimer.start();
@@ -160,7 +161,8 @@ EditorWindow::EditorWindow(quint16 controlPort)
         const int index = result.value(QStringLiteral("history_index")).toInt(-1);
         const QJsonArray entries = result.value(QStringLiteral("entries")).toArray();
         if (projectId.isEmpty() ||
-            projectId != currentProjectIdOrDefault() ||
+            projectId != (m_projectManager ? m_projectManager->currentProjectIdOrDefault()
+                                           : QStringLiteral("default")) ||
             projectId != m_deferredHistoryLoadProjectId) {
             return;
         }
@@ -764,9 +766,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     markStartup(QStringLiteral("apply_state.begin"));
 
     // Default to the projects root from editor.config, then fall back to saved state, then current dir
-    QString rootPath = root.value(QStringLiteral("mediaRoot")).toString(rootDirPath());
+    const QString defaultRootPath =
+        m_projectManager ? m_projectManager->rootDirPath() : QString();
+    QString rootPath = root.value(QStringLiteral("mediaRoot")).toString(defaultRootPath);
     if (rootPath.isEmpty()) {
-        rootPath = root.value(QStringLiteral("explorerRoot")).toString(rootDirPath());
+        rootPath = root.value(QStringLiteral("explorerRoot")).toString(defaultRootPath);
     }
     if (rootPath.isEmpty() || !QDir(rootPath).exists()) {
         rootPath = QDir::currentPath();
@@ -1670,7 +1674,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     markStartup(QStringLiteral("apply_state.end"));
     
     // Use the projects root from editor.config if available, otherwise use the saved media root
-    const QString projectsRoot = rootDirPath();
+    const QString projectsRoot = m_projectManager ? m_projectManager->rootDirPath() : QString();
     const QString mediaRoot = (!projectsRoot.isEmpty() && QDir(projectsRoot).exists()) 
         ? projectsRoot 
         : resolvedRootPath;

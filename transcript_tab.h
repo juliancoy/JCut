@@ -19,6 +19,7 @@
 
 #include "editor_shared.h"
 #include "transcript_document_io.h"
+#include "transcript_document_save_controller.h"
 #include "transcript_engine.h"
 
 class TranscriptTab : public QObject
@@ -282,10 +283,6 @@ private:
     QTimer m_refreshDebounceTimer;
     bool m_refreshQueued = false;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
-    QFutureWatcher<TranscriptDocumentSaveResult> m_transcriptSaveWatcher;
+    TranscriptDocumentSaveController m_transcriptSaveController{QStringLiteral("transcript")};
     qint64 m_transcriptLoadRequestId = 0;
-    qint64 m_transcriptSaveRevision = 0;
-    qint64 m_pendingTranscriptSaveRevision = 0;
-    QString m_pendingTranscriptSavePath;
-    QJsonDocument m_pendingTranscriptSaveDoc;
 };

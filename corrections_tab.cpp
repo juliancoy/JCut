@@ -1,4 +1,5 @@
 #include "corrections_tab.h"
+#include "editor_tab_edit_effects.h"
 #include "timeline_widget.h"
 
 #include <QMenu>
@@ -8,6 +9,17 @@ CorrectionsTab::CorrectionsTab(const Widgets& widgets, const Dependencies& deps,
     : QObject(parent)
     , m_widgets(widgets)
     , m_deps(deps) {
+}
+
+namespace {
+TabEditCallbacks correctionEditCallbacks(const CorrectionsTab::Dependencies& deps) {
+    return TabEditCallbacks{
+        .updatePreview = deps.setPreviewTimelineClips,
+        .refreshInspector = deps.refreshInspector,
+        .scheduleSave = deps.scheduleSaveState,
+        .pushHistory = deps.pushHistorySnapshot,
+    };
+}
 }
 
 void CorrectionsTab::wire() {
@@ -61,18 +73,7 @@ void CorrectionsTab::wire() {
                 })) {
                 return;
             }
-            if (m_deps.setPreviewTimelineClips) {
-                m_deps.setPreviewTimelineClips();
-            }
-            if (m_deps.scheduleSaveState) {
-                m_deps.scheduleSaveState();
-            }
-            if (m_deps.pushHistorySnapshot) {
-                m_deps.pushHistorySnapshot();
-            }
-            if (m_deps.refreshInspector) {
-                m_deps.refreshInspector();
-            }
+            applyTabEditEffects(correctionEditCallbacks(m_deps));
         });
     }
     if (m_widgets.correctionsClearAllButton) {
@@ -86,18 +87,7 @@ void CorrectionsTab::wire() {
                 })) {
                 return;
             }
-            if (m_deps.setPreviewTimelineClips) {
-                m_deps.setPreviewTimelineClips();
-            }
-            if (m_deps.scheduleSaveState) {
-                m_deps.scheduleSaveState();
-            }
-            if (m_deps.pushHistorySnapshot) {
-                m_deps.pushHistorySnapshot();
-            }
-            if (m_deps.refreshInspector) {
-                m_deps.refreshInspector();
-            }
+            applyTabEditEffects(correctionEditCallbacks(m_deps));
         });
     }
     if (m_widgets.correctionsPolygonTable) {
@@ -195,18 +185,7 @@ void CorrectionsTab::commitDraftPolygon() {
     m_selectedPolygon = newPolygonIndex;
     m_draftPoints.clear();
     clearDraftFromPreview();
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-    if (m_deps.refreshInspector) {
-        m_deps.refreshInspector();
-    }
+    applyTabEditEffects(correctionEditCallbacks(m_deps));
     if (m_deps.setSelectedCorrectionPolygon) {
         m_deps.setSelectedCorrectionPolygon(m_selectedPolygon);
     }
@@ -410,15 +389,8 @@ void CorrectionsTab::deletePolygonAtIndex(int polygonIndex) {
         m_selectedPolygon = qMin(m_selectedPolygon, remainingCount - 1);
     }
 
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyTabEditEffects(correctionEditCallbacks(m_deps),
+                        TabEditEffects{.refreshInspector = false});
     if (m_deps.refreshInspector) {
         m_deps.refreshInspector();
     } else {
@@ -533,15 +505,8 @@ void CorrectionsTab::applyPolygonCellEdit(QTableWidgetItem* item) {
     if (!changed) {
         return;
     }
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyTabEditEffects(correctionEditCallbacks(m_deps),
+                        TabEditEffects{.refreshInspector = false});
     refresh();
 }
 
@@ -583,14 +548,7 @@ void CorrectionsTab::applyVertexCellEdit(QTableWidgetItem* item) {
     if (!changed) {
         return;
     }
-    if (m_deps.setPreviewTimelineClips) {
-        m_deps.setPreviewTimelineClips();
-    }
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyTabEditEffects(correctionEditCallbacks(m_deps),
+                        TabEditEffects{.refreshInspector = false});
     refresh();
 }

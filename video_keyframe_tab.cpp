@@ -1,6 +1,7 @@
 #include "video_keyframe_tab.h"
 #include "clip_serialization.h"
 #include "editor_shared.h"
+#include "editor_transform_keyframe_ops.h"
 #include "keyframe_table_shared.h"
 
 #include <QMenu>
@@ -509,12 +510,7 @@ void VideoKeyframeTab::applyKeyframeFromInspector(bool pushHistory)
         return;
     }
 
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    if (pushHistory) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyPostEditEffects({.pushHistory = pushHistory});
     emit keyframeApplied();
 }
 
@@ -547,28 +543,14 @@ void VideoKeyframeTab::upsertKeyframeAtPlayhead()
         keyframe.frame = keyframeFrame;
         keyframe.linearInterpolation = m_widgets.videoInterpolationCombo->currentIndex() == 1;
 
-        bool replaced = false;
-        for (TimelineClip::TransformKeyframe& existing : editableClip.transformKeyframes) {
-            if (existing.frame == keyframeFrame) {
-                existing = keyframe;
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) {
-            editableClip.transformKeyframes.push_back(keyframe);
-        }
-        normalizeClipTransformKeyframes(editableClip);
+        upsertStoredTransformKeyframe(editableClip, keyframe);
     });
 
     if (!updated) {
         return;
     }
 
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
     emit keyframeAdded();
 }
 
@@ -600,14 +582,7 @@ void VideoKeyframeTab::removeSelectedKeyframes()
     }
 
     const bool updated = m_deps.updateClipById(clipId, [selectedFrames](TimelineClip& clip) {
-        clip.transformKeyframes.erase(
-            std::remove_if(clip.transformKeyframes.begin(),
-                           clip.transformKeyframes.end(),
-                           [&selectedFrames](const TimelineClip::TransformKeyframe& keyframe) {
-                               return selectedFrames.contains(keyframe.frame);
-                           }),
-            clip.transformKeyframes.end());
-        normalizeClipTransformKeyframes(clip);
+        removeStoredTransformKeyframes(clip, selectedFrames);
     });
 
     if (!updated) {
@@ -616,10 +591,7 @@ void VideoKeyframeTab::removeSelectedKeyframes()
 
     m_selectedKeyframeFrame = 0;
     m_selectedKeyframeFrames = {0};
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
     emit keyframesRemoved();
 }
 
@@ -639,42 +611,10 @@ void VideoKeyframeTab::duplicateSelectedKeyframes(int frameDelta)
         return;
     }
 
-    const int64_t maxFrame = qMax<int64_t>(0, selectedClip->durationFrames - 1);
     QSet<int64_t> newFrames;
 
-    const bool updated = m_deps.updateClipById(selectedClip->id, [frameDelta, maxFrame, selectedFrames, &newFrames](TimelineClip& clip) {
-        bool changed = false;
-        const QVector<TimelineClip::TransformKeyframe> originalKeyframes = clip.transformKeyframes;
-        
-        for (const TimelineClip::TransformKeyframe& keyframe : originalKeyframes) {
-            if (!selectedFrames.contains(keyframe.frame)) {
-                continue;
-            }
-            
-            const int64_t newFrame = qBound<int64_t>(0, keyframe.frame + frameDelta, maxFrame);
-            TimelineClip::TransformKeyframe duplicate = keyframe;
-            duplicate.frame = newFrame;
-            
-            bool replaced = false;
-            for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-                if (existing.frame == newFrame) {
-                    existing = duplicate;
-                    replaced = true;
-                    changed = true;
-                    break;
-                }
-            }
-            
-            if (!replaced) {
-                clip.transformKeyframes.push_back(duplicate);
-                changed = true;
-            }
-            newFrames.insert(newFrame);
-        }
-        
-        if (changed) {
-            normalizeClipTransformKeyframes(clip);
-        }
+    const bool updated = m_deps.updateClipById(selectedClip->id, [frameDelta, selectedFrames, &newFrames](TimelineClip& clip) {
+        newFrames = duplicateStoredTransformKeyframesByDelta(clip, selectedFrames, frameDelta);
     });
 
     if (!updated || newFrames.isEmpty()) {
@@ -683,10 +623,7 @@ void VideoKeyframeTab::duplicateSelectedKeyframes(int frameDelta)
 
     m_selectedKeyframeFrames = newFrames;
     m_selectedKeyframeFrame = *std::min_element(newFrames.begin(), newFrames.end());
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 void VideoKeyframeTab::duplicateSelectedKeyframesToFrame(int64_t targetFrame)
@@ -710,37 +647,7 @@ void VideoKeyframeTab::duplicateSelectedKeyframesToFrame(int64_t targetFrame)
 
     const bool updated = m_deps.updateClipById(selectedClip->id,
                                                [boundedTarget, selectedFrames](TimelineClip& clip) {
-        bool changed = false;
-        const QVector<TimelineClip::TransformKeyframe> originalKeyframes = clip.transformKeyframes;
-
-        for (const TimelineClip::TransformKeyframe& keyframe : originalKeyframes) {
-            if (!selectedFrames.contains(keyframe.frame)) {
-                continue;
-            }
-
-            TimelineClip::TransformKeyframe duplicate = keyframe;
-            duplicate.frame = boundedTarget;
-
-            bool replaced = false;
-            for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-                if (existing.frame == boundedTarget) {
-                    existing = duplicate;
-                    replaced = true;
-                    changed = true;
-                    break;
-                }
-            }
-
-            if (!replaced) {
-                clip.transformKeyframes.push_back(duplicate);
-                changed = true;
-            }
-            break;
-        }
-
-        if (changed) {
-            normalizeClipTransformKeyframes(clip);
-        }
+        duplicateStoredTransformKeyframesToFrame(clip, selectedFrames, boundedTarget);
     });
 
     if (!updated) {
@@ -749,10 +656,7 @@ void VideoKeyframeTab::duplicateSelectedKeyframesToFrame(int64_t targetFrame)
 
     m_selectedKeyframeFrames = {boundedTarget};
     m_selectedKeyframeFrame = boundedTarget;
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    applyPostEditEffects();
 }
 
 bool VideoKeyframeTab::insertInterpolatedKeyframeBetween(int64_t earlierFrame, int64_t laterFrame)
@@ -771,43 +675,18 @@ bool VideoKeyframeTab::insertInterpolatedKeyframeBetween(int64_t earlierFrame, i
         return false;
     }
 
-    const auto findKeyframeAt = [](const TimelineClip& clip, int64_t frame) -> const TimelineClip::TransformKeyframe* {
-        for (const TimelineClip::TransformKeyframe& keyframe : clip.transformKeyframes) {
-            if (keyframe.frame == frame) {
-                return &keyframe;
-            }
-        }
-        return nullptr;
-    };
-
-    const TimelineClip::TransformKeyframe* earlier = findKeyframeAt(*selectedClip, earlierFrame);
-    const TimelineClip::TransformKeyframe* later = findKeyframeAt(*selectedClip, laterFrame);
-    if (!earlier || !later) {
+    const int earlierIndex = findTransformKeyframeIndex(*selectedClip, earlierFrame);
+    const int laterIndex = findTransformKeyframeIndex(*selectedClip, laterFrame);
+    if (earlierIndex < 0 || laterIndex < 0) {
         return false;
     }
-
-    const qreal t = static_cast<qreal>(midpointFrame - earlierFrame) /
-                    static_cast<qreal>(laterFrame - earlierFrame);
-    
-    TimelineClip::TransformKeyframe midpoint;
-    midpoint.frame = midpointFrame;
-    midpoint.translationX = earlier->translationX + ((later->translationX - earlier->translationX) * t);
-    midpoint.translationY = earlier->translationY + ((later->translationY - earlier->translationY) * t);
-    midpoint.rotation = earlier->rotation + ((later->rotation - earlier->rotation) * t);
-    midpoint.scaleX = earlier->scaleX + ((later->scaleX - earlier->scaleX) * t);
-    midpoint.scaleY = earlier->scaleY + ((later->scaleY - earlier->scaleY) * t);
-    midpoint.linearInterpolation = later->linearInterpolation;
+    const TimelineClip::TransformKeyframe midpoint = interpolateStoredTransformKeyframe(
+        selectedClip->transformKeyframes[earlierIndex],
+        selectedClip->transformKeyframes[laterIndex],
+        midpointFrame);
 
     const bool updated = m_deps.updateClipById(selectedClip->id, [midpoint](TimelineClip& clip) {
-        for (TimelineClip::TransformKeyframe& existing : clip.transformKeyframes) {
-            if (existing.frame == midpoint.frame) {
-                existing = midpoint;
-                normalizeClipTransformKeyframes(clip);
-                return;
-            }
-        }
-        clip.transformKeyframes.push_back(midpoint);
-        normalizeClipTransformKeyframes(clip);
+        upsertStoredTransformKeyframe(clip, midpoint);
     });
 
     if (!updated) {
@@ -816,11 +695,11 @@ bool VideoKeyframeTab::insertInterpolatedKeyframeBetween(int64_t earlierFrame, i
 
     m_selectedKeyframeFrame = midpoint.frame;
     m_selectedKeyframeFrames = {midpoint.frame};
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
+    applyPostEditEffects({.pushHistory = false});
     m_deps.seekToTimelineFrame(selectedClip->startFrame + midpoint.frame);
-    m_deps.scheduleSaveState();
-    m_deps.pushHistorySnapshot();
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
     return true;
 }
 

@@ -79,9 +79,10 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
     connect(m_explorerPane, &ExplorerPane::transcriptionRequested, this, &EditorWindow::openTranscriptionWindow);
     connect(m_explorerPane, &ExplorerPane::folderRootChanged, this, [this](const QString& path) {
         // Update the projects root directory when media root changes
-        setRootDirPath(path);
-        // Reload projects from the new root
-        loadProjectsFromFolders();
+        if (m_projectManager) {
+            m_projectManager->setRootDirPath(path);
+            m_projectManager->loadProjectsFromFolders();
+        }
         refreshProjectsList();
     });
     connect(m_explorerPane, &ExplorerPane::stateChanged, this, [this]() {
@@ -401,15 +402,17 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             return buildStateJson();
         },
         [this]() {
-            const QString projectId = currentProjectIdOrDefault();
+            const QString projectId = m_projectManager
+                ? m_projectManager->currentProjectIdOrDefault()
+                : QStringLiteral("default");
             return QJsonObject{
                 {QStringLiteral("currentProjectId"), projectId},
-                {QStringLiteral("currentProjectName"), currentProjectName()},
-                {QStringLiteral("projectPath"), projectPath(projectId)},
-                {QStringLiteral("stateFilePath"), stateFilePath()},
-                {QStringLiteral("historyFilePath"), historyFilePath()},
-                {QStringLiteral("projectsDirPath"), projectsDirPath()},
-                {QStringLiteral("rootDirPath"), rootDirPath()}
+                {QStringLiteral("currentProjectName"), m_projectManager ? m_projectManager->currentProjectName() : QString()},
+                {QStringLiteral("projectPath"), m_projectManager ? m_projectManager->projectPath(projectId) : QString()},
+                {QStringLiteral("stateFilePath"), m_projectManager ? m_projectManager->stateFilePath() : QString()},
+                {QStringLiteral("historyFilePath"), m_projectManager ? m_projectManager->historyFilePath() : QString()},
+                {QStringLiteral("projectsDirPath"), m_projectManager ? m_projectManager->projectsDirPath() : QString()},
+                {QStringLiteral("rootDirPath"), m_projectManager ? m_projectManager->rootDirPath() : QString()}
             };
         },
         [this]() {
@@ -487,7 +490,9 @@ void EditorWindow::setupStartupLoad()
             scheduleDeferredStartupUiWarmup(false);
             return;
         }
-        loadProjectsFromFolders();
+        if (m_projectManager) {
+            m_projectManager->loadProjectsFromFolders();
+        }
         startupProfileMark(QStringLiteral("startup_load.projects_loaded"));
         loadState();
         startupProfileMark(QStringLiteral("startup_load.state_loaded"));

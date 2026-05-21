@@ -15,6 +15,7 @@
 #include "editor_timeline_types.h"
 #include "table_tab_base.h"
 #include "transcript_document_io.h"
+#include "transcript_document_save_controller.h"
 
 class QLabel;
 class QListWidget;
@@ -313,10 +314,6 @@ private:
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
-    QFutureWatcher<TranscriptDocumentSaveResult> m_transcriptSaveWatcher;
-    qint64 m_transcriptSaveRevision = 0;
-    qint64 m_pendingTranscriptSaveRevision = 0;
-    QString m_pendingTranscriptSavePath;
-    QJsonDocument m_pendingTranscriptSaveDoc;
+    TranscriptDocumentSaveController m_transcriptSaveController{QStringLiteral("speakers")};
     QString m_pendingPreferredSpeakerId;
 };

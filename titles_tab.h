@@ -103,6 +103,7 @@ private:
     TitleKeyframeDisplay evaluateDisplayedTitle(const TimelineClip &clip, int64_t localFrame) const;
     void updateWidgetsFromKeyframe(const TitleKeyframeDisplay &display);
     int64_t preferredEditFrame(const TimelineClip& clip) const;
+    TimelineClip::TitleKeyframe buildStoredKeyframeFromInspector(int64_t targetFrame) const;
     void applyKeyframeFromInspector();
     void applyKeyframeFromInspectorLive();
     int selectedKeyframeIndex(const TimelineClip &clip) const;

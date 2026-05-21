@@ -1,4 +1,5 @@
 #include "projects.h"
+#include "project_manager.h"
 
 #include <QDir>
 #include <QLabel>
@@ -46,8 +47,10 @@ void ProjectsTab::refresh()
         return;
     }
 
-    const QString currentProject = m_deps.currentProjectName ? m_deps.currentProjectName() : QString();
-    const QStringList projectIds = m_deps.availableProjectIds ? m_deps.availableProjectIds() : QStringList{};
+    const QString currentProject =
+        m_deps.projectManager ? m_deps.projectManager->currentProjectName() : QString();
+    const QStringList projectIds =
+        m_deps.projectManager ? m_deps.projectManager->availableProjectIds() : QStringList{};
 
     const QSignalBlocker blocker(m_widgets.projectsList);
     m_updatingList = true;
@@ -56,8 +59,8 @@ void ProjectsTab::refresh()
     for (const QString& projectId : projectIds) {
         auto* item = new QListWidgetItem(projectId, m_widgets.projectsList);
         item->setData(Qt::UserRole, projectId);
-        if (m_deps.projectPath) {
-            item->setToolTip(QDir::toNativeSeparators(m_deps.projectPath(projectId)));
+        if (m_deps.projectManager) {
+            item->setToolTip(QDir::toNativeSeparators(m_deps.projectManager->projectPath(projectId)));
         }
         if (projectId == currentProject) {
             item->setSelected(true);

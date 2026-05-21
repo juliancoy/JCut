@@ -1,4 +1,5 @@
 #include "effects_tab.h"
+#include "editor_tab_edit_effects.h"
 
 #include <QSignalBlocker>
 #include <QDir>
@@ -8,6 +9,17 @@ EffectsTab::EffectsTab(const Widgets& widgets, const Dependencies& deps, QObject
     , m_widgets(widgets)
     , m_deps(deps)
 {
+}
+
+namespace {
+TabEditCallbacks effectsEditCallbacks(const EffectsTab::Dependencies& deps) {
+    return TabEditCallbacks{
+        .updatePreview = deps.setPreviewTimelineClips,
+        .refreshInspector = deps.refreshInspector,
+        .scheduleSave = deps.scheduleSaveState,
+        .pushHistory = deps.pushHistorySnapshot,
+    };
+}
 }
 
 void EffectsTab::wire()
@@ -131,12 +143,8 @@ void EffectsTab::applyMaskFeather(bool pushHistory)
 
     if (!updated) return;
 
-    m_deps.setPreviewTimelineClips();
-    m_deps.refreshInspector();
-    m_deps.scheduleSaveState();
-    if (pushHistory) {
-        m_deps.pushHistorySnapshot();
-    }
+    applyTabEditEffects(effectsEditCallbacks(m_deps),
+                        TabEditEffects{.pushHistory = pushHistory});
     emit effectsApplied();
 }
 
