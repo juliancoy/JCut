@@ -1361,7 +1361,15 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *playheadFaceStreamsHeaderRow = new QHBoxLayout;
     playheadFaceStreamsHeaderRow->setContentsMargins(0, 0, 0, 0);
     playheadFaceStreamsHeaderRow->setSpacing(6);
+    m_speakerShowPlayheadFaceStreamsCheckBox =
+        new QCheckBox(QStringLiteral("Show"), page);
+    m_speakerShowPlayheadFaceStreamsCheckBox->setObjectName(
+        QStringLiteral("speakers.show_playhead_tracks"));
+    m_speakerShowPlayheadFaceStreamsCheckBox->setChecked(true);
+    m_speakerShowPlayheadFaceStreamsCheckBox->setToolTip(
+        QStringLiteral("Show or hide the Tracks At Playhead picker without affecting continuity overlays."));
     m_speakerPlayheadFaceStreamsList = new QListWidget(page);
+    m_speakerPlayheadFaceStreamsList->setObjectName(QStringLiteral("speakers.playhead_tracks"));
     m_speakerPlayheadFaceStreamsList->setViewMode(QListView::IconMode);
     m_speakerPlayheadFaceStreamsList->setFlow(QListView::LeftToRight);
     m_speakerPlayheadFaceStreamsList->setWrapping(true);
@@ -1431,6 +1439,7 @@ QWidget *InspectorPane::buildSpeakersTab()
         button->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     }
     playheadFaceStreamsHeaderRow->addWidget(playheadFaceStreamsTitle);
+    playheadFaceStreamsHeaderRow->addWidget(m_speakerShowPlayheadFaceStreamsCheckBox);
     playheadFaceStreamsHeaderRow->addStretch(1);
     playheadFaceStreamsHeaderRow->addWidget(m_speakerPrecropFacesButton);
     speakerTranscriptAiRow->addWidget(m_speakerAiFindNamesButton);
@@ -1467,6 +1476,7 @@ QWidget *InspectorPane::buildSpeakersTab()
         "QLabel { border: 1px solid #314459; border-radius: 8px; background: #142234; color: #d8e6f5; padding: 8px; }"));
 
     m_speakerTrackingStatusLabel = new QLabel(QString(), page);
+    m_speakerTrackingStatusLabel->setObjectName(QStringLiteral("speakers.tracking_status"));
     m_speakerTrackingStatusLabel->setWordWrap(true);
     m_speakerTrackingStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 

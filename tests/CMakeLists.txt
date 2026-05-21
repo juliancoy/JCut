@@ -128,6 +128,11 @@ set_tests_properties(test_facestream_processed_artifact PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
+target_sources(test_facestream_flow
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../speaker_flow_debug.cpp
+)
+
 add_executable(facestream_midpoint_detection_harness
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_midpoint_detection_harness.cpp
 )
@@ -141,3 +146,18 @@ target_compile_definitions(facestream_midpoint_detection_harness
         EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
 )
 jcut_force_bundled_ffmpeg_runtime(facestream_midpoint_detection_harness)
+
+add_executable(facestream_track_coverage_harness
+    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_track_coverage_harness.cpp
+)
+target_link_libraries(facestream_track_coverage_harness
+    PRIVATE
+        editor_test_support
+)
+target_compile_definitions(facestream_track_coverage_harness
+    PRIVATE
+        JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+        JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
+        EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
+)
+jcut_force_bundled_ffmpeg_runtime(facestream_track_coverage_harness)

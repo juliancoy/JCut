@@ -829,13 +829,13 @@ MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) 
 
     if (filePath.trimmed().isEmpty()) {
         // For empty path, set default
-        result.durationFrames = qRound64(fallbackSeconds * 30.0);
+        result.durationFrames = qRound64(fallbackSeconds * static_cast<double>(kTimelineFps));
         return result;
     }
 
     const QFileInfo info(filePath);
     if (!info.exists()) {
-        result.durationFrames = qRound64(fallbackSeconds * 30.0);
+        result.durationFrames = qRound64(fallbackSeconds * static_cast<double>(kTimelineFps));
         return result;
     }
     if (info.exists() && info.isDir()) {
@@ -852,25 +852,25 @@ MediaProbeResult probeMediaFile(const QString& filePath, qreal fallbackSeconds) 
                 result.frameSize = firstImage.size();
             }
         } else {
-            result.durationFrames = qRound64(fallbackSeconds * 30.0);
+            result.durationFrames = qRound64(fallbackSeconds * static_cast<double>(kTimelineFps));
         }
         return result;
     }
     const QString suffix = info.suffix().toLower();
     if (isImageSuffix(suffix)) {
         result.mediaType = ClipMediaType::Image;
-        result.durationFrames = qRound64(fallbackSeconds * 30.0); // For images, assume 30 fps
+        result.durationFrames = qRound64(fallbackSeconds * static_cast<double>(kTimelineFps));
         return result;
     }
 
     AVFormatContext* formatCtx = nullptr;
     const QByteArray pathBytes = QFile::encodeName(filePath);
     if (avformat_open_input(&formatCtx, pathBytes.constData(), nullptr, nullptr) < 0) {
-        result.durationFrames = qRound64(fallbackSeconds * 30.0);
+        result.durationFrames = qRound64(fallbackSeconds * static_cast<double>(kTimelineFps));
         return result;
     }
 
-    double sourceFps = 30.0;
+    double sourceFps = static_cast<double>(kTimelineFps);
     bool durationFound = false;
 
     if (avformat_find_stream_info(formatCtx, nullptr) >= 0) {

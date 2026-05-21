@@ -1,4 +1,5 @@
 #include "clip_serialization.h"
+#include "timeline_fps.h"
 
 #include <QColor>
 #include <QFileInfo>
@@ -257,7 +258,8 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.audioSourceStatus = obj.value(QStringLiteral("audioSourceStatus")).toString(QStringLiteral("unknown"));
         clip.audioSourceLastVerifiedMs =
             obj.value(QStringLiteral("audioSourceLastVerifiedMs")).toVariant().toLongLong();
-        clip.sourceFps = obj.value(QStringLiteral("sourceFps")).toDouble(30.0);
+        clip.sourceFps = obj.value(QStringLiteral("sourceFps"))
+                             .toDouble(static_cast<double>(kTimelineFps));
         clip.sourceDurationFrames = obj.value(QStringLiteral("sourceDurationFrames")).toVariant().toLongLong();
         const QSize storedSourceFrameSize(obj.value(QStringLiteral("sourceFrameWidth")).toInt(),
                                           obj.value(QStringLiteral("sourceFrameHeight")).toInt());

@@ -75,7 +75,7 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
     QDialog dialog;
     dialog.setWindowTitle(QStringLiteral("Continuity Track Tools"));
     dialog.setWindowFlag(Qt::Window, true);
-    dialog.resize(520, 230);
+    dialog.resize(520, 260);
     auto* layout = new QVBoxLayout(&dialog);
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
@@ -102,6 +102,14 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
         QStringLiteral("Applies gentle post-solve smoothing to scale keys to reduce zoom pumping and abrupt size changes."));
     layout->addWidget(smoothScaleCheck);
 
+    auto* showPreviewCheck = new QCheckBox(QStringLiteral("Show Preview"), &dialog);
+    showPreviewCheck->setChecked(
+        m_widgets.speakerShowFaceStreamBoxesCheckBox &&
+        m_widgets.speakerShowFaceStreamBoxesCheckBox->isChecked());
+    showPreviewCheck->setToolTip(
+        QStringLiteral("Draw generated continuity-track boxes for the selected clip in Preview."));
+    layout->addWidget(showPreviewCheck);
+
     auto* noteLabel = new QLabel(
         QStringLiteral("Current default is OFF for all smoothing."),
         &dialog);
@@ -121,6 +129,13 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
     layout->addLayout(buttons);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
     connect(saveButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(showPreviewCheck, &QCheckBox::toggled, &dialog, [this](bool checked) {
+        if (m_widgets.speakerShowFaceStreamBoxesCheckBox) {
+            m_widgets.speakerShowFaceStreamBoxesCheckBox->setChecked(checked);
+        } else if (m_speakerDeps.refreshPreview) {
+            m_speakerDeps.refreshPreview();
+        }
+    });
     connect(rebuildProcessedButton, &QPushButton::clicked, &dialog, [this]() {
         rebuildProcessedFaceStreamForSelectedClip(true);
     });
@@ -292,6 +307,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
                                              qreal yNorm,
                                              qreal boxSizeNorm)
 {
+    Q_UNUSED(sourceFrame);
     if (!activeCutMutable() || trackId < 0) {
         return false;
     }
@@ -299,6 +315,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
     if (!clip || clip->id != clipId) {
         return false;
     }
+    const int64_t anchorSourceFrame = currentSourceFrameForClip(*clip);
     const QString speakerId = selectedSpeakerId();
     if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         updateSpeakerTrackingStatusLabel();
@@ -333,12 +350,13 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
         const qreal rowAnchorY =
             row.value(QString(kSpeakerFlowAnchorYKey)).toDouble(-1.0);
         if ((rowIdentityId == speakerId &&
-             rowAnchorSourceFrame == sourceFrame &&
+             rowAnchorSourceFrame == anchorSourceFrame &&
              std::abs(rowAnchorX - xNorm) < 0.001 &&
              std::abs(rowAnchorY - yNorm) < 0.001)) {
             row[QStringLiteral("identity_id")] = speakerId;
             row[QStringLiteral("stream_id")] = streamId;
-            row[QString(kSpeakerFlowAnchorSourceFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
+            row[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+                static_cast<qint64>(qMax<int64_t>(0, anchorSourceFrame));
             row[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
             row[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
             row[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
@@ -353,7 +371,8 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
         row[QStringLiteral("track_id")] = trackId;
         row[QStringLiteral("identity_id")] = speakerId;
         row[QStringLiteral("stream_id")] = streamId;
-        row[QString(kSpeakerFlowAnchorSourceFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
+        row[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+            static_cast<qint64>(qMax<int64_t>(0, anchorSourceFrame));
         row[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
         row[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
         row[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
@@ -376,7 +395,8 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
     auditRow[QStringLiteral("track_id")] = trackId;
     auditRow[QStringLiteral("stream_id")] = streamId;
     auditRow[QStringLiteral("identity_id")] = speakerId;
-    auditRow[QString(kSpeakerFlowAnchorSourceFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
+    auditRow[QString(kSpeakerFlowAnchorSourceFrameKey)] =
+        static_cast<qint64>(qMax<int64_t>(0, anchorSourceFrame));
     auditRow[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
     auditRow[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
     auditRow[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
@@ -393,7 +413,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
     for (const QJsonValue& faceRefValue : faceRefs) {
         const QJsonObject faceRef = faceRefValue.toObject();
         if (faceRef.value(QStringLiteral("track_id")).toInt(-1) == trackId &&
-            faceRef.value(QString(kSpeakerFlowAnchorSourceFrameKey)).toVariant().toLongLong() == sourceFrame &&
+            faceRef.value(QString(kSpeakerFlowAnchorSourceFrameKey)).toVariant().toLongLong() == anchorSourceFrame &&
             std::abs(faceRef.value(QString(kSpeakerFlowAnchorXKey)).toDouble(-1.0) - xNorm) < 0.001 &&
             std::abs(faceRef.value(QString(kSpeakerFlowAnchorYKey)).toDouble(-1.0) - yNorm) < 0.001) {
             faceRefExists = true;
@@ -405,7 +425,7 @@ bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
         faceRef[QStringLiteral("track_id")] = trackId;
         faceRef[QStringLiteral("stream_id")] = streamId;
         faceRef[QString(kSpeakerFlowAnchorSourceFrameKey)] =
-            static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
+            static_cast<qint64>(qMax<int64_t>(0, anchorSourceFrame));
         faceRef[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
         faceRef[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
         faceRef[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);

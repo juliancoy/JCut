@@ -118,9 +118,10 @@ void setSpeakerFramingObject(QJsonObject& profile, const QJsonObject& framing)
 
 int64_t canonicalToSourceFrameForTracking(int64_t frame30, double sourceFps)
 {
-    const double fps = sourceFps > 0.0 ? sourceFps : 30.0;
+    const double fps = sourceFps > 0.0 ? sourceFps : static_cast<double>(kTimelineFps);
     return qMax<int64_t>(
-        0, static_cast<int64_t>(std::floor((static_cast<double>(frame30) / 30.0) * fps)));
+        0, static_cast<int64_t>(std::floor((static_cast<double>(frame30) /
+                                            static_cast<double>(kTimelineFps)) * fps)));
 }
 
 QImage toGray8(const QImage& image)

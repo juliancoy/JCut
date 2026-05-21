@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "editor_preview_edit_helpers.h"
+#include "timeline_fps.h"
 #include "transport_icons.h"
 
 #include <QFile>
@@ -503,7 +504,7 @@ void EditorWindow::updateTransportLabels()
 
 QString EditorWindow::frameToTimecode(int64_t frame) const
 {
-    const int fps = 30;
+    const int fps = kTimelineFps;
     const int64_t totalSeconds = frame / fps;
     const int64_t minutes = totalSeconds / 60;
     const int64_t seconds = totalSeconds % 60;

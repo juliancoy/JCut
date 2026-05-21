@@ -3,7 +3,9 @@
 #include "speakers_table.h"
 
 #include <QAbstractItemView>
+#include <QAction>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
 #include <QLabel>
@@ -252,9 +254,46 @@ void SpeakersTab::wire()
                 m_widgets.speakerPlayheadFaceStreamsList &&
                 !m_widgets.speakerPlayheadFaceStreamsList->selectedItems().isEmpty();
             if (m_widgets.speakerPrecropFacesButton) {
-                m_widgets.speakerPrecropFacesButton->setEnabled(activeCutMutable() && hasSpeaker && hasSelection);
+                const bool playheadListVisible =
+                    !m_widgets.speakerShowPlayheadFaceStreamsCheckBox ||
+                    m_widgets.speakerShowPlayheadFaceStreamsCheckBox->isChecked();
+                m_widgets.speakerPrecropFacesButton->setEnabled(
+                    activeCutMutable() && playheadListVisible && hasSpeaker && hasSelection);
             }
         });
+    }
+    if (m_widgets.speakerShowPlayheadFaceStreamsCheckBox) {
+        connect(m_widgets.speakerShowPlayheadFaceStreamsCheckBox, &QCheckBox::toggled, this, [this]() {
+            updatePlayheadTrackCandidatesVisibility();
+        });
+    }
+    if (m_widgets.speakerFaceStreamOverlaySourceCombo) {
+        connect(m_widgets.speakerFaceStreamOverlaySourceCombo,
+                &QComboBox::currentIndexChanged,
+                this,
+                [this](int) {
+                    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+                    const QString speakerId = selectedSpeakerId();
+                    if (clip && !speakerId.trimmed().isEmpty()) {
+                        refreshPlayheadTrackCandidatesList(*clip, speakerId);
+                        updatePlayheadTrackCandidatesVisibility();
+                        updateSpeakerTrackingStatusLabel();
+                    }
+                });
+    }
+    if (m_widgets.selectedSpeakerFaceStreamsList) {
+        m_widgets.selectedSpeakerFaceStreamsList->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.selectedSpeakerFaceStreamsList,
+                &QWidget::customContextMenuRequested,
+                this,
+                &SpeakersTab::showSelectedSpeakerAssignedTracksContextMenu);
+        auto* deassignShortcut = new QAction(m_widgets.selectedSpeakerFaceStreamsList);
+        deassignShortcut->setShortcut(QKeySequence::Delete);
+        deassignShortcut->setShortcutContext(Qt::WidgetShortcut);
+        connect(deassignShortcut, &QAction::triggered, this, [this]() {
+            deassignSelectedSpeakerAssignedTracks();
+        });
+        m_widgets.selectedSpeakerFaceStreamsList->addAction(deassignShortcut);
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(
@@ -321,6 +360,7 @@ void SpeakersTab::wire()
         m_widgets.selectedSpeakerRef2ImageLabel->setToolTip(
             QStringLiteral("Click: open Ref 2 preview/identity assignment. Shift+Drag: adjust crop."));
     }
+    updatePlayheadTrackCandidatesVisibility();
     syncSpeakerListMode();
 }
 

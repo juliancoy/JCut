@@ -100,29 +100,15 @@ public:
     bool selectedOverlayIsTranscript() const override;
 
 private:
-    struct FacestreamKeyframe {
-        int64_t frame = -1;
-        QRectF boxNorm;
-        qreal xNorm = 0.5;
-        qreal yNorm = 0.5;
-        qreal boxSizeNorm = -1.0;
-        bool hasCenterBox = false;
-        qreal confidence = 0.0;
-        QString source;
-    };
-    struct FacestreamTrack {
-        QString streamId;
-        QString source;
-        int trackId = -1;
-        FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
-        int64_t typicalFrameStep = 1;
-        QVector<FacestreamKeyframe> keyframes;
-    };
+    using FacestreamKeyframe = FacestreamResolvedKeyframe;
+    using FacestreamTrack = FacestreamResolvedTrack;
     struct FacestreamOverlayCacheEntry {
         QString signature;
         QVector<FacestreamTrack> tracks;
         QVector<VulkanPreviewFacestreamOverlay> rawDetections;
         QHash<int64_t, QVector<VulkanPreviewFacestreamOverlay>> rawDetectionsBySourceFrame;
+        QVector<int64_t> rawDetectionSourceFrames;
+        int64_t rawDetectionTypicalFrameStep = 1;
     };
     struct PlaybackSmoothnessSample {
         qint64 timestampMs = 0;

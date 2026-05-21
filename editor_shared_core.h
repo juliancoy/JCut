@@ -3,6 +3,7 @@
 #include "editor_action_result.h"
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
+#include "timeline_fps.h"
 
 #include <QHash>
 #include <QImage>
@@ -26,7 +27,7 @@ struct MediaProbeResult {
     int64_t durationFrames = 120;
     QString codecName;
     QSize frameSize;
-    double fps = 30.0;
+    double fps = static_cast<double>(kTimelineFps);
 };
 
 struct TranscriptWord {
@@ -89,7 +90,6 @@ inline const QString kDefaultFontFamily = QStringLiteral("Helvetica Neue");
 inline const QString kDefaultFontFamily = QStringLiteral("DejaVu Sans");
 #endif
 
-constexpr int kTimelineFps = 30;
 constexpr int kAudioSampleRate = 48000;
 constexpr int64_t kSamplesPerFrame = kAudioSampleRate / kTimelineFps;
 constexpr int64_t kAudioNudgeSamples = (kAudioSampleRate * 25) / 1000;

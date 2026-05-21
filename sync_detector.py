@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 from scipy import signal
 
+TIMELINE_FPS = 30.0
+
 
 @dataclass
 class DetectionResult:
@@ -31,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--video", required=True, help="Path to video/visual media input.")
     parser.add_argument("--audio", required=True, help="Path to audio media input.")
-    parser.add_argument("--fps", type=float, default=30.0, help="Timeline FPS.")
+    parser.add_argument("--fps", type=float, default=TIMELINE_FPS, help="Timeline FPS.")
     parser.add_argument(
         "--interval-seconds",
         type=float,
@@ -133,7 +135,7 @@ def extract_visual_activity(
 
     native_fps = cap.get(cv2.CAP_PROP_FPS)
     if not native_fps or math.isnan(native_fps) or native_fps <= 0.0:
-        native_fps = target_fps if target_fps > 0 else 30.0
+        native_fps = target_fps if target_fps > 0 else TIMELINE_FPS
     sample_every = max(1, int(round(native_fps / max(1.0, target_fps))))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     log_progress(

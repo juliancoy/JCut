@@ -104,6 +104,21 @@ The harness:
 - prints per-run summary metrics and a final median line
 - forwards the detector process logs directly to the terminal
 
+### Track Coverage Harness
+
+For a real end-to-end coverage check against the default startup clip, build and run:
+
+```bash
+./build/bin/facestream_track_coverage_harness
+```
+
+The harness:
+- resolves the selected clip from `projects/default/state.json`
+- prefers persisted clip artifacts first: existing `--output-dir`, sibling `_facestream.bin`, then latest `debug/speaker_flow` run
+- only reruns `jcut_vulkan_facestream_offscreen` when `--rerun` is explicitly passed
+- verifies that track observations cover the detector observations above configurable thresholds
+- avoids creating durable project artifacts unless `--output-dir` or `--keep-output` is used
+
 ### With Address Sanitizer
 
 ```bash

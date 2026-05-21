@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+TIMELINE_FPS = 30.0
+
 
 def _now_stamp() -> str:
     return time.strftime("%Y%m%d-%H%M%S")
@@ -291,7 +293,7 @@ def main() -> int:
     ap.add_argument("--start-frame", type=int, default=0)
     ap.add_argument("--end-frame", type=int, default=3600)
     ap.add_argument("--step", type=int, default=6)
-    ap.add_argument("--source-fps", type=float, default=30.0)
+    ap.add_argument("--source-fps", type=float, default=TIMELINE_FPS)
     ap.add_argument("--max-candidates", type=int, default=128)
     ap.add_argument("--live", action="store_true", help="Show real-time progress output.")
     args = ap.parse_args()

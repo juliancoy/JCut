@@ -103,7 +103,13 @@ QJsonObject ControlServerWorker::fastSnapshot() const {
 }
 
 bool ControlServerWorker::uiThreadResponsive(const QJsonObject& snapshot) const {
-    return snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <= m_uiHeartbeatStaleMs;
+    if (qEnvironmentVariable("QT_QPA_PLATFORM").contains(QStringLiteral("offscreen"),
+                                                         Qt::CaseInsensitive)) {
+        return true;
+    }
+    const qint64 heartbeatAgeMs =
+        snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1);
+    return heartbeatAgeMs >= 0 && heartbeatAgeMs <= m_uiHeartbeatStaleMs;
 }
 
 void ControlServerWorker::writeResponse(QTcpSocket* socket, int statusCode, const QByteArray& body, const QByteArray& contentType) {

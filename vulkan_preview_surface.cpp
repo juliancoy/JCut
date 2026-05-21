@@ -57,15 +57,6 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip)
         .arg(QString::number(clip.sourceFps, 'f', 6));
 }
 
-QString normalizedFacestreamOverlaySource(QString source)
-{
-    source = source.trimmed().toLower();
-    if (source.startsWith(QStringLiteral("scrfd"))) {
-        return QStringLiteral("scrfd");
-    }
-    return source.isEmpty() ? QStringLiteral("all") : source;
-}
-
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
                               int64_t samplePosition,

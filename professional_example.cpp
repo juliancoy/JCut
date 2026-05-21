@@ -26,6 +26,8 @@ extern "C" {
 // QRhi includes
 #include <QtGui/private/qrhi_p.h>
 
+#include "timeline_fps.h"
+
 // ============================================================================
 // 1. Thread-Safe Frame Handle (RAII wrapper)
 // ============================================================================
@@ -293,8 +295,8 @@ public:
         
         // Convert frame to timestamp
         int64_t targetPts = av_rescale_q(
-            targetFrame * stream->time_base.den / 30,  // assuming 30fps
-            AVRational{1, 30},
+            targetFrame * stream->time_base.den / kTimelineFps,
+            AVRational{1, kTimelineFps},
             stream->time_base
         );
         

@@ -100,6 +100,7 @@ public:
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QListWidget *selectedSpeakerFaceStreamsList() const { return m_selectedSpeakerFaceStreamsList; }
     QListWidget *speakerPlayheadFaceStreamsList() const { return m_speakerPlayheadFaceStreamsList; }
+    QCheckBox *speakerShowPlayheadFaceStreamsCheckBox() const { return m_speakerShowPlayheadFaceStreamsCheckBox; }
     QLabel *selectedSpeakerRef1ImageLabel() const { return m_selectedSpeakerRef1ImageLabel; }
     QLabel *selectedSpeakerRef2ImageLabel() const { return m_selectedSpeakerRef2ImageLabel; }
     QPushButton *selectedSpeakerPreviousSentenceButton() const { return m_selectedSpeakerPreviousSentenceButton; }
@@ -618,6 +619,7 @@ private:
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QListWidget *m_selectedSpeakerFaceStreamsList = nullptr;
     QListWidget *m_speakerPlayheadFaceStreamsList = nullptr;
+    QCheckBox *m_speakerShowPlayheadFaceStreamsCheckBox = nullptr;
     QLabel *m_selectedSpeakerRef1ImageLabel = nullptr;
     QLabel *m_selectedSpeakerRef2ImageLabel = nullptr;
     QPushButton *m_selectedSpeakerPreviousSentenceButton = nullptr;

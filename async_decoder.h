@@ -3,6 +3,7 @@
 #include "qt_compat.h"  // Qt 6.4/GCC 13 compatibility
 #include "frame_handle.h"
 #include "memory_budget.h"
+#include "timeline_fps.h"
 
 #include <QDateTime>
 #include <QDeadlineTimer>
@@ -75,7 +76,7 @@ struct DecodeRequest {
 struct VideoStreamInfo {
     QString path;
     int64_t durationFrames = 0;
-    double fps = 30.0;
+    double fps = static_cast<double>(kTimelineFps);
     QSize frameSize;
     int64_t bitrate = 0;
     QString codecName;

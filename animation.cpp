@@ -1,6 +1,7 @@
 #include "animation.h"
 
 #include "model.h"
+#include "timeline_fps.h"
 #include "ufbx.h"
 
 #include <algorithm>
@@ -95,7 +96,7 @@ double initialPlaybackTime(const motive::animation::FbxClipRuntime& clip, bool p
 
     // Many authored FBX clips include a bind/rest pose sample at the exact start.
     // Prime playback one frame forward so the first visible frame is the animated pose.
-    const double frameStep = 1.0 / 30.0;
+    const double frameStep = 1.0 / static_cast<double>(kTimelineFps);
     return std::min(clip.timeBegin + std::min(frameStep, clipDuration), clip.timeEnd);
 }
 

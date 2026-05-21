@@ -5,6 +5,7 @@
 #include <QFutureWatcher>
 #include <QPixmap>
 #include <QTableWidget>
+#include <QPoint>
 #include <QHash>
 #include <QPoint>
 #include <QStringList>
@@ -22,6 +23,7 @@ class QListWidget;
 class QPushButton;
 class QDoubleSpinBox;
 class QCheckBox;
+class QComboBox;
 class QPlainTextEdit;
 class QTimer;
 class QToolButton;
@@ -43,6 +45,7 @@ public:
         QLabel* selectedSpeakerIdLabel = nullptr;
         QListWidget* selectedSpeakerFaceStreamsList = nullptr;
         QListWidget* speakerPlayheadFaceStreamsList = nullptr;
+        QCheckBox* speakerShowPlayheadFaceStreamsCheckBox = nullptr;
         QLabel* selectedSpeakerRef1ImageLabel = nullptr;
         QLabel* selectedSpeakerRef2ImageLabel = nullptr;
         QPushButton* selectedSpeakerPreviousSentenceButton = nullptr;
@@ -76,8 +79,10 @@ public:
         QLabel* speakerPointstreamChipLabel = nullptr;
         QPushButton* speakerTrackingChipButton = nullptr;
         QPushButton* speakerStabilizeChipButton = nullptr;
+        QCheckBox* speakerShowFaceStreamBoxesCheckBox = nullptr;
         QTableWidget* speakerFaceStreamTable = nullptr;
         QPlainTextEdit* speakerFaceStreamDetailsEdit = nullptr;
+        QComboBox* speakerFaceStreamOverlaySourceCombo = nullptr;
         QCheckBox* speakerDetectionsAvailableCheckBox = nullptr;
         QCheckBox* speakerTracksAvailableCheckBox = nullptr;
         QTableWidget* speakerRawDetectionTable = nullptr;
@@ -123,6 +128,8 @@ public:
     qint64 maxSpeakersTableRefreshDurationMs() const { return m_maxSpeakersTableRefreshDurationMs; }
     qint64 lastFaceStreamPanelRefreshDurationMs() const { return m_lastFaceStreamPanelRefreshDurationMs; }
     qint64 maxFaceStreamPanelRefreshDurationMs() const { return m_maxFaceStreamPanelRefreshDurationMs; }
+    qint64 lastPlayheadTrackCandidatesRefreshDurationMs() const { return m_lastPlayheadTrackCandidatesRefreshDurationMs; }
+    qint64 maxPlayheadTrackCandidatesRefreshDurationMs() const { return m_maxPlayheadTrackCandidatesRefreshDurationMs; }
     qint64 lastRawDetectionsPanelRefreshDurationMs() const { return m_lastRawDetectionsPanelRefreshDurationMs; }
     qint64 maxRawDetectionsPanelRefreshDurationMs() const { return m_maxRawDetectionsPanelRefreshDurationMs; }
 
@@ -168,6 +175,7 @@ private:
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId);
     void requestRefreshFaceStreamPathsPanel();
     void refreshPlayheadTrackCandidatesList(const TimelineClip& clip, const QString& speakerId);
+    void updatePlayheadTrackCandidatesVisibility();
     enum class SentenceNavAction {
         Previous,
         Next,
@@ -257,6 +265,9 @@ private:
                                         qreal xNorm,
                                         qreal yNorm,
                                         qreal boxSizeNorm = -1.0);
+    bool deassignTrackFromSpeaker(const QString& speakerId, int trackId);
+    bool deassignSelectedSpeakerAssignedTracks();
+    void showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos);
     bool saveSpeakerTrackingReference(const QString& speakerId, int referenceIndex);
     bool assignTrackToSpeaker(const QString& speakerId,
                               int trackId,
@@ -317,8 +328,11 @@ private:
     qint64 m_maxSpeakersTableRefreshDurationMs = 0;
     qint64 m_lastFaceStreamPanelRefreshDurationMs = 0;
     qint64 m_maxFaceStreamPanelRefreshDurationMs = 0;
+    qint64 m_lastPlayheadTrackCandidatesRefreshDurationMs = 0;
+    qint64 m_maxPlayheadTrackCandidatesRefreshDurationMs = 0;
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
+    int m_lastPlayheadTrackCandidateCount = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
     QString m_pendingPreferredSpeakerId;
 };

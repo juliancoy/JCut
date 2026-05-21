@@ -4,6 +4,7 @@
 #include "external/imgui/backends/imgui_impl_glfw.h"
 #include "external/imgui/backends/imgui_impl_vulkan.h"
 #include "render_internal.h"
+#include "timeline_fps.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_zero_copy_face_detector.h"
 
@@ -1059,7 +1060,8 @@ void ImGuiPreviewWindow::pumpEvents()
     if (m_impl->followLatest) {
         m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
     } else if (m_impl->historyPlaying && m_impl->latestProcessedFrame > m_impl->minTimelineFrame) {
-        m_impl->previewFrameAccumulator += deltaSec * (30.0 * m_impl->historyPlaybackSpeed);
+        m_impl->previewFrameAccumulator +=
+            deltaSec * (static_cast<double>(kTimelineFps) * m_impl->historyPlaybackSpeed);
         while (m_impl->previewFrameAccumulator >= 1.0) {
             m_impl->previewFrameAccumulator -= 1.0;
             if (m_impl->requestedPreviewFrame < m_impl->latestProcessedFrame) {

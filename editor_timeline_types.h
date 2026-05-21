@@ -1,5 +1,7 @@
 #pragma once
 
+#include "timeline_fps.h"
+
 #include <QColor>
 #include <QPointF>
 #include <QSize>
@@ -146,7 +148,7 @@ struct TimelineClip {
     QString audioSourceOriginalPath;
     QString audioSourceStatus = QStringLiteral("unknown");
     qint64 audioSourceLastVerifiedMs = 0;
-    qreal sourceFps = 30.0;
+    qreal sourceFps = static_cast<qreal>(kTimelineFps);
     int64_t sourceDurationFrames = 0;
     QSize sourceFrameSize;
     int64_t sourceInFrame = 0;

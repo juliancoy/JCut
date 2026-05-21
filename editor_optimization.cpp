@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -399,6 +400,11 @@ QJsonObject EditorWindow::ensureOptimizedProfile()
 void EditorWindow::scheduleOptimizedProfileEnsure()
 {
     if (m_optimizedProfileEnsureScheduled) {
+        return;
+    }
+    if (QGuiApplication::platformName().compare(QStringLiteral("offscreen"), Qt::CaseInsensitive) == 0) {
+        startupProfileMark(QStringLiteral("deferred_optimization.skipped"),
+                           QJsonObject{{QStringLiteral("reason"), QStringLiteral("offscreen_platform")}});
         return;
     }
     m_optimizedProfileEnsureScheduled = true;

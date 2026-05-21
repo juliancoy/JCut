@@ -534,10 +534,15 @@ jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_zero_copy_video_preprocess)
 
 add_executable(jcut_vulkan_facestream_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_preview_support.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_edit_service.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_save_controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facestream_offscreen_main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp

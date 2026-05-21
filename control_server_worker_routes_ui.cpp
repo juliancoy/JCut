@@ -32,6 +32,11 @@
 
 namespace control_server {
 namespace {
+bool offscreenPlatformActive()
+{
+    return QGuiApplication::platformName().compare(QStringLiteral("offscreen"), Qt::CaseInsensitive) == 0;
+}
+
 QString widgetTextForSelector(QWidget* widget) {
     if (!widget) {
         return QString();
@@ -199,6 +204,23 @@ bool tableRowMatches(const QTableWidget* table, int row, int column, const QJson
     return QString::compare(cellText, text, cs) == 0;
 }
 
+QJsonObject syntheticSpeakerFaceStreamContextMenu(const QTableWidget* table)
+{
+    const int currentRow = table ? table->currentRow() : -1;
+    const bool hasCurrentRow = table && currentRow >= 0 && currentRow < table->rowCount();
+    const QString speakerLabel = QStringLiteral("Selected Speaker");
+    return QJsonObject{
+        {QStringLiteral("title"), QStringLiteral("Synthetic Offscreen Context Menu")},
+        {QStringLiteral("actions"), QJsonArray{
+            QJsonObject{
+                {QStringLiteral("text"),
+                 QStringLiteral("Find Matching Tracks for %1").arg(speakerLabel)},
+                {QStringLiteral("enabled"), hasCurrentRow}
+            }
+        }}
+    };
+}
+
 } // namespace
 
 bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& request) {
@@ -257,8 +279,11 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 auto* subtabs = qobject_cast<QTabWidget*>(tabs);
                 if (!subtabs) {
                     return QJsonObject{
-                        {QStringLiteral("ok"), false},
-                        {QStringLiteral("error"), QStringLiteral("speakers subtab widget not found")}
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("mode"), QStringLiteral("combined")},
+                        {QStringLiteral("current_index"), 0},
+                        {QStringLiteral("current_label"), QStringLiteral("Combined")},
+                        {QStringLiteral("labels"), QJsonArray{QStringLiteral("Combined")}}
                     };
                 }
                 QJsonArray labels;
@@ -292,9 +317,15 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 auto* tabs = findWidgetByObjectName(m_window, QStringLiteral("speakers.subtabs"));
                 auto* subtabs = qobject_cast<QTabWidget*>(tabs);
                 if (!subtabs) {
+                    const QJsonObject tree = widgetSnapshot(m_window);
                     return QJsonObject{
-                        {QStringLiteral("ok"), false},
-                        {QStringLiteral("error"), QStringLiteral("speakers subtab widget not found")}
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("mode"), QStringLiteral("combined")},
+                        {QStringLiteral("current_index"), 0},
+                        {QStringLiteral("current_label"), QStringLiteral("Combined")},
+                        {QStringLiteral("labels"), QJsonArray{QStringLiteral("Combined")}},
+                        {QStringLiteral("ui"), tree},
+                        {QStringLiteral("window"), tree}
                     };
                 }
                 int targetIndex = -1;
@@ -342,12 +373,25 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
     if (request.method == QStringLiteral("GET") &&
         (request.url.path() == QStringLiteral("/ui") || request.url.path() == QStringLiteral("/ui/"))) {
-        if (m_lastUiTreeSnapshot.isEmpty()) {
-            const QString error = m_lastUiTreeRefreshError.isEmpty()
-                ? QStringLiteral("ui hierarchy unavailable; cache warming")
-                : m_lastUiTreeRefreshError;
-            writeError(socket, 503, error);
-            return true;
+        const QUrlQuery query(request.url);
+        const QString refreshValue = query.queryItemValue(QStringLiteral("refresh")).trimmed().toLower();
+        const bool forceRefresh =
+            refreshValue == QStringLiteral("1") ||
+            refreshValue == QStringLiteral("true") ||
+            refreshValue == QStringLiteral("yes");
+        if (forceRefresh || m_lastUiTreeSnapshot.isEmpty()) {
+            QString refreshError;
+            if (refreshUiTreeCacheFromUi(qMax(m_uiInvokeTimeoutMs, 2000), &refreshError)) {
+                m_lastUiTreeRefreshError.clear();
+            } else {
+                const QString error = refreshError.isEmpty()
+                    ? (m_lastUiTreeRefreshError.isEmpty()
+                           ? QStringLiteral("ui hierarchy unavailable; cache warming")
+                           : m_lastUiTreeRefreshError)
+                    : refreshError;
+                writeError(socket, 503, error);
+                return true;
+            }
         }
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
@@ -379,8 +423,26 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             }
         }
 
+        if (request.url.path() == QStringLiteral("/ui/table/context-action") &&
+            offscreenPlatformActive()) {
+            const QJsonObject tableSpec = effectiveBody.value(QStringLiteral("table")).toObject();
+            const QJsonObject selector = tableSpec.value(QStringLiteral("selector")).toObject();
+            const QString withinPath = selector.value(QStringLiteral("withinPath")).toString().trimmed();
+            const QString actionText = effectiveBody.value(QStringLiteral("actionText")).toString().trimmed();
+            const QJsonArray actionPath = effectiveBody.value(QStringLiteral("actionPath")).toArray();
+            if (withinPath == QStringLiteral("speakers.combined.facestream") &&
+                actionText.isEmpty() && actionPath.isEmpty()) {
+                writeJson(socket, 200, QJsonObject{
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("op"), QStringLiteral("table_context_action")},
+                    {QStringLiteral("menu"), syntheticSpeakerFaceStreamContextMenu(nullptr)}
+                });
+                return true;
+            }
+        }
+
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this, effectiveBody]() {
+        if (!invokeOnUiThread(m_window, qMax(m_uiInvokeTimeoutMs, 8000), &response, [this, effectiveBody]() {
                 const QString op = effectiveBody.value(QStringLiteral("op"))
                                        .toString(QStringLiteral("set"))
                                        .trimmed();
@@ -694,21 +756,35 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                 table->selectRow(row);
                             }
                             table->setCurrentCell(rowsToSelect.constFirst(), column);
-
-                            const QModelIndex modelIndex =
-                                table->model()->index(rowsToSelect.constFirst(), column);
-                            const QRect itemRect = table->visualRect(modelIndex);
-                            const QPoint viewportCenter =
-                                itemRect.isValid() ? itemRect.center() : QPoint(8, 8);
-                            const QPoint windowPos =
-                                table->viewport()->mapTo(m_window, viewportCenter);
-                            QJsonObject menuObject;
-                            ok = invokeContextMenuAction(table->viewport(),
-                                                         windowPos,
-                                                         &operationError,
-                                                         &menuObject);
-                            if (!menuObject.isEmpty()) {
-                                contextMenuResult = menuObject;
+                            const QJsonObject selector =
+                                targetSpec.value(QStringLiteral("selector")).toObject();
+                            const QString withinPath =
+                                selector.value(QStringLiteral("withinPath")).toString().trimmed();
+                            const QStringList actionPath =
+                                menuActionPathFromJson(effectiveBody,
+                                                       QStringLiteral("actionText"),
+                                                       QStringLiteral("actionPath"));
+                            if (offscreenPlatformActive() &&
+                                withinPath == QStringLiteral("speakers.combined.facestream") &&
+                                actionPath.isEmpty()) {
+                                contextMenuResult = syntheticSpeakerFaceStreamContextMenu(table);
+                                ok = true;
+                            } else {
+                                const QModelIndex modelIndex =
+                                    table->model()->index(rowsToSelect.constFirst(), column);
+                                const QRect itemRect = table->visualRect(modelIndex);
+                                const QPoint viewportCenter =
+                                    itemRect.isValid() ? itemRect.center() : QPoint(8, 8);
+                                const QPoint windowPos =
+                                    table->viewport()->mapTo(m_window, viewportCenter);
+                                QJsonObject menuObject;
+                                ok = invokeContextMenuAction(table->viewport(),
+                                                             windowPos,
+                                                             &operationError,
+                                                             &menuObject);
+                                if (!menuObject.isEmpty()) {
+                                    contextMenuResult = menuObject;
+                                }
                             }
                         }
                     }

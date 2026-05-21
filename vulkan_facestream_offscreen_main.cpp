@@ -10,6 +10,7 @@
 #include "frame_handle.h"
 #include "imgui_preview_window.h"
 #include "json_io_utils.h"
+#include "timeline_fps.h"
 #include "vulkan_res10_ncnn_face_detector.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_scrfd_ncnn_face_detector.h"
@@ -57,6 +58,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <string>
 #include <unistd.h>
@@ -3568,7 +3570,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         : availableFrames;
     sourceClip.durationFrames = qMax<int64_t>(1, targetFrames);
     sourceClip.sourceDurationFrames = qMax<int64_t>(1, targetFrames);
-    sourceClip.sourceFps = 30.0;
+    sourceClip.sourceFps = static_cast<qreal>(kTimelineFps);
     sourceClip.playbackRate = 1.0;
     if (options.applyClipGrading && options.clipJsonPath.trimmed().isEmpty()) {
         std::cerr << "--apply-clip-grading requires --clip-json.\n";
@@ -5374,11 +5376,60 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         std::cout << "\n";
     }
     const auto wallEnd = std::chrono::steady_clock::now();
-    const QVector<Track> tracks =
-        jcut::facestream::buildContinuityTracksFromDetectionFrames(
-            rawDetectionFrames,
-            trackingTuningForRuntime(tuning));
-    const QJsonArray trackRows = jcut::facestream::buildContinuityTrackRows(tracks);
+    struct PersistedTrackAccumulator {
+        int trackId = -1;
+        int firstFrame = std::numeric_limits<int>::max();
+        int lastFrame = std::numeric_limits<int>::min();
+        int hits = 0;
+        int misses = 0;
+        QString state;
+        QJsonArray detections;
+    };
+    std::map<int, PersistedTrackAccumulator> persistedTracksById;
+    QList<int> processedTrackFrames = trackDetectionsByFrame.keys();
+    std::sort(processedTrackFrames.begin(), processedTrackFrames.end());
+    for (int frameNumber : processedTrackFrames) {
+        const QJsonArray trackRowsForFrame = trackDetectionsByFrame.value(frameNumber);
+        for (const QJsonValue& trackValue : trackRowsForFrame) {
+            const QJsonObject trackObject = trackValue.toObject();
+            const int trackId = trackObject.value(QStringLiteral("track_id")).toInt(-1);
+            if (trackId < 0) {
+                continue;
+            }
+            PersistedTrackAccumulator& accumulator = persistedTracksById[trackId];
+            accumulator.trackId = trackId;
+            accumulator.firstFrame = qMin(accumulator.firstFrame,
+                                          trackObject.value(QStringLiteral("first_frame")).toInt(frameNumber));
+            accumulator.lastFrame = qMax(accumulator.lastFrame,
+                                         trackObject.value(QStringLiteral("last_frame")).toInt(frameNumber));
+            accumulator.hits = qMax(accumulator.hits, trackObject.value(QStringLiteral("hits")).toInt(0));
+            accumulator.misses = trackObject.value(QStringLiteral("misses")).toInt(accumulator.misses);
+            accumulator.state = trackObject.value(QStringLiteral("track_state")).toString(accumulator.state);
+            accumulator.detections.append(QJsonObject{
+                {QStringLiteral("frame"), trackObject.value(QStringLiteral("frame")).toInt(frameNumber)},
+                {QStringLiteral("x"), trackObject.value(QStringLiteral("x")).toDouble()},
+                {QStringLiteral("y"), trackObject.value(QStringLiteral("y")).toDouble()},
+                {QStringLiteral("box"), trackObject.value(QStringLiteral("box")).toDouble()},
+                {QStringLiteral("score"), trackObject.value(QStringLiteral("score")).toDouble()}
+            });
+        }
+    }
+    QJsonArray trackRows;
+    for (const auto& [trackId, accumulator] : persistedTracksById) {
+        if (trackId < 0 || accumulator.detections.isEmpty()) {
+            continue;
+        }
+        trackRows.append(QJsonObject{
+            {QStringLiteral("track_id"), trackId},
+            {QStringLiteral("first_frame"), accumulator.firstFrame == std::numeric_limits<int>::max() ? -1 : accumulator.firstFrame},
+            {QStringLiteral("last_frame"), accumulator.lastFrame == std::numeric_limits<int>::min() ? -1 : accumulator.lastFrame},
+            {QStringLiteral("length"), accumulator.detections.size()},
+            {QStringLiteral("hits"), accumulator.hits},
+            {QStringLiteral("misses"), accumulator.misses},
+            {QStringLiteral("state"), accumulator.state},
+            {QStringLiteral("detections"), accumulator.detections}
+        });
+    }
     writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("detections.bin")), QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_facestream_offscreen_detections_v1")},
         {QStringLiteral("video"), options.videoPath},

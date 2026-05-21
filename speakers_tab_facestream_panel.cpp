@@ -527,6 +527,34 @@ void SpeakersTab::refreshFaceStreamPathsPanel()
     if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         continuityRoot = continuityRootForClip(artifactRoot, clip->id);
     }
+    const auto resolveRawContinuityRoot = [&](const QJsonObject& root) -> QJsonObject {
+        if (!root.value(QStringLiteral("raw_tracks")).toArray().isEmpty()) {
+            return root;
+        }
+        const QString processedArtifactPath =
+            root.value(QStringLiteral("processed_artifact_path")).toString().trimmed();
+        const QString clipId = root.value(QStringLiteral("clip_id")).toString().trimmed();
+        if (processedArtifactPath.isEmpty() || clipId.isEmpty()) {
+            return root;
+        }
+        QJsonObject processedArtifact;
+        if (!jcut::facestream::readBinaryJsonObject(processedArtifactPath, &processedArtifact, nullptr)) {
+            return root;
+        }
+        const QJsonObject processedRoot = continuityRootForClip(processedArtifact, clipId);
+        const QString rawArtifactPath =
+            processedRoot.value(QStringLiteral("source_raw_artifact_path")).toString().trimmed();
+        if (rawArtifactPath.isEmpty()) {
+            return root;
+        }
+        QJsonObject rawArtifact;
+        if (!jcut::facestream::readBinaryJsonObject(rawArtifactPath, &rawArtifact, nullptr)) {
+            return root;
+        }
+        const QJsonObject rawRoot = continuityRootForClip(rawArtifact, clipId);
+        return rawRoot.isEmpty() ? root : rawRoot;
+    };
+    continuityRoot = resolveRawContinuityRoot(continuityRoot);
     if (m_widgets.speakerDetectionsAvailableCheckBox) {
         QSignalBlocker block(m_widgets.speakerDetectionsAvailableCheckBox);
         m_widgets.speakerDetectionsAvailableCheckBox->setChecked(
@@ -538,7 +566,20 @@ void SpeakersTab::refreshFaceStreamPathsPanel()
             !continuityRoot.value(QStringLiteral("raw_tracks")).toArray().isEmpty());
     }
 
-    const QJsonArray streams = continuityStreamsForClip(*clip);
+    const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
+    QJsonArray streams;
+    const QJsonArray rawTracks = continuityRoot.value(QStringLiteral("raw_tracks")).toArray();
+    if (!rawTracks.isEmpty()) {
+        streams = jcut::facestream::buildContinuityStreams(
+            rawTracks,
+            transcriptRoot,
+            continuityRoot.value(QStringLiteral("detector_mode")).toString().trimmed(),
+            continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false),
+            continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed());
+    }
+    if (streams.isEmpty()) {
+        streams = continuityStreamsForClip(*clip);
+    }
     m_faceStreamPanelRefreshSignature = refreshSignature;
     const QHash<int, QString> identityByTrackId = resolvedIdentityByTrackId(*clip, streams);
 

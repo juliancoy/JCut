@@ -5,6 +5,7 @@
 #include "decode_trace.h"
 #include "decoder_ffmpeg_utils.h"
 #include "decoder_image_io.h"
+#include "timeline_fps.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -22,7 +23,7 @@ namespace {
 
 constexpr int64_t kMaxSequentialDecodeGap = 90;
 constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 4K WebP
-constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at 30fps
+constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at the default timeline FPS
 constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
 constexpr qint64 kNoVideoWarningThrottleMs = 15000;
 
@@ -156,7 +157,9 @@ bool DecoderContext::openInput() {
             m_info.frameSize = QSize(stream->codecpar->width, stream->codecpar->height);
 
             const AVRational framerate = av_guess_frame_rate(m_formatCtx, stream, nullptr);
-            m_info.fps = (framerate.num > 0 && framerate.den > 0) ? av_q2d(framerate) : 30.0;
+            m_info.fps = (framerate.num > 0 && framerate.den > 0)
+                ? av_q2d(framerate)
+                : static_cast<double>(kTimelineFps);
 
             if (stream->duration != AV_NOPTS_VALUE) {
                 const double secs = stream->duration * av_q2d(stream->time_base);
@@ -195,7 +198,7 @@ bool DecoderContext::loadStillImage() {
     m_stillImage = std::move(image);
     m_info.path = m_path;
     m_info.durationFrames = 1;
-    m_info.fps = 30.0;
+    m_info.fps = static_cast<double>(kTimelineFps);
     m_info.frameSize = m_stillImage.size();
     m_info.codecName = QStringLiteral("still-image");
     m_info.decodePath = QStringLiteral("software");
@@ -229,7 +232,7 @@ bool DecoderContext::loadImageSequence() {
 
     m_info.path = m_path;
     m_info.durationFrames = framePaths.size();
-    m_info.fps = 30.0;
+    m_info.fps = static_cast<double>(kTimelineFps);
     m_info.frameSize = image.size();
     m_info.codecName = QStringLiteral("image_sequence");
     m_info.decodePath = QStringLiteral("software");

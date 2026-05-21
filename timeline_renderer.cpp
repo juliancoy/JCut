@@ -1,6 +1,7 @@
 #include "timeline_renderer.h"
 #include "timeline_widget.h"
 #include "timeline_layout.h"
+#include "timeline_fps.h"
 #include "debug_controls.h"
 #include "waveform_service.h"
 
@@ -70,18 +71,21 @@ void TimelineRenderer::paint(QPainter* painter) {
     const int64_t visibleStartFrame = qMax<int64_t>(0, m_widget->frameFromX(content.left()));
     const int64_t visibleEndFrame =
         qMax<int64_t>(visibleStartFrame, m_widget->frameFromX(content.right() + 1));
-    const int64_t rulerStartFrame = qMax<int64_t>(0, (visibleStartFrame / 30) * 30);
-    const int64_t rulerEndFrame = qMin<int64_t>(m_widget->totalFrames(), visibleEndFrame + 30);
+    const int64_t rulerStartFrame =
+        qMax<int64_t>(0, (visibleStartFrame / kTimelineFps) * kTimelineFps);
+    const int64_t rulerEndFrame =
+        qMin<int64_t>(m_widget->totalFrames(), visibleEndFrame + kTimelineFps);
 
-    int64_t rulerStepFrames = 30;
+    int64_t rulerStepFrames = kTimelineFps;
     if (m_widget->m_pixelsPerFrame > 0.0) {
         // Keep ruler painting bounded even when zoom is extremely far out.
         const qreal targetSpacingPx = 10.0;
         const int64_t minFramesForSpacing =
             static_cast<int64_t>(std::ceil(targetSpacingPx / m_widget->m_pixelsPerFrame));
-        if (minFramesForSpacing > 30) {
-            const int64_t snapped = ((minFramesForSpacing + 29) / 30) * 30;
-            rulerStepFrames = qMax<int64_t>(30, snapped);
+        if (minFramesForSpacing > kTimelineFps) {
+            const int64_t snapped =
+                ((minFramesForSpacing + (kTimelineFps - 1)) / kTimelineFps) * kTimelineFps;
+            rulerStepFrames = qMax<int64_t>(kTimelineFps, snapped);
         }
     }
     const int kMaxRulerTicks = 4000;

@@ -1,5 +1,6 @@
 #include "preview_surface_factory.h"
 
+#include "null_preview_surface.h"
 #include "opengl_preview.h"
 #include "preview_surface.h"
 #include "render_backend.h"
@@ -59,6 +60,24 @@ PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent,
     const RenderBackend configured = desiredPreviewBackendFromEnvironment();
     PreviewBackendDecision decision;
     decision.requested = renderBackendName(configured);
+
+    const bool offscreenPlatform =
+        qEnvironmentVariable("QT_QPA_PLATFORM").contains(QStringLiteral("offscreen"),
+                                                         Qt::CaseInsensitive);
+    if (offscreenPlatform) {
+        decision.effective = QStringLiteral("offscreen-placeholder");
+        decision.fallbackApplied = true;
+        decision.reason = QStringLiteral(
+            "Offscreen Qt platform does not safely support the interactive preview widget stack; "
+            "using a non-GL placeholder preview surface.");
+        logDecision(decision);
+        if (decisionOut) {
+            *decisionOut = decision;
+        }
+        auto* placeholder = new NullPreviewSurface(parent);
+        placeholder->setRenderBackendPreference(decision.effective);
+        return placeholder;
+    }
 
     const bool preferVulkan = (configured == RenderBackend::Vulkan || configured == RenderBackend::Auto);
     if (preferVulkan) {
