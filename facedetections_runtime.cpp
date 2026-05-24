@@ -1,4 +1,4 @@
-#include "facestream_runtime.h"
+#include "facedetections_runtime.h"
 
 #include "decoder_context.h"
 #include "frame_handle.h"
@@ -13,7 +13,7 @@
 #include <QPainter>
 #include <QPixmap>
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 
 VulkanFrameProvider::~VulkanFrameProvider()
 {
@@ -38,7 +38,7 @@ bool VulkanFrameProvider::ensureInitialized(const QSize& size)
         initialized = false;
         failed = true;
         failureReason = error.isEmpty()
-            ? QStringLiteral("Vulkan FaceStream renderer initialization failed.")
+            ? QStringLiteral("Vulkan FaceDetections renderer initialization failed.")
             : error;
         return false;
     }
@@ -55,7 +55,7 @@ TimelineClip buildFacestreamRenderClip(const TimelineClip& sourceClip,
 {
     TimelineClip clip = sourceClip;
     clip.id = sourceClip.id.trimmed().isEmpty()
-        ? QStringLiteral("facestream-vulkan-source")
+        ? QStringLiteral("facedetections-vulkan-source")
         : sourceClip.id;
     clip.filePath = mediaPath;
     clip.proxyPath.clear();
@@ -90,8 +90,8 @@ RenderRequest buildFacestreamRenderRequest(const TimelineClip& clip,
                                           const QSize& outputSize)
 {
     RenderRequest request;
-    request.outputPath = QStringLiteral("facestream://vulkan");
-    request.outputFormat = QStringLiteral("facestream-preview");
+    request.outputPath = QStringLiteral("facedetections://vulkan");
+    request.outputFormat = QStringLiteral("facedetections-preview");
     request.outputSize = outputSize;
     request.bypassGrading = false;
     request.correctionsEnabled = false;
@@ -177,7 +177,7 @@ bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
         provider->failed = true;
         provider->failureReason = errorMessage && !errorMessage->isEmpty()
             ? *errorMessage
-            : QStringLiteral("Vulkan FaceStream render output request failed.");
+            : QStringLiteral("Vulkan FaceDetections render output request failed.");
         if (errorMessage && errorMessage->isEmpty()) {
             *errorMessage = provider->failureReason;
         }
@@ -191,7 +191,7 @@ bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
     }
     if (readbackToCpuImage && result->frame.cpuImage.isNull()) {
         provider->failed = true;
-        provider->failureReason = QStringLiteral("Vulkan FaceStream frame render returned null.");
+        provider->failureReason = QStringLiteral("Vulkan FaceDetections frame render returned null.");
         if (errorMessage) {
             *errorMessage = provider->failureReason;
         }
@@ -199,7 +199,7 @@ bool renderFrameWithVulkanResult(VulkanFrameProvider* provider,
     }
     if (!readbackToCpuImage && !result->frame.vulkanFrame.valid) {
         provider->failed = true;
-        provider->failureReason = QStringLiteral("Vulkan FaceStream frame render returned no GPU image.");
+        provider->failureReason = QStringLiteral("Vulkan FaceDetections frame render returned no GPU image.");
         if (errorMessage) {
             *errorMessage = provider->failureReason;
         }
@@ -276,7 +276,7 @@ bool renderFrameToVulkanWithPreviewImage(VulkanFrameProvider* provider,
         if (provider->failureReason.isEmpty()) {
             provider->failureReason = errorMessage && !errorMessage->isEmpty()
                 ? *errorMessage
-                : QStringLiteral("Failed to read back Vulkan FaceStream preview frame.");
+                : QStringLiteral("Failed to read back Vulkan FaceDetections preview frame.");
         }
         return false;
     }
@@ -480,7 +480,7 @@ void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
     state->clips = QVector<TimelineClip>{sourceClip};
     state->tracks = QVector<TimelineTrack>{TimelineTrack{}};
     state->vulkanFrameStatuses = QVector<VulkanPreviewClipFrameStatus>{status};
-    state->facestreamOverlays = overlays;
+    state->facedetectionsOverlays = overlays;
 }
 
 QImage buildScanPreview(const QImage& source,
@@ -512,4 +512,4 @@ QImage buildScanPreview(const QImage& source,
     return preview;
 }
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

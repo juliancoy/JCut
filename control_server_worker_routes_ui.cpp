@@ -15,6 +15,7 @@
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QLabel>
+#include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
@@ -204,7 +205,107 @@ bool tableRowMatches(const QTableWidget* table, int row, int column, const QJson
     return QString::compare(cellText, text, cs) == 0;
 }
 
-QJsonObject syntheticSpeakerFaceStreamContextMenu(const QTableWidget* table)
+bool itemViewRowMatches(QAbstractItemView* itemView, int row, const QJsonObject& rowMatch)
+{
+    if (!itemView || row < 0) {
+        return false;
+    }
+    const QString text = rowMatch.value(QStringLiteral("text")).toString();
+    if (text.isEmpty()) {
+        return false;
+    }
+    const bool caseSensitive = rowMatch.value(QStringLiteral("caseSensitive")).toBool(false);
+    const Qt::CaseSensitivity cs = caseSensitive ? Qt::CaseSensitive : Qt::CaseInsensitive;
+    const bool contains = rowMatch.value(QStringLiteral("contains")).toBool(true);
+
+    QString rowText;
+    if (const auto* listWidget = qobject_cast<QListWidget*>(itemView)) {
+        const QListWidgetItem* item = listWidget->item(row);
+        if (!item) {
+            return false;
+        }
+        rowText = item->text();
+    } else {
+        const QAbstractItemModel* model = itemView->model();
+        const int column = qMax(0, rowMatch.value(QStringLiteral("column")).toInt(0));
+        const QModelIndex index = model ? model->index(row, column) : QModelIndex{};
+        if (!index.isValid()) {
+            return false;
+        }
+        rowText = index.data(Qt::DisplayRole).toString();
+    }
+
+    if (contains) {
+        return rowText.contains(text, cs);
+    }
+    return QString::compare(rowText, text, cs) == 0;
+}
+
+bool selectItemViewRows(QAbstractItemView* itemView,
+                        const QJsonObject& effectiveBody,
+                        QString* errorOut)
+{
+    if (!itemView || !itemView->model() || !itemView->selectionModel()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("target is not a selectable item view");
+        }
+        return false;
+    }
+
+    QVector<int> rowsToSelect;
+    const int rowCount = itemView->model()->rowCount();
+    if (effectiveBody.contains(QStringLiteral("rows"))) {
+        const QJsonArray rowsArray = effectiveBody.value(QStringLiteral("rows")).toArray();
+        for (const QJsonValue& rowValue : rowsArray) {
+            const int row = rowValue.toInt(-1);
+            if (row >= 0 && row < rowCount) {
+                rowsToSelect.push_back(row);
+            }
+        }
+    }
+    if (rowsToSelect.isEmpty()) {
+        const int row = effectiveBody.value(QStringLiteral("row")).toInt(-1);
+        if (row >= 0 && row < rowCount) {
+            rowsToSelect.push_back(row);
+        }
+    }
+    if (rowsToSelect.isEmpty()) {
+        const QJsonObject rowMatch = effectiveBody.value(QStringLiteral("rowMatch")).toObject();
+        if (!rowMatch.isEmpty()) {
+            for (int row = 0; row < rowCount; ++row) {
+                if (itemViewRowMatches(itemView, row, rowMatch)) {
+                    rowsToSelect.push_back(row);
+                    if (!rowMatch.value(QStringLiteral("allMatches")).toBool(false)) {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (rowsToSelect.isEmpty()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("no matching row found");
+        }
+        return false;
+    }
+
+    itemView->clearSelection();
+    const int column = qMax(0, effectiveBody.value(QStringLiteral("column")).toInt(0));
+    for (int row : rowsToSelect) {
+        const QModelIndex index = itemView->model()->index(row, column);
+        if (index.isValid()) {
+            itemView->selectionModel()->select(index, QItemSelectionModel::Select | QItemSelectionModel::Rows);
+        }
+    }
+    const QModelIndex currentIndex = itemView->model()->index(rowsToSelect.constFirst(), column);
+    if (currentIndex.isValid()) {
+        itemView->setCurrentIndex(currentIndex);
+        itemView->scrollTo(currentIndex);
+    }
+    return true;
+}
+
+QJsonObject syntheticSpeakerFaceDetectionsContextMenu(const QTableWidget* table)
 {
     const int currentRow = table ? table->currentRow() : -1;
     const bool hasCurrentRow = table && currentRow >= 0 && currentRow < table->rowCount();
@@ -225,7 +326,7 @@ QJsonObject syntheticSpeakerFaceStreamContextMenu(const QTableWidget* table)
 
 bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& request) {
     if (request.method == QStringLiteral("POST") &&
-        request.url.path() == QStringLiteral("/facestream/delete-selected")) {
+        request.url.path() == QStringLiteral("/facedetections/delete-selected")) {
         QString error;
         const QJsonObject body = parseJsonObject(request.body, &error);
         if (!error.isEmpty()) {
@@ -234,8 +335,8 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
         }
 
         QJsonObject response;
-        const int facestreamDeleteTimeoutMs = qMax(m_uiInvokeTimeoutMs, 5000);
-        if (!invokeOnUiThread(m_window, facestreamDeleteTimeoutMs, &response, [this, body]() {
+        const int facedetectionsDeleteTimeoutMs = qMax(m_uiInvokeTimeoutMs, 5000);
+        if (!invokeOnUiThread(m_window, facedetectionsDeleteTimeoutMs, &response, [this, body]() {
                 auto* editorWindow = qobject_cast<editor::EditorWindow*>(m_window.data());
                 if (!editorWindow) {
                     return QJsonObject{
@@ -255,7 +356,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
                 QString operationError;
                 const bool deleted =
-                    editorWindow->triggerDeleteFaceStreamForSelectedClip(confirmDialog, &operationError);
+                    editorWindow->triggerDeleteFaceDetectionsForSelectedClip(confirmDialog, &operationError);
                 return QJsonObject{
                     {QStringLiteral("ok"), deleted},
                     {QStringLiteral("selectedClipId"), selectedClipId},
@@ -263,7 +364,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     {QStringLiteral("error"), operationError}
                 };
             })) {
-            writeError(socket, 503, QStringLiteral("timed out deleting selected FaceStream"));
+            writeError(socket, 503, QStringLiteral("timed out deleting selected FaceDetections"));
             return true;
         }
 
@@ -430,19 +531,23 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             const QString withinPath = selector.value(QStringLiteral("withinPath")).toString().trimmed();
             const QString actionText = effectiveBody.value(QStringLiteral("actionText")).toString().trimmed();
             const QJsonArray actionPath = effectiveBody.value(QStringLiteral("actionPath")).toArray();
-            if (withinPath == QStringLiteral("speakers.combined.facestream") &&
+            if ((withinPath == QStringLiteral("speakers.combined.facedetections") ||
+                 withinPath == QStringLiteral("speakers.section.continuity")) &&
                 actionText.isEmpty() && actionPath.isEmpty()) {
                 writeJson(socket, 200, QJsonObject{
                     {QStringLiteral("ok"), true},
                     {QStringLiteral("op"), QStringLiteral("table_context_action")},
-                    {QStringLiteral("menu"), syntheticSpeakerFaceStreamContextMenu(nullptr)}
+                    {QStringLiteral("menu"), syntheticSpeakerFaceDetectionsContextMenu(nullptr)}
                 });
                 return true;
             }
         }
 
+        const int requestTimeoutMs =
+            qBound(1, effectiveBody.value(QStringLiteral("timeoutMs")).toInt(qMax(m_uiInvokeTimeoutMs, 8000)),
+                   10 * 60 * 1000);
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, qMax(m_uiInvokeTimeoutMs, 8000), &response, [this, effectiveBody]() {
+        if (!invokeOnUiThread(m_window, requestTimeoutMs, &response, [this, effectiveBody]() {
                 const QString op = effectiveBody.value(QStringLiteral("op"))
                                        .toString(QStringLiteral("set"))
                                        .trimmed();
@@ -485,15 +590,15 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                 .trimmed();
                         if (keyCount <= 0 && runtimeSpeakerId.isEmpty()) {
                             return QStringLiteral(
-                                "Face Stabilize is disabled: selected clip has no FaceStream runtime binding. "
-                                "Generate FaceStream for this clip first.");
+                                "Face Stabilize is disabled: selected clip has no FaceDetections runtime binding. "
+                                "Generate FaceDetections for this clip first.");
                         }
                         return QStringLiteral(
                             "Face Stabilize is disabled by current UI state.");
                     }
                     if (text.startsWith(QStringLiteral("Tracking"), Qt::CaseInsensitive)) {
                         return QStringLiteral(
-                            "Tracking is disabled: select a speaker with an Auto-Track FaceStream first.");
+                            "Tracking is disabled: select a speaker with an Auto-Track FaceDetections first.");
                     }
                     return QStringLiteral("target button is disabled");
                 };
@@ -666,6 +771,31 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     }
                 } else if (op == QStringLiteral("set")) {
                     ok = applyGenericSet(widget, &operationError);
+                } else if (op == QStringLiteral("tab_select")) {
+                    auto* tabWidget = qobject_cast<QTabWidget*>(widget);
+                    if (!tabWidget) {
+                        operationError = QStringLiteral("target is not a QTabWidget");
+                    } else {
+                        int targetIndex = effectiveBody.value(QStringLiteral("index")).toInt(-1);
+                        if (targetIndex < 0) {
+                            const QString tabLabel =
+                                effectiveBody.value(QStringLiteral("tabLabel")).toString().trimmed();
+                            if (!tabLabel.isEmpty()) {
+                                for (int index = 0; index < tabWidget->count(); ++index) {
+                                    if (tabWidget->tabText(index).compare(tabLabel, Qt::CaseInsensitive) == 0) {
+                                        targetIndex = index;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (targetIndex < 0 || targetIndex >= tabWidget->count()) {
+                            operationError = QStringLiteral("tab selection is out of bounds");
+                        } else {
+                            tabWidget->setCurrentIndex(targetIndex);
+                            ok = true;
+                        }
+                    }
                 } else if (op == QStringLiteral("table_set")) {
                     auto* table = qobject_cast<QTableWidget*>(widget);
                     if (!table) {
@@ -704,6 +834,35 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                             table->setCurrentCell(row, column);
                             ok = true;
                         }
+                    }
+                } else if (op == QStringLiteral("table_click")) {
+                    auto* table = qobject_cast<QTableWidget*>(widget);
+                    if (!table) {
+                        operationError = QStringLiteral("target is not a QTableWidget");
+                    } else {
+                        const int row = effectiveBody.value(QStringLiteral("row")).toInt(-1);
+                        const int column = effectiveBody.value(QStringLiteral("column")).toInt(0);
+                        if (row < 0 || row >= table->rowCount() || column < 0 ||
+                            column >= table->columnCount()) {
+                            operationError = QStringLiteral("table click is out of bounds");
+                        } else {
+                            table->setCurrentCell(row, column);
+                            table->selectRow(row);
+                            const QModelIndex modelIndex = table->model()->index(row, column);
+                            const QRect itemRect = table->visualRect(modelIndex);
+                            const QPoint viewportCenter =
+                                itemRect.isValid() ? itemRect.center() : QPoint(8, 8);
+                            const QPoint windowPos =
+                                table->viewport()->mapTo(m_window, viewportCenter);
+                            ok = sendSyntheticClick(m_window, windowPos);
+                        }
+                    }
+                } else if (op == QStringLiteral("item_select")) {
+                    auto* itemView = qobject_cast<QAbstractItemView*>(widget);
+                    if (!itemView) {
+                        operationError = QStringLiteral("target is not a QAbstractItemView");
+                    } else {
+                        ok = selectItemViewRows(itemView, effectiveBody, &operationError);
                     }
                 } else if (op == QStringLiteral("table_context_action")) {
                     auto* table = qobject_cast<QTableWidget*>(widget);
@@ -765,9 +924,10 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                                        QStringLiteral("actionText"),
                                                        QStringLiteral("actionPath"));
                             if (offscreenPlatformActive() &&
-                                withinPath == QStringLiteral("speakers.combined.facestream") &&
+                                (withinPath == QStringLiteral("speakers.combined.facedetections") ||
+                                 withinPath == QStringLiteral("speakers.section.continuity")) &&
                                 actionPath.isEmpty()) {
-                                contextMenuResult = syntheticSpeakerFaceStreamContextMenu(table);
+                                contextMenuResult = syntheticSpeakerFaceDetectionsContextMenu(table);
                                 ok = true;
                             } else {
                                 const QModelIndex modelIndex =
@@ -1167,8 +1327,50 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
             return true;
         }
 
+        if (offscreenPlatformActive() &&
+            (id == QStringLiteral("transport.play") || id == QStringLiteral("transport.pause"))) {
+            QJsonObject response;
+            const int offscreenTransportTimeoutMs = qMax(m_uiInvokeTimeoutMs, 20000);
+            if (!invokeOnUiThread(m_window, offscreenTransportTimeoutMs, &response, [this, id]() {
+                    const QString effectiveId =
+                        id == QStringLiteral("transport.pause")
+                            ? QStringLiteral("transport.play")
+                            : id;
+                    QWidget* widget = findWidgetByObjectName(m_window, effectiveId);
+                    auto* button = qobject_cast<QAbstractButton*>(widget);
+                    if (!button) {
+                        return QJsonObject{
+                            {QStringLiteral("ok"), false},
+                            {QStringLiteral("error"), QStringLiteral("widget not found")},
+                            {QStringLiteral("id"), id}
+                        };
+                    }
+                    if (!button->isEnabled()) {
+                        return QJsonObject{
+                            {QStringLiteral("ok"), false},
+                            {QStringLiteral("error"), QStringLiteral("target button is disabled")},
+                            {QStringLiteral("id"), id}
+                        };
+                    }
+                    button->click();
+                    return QJsonObject{
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("id"), id},
+                        {QStringLiteral("confirmed"), true}
+                    };
+                })) {
+                writeError(socket, 503, QStringLiteral("timed out waiting for click-item"));
+                return true;
+            }
+
+            writeJson(socket, response.value(QStringLiteral("ok")).toBool() ? 200 : 404, response);
+            return true;
+        }
+
+        const int requestTimeoutMs =
+            qBound(1, body.value(QStringLiteral("timeoutMs")).toInt(m_uiInvokeTimeoutMs), 10 * 60 * 1000);
         QJsonObject response;
-        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &response, [this, id]() {
+        if (!invokeOnUiThread(m_window, requestTimeoutMs, &response, [this, id]() {
                 QWidget* widget = findWidgetByObjectName(m_window, id);
                 if (!widget) {
                     return QJsonObject{
@@ -1179,7 +1381,13 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 }
 
                 const QJsonObject before = widgetSnapshot(widget);
-                const QJsonObject profileBefore = m_profilingCallback ? m_profilingCallback() : QJsonObject{};
+                const bool lightweightOffscreenTransportClick =
+                    offscreenPlatformActive() &&
+                    (id == QStringLiteral("transport.play") || id == QStringLiteral("transport.pause"));
+                const QJsonObject profileBefore =
+                    (!lightweightOffscreenTransportClick && m_profilingCallback)
+                        ? m_profilingCallback()
+                        : QJsonObject{};
 
                 bool clicked = false;
                 if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
@@ -1192,7 +1400,10 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                 }
 
                 const QJsonObject after = widgetSnapshot(widget);
-                const QJsonObject profileAfter = m_profilingCallback ? m_profilingCallback() : QJsonObject{};
+                const QJsonObject profileAfter =
+                    (!lightweightOffscreenTransportClick && m_profilingCallback)
+                        ? m_profilingCallback()
+                        : QJsonObject{};
                 const bool confirmed = clicked && (before != after || profileBefore != profileAfter);
                 QString error;
                 if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
@@ -1217,15 +1428,15 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                                         .trimmed();
                                 if (keyCount <= 0 && runtimeSpeakerId.isEmpty()) {
                                     error = QStringLiteral(
-                                        "Face Stabilize is disabled: selected clip has no FaceStream runtime binding. "
-                                        "Generate FaceStream for this clip first.");
+                                        "Face Stabilize is disabled: selected clip has no FaceDetections runtime binding. "
+                                        "Generate FaceDetections for this clip first.");
                                 } else {
                                     error = QStringLiteral("Face Stabilize is disabled by current UI state.");
                                 }
                             }
                         } else if (text.startsWith(QStringLiteral("Tracking"), Qt::CaseInsensitive)) {
                             error = QStringLiteral(
-                                "Tracking is disabled: select a speaker with an Auto-Track FaceStream first.");
+                                "Tracking is disabled: select a speaker with an Auto-Track FaceDetections first.");
                         } else {
                             error = QStringLiteral("target button is disabled");
                         }

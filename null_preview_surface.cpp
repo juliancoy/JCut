@@ -60,7 +60,7 @@ void NullPreviewSurface::setPreviewZoom(qreal zoom) { m_previewZoom = qMax<qreal
 void NullPreviewSurface::setShowSpeakerTrackPoints(bool show) { m_showSpeakerTrackPoints = show; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrackBoxes = show; requestRepaint(); }
 void NullPreviewSurface::setShowRawDetections(bool show) { m_showRawDetections = show; requestRepaint(); }
-void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facestreamOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }
+void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facedetectionsOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }
 void NullPreviewSurface::setAudioSpeakerHoverModalEnabled(bool enabled) { m_audioSpeakerHoverModalEnabled = enabled; }
 void NullPreviewSurface::setAudioWaveformVisible(bool visible) { m_audioWaveformVisible = visible; requestRepaint(); }
 void NullPreviewSurface::setAudioVisualizationMode(AudioVisualizationMode mode) { m_audioVisualizationMode = mode; requestRepaint(); }
@@ -73,7 +73,7 @@ void NullPreviewSurface::setAudioDynamicsSettings(const AudioDynamicsSettings& s
 PreviewSurface::AudioDynamicsSettings NullPreviewSurface::audioDynamicsSettings() const { return m_audioDynamics; }
 void NullPreviewSurface::setTranscriptOverlayInteractionEnabled(bool enabled) { m_transcriptOverlayInteractionEnabled = enabled; requestRepaint(); }
 void NullPreviewSurface::setTitleOverlayInteractionOnly(bool enabled) { m_titleOverlayInteractionOnly = enabled; requestRepaint(); }
-void NullPreviewSurface::setFaceStreamAssignmentInteractionEnabled(bool enabled) { m_faceStreamAssignmentInteractionEnabled = enabled; requestRepaint(); }
+void NullPreviewSurface::setFaceDetectionsAssignmentInteractionEnabled(bool enabled) { m_faceStreamAssignmentInteractionEnabled = enabled; requestRepaint(); }
 void NullPreviewSurface::setCorrectionDrawMode(bool enabled) { m_correctionDrawMode = enabled; requestRepaint(); }
 bool NullPreviewSurface::correctionDrawMode() const { return m_correctionDrawMode; }
 bool NullPreviewSurface::transcriptOverlayInteractionEnabled() const { return m_transcriptOverlayInteractionEnabled; }
@@ -153,7 +153,7 @@ void NullPreviewSurface::paintEvent(QPaintEvent* event)
         QStringLiteral("Clips: %1").arg(m_clips.size()),
         QStringLiteral("Selected Clip: %1").arg(m_selectedClipId.isEmpty() ? QStringLiteral("-") : m_selectedClipId),
         QStringLiteral("View: %1").arg(m_viewMode == ViewMode::Audio ? QStringLiteral("audio") : QStringLiteral("video")),
-        QStringLiteral("FaceStream Overlay: %1").arg(m_facestreamOverlaySource),
+        QStringLiteral("FaceDetections Overlay: %1").arg(m_facedetectionsOverlaySource),
     };
     if (m_showSpeakerTrackBoxes || m_showSpeakerTrackPoints || m_showRawDetections) {
         QStringList overlays;

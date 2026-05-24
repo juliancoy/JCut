@@ -28,7 +28,7 @@ void SpeakersTab::wire()
         m_faceStreamPanelRefreshTimer->setInterval(40);
         connect(m_faceStreamPanelRefreshTimer, &QTimer::timeout, this, [this]() {
             m_faceStreamPanelRefreshQueued = false;
-            refreshFaceStreamPathsPanel();
+            refreshFaceDetectionsPathsPanel();
         });
     }
     if (m_widgets.speakersTable) {
@@ -94,23 +94,23 @@ void SpeakersTab::wire()
                     }
                 });
     }
-    if (m_widgets.speakerFaceStreamTable) {
-        m_widgets.speakerFaceStreamTable->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(m_widgets.speakerFaceStreamTable,
+    if (m_widgets.speakerFaceDetectionsTable) {
+        m_widgets.speakerFaceDetectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.speakerFaceDetectionsTable,
                 &QWidget::customContextMenuRequested,
                 this,
-                &SpeakersTab::onSpeakerFaceStreamTableContextMenuRequested);
-        connect(m_widgets.speakerFaceStreamTable, &QTableWidget::itemSelectionChanged, this, [this]() {
-            if (!m_widgets.speakerFaceStreamTable || !m_widgets.speakerFaceStreamDetailsEdit) {
+                &SpeakersTab::onSpeakerFaceDetectionsTableContextMenuRequested);
+        connect(m_widgets.speakerFaceDetectionsTable, &QTableWidget::itemSelectionChanged, this, [this]() {
+            if (!m_widgets.speakerFaceDetectionsTable || !m_widgets.speakerFaceDetectionsDetailsEdit) {
                 return;
             }
-            const int row = m_widgets.speakerFaceStreamTable->currentRow();
+            const int row = m_widgets.speakerFaceDetectionsTable->currentRow();
             if (row < 0) {
-                m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
-                    QStringLiteral("Select a FaceStream path row to inspect full JSON."));
+                m_widgets.speakerFaceDetectionsDetailsEdit->setPlainText(
+                    QStringLiteral("Select a FaceDetections path row to inspect full JSON."));
                 return;
             }
-            QTableWidgetItem* streamItem = m_widgets.speakerFaceStreamTable->item(row, 0);
+            QTableWidgetItem* streamItem = m_widgets.speakerFaceDetectionsTable->item(row, 0);
             const int64_t frame30 = streamItem
                 ? streamItem->data(Qt::UserRole + 2).toLongLong()
                 : -1;
@@ -134,7 +134,7 @@ void SpeakersTab::wire()
                     streamJson = QString::fromUtf8(QJsonDocument(streamObj).toJson(QJsonDocument::Indented));
                 }
             }
-            m_widgets.speakerFaceStreamDetailsEdit->setPlainText(
+            m_widgets.speakerFaceDetectionsDetailsEdit->setPlainText(
                 streamJson.isEmpty()
                     ? QStringLiteral("No stream payload available.")
                     : streamJson);
@@ -213,13 +213,13 @@ void SpeakersTab::wire()
         m_widgets.speakerViewFacestreamButton->setToolTip(
             QStringLiteral("Open the selected continuity-track payload and the latest generated artifact paths."));
         connect(m_widgets.speakerViewFacestreamButton, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerViewFaceStreamClicked);
+                this, &SpeakersTab::onSpeakerViewFaceDetectionsClicked);
     }
     if (m_widgets.speakerFacestreamSettingsButton) {
         m_widgets.speakerFacestreamSettingsButton->setToolTip(
             QStringLiteral("Open continuity-track rebuild and smoothing tools."));
         connect(m_widgets.speakerFacestreamSettingsButton, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerFaceStreamSettingsClicked);
+                this, &SpeakersTab::onSpeakerFaceDetectionsSettingsClicked);
     }
     if (m_widgets.speakerTrackingChipButton) {
         m_widgets.speakerTrackingChipButton->setToolTip(
@@ -247,53 +247,39 @@ void SpeakersTab::wire()
             QTimer::singleShot(0, this, &SpeakersTab::onSpeakerPrecropFacesClicked);
         });
     }
-    if (m_widgets.speakerPlayheadFaceStreamsList) {
-        connect(m_widgets.speakerPlayheadFaceStreamsList, &QListWidget::itemSelectionChanged, this, [this]() {
+    if (m_widgets.speakerPlayheadFaceDetectionsList) {
+        connect(m_widgets.speakerPlayheadFaceDetectionsList, &QListWidget::itemSelectionChanged, this, [this]() {
             const bool hasSpeaker = !selectedSpeakerId().trimmed().isEmpty();
             const bool hasSelection =
-                m_widgets.speakerPlayheadFaceStreamsList &&
-                !m_widgets.speakerPlayheadFaceStreamsList->selectedItems().isEmpty();
+                m_widgets.speakerPlayheadFaceDetectionsList &&
+                !m_widgets.speakerPlayheadFaceDetectionsList->selectedItems().isEmpty();
             if (m_widgets.speakerPrecropFacesButton) {
                 const bool playheadListVisible =
-                    !m_widgets.speakerShowPlayheadFaceStreamsCheckBox ||
-                    m_widgets.speakerShowPlayheadFaceStreamsCheckBox->isChecked();
+                    !m_widgets.speakerShowPlayheadFaceDetectionsCheckBox ||
+                    m_widgets.speakerShowPlayheadFaceDetectionsCheckBox->isChecked();
                 m_widgets.speakerPrecropFacesButton->setEnabled(
                     activeCutMutable() && playheadListVisible && hasSpeaker && hasSelection);
             }
         });
     }
-    if (m_widgets.speakerShowPlayheadFaceStreamsCheckBox) {
-        connect(m_widgets.speakerShowPlayheadFaceStreamsCheckBox, &QCheckBox::toggled, this, [this]() {
+    if (m_widgets.speakerShowPlayheadFaceDetectionsCheckBox) {
+        connect(m_widgets.speakerShowPlayheadFaceDetectionsCheckBox, &QCheckBox::toggled, this, [this]() {
             updatePlayheadTrackCandidatesVisibility();
         });
     }
-    if (m_widgets.speakerFaceStreamOverlaySourceCombo) {
-        connect(m_widgets.speakerFaceStreamOverlaySourceCombo,
-                &QComboBox::currentIndexChanged,
-                this,
-                [this](int) {
-                    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-                    const QString speakerId = selectedSpeakerId();
-                    if (clip && !speakerId.trimmed().isEmpty()) {
-                        refreshPlayheadTrackCandidatesList(*clip, speakerId);
-                        updatePlayheadTrackCandidatesVisibility();
-                        updateSpeakerTrackingStatusLabel();
-                    }
-                });
-    }
-    if (m_widgets.selectedSpeakerFaceStreamsList) {
-        m_widgets.selectedSpeakerFaceStreamsList->setContextMenuPolicy(Qt::CustomContextMenu);
-        connect(m_widgets.selectedSpeakerFaceStreamsList,
+    if (m_widgets.selectedSpeakerFaceDetectionsList) {
+        m_widgets.selectedSpeakerFaceDetectionsList->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.selectedSpeakerFaceDetectionsList,
                 &QWidget::customContextMenuRequested,
                 this,
                 &SpeakersTab::showSelectedSpeakerAssignedTracksContextMenu);
-        auto* deassignShortcut = new QAction(m_widgets.selectedSpeakerFaceStreamsList);
+        auto* deassignShortcut = new QAction(m_widgets.selectedSpeakerFaceDetectionsList);
         deassignShortcut->setShortcut(QKeySequence::Delete);
         deassignShortcut->setShortcutContext(Qt::WidgetShortcut);
         connect(deassignShortcut, &QAction::triggered, this, [this]() {
             deassignSelectedSpeakerAssignedTracks();
         });
-        m_widgets.selectedSpeakerFaceStreamsList->addAction(deassignShortcut);
+        m_widgets.selectedSpeakerFaceDetectionsList->addAction(deassignShortcut);
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(

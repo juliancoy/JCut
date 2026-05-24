@@ -1,6 +1,6 @@
 #pragma once
 
-#include "facestream_time_mapping.h"
+#include "facedetections_time_mapping.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -8,7 +8,7 @@
 #include <QString>
 #include <QStringList>
 
-inline qint64 facestreamArtifactRevisionMsForTranscript(const QString& transcriptPath)
+inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
     if (!info.exists() || !info.isFile()) {
@@ -17,10 +17,10 @@ inline qint64 facestreamArtifactRevisionMsForTranscript(const QString& transcrip
     const QDir dir = info.dir();
     const QString base = info.completeBaseName();
     const QStringList candidates{
-        dir.filePath(base + QStringLiteral("_facestream.bin")),
-        dir.filePath(base + QStringLiteral("_facestream_processed.bin")),
-        dir.filePath(base + QStringLiteral("_facestream.bin")),
-        dir.filePath(base + QStringLiteral("_facestream.json")),
+        dir.filePath(base + QStringLiteral("_facedetections.bin")),
+        dir.filePath(base + QStringLiteral("_facedetections_processed.bin")),
+        dir.filePath(base + QStringLiteral("_facedetections.bin")),
+        dir.filePath(base + QStringLiteral("_facedetections.json")),
     };
     qint64 revisionMs = -1;
     for (const QString& path : candidates) {
@@ -34,12 +34,12 @@ inline qint64 facestreamArtifactRevisionMsForTranscript(const QString& transcrip
 
 inline QString continuityFacestreamsByClipKey()
 {
-    return QStringLiteral("continuity_facestreams_by_clip");
+    return QStringLiteral("continuity_facedetections_by_clip");
 }
 
 inline QJsonObject continuityFacestreamsByClipObject(const QJsonObject& artifactRoot)
 {
-    QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+    QJsonObject byClip = artifactRoot.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
     if (!byClip.isEmpty()) {
         return byClip;
     }
@@ -57,10 +57,10 @@ inline void setContinuityFacestreamsByClipObject(QJsonObject* artifactRoot, cons
         return;
     }
     artifactRoot->remove(QStringLiteral("continuity_boxstreams_by_clip"));
-    (*artifactRoot)[QStringLiteral("continuity_facestreams_by_clip")] = byClip;
+    (*artifactRoot)[QStringLiteral("continuity_facedetections_by_clip")] = byClip;
 }
 
-inline QString facestreamFrameDomainString(FacestreamFrameDomain domain)
+inline QString facedetectionsFrameDomainString(FacestreamFrameDomain domain)
 {
     switch (domain) {
     case FacestreamFrameDomain::ClipTimeline30Fps:

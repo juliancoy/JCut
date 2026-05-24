@@ -864,6 +864,7 @@ void ExplorerPane::chooseExplorerRoot()
     if (!selected.isEmpty())
     {
         setExplorerRootPath(selected, true);
+        emit folderRootChosen(m_currentRootPath);
     }
 }
 

@@ -248,24 +248,24 @@ void EditorWindow::connectTimelineSignals()
     m_timeline->createProxyRequested = [this](const QString &clipId) { createProxyForClip(clipId); };
     m_timeline->continueProxyRequested = [this](const QString &clipId) { continueProxyForClip(clipId); };
     m_timeline->deleteProxyRequested = [this](const QString &clipId) { deleteProxyForClip(clipId); };
-    m_timeline->generateFaceStreamRequested = [this](const QString& clipId) {
+    m_timeline->generateFaceDetectionsRequested = [this](const QString& clipId) {
         if (!m_timeline || !m_speakersTab) {
             return;
         }
         m_timeline->setSelectedClipId(clipId);
         m_speakersTab->refresh();
-        m_speakersTab->generateFaceStreamForSelectedClip();
+        m_speakersTab->generateFaceDetectionsForSelectedClip();
         if (m_inspectorPane) {
             m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
         }
     };
-    m_timeline->deleteFaceStreamRequested = [this](const QString& clipId) {
+    m_timeline->deleteFaceDetectionsRequested = [this](const QString& clipId) {
         if (!m_timeline || !m_speakersTab) {
             return;
         }
         m_timeline->setSelectedClipId(clipId);
         m_speakersTab->refresh();
-        m_speakersTab->deleteFaceStreamForSelectedClip(true);
+        m_speakersTab->deleteFaceDetectionsForSelectedClip(true);
         if (m_inspectorPane) {
             m_inspectorPane->refreshTab(QStringLiteral("Speakers"));
         }
@@ -344,7 +344,7 @@ void EditorWindow::connectPreviewSignals()
                                                qreal yNorm,
                                                qreal boxSizeNorm) {
         if (m_speakersTab) {
-            m_speakersTab->handlePreviewFaceStreamBox(
+            m_speakersTab->handlePreviewFaceDetectionsBox(
                 clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
         }
     };

@@ -84,8 +84,8 @@ void EditorWindow::setupMainLayout(QElapsedTimer &ctorTimer)
         addFileToTimeline(filePath);
     });
     connect(m_explorerPane, &ExplorerPane::transcriptionRequested, this, &EditorWindow::openTranscriptionWindow);
-    connect(m_explorerPane, &ExplorerPane::folderRootChanged, this, [this](const QString& path) {
-        // Update the projects root directory when media root changes
+    connect(m_explorerPane, &ExplorerPane::folderRootChosen, this, [this](const QString& path) {
+        // Persist only an explicit user-picked media root.
         if (m_projectManager) {
             m_projectManager->setRootDirPath(path);
             m_projectManager->loadProjectsFromFolders();

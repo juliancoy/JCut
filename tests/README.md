@@ -72,14 +72,14 @@ export QT_QPA_PLATFORM=xcb
 ./tests/test_async_decoder
 ```
 
-### Vulkan FaceStream Preview Smoke
+### Vulkan FaceDetections Preview Smoke
 
-The standalone `jcut_vulkan_facestream_offscreen --preview-window` smoke test is opt-in because it
+The standalone `jcut_vulkan_facedetections_offscreen --preview-window` smoke test is opt-in because it
 requires a real GUI display plus working Vulkan preview support:
 
 ```bash
 export JCUT_RUN_VULKAN_FACESTREAM_PREVIEW_SMOKE=1
-ctest --output-on-failure -R test_facestream_preview_smoke
+ctest --output-on-failure -R test_facedetections_preview_smoke
 ```
 
 If the env var is not set, or no `DISPLAY` / `WAYLAND_DISPLAY` is available, the test skips cleanly.
@@ -89,8 +89,8 @@ If the env var is not set, or no `DISPLAY` / `WAYLAND_DISPLAY` is available, the
 For manual profiling/debugging against a real file, build and run:
 
 ```bash
-./build/tests/facestream_midpoint_detection_harness /path/to/video.mp4 \
-  --params-file /tmp/jcut_facestream_default.json \
+./build/tests/facedetections_midpoint_detection_harness /path/to/video.mp4 \
+  --params-file /tmp/jcut_facedetections_default.json \
   --benchmark-frames 16 \
   --warmup-frames 4 \
   --repeat 3
@@ -109,13 +109,13 @@ The harness:
 For a real end-to-end coverage check against the default startup clip, build and run:
 
 ```bash
-./build/bin/facestream_track_coverage_harness
+./build/bin/facedetections_track_coverage_harness
 ```
 
 The harness:
 - resolves the selected clip from `projects/default/state.json`
-- prefers persisted clip artifacts first: existing `--output-dir`, sibling `_facestream.bin`, then latest `debug/speaker_flow` run
-- only reruns `jcut_vulkan_facestream_offscreen` when `--rerun` is explicitly passed
+- prefers persisted clip artifacts first: existing `--output-dir`, sibling `_facedetections.bin`, then latest `debug/speaker_flow` run
+- only reruns `jcut_vulkan_facedetections_offscreen` when `--rerun` is explicitly passed
 - verifies that track observations cover the detector observations above configurable thresholds
 - avoids creating durable project artifacts unless `--output-dir` or `--keep-output` is used
 

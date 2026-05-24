@@ -169,7 +169,7 @@ bool ControlServerWorker::handleUiBoundRouteGuard(QTcpSocket* socket, const Requ
          (path == QStringLiteral("/ui") ||
           path == QStringLiteral("/ui/") ||
           path == QStringLiteral("/ui/context-action") ||
-          path == QStringLiteral("/facestream/delete-selected") ||
+          path == QStringLiteral("/facedetections/delete-selected") ||
           path == QStringLiteral("/speakers/subtab") ||
           path == QStringLiteral("/ui/table/context-action"))) ||
         (request.method == QStringLiteral("GET") &&
@@ -269,7 +269,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>POST /playhead</strong> - Set playhead position</div>
         <div class="endpoint"><strong>POST /ui</strong> - Mutate UI widgets/tables by id or selector</div>
         <div class="endpoint"><strong>POST /ui/context-action</strong> - Right-click a widget and trigger a nested context-menu path</div>
-        <div class="endpoint"><strong>POST /facestream/delete-selected</strong> - Delete FaceStream for the currently selected clip</div>
+        <div class="endpoint"><strong>POST /facedetections/delete-selected</strong> - Delete FaceDetections for the currently selected clip</div>
         <div class="endpoint"><strong>POST /menu</strong> - Trigger an active popup menu action by text or submenu path</div>
         <div class="endpoint"><strong>POST /profile/reset</strong> - Reset profiling stats</div>
         <div class="endpoint"><strong>POST /throttles</strong> - Patch throttle configuration</div>
@@ -359,8 +359,8 @@ bool ControlServerWorker::handleParadigms(QTcpSocket* socket, const Request& req
                 <tr><td><code>transcript_tab_document.cpp</code></td><td>🟩 Transcript document</td><td>🟩 Satellite</td><td>🟫 Load/parse/version/persist</td><td>🟩 Extracted to cap</td></tr>
                 <tr><td><code>speakers_tab.cpp</code></td><td>🟦 Speakers core</td><td>🟦 Facade</td><td>🟧 Wiring/refresh/model summary</td><td>🟩 Below cap</td></tr>
                 <tr><td><code>speakers_tab_interactions.cpp</code></td><td>🟩 Speakers interactions</td><td>🟩 Satellite</td><td>🟨 Selection/reference/context actions</td><td>🟩 Extracted to cap</td></tr>
-                <tr><td><code>speakers_tab_facestream_engines.cpp</code></td><td>🟩 FaceStream engines</td><td>🟩 Satellite</td><td>🟥 Native/docker engine execution</td><td>🟩 Extracted to cap</td></tr>
-                <tr><td><code>speakers_tab_facestream_actions.cpp</code></td><td>🟩 FaceStream actions</td><td>🟩 Satellite</td><td>🟧 Workflow orchestration + preview framing</td><td>🟩 Extracted to cap</td></tr>
+                <tr><td><code>speakers_tab_facedetections_engines.cpp</code></td><td>🟩 FaceDetections engines</td><td>🟩 Satellite</td><td>🟥 Native/docker engine execution</td><td>🟩 Extracted to cap</td></tr>
+                <tr><td><code>speakers_tab_facedetections_actions.cpp</code></td><td>🟩 FaceDetections actions</td><td>🟩 Satellite</td><td>🟧 Workflow orchestration + preview framing</td><td>🟩 Extracted to cap</td></tr>
                 <tr><td><code>speakers_tab_internal.h</code></td><td>🟪 Shared helper slice</td><td>🟪 Helper module</td><td>🟪 Internal constants/utilities</td><td>🟩 Prevents duplication</td></tr>
             </tbody>
         </table>
@@ -442,6 +442,23 @@ bool ControlServerWorker::handlePlayhead(QTcpSocket* socket, const Request& requ
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), success},
             {QStringLiteral("frame"), frame}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/speakers/sync-playhead")) {
+        bool success = false;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &success, [this]() {
+                if (auto* editor = qobject_cast<EditorWindow*>(m_window)) {
+                    return editor->syncSpeakersPlayheadForAutomation();
+                }
+                return false;
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for speakers playhead sync"));
+            return true;
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), success}
         });
         return true;
     }

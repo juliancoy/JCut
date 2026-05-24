@@ -1,4 +1,4 @@
-#include "facestream_time_mapping.h"
+#include "facedetections_time_mapping.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,7 +12,7 @@ QString normalizedFacestreamOverlaySource(QString source)
     return source.isEmpty() ? QStringLiteral("all") : source;
 }
 
-bool facestreamOverlaySourceMatches(const QString& sourceFilter,
+bool facedetectionsOverlaySourceMatches(const QString& sourceFilter,
                                     const QString& trackSource,
                                     const QString& streamId)
 {
@@ -62,7 +62,7 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
     return FacestreamFrameDomain::SourceRelative;
 }
 
-int64_t facestreamLookupFrameForDomain(FacestreamFrameDomain domain,
+int64_t facedetectionsLookupFrameForDomain(FacestreamFrameDomain domain,
                                       int64_t localTimelineFrame,
                                       int64_t localSourceFrame,
                                       int64_t absoluteSourceFrame)
@@ -77,11 +77,11 @@ int64_t facestreamLookupFrameForDomain(FacestreamFrameDomain domain,
 }
 
 int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
-                                       int64_t facestreamFrame,
+                                       int64_t facedetectionsFrame,
                                        FacestreamFrameDomain domain,
                                        const QVector<RenderSyncMarker>& markers)
 {
-    const int64_t safeFrame = qMax<int64_t>(0, facestreamFrame);
+    const int64_t safeFrame = qMax<int64_t>(0, facedetectionsFrame);
     if (domain == FacestreamFrameDomain::ClipTimeline30Fps) {
         const int64_t timelineFrame = clip.startFrame + safeFrame;
         return sourceFrameForClipAtTimelinePosition(
@@ -95,7 +95,7 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
     return qMax<int64_t>(0, clip.sourceInFrame + safeFrame);
 }
 
-int64_t facestreamTypicalFrameStep(const QVector<int64_t>& sortedFrames)
+int64_t facedetectionsTypicalFrameStep(const QVector<int64_t>& sortedFrames)
 {
     QVector<int64_t> deltas;
     deltas.reserve(sortedFrames.size());
@@ -112,7 +112,7 @@ int64_t facestreamTypicalFrameStep(const QVector<int64_t>& sortedFrames)
     return qMax<int64_t>(1, deltas.at(deltas.size() / 2));
 }
 
-bool facestreamShouldBridgeGap(int64_t previousFrame,
+bool facedetectionsShouldBridgeGap(int64_t previousFrame,
                                int64_t nextFrame,
                                int64_t typicalStep)
 {
@@ -124,7 +124,7 @@ bool facestreamShouldBridgeGap(int64_t previousFrame,
     return (nextFrame - previousFrame) <= maxBridgeGap;
 }
 
-int64_t facestreamMaxEdgeHoldFrames(int64_t typicalStep)
+int64_t facedetectionsMaxEdgeHoldFrames(int64_t typicalStep)
 {
     const int64_t safeStep = qMax<int64_t>(1, typicalStep);
     return qMax<int64_t>(1, safeStep / 2);
@@ -144,7 +144,7 @@ bool resolveFacestreamTrackAtPlayhead(const TimelineClip& clip,
     const int64_t localTimelineFrame = qMax<int64_t>(0, playheadTimelineFrame - clip.startFrame);
     const int64_t localSourceFrame =
         qMax<int64_t>(0, playheadSourceFrame - qMax<int64_t>(0, clip.sourceInFrame));
-    const int64_t lookupFrame = facestreamLookupFrameForDomain(
+    const int64_t lookupFrame = facedetectionsLookupFrameForDomain(
         track.frameDomain, localTimelineFrame, localSourceFrame, playheadSourceFrame);
 
     const auto nextIt = std::lower_bound(
@@ -158,7 +158,7 @@ bool resolveFacestreamTrackAtPlayhead(const TimelineClip& clip,
         (nextIt != track.keyframes.constBegin()) ? &(*(nextIt - 1)) : nullptr;
     const FacestreamResolvedKeyframe* next =
         (nextIt != track.keyframes.constEnd()) ? &(*nextIt) : nullptr;
-    const int64_t edgeHoldFrames = facestreamMaxEdgeHoldFrames(track.typicalFrameStep);
+    const int64_t edgeHoldFrames = facedetectionsMaxEdgeHoldFrames(track.typicalFrameStep);
 
     FacestreamResolvedSelection selection;
     selection.lookupFrame = lookupFrame;
@@ -167,7 +167,7 @@ bool resolveFacestreamTrackAtPlayhead(const TimelineClip& clip,
     } else if (previous && previous->frame == lookupFrame) {
         selection.keyframe = *previous;
     } else if (previous && next &&
-               facestreamShouldBridgeGap(previous->frame, next->frame, track.typicalFrameStep)) {
+               facedetectionsShouldBridgeGap(previous->frame, next->frame, track.typicalFrameStep)) {
         const int64_t span = qMax<int64_t>(1, next->frame - previous->frame);
         const qreal t = qBound<qreal>(
             0.0,

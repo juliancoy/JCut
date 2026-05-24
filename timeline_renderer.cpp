@@ -292,15 +292,15 @@ void TimelineRenderer::paint(QPainter* painter) {
             barBottom -= (barHeight + 1);
         }
 
-        const bool facestreamSidecarExists = facestreamSidecarExistsForClipFile(clip.filePath);
-        if (facestreamSidecarExists) {
-            const QRect facestreamBarRect(visibleClipRect.left() + 2,
+        const bool facedetectionsSidecarExists = facedetectionsSidecarExistsForClipFile(clip.filePath);
+        if (facedetectionsSidecarExists) {
+            const QRect facedetectionsBarRect(visibleClipRect.left() + 2,
                                           barBottom - barHeight + 1,
                                           qMax(1, visibleClipRect.width() - 4),
                                           barHeight);
             painter->setPen(Qt::NoPen);
             painter->setBrush(QColor(QStringLiteral("#c35cff")));
-            painter->drawRoundedRect(facestreamBarRect, 2, 2);
+            painter->drawRoundedRect(facedetectionsBarRect, 2, 2);
             barBottom -= (barHeight + 1);
         }
 

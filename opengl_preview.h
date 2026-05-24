@@ -22,7 +22,7 @@
 #include "frame_handle.h"
 #include "gl_frame_texture_shared.h"
 #include "editor_shared.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_time_mapping.h"
 #include "timeline_widget.h"
 #include "async_decoder.h"
 #include "timeline_cache.h"
@@ -86,7 +86,7 @@ public:
     AudioDynamicsSettings audioDynamicsSettings() const { return m_audioDynamics; }
     void setTranscriptOverlayInteractionEnabled(bool enabled);
     void setTitleOverlayInteractionOnly(bool enabled);
-    void setFaceStreamAssignmentInteractionEnabled(bool enabled);
+    void setFaceDetectionsAssignmentInteractionEnabled(bool enabled);
     void setCorrectionDrawMode(bool enabled) {
         if (m_interaction.correctionDrawMode == enabled) {
             return;
@@ -182,9 +182,9 @@ private:
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& rawDetectionPointsForClip(const TimelineClip& clip) const;
-    bool dispatchFaceStreamBoxAtPosition(const QPointF& position);
-    bool updateHoveredFaceStreamBox(const QPointF& position);
-    void clearHoveredFaceStreamBox();
+    bool dispatchFaceDetectionsBoxAtPosition(const QPointF& position);
+    bool updateHoveredFaceDetectionsBox(const QPointF& position);
+    void clearHoveredFaceDetectionsBox();
     void drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
     void drawRawDetectionOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
     void drawSpeakerFramingTargetOverlay(QPainter* painter,
@@ -300,7 +300,7 @@ private:
     bool m_showSpeakerTrackBoxes = false;
     bool m_showRawDetections = false;
     bool m_useProxyMedia = false;
-    QString m_facestreamOverlaySource = QStringLiteral("all");
+    QString m_facedetectionsOverlaySource = QStringLiteral("all");
         PreviewOverlayModel m_overlayModel;
     mutable QHash<QString, qreal> m_audioDisplayPeakCache;
     mutable QHash<QString, std::shared_ptr<const TranscriptRuntimeDocument>> m_transcriptSectionsCache;

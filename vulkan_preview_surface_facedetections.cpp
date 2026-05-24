@@ -1,8 +1,8 @@
 #include "vulkan_preview_surface.h"
 
-#include "facestream_artifact_utils.h"
-#include "facestream_runtime.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
+#include "facedetections_time_mapping.h"
 #include "transcript_engine.h"
 
 #include <QFileInfo>
@@ -59,7 +59,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
         continuityRoot,
         QStringLiteral("streams_frame_domain"),
         &fallbackFrameDomain);
-    const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
+    const QJsonArray streams = jcut::facedetections::continuityStreamsForRoot(continuityRoot);
     tracks.reserve(streams.size());
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject streamObj = streamValue.toObject();
@@ -118,7 +118,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
         for (const FacestreamKeyframe& keyframe : track.keyframes) {
             sortedFrames.push_back(keyframe.frame);
         }
-        track.typicalFrameStep = facestreamTypicalFrameStep(sortedFrames);
+        track.typicalFrameStep = facedetectionsTypicalFrameStep(sortedFrames);
         if (!track.keyframes.isEmpty()) {
             tracks.push_back(track);
         }
@@ -133,14 +133,14 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
     const QFileInfo transcriptInfo(transcriptPath);
     const qint64 artifactRevisionMs =
-        facestreamArtifactRevisionMsForTranscript(transcriptInfo.absoluteFilePath());
+        facedetectionsArtifactRevisionMsForTranscript(transcriptInfo.absoluteFilePath());
     const QString signature = QStringLiteral("%1|%2|%3|%4|%5")
                                   .arg(clip.id)
                                   .arg(transcriptInfo.absoluteFilePath())
                                   .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0)
                                   .arg(artifactRevisionMs)
-                                  .arg(m_facestreamOverlaySource);
-    FacestreamOverlayCacheEntry& entry = m_facestreamOverlayCache[clipPath];
+                                  .arg(m_facedetectionsOverlaySource);
+    FacestreamOverlayCacheEntry& entry = m_facedetectionsOverlayCache[clipPath];
     if (entry.signature == signature) {
         return entry.tracks;
     }
@@ -167,7 +167,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
         }
         std::sort(entry.rawDetectionSourceFrames.begin(), entry.rawDetectionSourceFrames.end());
         entry.rawDetectionTypicalFrameStep =
-            facestreamTypicalFrameStep(entry.rawDetectionSourceFrames);
+            facedetectionsTypicalFrameStep(entry.rawDetectionSourceFrames);
     }
     return entry.tracks;
 }
@@ -248,7 +248,7 @@ QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::rawDetectionsForCl
 {
     loadFacestreamTracksForClip(clip);
     const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-    const FacestreamOverlayCacheEntry entry = m_facestreamOverlayCache.value(clipPath);
+    const FacestreamOverlayCacheEntry entry = m_facedetectionsOverlayCache.value(clipPath);
     const auto exact = entry.rawDetectionsBySourceFrame.constFind(sourceFrame);
     if (exact != entry.rawDetectionsBySourceFrame.constEnd()) {
         return exact.value();
@@ -262,7 +262,7 @@ QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::rawDetectionsForCl
         entry.rawDetectionSourceFrames.constEnd(),
         sourceFrame);
     const int64_t typicalStep = qMax<int64_t>(1, entry.rawDetectionTypicalFrameStep);
-    const int64_t edgeHoldFrames = facestreamMaxEdgeHoldFrames(typicalStep);
+    const int64_t edgeHoldFrames = facedetectionsMaxEdgeHoldFrames(typicalStep);
     const int64_t* previous =
         (nextIt != entry.rawDetectionSourceFrames.constBegin()) ? &(*(nextIt - 1)) : nullptr;
     const int64_t* next =
@@ -272,7 +272,7 @@ QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::rawDetectionsForCl
         return entry.rawDetectionsBySourceFrame.value(storedFrame);
     };
 
-    if (previous && next && facestreamShouldBridgeGap(*previous, *next, typicalStep)) {
+    if (previous && next && facedetectionsShouldBridgeGap(*previous, *next, typicalStep)) {
         const int64_t previousDistance = qAbs(sourceFrame - *previous);
         const int64_t nextDistance = qAbs(*next - sourceFrame);
         return previousDistance <= nextDistance
@@ -293,7 +293,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
     QVector<VulkanPreviewFacestreamOverlay> overlays;
     QVector<VulkanPreviewFacestreamOverlay> rawDetections;
     if (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled && !m_showRawDetections) {
-        m_interaction.facestreamOverlays = overlays;
+        m_interaction.facedetectionsOverlays = overlays;
         m_interaction.rawDetectionOverlays = rawDetections;
         return;
     }
@@ -311,7 +311,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         }
         return keyframe.boxNorm;
     };
-    const QString sourceFilter = normalizedFacestreamOverlaySource(m_facestreamOverlaySource);
+    const QString sourceFilter = normalizedFacestreamOverlaySource(m_facedetectionsOverlaySource);
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
             continue;
@@ -352,7 +352,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             if (track.keyframes.isEmpty()) {
                 continue;
             }
-            if (!facestreamOverlaySourceMatches(sourceFilter, track.source, track.streamId)) {
+            if (!facedetectionsOverlaySourceMatches(sourceFilter, track.source, track.streamId)) {
                 continue;
             }
             FacestreamResolvedSelection selection;
@@ -380,7 +380,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             overlays.push_back(overlay);
         }
     }
-    m_interaction.facestreamOverlays = overlays;
+    m_interaction.facedetectionsOverlays = overlays;
     m_interaction.rawDetectionOverlays = rawDetections;
 }
 

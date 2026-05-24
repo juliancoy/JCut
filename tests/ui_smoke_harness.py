@@ -19,6 +19,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ONSCREEN_BASE_URL = "http://127.0.0.1:40130"
 OFFSCREEN_BASE_URL = "http://127.0.0.1:40131"
+EDITOR_PROCESS_PATTERN = f"{REPO_ROOT}/(build|build-asan)/(editor|jcut)"
+SPEAKER_FLOW_CLIP = REPO_ROOT / "testbench_assets" / "video" / "pseudorandom_source.mp4"
 
 
 class HarnessFailure(RuntimeError):
@@ -98,19 +100,23 @@ def wait_for_ui_payload(process: subprocess.Popen[str],
         if not require_speaker_table_rows:
             return payload
         ui_root = payload["window"]
-        facestream_table = continuity_track_table(ui_root)
-        if facestream_table is None:
+        facedetections_table = continuity_track_table(ui_root)
+        if facedetections_table is None:
             return None
-        row_count = int(facestream_table.get("rows", 0))
+        row_count = int(facedetections_table.get("rows", 0))
         if row_count < min_speaker_table_rows:
             return None
         return payload
     return wait_until(poll, timeout=timeout, description="/ui speaker-track rows")
 
 
+def ui_request(base_url: str, payload: dict[str, Any], timeout: float = 8.0) -> Any:
+    return request(base_url, "/ui", method="POST", payload=payload, timeout=timeout)
+
+
 def kill_existing_editors() -> None:
     probe = subprocess.run(
-        ["pgrep", "-f", f"{REPO_ROOT}/(build|build-asan)/editor"],
+        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
         text=True,
         capture_output=True,
         cwd=str(REPO_ROOT),
@@ -132,7 +138,7 @@ def kill_existing_editors() -> None:
     deadline = time.time() + 5.0
     while time.time() < deadline:
         probe = subprocess.run(
-            ["pgrep", "-f", f"{REPO_ROOT}/(build|build-asan)/editor"],
+            ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
             text=True,
             capture_output=True,
             cwd=str(REPO_ROOT),
@@ -142,7 +148,7 @@ def kill_existing_editors() -> None:
         time.sleep(0.1)
 
     probe = subprocess.run(
-        ["pgrep", "-f", f"{REPO_ROOT}/(build|build-asan)/editor"],
+        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
         text=True,
         capture_output=True,
         cwd=str(REPO_ROOT),
@@ -194,6 +200,7 @@ def launch_editor(offscreen: bool,
     if valgrind:
         env["EDITOR_FORCE_NULL_RHI"] = "1"
     env["EDITOR_CONTROL_PORT"] = "40131" if offscreen else "40130"
+    env["JCUT_UI_AUTOMATION"] = "1"
     return subprocess.Popen(
         cmd,
         cwd=str(REPO_ROOT),
@@ -251,6 +258,11 @@ def find_widgets(node: dict[str, Any], predicate) -> list[dict[str, Any]]:
     return matches
 
 
+def list_items(widget: dict[str, Any]) -> list[dict[str, Any]]:
+    items = widget.get("items", [])
+    return items if isinstance(items, list) else []
+
+
 def require_widget(ui_root: dict[str, Any], widget_id: str) -> dict[str, Any]:
     widget = find_widget(ui_root, widget_id)
     if widget is None:
@@ -287,7 +299,7 @@ def continuity_track_table(ui_root: dict[str, Any]) -> dict[str, Any] | None:
     matches = find_widgets(
         ui_root,
         lambda node: node.get("role") == "table_widget"
-        and node.get("headers", []) == ["Stream", "Track", "Assignment", "Range", "Source"],
+        and node.get("headers", []) == ["Stream", "Track", "Frames", "Range", "Source"],
     )
     return matches[0] if matches else None
 
@@ -295,6 +307,33 @@ def continuity_track_table(ui_root: dict[str, Any]) -> dict[str, Any] | None:
 def save_binary(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content)
+
+
+def reset_speaker_flow_artifacts(clip_path: Path) -> None:
+    transcript_path = clip_path.with_suffix(".json")
+    editable_path = clip_path.with_name(f"{clip_path.stem}_editable.json")
+    removable = [
+        editable_path,
+        editable_path.with_name(f"{editable_path.stem}_facedetections.bin"),
+        editable_path.with_name(f"{editable_path.stem}_facedetections_processed.bin"),
+        editable_path.with_name(f"{editable_path.stem}_identity.bin"),
+        transcript_path.with_name(f"{transcript_path.stem}_facedetections.bin"),
+        transcript_path.with_name(f"{transcript_path.stem}_facedetections_processed.bin"),
+        transcript_path.with_name(f"{transcript_path.stem}_identity.bin"),
+    ]
+    for path in removable:
+        if path.exists():
+            path.unlink()
+    editable_path.write_text(transcript_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+
+def configure_editor_project_root(editor_path: Path) -> None:
+    legacy_config_path = editor_path.parent / "editor.config"
+    stable_config_path = Path.home() / ".config" / "PanelTalkEditor" / "editor.config"
+    payload = f"{REPO_ROOT}\n"
+    legacy_config_path.write_text(payload, encoding="utf-8")
+    stable_config_path.parent.mkdir(parents=True, exist_ok=True)
+    stable_config_path.write_text(payload, encoding="utf-8")
 
 
 def build_if_requested(args: argparse.Namespace) -> None:
@@ -331,6 +370,8 @@ def main() -> int:
     parser.add_argument("--screenshot-out", default="", help="Optional screenshot path; defaults under artifact-dir")
     parser.add_argument("--exercise-speaker-table-menu", action="store_true",
                         help="If the continuity-track table has rows, open its context menu and verify actions.")
+    parser.add_argument("--exercise-generated-track-assignment", action="store_true",
+                        help="Generate continuity tracks on the local sample clip and assign one playhead track.")
     parser.add_argument("--require-speaker-table-rows", action="store_true",
                         help="Fail if the continuity-track table exists but has no rows.")
     parser.add_argument("--min-speaker-table-rows", type=int, default=1,
@@ -352,11 +393,16 @@ def main() -> int:
     monitor: HarnessMonitor | None = None
     try:
         build_if_requested(args)
+        if args.exercise_generated_track_assignment:
+            if not SPEAKER_FLOW_CLIP.exists():
+                raise HarnessFailure(f"speaker-flow clip not found: {SPEAKER_FLOW_CLIP}")
+            reset_speaker_flow_artifacts(SPEAKER_FLOW_CLIP)
         kill_existing_editors()
 
         editor_path = resolve_editor_path(args.asan)
         if not editor_path.exists():
             raise HarnessFailure(f"editor binary not found: {editor_path}")
+        configure_editor_project_root(editor_path)
 
         process = launch_editor(
             offscreen=args.offscreen,
@@ -382,22 +428,230 @@ def main() -> int:
         ui_root = ui_payload["window"]
         require_enabled_visible(require_widget(ui_root, "transport.play"), "transport.play")
         require_enabled_visible(require_widget(ui_root, "preview.window"), "preview.window")
-        require_present_enabled(require_widget(ui_root, "speakers.generate_facestream"), "speakers.generate_facestream")
-        require_present_enabled(require_widget(ui_root, "speakers.facestream_settings"), "speakers.facestream_settings")
-        require_widget(ui_root, "speakers.assign_facestreams")
+        require_present_enabled(require_widget(ui_root, "speakers.generate_facedetections"), "speakers.generate_facedetections")
+        require_present_enabled(require_widget(ui_root, "speakers.facedetections_settings"), "speakers.facedetections_settings")
+        require_widget(ui_root, "speakers.assign_facedetections")
+        require_widget(ui_root, "speakers_identities_section")
+        require_widget(ui_root, "speakers_continuity_section")
+        require_widget(ui_root, "speakers_framing_section")
+        require_widget(ui_root, "speakers_debug_section")
+        require_widget(ui_root, "speakers.show_playhead_tracks")
+        require_widget(ui_root, "speakers.playhead_tracks")
 
         try:
             subtab = request(base_url, "/speakers/subtab", timeout=1.5)
         except HarnessFailure as exc:
             subtab = {"ok": False, "error": str(exc)}
 
-        facestream_table = continuity_track_table(ui_root)
-        if facestream_table is None:
+        facedetections_table = continuity_track_table(ui_root)
+        if facedetections_table is None and not args.exercise_generated_track_assignment:
             raise HarnessFailure("could not find the speaker continuity-track table in the UI tree")
 
-        row_count = int(facestream_table.get("rows", 0))
+        row_count = int(facedetections_table.get("rows", 0)) if facedetections_table is not None else 0
         if args.require_speaker_table_rows and row_count <= 0:
             raise HarnessFailure("speaker continuity-track table has no rows")
+
+        speaker_flow_status: dict[str, Any] = {"ok": False, "skipped": True}
+        if args.exercise_generated_track_assignment:
+            inspector_tabs = find_widgets(
+                ui_root,
+                lambda node: node.get("role") == "tab_widget"
+                and any(tab.get("label") == "Speakers" for tab in node.get("tabs", [])),
+            )
+            if not inspector_tabs:
+                raise HarnessFailure("could not find inspector tab widget")
+            speaker_tab_select = ui_request(
+                base_url,
+                {
+                    "op": "tab_select",
+                    "path": inspector_tabs[0]["path"],
+                    "tabLabel": "Speakers",
+                    "timeoutMs": 10000,
+                },
+                timeout=15.0,
+            )
+            if not speaker_tab_select.get("ok"):
+                raise HarnessFailure(f"failed to select Speakers inspector tab: {speaker_tab_select}")
+
+            def wait_for_speaker_flow_ready() -> tuple[dict[str, Any], dict[str, Any]]:
+                profile_payload = request(base_url, "/profile", timeout=8.0)
+                profile = profile_payload.get("profile", {})
+                preview = profile.get("preview", {})
+                if preview.get("selected_clip_id") != "clip_video_01":
+                    return None
+                payload = request(base_url, "/ui?refresh=1", timeout=8.0)
+                if not payload.get("ok"):
+                    return None
+                roster_widget = require_widget(payload["window"], "speakers.roster")
+                if int(roster_widget.get("rows", 0)) <= 0:
+                    return None
+                return payload, profile_payload
+
+            ui_payload, profile_payload = wait_until(
+                wait_for_speaker_flow_ready,
+                timeout=30.0,
+                description="speaker flow project state",
+                interval=0.5,
+            )
+            ui_root = ui_payload["window"]
+            roster = require_widget(ui_root, "speakers.roster")
+            facedetections_table = require_widget(ui_root, "speakers.continuity_table")
+            add_track_buttons = find_widgets(
+                ui_root,
+                lambda node: str(node.get("id", "")).startswith("speakers.roster.add_tracks."),
+            )
+            if not add_track_buttons:
+                raise HarnessFailure("could not find speaker add-tracks button")
+            selected_speaker_id = str(add_track_buttons[0]["id"]).split(".")[-1]
+            roster_select = ui_request(
+                base_url,
+                {
+                    "op": "click",
+                    "id": add_track_buttons[0]["id"],
+                    "timeoutMs": 10000,
+                },
+                timeout=15.0,
+            )
+            if not roster_select.get("ok"):
+                raise HarnessFailure(f"failed to activate speaker row: {roster_select}")
+
+            def wait_for_selected_speaker() -> dict[str, Any]:
+                payload = request(base_url, "/ui?refresh=1", timeout=8.0)
+                if not payload.get("ok"):
+                    return None
+                selected_speaker_widget = require_widget(payload["window"], "speakers.selected_speaker")
+                if selected_speaker_widget.get("text") == "No speaker selected":
+                    return None
+                return payload
+
+            ui_payload = wait_until(
+                wait_for_selected_speaker,
+                timeout=10.0,
+                description="selected speaker label",
+                interval=0.5,
+            )
+            ui_root = ui_payload["window"]
+
+            generate_result = ui_request(
+                base_url,
+                {
+                    "op": "click",
+                    "id": "speakers.generate_facedetections",
+                    "timeoutMs": 180000,
+                },
+                timeout=190.0,
+            )
+            if not generate_result.get("ok"):
+                raise HarnessFailure(f"failed to generate continuity tracks: {generate_result}")
+
+            def wait_for_generated_ui() -> dict[str, Any]:
+                payload = request(base_url, "/ui?refresh=1", timeout=8.0)
+                if not payload.get("ok"):
+                    return None
+                continuity_widget = require_widget(payload["window"], "speakers.continuity_table")
+                continuity_rows = int(continuity_widget.get("rows", 0))
+                if continuity_rows < 140:
+                    return None
+                return payload
+
+            generated_ui = wait_until(
+                wait_for_generated_ui,
+                timeout=45.0,
+                description="generated continuity rows",
+                interval=0.5,
+            )
+            ui_root = generated_ui["window"]
+            facedetections_table = require_widget(ui_root, "speakers.continuity_table")
+            row_count = int(facedetections_table.get("rows", 0))
+            if row_count > 170:
+                raise HarnessFailure(f"unexpected continuity row count after generation: {row_count}")
+
+            def wait_for_playhead_track() -> tuple[dict[str, Any], dict[str, Any]]:
+                payload = request(base_url, "/ui?refresh=1", timeout=8.0)
+                if not payload.get("ok"):
+                    return None
+                playhead_widget = require_widget(payload["window"], "speakers.playhead_tracks")
+                for item in list_items(playhead_widget):
+                    text = str(item.get("text", ""))
+                    if item.get("selectable", False) and "No Tracks At Playhead" not in text and "No Continuity Tracks" not in text:
+                        return payload, item
+                return None
+
+            generated_ui, playhead_item = wait_until(
+                wait_for_playhead_track,
+                timeout=15.0,
+                description="playhead track candidate after generation",
+                interval=0.25,
+            )
+            ui_root = generated_ui["window"]
+
+            playhead_select = ui_request(
+                base_url,
+                {
+                    "op": "item_select",
+                    "id": "speakers.playhead_tracks",
+                    "row": int(playhead_item["row"]),
+                    "timeoutMs": 10000,
+                },
+                timeout=15.0,
+            )
+            if not playhead_select.get("ok"):
+                raise HarnessFailure(f"failed to select playhead track: {playhead_select}")
+
+            assign_result = ui_request(
+                base_url,
+                {
+                    "op": "click",
+                    "id": "speakers.assign_facedetections",
+                    "timeoutMs": 20000,
+                },
+                timeout=25.0,
+            )
+            if not assign_result.get("ok"):
+                raise HarnessFailure(f"failed to assign selected playhead track: {assign_result}")
+
+            editable_transcript_path = SPEAKER_FLOW_CLIP.with_name(
+                f"{SPEAKER_FLOW_CLIP.stem}_editable.json"
+            )
+
+            def wait_for_assignment_persisted() -> dict[str, Any]:
+                transcript_root = json.loads(editable_transcript_path.read_text(encoding="utf-8"))
+                track_map = (
+                    transcript_root.get("speaker_flow", {})
+                    .get("clips", {})
+                    .get("clip_video_01", {})
+                    .get("resolved_current", {})
+                    .get("track_identity_map", [])
+                )
+                matching_rows = [
+                    row for row in track_map
+                    if row.get("identity_id") == selected_speaker_id
+                ]
+                if not matching_rows:
+                    return None
+                return {
+                    "track_map": track_map,
+                    "matching_rows": matching_rows,
+                }
+
+            assignment_state = wait_until(
+                wait_for_assignment_persisted,
+                timeout=30.0,
+                description="persisted speaker assignment",
+                interval=0.5,
+            )
+            assigned_items = assignment_state["matching_rows"]
+            selected_speaker = require_widget(generated_ui["window"], "speakers.selected_speaker")
+            speaker_flow_status = {
+                "ok": True,
+                "skipped": False,
+                "clip": str(SPEAKER_FLOW_CLIP),
+                "selected_clip_id": profile_payload.get("profile", {}).get("preview", {}).get("selected_clip_id", ""),
+                "generated_track_rows": row_count,
+                "assigned_track_count": len(assigned_items),
+                "selected_speaker": selected_speaker.get("text", ""),
+                "playhead_track_text": playhead_item.get("text", ""),
+            }
 
         context_menu: dict[str, Any] | None = None
         context_menu_status: dict[str, Any] = {"ok": False, "skipped": True}
@@ -412,7 +666,7 @@ def main() -> int:
                             "selector": {
                                 "class": "QTableWidget",
                                 "headersContains": "Track",
-                                "withinPath": "speakers.combined.facestream",
+                                "withinPath": "speakers.section.continuity",
                                 "visibleOnly": True,
                             }
                         },
@@ -455,6 +709,7 @@ def main() -> int:
             "project": project,
             "subtab": subtab,
             "speaker_track_table_rows": row_count,
+            "speaker_flow": speaker_flow_status,
             "context_menu_checked": bool(args.exercise_speaker_table_menu and row_count > 0),
             "context_menu_status": context_menu_status,
             "screenshot": screenshot_status,

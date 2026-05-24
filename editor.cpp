@@ -60,14 +60,15 @@ bool restVulkanDiagnosticsModeEnabled()
            value == QStringLiteral("on");
 }
 
-QString normalizedPreviewFacestreamOverlaySource(const QString& source)
-{
-    const QString normalized = source.trimmed().toLower();
-    if (normalized.startsWith(QStringLiteral("scrfd"))) {
-        return QStringLiteral("scrfd");
-    }
-    return normalized.isEmpty() ? QStringLiteral("all") : normalized;
 }
+
+bool EditorWindow::syncSpeakersPlayheadForAutomation()
+{
+    if (!m_speakersTab) {
+        return false;
+    }
+    m_speakersTab->syncCurrentSpeakerSentenceToPlayhead();
+    return true;
 }
 
 void EditorWindow::startupProfileMark(const QString& phase, const QJsonObject& extra)
@@ -472,7 +473,7 @@ void EditorWindow::applyDeferredStartupPanelState(const QJsonObject& root,
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
-            m_preview->setFaceStreamAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
+            m_preview->setFaceDetectionsAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }
@@ -872,8 +873,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
     const bool previewShowRawDetections =
         root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
-    const QString previewFacestreamOverlaySource = normalizedPreviewFacestreamOverlaySource(
-        root.value(QStringLiteral("previewFacestreamOverlaySource")).toString(QStringLiteral("all")));
+    const QString previewFacestreamOverlaySource = QStringLiteral("all");
     const int autosaveIntervalMinutes = qBound(
         1,
         root.value(QStringLiteral("autosaveIntervalMinutes"))
@@ -1241,24 +1241,13 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_previewVulkanPresenterCombo->setCurrentIndex(presenterIndex);
         }
     }
-    if (m_speakerShowFaceStreamBoxesCheckBox) {
-        QSignalBlocker block(m_speakerShowFaceStreamBoxesCheckBox);
-        m_speakerShowFaceStreamBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
+    if (m_speakerShowFaceDetectionsBoxesCheckBox) {
+        QSignalBlocker block(m_speakerShowFaceDetectionsBoxesCheckBox);
+        m_speakerShowFaceDetectionsBoxesCheckBox->setChecked(previewShowSpeakerTrackBoxes);
     }
     if (m_speakerShowRawDetectionsCheckBox) {
         QSignalBlocker block(m_speakerShowRawDetectionsCheckBox);
         m_speakerShowRawDetectionsCheckBox->setChecked(previewShowRawDetections);
-    }
-    if (m_speakerFaceStreamOverlaySourceCombo) {
-        QSignalBlocker block(m_speakerFaceStreamOverlaySourceCombo);
-        int sourceIndex =
-            m_speakerFaceStreamOverlaySourceCombo->findData(previewFacestreamOverlaySource, Qt::MatchFixedString);
-        if (sourceIndex < 0) {
-            sourceIndex = m_speakerFaceStreamOverlaySourceCombo->findData(QStringLiteral("all"), Qt::MatchFixedString);
-        }
-        if (sourceIndex >= 0) {
-            m_speakerFaceStreamOverlaySourceCombo->setCurrentIndex(sourceIndex);
-        }
     }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
@@ -1447,7 +1436,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
-            m_preview->setFaceStreamAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
+            m_preview->setFaceDetectionsAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }

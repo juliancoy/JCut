@@ -55,6 +55,7 @@ public:
 signals:
     void fileActivated(const QString &filePath);
     void folderRootChanged(const QString &path);
+    void folderRootChosen(const QString &path);
     void galleryPathChanged(const QString &path);
     void transcriptionRequested(const QString &filePath, const QString &label);
     void stateChanged();

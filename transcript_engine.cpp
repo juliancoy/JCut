@@ -27,25 +27,25 @@ struct FacestreamDocCacheEntry {
     QJsonDocument doc;
 };
 
-QMutex g_facestreamDocCacheMutex;
-QHash<QString, FacestreamDocCacheEntry> g_facestreamDocCache;
+QMutex g_facedetectionsDocCacheMutex;
+QHash<QString, FacestreamDocCacheEntry> g_facedetectionsDocCache;
 
-QString facestreamPathForTranscriptPath(const QString& transcriptPath)
+QString facedetectionsPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin"));
 }
 
-QString facestreamProcessedPathForTranscriptPath(const QString& transcriptPath)
+QString facedetectionsProcessedPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream_processed.bin"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin"));
 }
 
 QString legacyFacestreamPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin"));
 }
 
 QString identityPathForTranscriptPath(const QString& transcriptPath)
@@ -57,7 +57,7 @@ QString identityPathForTranscriptPath(const QString& transcriptPath)
 QString legacyJsonFacestreamPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.json"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.json"));
 }
 
 QString transcriptTextCompanionPath(const QString& transcriptPath)
@@ -195,7 +195,7 @@ bool saveTranscriptTextCompanion(const QString& transcriptPath, const QJsonObjec
     return file.commit();
 }
 
-QByteArray facestreamMagic()
+QByteArray facedetectionsMagic()
 {
     return QByteArrayLiteral("JCUTBOX1");
 }
@@ -212,9 +212,9 @@ bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
     const qint64 modifiedMs = info.lastModified().toMSecsSinceEpoch();
     const qint64 fileSize = info.size();
     {
-        QMutexLocker locker(&g_facestreamDocCacheMutex);
-        const auto cached = g_facestreamDocCache.constFind(path);
-        if (cached != g_facestreamDocCache.constEnd() &&
+        QMutexLocker locker(&g_facedetectionsDocCacheMutex);
+        const auto cached = g_facedetectionsDocCache.constFind(path);
+        if (cached != g_facedetectionsDocCache.constEnd() &&
             cached->modifiedMs == modifiedMs &&
             cached->fileSize == fileSize &&
             cached->doc.isObject()) {
@@ -228,13 +228,13 @@ bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
         return false;
     }
     const QByteArray payload = file.readAll();
-    if (payload.size() < facestreamMagic().size() + static_cast<int>(sizeof(quint32) * 2)) {
+    if (payload.size() < facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2)) {
         return false;
     }
-    if (!payload.startsWith(facestreamMagic())) {
+    if (!payload.startsWith(facedetectionsMagic())) {
         return false;
     }
-    const char* raw = payload.constData() + facestreamMagic().size();
+    const char* raw = payload.constData() + facedetectionsMagic().size();
     const quint32 version = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
     raw += sizeof(quint32);
     const quint32 jsonSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
@@ -242,7 +242,7 @@ bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
     if (version != 1) {
         return false;
     }
-    const int headerSize = facestreamMagic().size() + static_cast<int>(sizeof(quint32) * 2);
+    const int headerSize = facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2);
     if (jsonSize > static_cast<quint32>(payload.size() - headerSize)) {
         return false;
     }
@@ -253,8 +253,8 @@ bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
         return false;
     }
     {
-        QMutexLocker locker(&g_facestreamDocCacheMutex);
-        g_facestreamDocCache.insert(path, FacestreamDocCacheEntry{modifiedMs, fileSize, doc});
+        QMutexLocker locker(&g_facedetectionsDocCacheMutex);
+        g_facedetectionsDocCache.insert(path, FacestreamDocCacheEntry{modifiedMs, fileSize, doc});
     }
     *outDoc = doc;
     return true;
@@ -270,8 +270,8 @@ bool saveFacestreamDocToFile(const QString& path, const QJsonDocument& doc)
         return false;
     }
     QByteArray payload;
-    payload.reserve(facestreamMagic().size() + static_cast<int>(sizeof(quint32) * 2) + jsonBytes.size());
-    payload.append(facestreamMagic());
+    payload.reserve(facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2) + jsonBytes.size());
+    payload.append(facedetectionsMagic());
     quint32 version = qToLittleEndian<quint32>(1);
     quint32 jsonSize = qToLittleEndian<quint32>(static_cast<quint32>(jsonBytes.size()));
     payload.append(reinterpret_cast<const char*>(&version), sizeof(quint32));
@@ -290,8 +290,8 @@ bool saveFacestreamDocToFile(const QString& path, const QJsonDocument& doc)
         return false;
     }
     const QFileInfo info(path);
-    QMutexLocker locker(&g_facestreamDocCacheMutex);
-    g_facestreamDocCache.insert(path, FacestreamDocCacheEntry{
+    QMutexLocker locker(&g_facedetectionsDocCacheMutex);
+    g_facedetectionsDocCache.insert(path, FacestreamDocCacheEntry{
         info.exists() ? info.lastModified().toMSecsSinceEpoch() : 0,
         info.exists() ? info.size() : 0,
         doc});
@@ -303,29 +303,29 @@ bool mergeFacestreamSpeakerProfiles(const QString& transcriptPath, QJsonObject* 
     if (!root) {
         return false;
     }
-    QJsonDocument facestreamDoc;
-    if (!loadFacestreamDocFromFile(facestreamPathForTranscriptPath(transcriptPath), &facestreamDoc) &&
-        !loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facestreamDoc)) {
+    QJsonDocument facedetectionsDoc;
+    if (!loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc) &&
+        !loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facedetectionsDoc)) {
         QFile legacyFile(legacyJsonFacestreamPathForTranscriptPath(transcriptPath));
         if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
             return false;
         }
         QJsonParseError parseError;
-        facestreamDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !facestreamDoc.isObject()) {
+        facedetectionsDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
+        if (parseError.error != QJsonParseError::NoError || !facedetectionsDoc.isObject()) {
             return false;
         }
     }
-    if (!facestreamDoc.isObject()) {
+    if (!facedetectionsDoc.isObject()) {
         return false;
     }
-    const QJsonObject facestreamRoot = facestreamDoc.object();
-    const QJsonObject facestreamProfiles = facestreamRoot.value(QStringLiteral("speaker_profiles")).toObject();
-    if (facestreamProfiles.isEmpty()) {
+    const QJsonObject facedetectionsRoot = facedetectionsDoc.object();
+    const QJsonObject facedetectionsProfiles = facedetectionsRoot.value(QStringLiteral("speaker_profiles")).toObject();
+    if (facedetectionsProfiles.isEmpty()) {
         return false;
     }
     QJsonObject transcriptProfiles = root->value(QStringLiteral("speaker_profiles")).toObject();
-    for (auto it = facestreamProfiles.constBegin(); it != facestreamProfiles.constEnd(); ++it) {
+    for (auto it = facedetectionsProfiles.constBegin(); it != facedetectionsProfiles.constEnd(); ++it) {
         const QString speakerId = it.key().trimmed();
         if (speakerId.isEmpty()) {
             continue;
@@ -503,11 +503,11 @@ bool TranscriptEngine::loadFacestreamArtifact(const QString &transcriptPath, QJs
         if (!rootOut) {
             return false;
         }
-        QJsonDocument facestreamDoc;
-        if ((loadFacestreamDocFromFile(facestreamPathForTranscriptPath(transcriptPath), &facestreamDoc) ||
-             loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facestreamDoc)) &&
-            facestreamDoc.isObject()) {
-            *rootOut = facestreamDoc.object();
+        QJsonDocument facedetectionsDoc;
+        if ((loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc) ||
+             loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facedetectionsDoc)) &&
+            facedetectionsDoc.isObject()) {
+            *rootOut = facedetectionsDoc.object();
             return true;
         }
         QFile legacyFile(legacyJsonFacestreamPathForTranscriptPath(transcriptPath));
@@ -523,19 +523,19 @@ bool TranscriptEngine::loadFacestreamArtifact(const QString &transcriptPath, QJs
         return true;
     }
 
-QString TranscriptEngine::facestreamArtifactPath(const QString &transcriptPath) const
+QString TranscriptEngine::facedetectionsArtifactPath(const QString &transcriptPath) const
     {
-        return facestreamPathForTranscriptPath(transcriptPath);
+        return facedetectionsPathForTranscriptPath(transcriptPath);
     }
 
 bool TranscriptEngine::saveFacestreamArtifact(const QString &transcriptPath, const QJsonObject &root) const
     {
-        return saveFacestreamDocToFile(facestreamPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+        return saveFacestreamDocToFile(facedetectionsPathForTranscriptPath(transcriptPath), QJsonDocument(root));
     }
 
-QString TranscriptEngine::facestreamProcessedArtifactPath(const QString &transcriptPath) const
+QString TranscriptEngine::facedetectionsProcessedArtifactPath(const QString &transcriptPath) const
     {
-        return facestreamProcessedPathForTranscriptPath(transcriptPath);
+        return facedetectionsProcessedPathForTranscriptPath(transcriptPath);
     }
 
 bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
@@ -544,7 +544,7 @@ bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcript
             return false;
         }
         QJsonDocument processedDoc;
-        if (loadFacestreamDocFromFile(facestreamProcessedPathForTranscriptPath(transcriptPath), &processedDoc) &&
+        if (loadFacestreamDocFromFile(facedetectionsProcessedPathForTranscriptPath(transcriptPath), &processedDoc) &&
             processedDoc.isObject()) {
             *rootOut = processedDoc.object();
             return true;
@@ -554,7 +554,7 @@ bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcript
 
 bool TranscriptEngine::saveFacestreamProcessedArtifact(const QString &transcriptPath, const QJsonObject &root) const
     {
-        return saveFacestreamDocToFile(facestreamProcessedPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+        return saveFacestreamDocToFile(facedetectionsProcessedPathForTranscriptPath(transcriptPath), QJsonDocument(root));
     }
 
 QString TranscriptEngine::identityArtifactPath(const QString &transcriptPath) const
@@ -588,26 +588,26 @@ bool TranscriptEngine::saveTranscriptJson(const QString &path, const QJsonDocume
         }
         QJsonObject root = doc.object();
         QJsonObject transcriptProfiles = root.value(QStringLiteral("speaker_profiles")).toObject();
-        QJsonObject facestreamProfiles;
+        QJsonObject facedetectionsProfiles;
         for (auto it = transcriptProfiles.begin(); it != transcriptProfiles.end(); ++it) {
             QJsonObject profileObj = it.value().toObject();
             const QJsonObject framingObj = profileObj.value(QStringLiteral("framing")).toObject();
             if (!framingObj.isEmpty()) {
                 QJsonObject outProfile;
                 outProfile[QStringLiteral("framing")] = framingObj;
-                facestreamProfiles[it.key()] = outProfile;
+                facedetectionsProfiles[it.key()] = outProfile;
                 profileObj.remove(QStringLiteral("framing"));
                 it.value() = profileObj;
             }
         }
         root[QStringLiteral("speaker_profiles")] = transcriptProfiles;
 
-        if (!facestreamProfiles.isEmpty()) {
-            QJsonObject facestreamRoot;
-            loadFacestreamArtifact(path, &facestreamRoot);
-            facestreamRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facestream_v1");
-            facestreamRoot[QStringLiteral("speaker_profiles")] = facestreamProfiles;
-            if (!saveFacestreamArtifact(path, facestreamRoot)) {
+        if (!facedetectionsProfiles.isEmpty()) {
+            QJsonObject facedetectionsRoot;
+            loadFacestreamArtifact(path, &facedetectionsRoot);
+            facedetectionsRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_v1");
+            facedetectionsRoot[QStringLiteral("speaker_profiles")] = facedetectionsProfiles;
+            if (!saveFacestreamArtifact(path, facedetectionsRoot)) {
                 return false;
             }
         }
@@ -1078,8 +1078,8 @@ void TranscriptEngine::invalidateCache()
     m_transcriptWordRangesMergedCache.clear();
     m_transcriptWordRangesDiscreteCacheSignature.clear();
     m_transcriptWordRangesDiscreteCache.clear();
-    QMutexLocker locker(&g_facestreamDocCacheMutex);
-    g_facestreamDocCache.clear();
+    QMutexLocker locker(&g_facedetectionsDocCacheMutex);
+    g_facedetectionsDocCache.clear();
 }
 
 } // namespace editor

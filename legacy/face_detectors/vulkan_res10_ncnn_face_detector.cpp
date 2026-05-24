@@ -123,7 +123,7 @@ bool VulkanRes10NcnnFaceDetector::initialize(const VulkanDeviceContext& context,
     QByteArray paramBytes = paramFile.readAll();
     // Keep DetectionOutput permissive; runtime thresholding happens after extraction.
     // The stock converted param uses 0.45, which prevents small/low-confidence faces
-    // from ever reaching the FaceStream post-filter.
+    // from ever reaching the FaceDetections post-filter.
     paramBytes.replace("1=4.500000e-01", "1=5.000000e-02");
     paramBytes.append('\0');
     if (m_impl->net.load_param_mem(paramBytes.constData()) != 0) {

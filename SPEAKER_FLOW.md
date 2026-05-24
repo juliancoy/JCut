@@ -1,7 +1,7 @@
 # Speaker Flow
 
 ## Purpose
-This document describes the current speaker / FaceStream pipeline as it exists in the app today.
+This document describes the current speaker / FaceDetections pipeline as it exists in the app today.
 
 It is intentionally shorter than the older planning doc. The goal is to document:
 - the user-facing flow
@@ -30,11 +30,11 @@ It does not describe speculative UI or future tooling.
 3. Apply accepted profile updates.
 
 ### 3. Generate continuity tracks
-1. Click `Generate FaceStream`.
+1. Click `Generate FaceDetections`.
 2. The generator produces:
    - raw detections
    - processed continuity tracks
-3. The transcript gets a FaceStream sidecar.
+3. The transcript gets a FaceDetections sidecar.
 4. `Rebuild Continuity Tracks` is only a maintenance path from existing raw data.
 
 ### 4. Assign continuity tracks to transcript speakers
@@ -50,7 +50,7 @@ There are now two supported paths.
 
 #### Path B: Seeded matching from one known track
 1. Select a speaker in `Speakers`.
-2. Select a continuity-track row in the FaceStream table.
+2. Select a continuity-track row in the FaceDetections table.
 3. Right-click and choose `Find Matching Tracks for ...`.
 4. The app uses the selected track as the seed, embeds all track crops with ArcFace NCNN, and scores every other track against the seed.
 5. A review dialog shows:
@@ -65,9 +65,9 @@ There are now two supported paths.
 3. Runtime framing and stabilization consume the resolved `track_id -> speaker_id` map, not raw detections and not raw identity clusters.
 
 ## Durable Sidecars
-### FaceStream sidecar
+### FaceDetections sidecar
 File:
-- `{transcript_basename}_facestream.bin`
+- `{transcript_basename}_facedetections.bin`
 
 Stores:
 - raw detection payloads
@@ -109,8 +109,8 @@ Each run has an `index.json` entrypoint plus stage artifacts.
 ## Current Debug Artifacts
 ### Stage 4: representative crop extraction
 Files:
-- `{videofilename}_facestream_track_candidates.json`
-- `{videofilename}_facestream_track_crops/`
+- `{videofilename}_facedetections_track_candidates.json`
+- `{videofilename}_facedetections_track_crops/`
 
 Contains:
 - representative crops per continuity track
@@ -157,7 +157,7 @@ Use this order:
    - user-driven assignment and audit history
 3. `speaker_flow.clips.<clip_id>.machine_runs`
    - machine-produced evidence and suggestions
-4. FaceStream sidecar raw/processed track data
+4. FaceDetections sidecar raw/processed track data
    - motion grouping and detections only
 
 Runtime speaker tracking should prefer the resolved map whenever it exists.
@@ -166,8 +166,8 @@ Runtime speaker tracking should prefer the resolved map whenever it exists.
 - Continuity-track generation is identity-agnostic.
 - Identity clustering is review assistance, not the runtime source of truth.
 - The seeded `Find Matching Tracks` workflow is separate from batch cluster review, but writes into the same resolved assignment layer.
-- Manual preview assignment is still supported by selecting a speaker and clicking a FaceStream box in preview.
-- FaceStream generation can exist without identity assignment.
+- Manual preview assignment is still supported by selecting a speaker and clicking a FaceDetections box in preview.
+- FaceDetections generation can exist without identity assignment.
 - Speaker-specific tracking quality depends on having a resolved assignment.
 
 ## What This Document Does Not Promise

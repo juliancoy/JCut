@@ -89,12 +89,13 @@ public:
     };
 
     void addFileToTimeline(const QString &filePath, int64_t startFrame = -1);
-    bool prepareVulkanFaceStreamPreviewRun(const QString& filePath,
+    bool prepareVulkanFaceDetectionsPreviewRun(const QString& filePath,
                                           bool createHarnessTranscript,
                                           QString* errorOut = nullptr);
-    bool triggerGenerateFaceStreamForSelectedClip(QString* errorOut = nullptr);
-    bool triggerDeleteFaceStreamForSelectedClip(bool confirmDialog = false,
+    bool triggerGenerateFaceDetectionsForSelectedClip(QString* errorOut = nullptr);
+    bool triggerDeleteFaceDetectionsForSelectedClip(bool confirmDialog = false,
                                                 QString* errorOut = nullptr);
+    bool syncSpeakersPlayheadForAutomation();
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -332,6 +333,7 @@ private:
     void createSpeakersTab();
 
     QLabel *m_projectSectionLabel = nullptr;
+    QLabel *m_projectPathLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
     QPushButton *m_newProjectButton = nullptr;
     QPushButton *m_saveProjectAsButton = nullptr;
@@ -427,9 +429,8 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
-    QCheckBox *m_speakerShowFaceStreamBoxesCheckBox = nullptr;
+    QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
-    QComboBox *m_speakerFaceStreamOverlaySourceCombo = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;

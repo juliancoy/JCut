@@ -98,9 +98,9 @@ public:
     QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
-    QListWidget *selectedSpeakerFaceStreamsList() const { return m_selectedSpeakerFaceStreamsList; }
-    QListWidget *speakerPlayheadFaceStreamsList() const { return m_speakerPlayheadFaceStreamsList; }
-    QCheckBox *speakerShowPlayheadFaceStreamsCheckBox() const { return m_speakerShowPlayheadFaceStreamsCheckBox; }
+    QListWidget *selectedSpeakerFaceDetectionsList() const { return m_selectedSpeakerFaceDetectionsList; }
+    QListWidget *speakerPlayheadFaceDetectionsList() const { return m_speakerPlayheadFaceDetectionsList; }
+    QCheckBox *speakerShowPlayheadFaceDetectionsCheckBox() const { return m_speakerShowPlayheadFaceDetectionsCheckBox; }
     QLabel *selectedSpeakerRef1ImageLabel() const { return m_selectedSpeakerRef1ImageLabel; }
     QLabel *selectedSpeakerRef2ImageLabel() const { return m_selectedSpeakerRef2ImageLabel; }
     QPushButton *selectedSpeakerPreviousSentenceButton() const { return m_selectedSpeakerPreviousSentenceButton; }
@@ -128,7 +128,7 @@ public:
     QDoubleSpinBox *speakerFramingTargetYSpin() const { return m_speakerFramingTargetYSpin; }
     QDoubleSpinBox *speakerFramingTargetBoxSpin() const { return m_speakerFramingTargetBoxSpin; }
     QCheckBox *speakerFramingZoomEnabledCheckBox() const { return m_speakerFramingZoomEnabledCheckBox; }
-    QCheckBox *speakerShowFaceStreamBoxesCheckBox() const { return m_speakerShowFaceStreamBoxesCheckBox; }
+    QCheckBox *speakerShowFaceDetectionsBoxesCheckBox() const { return m_speakerShowFaceDetectionsBoxesCheckBox; }
     QCheckBox *speakerShowRawDetectionsCheckBox() const { return m_speakerShowRawDetectionsCheckBox; }
     QCheckBox *speakerApplyFramingToClipCheckBox() const { return m_speakerApplyFramingToClipCheckBox; }
     QLabel *speakerClipFramingStatusLabel() const { return m_speakerClipFramingStatusLabel; }
@@ -136,9 +136,8 @@ public:
     QLabel *speakerPointstreamChipLabel() const { return m_speakerPointstreamChipLabel; }
     QPushButton *speakerTrackingChipButton() const { return m_speakerTrackingChipButton; }
     QPushButton *speakerStabilizeChipButton() const { return m_speakerStabilizeChipButton; }
-    QTableWidget *speakerFaceStreamTable() const { return m_speakerFaceStreamTable; }
-    QPlainTextEdit *speakerFaceStreamDetailsEdit() const { return m_speakerFaceStreamDetailsEdit; }
-    QComboBox *speakerFaceStreamOverlaySourceCombo() const { return m_speakerFaceStreamOverlaySourceCombo; }
+    QTableWidget *speakerFaceDetectionsTable() const { return m_speakerFaceDetectionsTable; }
+    QPlainTextEdit *speakerFaceDetectionsDetailsEdit() const { return m_speakerFaceDetectionsDetailsEdit; }
     QCheckBox *speakerDetectionsAvailableCheckBox() const { return m_speakerDetectionsAvailableCheckBox; }
     QCheckBox *speakerTracksAvailableCheckBox() const { return m_speakerTracksAvailableCheckBox; }
     QTableWidget *speakerRawDetectionTable() const { return m_speakerRawDetectionTable; }
@@ -290,6 +289,7 @@ public:
     QTableWidget *tracksTable() const { return m_tracksTable; }
     QPushButton *profileBenchmarkButton() const { return m_profileBenchmarkButton; }
     QLabel *projectSectionLabel() const { return m_projectSectionLabel; }
+    QLabel *projectPathLabel() const { return m_projectPathLabel; }
     QListWidget *projectsList() const { return m_projectsList; }
     QPushButton *newProjectButton() const { return m_newProjectButton; }
     QPushButton *saveProjectAsButton() const { return m_saveProjectAsButton; }
@@ -568,6 +568,7 @@ private:
     QPushButton *m_profileBenchmarkButton = nullptr;
     QPushButton *m_restartDecodersButton = nullptr;
     QLabel *m_projectSectionLabel = nullptr;
+    QLabel *m_projectPathLabel = nullptr;
     QListWidget *m_projectsList = nullptr;
     QPushButton *m_newProjectButton = nullptr;
     QPushButton *m_saveProjectAsButton = nullptr;
@@ -617,9 +618,9 @@ private:
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
-    QListWidget *m_selectedSpeakerFaceStreamsList = nullptr;
-    QListWidget *m_speakerPlayheadFaceStreamsList = nullptr;
-    QCheckBox *m_speakerShowPlayheadFaceStreamsCheckBox = nullptr;
+    QListWidget *m_selectedSpeakerFaceDetectionsList = nullptr;
+    QListWidget *m_speakerPlayheadFaceDetectionsList = nullptr;
+    QCheckBox *m_speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
     QLabel *m_selectedSpeakerRef1ImageLabel = nullptr;
     QLabel *m_selectedSpeakerRef2ImageLabel = nullptr;
     QPushButton *m_selectedSpeakerPreviousSentenceButton = nullptr;
@@ -651,7 +652,7 @@ private:
     QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetBoxSpin = nullptr;
     QCheckBox *m_speakerFramingZoomEnabledCheckBox = nullptr;
-    QCheckBox *m_speakerShowFaceStreamBoxesCheckBox = nullptr;
+    QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QCheckBox *m_speakerApplyFramingToClipCheckBox = nullptr;
     QLabel *m_speakerClipFramingStatusLabel = nullptr;
@@ -659,9 +660,8 @@ private:
     QLabel *m_speakerPointstreamChipLabel = nullptr;
     QPushButton *m_speakerTrackingChipButton = nullptr;
     QPushButton *m_speakerStabilizeChipButton = nullptr;
-    QTableWidget *m_speakerFaceStreamTable = nullptr;
-    QPlainTextEdit *m_speakerFaceStreamDetailsEdit = nullptr;
-    QComboBox *m_speakerFaceStreamOverlaySourceCombo = nullptr;
+    QTableWidget *m_speakerFaceDetectionsTable = nullptr;
+    QPlainTextEdit *m_speakerFaceDetectionsDetailsEdit = nullptr;
     QCheckBox *m_speakerDetectionsAvailableCheckBox = nullptr;
     QCheckBox *m_speakerTracksAvailableCheckBox = nullptr;
     QTableWidget *m_speakerRawDetectionTable = nullptr;

@@ -1,10 +1,10 @@
 #include "speakers_tab.h"
 #include "speakers_tab_internal.h"
 
-#include "facestream_assignment_services.h"
-#include "facestream_artifact_utils.h"
-#include "facestream_runtime.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_assignment_services.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
+#include "facedetections_time_mapping.h"
 #include "facefind_window.h"
 #include "identity_resolution.h"
 #include "transcript_engine.h"
@@ -53,8 +53,33 @@
 #include <random>
 #include <vector>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 
 namespace {
+bool uiAutomationEnabled()
+{
+    return qEnvironmentVariableIntValue("JCUT_UI_AUTOMATION") > 0;
+}
+
+void showAutomationAwareWarning(const QString& title, const QString& message)
+{
+    if (uiAutomationEnabled()) {
+        qWarning().noquote() << title << ":" << message;
+        return;
+    }
+    QMessageBox::warning(nullptr, title, message);
+}
+
+void showAutomationAwareInfo(const QString& title, const QString& message)
+{
+    if (uiAutomationEnabled()) {
+        qInfo().noquote() << title << ":" << message;
+        return;
+    }
+    QMessageBox::information(nullptr, title, message);
+}
+
 class ClickableTileWidget : public QFrame
 {
 public:
@@ -159,7 +184,7 @@ struct SeedTrackMatchDialogResult {
 SeedTrackMatchDialogResult reviewSeedTrackMatches(QWidget* parent,
                                                   const QString& speakerLabel,
                                                   int seedTrackId,
-                                                  const QVector<jcut::facestream_assignment::SeedTrackMatch>& matches,
+                                                  const QVector<jcut::facedetections_assignment::SeedTrackMatch>& matches,
                                                   double autoMatchThreshold,
                                                   double reviewThreshold)
 {
@@ -741,26 +766,26 @@ void SpeakersTab::onSpeakerDeletePointstreamClicked()
     refresh();
 }
 
-void SpeakersTab::onSpeakerFaceStreamTableContextMenuRequested(const QPoint& pos)
+void SpeakersTab::onSpeakerFaceDetectionsTableContextMenuRequested(const QPoint& pos)
 {
-    if (!m_widgets.speakerFaceStreamTable) {
+    if (!m_widgets.speakerFaceDetectionsTable) {
         return;
     }
-    const int row = m_widgets.speakerFaceStreamTable->rowAt(pos.y());
+    const int row = m_widgets.speakerFaceDetectionsTable->rowAt(pos.y());
     if (row < 0) {
         return;
     }
-    if (m_widgets.speakerFaceStreamTable->currentRow() != row) {
-        m_widgets.speakerFaceStreamTable->setCurrentCell(row, 0);
+    if (m_widgets.speakerFaceDetectionsTable->currentRow() != row) {
+        m_widgets.speakerFaceDetectionsTable->setCurrentCell(row, 0);
     }
     const QString speakerId = selectedSpeakerId();
-    QMenu menu(m_widgets.speakerFaceStreamTable);
+    QMenu menu(m_widgets.speakerFaceDetectionsTable);
     QAction* matchAction =
         menu.addAction(QStringLiteral("Find Matching Tracks for %1").arg(
             speakerId.isEmpty() ? QStringLiteral("Selected Speaker") : speakerDisplayLabel(speakerId)));
     matchAction->setEnabled(activeCutMutable() && !speakerId.isEmpty());
     QAction* chosen =
-        menu.exec(m_widgets.speakerFaceStreamTable->viewport()->mapToGlobal(pos));
+        menu.exec(m_widgets.speakerFaceDetectionsTable->viewport()->mapToGlobal(pos));
     if (chosen == matchAction) {
         onSpeakerFindMatchingTracksClicked();
     }
@@ -783,17 +808,17 @@ void SpeakersTab::onSpeakerFindMatchingTracksClicked()
     if (!clip) {
         return;
     }
-    if (!m_widgets.speakerFaceStreamTable) {
+    if (!m_widgets.speakerFaceDetectionsTable) {
         return;
     }
-    const int tableRow = m_widgets.speakerFaceStreamTable->currentRow();
+    const int tableRow = m_widgets.speakerFaceDetectionsTable->currentRow();
     if (tableRow < 0) {
         QMessageBox::information(nullptr,
                                  QStringLiteral("Find Matching Tracks"),
                                  QStringLiteral("Select a continuity track first."));
         return;
     }
-    QTableWidgetItem* streamItem = m_widgets.speakerFaceStreamTable->item(tableRow, 0);
+    QTableWidgetItem* streamItem = m_widgets.speakerFaceDetectionsTable->item(tableRow, 0);
     if (!streamItem) {
         return;
     }
@@ -897,8 +922,8 @@ void SpeakersTab::onSpeakerFindMatchingTracksClicked()
 
     const QVector<RenderSyncMarker> renderSyncMarkers =
         m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
-    const auto cropResult = jcut::facestream_assignment::extractRepresentativeCrops(
-        jcut::facestream_assignment::CropExtractionRequest{
+    const auto cropResult = jcut::facedetections_assignment::extractRepresentativeCrops(
+        jcut::facedetections_assignment::CropExtractionRequest{
             *clip,
             renderSyncMarkers,
             mediaPath,
@@ -925,8 +950,8 @@ void SpeakersTab::onSpeakerFindMatchingTracksClicked()
         return;
     }
 
-    const auto matchResult = jcut::facestream_assignment::matchFaceTracksToSeed(
-        jcut::facestream_assignment::SeedTrackMatchRequest{
+    const auto matchResult = jcut::facedetections_assignment::matchFaceTracksToSeed(
+        jcut::facedetections_assignment::SeedTrackMatchRequest{
             cropResult.candidates, seedTrackId, arcfaceParamPath, arcfaceBinPath},
         [&](int value, const QString& message) {
             return updateProgress(streams.size() + value, message);
@@ -945,7 +970,7 @@ void SpeakersTab::onSpeakerFindMatchingTracksClicked()
         return;
     }
 
-    QVector<jcut::facestream_assignment::SeedTrackMatch> candidateMatches;
+    QVector<jcut::facedetections_assignment::SeedTrackMatch> candidateMatches;
     candidateMatches.reserve(matchResult.matches.size());
     for (const auto& match : matchResult.matches) {
         if (match.decision == QLatin1StringView("seed") ||
@@ -1054,18 +1079,16 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
 {
     {
         const QString inlineTargetSpeakerId = selectedSpeakerId().trimmed();
-        if (inlineTargetSpeakerId.isEmpty() || !m_widgets.speakerPlayheadFaceStreamsList) {
-            QMessageBox::information(nullptr,
-                                     QStringLiteral("Add Tracks"),
-                                     QStringLiteral("Select a speaker and one or more playhead tracks first."));
+        if (inlineTargetSpeakerId.isEmpty() || !m_widgets.speakerPlayheadFaceDetectionsList) {
+            showAutomationAwareInfo(QStringLiteral("Add Tracks"),
+                                    QStringLiteral("Select a speaker and one or more playhead tracks first."));
             return;
         }
         const QList<QListWidgetItem*> selectedPlayheadItems =
-            m_widgets.speakerPlayheadFaceStreamsList->selectedItems();
+            m_widgets.speakerPlayheadFaceDetectionsList->selectedItems();
         if (selectedPlayheadItems.isEmpty()) {
-            QMessageBox::information(nullptr,
-                                     QStringLiteral("Add Tracks"),
-                                     QStringLiteral("Select one or more tracks from the Tracks At Playhead list first."));
+            showAutomationAwareInfo(QStringLiteral("Add Tracks"),
+                                    QStringLiteral("Select one or more tracks from the Tracks At Playhead list first."));
             return;
         }
         QJsonArray inlineAssignmentAnchors;
@@ -1087,9 +1110,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
             inlineAssignmentAnchors.push_back(anchor);
         }
         if (inlineAssignmentAnchors.isEmpty()) {
-            QMessageBox::warning(nullptr,
-                                 QStringLiteral("Add Tracks"),
-                                 QStringLiteral("The selected playhead tracks did not contain usable assignment anchors."));
+            showAutomationAwareWarning(
+                QStringLiteral("Add Tracks"),
+                QStringLiteral("The selected playhead tracks did not contain usable assignment anchors."));
             return;
         }
         if (!assignTrackAnchorsToSpeakerBatch(
@@ -1099,11 +1122,10 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                 QStringLiteral("playhead_sidebar_picker_set"))) {
             return;
         }
-        QMessageBox::information(nullptr,
-                                 QStringLiteral("Add Tracks"),
-                                 QStringLiteral("Assigned %1 continuity track(s) to %2.")
-                                     .arg(inlineAssignmentAnchors.size())
-                                     .arg(speakerDisplayLabel(inlineTargetSpeakerId)));
+        showAutomationAwareInfo(QStringLiteral("Add Tracks"),
+                                QStringLiteral("Assigned %1 continuity track(s) to %2.")
+                                    .arg(inlineAssignmentAnchors.size())
+                                    .arg(speakerDisplayLabel(inlineTargetSpeakerId)));
         return;
     }
 
@@ -1382,16 +1404,16 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     QJsonObject artifactRoot;
     QJsonArray streams;
     QString importedArtifactDir;
-    QString facestreamPath;
+    QString facedetectionsPath;
     if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip->id);
-        streams = jcut::facestream::continuityStreamsForRoot(
+        streams = jcut::facedetections::continuityStreamsForRoot(
             continuityRoot,
             m_transcriptSession.rootObject());
         importedArtifactDir = continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString();
-        facestreamPath = continuityRoot.value(QStringLiteral("facestream_part")).toString();
-        if (facestreamPath.isEmpty()) {
-            facestreamPath = continuityRoot.value(QStringLiteral("facestream_bin")).toString();
+        facedetectionsPath = continuityRoot.value(QStringLiteral("facedetections_part")).toString();
+        if (facedetectionsPath.isEmpty()) {
+            facedetectionsPath = continuityRoot.value(QStringLiteral("facedetections_bin")).toString();
         }
     }
     if (streams.isEmpty()) {
@@ -1399,22 +1421,22 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
         const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
         const QJsonObject clipFlow = clipsRoot.value(clip->id.trimmed()).toObject();
-        const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_facestreams")).toObject();
+        const QJsonObject continuityRoot = clipFlow.value(QStringLiteral("continuity_facedetections")).toObject();
         streams = continuityRoot.value(QStringLiteral("streams")).toArray();
     }
     if (streams.isEmpty()) {
         QMessageBox::information(nullptr,
                                  QStringLiteral("Assign Speaker Identity"),
-                                 QStringLiteral("No generated continuity tracks were found for this clip. Generate FaceStream first."));
+                                 QStringLiteral("No generated continuity tracks were found for this clip. Generate FaceDetections first."));
         return;
     }
     const int maxManualSingletonReviewRows = 200;
-    const QString kStageCrop = QStringLiteral("stage_3_facestream_crop");
-    const QString kStageCropReview = QStringLiteral("stage_4_facestream_crop");
+    const QString kStageCrop = QStringLiteral("stage_3_facedetections_crop");
+    const QString kStageCropReview = QStringLiteral("stage_4_facedetections_crop");
     const QString kStageClustering = QStringLiteral("stage_5_identity_clustering");
     const QString kStageAssignment = QStringLiteral("stage_6_assignment");
     const QString kStatusSkipped = QStringLiteral("skipped");
-    const QString kMsgCanceledCropExtraction = QStringLiteral("User canceled FaceStream crop extraction.");
+    const QString kMsgCanceledCropExtraction = QStringLiteral("User canceled FaceDetections crop extraction.");
     const QString kMsgCanceledClusteringPreflight = QStringLiteral("User canceled clustering preflight.");
     const QString kMsgCanceledAssignmentDialog = QStringLiteral("User canceled assignment dialog.");
     const QString arcfaceParamPath =
@@ -1422,9 +1444,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     const QString arcfaceBinPath =
         jcut::identity_resolution::findArcFaceModelFile(QStringLiteral("arcface_mobilefacenet.bin"));
     QString cropsDir = QDir(debugRun.runDir).absoluteFilePath(
-        QStringLiteral("%1_facestream_track_crops").arg(debugRun.videoStem));
+        QStringLiteral("%1_facedetections_track_crops").arg(debugRun.videoStem));
     QString outputJsonPath = QDir(debugRun.runDir).absoluteFilePath(
-        QStringLiteral("%1_facestream_track_candidates.json").arg(debugRun.videoStem));
+        QStringLiteral("%1_facedetections_track_candidates.json").arg(debugRun.videoStem));
     bool createNewRun = false;
     if (!ensureWritableArtefacts(
             kStageCrop,
@@ -1434,9 +1456,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         if (createNewRun) {
             debugRun = makeDebugRun(QString());
             cropsDir = QDir(debugRun.runDir).absoluteFilePath(
-                QStringLiteral("%1_facestream_track_crops").arg(debugRun.videoStem));
+                QStringLiteral("%1_facedetections_track_crops").arg(debugRun.videoStem));
             outputJsonPath = QDir(debugRun.runDir).absoluteFilePath(
-                QStringLiteral("%1_facestream_track_candidates.json").arg(debugRun.videoStem));
+                QStringLiteral("%1_facedetections_track_candidates.json").arg(debugRun.videoStem));
         } else {
             setStageStatus(debugRun, kStageCrop, kStatusSkipped,
                            QStringLiteral("Canceled due to overwrite prompt."));
@@ -1447,7 +1469,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     QDir().mkpath(cropsDir);
 
     QProgressDialog progressDialog(
-        QStringLiteral("Preparing FaceStream assignment..."),
+        QStringLiteral("Preparing FaceDetections assignment..."),
         QStringLiteral("Cancel"),
         0,
         qMax(1, streams.size() + 3),
@@ -1471,8 +1493,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     const QVector<RenderSyncMarker> renderSyncMarkers =
         m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
 
-    const auto cropResult = jcut::facestream_assignment::extractRepresentativeCrops(
-        jcut::facestream_assignment::CropExtractionRequest{
+    const auto cropResult = jcut::facedetections_assignment::extractRepresentativeCrops(
+        jcut::facedetections_assignment::CropExtractionRequest{
             *clip, renderSyncMarkers, mediaPath, cropsDir, debugRun.videoStem, streams},
         updateProgress);
     if (!cropResult.ok) {
@@ -1490,10 +1512,10 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     maxCandidates = candidates.size();
     QJsonObject candidateRoot;
     candidateRoot[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-    candidateRoot[QStringLiteral("source")] = QStringLiteral("generated_facestream_tracks");
+    candidateRoot[QStringLiteral("source")] = QStringLiteral("generated_facedetections_tracks");
     candidateRoot[QStringLiteral("media_path")] = mediaPath;
     candidateRoot[QStringLiteral("imported_artifact_dir")] = importedArtifactDir;
-    candidateRoot[QStringLiteral("facestream_part")] = facestreamPath;
+    candidateRoot[QStringLiteral("facedetections_part")] = facedetectionsPath;
     candidateRoot[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     candidateRoot[QStringLiteral("candidates")] = candidateRows;
     QFile candidateFile(outputJsonPath);
@@ -1672,7 +1694,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         QJsonObject machinePayload;
         machinePayload[QStringLiteral("run_id")] = debugRun.runId;
         machinePayload[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        machinePayload[QStringLiteral("detection_source")] = QStringLiteral("generated_facestream_tracks");
+        machinePayload[QStringLiteral("detection_source")] = QStringLiteral("generated_facedetections_tracks");
         machinePayload[QStringLiteral("candidates")] = machineCandidates;
         machinePayload[QStringLiteral("suggestions")] = machineSuggestions;
         machinePayload[QStringLiteral("candidate_count")] = candidates.size();
@@ -1838,8 +1860,8 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     bool embeddingReadyForDialog = false;
     QString embeddingErrorForDialog;
     {
-        const auto clusterResult = jcut::facestream_assignment::clusterFaceTracks(
-            jcut::facestream_assignment::ClusterRequest{trackCandidates, arcfaceParamPath, arcfaceBinPath},
+        const auto clusterResult = jcut::facedetections_assignment::clusterFaceTracks(
+            jcut::facedetections_assignment::ClusterRequest{trackCandidates, arcfaceParamPath, arcfaceBinPath},
             [&](int value, const QString& message) {
                 return updateProgress(streams.size() + value, message);
             });
@@ -1864,9 +1886,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         QJsonObject clustersRoot;
         clustersRoot[QStringLiteral("run_id")] = debugRun.runId;
         clustersRoot[QStringLiteral("created_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        clustersRoot[QStringLiteral("source")] = QStringLiteral("generated_facestream_track_crops");
+        clustersRoot[QStringLiteral("source")] = QStringLiteral("generated_facedetections_track_crops");
         clustersRoot[QStringLiteral("sidecar_path")] = identitySidecarPath;
-        clustersRoot[QStringLiteral("facestream_part")] = facestreamPath;
+        clustersRoot[QStringLiteral("facedetections_part")] = facedetectionsPath;
         clustersRoot[QStringLiteral("embedding_model")] = QStringLiteral("arcface_mobilefacenet_ncnn");
         clustersRoot[QStringLiteral("embedding_available")] = clusterResult.embeddingReady;
         clustersRoot[QStringLiteral("embedding_error")] =
@@ -1915,9 +1937,9 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                                  .arg(streams.size())
                                  .arg(clusterCandidates.size()));
         persistIndex(debugRun);
-        updateProgress(streams.size() + 3, QStringLiteral("FaceStream identity preparation complete."));
+        updateProgress(streams.size() + 3, QStringLiteral("FaceDetections identity preparation complete."));
         clusterSummaryText = clusterResult.embeddingReady
-            ? QStringLiteral("Auto-cluster ran: %1 FaceStream crop sample(s) across %2 track(s) -> %3 identity cluster(s) using ArcFace NCNN. Auto-merge pairs: %4. Review pairs: %5. Thresholds: auto >= %6, review >= %7.")
+            ? QStringLiteral("Auto-cluster ran: %1 FaceDetections crop sample(s) across %2 track(s) -> %3 identity cluster(s) using ArcFace NCNN. Auto-merge pairs: %4. Review pairs: %5. Thresholds: auto >= %6, review >= %7.")
                   .arg(trackCandidates.size())
                   .arg(streams.size())
                   .arg(clusterCandidates.size())
@@ -1925,7 +1947,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
                   .arg(clusterResult.reviewPairCount)
                   .arg(clusterResult.autoClusterThreshold, 0, 'f', 2)
                   .arg(clusterResult.reviewThreshold, 0, 'f', 2)
-            : QStringLiteral("Auto-cluster fallback: ArcFace NCNN unavailable (%1). %2 FaceStream track(s) are shown as %3 singleton cluster(s).")
+            : QStringLiteral("Auto-cluster fallback: ArcFace NCNN unavailable (%1). %2 FaceDetections track(s) are shown as %3 singleton cluster(s).")
                   .arg(clusterResult.embeddingError.trimmed().isEmpty() ? QStringLiteral("unknown error")
                                                                         : clusterResult.embeddingError)
                   .arg(streams.size())
@@ -2010,7 +2032,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
     {
         const QString timestampUtc = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
         const auto resolution =
-            jcut::facestream_assignment::resolveTrackIdentityAssignments(
+            jcut::facedetections_assignment::resolveTrackIdentityAssignments(
                 assignmentTableRows,
                 trackCandidates,
                 timestampUtc);

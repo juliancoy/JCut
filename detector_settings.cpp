@@ -28,8 +28,13 @@
 #include <functional>
 #include <memory>
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 namespace {
+
+bool uiAutomationEnabled()
+{
+    return qEnvironmentVariableIntValue("JCUT_UI_AUTOMATION") > 0;
+}
 
 constexpr const char* kNcnnAndroidScrfdSourceRevision =
     "f94e2630ac1b2eaef8cd00c506f5baf4c530d5c1";
@@ -1034,15 +1039,15 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
     return panel;
 }
 
-FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
+FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
     DetectorRuntimeSettings* settings,
     const QString& detector,
     int scrfdTargetSize,
     const QString& settingsPath,
-    const FaceStreamPreflightDialogOptions& options,
+    const FaceDetectionsPreflightDialogOptions& options,
     QWidget* parent)
 {
-    FaceStreamPreflightDialogResult result;
+    FaceDetectionsPreflightDialogResult result;
     result.livePreview = options.livePreviewChecked;
     result.applyClipGrading = options.applyClipGradingChecked;
     result.restartFromScratch = options.restartFromScratchChecked;
@@ -1052,9 +1057,22 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
         return result;
     }
 
+    if (uiAutomationEnabled()) {
+        result.accepted = true;
+        if (QFileInfo::exists(settingsPath) ||
+            !detectorRuntimeSettingsEqual(*settings, immutableDefaultDetectorSettings())) {
+            saveDetectorRuntimeSettingsFile(settingsPath,
+                                            *settings,
+                                            detector,
+                                            scrfdTargetSize,
+                                            &result.saveError);
+        }
+        return result;
+    }
+
     QDialog preflightDialog(parent);
     preflightDialog.setWindowTitle(options.title.trimmed().isEmpty()
-                                       ? QStringLiteral("JCut DNN FaceStream Generator")
+                                       ? QStringLiteral("JCut DNN FaceDetections Generator")
                                        : options.title);
     preflightDialog.setWindowFlag(Qt::Window, true);
     preflightDialog.resize(options.initialSize.isValid() ? options.initialSize : QSize(760, 420));
@@ -1098,7 +1116,7 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
     if (options.showRestartFromScratchToggle) {
         restartFromScratchCheckbox = new QCheckBox(
             options.restartFromScratchLabel.trimmed().isEmpty()
-                ? QStringLiteral("Restart from scratch (delete facestream.part)")
+                ? QStringLiteral("Restart from scratch (delete facedetections.part)")
                 : options.restartFromScratchLabel,
             &preflightDialog);
         restartFromScratchCheckbox->setChecked(options.restartFromScratchChecked);
@@ -1109,7 +1127,7 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
     if (options.showUseProxySourceToggle) {
         useProxySourceCheckbox = new QCheckBox(
             options.useProxySourceLabel.trimmed().isEmpty()
-                ? QStringLiteral("Use proxy media as FaceStream input")
+                ? QStringLiteral("Use proxy media as FaceDetections input")
                 : options.useProxySourceLabel,
             &preflightDialog);
         useProxySourceCheckbox->setChecked(options.useProxySourceChecked);
@@ -1164,4 +1182,4 @@ FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
     return result;
 }
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

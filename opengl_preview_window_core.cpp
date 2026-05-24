@@ -468,10 +468,10 @@ void PreviewWindow::setFacestreamOverlaySource(const QString& source) {
     const QString normalized = source.trimmed().isEmpty()
         ? QStringLiteral("all")
         : source.trimmed().toLower();
-    if (m_facestreamOverlaySource == normalized) {
+    if (m_facedetectionsOverlaySource == normalized) {
         return;
     }
-    m_facestreamOverlaySource = normalized;
+    m_facedetectionsOverlaySource = normalized;
     m_speakerTrackPointsCache.clear();
     scheduleRepaint();
 }
@@ -536,12 +536,12 @@ void PreviewWindow::setTitleOverlayInteractionOnly(bool enabled) {
     scheduleRepaint();
 }
 
-void PreviewWindow::setFaceStreamAssignmentInteractionEnabled(bool enabled) {
+void PreviewWindow::setFaceDetectionsAssignmentInteractionEnabled(bool enabled) {
     if (m_interaction.faceStreamAssignmentInteractionEnabled == enabled) {
         return;
     }
     m_interaction.faceStreamAssignmentInteractionEnabled = enabled;
-    clearHoveredFaceStreamBox();
+    clearHoveredFaceDetectionsBox();
     if (m_interaction.faceStreamAssignmentInteractionEnabled) {
         m_interaction.transient.dragMode = PreviewDragMode::None;
         m_interaction.transient.dragOriginBounds = QRectF();

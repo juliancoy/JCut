@@ -1,4 +1,4 @@
-#include "facestream_tracking.h"
+#include "facedetections_tracking.h"
 
 #include <QtGlobal>
 
@@ -7,7 +7,7 @@
 #include <limits>
 #include <utility>
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 
 namespace {
 
@@ -483,4 +483,4 @@ QVector<ContinuityTrack> buildContinuityTracksFromDetectionFrames(
     return tracks;
 }
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

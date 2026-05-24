@@ -20,10 +20,10 @@ public:
     bool loadTranscriptJson(const QString &path, QJsonDocument *docOut, QString *errorOut = nullptr) const;
     bool saveTranscriptJson(const QString &path, const QJsonDocument &doc) const;
     bool ensureTranscriptTextCompanion(const QString &path) const;
-    QString facestreamArtifactPath(const QString &transcriptPath) const;
+    QString facedetectionsArtifactPath(const QString &transcriptPath) const;
     bool loadFacestreamArtifact(const QString &transcriptPath, QJsonObject *rootOut) const;
     bool saveFacestreamArtifact(const QString &transcriptPath, const QJsonObject &root) const;
-    QString facestreamProcessedArtifactPath(const QString &transcriptPath) const;
+    QString facedetectionsProcessedArtifactPath(const QString &transcriptPath) const;
     bool loadFacestreamProcessedArtifact(const QString &transcriptPath, QJsonObject *rootOut) const;
     bool saveFacestreamProcessedArtifact(const QString &transcriptPath, const QJsonObject &root) const;
     QString identityArtifactPath(const QString &transcriptPath) const;

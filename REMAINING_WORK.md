@@ -47,13 +47,13 @@ _Last updated: 2026-05-05_
 - [ ] Tune thresholds and candidate limits on `nasreen.mp4` plus crowded scenes.
 - [ ] Add quality metrics: detection count, false-positive proxy, track length, ID-switch proxy, and runtime.
 
-### FaceStream Native Tracking
-- [x] Extend the headless benchmark to include native Vulkan FaceStream inference.
-- [x] Add live tuning for native Vulkan FaceStream threshold, stride, candidate caps, ROI, area, and aspect filters.
+### FaceDetections Native Tracking
+- [x] Extend the headless benchmark to include native Vulkan FaceDetections inference.
+- [x] Add live tuning for native Vulkan FaceDetections threshold, stride, candidate caps, ROI, area, and aspect filters.
 - [x] Throttle preview/debug readback separately from detector frame processing with `--preview-stride`.
 - [ ] Compare native Vulkan against Python hybrid, Docker hybrid, Haar, YOLO, and RetinaFace paths.
 - [ ] Stabilize native Vulkan tracks with association tuning and smoothing.
-- [ ] Keep FaceStream schema compatibility while adding source metadata for native Vulkan inference.
+- [ ] Keep FaceDetections schema compatibility while adding source metadata for native Vulkan inference.
 - [ ] Update UI copy once native Vulkan inference is production-grade rather than heuristic.
 
 ### Native C++ Production Tracker
@@ -72,9 +72,9 @@ _Last updated: 2026-05-05_
 
 ### Verification Commands
 ```bash
-cmake --build build --target jcut jcut_vulkan_facestream_offscreen jcut_vulkan_zero_copy_video_preprocess -j$(nproc)
+cmake --build build --target jcut jcut_vulkan_facedetections_offscreen jcut_vulkan_zero_copy_video_preprocess -j$(nproc)
 ./build/jcut_vulkan_zero_copy_video_preprocess nasreen.mp4 --max-frames 48 --stride 12
-./build/jcut_vulkan_facestream_offscreen input.mp4 --max-frames 360 --params-file /tmp/jcut_runtime_params.json --no-preview-window --no-preview-files
+./build/jcut_vulkan_facedetections_offscreen input.mp4 --max-frames 360 --params-file /tmp/jcut_runtime_params.json --no-preview-window --no-preview-files
 ctest --test-dir build -R 'test_integration|test_vulkan_subtitle_render' --output-on-failure
 ```
 
@@ -87,9 +87,9 @@ end_to_end_zero_copy=0
 
 ### Files To Look At First
 - `vulkan_preview_surface.cpp`: direct `QVulkanWindow` swapchain presenter; no `QImage` bridge.
-- `vulkan_facestream_offscreen_main.cpp`: default zero-copy Vulkan FaceStream verifier, with materialized compatibility mode behind `--materialized-generate-facestream`.
+- `vulkan_facedetections_offscreen_main.cpp`: default zero-copy Vulkan FaceDetections verifier, with materialized compatibility mode behind `--materialized-generate-facedetections`.
 - `vulkan_zero_copy_face_detector.cpp`: Vulkan preprocessing + heuristic inference compute pipelines.
-- `speakers_tab_facestream_actions.cpp`: UI integration for native Vulkan FaceStream inference.
+- `speakers_tab_facedetections_actions.cpp`: UI integration for native Vulkan FaceDetections inference.
 
 ---
 
@@ -101,12 +101,12 @@ Build a full **native C++ production face tracker** path (no Python, no Docker) 
 - ReID: ArcFace embeddings (ONNX)
 - Association: IoU + embedding similarity
 - Smoothing: temporal stabilization
-- Output: existing FaceStream schema
+- Output: existing FaceDetections schema
 
 ### 1) Scope And Acceptance
 - [ ] Runs from UI with no Python runtime.
 - [ ] Runs from UI with no Docker runtime.
-- [ ] Produces current continuity FaceStream JSON schema (no downstream breakage).
+- [ ] Produces current continuity FaceDetections JSON schema (no downstream breakage).
 - [ ] Meets or beats current local hybrid tracking stability on `nasreen.mp4`.
 - [ ] CPU-first implementation works reliably.
 - [ ] Optional GPU acceleration can be added without API/schema changes.
@@ -152,7 +152,7 @@ Build a full **native C++ production face tracker** path (no Python, no Docker) 
 - [ ] Expose smoothing strength in config.
 - [ ] Ensure smoothing does not drift off-face on cuts/occlusion.
 
-### 6) FaceStream Integration
+### 6) FaceDetections Integration
 - [ ] (future) Add `NativeHybridGpu` preset in `FacestreamDetectorPreset`.
 
 ### 7) Benchmark And Validation
@@ -183,7 +183,7 @@ Build a full **native C++ production face tracker** path (no Python, no Docker) 
 
 ### 10) Suggested Milestones
 - [ ] Week 1: ONNX runtime + model plumbing + detector/embedder wrappers.
-- [ ] Week 2: tracker association + smoothing + FaceStream write path.
+- [ ] Week 2: tracker association + smoothing + FaceDetections write path.
 - [ ] Week 3: UI stage reporting + benchmark integration + tuning.
 - [ ] Week 4: stabilization, docs, default switch.
 

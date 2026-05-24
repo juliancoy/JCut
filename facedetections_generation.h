@@ -1,6 +1,6 @@
 #pragma once
 
-#include "facestream_runtime.h"
+#include "facedetections_runtime.h"
 #include "detector_settings.h"
 #include "decoder_context.h"
 #include "editor_shared.h"
@@ -38,17 +38,17 @@
 #include <vulkan/vulkan.h>
 #endif
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 struct FacestreamSmoothingSettings {
     bool smoothTranslation = false;
     bool smoothScale = false;
 };
-inline FacestreamSmoothingSettings g_facestreamSmoothingSettings;
+inline FacestreamSmoothingSettings g_facedetectionsSmoothingSettings;
 struct FacestreamContribTrackingSettings {
     int redetectStrideSamples = 5;
     bool allowTrackerOnlyPropagation = true;
 };
-inline FacestreamContribTrackingSettings g_facestreamContribTrackingSettings;
+inline FacestreamContribTrackingSettings g_facedetectionsContribTrackingSettings;
 
 enum class FacestreamDetectorPreset {
     HaarBalanced = 0,
@@ -150,7 +150,7 @@ struct VulkanFacestreamFrameProvider {
             initialized = false;
             failed = true;
             failureReason = error.isEmpty()
-                ? QStringLiteral("Vulkan FaceStream renderer initialization failed.")
+                ? QStringLiteral("Vulkan FaceDetections renderer initialization failed.")
                 : error;
             return false;
         }
@@ -174,7 +174,7 @@ inline QImage renderFacestreamFrameWithVulkan(VulkanFacestreamFrameProvider* pro
 
     TimelineClip clip = sourceClip;
     clip.id = sourceClip.id.trimmed().isEmpty()
-        ? QStringLiteral("facestream-vulkan-source")
+        ? QStringLiteral("facedetections-vulkan-source")
         : sourceClip.id;
     clip.filePath = mediaPath;
     clip.proxyPath.clear();
@@ -210,8 +210,8 @@ inline QImage renderFacestreamFrameWithVulkan(VulkanFacestreamFrameProvider* pro
     clip.correctionPolygons.clear();
 
     RenderRequest request;
-    request.outputPath = QStringLiteral("facestream://vulkan");
-    request.outputFormat = QStringLiteral("facestream-preview");
+    request.outputPath = QStringLiteral("facedetections://vulkan");
+    request.outputFormat = QStringLiteral("facedetections-preview");
     request.outputSize = outputSize;
     request.bypassGrading = true;
     request.correctionsEnabled = false;
@@ -244,8 +244,8 @@ inline QImage renderFacestreamFrameWithVulkan(VulkanFacestreamFrameProvider* pro
     if (frame.isNull()) {
         provider->failed = true;
         provider->failureReason = renderedOk
-            ? QStringLiteral("Vulkan FaceStream frame render returned null.")
-            : QStringLiteral("Vulkan FaceStream render output request failed.");
+            ? QStringLiteral("Vulkan FaceDetections frame render returned null.")
+            : QStringLiteral("Vulkan FaceDetections render output request failed.");
     }
     return frame;
 }
@@ -304,21 +304,21 @@ public:
         }
         VkApplicationInfo app{};
         app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        app.pApplicationName = "JCut FaceStream Vulkan Face Preprocess";
+        app.pApplicationName = "JCut FaceDetections Vulkan Face Preprocess";
         app.apiVersion = VK_API_VERSION_1_1;
 
         VkInstanceCreateInfo instanceInfo{};
         instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         instanceInfo.pApplicationInfo = &app;
         if (vkCreateInstance(&instanceInfo, nullptr, &m_instance) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan instance for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan instance for FaceDetections preprocessing."));
             return false;
         }
 
         uint32_t deviceCount = 0;
         vkEnumeratePhysicalDevices(m_instance, &deviceCount, nullptr);
         if (deviceCount == 0) {
-            setError(error, QStringLiteral("No Vulkan physical devices found for FaceStream preprocessing."));
+            setError(error, QStringLiteral("No Vulkan physical devices found for FaceDetections preprocessing."));
             return false;
         }
         QVector<VkPhysicalDevice> devices(static_cast<int>(deviceCount));
@@ -352,7 +352,7 @@ public:
             }
         }
         if (m_physicalDevice == VK_NULL_HANDLE || m_queueFamilyIndex == UINT32_MAX) {
-            setError(error, QStringLiteral("No Vulkan compute queue found for FaceStream preprocessing."));
+            setError(error, QStringLiteral("No Vulkan compute queue found for FaceDetections preprocessing."));
             return false;
         }
 
@@ -368,7 +368,7 @@ public:
         deviceInfo.queueCreateInfoCount = 1;
         deviceInfo.pQueueCreateInfos = &queueInfo;
         if (vkCreateDevice(m_physicalDevice, &deviceInfo, nullptr, &m_device) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan device for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan device for FaceDetections preprocessing."));
             return false;
         }
         vkGetDeviceQueue(m_device, m_queueFamilyIndex, 0, &m_queue);
@@ -378,7 +378,7 @@ public:
         poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
         poolInfo.queueFamilyIndex = m_queueFamilyIndex;
         if (vkCreateCommandPool(m_device, &poolInfo, nullptr, &m_commandPool) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan command pool for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan command pool for FaceDetections preprocessing."));
             return false;
         }
         VkCommandBufferAllocateInfo allocInfo{};
@@ -387,13 +387,13 @@ public:
         allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         allocInfo.commandBufferCount = 1;
         if (vkAllocateCommandBuffers(m_device, &allocInfo, &m_commandBuffer) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to allocate Vulkan command buffer for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to allocate Vulkan command buffer for FaceDetections preprocessing."));
             return false;
         }
         VkFenceCreateInfo fenceInfo{};
         fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         if (vkCreateFence(m_device, &fenceInfo, nullptr, &m_fence) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan fence for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan fence for FaceDetections preprocessing."));
             return false;
         }
 
@@ -481,7 +481,7 @@ public:
         void* mapped = nullptr;
         const VkDeviceSize bytes = static_cast<VkDeviceSize>(rgba.width()) * rgba.height() * 4;
         if (vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to map Vulkan staging buffer for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to map Vulkan staging buffer for FaceDetections preprocessing."));
             return false;
         }
         for (int y = 0; y < rgba.height(); ++y) {
@@ -497,7 +497,7 @@ public:
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (vkBeginCommandBuffer(m_commandBuffer, &begin) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to begin Vulkan upload command buffer for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to begin Vulkan upload command buffer for FaceDetections preprocessing."));
             return false;
         }
         transitionImage(m_imageLayout, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -513,7 +513,7 @@ public:
                                &copy);
         transitionImage(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
         if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to end Vulkan upload command buffer for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to end Vulkan upload command buffer for FaceDetections preprocessing."));
             return false;
         }
         VkSubmitInfo submit{};
@@ -521,11 +521,11 @@ public:
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &m_commandBuffer;
         if (vkQueueSubmit(m_queue, 1, &submit, m_fence) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to submit Vulkan upload for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to submit Vulkan upload for FaceDetections preprocessing."));
             return false;
         }
         if (vkWaitForFences(m_device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Timed out waiting for Vulkan upload for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Timed out waiting for Vulkan upload for FaceDetections preprocessing."));
             return false;
         }
         m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -577,14 +577,14 @@ private:
         info.usage = usage;
         info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateBuffer(m_device, &info, nullptr, buffer) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan buffer for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan buffer for FaceDetections preprocessing."));
             return false;
         }
         VkMemoryRequirements req{};
         vkGetBufferMemoryRequirements(m_device, *buffer, &req);
         const uint32_t type = findVulkanMemoryType(m_physicalDevice, req.memoryTypeBits, properties);
         if (type == UINT32_MAX) {
-            setError(error, QStringLiteral("No Vulkan memory type for FaceStream preprocessing buffer."));
+            setError(error, QStringLiteral("No Vulkan memory type for FaceDetections preprocessing buffer."));
             return false;
         }
         VkMemoryAllocateInfo alloc{};
@@ -592,7 +592,7 @@ private:
         alloc.allocationSize = req.size;
         alloc.memoryTypeIndex = type;
         if (vkAllocateMemory(m_device, &alloc, nullptr, memory) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to allocate Vulkan buffer memory for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to allocate Vulkan buffer memory for FaceDetections preprocessing."));
             return false;
         }
         vkBindBufferMemory(m_device, *buffer, *memory, 0);
@@ -675,7 +675,7 @@ private:
         imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         if (vkCreateImage(m_device, &imageInfo, nullptr, &m_image) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan image for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan image for FaceDetections preprocessing."));
             return false;
         }
         VkMemoryRequirements req{};
@@ -683,7 +683,7 @@ private:
         const uint32_t type = findVulkanMemoryType(
             m_physicalDevice, req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (type == UINT32_MAX) {
-            setError(error, QStringLiteral("No Vulkan memory type for FaceStream preprocessing image."));
+            setError(error, QStringLiteral("No Vulkan memory type for FaceDetections preprocessing image."));
             return false;
         }
         VkMemoryAllocateInfo alloc{};
@@ -691,7 +691,7 @@ private:
         alloc.allocationSize = req.size;
         alloc.memoryTypeIndex = type;
         if (vkAllocateMemory(m_device, &alloc, nullptr, &m_imageMemory) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to allocate Vulkan image memory for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to allocate Vulkan image memory for FaceDetections preprocessing."));
             return false;
         }
         vkBindImageMemory(m_device, m_image, m_imageMemory, 0);
@@ -705,7 +705,7 @@ private:
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.layerCount = 1;
         if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_imageView) != VK_SUCCESS) {
-            setError(error, QStringLiteral("Failed to create Vulkan image view for FaceStream preprocessing."));
+            setError(error, QStringLiteral("Failed to create Vulkan image view for FaceDetections preprocessing."));
             return false;
         }
         return true;
@@ -844,7 +844,7 @@ inline QImage buildScanPreview(const QImage& source,
     for (const cv::Rect& det : detections) {
         boxes.push_back(QRect(det.x, det.y, det.width, det.height));
     }
-    return jcut::facestream::buildScanPreview(source, boxes, detectionCount, roiRect);
+    return jcut::facedetections::buildScanPreview(source, boxes, detectionCount, roiRect);
 }
 
 inline std::vector<WeightedDetection> filterAndSuppressDetections(std::vector<WeightedDetection> detections,
@@ -888,7 +888,7 @@ inline std::vector<WeightedDetection> filterAndSuppressDetections(std::vector<We
 
 inline bool ensureFaceDnnModel(const QString& baseDir, QString* prototxtOut, QString* modelOut)
 {
-    return jcut::facestream::ensureRes10FaceDnnModelAssets(baseDir, prototxtOut, modelOut, nullptr);
+    return jcut::facedetections::ensureRes10FaceDnnModelAssets(baseDir, prototxtOut, modelOut, nullptr);
 }
 
 inline std::vector<cv::Rect> runDnnFaceDetect(DnnFaceDetectorRuntime* runtime, const cv::Mat& bgr, float confThreshold = 0.5f)
@@ -960,4 +960,4 @@ inline cv::Ptr<cv::legacy::Tracker> createContribTracker(FacestreamDetectorPrese
 }
 #endif
 #endif
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

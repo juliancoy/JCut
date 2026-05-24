@@ -41,7 +41,7 @@ struct FacestreamResolvedSelection {
 
 QString normalizedFacestreamOverlaySource(QString source);
 
-bool facestreamOverlaySourceMatches(const QString& sourceFilter,
+bool facedetectionsOverlaySourceMatches(const QString& sourceFilter,
                                     const QString& trackSource,
                                     const QString& streamId);
 
@@ -49,23 +49,23 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
                                                int64_t keyframeMin,
                                                int64_t keyframeMax);
 
-int64_t facestreamLookupFrameForDomain(FacestreamFrameDomain domain,
+int64_t facedetectionsLookupFrameForDomain(FacestreamFrameDomain domain,
                                       int64_t localTimelineFrame,
                                       int64_t localSourceFrame,
                                       int64_t absoluteSourceFrame);
 
 int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
-                                       int64_t facestreamFrame,
+                                       int64_t facedetectionsFrame,
                                        FacestreamFrameDomain domain,
                                        const QVector<RenderSyncMarker>& markers);
 
-int64_t facestreamTypicalFrameStep(const QVector<int64_t>& sortedFrames);
+int64_t facedetectionsTypicalFrameStep(const QVector<int64_t>& sortedFrames);
 
-bool facestreamShouldBridgeGap(int64_t previousFrame,
+bool facedetectionsShouldBridgeGap(int64_t previousFrame,
                                int64_t nextFrame,
                                int64_t typicalStep);
 
-int64_t facestreamMaxEdgeHoldFrames(int64_t typicalStep);
+int64_t facedetectionsMaxEdgeHoldFrames(int64_t typicalStep);
 
 bool resolveFacestreamTrackAtPlayhead(const TimelineClip& clip,
                                       const FacestreamResolvedTrack& track,

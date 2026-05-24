@@ -43,9 +43,9 @@ public:
         QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
         QTableWidget* speakerSectionsTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
-        QListWidget* selectedSpeakerFaceStreamsList = nullptr;
-        QListWidget* speakerPlayheadFaceStreamsList = nullptr;
-        QCheckBox* speakerShowPlayheadFaceStreamsCheckBox = nullptr;
+        QListWidget* selectedSpeakerFaceDetectionsList = nullptr;
+        QListWidget* speakerPlayheadFaceDetectionsList = nullptr;
+        QCheckBox* speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
         QLabel* selectedSpeakerRef1ImageLabel = nullptr;
         QLabel* selectedSpeakerRef2ImageLabel = nullptr;
         QPushButton* selectedSpeakerPreviousSentenceButton = nullptr;
@@ -79,10 +79,9 @@ public:
         QLabel* speakerPointstreamChipLabel = nullptr;
         QPushButton* speakerTrackingChipButton = nullptr;
         QPushButton* speakerStabilizeChipButton = nullptr;
-        QCheckBox* speakerShowFaceStreamBoxesCheckBox = nullptr;
-        QTableWidget* speakerFaceStreamTable = nullptr;
-        QPlainTextEdit* speakerFaceStreamDetailsEdit = nullptr;
-        QComboBox* speakerFaceStreamOverlaySourceCombo = nullptr;
+        QCheckBox* speakerShowFaceDetectionsBoxesCheckBox = nullptr;
+        QTableWidget* speakerFaceDetectionsTable = nullptr;
+        QPlainTextEdit* speakerFaceDetectionsDetailsEdit = nullptr;
         QCheckBox* speakerDetectionsAvailableCheckBox = nullptr;
         QCheckBox* speakerTracksAvailableCheckBox = nullptr;
         QTableWidget* speakerRawDetectionTable = nullptr;
@@ -106,14 +105,14 @@ public:
     void refresh();
     void refreshForSubtab(const QString& subtabName);
     void syncCurrentSpeakerSentenceToPlayhead();
-    bool generateFaceStreamForSelectedClip();
-    bool deleteFaceStreamForSelectedClip(bool confirmDialog = true,
+    bool generateFaceDetectionsForSelectedClip();
+    bool deleteFaceDetectionsForSelectedClip(bool confirmDialog = true,
                                          QString* errorOut = nullptr);
-    editor::ActionResult deleteFaceStreamForSelectedClipResult(bool confirmDialog = true,
+    editor::ActionResult deleteFaceDetectionsForSelectedClipResult(bool confirmDialog = true,
                                                                bool interactive = true);
     bool handlePreviewPoint(const QString& clipId, qreal xNorm, qreal yNorm);
     bool handlePreviewBox(const QString& clipId, qreal xNorm, qreal yNorm, qreal boxSizeNorm);
-    bool handlePreviewFaceStreamBox(const QString& clipId,
+    bool handlePreviewFaceDetectionsBox(const QString& clipId,
                                     int trackId,
                                     const QString& streamId,
                                     int64_t sourceFrame,
@@ -123,11 +122,11 @@ public:
     bool runAiFindSpeakerNames();
     bool runAiFindOrganizations();
     bool runAiCleanSpuriousAssignments();
-    bool rebuildProcessedFaceStreamForSelectedClip(bool interactive = true);
+    bool rebuildProcessedFaceDetectionsForSelectedClip(bool interactive = true);
     qint64 lastSpeakersTableRefreshDurationMs() const { return m_lastSpeakersTableRefreshDurationMs; }
     qint64 maxSpeakersTableRefreshDurationMs() const { return m_maxSpeakersTableRefreshDurationMs; }
-    qint64 lastFaceStreamPanelRefreshDurationMs() const { return m_lastFaceStreamPanelRefreshDurationMs; }
-    qint64 maxFaceStreamPanelRefreshDurationMs() const { return m_maxFaceStreamPanelRefreshDurationMs; }
+    qint64 lastFaceDetectionsPanelRefreshDurationMs() const { return m_lastFaceDetectionsPanelRefreshDurationMs; }
+    qint64 maxFaceDetectionsPanelRefreshDurationMs() const { return m_maxFaceDetectionsPanelRefreshDurationMs; }
     qint64 lastPlayheadTrackCandidatesRefreshDurationMs() const { return m_lastPlayheadTrackCandidatesRefreshDurationMs; }
     qint64 maxPlayheadTrackCandidatesRefreshDurationMs() const { return m_maxPlayheadTrackCandidatesRefreshDurationMs; }
     qint64 lastRawDetectionsPanelRefreshDurationMs() const { return m_lastRawDetectionsPanelRefreshDurationMs; }
@@ -150,8 +149,8 @@ private slots:
     void onSpeakerRandomSentenceClicked();
     void onSpeakerClearReferencesClicked();
     void onSpeakerRunAutoTrackClicked();
-    void onSpeakerViewFaceStreamClicked();
-    void onSpeakerFaceStreamSettingsClicked();
+    void onSpeakerViewFaceDetectionsClicked();
+    void onSpeakerFaceDetectionsSettingsClicked();
     void onSpeakerEnableTrackingClicked();
     void onSpeakerDisableTrackingClicked();
     void onSpeakerDeletePointstreamClicked();
@@ -162,7 +161,7 @@ private slots:
     void onSpeakerFramingTargetChanged();
     void onSpeakerFramingZoomEnabledChanged(bool checked);
     void onSpeakerApplyFramingToClipChanged(bool checked);
-    void onSpeakerFaceStreamTableContextMenuRequested(const QPoint& pos);
+    void onSpeakerFaceDetectionsTableContextMenuRequested(const QPoint& pos);
     void onSpeakerFindMatchingTracksClicked();
 
 private:
@@ -173,7 +172,7 @@ private:
                                     const QString& transcriptPath,
                                     const QString& preferredSpeakerId);
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId);
-    void requestRefreshFaceStreamPathsPanel();
+    void requestRefreshFaceDetectionsPathsPanel();
     void refreshPlayheadTrackCandidatesList(const TimelineClip& clip, const QString& speakerId);
     void updatePlayheadTrackCandidatesVisibility();
     enum class SentenceNavAction {
@@ -183,7 +182,7 @@ private:
     };
 
     bool eventFilter(QObject* watched, QEvent* event) override;
-    void refreshFaceStreamPathsPanel();
+    void refreshFaceDetectionsPathsPanel();
     void refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot);
     void syncSpeakerListMode();
     bool selectSpeakerRowById(const QString& speakerId);
@@ -204,13 +203,13 @@ private:
                                                editor::DecoderContext* decoderCtx,
                                                QHash<int64_t, QImage>* frameImageCache,
                                                qreal sourceFps) const;
-    QVector<QPixmap> assignedFaceStreamPreviewPixmaps(const TimelineClip& clip,
+    QVector<QPixmap> assignedFaceDetectionsPreviewPixmaps(const TimelineClip& clip,
                                                       const QString& speakerId) const;
-    QString assignedFaceStreamPreviewTooltipHtml(const TimelineClip& clip,
+    QString assignedFaceDetectionsPreviewTooltipHtml(const TimelineClip& clip,
                                                  const QString& speakerId) const;
     QJsonArray continuityStreamsForClip(const TimelineClip& clip) const;
-    void clearFaceStreamDerivedCaches();
-    QJsonObject resolveFaceStreamAssignmentRow(const TimelineClip& clip,
+    void clearFaceDetectionsDerivedCaches();
+    QJsonObject resolveFaceDetectionsAssignmentRow(const TimelineClip& clip,
                                                const QJsonArray& streams,
                                                const QJsonObject& row) const;
     QHash<int, QString> resolvedIdentityByTrackId(const TimelineClip& clip,
@@ -220,7 +219,7 @@ private:
                                                     const QString& speakerId) const;
     void showSpeakerAvatarHoverPreview(const QString& speakerId, const QPoint& globalPos);
     void hideSpeakerAvatarHoverPreview();
-    bool selectedClipHasFaceStreamSidecars() const;
+    bool selectedClipHasFaceDetectionsSidecars() const;
     bool clipSupportsTranscript(const TimelineClip& clip) const;
     bool activeCutMutable() const;
     QString originalTranscriptPathForClip(const QString& clipFilePath) const;
@@ -317,7 +316,7 @@ private:
     bool m_updatingSpeakerFramingTargetControls = false;
     QString m_lastSelectionSeekSpeakerId;
     QString m_lastSelectionSeekClipId;
-    bool m_refreshingFaceStreamPathsPanel = false;
+    bool m_refreshingFaceDetectionsPathsPanel = false;
     bool m_faceStreamPanelRefreshQueued = false;
     QTimer* m_faceStreamPanelRefreshTimer = nullptr;
     QString m_speakersTableRefreshSignature;
@@ -326,8 +325,8 @@ private:
     mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
     qint64 m_lastSpeakersTableRefreshDurationMs = 0;
     qint64 m_maxSpeakersTableRefreshDurationMs = 0;
-    qint64 m_lastFaceStreamPanelRefreshDurationMs = 0;
-    qint64 m_maxFaceStreamPanelRefreshDurationMs = 0;
+    qint64 m_lastFaceDetectionsPanelRefreshDurationMs = 0;
+    qint64 m_maxFaceDetectionsPanelRefreshDurationMs = 0;
     qint64 m_lastPlayheadTrackCandidatesRefreshDurationMs = 0;
     qint64 m_maxPlayheadTrackCandidatesRefreshDurationMs = 0;
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;

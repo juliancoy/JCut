@@ -59,7 +59,7 @@ public:
     AudioDynamicsSettings audioDynamicsSettings() const override;
     void setTranscriptOverlayInteractionEnabled(bool enabled) override;
     void setTitleOverlayInteractionOnly(bool enabled) override;
-    void setFaceStreamAssignmentInteractionEnabled(bool enabled) override;
+    void setFaceDetectionsAssignmentInteractionEnabled(bool enabled) override;
     void setCorrectionDrawMode(bool enabled) override;
     bool correctionDrawMode() const override;
     bool transcriptOverlayInteractionEnabled() const override;
@@ -103,7 +103,7 @@ private:
     QSize m_outputSize = QSize(1080, 1920);
     QColor m_backgroundColor = QColor(QStringLiteral("#11161c"));
     QString m_backendLabel = QStringLiteral("offscreen-placeholder");
-    QString m_facestreamOverlaySource = QStringLiteral("all");
+    QString m_facedetectionsOverlaySource = QStringLiteral("all");
     bool m_useProxyMedia = false;
     bool m_hideOutsideOutputWindow = false;
     bool m_bypassGrading = false;

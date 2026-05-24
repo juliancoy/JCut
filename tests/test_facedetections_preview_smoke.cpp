@@ -7,7 +7,7 @@
 #include <QProcessEnvironment>
 #include <QTemporaryDir>
 
-class FaceStreamPreviewSmokeTest : public QObject {
+class FaceDetectionsPreviewSmokeTest : public QObject {
     Q_OBJECT
 
 private:
@@ -50,7 +50,7 @@ private slots:
     {
         const QProcessEnvironment sysEnv = QProcessEnvironment::systemEnvironment();
         if (sysEnv.value(QStringLiteral("JCUT_RUN_VULKAN_FACESTREAM_PREVIEW_SMOKE")).trimmed() != QStringLiteral("1")) {
-            QSKIP("Set JCUT_RUN_VULKAN_FACESTREAM_PREVIEW_SMOKE=1 to run Vulkan FaceStream preview smoke test.");
+            QSKIP("Set JCUT_RUN_VULKAN_FACESTREAM_PREVIEW_SMOKE=1 to run Vulkan FaceDetections preview smoke test.");
         }
         const bool hasDisplay =
             !sysEnv.value(QStringLiteral("DISPLAY")).trimmed().isEmpty() ||
@@ -63,9 +63,9 @@ private slots:
         }
 
         const QString binaryPath = QDir(QStringLiteral(JCUT_BINARY_DIR))
-                                       .filePath(QStringLiteral("jcut_vulkan_facestream_offscreen"));
+                                       .filePath(QStringLiteral("jcut_vulkan_facedetections_offscreen"));
         if (!QFileInfo::exists(binaryPath)) {
-            QSKIP("Standalone FaceStream generator binary is not available.");
+            QSKIP("Standalone FaceDetections generator binary is not available.");
         }
 
         QTemporaryDir tempDir;
@@ -80,7 +80,7 @@ private slots:
                        sysEnv.value(QStringLiteral("LD_LIBRARY_PATH")));
         process.setProcessEnvironment(env);
 
-        const QString outputDir = tempDir.filePath(QStringLiteral("facestream_out"));
+        const QString outputDir = tempDir.filePath(QStringLiteral("facedetections_out"));
         const QStringList args{
             videoPath,
             QStringLiteral("--detector"), QStringLiteral("scrfd-ncnn-vulkan"),
@@ -88,7 +88,7 @@ private slots:
             QStringLiteral("--threshold"), QStringLiteral("0.25"),
             QStringLiteral("--nms-iou"), QStringLiteral("0.14"),
             QStringLiteral("--track-match-iou"), QStringLiteral("0.22"),
-            QStringLiteral("--new-track-min-confidence"), QStringLiteral("0.45"),
+            QStringLiteral("--new-track-min-confidence"), QStringLiteral("0.35"),
             QStringLiteral("--max-faces-per-frame"), QStringLiteral("4"),
             QStringLiteral("--scrfd-target-size"), QStringLiteral("640"),
             QStringLiteral("--start-frame"), QStringLiteral("0"),
@@ -104,7 +104,7 @@ private slots:
 
         process.start(binaryPath, args);
         QVERIFY2(process.waitForStarted(10000), qPrintable(process.errorString()));
-        QVERIFY2(process.waitForFinished(60000), "Standalone FaceStream preview smoke run timed out.");
+        QVERIFY2(process.waitForFinished(60000), "Standalone FaceDetections preview smoke run timed out.");
 
         const QByteArray stderrText = process.readAllStandardError();
         const QByteArray stdoutText = process.readAllStandardOutput();
@@ -117,5 +117,5 @@ private slots:
     }
 };
 
-QTEST_MAIN(FaceStreamPreviewSmokeTest)
-#include "test_facestream_preview_smoke.moc"
+QTEST_MAIN(FaceDetectionsPreviewSmokeTest)
+#include "test_facedetections_preview_smoke.moc"

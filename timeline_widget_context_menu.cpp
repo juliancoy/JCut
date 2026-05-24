@@ -1,6 +1,6 @@
 #include "timeline_widget.h"
-#include "facestream_artifact_utils.h"
-#include "facestream_runtime.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
 #include "transcript_engine.h"
 #include "titles.h"
 
@@ -67,8 +67,8 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
     QAction* createProxyAction = nullptr;
     QAction* continueProxyAction = nullptr;
     QAction* deleteProxyAction = nullptr;
-    QAction* generateFaceStreamAction = nullptr;
-    QAction* deleteFaceStreamAction = nullptr;
+    QAction* generateFaceDetectionsAction = nullptr;
+    QAction* deleteFaceDetectionsAction = nullptr;
 
     QSet<QString> contextSelection = selectedClipIds();
     if (clipIndex >= 0 && !clickedClipId.isEmpty() && !contextSelection.contains(clickedClipId)) {
@@ -176,9 +176,9 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             deleteProxyAction = proxyMenu->addAction(QStringLiteral("Delete Proxy"));
             deleteProxyAction->setEnabled(canProxy);
         }
-        const bool canFaceStream =
+        const bool canFaceDetections =
             m_clips[clipIndex].mediaType == ClipMediaType::Audio || m_clips[clipIndex].hasAudio;
-        bool hasFaceStream = false;
+        bool hasFaceDetections = false;
         const QString transcriptPath = activeTranscriptPathForClipFile(m_clips[clipIndex].filePath);
         if (!transcriptPath.trimmed().isEmpty()) {
             editor::TranscriptEngine transcriptEngine;
@@ -186,16 +186,16 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
             if (transcriptEngine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
                 const QJsonObject continuityRoot =
                     continuityRootForClip(artifactRoot, m_clips[clipIndex].id);
-                hasFaceStream =
-                    jcut::facestream::continuityRootHasTracks(continuityRoot) ||
-                    jcut::facestream::continuityRootHasStoredPayload(continuityRoot);
+                hasFaceDetections =
+                    jcut::facedetections::continuityRootHasTracks(continuityRoot) ||
+                    jcut::facedetections::continuityRootHasStoredPayload(continuityRoot);
             }
         }
-        QMenu* faceStreamMenu = menu.addMenu(QStringLiteral("FaceStream"));
-        generateFaceStreamAction = faceStreamMenu->addAction(QStringLiteral("Generate FaceStream..."));
-        generateFaceStreamAction->setEnabled(canFaceStream);
-        deleteFaceStreamAction = faceStreamMenu->addAction(QStringLiteral("Delete FaceStream..."));
-        deleteFaceStreamAction->setEnabled(canFaceStream && hasFaceStream);
+        QMenu* faceStreamMenu = menu.addMenu(QStringLiteral("FaceDetections"));
+        generateFaceDetectionsAction = faceStreamMenu->addAction(QStringLiteral("Generate FaceDetections..."));
+        generateFaceDetectionsAction->setEnabled(canFaceDetections);
+        deleteFaceDetectionsAction = faceStreamMenu->addAction(QStringLiteral("Delete FaceDetections..."));
+        deleteFaceDetectionsAction->setEnabled(canFaceDetections && hasFaceDetections);
         propertiesAction = menu.addAction(QStringLiteral("Properties"));
         menu.addSeparator();
     }
@@ -527,16 +527,16 @@ void TimelineWidget::contextMenuEvent(QContextMenuEvent* event) {
         return;
     }
 
-    if (selected == generateFaceStreamAction) {
-        if (generateFaceStreamRequested && clipIndex >= 0) {
-            generateFaceStreamRequested(m_clips[clipIndex].id);
+    if (selected == generateFaceDetectionsAction) {
+        if (generateFaceDetectionsRequested && clipIndex >= 0) {
+            generateFaceDetectionsRequested(m_clips[clipIndex].id);
         }
         return;
     }
 
-    if (selected == deleteFaceStreamAction) {
-        if (deleteFaceStreamRequested && clipIndex >= 0) {
-            deleteFaceStreamRequested(m_clips[clipIndex].id);
+    if (selected == deleteFaceDetectionsAction) {
+        if (deleteFaceDetectionsRequested && clipIndex >= 0) {
+            deleteFaceDetectionsRequested(m_clips[clipIndex].id);
         }
         return;
     }

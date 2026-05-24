@@ -40,9 +40,8 @@ void EditorWindow::bindInspectorWidgets()
     m_previewHideOutsideOutputCheckBox = m_inspectorPane->previewHideOutsideOutputCheckBox();
     m_previewShowSpeakerTrackPointsCheckBox = m_inspectorPane->previewShowSpeakerTrackPointsCheckBox();
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
-    m_speakerShowFaceStreamBoxesCheckBox = m_inspectorPane->speakerShowFaceStreamBoxesCheckBox();
+    m_speakerShowFaceDetectionsBoxesCheckBox = m_inspectorPane->speakerShowFaceDetectionsBoxesCheckBox();
     m_speakerShowRawDetectionsCheckBox = m_inspectorPane->speakerShowRawDetectionsCheckBox();
-    m_speakerFaceStreamOverlaySourceCombo = m_inspectorPane->speakerFaceStreamOverlaySourceCombo();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -545,8 +544,8 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
     }
-    if (m_speakerShowFaceStreamBoxesCheckBox) {
-        connect(m_speakerShowFaceStreamBoxesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+    if (m_speakerShowFaceDetectionsBoxesCheckBox) {
+        connect(m_speakerShowFaceDetectionsBoxesCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
             if (m_preview) {
                 m_preview->setShowSpeakerTrackBoxes(checked);
             }
@@ -562,18 +561,6 @@ void EditorWindow::setupPreviewControls()
             scheduleSaveState();
             pushHistorySnapshot();
         });
-    }
-    if (m_speakerFaceStreamOverlaySourceCombo) {
-        connect(m_speakerFaceStreamOverlaySourceCombo,
-                &QComboBox::currentIndexChanged,
-                this,
-                [this](int index) {
-                    if (m_preview && m_speakerFaceStreamOverlaySourceCombo) {
-                        m_preview->setFacestreamOverlaySource(
-                            m_speakerFaceStreamOverlaySourceCombo->itemData(index).toString());
-                    }
-                    scheduleSaveState();
-                });
     }
     if (m_renderBackendCombo) {
         connect(m_renderBackendCombo,

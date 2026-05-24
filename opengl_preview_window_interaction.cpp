@@ -184,7 +184,7 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
         }
     }
 
-    if (dispatchFaceStreamBoxAtPosition(event->position())) {
+    if (dispatchFaceDetectionsBoxAtPosition(event->position())) {
         update();
         event->accept();
         return;
@@ -409,7 +409,7 @@ void PreviewWindow::mouseMoveEvent(QMouseEvent* event) {
 
 void PreviewWindow::leaveEvent(QEvent* event) {
     m_interaction.transient.lastMousePos = QPointF(-10000.0, -10000.0);
-    clearHoveredFaceStreamBox();
+    clearHoveredFaceDetectionsBox();
     if (m_interaction.viewMode == ViewMode::Audio) {
         scheduleRepaint();
     }
@@ -727,10 +727,10 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
     }
 
     if (m_interaction.faceStreamAssignmentInteractionEnabled) {
-        if (updateHoveredFaceStreamBox(position)) {
+        if (updateHoveredFaceDetectionsBox(position)) {
             setCursor(Qt::PointingHandCursor);
         } else {
-            clearHoveredFaceStreamBox();
+            clearHoveredFaceDetectionsBox();
             setCursor(Qt::ArrowCursor);
         }
         return;
@@ -772,16 +772,16 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
     unsetCursor();
 }
 
-void PreviewWindow::clearHoveredFaceStreamBox()
+void PreviewWindow::clearHoveredFaceDetectionsBox()
 {
     PreviewInteractionTransientState& transient = m_interaction.transient;
-    if (transient.hoveredFaceStreamTrackId < 0 &&
-        transient.hoveredFaceStreamClipId.isEmpty() &&
-        transient.hoveredFaceStreamId.isEmpty()) {
+    if (transient.hoveredFaceDetectionsTrackId < 0 &&
+        transient.hoveredFaceDetectionsClipId.isEmpty() &&
+        transient.hoveredFaceDetectionsId.isEmpty()) {
         return;
     }
-    transient.hoveredFaceStreamTrackId = -1;
-    transient.hoveredFaceStreamClipId.clear();
-    transient.hoveredFaceStreamId.clear();
+    transient.hoveredFaceDetectionsTrackId = -1;
+    transient.hoveredFaceDetectionsClipId.clear();
+    transient.hoveredFaceDetectionsId.clear();
     scheduleRepaint();
 }

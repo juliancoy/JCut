@@ -2,7 +2,7 @@
 
 #include "preview_interaction_state.h"
 #include "preview_surface.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_time_mapping.h"
 #include "debug_controls.h"
 
 #include <QJsonObject>
@@ -73,7 +73,7 @@ public:
     AudioDynamicsSettings audioDynamicsSettings() const override;
     void setTranscriptOverlayInteractionEnabled(bool enabled) override;
     void setTitleOverlayInteractionOnly(bool enabled) override;
-    void setFaceStreamAssignmentInteractionEnabled(bool enabled) override;
+    void setFaceDetectionsAssignmentInteractionEnabled(bool enabled) override;
     void setCorrectionDrawMode(bool enabled) override;
     bool correctionDrawMode() const override;
     bool transcriptOverlayInteractionEnabled() const override;
@@ -161,13 +161,13 @@ private:
     std::unique_ptr<editor::TimelineCache> m_cache;
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
-    QHash<QString, FacestreamOverlayCacheEntry> m_facestreamOverlayCache;
+    QHash<QString, FacestreamOverlayCacheEntry> m_facedetectionsOverlayCache;
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
     LoiaconoSpectrumSettings m_loiaconoSpectrumSettings;
     AudioVisualizationMode m_audioVisualizationMode = AudioVisualizationMode::Waveform;
     QString m_failureReason;
-    QString m_facestreamOverlaySource;
+    QString m_facedetectionsOverlaySource;
     QString m_activeAudioClipLabel;
     bool m_hideOutsideOutputWindow = true;
     bool m_bypassGrading = false;

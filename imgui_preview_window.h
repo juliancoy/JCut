@@ -1,6 +1,6 @@
 #pragma once
 
-#include "facestream_tracking.h"
+#include "facedetections_tracking.h"
 
 #include <QRectF>
 #include <QSize>
@@ -67,8 +67,8 @@ public:
     void pumpEvents();
     bool presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                       int64_t frameNumber,
-                      const QVector<jcut::facestream::ContinuityTrack>& tracks,
-                      const QVector<jcut::facestream::Detection>& detections,
+                      const QVector<jcut::facedetections::ContinuityTrack>& tracks,
+                      const QVector<jcut::facedetections::Detection>& detections,
                       const QRectF& roiRect,
                       int detectionCount);
 

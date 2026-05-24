@@ -14,7 +14,7 @@ During the migration, both backends must continue to work with acceptable perfor
 - Shared preview state/controller code must be used by both backends.
 - The migration must not introduce a heavy translation layer in the OpenGL path.
 - Vulkan consumes shared state through a direct `QVulkanWindow` presenter; offscreen `QImage` bridge paths are not valid Vulkan preview paths.
-- Each extraction slice must keep `editor` building and preserve the FaceStream wrapper smoke path.
+- Each extraction slice must keep `editor` building and preserve the FaceDetections wrapper smoke path.
 
 This intermediate state is temporary. It exists to avoid breaking mature preview behavior while Vulkan becomes the normal interactive presenter.
 
@@ -31,7 +31,7 @@ OpenGL is still necessary because the existing `PreviewWindow` path owns mature 
 - Zoom and pan behavior
 - Audio/waveform preview UI behavior
 
-Vulkan currently owns a direct swapchain presenter and FaceStream wrapper paths, but Vulkan is not yet the full interactive timeline composition implementation.
+Vulkan currently owns a direct swapchain presenter and FaceDetections wrapper paths, but Vulkan is not yet the full interactive timeline composition implementation.
 
 The obsolete `QVulkanWindow` scaffold was removed because it performed an offscreen Vulkan render, read back to `QImage`, then uploaded again to a Vulkan swapchain. The replacement direct presenter owns the swapchain and records commands directly into it.
 
@@ -48,8 +48,8 @@ RenderBackend
   Vulkan renderer as default
   OpenGL renderer as fallback during transition
 
-FaceStreamGenerator
-  Shared Generate FaceStream service used by the program and test wrappers
+FaceDetectionsGenerator
+  Shared Generate FaceDetections service used by the program and test wrappers
 
 PreviewPresenter
   Vulkan presenter when available
@@ -75,17 +75,17 @@ Requirements:
 
 - Vulkan is the default preview backend when available.
 - Backend factory reports clear requested/effective backend decisions.
-- Vulkan preview presentation uses the direct swapchain presenter; FaceStream verification uses Vulkan image handles without `QImage` materialization by default.
-- FaceStream test wrapper uses the same native Generate FaceStream path as the program.
+- Vulkan preview presentation uses the direct swapchain presenter; FaceDetections verification uses Vulkan image handles without `QImage` materialization by default.
+- FaceDetections test wrapper uses the same native Generate FaceDetections path as the program.
 - Obsolete offscreen-readback `QVulkanWindow` scaffold remains removed.
 - Vulkan render stats distinguish decode, texture, composite, readback, and detector stages.
-- FaceStream preview/debug readback is explicitly opt-in and throttled with `--preview-stride`; normal detector throughput should be profiled with preview output disabled.
-- The offscreen FaceStream harness supports live detector tuning through `--params-file` for threshold, stride, candidate caps, ROI, area, and aspect filters.
+- FaceDetections preview/debug readback is explicitly opt-in and throttled with `--preview-stride`; normal detector throughput should be profiled with preview output disabled.
+- The offscreen FaceDetections harness supports live detector tuning through `--params-file` for threshold, stride, candidate caps, ROI, area, and aspect filters.
 
 Exit gates:
 
 - `editor` builds cleanly.
-- `jcut_vulkan_facestream_offscreen` builds and runs on the reference video.
+- `jcut_vulkan_facedetections_offscreen` builds and runs on the reference video.
 - Vulkan preview fallback decisions are visible in logs.
 - Preview/readback timing is visible in the offscreen summary when preview output is enabled.
 - No stale `QVulkanWindow` scaffold references remain.
@@ -136,7 +136,7 @@ Requirements:
 - Same correction drawing behavior as OpenGL.
 - Same speaker overlay behavior as OpenGL.
 - Same zoom/pan behavior as OpenGL.
-- Same FaceStream overlay preview behavior as Generate FaceStream.
+- Same FaceDetections overlay preview behavior as Generate FaceDetections.
 - Render path avoids unnecessary `QImage` readback in normal preview operation.
 
 Exit gates:
@@ -165,7 +165,7 @@ Example log:
 Exit gates:
 
 - Vulkan is stable across normal editing sessions.
-- Vulkan handles FaceStream preview and generation workflows.
+- Vulkan handles FaceDetections preview and generation workflows.
 - No high-severity Vulkan-only preview regressions remain open.
 
 ## Phase 5: Remove OpenGL Fallback
@@ -190,7 +190,7 @@ Exit gates:
 
 - `editor` builds without OpenGL preview sources.
 - Runtime backend selection has no OpenGL branch.
-- Vulkan preview and FaceStream workflows pass smoke tests.
+- Vulkan preview and FaceDetections workflows pass smoke tests.
 - Headless/offscreen workflows still work through Vulkan offscreen or null/software test paths.
 
 ## Minimum Test Matrix Before Removal
@@ -202,8 +202,8 @@ Exit gates:
 - Transcript overlay selection/hit testing.
 - Correction drawing/editing.
 - Speaker track points/boxes overlay.
-- Generate FaceStream native hybrid Vulkan path.
-- FaceStream offscreen wrapper on reference video.
+- Generate FaceDetections native hybrid Vulkan path.
+- FaceDetections offscreen wrapper on reference video.
 - Vulkan unavailable/failure behavior before OpenGL removal.
 - Headless/offscreen CI smoke path.
 

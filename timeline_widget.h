@@ -124,8 +124,8 @@ public:
     std::function<void(const QString&)> createProxyRequested;
     std::function<void(const QString&)> continueProxyRequested;
     std::function<void(const QString&)> deleteProxyRequested;
-    std::function<void(const QString&)> generateFaceStreamRequested;
-    std::function<void(const QString&)> deleteFaceStreamRequested;
+    std::function<void(const QString&)> generateFaceDetectionsRequested;
+    std::function<void(const QString&)> deleteFaceDetectionsRequested;
     std::function<void(const QSet<QString>&)> syncRequested;
     std::function<void()> exportRangeChanged;
     std::function<void()> toolModeChanged;

@@ -726,7 +726,7 @@ bool lookupVulkanInteractionInfo(const VulkanInteractionOverlayInfos& infos,
                                  const QString& clipId,
                                  VulkanInteractionOverlayInfo* out);
 
-bool dispatchFaceStreamBoxAtPosition(const PreviewInteractionState* state,
+bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
                                      const VulkanInteractionOverlayInfos& infos,
                                      const QPointF& surfacePosition,
                                      const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback)
@@ -736,8 +736,8 @@ bool dispatchFaceStreamBoxAtPosition(const PreviewInteractionState* state,
     }
     const VulkanPreviewFacestreamOverlay* nearestOverlay = nullptr;
     qreal nearestDistanceSq = std::numeric_limits<qreal>::max();
-    for (int overlayIndex = state->facestreamOverlays.size() - 1; overlayIndex >= 0; --overlayIndex) {
-        const VulkanPreviewFacestreamOverlay& overlay = state->facestreamOverlays.at(overlayIndex);
+    for (int overlayIndex = state->facedetectionsOverlays.size() - 1; overlayIndex >= 0; --overlayIndex) {
+        const VulkanPreviewFacestreamOverlay& overlay = state->facedetectionsOverlays.at(overlayIndex);
         if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
             continue;
         }
@@ -811,7 +811,7 @@ bool lookupVulkanInteractionInfo(const VulkanInteractionOverlayInfos& infos,
                                  const QString& clipId,
                                  VulkanInteractionOverlayInfo* outInfo);
 
-bool updateHoveredFaceStreamBox(const PreviewInteractionState* state,
+bool updateHoveredFaceDetectionsBox(const PreviewInteractionState* state,
                                 const VulkanInteractionOverlayInfos& infos,
                                 const QPointF& surfacePosition)
 {
@@ -825,8 +825,8 @@ bool updateHoveredFaceStreamBox(const PreviewInteractionState* state,
     QString nearestStreamId;
     int nearestTrackId = -1;
     qreal nearestDistanceSq = std::numeric_limits<qreal>::max();
-    for (int overlayIndex = state->facestreamOverlays.size() - 1; overlayIndex >= 0; --overlayIndex) {
-        const VulkanPreviewFacestreamOverlay& overlay = state->facestreamOverlays.at(overlayIndex);
+    for (int overlayIndex = state->facedetectionsOverlays.size() - 1; overlayIndex >= 0; --overlayIndex) {
+        const VulkanPreviewFacestreamOverlay& overlay = state->facedetectionsOverlays.at(overlayIndex);
         if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
             continue;
         }
@@ -880,13 +880,13 @@ bool updateHoveredFaceStreamBox(const PreviewInteractionState* state,
     PreviewInteractionTransientState& transient =
         const_cast<PreviewInteractionState*>(state)->transient;
     const bool changed =
-        transient.hoveredFaceStreamTrackId != hoveredTrackId ||
-        transient.hoveredFaceStreamClipId != hoveredClipId ||
-        transient.hoveredFaceStreamId != hoveredStreamId;
+        transient.hoveredFaceDetectionsTrackId != hoveredTrackId ||
+        transient.hoveredFaceDetectionsClipId != hoveredClipId ||
+        transient.hoveredFaceDetectionsId != hoveredStreamId;
     if (changed) {
-        transient.hoveredFaceStreamTrackId = hoveredTrackId;
-        transient.hoveredFaceStreamClipId = hoveredClipId;
-        transient.hoveredFaceStreamId = hoveredStreamId;
+        transient.hoveredFaceDetectionsTrackId = hoveredTrackId;
+        transient.hoveredFaceDetectionsClipId = hoveredClipId;
+        transient.hoveredFaceDetectionsId = hoveredStreamId;
     }
     return hoveredTrackId >= 0;
 }
@@ -1103,7 +1103,7 @@ VkClearValue clipColorForStatus(const TimelineClip& clip,
     return clear;
 }
 
-VkClearValue facestreamOverlayColor(const PreviewInteractionState* state,
+VkClearValue facedetectionsOverlayColor(const PreviewInteractionState* state,
                                    const VulkanPreviewFacestreamOverlay& overlay)
 {
     if (overlay.source.compare(QStringLiteral("raw_detection"), Qt::CaseInsensitive) == 0) {
@@ -1124,9 +1124,9 @@ VkClearValue facestreamOverlayColor(const PreviewInteractionState* state,
     }
     if (state &&
         overlay.trackId >= 0 &&
-        overlay.trackId == state->transient.hoveredFaceStreamTrackId &&
-        overlay.clipId == state->transient.hoveredFaceStreamClipId &&
-        overlay.streamId == state->transient.hoveredFaceStreamId) {
+        overlay.trackId == state->transient.hoveredFaceDetectionsTrackId &&
+        overlay.clipId == state->transient.hoveredFaceDetectionsClipId &&
+        overlay.streamId == state->transient.hoveredFaceDetectionsId) {
         VkClearValue hovered{};
         hovered.color.float32[0] = 1.0f;
         hovered.color.float32[1] = 0.835f;
@@ -1417,7 +1417,7 @@ protected:
         }
 
         if (m_faceStreamBoxRequested &&
-            dispatchFaceStreamBoxAtPosition(m_state, infos, surfacePosition, m_faceStreamBoxRequested)) {
+            dispatchFaceDetectionsBoxAtPosition(m_state, infos, surfacePosition, m_faceStreamBoxRequested)) {
             requestUpdate();
             event->accept();
             return;
@@ -1820,9 +1820,9 @@ protected:
             if (m_state) {
                 m_state->transient.lastMousePos = QPointF(-10000.0, -10000.0);
                 m_state->transient.speakerPickCurrentPos = QPointF(-10000.0, -10000.0);
-                m_state->transient.hoveredFaceStreamTrackId = -1;
-                m_state->transient.hoveredFaceStreamClipId.clear();
-                m_state->transient.hoveredFaceStreamId.clear();
+                m_state->transient.hoveredFaceDetectionsTrackId = -1;
+                m_state->transient.hoveredFaceDetectionsClipId.clear();
+                m_state->transient.hoveredFaceDetectionsId.clear();
                 if (!m_state->transient.speakerPickDragActive) {
                     unsetCursor();
                     requestUpdate();
@@ -1902,16 +1902,16 @@ private:
         }
 
         if (m_state->faceStreamAssignmentInteractionEnabled) {
-            if (updateHoveredFaceStreamBox(m_state, infos, position)) {
+            if (updateHoveredFaceDetectionsBox(m_state, infos, position)) {
                 requestUpdate();
                 setCursor(Qt::PointingHandCursor);
             } else {
-                if (m_state->transient.hoveredFaceStreamTrackId >= 0 ||
-                    !m_state->transient.hoveredFaceStreamClipId.isEmpty() ||
-                    !m_state->transient.hoveredFaceStreamId.isEmpty()) {
-                    m_state->transient.hoveredFaceStreamTrackId = -1;
-                    m_state->transient.hoveredFaceStreamClipId.clear();
-                    m_state->transient.hoveredFaceStreamId.clear();
+                if (m_state->transient.hoveredFaceDetectionsTrackId >= 0 ||
+                    !m_state->transient.hoveredFaceDetectionsClipId.isEmpty() ||
+                    !m_state->transient.hoveredFaceDetectionsId.isEmpty()) {
+                    m_state->transient.hoveredFaceDetectionsTrackId = -1;
+                    m_state->transient.hoveredFaceDetectionsClipId.clear();
+                    m_state->transient.hoveredFaceDetectionsId.clear();
                     requestUpdate();
                 }
                 setCursor(Qt::ArrowCursor);
@@ -2924,7 +2924,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
         }
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);
-        for (const VulkanPreviewFacestreamOverlay& overlay : state->facestreamOverlays) {
+        for (const VulkanPreviewFacestreamOverlay& overlay : state->facedetectionsOverlays) {
             const auto it = activeClipGeometry.constFind(overlay.clipId);
             if (it == activeClipGeometry.constEnd() || !overlay.boxNorm.isValid()) {
                 continue;
@@ -2935,7 +2935,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 geometry.clipToScreen,
                 geometry.localRect,
                 swapSize);
-            clearBoxOutline(m_devFuncs, cb, facestreamOverlayColor(state, overlay), boxRect, thickness);
+            clearBoxOutline(m_devFuncs, cb, facedetectionsOverlayColor(state, overlay), boxRect, thickness);
         }
         for (const VulkanPreviewFacestreamOverlay& overlay : state->rawDetectionOverlays) {
             const auto it = activeClipGeometry.constFind(overlay.clipId);
@@ -2948,7 +2948,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 geometry.clipToScreen,
                 geometry.localRect,
                 swapSize);
-            clearBoxOutline(m_devFuncs, cb, facestreamOverlayColor(state, overlay), boxRect, qMax(1, thickness - 1));
+            clearBoxOutline(m_devFuncs, cb, facedetectionsOverlayColor(state, overlay), boxRect, qMax(1, thickness - 1));
         }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);

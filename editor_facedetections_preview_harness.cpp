@@ -1,6 +1,6 @@
 #include "editor.h"
-#include "facestream_artifact_utils.h"
-#include "facestream_runtime.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
 #include "transcript_engine.h"
 
 #include <QComboBox>
@@ -28,7 +28,7 @@ QJsonDocument buildHarnessTranscript(double durationSeconds)
     const double boundedDuration = qMax(1.0, durationSeconds);
 
     QJsonObject word{
-        {QStringLiteral("word"), QStringLiteral("facestream")},
+        {QStringLiteral("word"), QStringLiteral("facedetections")},
         {QStringLiteral("start"), 0.0},
         {QStringLiteral("end"), boundedDuration},
         {QStringLiteral("speaker"), QStringLiteral("SPEAKER_00")}
@@ -38,7 +38,7 @@ QJsonDocument buildHarnessTranscript(double durationSeconds)
         {QStringLiteral("start"), 0.0},
         {QStringLiteral("end"), boundedDuration},
         {QStringLiteral("speaker"), QStringLiteral("SPEAKER_00")},
-        {QStringLiteral("text"), QStringLiteral("facestream")},
+        {QStringLiteral("text"), QStringLiteral("facedetections")},
         {QStringLiteral("words"), QJsonArray{word}}
     };
 
@@ -109,7 +109,7 @@ int64_t firstFacestreamFrameForClip(const QString& transcriptPath, const QString
 
     int64_t firstFrame = std::numeric_limits<int64_t>::max();
     const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clipId);
-    const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(continuityRoot);
+    const QJsonArray streams = jcut::facedetections::continuityStreamsForRoot(continuityRoot);
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject stream = streamValue.toObject();
         const QJsonArray keyframes = stream.value(QStringLiteral("keyframes")).toArray();
@@ -127,7 +127,7 @@ int64_t firstFacestreamFrameForClip(const QString& transcriptPath, const QString
 
 } // namespace
 
-bool EditorWindow::prepareVulkanFaceStreamPreviewRun(const QString& filePath,
+bool EditorWindow::prepareVulkanFaceDetectionsPreviewRun(const QString& filePath,
                                                     bool createHarnessTranscript,
                                                     QString* errorOut)
 {
@@ -195,17 +195,17 @@ bool EditorWindow::prepareVulkanFaceStreamPreviewRun(const QString& filePath,
     return true;
 }
 
-bool EditorWindow::triggerGenerateFaceStreamForSelectedClip(QString* errorOut)
+bool EditorWindow::triggerGenerateFaceDetectionsForSelectedClip(QString* errorOut)
 {
     if (!m_timeline || !m_speakersTab || !m_timeline->selectedClip()) {
-        setError(errorOut, QStringLiteral("No selected clip is available for Generate FaceStream."));
+        setError(errorOut, QStringLiteral("No selected clip is available for Generate FaceDetections."));
         return false;
     }
 
     m_speakersTab->refresh();
-    const bool started = m_speakersTab->generateFaceStreamForSelectedClip();
+    const bool started = m_speakersTab->generateFaceDetectionsForSelectedClip();
     if (!started) {
-        setError(errorOut, QStringLiteral("Generate FaceStream did not start."));
+        setError(errorOut, QStringLiteral("Generate FaceDetections did not start."));
         return false;
     }
     if (m_preview && m_timeline->selectedClip()) {
@@ -225,20 +225,20 @@ bool EditorWindow::triggerGenerateFaceStreamForSelectedClip(QString* errorOut)
     return true;
 }
 
-bool EditorWindow::triggerDeleteFaceStreamForSelectedClip(bool confirmDialog, QString* errorOut)
+bool EditorWindow::triggerDeleteFaceDetectionsForSelectedClip(bool confirmDialog, QString* errorOut)
 {
     if (!m_timeline || !m_speakersTab || !m_timeline->selectedClip()) {
-        setError(errorOut, QStringLiteral("No selected clip is available for Delete FaceStream."));
+        setError(errorOut, QStringLiteral("No selected clip is available for Delete FaceDetections."));
         return false;
     }
 
     m_speakersTab->refresh();
     const editor::ActionResult result =
-        m_speakersTab->deleteFaceStreamForSelectedClipResult(confirmDialog, false);
+        m_speakersTab->deleteFaceDetectionsForSelectedClipResult(confirmDialog, false);
     if (!result.ok) {
         setError(errorOut,
                  result.message.trimmed().isEmpty()
-                     ? QStringLiteral("Delete FaceStream did not complete.")
+                     ? QStringLiteral("Delete FaceDetections did not complete.")
                      : result.message);
         return false;
     }

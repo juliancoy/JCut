@@ -1,6 +1,6 @@
-#include "facestream_generation.h"
-#include "facestream_runtime.h"
-#include "facestream_tracking.h"
+#include "facedetections_generation.h"
+#include "facedetections_runtime.h"
+#include "facedetections_tracking.h"
 #include "clip_serialization.h"
 #include "detector_settings.h"
 #include "decoder_context.h"
@@ -14,7 +14,7 @@
 #include "vulkan_res10_ncnn_face_detector.h"
 #include "vulkan_detector_frame_handoff.h"
 #include "vulkan_scrfd_ncnn_face_detector.h"
-#include "vulkan_facestream_offscreen_runner.h"
+#include "vulkan_facedetections_offscreen_runner.h"
 #include "vulkan_zero_copy_face_detector.h"
 
 #include <QDir>
@@ -74,23 +74,23 @@ namespace {
 
 struct Options {
     QString videoPath = QStringLiteral("/mnt/Cancer/PanelVid2TikTok/Politics/YTDown.com_YouTube_Meet-the-Candidates-for-Baltimore-County_Media_Hho5MORgIj8_001_1080p.mp4");
-    QString outputDir = QStringLiteral("testbench_assets/vulkan_facestream_offscreen");
+    QString outputDir = QStringLiteral("testbench_assets/vulkan_facedetections_offscreen");
     int maxFrames = 0; // 0 => full video
     int startFrame = 0;
-    int stride = jcut::facestream::kDefaultDetectorStride;
-    int maxDetections = jcut::facestream::kDefaultDetectorMaxDetections;
-    int maxFacesPerFrame = jcut::facestream::kDefaultDetectorMaxFacesPerFrame; // 0 => no post-cap
-    int scrfdTargetSize = jcut::facestream::kDefaultDetectorScrfdTargetSize;
-    QString scrfdModelVariant = QString::fromLatin1(jcut::facestream::kDefaultScrfdModelVariant);
+    int stride = jcut::facedetections::kDefaultDetectorStride;
+    int maxDetections = jcut::facedetections::kDefaultDetectorMaxDetections;
+    int maxFacesPerFrame = jcut::facedetections::kDefaultDetectorMaxFacesPerFrame; // 0 => no post-cap
+    int scrfdTargetSize = jcut::facedetections::kDefaultDetectorScrfdTargetSize;
+    QString scrfdModelVariant = QString::fromLatin1(jcut::facedetections::kDefaultScrfdModelVariant);
     int previewFrames = 24;
     int previewStride = 12;
-    float threshold = jcut::facestream::kDefaultDetectorThreshold;
-    float nmsIouThreshold = jcut::facestream::kDefaultDetectorNmsIouThreshold;
-    float trackMatchIouThreshold = jcut::facestream::kDefaultDetectorTrackMatchIouThreshold;
-    float newTrackMinConfidence = jcut::facestream::kDefaultDetectorNewTrackMinConfidence;
-    bool primaryFaceOnly = jcut::facestream::kDefaultDetectorPrimaryFaceOnly;
-    bool smallFaceFallback = jcut::facestream::kDefaultDetectorSmallFaceFallback;
-    bool scrfdTiled = jcut::facestream::kDefaultDetectorScrfdTiled;
+    float threshold = jcut::facedetections::kDefaultDetectorThreshold;
+    float nmsIouThreshold = jcut::facedetections::kDefaultDetectorNmsIouThreshold;
+    float trackMatchIouThreshold = jcut::facedetections::kDefaultDetectorTrackMatchIouThreshold;
+    float newTrackMinConfidence = jcut::facedetections::kDefaultDetectorNewTrackMinConfidence;
+    bool primaryFaceOnly = jcut::facedetections::kDefaultDetectorPrimaryFaceOnly;
+    bool smallFaceFallback = jcut::facedetections::kDefaultDetectorSmallFaceFallback;
+    bool scrfdTiled = jcut::facedetections::kDefaultDetectorScrfdTiled;
     QString detector = QStringLiteral("jcut-dnn");
     QString res10ParamPath;
     QString res10BinPath;
@@ -170,45 +170,45 @@ struct DetectionSanitizeStats {
     int keptAfterNms = 0;
 };
 
-using Detection = jcut::facestream::Detection;
-using Track = jcut::facestream::ContinuityTrack;
+using Detection = jcut::facedetections::Detection;
+using Track = jcut::facedetections::ContinuityTrack;
 
 QString backendIdForOptions(const Options& options)
 {
     if (options.materializedGenerateFacestream) {
-        return QStringLiteral("materialized_generate_facestream_opencv_cascade_v1");
+        return QStringLiteral("materialized_generate_facedetections_opencv_cascade_v1");
     }
     if (options.heuristicZeroCopyDetector) {
         return QStringLiteral("native_jcut_heuristic_zero_copy_v1");
     }
     if (options.scrfdDetector) {
         return QStringLiteral("scrfd_%1_ncnn_vulkan_zero_copy_v1")
-            .arg(jcut::facestream::normalizeScrfdModelVariantId(options.scrfdModelVariant));
+            .arg(jcut::facedetections::normalizeScrfdModelVariantId(options.scrfdModelVariant));
     }
     return QStringLiteral("res10_ssd_ncnn_vulkan_zero_copy_v1");
 }
 
 struct RuntimeTuning {
-    int stride = jcut::facestream::kDefaultDetectorStride;
-    int maxDetections = jcut::facestream::kDefaultDetectorMaxDetections;
-    int scrfdTargetSize = jcut::facestream::kDefaultDetectorScrfdTargetSize;
-    int maxFacesPerFrame = jcut::facestream::kDefaultDetectorMaxFacesPerFrame;
-    QString scrfdModelVariant = QString::fromLatin1(jcut::facestream::kDefaultScrfdModelVariant);
-    float threshold = jcut::facestream::kDefaultDetectorThreshold;
-    float nmsIouThreshold = jcut::facestream::kDefaultDetectorNmsIouThreshold;
-    float trackMatchIouThreshold = jcut::facestream::kDefaultDetectorTrackMatchIouThreshold;
-    float newTrackMinConfidence = jcut::facestream::kDefaultDetectorNewTrackMinConfidence;
-    bool primaryFaceOnly = jcut::facestream::kDefaultDetectorPrimaryFaceOnly;
-    bool smallFaceFallback = jcut::facestream::kDefaultDetectorSmallFaceFallback;
-    bool scrfdTiled = jcut::facestream::kDefaultDetectorScrfdTiled;
-    float roiX1 = jcut::facestream::kDefaultDetectorRoiX1;
-    float roiY1 = jcut::facestream::kDefaultDetectorRoiY1;
-    float roiX2 = jcut::facestream::kDefaultDetectorRoiX2;
-    float roiY2 = jcut::facestream::kDefaultDetectorRoiY2;
-    float minFaceAreaRatio = jcut::facestream::kDefaultDetectorMinFaceAreaRatio;
-    float maxFaceAreaRatio = jcut::facestream::kDefaultDetectorMaxFaceAreaRatio;
-    float minAspect = jcut::facestream::kDefaultDetectorMinAspect;
-    float maxAspect = jcut::facestream::kDefaultDetectorMaxAspect;
+    int stride = jcut::facedetections::kDefaultDetectorStride;
+    int maxDetections = jcut::facedetections::kDefaultDetectorMaxDetections;
+    int scrfdTargetSize = jcut::facedetections::kDefaultDetectorScrfdTargetSize;
+    int maxFacesPerFrame = jcut::facedetections::kDefaultDetectorMaxFacesPerFrame;
+    QString scrfdModelVariant = QString::fromLatin1(jcut::facedetections::kDefaultScrfdModelVariant);
+    float threshold = jcut::facedetections::kDefaultDetectorThreshold;
+    float nmsIouThreshold = jcut::facedetections::kDefaultDetectorNmsIouThreshold;
+    float trackMatchIouThreshold = jcut::facedetections::kDefaultDetectorTrackMatchIouThreshold;
+    float newTrackMinConfidence = jcut::facedetections::kDefaultDetectorNewTrackMinConfidence;
+    bool primaryFaceOnly = jcut::facedetections::kDefaultDetectorPrimaryFaceOnly;
+    bool smallFaceFallback = jcut::facedetections::kDefaultDetectorSmallFaceFallback;
+    bool scrfdTiled = jcut::facedetections::kDefaultDetectorScrfdTiled;
+    float roiX1 = jcut::facedetections::kDefaultDetectorRoiX1;
+    float roiY1 = jcut::facedetections::kDefaultDetectorRoiY1;
+    float roiX2 = jcut::facedetections::kDefaultDetectorRoiX2;
+    float roiY2 = jcut::facedetections::kDefaultDetectorRoiY2;
+    float minFaceAreaRatio = jcut::facedetections::kDefaultDetectorMinFaceAreaRatio;
+    float maxFaceAreaRatio = jcut::facedetections::kDefaultDetectorMaxFaceAreaRatio;
+    float minAspect = jcut::facedetections::kDefaultDetectorMinAspect;
+    float maxAspect = jcut::facedetections::kDefaultDetectorMaxAspect;
 };
 
 struct PreviewDebugSettings {
@@ -225,10 +225,10 @@ struct PreviewDebugSettings {
     float overlayOpacity = 1.0f;
 };
 
-jcut::facestream::ContinuityTrackingTuning trackingTuningForRuntime(
+jcut::facedetections::ContinuityTrackingTuning trackingTuningForRuntime(
     const RuntimeTuning& tuning)
 {
-    jcut::facestream::ContinuityTrackingTuning trackingTuning;
+    jcut::facedetections::ContinuityTrackingTuning trackingTuning;
     trackingTuning.trackMatchIouThreshold = tuning.trackMatchIouThreshold;
     trackingTuning.newTrackMinConfidence = tuning.newTrackMinConfidence;
     trackingTuning.primaryFaceOnly = tuning.primaryFaceOnly;
@@ -243,7 +243,7 @@ QJsonObject buildRawDetectionFrameRecord(int frameNumber,
 {
     QJsonArray detectionRows;
     for (const Detection& detection : detections) {
-        detectionRows.append(jcut::facestream::compactDetectionJson(detection, frameSize));
+        detectionRows.append(jcut::facedetections::compactDetectionJson(detection, frameSize));
     }
     return QJsonObject{
         {QStringLiteral("frame"), frameNumber},
@@ -270,7 +270,7 @@ QJsonObject runtimeTuningToJson(const RuntimeTuning& tuning,
 {
     return {
         {QStringLiteral("detector"), detector},
-        {QStringLiteral("scrfd_model_variant"), jcut::facestream::normalizeScrfdModelVariantId(tuning.scrfdModelVariant)},
+        {QStringLiteral("scrfd_model_variant"), jcut::facedetections::normalizeScrfdModelVariantId(tuning.scrfdModelVariant)},
         {QStringLiteral("scrfd_target_size"), tuning.scrfdTargetSize > 0 ? tuning.scrfdTargetSize : scrfdTargetSize},
         {QStringLiteral("stride"), tuning.stride},
         {QStringLiteral("max_detections"), tuning.maxDetections},
@@ -449,7 +449,7 @@ QVector<Detection> sanitizeDetections(const QVector<Detection>& raw,
     for (const Detection& candidate : out) {
         bool keep = true;
         for (const Detection& accepted : suppressed) {
-            if (jcut::facestream::continuityIou(candidate.box, accepted.box) >
+            if (jcut::facedetections::continuityIou(candidate.box, accepted.box) >
                 tuning.nmsIouThreshold) {
                 if (stats) {
                     ++stats->rejectedNms;
@@ -481,7 +481,7 @@ void logDetectionSanitizeStats(int frameNumber,
                                const DetectionSanitizeStats& stats,
                                const QVector<Detection>& raw)
 {
-    std::cerr << "facestream_debug"
+    std::cerr << "facedetections_debug"
               << " frame=" << frameNumber
               << " size=" << frameSize.width() << "x" << frameSize.height()
               << " raw=" << stats.rawCount
@@ -500,7 +500,7 @@ void logDetectionSanitizeStats(int frameNumber,
     const int sampleCount = std::min(static_cast<int>(raw.size()), 3);
     for (int i = 0; i < sampleCount; ++i) {
         const Detection& det = raw.at(i);
-        std::cerr << "facestream_debug_box"
+        std::cerr << "facedetections_debug_box"
                   << " frame=" << frameNumber
                   << " index=" << i
                   << " conf=" << det.confidence
@@ -550,7 +550,7 @@ void usage(const char* argv0)
               << " [--scrfd-target-size N] [--scrfd-tiling] [--no-scrfd-tiling]"
               << " [--preview-window] [--no-preview-window] [--preview-files]"
               << " [--preflight]"
-              << " [--materialized-generate-facestream]"
+              << " [--materialized-generate-facedetections]"
               << " [--require-zero-copy]"
               << " [--require-hardware-vulkan-frame-path]"
               << " [--allow-cpu-upload-fallback]"
@@ -608,7 +608,7 @@ bool parseArgs(int argc, char** argv, Options* options)
             const char* v = next("--scrfd-model");
             if (!v) return false;
             options->scrfdModelVariant =
-                jcut::facestream::normalizeScrfdModelVariantId(QString::fromLocal8Bit(v));
+                jcut::facedetections::normalizeScrfdModelVariantId(QString::fromLocal8Bit(v));
         } else if (arg == "--scrfd-tiling") {
             options->scrfdTiled = true;
         } else if (arg == "--no-scrfd-tiling") {
@@ -718,7 +718,7 @@ bool parseArgs(int argc, char** argv, Options* options)
             options->writePreviewFiles = true;
         } else if (arg == "--no-preview-files") {
             options->writePreviewFiles = false;
-        } else if (arg == "--materialized-generate-facestream") {
+        } else if (arg == "--materialized-generate-facedetections") {
             options->materializedGenerateFacestream = true;
         } else if (arg == "--require-zero-copy") {
             options->requireZeroCopy = true;
@@ -767,7 +767,7 @@ bool parseArgs(int argc, char** argv, Options* options)
             return false;
         }
         if (options->materializedGenerateFacestream) {
-            std::cerr << "--require-zero-copy cannot be combined with --materialized-generate-facestream.\n";
+            std::cerr << "--require-zero-copy cannot be combined with --materialized-generate-facedetections.\n";
             return false;
         }
         if (!options->previewSocket.trimmed().isEmpty()) {
@@ -1041,11 +1041,11 @@ bool applyRuntimeParamsFile(const QString& path,
     }
     if (o.contains(QStringLiteral("scrfd_model_variant"))) {
         tuning->scrfdModelVariant =
-            jcut::facestream::normalizeScrfdModelVariantId(
+            jcut::facedetections::normalizeScrfdModelVariantId(
                 o.value(QStringLiteral("scrfd_model_variant")).toString(tuning->scrfdModelVariant));
     } else {
         tuning->scrfdModelVariant =
-            jcut::facestream::normalizeScrfdModelVariantId(tuning->scrfdModelVariant);
+            jcut::facedetections::normalizeScrfdModelVariantId(tuning->scrfdModelVariant);
     }
     if (o.contains(QStringLiteral("stride"))) {
         tuning->stride = qMax(1, o.value(QStringLiteral("stride")).toInt(tuning->stride));
@@ -1193,14 +1193,14 @@ QString aspectText(float value)
     return QStringLiteral("%1").arg(static_cast<double>(value), 0, 'f', 2);
 }
 
-RuntimeTuning runtimeTuningFromDetectorSettings(const jcut::facestream::DetectorRuntimeSettings& settings)
+RuntimeTuning runtimeTuningFromDetectorSettings(const jcut::facedetections::DetectorRuntimeSettings& settings)
 {
     RuntimeTuning tuning;
     tuning.stride = settings.stride;
     tuning.maxDetections = settings.maxDetections;
     tuning.scrfdTargetSize = settings.scrfdTargetSize;
     tuning.maxFacesPerFrame = settings.maxFacesPerFrame;
-    tuning.scrfdModelVariant = jcut::facestream::normalizeScrfdModelVariantId(settings.scrfdModelVariant);
+    tuning.scrfdModelVariant = jcut::facedetections::normalizeScrfdModelVariantId(settings.scrfdModelVariant);
     tuning.threshold = settings.threshold;
     tuning.nmsIouThreshold = settings.nmsIouThreshold;
     tuning.trackMatchIouThreshold = settings.trackMatchIouThreshold;
@@ -1227,7 +1227,7 @@ void syncDetectorControlPanel(DetectorControlPanel* panel, const RuntimeTuning& 
     *panel->syncing = true;
     if (panel->scrfdModelVariant) {
         const int index = panel->scrfdModelVariant->findData(
-            jcut::facestream::normalizeScrfdModelVariantId(tuning.scrfdModelVariant));
+            jcut::facedetections::normalizeScrfdModelVariantId(tuning.scrfdModelVariant));
         if (index >= 0) {
             panel->scrfdModelVariant->setCurrentIndex(index);
         }
@@ -1442,12 +1442,12 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
             qWarning().noquote() << error;
         }
     };
-    auto applyProfile = [tuning, persist, &panel](const jcut::facestream::DetectorRuntimeSettings& profileSettings) {
+    auto applyProfile = [tuning, persist, &panel](const jcut::facedetections::DetectorRuntimeSettings& profileSettings) {
         if (!tuning) {
             return;
         }
         const QString currentScrfdModelVariant =
-            jcut::facestream::normalizeScrfdModelVariantId(tuning->scrfdModelVariant);
+            jcut::facedetections::normalizeScrfdModelVariantId(tuning->scrfdModelVariant);
         *panel.syncing = true;
         *tuning = runtimeTuningFromDetectorSettings(profileSettings);
         tuning->scrfdModelVariant = currentScrfdModelVariant;
@@ -1504,9 +1504,9 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
     panel.profileCombo->setToolTip(QStringLiteral(
         "Built-in immutable detector profiles. Applying one overwrites the live tuning and persists it to the active settings file."));
     applyProfileButton->setToolTip(panel.profileCombo->toolTip());
-    const QVector<jcut::facestream::DetectorSettingsProfileDefinition> profiles =
-        jcut::facestream::builtInDetectorProfiles();
-    for (const jcut::facestream::DetectorSettingsProfileDefinition& profile : profiles) {
+    const QVector<jcut::facedetections::DetectorSettingsProfileDefinition> profiles =
+        jcut::facedetections::builtInDetectorProfiles();
+    for (const jcut::facedetections::DetectorSettingsProfileDefinition& profile : profiles) {
         panel.profileCombo->addItem(profile.label, profile.id);
         const int index = panel.profileCombo->count() - 1;
         panel.profileCombo->setItemData(
@@ -1524,7 +1524,7 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
             return;
         }
         const QString selectedId = panel.profileCombo->currentData().toString();
-        for (const jcut::facestream::DetectorSettingsProfileDefinition& profile : profiles) {
+        for (const jcut::facedetections::DetectorSettingsProfileDefinition& profile : profiles) {
             if (profile.id == selectedId) {
                 applyProfile(profile.settings);
                 return;
@@ -1550,9 +1550,9 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
         panel.scrfdModelVariant = new QComboBox;
         panel.scrfdModelVariant->setToolTip(
             QStringLiteral("SCRFD model family variant. Larger variants improve recall, especially for small or crowded faces, at higher GPU cost. Model changes apply on the next run, not mid-run."));
-        const QVector<jcut::facestream::ScrfdModelVariantDefinition> variants =
-            jcut::facestream::supportedScrfdModelVariants();
-        for (const jcut::facestream::ScrfdModelVariantDefinition& variant : variants) {
+        const QVector<jcut::facedetections::ScrfdModelVariantDefinition> variants =
+            jcut::facedetections::supportedScrfdModelVariants();
+        for (const jcut::facedetections::ScrfdModelVariantDefinition& variant : variants) {
             panel.scrfdModelVariant->addItem(variant.label, variant.id);
             const int index = panel.scrfdModelVariant->count() - 1;
             panel.scrfdModelVariant->setItemData(index, variant.description, Qt::ToolTipRole);
@@ -1702,7 +1702,7 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
         panel.pauseButton = new QPushButton(*paused ? QStringLiteral("Resume")
                                                     : QStringLiteral("Pause"));
         panel.pauseButton->setToolTip(QStringLiteral(
-            "Pause or resume FaceStream detection while keeping the runtime controls responsive."));
+            "Pause or resume FaceDetections detection while keeping the runtime controls responsive."));
         root->addWidget(panel.pauseButton);
         QObject::connect(panel.pauseButton,
                          &QPushButton::clicked,
@@ -1991,8 +1991,8 @@ QString findRes10NcnnModelFile(const QString& explicitPath, const QString& fileN
 
 QString scrfdModelFileName(const QString& variantId, const QString& suffix)
 {
-    jcut::facestream::ScrfdModelVariantDefinition definition;
-    if (jcut::facestream::scrfdModelVariantById(variantId, &definition)) {
+    jcut::facedetections::ScrfdModelVariantDefinition definition;
+    if (jcut::facedetections::scrfdModelVariantById(variantId, &definition)) {
         return definition.modelStem + suffix;
     }
     return QStringLiteral("scrfd_500m-opt2") + suffix;
@@ -2021,7 +2021,7 @@ public:
     {
         VkApplicationInfo app{};
         app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        app.pApplicationName = "jcut-dnn-facestream-generator";
+        app.pApplicationName = "jcut-dnn-facedetections-generator";
         app.apiVersion = VK_API_VERSION_1_1;
 
         VkInstanceCreateInfo instanceInfo{};
@@ -3144,7 +3144,7 @@ bool initializeTrainedVulkanDnn(cv::dnn::Net* net, QString* error)
     }
     QString proto;
     QString model;
-    if (!jcut::facestream::ensureFaceDnnModel(QDir::currentPath(), &proto, &model)) {
+    if (!jcut::facedetections::ensureFaceDnnModel(QDir::currentPath(), &proto, &model)) {
         if (error) *error = QStringLiteral("OpenCV Res10 SSD face detector assets are missing or could not be downloaded.");
         return false;
     }
@@ -3236,7 +3236,7 @@ QImage buildPreview(QImage image,
             boxes.push_back(detection.box.toAlignedRect());
         }
     }
-    return jcut::facestream::buildScanPreview(image, boxes, boxes.size(), roiRect);
+    return jcut::facedetections::buildScanPreview(image, boxes, boxes.size(), roiRect);
 }
 
 bool sendPreviewFrame(QLocalSocket* socket, const QImage& image)
@@ -3272,7 +3272,7 @@ bool appendBinaryJsonRecord(QFile* file, const QJsonObject& object)
     return jcut::jsonio::appendBinaryJsonRecord(file, object, 0x4A465352, 1, nullptr);
 }
 
-struct FaceStreamResumeState {
+struct FaceDetectionsResumeState {
     QSet<int> completedFrames;
     QJsonArray frameRows;
     QJsonArray rawDetectionFrames;
@@ -3302,12 +3302,12 @@ struct FaceStreamResumeState {
     double ncnnTotalMsTotal = 0.0;
 };
 
-bool loadFaceStreamResume(const QString& path,
+bool loadFaceDetectionsResume(const QString& path,
                           const QString& videoPath,
                           const QString& backend,
                           int startFrame,
                           int endFrame,
-                          FaceStreamResumeState* state,
+                          FaceDetectionsResumeState* state,
                           QString* error)
 {
     if (!state || !QFileInfo::exists(path)) {
@@ -3315,7 +3315,7 @@ bool loadFaceStreamResume(const QString& path,
     }
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
-        if (error) *error = QStringLiteral("Failed to open existing facestream checkpoint: %1").arg(path);
+        if (error) *error = QStringLiteral("Failed to open existing facedetections checkpoint: %1").arg(path);
         return false;
     }
     bool sawMeta = false;
@@ -3333,7 +3333,7 @@ bool loadFaceStreamResume(const QString& path,
         }
         if (magic != 0x4A465352 || version != 1) {
             if (error) {
-                *error = QStringLiteral("Invalid facestream checkpoint record header.");
+                *error = QStringLiteral("Invalid facedetections checkpoint record header.");
             }
             return false;
         }
@@ -3343,7 +3343,7 @@ bool loadFaceStreamResume(const QString& path,
             const int bytesRead = stream.readRawData(compressed.data(), static_cast<int>(compressedSize));
             if (bytesRead != static_cast<int>(compressedSize)) {
                 if (error) {
-                    *error = QStringLiteral("Truncated facestream checkpoint record.");
+                    *error = QStringLiteral("Truncated facedetections checkpoint record.");
                 }
                 return false;
             }
@@ -3358,7 +3358,7 @@ bool loadFaceStreamResume(const QString& path,
             if (object.value(QStringLiteral("video")).toString() != videoPath ||
                 object.value(QStringLiteral("backend")).toString() != backend) {
                 if (error) {
-                    *error = QStringLiteral("Existing facestream checkpoint is for a different video/backend.");
+                    *error = QStringLiteral("Existing facedetections checkpoint is for a different video/backend.");
                 }
                 return false;
             }
@@ -3440,7 +3440,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         appPtr = ownedApp.get();
     }
     if (!appPtr) {
-        std::cerr << "Failed to initialize QApplication for FaceStream generator.\n";
+        std::cerr << "Failed to initialize QApplication for FaceDetections generator.\n";
         return 2;
     }
     editor::installFfmpegLogFilter();
@@ -3460,13 +3460,13 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             std::cerr << "--preflight requires a GUI-capable Qt platform.\n";
             return 2;
         }
-        jcut::facestream::DetectorRuntimeSettings detectorSettings;
+        jcut::facedetections::DetectorRuntimeSettings detectorSettings;
         detectorSettings.stride = options.stride;
         detectorSettings.maxDetections = options.maxDetections;
         detectorSettings.scrfdTargetSize = options.scrfdTargetSize;
         detectorSettings.maxFacesPerFrame = options.maxFacesPerFrame;
         detectorSettings.scrfdModelVariant =
-            jcut::facestream::normalizeScrfdModelVariantId(options.scrfdModelVariant);
+            jcut::facedetections::normalizeScrfdModelVariantId(options.scrfdModelVariant);
         detectorSettings.threshold = options.threshold;
         detectorSettings.nmsIouThreshold = options.nmsIouThreshold;
         detectorSettings.trackMatchIouThreshold = options.trackMatchIouThreshold;
@@ -3476,17 +3476,17 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         detectorSettings.scrfdTiled = options.scrfdTiled;
 
         const QString detectorSettingsPath =
-            jcut::facestream::detectorSettingsPathForVideo(options.videoPath);
-        jcut::facestream::loadDetectorRuntimeSettingsFile(detectorSettingsPath, &detectorSettings, nullptr);
-        const jcut::facestream::FaceStreamPreflightDialogResult preflight =
-            jcut::facestream::runFaceStreamPreflightDialog(
+            jcut::facedetections::detectorSettingsPathForVideo(options.videoPath);
+        jcut::facedetections::loadDetectorRuntimeSettingsFile(detectorSettingsPath, &detectorSettings, nullptr);
+        const jcut::facedetections::FaceDetectionsPreflightDialogResult preflight =
+            jcut::facedetections::runFaceDetectionsPreflightDialog(
                 &detectorSettings,
                 options.detector,
                 options.scrfdTargetSize,
                 detectorSettingsPath,
-                jcut::facestream::FaceStreamPreflightDialogOptions{
-                    QStringLiteral("JCut DNN FaceStream Generator"),
-                    QStringLiteral("This flow runs the standalone FaceStream detector directly against the selected media.\n\n"
+                jcut::facedetections::FaceDetectionsPreflightDialogOptions{
+                    QStringLiteral("JCut DNN FaceDetections Generator"),
+                    QStringLiteral("This flow runs the standalone FaceDetections detector directly against the selected media.\n\n"
                                    "Detector: Vulkan-native face detection pipeline. Track processing runs later."),
                     QStringLiteral("The saved detector settings file is reused by both the editor and the standalone runner for this source video."),
                     QStringLiteral("Run"),
@@ -3513,7 +3513,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         options.scrfdTargetSize = detectorSettings.scrfdTargetSize;
         options.maxFacesPerFrame = detectorSettings.maxFacesPerFrame;
         options.scrfdModelVariant =
-            jcut::facestream::normalizeScrfdModelVariantId(detectorSettings.scrfdModelVariant);
+            jcut::facedetections::normalizeScrfdModelVariantId(detectorSettings.scrfdModelVariant);
         options.threshold = detectorSettings.threshold;
         options.nmsIouThreshold = detectorSettings.nmsIouThreshold;
         options.trackMatchIouThreshold = detectorSettings.trackMatchIouThreshold;
@@ -3532,7 +3532,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         if (object.contains(QStringLiteral("scrfd_model_variant"))) {
             options.scrfdModelVariant =
-                jcut::facestream::normalizeScrfdModelVariantId(
+                jcut::facedetections::normalizeScrfdModelVariantId(
                     object.value(QStringLiteral("scrfd_model_variant")).toString(options.scrfdModelVariant));
         }
     };
@@ -3540,7 +3540,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         applyScrfdModelVariantFromSettingsFile(options.paramsFile);
     }
     applyScrfdModelVariantFromSettingsFile(
-        jcut::facestream::detectorSettingsPathForVideo(options.videoPath));
+        jcut::facedetections::detectorSettingsPathForVideo(options.videoPath));
     qputenv("JCUT_ALLOW_HEADLESS_HARDWARE_DECODE", "1");
     QDir().mkpath(options.outputDir);
     const bool platformIsOffscreen =
@@ -3555,7 +3555,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         return 2;
     }
     TimelineClip sourceClip;
-    sourceClip.id = QStringLiteral("facestream-offscreen-source");
+    sourceClip.id = QStringLiteral("facedetections-offscreen-source");
     sourceClip.filePath = options.videoPath;
     sourceClip.mediaType = ClipMediaType::Video;
     sourceClip.videoEnabled = true;
@@ -3603,7 +3603,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         sourceClip.opacityKeyframes = effectiveClip.opacityKeyframes;
     };
     syncSourceClipGrading();
-    jcut::facestream::VulkanFrameProvider appFrameProvider;
+    jcut::facedetections::VulkanFrameProvider appFrameProvider;
     const QSize renderSize = decoder.info().frameSize.isValid()
         ? decoder.info().frameSize
         : QSize(1920, 1080);
@@ -3611,13 +3611,13 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     if (options.livePreview && !platformIsOffscreen) {
         livePreviewWindow = std::make_unique<ImGuiPreviewWindow>();
         if (!livePreviewWindow->initialize(
-                QStringLiteral("JCut DNN FaceStream Generator Preview"),
+                QStringLiteral("JCut DNN FaceDetections Generator Preview"),
                 QSize(1080, 720))) {
             std::cerr << "Failed to initialize Dear ImGui preview window: "
                       << livePreviewWindow->failureReason().toStdString() << "\n";
             return 2;
         }
-        livePreviewWindow->setStatusText(QStringLiteral("Waiting for JCut DNN FaceStream preview..."));
+        livePreviewWindow->setStatusText(QStringLiteral("Waiting for JCut DNN FaceDetections preview..."));
     }
     QLocalSocket previewSocket;
     QLocalSocket* previewSocketPtr = nullptr;
@@ -3685,29 +3685,29 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     cv::CascadeClassifier faceCascadeAlt;
     cv::CascadeClassifier faceCascadeProfile;
     if (options.materializedGenerateFacestream) {
-        const QString cascadePath = jcut::facestream::findCascadeFile(QStringLiteral("haarcascade_frontalface_default.xml"));
+        const QString cascadePath = jcut::facedetections::findCascadeFile(QStringLiteral("haarcascade_frontalface_default.xml"));
         if (cascadePath.isEmpty() || !faceCascade.load(cascadePath.toStdString())) {
-            std::cerr << "Failed to load Haar cascade for materialized Generate FaceStream scan.\n";
+            std::cerr << "Failed to load Haar cascade for materialized Generate FaceDetections scan.\n";
             return 2;
         }
-        const QString altCascadePath = jcut::facestream::findCascadeFile(QStringLiteral("haarcascade_frontalface_alt2.xml"));
+        const QString altCascadePath = jcut::facedetections::findCascadeFile(QStringLiteral("haarcascade_frontalface_alt2.xml"));
         if (!altCascadePath.isEmpty()) {
             faceCascadeAlt.load(altCascadePath.toStdString());
         }
-        const QString profileCascadePath = jcut::facestream::findCascadeFile(QStringLiteral("haarcascade_profileface.xml"));
+        const QString profileCascadePath = jcut::facedetections::findCascadeFile(QStringLiteral("haarcascade_profileface.xml"));
         if (!profileCascadePath.isEmpty()) {
             faceCascadeProfile.load(profileCascadePath.toStdString());
         }
     }
 #else
     if (options.materializedGenerateFacestream) {
-        std::cerr << "OpenCV is not enabled in this build; materialized Generate FaceStream scan is unavailable.\n";
+        std::cerr << "OpenCV is not enabled in this build; materialized Generate FaceDetections scan is unavailable.\n";
         return 2;
     }
 #endif
     const bool zeroCopyVulkanDetector = !options.materializedGenerateFacestream;
     const QString normalizedScrfdModelVariant =
-        jcut::facestream::normalizeScrfdModelVariantId(options.scrfdModelVariant);
+        jcut::facedetections::normalizeScrfdModelVariantId(options.scrfdModelVariant);
     const QString res10ParamPath = findRes10NcnnModelFile(
         options.res10ParamPath, QStringLiteral("res10_300x300_ssd_ncnn.param"));
     const QString res10BinPath = findRes10NcnnModelFile(
@@ -3728,7 +3728,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 return 2;
             }
         } else {
-            if (!jcut::facestream::ensureScrfdModelVariantAssets(
+            if (!jcut::facedetections::ensureScrfdModelVariantAssets(
                     normalizedScrfdModelVariant, &scrfdParamPath, &scrfdBinPath, &error)) {
                 std::cerr << error.toStdString() << "\n";
                 return 2;
@@ -3736,24 +3736,24 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
     }
     if (options.requireZeroCopy && options.materializedGenerateFacestream) {
-        std::cerr << "Materialized Generate FaceStream mode cannot satisfy --require-zero-copy.\n";
+        std::cerr << "Materialized Generate FaceDetections mode cannot satisfy --require-zero-copy.\n";
         return 2;
     }
     if (zeroCopyVulkanDetector && !options.heuristicZeroCopyDetector && !options.scrfdDetector) {
         std::cout << "detector=res10_ssd_ncnn_vulkan_zero_copy_v1"
-                  << " name=\"JCut DNN FaceStream Generator\""
+                  << " name=\"JCut DNN FaceDetections Generator\""
                   << " inference_backend=ncnn_vulkan"
                   << " model_param=\"" << res10ParamPath.toStdString() << "\""
                   << " model_bin=\"" << res10BinPath.toStdString() << "\""
                   << " qimage_materialized=0\n";
     } else if (options.heuristicZeroCopyDetector) {
         std::cout << "detector=native_jcut_heuristic_zero_copy_v1"
-                  << " name=\"JCut DNN FaceStream Generator\""
+                  << " name=\"JCut DNN FaceDetections Generator\""
                   << " decode=hardware_zero_copy"
                   << " qimage_materialized=0\n";
     } else if (options.scrfdDetector) {
         std::cout << "detector=scrfd_" << normalizedScrfdModelVariant.toStdString() << "_ncnn_vulkan_zero_copy_v1"
-                  << " name=\"JCut SCRFD FaceStream Generator\""
+                  << " name=\"JCut SCRFD FaceDetections Generator\""
                   << " inference_backend=ncnn_vulkan"
                   << " scrfd_model_variant=\"" << normalizedScrfdModelVariant.toStdString() << "\""
                   << " model_param=\"" << scrfdParamPath.toStdString() << "\""
@@ -3808,7 +3808,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         options.maxDetections,
         options.scrfdTargetSize,
         options.maxFacesPerFrame,
-        jcut::facestream::normalizeScrfdModelVariantId(options.scrfdModelVariant),
+        jcut::facedetections::normalizeScrfdModelVariantId(options.scrfdModelVariant),
         options.threshold,
         options.nmsIouThreshold,
         options.trackMatchIouThreshold,
@@ -3875,7 +3875,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     auto liveTrackCount = [&](const QVector<Track>& tracks) {
         int count = 0;
         for (const Track& track : tracks) {
-            if (track.state != jcut::facestream::ContinuityTrackState::Removed) {
+            if (track.state != jcut::facedetections::ContinuityTrackState::Removed) {
                 ++count;
             }
         }
@@ -3915,7 +3915,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         render_detail::OffscreenVulkanFrame previewFrame;
         QString previewError;
-        if (!jcut::facestream::renderFrameToVulkan(&appFrameProvider,
+        if (!jcut::facedetections::renderFrameToVulkan(&appFrameProvider,
                                                    sourceClip,
                                                    options.videoPath,
                                                    frameNumber,
@@ -4058,10 +4058,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     };
     const int totalFrames = static_cast<int>(qMax<int64_t>(1, targetFrames));
     const int finalFrame = qMax(0, options.startFrame + totalFrames - 1);
-    const QString faceStreamPath = QDir(options.outputDir).filePath(QStringLiteral("facestream.part"));
-    FaceStreamResumeState resume;
+    const QString faceStreamPath = QDir(options.outputDir).filePath(QStringLiteral("facedetections.part"));
+    FaceDetectionsResumeState resume;
     QString resumeError;
-    if (!loadFaceStreamResume(faceStreamPath,
+    if (!loadFaceDetectionsResume(faceStreamPath,
                               options.videoPath,
                               backend,
                               options.startFrame,
@@ -4072,10 +4072,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         QFile::remove(stalePath);
         QFile::rename(faceStreamPath, stalePath);
         if (options.verbose && !resumeError.isEmpty()) {
-            std::cerr << "Ignoring previous facestream checkpoint: "
+            std::cerr << "Ignoring previous facedetections checkpoint: "
                       << resumeError.toStdString() << "\n";
         }
-        resume = FaceStreamResumeState{};
+        resume = FaceDetectionsResumeState{};
     }
     int resumeStartOffset = 0;
     while (resumeStartOffset < totalFrames &&
@@ -4095,12 +4095,12 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                               previewStartFrame,
                               warmupTracks,
                               warmupDetections,
-                              QStringLiteral("JCut DNN FaceStream Generator (Preview Warmup)")) ||
+                              QStringLiteral("JCut DNN FaceDetections Generator (Preview Warmup)")) ||
                           emitted;
             }
             if (previewSocketPtr || (options.writePreviewFiles && previewWritten < options.previewFrames)) {
-                jcut::facestream::VulkanFrameStats warmupStats;
-                const QImage warmupImage = jcut::facestream::renderFrameWithVulkan(&appFrameProvider,
+                jcut::facedetections::VulkanFrameStats warmupStats;
+                const QImage warmupImage = jcut::facedetections::renderFrameWithVulkan(&appFrameProvider,
                                                                                    sourceClip,
                                                                                    options.videoPath,
                                                                                    previewStartFrame,
@@ -4112,7 +4112,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                 previewStartFrame,
                                 warmupTracks,
                                 warmupDetections,
-                                QStringLiteral("JCut DNN FaceStream Generator (Preview Warmup)"))) {
+                                QStringLiteral("JCut DNN FaceDetections Generator (Preview Warmup)"))) {
                     emitted = true;
                 }
             }
@@ -4121,7 +4121,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
 
         if (livePreviewWindow) {
             setPreviewStatusText(QStringLiteral(
-                "Waiting for JCut DNN FaceStream preview before detection starts..."));
+                "Waiting for JCut DNN FaceDetections preview before detection starts..."));
             appPtr->processEvents();
         }
         QElapsedTimer previewWarmupTimer;
@@ -4153,7 +4153,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         if (previewPipelinePrimed && livePreviewWindow) {
             setPreviewStatusText(QStringLiteral(
-                "Preview ready. Starting FaceStream detection."));
+                "Preview ready. Starting FaceDetections detection."));
             appPtr->processEvents();
         }
     }
@@ -4187,14 +4187,14 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     QFile faceStreamFile(faceStreamPath);
     const bool faceStreamExists = QFileInfo::exists(faceStreamPath) && QFileInfo(faceStreamPath).size() > 0;
     if (!faceStreamFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        std::cerr << "Failed to open streaming facestream checkpoint: "
+        std::cerr << "Failed to open streaming facedetections checkpoint: "
                   << faceStreamPath.toStdString() << "\n";
         return 2;
     }
     if (!faceStreamExists) {
         appendBinaryJsonRecord(&faceStreamFile, QJsonObject{
             {QStringLiteral("type"), QStringLiteral("meta")},
-            {QStringLiteral("schema"), QStringLiteral("jcut_facestream_part_v1")},
+            {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_part_v1")},
             {QStringLiteral("video"), options.videoPath},
             {QStringLiteral("backend"), backend},
             {QStringLiteral("start_frame"), options.startFrame},
@@ -4204,7 +4204,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         });
     }
     if (options.verbose && !resume.completedFrames.isEmpty()) {
-        std::cout << "resumed_facestream_checkpoint=\""
+        std::cout << "resumed_facedetections_checkpoint=\""
                   << faceStreamPath.toStdString()
                   << "\" completed_frames=" << resume.completedFrames.size()
                   << "\n";
@@ -4221,7 +4221,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                              options.startFrame,
                              qMax(options.startFrame, latestProcessedFrame));
     QVector<Track> runtimeTracks =
-        jcut::facestream::buildContinuityTracksFromDetectionFrames(
+        jcut::facedetections::buildContinuityTracksFromDetectionFrames(
             rawDetectionFrames,
             trackingTuningForRuntime(tuning));
     auto detectionsForFrame = [&](int frameNumber) {
@@ -4266,13 +4266,13 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             track.misses = trackObject.value(QStringLiteral("misses")).toInt(0);
             const QString state = trackObject.value(QStringLiteral("track_state")).toString();
             if (state == QStringLiteral("confirmed")) {
-                track.state = jcut::facestream::ContinuityTrackState::Confirmed;
+                track.state = jcut::facedetections::ContinuityTrackState::Confirmed;
             } else if (state == QStringLiteral("lost")) {
-                track.state = jcut::facestream::ContinuityTrackState::Lost;
+                track.state = jcut::facedetections::ContinuityTrackState::Lost;
             } else if (state == QStringLiteral("removed")) {
-                track.state = jcut::facestream::ContinuityTrackState::Removed;
+                track.state = jcut::facedetections::ContinuityTrackState::Removed;
             } else {
-                track.state = jcut::facestream::ContinuityTrackState::Tentative;
+                track.state = jcut::facedetections::ContinuityTrackState::Tentative;
             }
             if (track.id >= 0 && track.box.isValid() && !track.box.isEmpty()) {
                 frameTracks.push_back(track);
@@ -4283,7 +4283,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     auto advanceRuntimeTracks = [&](int frameNumber,
                                     const QVector<Detection>& detections,
                                     const QSize& detectionFrameSize) -> QVector<Track> {
-        jcut::facestream::updateContinuityTracks(&runtimeTracks,
+        jcut::facedetections::updateContinuityTracks(&runtimeTracks,
                                                  detections,
                                                  frameNumber,
                                                  detectionFrameSize,
@@ -4292,7 +4292,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     };
     auto recordProcessedFrame = [&](int frameOffset,
                                     int frameNumber,
-                                    const jcut::facestream::VulkanFrameStats& renderStats,
+                                    const jcut::facedetections::VulkanFrameStats& renderStats,
                                     const QVector<Detection>& detections,
                                     const QVector<Track>& tracks,
                                     const QSize& detectionFrameSize,
@@ -4325,7 +4325,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         rawDetectionFrames.append(rawDetectionFrame);
         rawDetectionFrameIndexByFrame.insert(frameNumber, rawDetectionFrames.size() - 1);
         const QJsonArray trackDetections =
-            jcut::facestream::frameTrackDetections(tracks, frameNumber);
+            jcut::facedetections::frameTrackDetections(tracks, frameNumber);
         trackDetectionsByFrame.insert(frameNumber, trackDetections);
         latestProcessedFrame = qMax(latestProcessedFrame, frameNumber);
         const bool decoderDirectHandoff = !appVulkanFrame && hardwareDirectHandoff;
@@ -4356,7 +4356,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         frameRows.append(frameRow);
         QJsonObject streamRow = frameRow;
         streamRow.insert(QStringLiteral("type"), QStringLiteral("frame"));
-        streamRow.insert(QStringLiteral("schema"), QStringLiteral("jcut_facestream_frame_v1"));
+        streamRow.insert(QStringLiteral("schema"), QStringLiteral("jcut_facedetections_frame_v1"));
         streamRow.insert(QStringLiteral("video"), options.videoPath);
         streamRow.insert(QStringLiteral("backend"), backend);
         streamRow.insert(QStringLiteral("decoder_direct_handoff"), decoderDirectHandoff);
@@ -4370,7 +4370,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                          rawDetectionFrame.value(QStringLiteral("detections")).toArray());
         streamRow.insert(QStringLiteral("track_detections"), trackDetections);
         if (!appendBinaryJsonRecord(&faceStreamFile, streamRow)) {
-            std::cerr << "Failed to append streaming facestream checkpoint: "
+            std::cerr << "Failed to append streaming facedetections checkpoint: "
                       << faceStreamPath.toStdString() << "\n";
             return false;
         }
@@ -4533,9 +4533,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 slot.decodedFrame,
                 detectionPreviewTracks,
                 detections,
-                QStringLiteral("JCut DNN FaceStream Generator (Decoder Vulkan Upload Fallback)"),
+                QStringLiteral("JCut DNN FaceDetections Generator (Decoder Vulkan Upload Fallback)"),
                 [&]() -> QImage {
-                    return jcut::facestream::renderFrameWithVulkan(&appFrameProvider,
+                    return jcut::facedetections::renderFrameWithVulkan(&appFrameProvider,
                                                                    sourceClip,
                                                                    options.videoPath,
                                                                    slot.frameNumber,
@@ -4547,7 +4547,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             return false;
         }
         ++decoderDirectHandoffFrames;
-        const jcut::facestream::VulkanFrameStats emptyRenderStats;
+        const jcut::facedetections::VulkanFrameStats emptyRenderStats;
         const bool recorded = recordProcessedFrame(slot.frameOffset,
                                                    slot.frameNumber,
                                                    emptyRenderStats,
@@ -4686,7 +4686,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                             resumedDecodedFrame,
                             resumedTracks,
                             resumedDetections,
-                            QStringLiteral("JCut DNN FaceStream Generator (Resume)"),
+                            QStringLiteral("JCut DNN FaceDetections Generator (Resume)"),
                             [&]() -> QImage {
                                 const editor::FrameHandle imageFrame = decoder.decodeFrame(frameNumber);
                                 return imageFrame.hasCpuImage() ? imageFrame.cpuImage() : QImage();
@@ -4698,9 +4698,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     }
                 } else {
                     render_detail::OffscreenVulkanFrame resumedFrame;
-                    jcut::facestream::VulkanFrameStats resumedStats;
+                    jcut::facedetections::VulkanFrameStats resumedStats;
                     QString resumedError;
-                    if (!jcut::facestream::renderFrameToVulkan(&appFrameProvider,
+                    if (!jcut::facedetections::renderFrameToVulkan(&appFrameProvider,
                                                                sourceClip,
                                                                options.videoPath,
                                                                frameNumber,
@@ -4714,9 +4714,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                             resumedFrame,
                             resumedTracks,
                             resumedDetections,
-                            QStringLiteral("JCut DNN FaceStream Generator (Resume)"),
+                            QStringLiteral("JCut DNN FaceDetections Generator (Resume)"),
                             [&]() -> QImage {
-                                return jcut::facestream::renderFrameWithVulkan(&appFrameProvider,
+                                return jcut::facedetections::renderFrameWithVulkan(&appFrameProvider,
                                                                                sourceClip,
                                                                                options.videoPath,
                                                                                frameNumber,
@@ -4787,7 +4787,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         while (runtimePaused) {
             if (livePreviewWindow) {
                 setPreviewStatusText(QStringLiteral(
-                    "FaceStream detection paused. Resume from the runtime controls to continue."));
+                    "FaceDetections detection paused. Resume from the runtime controls to continue."));
                 livePreviewWindow->setTimelineRange(options.startFrame,
                                                    finalFrame,
                                                    qMax(options.startFrame, latestProcessedFrame));
@@ -4812,7 +4812,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     renderAndPresentLivePreviewWindow(previewFrame,
                                                      tracksForFrame(previewFrame),
                                                      detectionsForFrame(previewFrame),
-                                                     QStringLiteral("JCut DNN FaceStream Generator (History Preview)"));
+                                                     QStringLiteral("JCut DNN FaceDetections Generator (History Preview)"));
                 }
             }
             if (detectorControls.window && !detectorControls.window->isVisible()) {
@@ -4892,7 +4892,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             continue;
         }
 
-        jcut::facestream::VulkanFrameStats renderStats;
+        jcut::facedetections::VulkanFrameStats renderStats;
         QVector<Detection> detections;
         QSize detectionFrameSize = renderSize;
         bool appVulkanFrame = false;
@@ -5038,9 +5038,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                         decodedFrame,
                         detectionPreviewTracks,
                         detections,
-                        QStringLiteral("JCut DNN FaceStream Generator (Decoder Vulkan Upload Fallback)"),
+                        QStringLiteral("JCut DNN FaceDetections Generator (Decoder Vulkan Upload Fallback)"),
                         [&]() -> QImage {
-                            return jcut::facestream::renderFrameWithVulkan(&appFrameProvider,
+                            return jcut::facedetections::renderFrameWithVulkan(&appFrameProvider,
                                                                            sourceClip,
                                                                            options.videoPath,
                                                                            frameNumber,
@@ -5095,7 +5095,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                  previewRequiresSynchronizedDetection &&
                                  (!previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0));
                              Q_UNUSED(synchronizedPreviewFrameNeeded);
-                             return jcut::facestream::renderFrameToVulkan(&appFrameProvider,
+                             return jcut::facedetections::renderFrameToVulkan(&appFrameProvider,
                                                                           sourceClip,
                                                                           options.videoPath,
                                                                           frameNumber,
@@ -5187,9 +5187,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                             vulkanFrame,
                             detectionPreviewTracks,
                             detections,
-                            QStringLiteral("JCut DNN FaceStream Generator"),
+                            QStringLiteral("JCut DNN FaceDetections Generator"),
                             [&]() -> QImage {
-                                return jcut::facestream::renderFrameWithVulkan(&appFrameProvider,
+                                return jcut::facedetections::renderFrameWithVulkan(&appFrameProvider,
                                                                                sourceClip,
                                                                                options.videoPath,
                                                                                frameNumber,
@@ -5207,7 +5207,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             QImage frameImage;
             QString materializedPreviewError;
             const bool materializedRenderOk =
-                jcut::facestream::renderFrameToVulkanWithPreviewImage(&appFrameProvider,
+                jcut::facedetections::renderFrameToVulkanWithPreviewImage(&appFrameProvider,
                                                                       sourceClip,
                                                                       options.videoPath,
                                                                       frameNumber,
@@ -5230,7 +5230,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                               << materializedPreviewError.toStdString() << "\n";
                     printedAppVulkanFailure = true;
                 }
-                std::cerr << "FaceStream generator refuses implicit fallback from app Vulkan render to decoder/CPU frame path.\n";
+                std::cerr << "FaceDetections generator refuses implicit fallback from app Vulkan render to decoder/CPU frame path.\n";
                 return 2;
             }
             if (frameImage.isNull()) {
@@ -5240,7 +5240,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             }
             detectionFrameSize = frameImage.size();
 
-            const cv::Mat bgr = jcut::facestream::qImageToBgrMat(frameImage);
+            const cv::Mat bgr = jcut::facedetections::qImageToBgrMat(frameImage);
             if (options.scrfdDetector) {
                 if (!scrfdDetector.isInitialized()) {
                     ScopedStderrSilencer silence(!options.verbose);
@@ -5272,7 +5272,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 const cv::Size minFace(qMax(18, minSide / minDivisor), qMax(18, minSide / minDivisor));
                 const cv::Size maxFace(qMax(minFace.width + 1, (minSide * 3) / 4),
                                        qMax(minFace.height + 1, (minSide * 3) / 4));
-                std::vector<jcut::facestream::WeightedDetection> weightedDetections;
+                std::vector<jcut::facedetections::WeightedDetection> weightedDetections;
                 auto runCascade = [&](cv::CascadeClassifier& cascade, int minNeighbors, double weightBias) {
                     if (cascade.empty()) {
                         return;
@@ -5294,10 +5294,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 runCascade(faceCascadeAlt, qMax(2, baseNeighbors - 1), -0.05);
                 runCascade(faceCascadeProfile, qMax(2, baseNeighbors - 1), -0.10);
 
-                const std::vector<jcut::facestream::WeightedDetection> filtered =
-                    jcut::facestream::filterAndSuppressDetections(std::move(weightedDetections), frameImage.size());
+                const std::vector<jcut::facedetections::WeightedDetection> filtered =
+                    jcut::facedetections::filterAndSuppressDetections(std::move(weightedDetections), frameImage.size());
                 detections.reserve(static_cast<int>(filtered.size()));
-                for (const jcut::facestream::WeightedDetection& det : filtered) {
+                for (const jcut::facedetections::WeightedDetection& det : filtered) {
                     detections.push_back({QRectF(det.box.x, det.box.y, det.box.width, det.box.height),
                                           static_cast<float>(det.weight)});
                 }
@@ -5334,7 +5334,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                         previewFrame,
                         detectionPreviewTracks,
                         detections,
-                        QStringLiteral("JCut Materialized Generate FaceStream"),
+                        QStringLiteral("JCut Materialized Generate FaceDetections"),
                         [&]() -> QImage { return frameImage; })) {
                     return 2;
                 }
@@ -5344,7 +5344,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                             frameNumber,
                             detectionPreviewTracks,
                             detections,
-                            QStringLiteral("JCut Materialized Generate FaceStream"));
+                            QStringLiteral("JCut Materialized Generate FaceDetections"));
             }
 #endif
         }
@@ -5431,21 +5431,21 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         });
     }
     writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("detections.bin")), QJsonObject{
-        {QStringLiteral("schema"), QStringLiteral("jcut_facestream_offscreen_detections_v1")},
+        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_detections_v1")},
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("backend"), backend},
         {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")},
         {QStringLiteral("frames"), rawDetectionFrames}
     });
     writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("tracks.bin")), QJsonObject{
-        {QStringLiteral("schema"), QStringLiteral("jcut_facestream_offscreen_tracks_v1")},
+        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("backend"), backend},
         {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")},
         {QStringLiteral("tracks"), trackRows},
         {QStringLiteral("frame_summaries"), frameRows}
     });
-    const QJsonObject continuityRoot = jcut::facestream::buildContinuityRoot(
+    const QJsonObject continuityRoot = jcut::facedetections::buildContinuityRoot(
         QStringLiteral("offscreen"),
         false,
         0,
@@ -5454,10 +5454,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         trackRows,
         rawDetectionFrames,
         backend);
-    writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("continuity_facestream.bin")), QJsonObject{
-        {QStringLiteral("schema"), QStringLiteral("jcut_facestream_v1")},
-        {QStringLiteral("continuity_facestreams_by_clip"), QJsonObject{
-            {QStringLiteral("facestream-offscreen-source"), continuityRoot}
+    writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("continuity_facedetections.bin")), QJsonObject{
+        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_v1")},
+        {QStringLiteral("continuity_facedetections_by_clip"), QJsonObject{
+            {QStringLiteral("facedetections-offscreen-source"), continuityRoot}
         }}
     });
 
@@ -5472,7 +5472,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     const QJsonObject summary{
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("output_dir"), QDir(options.outputDir).absolutePath()},
-        {QStringLiteral("generator_name"), QStringLiteral("JCut DNN FaceStream Generator")},
+        {QStringLiteral("generator_name"), QStringLiteral("JCut DNN FaceDetections Generator")},
         {QStringLiteral("backend"), backend},
         {QStringLiteral("detector"), backend},
         {QStringLiteral("max_frames"), totalFrames},
@@ -5575,7 +5575,7 @@ int runVulkanFacestreamOffscreen(const QStringList& args)
 {
     QVector<QByteArray> argvStorage;
     argvStorage.reserve(args.size() + 1);
-    argvStorage.push_back(QByteArrayLiteral("jcut_vulkan_facestream_offscreen"));
+    argvStorage.push_back(QByteArrayLiteral("jcut_vulkan_facedetections_offscreen"));
     for (const QString& arg : args) {
         argvStorage.push_back(arg.toLocal8Bit());
     }

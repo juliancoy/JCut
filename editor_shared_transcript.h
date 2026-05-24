@@ -13,7 +13,7 @@ QString transcriptEditablePathForClipFile(const QString& filePath);
 QString transcriptWorkingPathForClipFile(const QString& filePath);
 QStringList transcriptCutPathsForClipFile(const QString& filePath);
 QString activeTranscriptPathForClipFile(const QString& filePath);
-bool facestreamSidecarExistsForClipFile(const QString& filePath);
+bool facedetectionsSidecarExistsForClipFile(const QString& filePath);
 void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath);
 void clearActiveTranscriptPathForClipFile(const QString& filePath);
 void clearAllActiveTranscriptPaths();

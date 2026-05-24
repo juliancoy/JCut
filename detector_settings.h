@@ -11,7 +11,7 @@ class QLabel;
 class QSlider;
 class QWidget;
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 
 inline constexpr int kDefaultDetectorStride = 4;
 inline constexpr int kDefaultDetectorMaxDetections = 512;
@@ -20,7 +20,7 @@ inline constexpr int kDefaultDetectorMaxFacesPerFrame = 16;
 inline constexpr float kDefaultDetectorThreshold = 0.30f;
 inline constexpr float kDefaultDetectorNmsIouThreshold = 0.35f;
 inline constexpr float kDefaultDetectorTrackMatchIouThreshold = 0.35f;
-inline constexpr float kDefaultDetectorNewTrackMinConfidence = 0.45f;
+inline constexpr float kDefaultDetectorNewTrackMinConfidence = 0.35f;
 inline constexpr const char* kDefaultScrfdModelVariant = "500m";
 inline constexpr bool kDefaultDetectorPrimaryFaceOnly = false;
 inline constexpr bool kDefaultDetectorSmallFaceFallback = false;
@@ -115,8 +115,8 @@ struct DetectorSettingsPanel {
     QLabel* settingsPath = nullptr;
 };
 
-struct FaceStreamPreflightDialogOptions {
-    QString title = QStringLiteral("JCut DNN FaceStream Generator");
+struct FaceDetectionsPreflightDialogOptions {
+    QString title = QStringLiteral("JCut DNN FaceDetections Generator");
     QString introText;
     QString detailText;
     QString proceedButtonText = QStringLiteral("Proceed");
@@ -130,13 +130,13 @@ struct FaceStreamPreflightDialogOptions {
     QString applyClipGradingLabel = QStringLiteral("Apply clip grading during detection");
     bool showRestartFromScratchToggle = false;
     bool restartFromScratchChecked = false;
-    QString restartFromScratchLabel = QStringLiteral("Restart from scratch (delete facestream.part)");
+    QString restartFromScratchLabel = QStringLiteral("Restart from scratch (delete facedetections.part)");
     bool showUseProxySourceToggle = false;
     bool useProxySourceChecked = false;
-    QString useProxySourceLabel = QStringLiteral("Use proxy media as FaceStream input");
+    QString useProxySourceLabel = QStringLiteral("Use proxy media as FaceDetections input");
 };
 
-struct FaceStreamPreflightDialogResult {
+struct FaceDetectionsPreflightDialogResult {
     bool accepted = false;
     bool livePreview = true;
     bool applyClipGrading = false;
@@ -178,12 +178,12 @@ DetectorSettingsPanel createDetectorSettingsPanel(DetectorRuntimeSettings* setti
                                                   bool showTrackingControls = false,
                                                   QWidget* parent = nullptr);
 void syncDetectorSettingsPanel(DetectorSettingsPanel* panel, const DetectorRuntimeSettings& settings);
-FaceStreamPreflightDialogResult runFaceStreamPreflightDialog(
+FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
     DetectorRuntimeSettings* settings,
     const QString& detector,
     int scrfdTargetSize,
     const QString& settingsPath,
-    const FaceStreamPreflightDialogOptions& options,
+    const FaceDetectionsPreflightDialogOptions& options,
     QWidget* parent = nullptr);
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

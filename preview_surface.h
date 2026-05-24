@@ -112,7 +112,7 @@ public:
     virtual AudioDynamicsSettings audioDynamicsSettings() const = 0;
     virtual void setTranscriptOverlayInteractionEnabled(bool enabled) = 0;
     virtual void setTitleOverlayInteractionOnly(bool enabled) = 0;
-    virtual void setFaceStreamAssignmentInteractionEnabled(bool enabled) = 0;
+    virtual void setFaceDetectionsAssignmentInteractionEnabled(bool enabled) = 0;
     virtual void setCorrectionDrawMode(bool enabled) = 0;
     virtual bool correctionDrawMode() const = 0;
     virtual bool transcriptOverlayInteractionEnabled() const = 0;

@@ -3,6 +3,7 @@
 
 #include "decoder_context.h"
 
+#include <QCoreApplication>
 #include <QDialog>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -12,11 +13,20 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPushButton>
+#include <QThread>
 #include <QSizePolicy>
 #include <QVBoxLayout>
 
 #include <cmath>
 #include <memory>
+
+namespace {
+bool shouldAvoidTransientUiThreadDecoder()
+{
+    QCoreApplication* const app = QCoreApplication::instance();
+    return app && QThread::currentThread() == app->thread();
+}
+}
 
 QPixmap SpeakersTab::placeholderSpeakerAvatar(const QString& speakerId) const
 {
@@ -127,9 +137,14 @@ QPixmap SpeakersTab::speakerReferenceAvatar(const TimelineClip& clip,
     const int64_t decodeFrame = qMax<int64_t>(
         0, static_cast<int64_t>(std::floor((static_cast<qreal>(sourceFrame30) / kTimelineFps) * sourceFps)));
     const QString mediaPath = interactivePreviewMediaPathForClip(clip);
+    QPixmap avatar = placeholderSpeakerAvatar(speakerId);
+
+    if (shouldAvoidTransientUiThreadDecoder()) {
+        m_avatarCache.insert(cacheKey, avatar);
+        return avatar;
+    }
 
     editor::DecoderContext ctx(mediaPath);
-    QPixmap avatar = placeholderSpeakerAvatar(speakerId);
     if (ctx.initialize()) {
         const editor::FrameHandle frame = ctx.decodeFrame(decodeFrame);
         const QImage image = frame.hasCpuImage() ? frame.cpuImage() : QImage();
@@ -193,6 +208,9 @@ QPixmap SpeakersTab::referenceFullFramePreview(const TimelineClip& clip,
         0, static_cast<int64_t>(std::floor((static_cast<qreal>(sourceFrame30) / kTimelineFps) * sourceFps)));
 
     const QString mediaPath = interactivePreviewMediaPathForClip(clip);
+    if (shouldAvoidTransientUiThreadDecoder()) {
+        return QPixmap::fromImage(canvas);
+    }
     editor::DecoderContext ctx(mediaPath);
     if (!ctx.initialize()) {
         return QPixmap::fromImage(canvas);

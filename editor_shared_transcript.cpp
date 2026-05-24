@@ -735,24 +735,24 @@ QString activeTranscriptPathForClipFile(const QString& filePath) {
     return transcriptWorkingPathForClipFile(filePath);
 }
 
-bool facestreamSidecarExistsForClipFile(const QString& filePath) {
+bool facedetectionsSidecarExistsForClipFile(const QString& filePath) {
     const auto sidecarExistsForTranscriptPath = [](const QString& transcriptPath) {
         if (transcriptPath.trimmed().isEmpty()) {
             return false;
         }
         const QFileInfo info(transcriptPath);
-        const QString facestreamBinPath =
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
-        if (QFileInfo::exists(facestreamBinPath)) {
+        const QString facedetectionsBinPath =
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin"));
+        if (QFileInfo::exists(facedetectionsBinPath)) {
             return true;
         }
         const QString legacyFacestreamBinPath =
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin"));
         if (QFileInfo::exists(legacyFacestreamBinPath)) {
             return true;
         }
         const QString legacyFacestreamJsonPath =
-            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.json"));
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.json"));
         return QFileInfo::exists(legacyFacestreamJsonPath);
     };
 

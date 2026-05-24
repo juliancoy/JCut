@@ -127,17 +127,21 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
 void EditorWindow::applyPreviewViewMode(const QString& modeText)
 {
     if (!m_featureAudioPreviewMode) {
-        m_previewViewMode = QStringLiteral("video");
-        if (m_preview) {
+        const QString nextMode = QStringLiteral("video");
+        const bool changed = (m_previewViewMode != nextMode);
+        m_previewViewMode = nextMode;
+        if (changed && m_preview) {
             m_preview->setViewMode(PreviewSurface::ViewMode::Video);
         }
         return;
     }
     const QString normalized = modeText.trimmed().toLower();
-    m_previewViewMode = (normalized.contains(QStringLiteral("audio")))
-                            ? QStringLiteral("audio")
-                            : QStringLiteral("video");
-    if (m_preview) {
+    const QString nextMode = (normalized.contains(QStringLiteral("audio")))
+        ? QStringLiteral("audio")
+        : QStringLiteral("video");
+    const bool changed = (m_previewViewMode != nextMode);
+    m_previewViewMode = nextMode;
+    if (changed && m_preview) {
         m_preview->setViewMode(m_previewViewMode == QStringLiteral("audio")
                                    ? PreviewSurface::ViewMode::Audio
                                    : PreviewSurface::ViewMode::Video);

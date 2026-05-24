@@ -2,6 +2,7 @@
 #include "json_io_utils.h"
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -11,9 +12,44 @@
 #include <QStandardPaths>
 #include <QCoreApplication>
 
+namespace {
+
+QString writeConfigPath(const QString &configPath, const QString &payload)
+{
+    if (configPath.isEmpty()) {
+        return QStringLiteral("empty config path");
+    }
+    const QFileInfo configInfo(configPath);
+    QDir().mkpath(configInfo.dir().absolutePath());
+    QSaveFile config(configPath);
+    if (!config.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
+        return config.errorString();
+    }
+    const QByteArray bytes = payload.toUtf8();
+    if (config.write(bytes) != bytes.size()) {
+        config.cancelWriting();
+        return QStringLiteral("failed to write config payload");
+    }
+    if (!config.commit()) {
+        return config.errorString();
+    }
+    return {};
+}
+
+} // namespace
+
 ProjectManager::ProjectManager(QObject *parent)
     : QObject(parent)
 {
+}
+
+void ProjectManager::synchronizeRootIfNeeded() const
+{
+    const QString effectiveRoot = rootDirPath();
+    if (!m_currentProjectId.isEmpty() && m_loadedRootDirPath == effectiveRoot) {
+        return;
+    }
+    const_cast<ProjectManager*>(this)->loadProjectsFromFolders();
 }
 
 QString ProjectManager::applicationDirPath() const
@@ -24,33 +60,86 @@ QString ProjectManager::applicationDirPath() const
 
 QString ProjectManager::configFilePath() const
 {
-    // Config file stored near the executable
+    const QString configRoot = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+    return QDir(configRoot).filePath(QStringLiteral("PanelTalkEditor/editor.config"));
+}
+
+QString ProjectManager::legacyConfigFilePath() const
+{
     return QDir(applicationDirPath()).filePath(QStringLiteral("editor.config"));
+}
+
+QString ProjectManager::normalizedExistingDirPath(const QString &path) const
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty()) {
+        return {};
+    }
+    const QFileInfo info(trimmed);
+    if (!info.exists() || !info.isDir()) {
+        return {};
+    }
+    const QString canonical = info.canonicalFilePath();
+    if (!canonical.isEmpty()) {
+        return canonical;
+    }
+    return QDir::cleanPath(info.absoluteFilePath());
+}
+
+QString ProjectManager::defaultRootDirPath() const
+{
+    const QString appDir = normalizedExistingDirPath(applicationDirPath());
+    if (appDir.isEmpty()) {
+        return QDir::currentPath();
+    }
+
+    const QFileInfo appDirInfo(appDir);
+    const QString baseName = appDirInfo.fileName().trimmed().toLower();
+    if (baseName == QStringLiteral("build") || baseName.startsWith(QStringLiteral("build-"))) {
+        const QString parentDir = normalizedExistingDirPath(appDirInfo.dir().absoluteFilePath(QStringLiteral("..")));
+        if (!parentDir.isEmpty()) {
+            return parentDir;
+        }
+    }
+    return appDir;
 }
 
 QString ProjectManager::rootDirPath() const
 {
-    // Read root directory from config file, or default to executable directory
-    QFile configFile(configFilePath());
-    if (configFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        const QString path = QString::fromUtf8(configFile.readAll()).trimmed();
-        if (!path.isEmpty() && QDir(path).exists()) {
-            return path;
+    auto readConfig = [this](const QString &path) -> QString {
+        QFile configFile(path);
+        if (!configFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            return {};
         }
+        return normalizedExistingDirPath(QString::fromUtf8(configFile.readAll()));
+    };
+
+    const QString primaryRoot = readConfig(configFilePath());
+    if (!primaryRoot.isEmpty()) {
+        return primaryRoot;
     }
-    // Default to executable directory if no valid config
-    return applicationDirPath();
+
+    const QString legacyRoot = readConfig(legacyConfigFilePath());
+    if (!legacyRoot.isEmpty()) {
+        writeConfigPath(configFilePath(), legacyRoot + QLatin1Char('\n'));
+        return legacyRoot;
+    }
+
+    return defaultRootDirPath();
 }
 
 void ProjectManager::setRootDirPath(const QString& path)
 {
-    if (path.isEmpty()) {
+    const QString normalizedPath = normalizedExistingDirPath(path);
+    if (normalizedPath.isEmpty()) {
         return;
     }
-    QSaveFile config(configFilePath());
-    if (config.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text)) {
-        config.write(path.toUtf8());
-        config.commit();
+
+    const QString payload = normalizedPath + QLatin1Char('\n');
+    writeConfigPath(configFilePath(), payload);
+    const QString legacyPath = legacyConfigFilePath();
+    if (legacyPath != configFilePath()) {
+        writeConfigPath(legacyPath, payload);
     }
 }
 
@@ -67,22 +156,26 @@ QString ProjectManager::currentProjectMarkerPath() const
 
 QString ProjectManager::currentProjectIdOrDefault() const
 {
-    return m_currentProjectId.isEmpty() ? QStringLiteral("default") : m_currentProjectId;
+    synchronizeRootIfNeeded();
+    return currentProjectIdOrDefaultWithoutSync();
 }
 
 QString ProjectManager::projectPath(const QString &projectId) const
 {
-    return QDir(projectsDirPath()).filePath(projectId.isEmpty() ? QStringLiteral("default") : projectId);
+    synchronizeRootIfNeeded();
+    return projectPathWithoutSync(projectId);
 }
 
 QString ProjectManager::stateFilePathForProject(const QString &projectId) const
 {
-    return QDir(projectPath(projectId)).filePath(QStringLiteral("state.json"));
+    synchronizeRootIfNeeded();
+    return QDir(projectPathWithoutSync(projectId)).filePath(QStringLiteral("state.json"));
 }
 
 QString ProjectManager::historyFilePathForProject(const QString &projectId) const
 {
-    return QDir(projectPath(projectId)).filePath(QStringLiteral("history.json"));
+    synchronizeRootIfNeeded();
+    return QDir(projectPathWithoutSync(projectId)).filePath(QStringLiteral("history.json"));
 }
 
 QString ProjectManager::stateFilePath() const
@@ -97,6 +190,7 @@ QString ProjectManager::historyFilePath() const
 
 QString ProjectManager::sanitizedProjectId(const QString &name) const
 {
+    synchronizeRootIfNeeded();
     QString id = name.trimmed().toLower();
     for (QChar &ch : id) {
         if (!(ch.isLetterOrNumber() || ch == QLatin1Char('_') || ch == QLatin1Char('-'))) {
@@ -116,6 +210,16 @@ QString ProjectManager::sanitizedProjectId(const QString &name) const
         uniqueId = QStringLiteral("%1-%2").arg(id).arg(suffix++);
     }
     return uniqueId;
+}
+
+QString ProjectManager::currentProjectIdOrDefaultWithoutSync() const
+{
+    return m_currentProjectId.isEmpty() ? QStringLiteral("default") : m_currentProjectId;
+}
+
+QString ProjectManager::projectPathWithoutSync(const QString &projectId) const
+{
+    return QDir(projectsDirPath()).filePath(projectId.isEmpty() ? QStringLiteral("default") : projectId);
 }
 
 void ProjectManager::ensureProjectsDirectory() const
@@ -138,11 +242,12 @@ QStringList ProjectManager::availableProjectIds() const
 void ProjectManager::ensureDefaultProjectExists() const
 {
     ensureProjectsDirectory();
-    QDir().mkpath(projectPath(QStringLiteral("default")));
+    QDir().mkpath(projectPathWithoutSync(QStringLiteral("default")));
 }
 
 void ProjectManager::loadProjectsFromFolders()
 {
+    m_loadedRootDirPath = rootDirPath();
     ensureDefaultProjectExists();
     QFile markerFile(currentProjectMarkerPath());
     if (markerFile.open(QIODevice::ReadOnly)) {
@@ -197,6 +302,7 @@ void ProjectManager::refreshProjectsList()
 
 void ProjectManager::switchToProject(const QString &projectId)
 {
+    synchronizeRootIfNeeded();
     if (projectId.isEmpty() || projectId == currentProjectIdOrDefault()) {
         refreshProjectsList();
         return;
@@ -209,6 +315,7 @@ void ProjectManager::switchToProject(const QString &projectId)
 
 void ProjectManager::createProject()
 {
+    synchronizeRootIfNeeded();
     bool accepted = false;
     const QString name = QInputDialog::getText(nullptr,
                                                QStringLiteral("New Project"),
@@ -228,6 +335,7 @@ bool ProjectManager::saveProjectPayload(const QString &projectId,
                                         const QByteArray &statePayload,
                                         const QByteArray &historyPayload)
 {
+    synchronizeRootIfNeeded();
     ensureProjectsDirectory();
     QDir().mkpath(projectPath(projectId));
 
@@ -259,6 +367,7 @@ void ProjectManager::saveProjectAs(const QString &currentName,
                                    const QJsonArray &historyEntries,
                                    int historyIndex)
 {
+    synchronizeRootIfNeeded();
     bool accepted = false;
     const QString name = QInputDialog::getText(nullptr,
                                                QStringLiteral("Save Project As"),
@@ -291,6 +400,7 @@ void ProjectManager::saveProjectAs(const QString &currentName,
 
 void ProjectManager::renameProject(const QString &projectId)
 {
+    synchronizeRootIfNeeded();
     if (projectId.isEmpty() || !QFileInfo::exists(projectPath(projectId))) {
         return;
     }

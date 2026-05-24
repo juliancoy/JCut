@@ -41,9 +41,9 @@ struct PreviewInteractionTransientState {
     QPointF speakerPickStartPos;
     QPointF speakerPickCurrentPos;
     QString speakerPickHintClipId;
-    QString hoveredFaceStreamClipId;
-    QString hoveredFaceStreamId;
-    int hoveredFaceStreamTrackId = -1;
+    QString hoveredFaceDetectionsClipId;
+    QString hoveredFaceDetectionsId;
+    int hoveredFaceDetectionsTrackId = -1;
     QPointF lastMousePos = QPointF(-10000.0, -10000.0);
 };
 
@@ -118,7 +118,7 @@ struct PreviewInteractionState {
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<VulkanPreviewClipFrameStatus> vulkanFrameStatuses;
-    QVector<VulkanPreviewFacestreamOverlay> facestreamOverlays;
+    QVector<VulkanPreviewFacestreamOverlay> facedetectionsOverlays;
     QVector<VulkanPreviewFacestreamOverlay> rawDetectionOverlays;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;

@@ -9,7 +9,7 @@
 
 #include <functional>
 
-namespace jcut::facestream_assignment {
+namespace jcut::facedetections_assignment {
 
 struct CropExtractionRequest {
     TimelineClip clip;
@@ -123,4 +123,4 @@ SeedTrackMatchResult matchFaceTracksToSeed(
     const SeedTrackMatchRequest& request,
     const std::function<bool(int, const QString&)>& progress);
 
-} // namespace jcut::facestream_assignment
+} // namespace jcut::facedetections_assignment

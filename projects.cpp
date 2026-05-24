@@ -49,6 +49,12 @@ void ProjectsTab::refresh()
 
     const QString currentProject =
         m_deps.projectManager ? m_deps.projectManager->currentProjectName() : QString();
+    const QString rootDir =
+        m_deps.projectManager ? QDir::toNativeSeparators(m_deps.projectManager->rootDirPath()) : QString();
+    const QString activeProjectPath =
+        m_deps.projectManager
+            ? QDir::toNativeSeparators(m_deps.projectManager->projectPath(currentProject))
+            : QString();
     const QStringList projectIds =
         m_deps.projectManager ? m_deps.projectManager->availableProjectIds() : QStringList{};
 
@@ -68,7 +74,17 @@ void ProjectsTab::refresh()
     }
 
     if (m_widgets.projectSectionLabel) {
-        m_widgets.projectSectionLabel->setText(QStringLiteral("PROJECTS  %1").arg(currentProject));
+        m_widgets.projectSectionLabel->setText(
+            QStringLiteral("Active Project\n%1").arg(currentProject.isEmpty() ? QStringLiteral("default")
+                                                                              : currentProject));
+    }
+    if (m_widgets.projectPathLabel) {
+        QStringList lines;
+        lines.push_back(QStringLiteral("Project Path: %1").arg(activeProjectPath));
+        lines.push_back(QStringLiteral("Project Root: %1").arg(rootDir));
+        lines.push_back(QStringLiteral("Available Projects: %1").arg(projectIds.size()));
+        m_widgets.projectPathLabel->setText(lines.join(QLatin1Char('\n')));
+        m_widgets.projectPathLabel->setToolTip(activeProjectPath);
     }
     if (m_widgets.renameProjectButton) {
         m_widgets.renameProjectButton->setEnabled(!selectedProjectId().isEmpty());

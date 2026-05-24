@@ -56,7 +56,7 @@ struct RunSummary {
 void printUsage()
 {
     std::cout
-        << "Usage: facestream_midpoint_detection_harness <video-path> [options]\n"
+        << "Usage: facedetections_midpoint_detection_harness <video-path> [options]\n"
         << "Options:\n"
         << "  --params-file PATH    Detector params file passed through to the runner.\n"
         << "  --out-dir DIR         Output directory. Defaults to /tmp/jcut_midpoint_detection_harness.\n"
@@ -68,7 +68,7 @@ void printUsage()
         << "  --benchmark-frames N  Number of sampled frames to benchmark from midpoint. Default: 1\n"
         << "  --warmup-frames N     Sampled frames to warm up before measurement. Default: 0\n"
         << "  --repeat N            Repeat the benchmark N times and report median. Default: 1\n"
-        << "  --                    Remaining args are passed through to jcut_vulkan_facestream_offscreen.\n";
+        << "  --                    Remaining args are passed through to jcut_vulkan_facedetections_offscreen.\n";
 }
 
 bool parseArgs(const QStringList& args, Options* options)
@@ -151,18 +151,18 @@ QString defaultOutputDir()
 QString runnerPath()
 {
     return QDir(QStringLiteral(JCUT_BINARY_DIR))
-        .filePath(QStringLiteral("jcut_vulkan_facestream_offscreen"));
+        .filePath(QStringLiteral("jcut_vulkan_facedetections_offscreen"));
 }
 
 int effectiveStrideForRun(const Options& options, const QString& videoPath)
 {
-    jcut::facestream::DetectorRuntimeSettings settings;
+    jcut::facedetections::DetectorRuntimeSettings settings;
     if (!options.paramsFile.trimmed().isEmpty()) {
-        jcut::facestream::loadDetectorRuntimeSettingsFile(options.paramsFile, &settings, nullptr);
+        jcut::facedetections::loadDetectorRuntimeSettingsFile(options.paramsFile, &settings, nullptr);
     } else {
         const QString detectorSettingsPath =
-            jcut::facestream::detectorSettingsPathForVideo(videoPath);
-        jcut::facestream::loadDetectorRuntimeSettingsFile(detectorSettingsPath, &settings, nullptr);
+            jcut::facedetections::detectorSettingsPathForVideo(videoPath);
+        jcut::facedetections::loadDetectorRuntimeSettingsFile(detectorSettingsPath, &settings, nullptr);
     }
     return qMax(1, settings.stride);
 }
@@ -541,7 +541,7 @@ int main(int argc, char** argv)
 
         if (runIndex == 0) {
             QJsonObject frameRecord;
-            const QString streamPath = QDir(runOutDir).filePath(QStringLiteral("facestream.part"));
+            const QString streamPath = QDir(runOutDir).filePath(QStringLiteral("facedetections.part"));
             if (loadFrameRecord(streamPath, alignedFrame, &frameRecord)) {
                 int boxCount = 0;
                 const QImage annotatedImage = annotateFrameImage(midpointImage, frameRecord, &boxCount);

@@ -15,9 +15,10 @@ public:
     explicit ProjectManager(QObject *parent = nullptr);
     ~ProjectManager() override = default;
 
-    // Root directory configuration (stored near executable)
+    // Root directory configuration (stored in a stable app config location).
     QString applicationDirPath() const;
     QString configFilePath() const;
+    QString legacyConfigFilePath() const;
     QString rootDirPath() const;
     void setRootDirPath(const QString& path);
     
@@ -52,5 +53,12 @@ signals:
     void projectsListRefreshed();
 
 private:
+    QString defaultRootDirPath() const;
+    QString normalizedExistingDirPath(const QString &path) const;
+    void synchronizeRootIfNeeded() const;
+    QString currentProjectIdOrDefaultWithoutSync() const;
+    QString projectPathWithoutSync(const QString &projectId) const;
+
     QString m_currentProjectId;
+    mutable QString m_loadedRootDirPath;
 };

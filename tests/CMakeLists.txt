@@ -12,14 +12,14 @@ set(EDITOR_TEST_TARGETS
     test_waveform_service
     test_shader_grading_logic
     test_grading_keyframes
-    test_facestream_time_mapping
-    test_facestream_tracking
-    test_facestream_assignment
-    test_facestream_flow
-    test_facestream_artifacts
+    test_facedetections_time_mapping
+    test_facedetections_tracking
+    test_facedetections_assignment
+    test_facedetections_flow
+    test_facedetections_artifacts
     test_facefind_window
     test_vulkan_direct_render_parity
-    test_facestream_preview_smoke
+    test_facedetections_preview_smoke
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
@@ -108,56 +108,101 @@ set_tests_properties(test_opengl_vulkan_render_exactness PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
-add_executable(test_facestream_processed_artifact
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_facestream_processed_artifact.cpp
+add_executable(test_facedetections_processed_artifact
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_facedetections_processed_artifact.cpp
 )
-target_link_libraries(test_facestream_processed_artifact
+target_link_libraries(test_facedetections_processed_artifact
     PRIVATE
         editor_test_support
         Qt6::Test
 )
-target_compile_definitions(test_facestream_processed_artifact
+target_compile_definitions(test_facedetections_processed_artifact
     PRIVATE
         JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
         JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
         EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
 )
-jcut_force_bundled_ffmpeg_runtime(test_facestream_processed_artifact)
-add_test(NAME test_facestream_processed_artifact COMMAND test_facestream_processed_artifact)
-set_tests_properties(test_facestream_processed_artifact PROPERTIES
+jcut_force_bundled_ffmpeg_runtime(test_facedetections_processed_artifact)
+add_test(NAME test_facedetections_processed_artifact COMMAND test_facedetections_processed_artifact)
+set_tests_properties(test_facedetections_processed_artifact PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
-target_sources(test_facestream_flow
+target_sources(test_facedetections_flow
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../speaker_flow_debug.cpp
 )
 
-add_executable(facestream_midpoint_detection_harness
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_midpoint_detection_harness.cpp
+find_program(JCUT_PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
+
+add_test(
+    NAME test_ui_smoke_harness_offscreen
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/ui_smoke_harness.py
+            --offscreen
+            --skip-build
 )
-target_link_libraries(facestream_midpoint_detection_harness
+set_tests_properties(test_ui_smoke_harness_offscreen PROPERTIES
+    TIMEOUT 60
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_test(
+    NAME test_speaker_flow_e2e_offscreen
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/ui_smoke_harness.py
+            --offscreen
+            --skip-build
+            --exercise-generated-track-assignment
+)
+set_tests_properties(test_speaker_flow_e2e_offscreen PROPERTIES
+    TIMEOUT 300
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_test(
+    NAME test_rest_smoke_offscreen
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/rest_smoke_test.py
+            --offscreen
+            --skip-build
+            --skip-restart
+            --startup-timeout 30
+            --play-timeout 25
+            --advance-timeout 25
+            --pause-timeout 10
+            --monitor-seconds 2
+)
+set_tests_properties(test_rest_smoke_offscreen PROPERTIES
+    TIMEOUT 90
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_executable(facedetections_midpoint_detection_harness
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_midpoint_detection_harness.cpp
+)
+target_link_libraries(facedetections_midpoint_detection_harness
     PRIVATE
         editor_test_support
 )
-target_compile_definitions(facestream_midpoint_detection_harness
+target_compile_definitions(facedetections_midpoint_detection_harness
     PRIVATE
         JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
         EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
 )
-jcut_force_bundled_ffmpeg_runtime(facestream_midpoint_detection_harness)
+jcut_force_bundled_ffmpeg_runtime(facedetections_midpoint_detection_harness)
 
-add_executable(facestream_track_coverage_harness
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_track_coverage_harness.cpp
+add_executable(facedetections_track_coverage_harness
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_track_coverage_harness.cpp
 )
-target_link_libraries(facestream_track_coverage_harness
+target_link_libraries(facedetections_track_coverage_harness
     PRIVATE
         editor_test_support
 )
-target_compile_definitions(facestream_track_coverage_harness
+target_compile_definitions(facedetections_track_coverage_harness
     PRIVATE
         JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
         JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
         EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
 )
-jcut_force_bundled_ffmpeg_runtime(facestream_track_coverage_harness)
+jcut_force_bundled_ffmpeg_runtime(facedetections_track_coverage_harness)

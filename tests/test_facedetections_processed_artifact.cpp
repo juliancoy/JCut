@@ -1,4 +1,4 @@
-#include "facestream_runtime.h"
+#include "facedetections_runtime.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -85,7 +85,7 @@ private slots:
         };
 
         const QJsonObject rawContinuityRoot =
-            jcut::facestream::buildContinuityRoot(
+            jcut::facedetections::buildContinuityRoot(
                 QStringLiteral("run_dialogue"),
                 true,
                 0,
@@ -96,18 +96,18 @@ private slots:
                 QStringLiteral("scrfd"));
 
         QJsonObject savedRawArtifact;
-        QVERIFY(jcut::facestream::saveContinuityArtifact(
+        QVERIFY(jcut::facedetections::saveContinuityArtifact(
             transcriptPath,
             clipId,
             rawContinuityRoot,
             &savedRawArtifact));
         QVERIFY(engine.loadFacestreamArtifact(transcriptPath, &savedRawArtifact));
         const QJsonObject rawByClip =
-            savedRawArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+            savedRawArtifact.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
         QVERIFY(rawByClip.contains(clipId));
 
         QJsonObject savedProcessedArtifact;
-        QVERIFY(jcut::facestream::saveProcessedContinuityArtifact(
+        QVERIFY(jcut::facedetections::saveProcessedContinuityArtifact(
             transcriptPath,
             clipId,
             rawContinuityRoot,
@@ -116,10 +116,10 @@ private slots:
         QVERIFY(engine.loadFacestreamProcessedArtifact(transcriptPath, &savedProcessedArtifact));
 
         const QJsonObject processedByClip =
-            savedProcessedArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+            savedProcessedArtifact.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
         const QJsonObject processedRoot = processedByClip.value(clipId).toObject();
-        QVERIFY(jcut::facestream::continuityRootHasStoredPayload(processedRoot));
-        QVERIFY(jcut::facestream::continuityRootHasTracks(processedRoot, transcriptRoot));
+        QVERIFY(jcut::facedetections::continuityRootHasStoredPayload(processedRoot));
+        QVERIFY(jcut::facedetections::continuityRootHasTracks(processedRoot, transcriptRoot));
 
         const QJsonArray processedStreams =
             processedRoot.value(QStringLiteral("streams")).toArray();
@@ -140,11 +140,11 @@ private slots:
 
         const QJsonObject rawRootForRuntime = rawByClip.value(clipId).toObject();
         const QJsonArray derivedStreams =
-            jcut::facestream::continuityStreamsForRoot(rawRootForRuntime, transcriptRoot);
+            jcut::facedetections::continuityStreamsForRoot(rawRootForRuntime, transcriptRoot);
         QCOMPARE(derivedStreams.size(), 2);
         QCOMPARE(derivedStreams.at(0).toObject().value(QStringLiteral("keyframes")).toArray().size(), 2);
     }
 };
 
 QTEST_MAIN(FacestreamProcessedArtifactTest)
-#include "test_facestream_processed_artifact.moc"
+#include "test_facedetections_processed_artifact.moc"

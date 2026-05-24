@@ -42,7 +42,7 @@ AssignmentDialogResult showFaceFindWindow(
     layout->setContentsMargins(12, 12, 12, 12);
     layout->setSpacing(8);
     auto* intro = new QLabel(
-        QStringLiteral("Review same-person FaceStream clusters, then assign each cluster to a transcript speaker. "
+        QStringLiteral("Review same-person FaceDetections clusters, then assign each cluster to a transcript speaker. "
                        "Auto suggestions are preselected from transcript timing and persisted mappings; manual speaker ID override is optional. "
                        "On apply, cluster members are expanded into the final track-to-speaker map."),
         &dialog);

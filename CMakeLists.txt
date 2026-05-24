@@ -250,9 +250,9 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/model_import_shared\\.cpp$"
     ".*/model_runtime\\.cpp$"
     ".*/backend_headless_compare_main\\.cpp$"
-    ".*/vulkan_facestream_offscreen_main\\.cpp$"
-    ".*/vulkan_facestream_preview_main\\.cpp$"
-    ".*/vulkan_facestream_test_ui_main\\.cpp$"
+    ".*/vulkan_facedetections_offscreen_main\\.cpp$"
+    ".*/vulkan_facedetections_preview_main\\.cpp$"
+    ".*/vulkan_facedetections_test_ui_main\\.cpp$"
     ".*/vulkan_zero_copy_video_preprocess_main\\.cpp$"
 )
 
@@ -403,10 +403,10 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_transcript.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facefind_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_handle.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_assignment_services.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_continuity_artifacts.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_tracking.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_time_mapping.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_assignment_services.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_continuity_artifacts.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_tracking.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_time_mapping.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/identity_resolution.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/media_pipeline_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_budget.cpp
@@ -532,14 +532,14 @@ if(TARGET jcut_vulkan_shaders)
 endif()
 jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_zero_copy_video_preprocess)
 
-add_executable(jcut_vulkan_facestream_offscreen
+add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_preview_support.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_edit_service.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_io.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_save_controller.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_session.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facestream_offscreen_main.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/facestream_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
@@ -569,35 +569,35 @@ add_executable(jcut_vulkan_facestream_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
-target_include_directories(jcut_vulkan_facestream_offscreen PRIVATE
+target_include_directories(jcut_vulkan_facedetections_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
     ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
-target_link_libraries(jcut_vulkan_facestream_offscreen PRIVATE
+target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
     editor_test_support
     Vulkan::Vulkan
     PkgConfig::FONT_RENDER
     PkgConfig::GLFW
 )
 if(CUDA_DRIVER_LIBRARY)
-    target_link_libraries(jcut_vulkan_facestream_offscreen PRIVATE ${CUDA_DRIVER_LIBRARY})
-    target_compile_definitions(jcut_vulkan_facestream_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=1)
+    target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE ${CUDA_DRIVER_LIBRARY})
+    target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=1)
 else()
-    target_compile_definitions(jcut_vulkan_facestream_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=0)
+    target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE JCUT_HAS_CUDA_DRIVER=0)
 endif()
 if(TARGET ncnn)
-    target_link_libraries(jcut_vulkan_facestream_offscreen PRIVATE ncnn)
+    target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE ncnn)
 endif()
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    target_link_libraries(jcut_vulkan_facestream_offscreen PRIVATE
+    target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
         "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
-    target_link_options(jcut_vulkan_facestream_offscreen PRIVATE
+    target_link_options(jcut_vulkan_facedetections_offscreen PRIVATE
         "LINKER:--no-as-needed")
 endif()
-target_compile_definitions(jcut_vulkan_facestream_offscreen PRIVATE
+target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE
     JCUT_FACESTREAM_OFFSCREEN_STANDALONE=1
     JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
     JCUT_HAVE_OPENCV_CONTRIB=0
@@ -605,13 +605,13 @@ target_compile_definitions(jcut_vulkan_facestream_offscreen PRIVATE
     JCUT_HAVE_OPENCV=0
     JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE=${JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE}
 )
-set_target_properties(jcut_vulkan_facestream_offscreen PROPERTIES
+set_target_properties(jcut_vulkan_facedetections_offscreen PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 if(TARGET jcut_vulkan_shaders)
-    add_dependencies(jcut_vulkan_facestream_offscreen jcut_vulkan_shaders)
+    add_dependencies(jcut_vulkan_facedetections_offscreen jcut_vulkan_shaders)
 endif()
-jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_facestream_offscreen)
+jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_facedetections_offscreen)
 
 add_executable(jcut_headless_backend_compare
     ${CMAKE_CURRENT_SOURCE_DIR}/backend_headless_compare_main.cpp

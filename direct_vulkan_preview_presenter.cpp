@@ -562,7 +562,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     bool correctionsApplied = false;
     bool curveLutApplied = false;
     QJsonArray statusDetails;
-    QJsonArray facestreamOverlays;
+    QJsonArray facedetectionsOverlays;
     QJsonArray rawDetectionOverlays;
     const bool texturePipelineReady = m_active && m_window != nullptr;
     const bool windowValid = directVulkanPreviewWindowIsValid(m_window);
@@ -625,8 +625,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
             });
         }
 
-        for (const VulkanPreviewFacestreamOverlay& overlay : m_state->facestreamOverlays) {
-            facestreamOverlays.append(overlayToJson(overlay));
+        for (const VulkanPreviewFacestreamOverlay& overlay : m_state->facedetectionsOverlays) {
+            facedetectionsOverlays.append(overlayToJson(overlay));
         }
         for (const VulkanPreviewFacestreamOverlay& overlay : m_state->rawDetectionOverlays) {
             rawDetectionOverlays.append(overlayToJson(overlay));
@@ -661,8 +661,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("preview_pan_y"), m_state ? m_state->previewPanOffset.y() : 0.0},
         {QStringLiteral("face_stream_assignment_interaction_enabled"),
          m_state ? m_state->faceStreamAssignmentInteractionEnabled : false},
-        {QStringLiteral("hovered_facestream_track_id"),
-         m_state ? m_state->transient.hoveredFaceStreamTrackId : -1},
+        {QStringLiteral("hovered_facedetections_track_id"),
+         m_state ? m_state->transient.hoveredFaceDetectionsTrackId : -1},
         {QStringLiteral("direct_preview_frame_image"), false},
         {QStringLiteral("direct_preview_frame_size"), QString()},
         {QStringLiteral("pipeline_thumbnail_readback_pending"), false},
@@ -686,8 +686,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("hardware_decode_status_clips"), hardwareStatuses},
         {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
         {QStringLiteral("decode_status_details"), statusDetails},
-        {QStringLiteral("facestream_overlay_boxes"), m_state ? m_state->facestreamOverlays.size() : 0},
-        {QStringLiteral("facestream_overlays"), facestreamOverlays},
+        {QStringLiteral("facedetections_overlay_boxes"), m_state ? m_state->facedetectionsOverlays.size() : 0},
+        {QStringLiteral("facedetections_overlays"), facedetectionsOverlays},
         {QStringLiteral("raw_detection_overlay_boxes"), m_state ? m_state->rawDetectionOverlays.size() : 0},
         {QStringLiteral("raw_detection_overlays"), rawDetectionOverlays},
         {QStringLiteral("timeline_texture_composition"), hasTimelineFrameGeometry && readyStatuses > 0},

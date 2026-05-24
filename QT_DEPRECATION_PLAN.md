@@ -22,7 +22,7 @@ As of the current tree:
 - renderer output is partially dual-path, not purely `QImage`-first
 - overlay rendering now has an explicit backend abstraction
 - the non-Qt overlay backend already uses `fontconfig` + `freetype2`
-- Vulkan facestream/offscreen paths already emit zero-copy and fallback telemetry
+- Vulkan facedetections/offscreen paths already emit zero-copy and fallback telemetry
 - targeted tests already exist for Vulkan subtitle/render parity work
 
 That means the plan should focus on finishing boundary cleanup, not re-describing already-completed groundwork as future work.
@@ -34,14 +34,14 @@ That means the plan should focus on finishing boundary cleanup, not re-describin
 Relevant files:
 
 - [render_internal.h](/home/julian/Documents/JCut/render_internal.h:205)
-- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h:24)
-- [facestream_runtime.cpp](/home/julian/Documents/JCut/facestream_runtime.cpp:106)
+- [facedetections_runtime.h](/home/julian/Documents/JCut/facedetections_runtime.h:24)
+- [facedetections_runtime.cpp](/home/julian/Documents/JCut/facedetections_runtime.cpp:106)
 
 Current status:
 
 - `render_detail::OffscreenRenderFrame` carries both `QImage cpuImage` and `OffscreenVulkanFrame vulkanFrame`
 - `OffscreenRenderer::renderFrameToOutput(...)` already exists beside the legacy `QImage renderFrame(...)` convenience API
-- facestream runtime has `VulkanRenderResult` and `renderFrameToVulkan(...)`-style entry points
+- facedetections runtime has `VulkanRenderResult` and `renderFrameToVulkan(...)`-style entry points
 
 Implication:
 
@@ -73,12 +73,12 @@ Implication:
 
 Relevant files:
 
-- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp:4200)
-- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp:4336)
+- [vulkan_facedetections_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facedetections_offscreen_main.cpp:4200)
+- [vulkan_facedetections_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facedetections_offscreen_main.cpp:4336)
 
 Current status:
 
-- facestream summary output already records hardware/direct handoff, CPU fallback, `qimage_materialized`, and zero-copy satisfaction flags
+- facedetections summary output already records hardware/direct handoff, CPU fallback, `qimage_materialized`, and zero-copy satisfaction flags
 - strictness knobs already exist such as `require_zero_copy` and `require_hardware_vulkan_frame_path`
 
 Implication:
@@ -114,7 +114,7 @@ Examples:
 Relevant files:
 
 - [render_internal.h](/home/julian/Documents/JCut/render_internal.h:222)
-- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h:45)
+- [facedetections_runtime.h](/home/julian/Documents/JCut/facedetections_runtime.h:45)
 - [preview_surface.h](/home/julian/Documents/JCut/preview_surface.h:134)
 
 Impact:
@@ -133,7 +133,7 @@ Examples:
 Relevant files:
 
 - [offscreen_vulkan_renderer.cpp](/home/julian/Documents/JCut/offscreen_vulkan_renderer.cpp:3155)
-- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h:80)
+- [facedetections_runtime.h](/home/julian/Documents/JCut/facedetections_runtime.h:80)
 - [render_internal.h](/home/julian/Documents/JCut/render_internal.h:214)
 
 Impact:
@@ -184,8 +184,8 @@ Impact:
 Primary files:
 
 - [render_internal.h](/home/julian/Documents/JCut/render_internal.h)
-- [facestream_runtime.h](/home/julian/Documents/JCut/facestream_runtime.h)
-- [facestream_runtime.cpp](/home/julian/Documents/JCut/facestream_runtime.cpp)
+- [facedetections_runtime.h](/home/julian/Documents/JCut/facedetections_runtime.h)
+- [facedetections_runtime.cpp](/home/julian/Documents/JCut/facedetections_runtime.cpp)
 
 Tasks:
 
@@ -204,7 +204,7 @@ Exit criteria:
 Primary files:
 
 - [offscreen_vulkan_renderer.cpp](/home/julian/Documents/JCut/offscreen_vulkan_renderer.cpp)
-- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp)
+- [vulkan_facedetections_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facedetections_offscreen_main.cpp)
 
 Tasks:
 
@@ -262,7 +262,7 @@ Exit criteria:
 
 Primary files:
 
-- [vulkan_facestream_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facestream_offscreen_main.cpp)
+- [vulkan_facedetections_offscreen_main.cpp](/home/julian/Documents/JCut/vulkan_facedetections_offscreen_main.cpp)
 - runtime/editor boundary modules that currently exchange `QString`/`QJsonObject`/`QVector`
 
 Tasks:
@@ -293,7 +293,7 @@ Tasks:
   - text/layout/rendering
   - core/container types
 - document which render paths are allowed to read back and which are not
-- reuse existing facestream metrics as the baseline for zero-copy/fallback reporting
+- reuse existing facedetections metrics as the baseline for zero-copy/fallback reporting
 - add tests or assertions for "unexpected `QImage` materialization"
 
 Exit criteria:

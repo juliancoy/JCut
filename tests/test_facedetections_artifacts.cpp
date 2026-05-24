@@ -1,5 +1,5 @@
-#include "facestream_assignment_services.h"
-#include "facestream_tracking.h"
+#include "facedetections_assignment_services.h"
+#include "facedetections_tracking.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -82,15 +82,15 @@ private slots:
             })
         };
 
-        jcut::facestream::ContinuityTrackingTuning trackingTuning;
+        jcut::facedetections::ContinuityTrackingTuning trackingTuning;
         trackingTuning.tentativeTrackHitCount = 2;
-        const QVector<jcut::facestream::ContinuityTrack> tracks =
-            jcut::facestream::buildContinuityTracksFromDetectionFrames(
+        const QVector<jcut::facedetections::ContinuityTrack> tracks =
+            jcut::facedetections::buildContinuityTracksFromDetectionFrames(
                 rawDetectionFrames,
                 trackingTuning);
         QCOMPARE(tracks.size(), 2);
 
-        const QJsonArray trackRows = jcut::facestream::buildContinuityTrackRows(tracks);
+        const QJsonArray trackRows = jcut::facedetections::buildContinuityTrackRows(tracks);
         QCOMPARE(trackRows.size(), 2);
 
         QJsonObject continuityRoot{
@@ -102,16 +102,16 @@ private slots:
             {QStringLiteral("raw_tracks"), trackRows},
             {QStringLiteral("raw_frames"), rawDetectionFrames}
         };
-        QJsonObject facestreamArtifact{
-            {QStringLiteral("schema"), QStringLiteral("jcut_facestream_v1")},
-            {QStringLiteral("continuity_facestreams_by_clip"), QJsonObject{
+        QJsonObject facedetectionsArtifact{
+            {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_v1")},
+            {QStringLiteral("continuity_facedetections_by_clip"), QJsonObject{
                  {clipId, continuityRoot}
              }}
         };
-        QVERIFY(engine.saveFacestreamArtifact(transcriptPath, facestreamArtifact));
-        QVERIFY(QFileInfo::exists(engine.facestreamArtifactPath(transcriptPath)));
+        QVERIFY(engine.saveFacestreamArtifact(transcriptPath, facedetectionsArtifact));
+        QVERIFY(QFileInfo::exists(engine.facedetectionsArtifactPath(transcriptPath)));
 
-        jcut::facestream_assignment::TrackIdentityEvidence identityA;
+        jcut::facedetections_assignment::TrackIdentityEvidence identityA;
         identityA.trackId = trackRows.at(0).toObject().value(QStringLiteral("track_id")).toInt();
         identityA.cropSamples = {
             cropSample(identityA.trackId, 0, 0.90, QStringLiteral("track_a_0.png"))
@@ -119,7 +119,7 @@ private slots:
         identityA.embedding = {1.0f, 0.0f, 0.0f};
         identityA.hasEmbedding = true;
 
-        jcut::facestream_assignment::TrackIdentityEvidence identityB;
+        jcut::facedetections_assignment::TrackIdentityEvidence identityB;
         identityB.trackId = trackRows.at(1).toObject().value(QStringLiteral("track_id")).toInt();
         identityB.cropSamples = {
             cropSample(identityB.trackId, 0, 0.92, QStringLiteral("track_b_0.png"))
@@ -128,7 +128,7 @@ private slots:
         identityB.hasEmbedding = true;
 
         const auto clusterResult =
-            jcut::facestream_assignment::clusterTrackIdentityEvidence(
+            jcut::facedetections_assignment::clusterTrackIdentityEvidence(
                 {identityA, identityB},
                 0.70,
                 0.55);
@@ -152,7 +152,7 @@ private slots:
         QVector<facefind::Candidate> trackCandidates;
         trackCandidates << identityA.cropSamples << identityB.cropSamples;
         const auto assignmentResult =
-            jcut::facestream_assignment::resolveTrackIdentityAssignments(
+            jcut::facedetections_assignment::resolveTrackIdentityAssignments(
                 assignmentRows,
                 trackCandidates,
                 QStringLiteral("2026-05-18T03:00:00Z"));
@@ -198,7 +198,7 @@ private slots:
         QJsonObject loadedFacestreamArtifact;
         QVERIFY(engine.loadFacestreamArtifact(transcriptPath, &loadedFacestreamArtifact));
         const QJsonObject loadedByClip =
-            loadedFacestreamArtifact.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+            loadedFacestreamArtifact.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
         const QJsonObject loadedContinuityRoot = loadedByClip.value(clipId).toObject();
         QCOMPARE(loadedContinuityRoot.value(QStringLiteral("detector_mode")).toString(),
                  QStringLiteral("scrfd"));
@@ -228,4 +228,4 @@ private slots:
 };
 
 QTEST_MAIN(FacestreamArtifactsTest)
-#include "test_facestream_artifacts.moc"
+#include "test_facedetections_artifacts.moc"

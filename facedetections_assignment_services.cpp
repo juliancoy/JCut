@@ -1,7 +1,7 @@
-#include "facestream_assignment_services.h"
+#include "facedetections_assignment_services.h"
 
-#include "facestream_artifact_utils.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_time_mapping.h"
 #include "decoder_context.h"
 #include "identity_resolution.h"
 
@@ -14,7 +14,7 @@
 #include <limits>
 #include <vector>
 
-namespace jcut::facestream_assignment {
+namespace jcut::facedetections_assignment {
 namespace {
 constexpr auto kTrackingConfidenceKey = "confidence";
 constexpr auto kTrackingFrameKey = "frame";
@@ -181,7 +181,7 @@ CropExtractionResult extractRepresentativeCrops(
 
     editor::DecoderContext decoder(request.mediaPath);
     if (!decoder.initialize()) {
-        result.errorMessage = QStringLiteral("Could not decode media for FaceStream comparison crops.");
+        result.errorMessage = QStringLiteral("Could not decode media for FaceDetections comparison crops.");
         return result;
     }
 
@@ -296,7 +296,7 @@ CropExtractionResult extractRepresentativeCrops(
         }
     }
 
-    if (!progress(request.streams.size(), QStringLiteral("Writing FaceStream crop candidates..."))) {
+    if (!progress(request.streams.size(), QStringLiteral("Writing FaceDetections crop candidates..."))) {
         result.canceled = true;
         return result;
     }
@@ -517,10 +517,10 @@ ClusterResult clusterFaceTracks(
         for (int i = 0; i < trackIds.size(); ++i) {
             if ((i % 25) == 0 &&
                 !progress(1,
-                          QStringLiteral("Embedding FaceStream track crops: %1 / %2")
+                          QStringLiteral("Embedding FaceDetections track crops: %1 / %2")
                               .arg(i)
                               .arg(trackIds.size()))) {
-                result.cancelStageMessage = QStringLiteral("User canceled FaceStream identity embedding.");
+                result.cancelStageMessage = QStringLiteral("User canceled FaceDetections identity embedding.");
                 return result;
             }
             TrackIdentityEvidence row;
@@ -601,10 +601,10 @@ SeedTrackMatchResult matchFaceTracksToSeed(
         for (int i = 0; i < trackIds.size(); ++i) {
             if ((i % 25) == 0 &&
                 !progress(1,
-                          QStringLiteral("Embedding FaceStream track crops: %1 / %2")
+                          QStringLiteral("Embedding FaceDetections track crops: %1 / %2")
                               .arg(i)
                               .arg(trackIds.size()))) {
-                result.cancelStageMessage = QStringLiteral("User canceled seeded FaceStream identity matching.");
+                result.cancelStageMessage = QStringLiteral("User canceled seeded FaceDetections identity matching.");
                 return result;
             }
             TrackIdentityEvidence row;
@@ -810,4 +810,4 @@ AssignmentResolutionResult resolveTrackIdentityAssignments(
     return result;
 }
 
-} // namespace jcut::facestream_assignment
+} // namespace jcut::facedetections_assignment

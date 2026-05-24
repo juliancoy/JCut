@@ -1,7 +1,7 @@
 #include "vulkan_preview_surface.h"
-#include "facestream_artifact_utils.h"
-#include "facestream_runtime.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
+#include "facedetections_time_mapping.h"
 
 #include "async_decoder.h"
 #include "audio_preview_support.h"
@@ -399,10 +399,10 @@ int VulkanPreviewSurface::effectivePlaybackLookaheadFrames() const
 void VulkanPreviewSurface::invalidateTranscriptOverlayCache(const QString& clipFilePath)
 {
     if (clipFilePath.trimmed().isEmpty()) {
-        m_facestreamOverlayCache.clear();
+        m_facedetectionsOverlayCache.clear();
     } else {
-        m_facestreamOverlayCache.remove(QFileInfo(clipFilePath).absoluteFilePath());
-        m_facestreamOverlayCache.remove(clipFilePath);
+        m_facedetectionsOverlayCache.remove(QFileInfo(clipFilePath).absoluteFilePath());
+        m_facedetectionsOverlayCache.remove(clipFilePath);
     }
     refreshFacestreamOverlays();
     requestNativeUpdate();
@@ -532,7 +532,7 @@ void VulkanPreviewSurface::setShowRawDetections(bool show)
 
 void VulkanPreviewSurface::setFacestreamOverlaySource(const QString& source)
 {
-    m_facestreamOverlaySource = normalizedFacestreamOverlaySource(source);
+    m_facedetectionsOverlaySource = normalizedFacestreamOverlaySource(source);
     refreshFacestreamOverlays();
     requestNativeUpdate();
 }
@@ -577,6 +577,9 @@ bool VulkanPreviewSurface::audioWaveformVisible() const
 
 void VulkanPreviewSurface::setViewMode(ViewMode mode)
 {
+    if (m_interaction.viewMode == mode) {
+        return;
+    }
     m_interaction.viewMode = mode;
     requestNativeUpdate();
 }
@@ -633,15 +636,15 @@ void VulkanPreviewSurface::setTitleOverlayInteractionOnly(bool enabled)
     requestNativeUpdate();
 }
 
-void VulkanPreviewSurface::setFaceStreamAssignmentInteractionEnabled(bool enabled)
+void VulkanPreviewSurface::setFaceDetectionsAssignmentInteractionEnabled(bool enabled)
 {
     if (m_interaction.faceStreamAssignmentInteractionEnabled == enabled) {
         return;
     }
     m_interaction.faceStreamAssignmentInteractionEnabled = enabled;
-    m_interaction.transient.hoveredFaceStreamTrackId = -1;
-    m_interaction.transient.hoveredFaceStreamClipId.clear();
-    m_interaction.transient.hoveredFaceStreamId.clear();
+    m_interaction.transient.hoveredFaceDetectionsTrackId = -1;
+    m_interaction.transient.hoveredFaceDetectionsClipId.clear();
+    m_interaction.transient.hoveredFaceDetectionsId.clear();
     if (enabled) {
         m_interaction.transient.dragMode = PreviewDragMode::None;
         m_interaction.transient.dragOriginBounds = QRectF();
@@ -1542,14 +1545,14 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                           ? QStringLiteral("pending_gpu_diagnostic_readback")
                           : QStringLiteral("gpu_diagnostic_readback")}
                  });
-        addStage(QStringLiteral("12 FaceStream Overlay"),
+        addStage(QStringLiteral("12 FaceDetections Overlay"),
                  QStringLiteral("active overlays %1 | source frame %2")
-                     .arg(m_interaction.facestreamOverlays.size())
+                     .arg(m_interaction.facedetectionsOverlays.size())
                      .arg(status.presentedSourceFrame),
                  previewImage,
                  QStringLiteral("composite"),
                  true,
-                 !m_interaction.facestreamOverlays.isEmpty());
+                 !m_interaction.facedetectionsOverlays.isEmpty());
     }
 
     if (snapshots.size() == 1 && !m_interaction.selectedClipId.isEmpty()) {

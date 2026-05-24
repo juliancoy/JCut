@@ -1,7 +1,7 @@
 #include "opengl_preview.h"
-#include "facestream_artifact_utils.h"
-#include "facestream_runtime.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
+#include "facedetections_time_mapping.h"
 #include "gl_frame_texture_shared.h"
 #include "preview_view_transform.h"
 #include "transcript_engine.h"
@@ -112,7 +112,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         return kEmpty;
     }
     const qint64 transcriptMtimeMs = info.lastModified().toMSecsSinceEpoch();
-    const qint64 artifactMtimeMs = facestreamArtifactRevisionMsForTranscript(transcriptPath);
+    const qint64 artifactMtimeMs = facedetectionsArtifactRevisionMsForTranscript(transcriptPath);
     const QString trackPointsCacheKey = QStringLiteral("%1|%2")
         .arg(transcriptPath, clip.id.trimmed());
     auto it = m_speakerTrackPointsCache.find(trackPointsCacheKey);
@@ -131,12 +131,12 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         return it->points;
     }
 
-    // Canonical runtime source: continuity FaceStream tracks from artifact sidecar.
+    // Canonical runtime source: continuity FaceDetections tracks from artifact sidecar.
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
     if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
-        const QJsonArray streams = jcut::facestream::continuityStreamsForRoot(
+        const QJsonArray streams = jcut::facedetections::continuityStreamsForRoot(
             continuityRoot,
             doc.object());
         FacestreamFrameDomain explicitFrameDomain = FacestreamFrameDomain::SourceRelative;
@@ -148,7 +148,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
             it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
             return it->points;
         }
-        const QString sourceFilter = m_facestreamOverlaySource.trimmed().toLower();
+        const QString sourceFilter = m_facedetectionsOverlaySource.trimmed().toLower();
         for (const QJsonValue& streamValue : streams) {
             const QJsonObject streamObj = streamValue.toObject();
             const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
@@ -248,7 +248,7 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::rawDetectionPoin
         return kEmpty;
     }
     const qint64 transcriptMtimeMs = info.lastModified().toMSecsSinceEpoch();
-    const qint64 artifactMtimeMs = facestreamArtifactRevisionMsForTranscript(transcriptPath);
+    const qint64 artifactMtimeMs = facedetectionsArtifactRevisionMsForTranscript(transcriptPath);
     const QString cacheKey = QStringLiteral("%1|raw|%2").arg(transcriptPath, clip.id.trimmed());
     auto it = m_rawDetectionPointsCache.find(cacheKey);
     if (it != m_rawDetectionPointsCache.end() &&
@@ -382,9 +382,9 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
         }
         if (!drewLegend && (m_showSpeakerTrackBoxes || m_showSpeakerTrackPoints)) {
             const QString legendText = QStringLiteral("Tracker: %1")
-                .arg(prettyTrackerLabel(m_facestreamOverlaySource));
+                .arg(prettyTrackerLabel(m_facedetectionsOverlaySource));
             const QRectF legendRect(12.0, 12.0, 300.0, 24.0);
-            const bool dockerSource = m_facestreamOverlaySource.trimmed().toLower().startsWith(QStringLiteral("docker_"));
+            const bool dockerSource = m_facedetectionsOverlaySource.trimmed().toLower().startsWith(QStringLiteral("docker_"));
             const QColor chipBg = dockerSource ? QColor(QStringLiteral("#dff1ff")) : QColor(0, 0, 0, 165);
             const QColor chipFg = dockerSource ? QColor(QStringLiteral("#16384f")) : QColor(235, 245, 255, 240);
             painter->setPen(Qt::NoPen);
@@ -484,9 +484,9 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
             const bool hovered =
                 m_interaction.faceStreamAssignmentInteractionEnabled &&
                 candidate.point.trackId >= 0 &&
-                candidate.point.trackId == m_interaction.transient.hoveredFaceStreamTrackId &&
-                candidate.point.streamId == m_interaction.transient.hoveredFaceStreamId &&
-                clip.id == m_interaction.transient.hoveredFaceStreamClipId;
+                candidate.point.trackId == m_interaction.transient.hoveredFaceDetectionsTrackId &&
+                candidate.point.streamId == m_interaction.transient.hoveredFaceDetectionsId &&
+                clip.id == m_interaction.transient.hoveredFaceDetectionsClipId;
             const QColor boxStroke = hovered
                 ? QColor(QStringLiteral("#ffd54a"))
                 : QColor(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 235);
@@ -545,7 +545,7 @@ void PreviewWindow::drawRawDetectionOverlay(QPainter* painter, const QList<Timel
     painter->restore();
 }
 
-bool PreviewWindow::dispatchFaceStreamBoxAtPosition(const QPointF& position)
+bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(const QPointF& position)
 {
     if (!faceStreamBoxRequested ||
         (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled)) {
@@ -647,7 +647,7 @@ bool PreviewWindow::dispatchFaceStreamBoxAtPosition(const QPointF& position)
     return false;
 }
 
-bool PreviewWindow::updateHoveredFaceStreamBox(const QPointF& position)
+bool PreviewWindow::updateHoveredFaceDetectionsBox(const QPointF& position)
 {
     if (!m_interaction.faceStreamAssignmentInteractionEnabled) {
         return false;
@@ -726,13 +726,13 @@ bool PreviewWindow::updateHoveredFaceStreamBox(const QPointF& position)
 
     PreviewInteractionTransientState& transient = m_interaction.transient;
     const bool changed =
-        transient.hoveredFaceStreamTrackId != hoveredTrackId ||
-        transient.hoveredFaceStreamClipId != hoveredClipId ||
-        transient.hoveredFaceStreamId != hoveredStreamId;
+        transient.hoveredFaceDetectionsTrackId != hoveredTrackId ||
+        transient.hoveredFaceDetectionsClipId != hoveredClipId ||
+        transient.hoveredFaceDetectionsId != hoveredStreamId;
     if (changed) {
-        transient.hoveredFaceStreamTrackId = hoveredTrackId;
-        transient.hoveredFaceStreamClipId = hoveredClipId;
-        transient.hoveredFaceStreamId = hoveredStreamId;
+        transient.hoveredFaceDetectionsTrackId = hoveredTrackId;
+        transient.hoveredFaceDetectionsClipId = hoveredClipId;
+        transient.hoveredFaceDetectionsId = hoveredStreamId;
         scheduleRepaint();
     }
     return hoveredTrackId >= 0;

@@ -30,7 +30,7 @@ Commit: `ec7024c Support Caffe raw_data blobs in converter`
 Purpose:
 
 1. Adds FP16/raw blob handling to NCNN's Caffe converter.
-2. This is not required for JCut runtime FaceStream generation.
+2. This is not required for JCut runtime FaceDetections generation.
 3. Keep it as a separate commit so it can be dropped if the fork should only carry runtime patches.
 
 ## Updating From Upstream

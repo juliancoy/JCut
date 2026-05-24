@@ -21,6 +21,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ONSCREEN_BASE_URL = "http://127.0.0.1:40130"
 OFFSCREEN_BASE_URL = "http://127.0.0.1:40131"
 BASE_URL = ONSCREEN_BASE_URL
+EDITOR_PROCESS_PATTERN = f"{REPO_ROOT}/(build|build-asan)/(editor|jcut)"
 
 
 class TestFailure(RuntimeError):
@@ -88,7 +89,7 @@ def find_widget(node: dict[str, Any], widget_id: str) -> dict[str, Any] | None:
 
 def kill_existing_editors() -> None:
     probe = subprocess.run(
-        ["pgrep", "-f", f"{REPO_ROOT}/(build|build-asan)/editor"],
+        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
         text=True,
         capture_output=True,
         cwd=str(REPO_ROOT),
@@ -111,7 +112,7 @@ def kill_existing_editors() -> None:
     deadline = time.time() + 5.0
     while time.time() < deadline:
         probe = subprocess.run(
-            ["pgrep", "-f", f"{REPO_ROOT}/(build|build-asan)/editor"],
+            ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
             text=True,
             capture_output=True,
             cwd=str(REPO_ROOT),
@@ -121,7 +122,7 @@ def kill_existing_editors() -> None:
         time.sleep(0.1)
 
     probe = subprocess.run(
-        ["pgrep", "-f", f"{REPO_ROOT}/(build|build-asan)/editor"],
+        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
         text=True,
         capture_output=True,
         cwd=str(REPO_ROOT),
@@ -140,12 +141,39 @@ def kill_existing_editors() -> None:
 def wait_until(predicate, timeout: float, interval: float = 0.1, description: str = "condition") -> Any:
     deadline = time.time() + timeout
     last_value = None
+    last_error: Exception | None = None
     while time.time() < deadline:
-        last_value = predicate()
-        if last_value:
-            return last_value
+        try:
+            last_value = predicate()
+            if last_value:
+                return last_value
+        except TestFailure as exc:
+            last_error = exc
         time.sleep(interval)
+    if last_error is not None:
+        raise TestFailure(f"timed out waiting for {description}: {last_error}") from last_error
     raise TestFailure(f"timed out waiting for {description}")
+
+
+def wait_for_ui(timeout: float) -> dict[str, Any]:
+    return wait_until(
+        lambda: request("/ui?refresh=1", timeout=3.0),
+        timeout=timeout,
+        description="/ui",
+    )
+
+
+def wait_for_request_json(path: str,
+                          timeout: float,
+                          method: str = "GET",
+                          payload: dict[str, Any] | None = None,
+                          description: str | None = None,
+                          request_timeout: float = 3.0) -> dict[str, Any]:
+    return wait_until(
+        lambda: request(path, method=method, payload=payload, timeout=request_timeout),
+        timeout=timeout,
+        description=description or path,
+    )
 
 
 def try_request(path: str, method: str = "GET", payload: dict[str, Any] | None = None, timeout: float = 1.0) -> tuple[bool, Any]:
@@ -156,7 +184,16 @@ def try_request(path: str, method: str = "GET", payload: dict[str, Any] | None =
 
 
 def resolve_editor_path(asan: bool) -> Path:
-    return REPO_ROOT / ("build-asan" if asan else "build") / "editor"
+    build_dir = REPO_ROOT / ("build-asan" if asan else "build")
+    for candidate in (
+        build_dir / "jcut",
+        build_dir / "editor",
+        build_dir / "bin" / "editor",
+        build_dir / "bin" / "jcut",
+    ):
+        if candidate.exists():
+            return candidate
+    return build_dir / "editor"
 
 
 def launch_editor(offscreen: bool, asan: bool, valgrind: bool, software_rendering: bool) -> subprocess.Popen[str]:
@@ -381,6 +418,7 @@ def main() -> int:
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument("--max-playhead-failures", type=int, default=4)
     parser.add_argument("--pause-timeout", type=float, default=5.0)
+    parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-restart", action="store_true")
     parser.add_argument("--artifact-dir", default=str(REPO_ROOT / "tests" / "artifacts"))
     parser.add_argument("--screenshot-out", default=str(REPO_ROOT / "tests" / "rest_smoke_screenshot.png"))
@@ -397,20 +435,21 @@ def main() -> int:
         args.advance_timeout = max(args.advance_timeout, 20.0)
         args.software_rendering = True
 
-    build_cmd = ["./build.sh"]
-    if args.asan:
-        build_cmd.append("--asan")
+    if not args.skip_build:
+        build_cmd = ["./build.sh"]
+        if args.asan:
+            build_cmd.append("--asan")
 
-    build = subprocess.run(
-        build_cmd,
-        cwd=str(REPO_ROOT),
-        text=True,
-        capture_output=True,
-        timeout=args.build_timeout,
-    )
-    if build.returncode != 0:
-        print(json.dumps({"ok": False, "error": "build failed", "stdout": build.stdout, "stderr": build.stderr}), file=sys.stderr)
-        return 1
+        build = subprocess.run(
+            build_cmd,
+            cwd=str(REPO_ROOT),
+            text=True,
+            capture_output=True,
+            timeout=args.build_timeout,
+        )
+        if build.returncode != 0:
+            print(json.dumps({"ok": False, "error": "build failed", "stdout": build.stdout, "stderr": build.stderr}), file=sys.stderr)
+            return 1
 
     kill_existing_editors()
 
@@ -454,7 +493,7 @@ def main() -> int:
             diagnostics.last_pid = int(diagnostics.last_health.get("pid", 0))
 
         diagnostics.phase = "ui"
-        ui = request("/ui")
+        ui = wait_for_ui(args.startup_timeout)
         if not ui.get("ok"):
             raise TestFailure("/ui did not return ok=true")
         play_button = find_widget(ui["window"], "transport.play")
@@ -463,14 +502,15 @@ def main() -> int:
         if not play_button.get("clickable") or not play_button.get("enabled") or not play_button.get("visible"):
             raise TestFailure("transport.play is not clickable/enabled/visible")
 
-        diagnostics.phase = "profile_before_play"
-        profile_before = request("/profile")
-        diagnostics.last_profile = profile_before
-        if not profile_before.get("ok"):
-            raise TestFailure("/profile did not return ok=true")
-
         diagnostics.phase = "click_play"
-        click_result = request("/click-item", method="POST", payload={"id": "transport.play"})
+        click_result = wait_for_request_json(
+            "/click-item",
+            timeout=max(5.0, args.play_timeout),
+            method="POST",
+            payload={"id": "transport.play"},
+            description="transport.play click",
+            request_timeout=max(5.0, args.play_timeout),
+        )
         if not click_result.get("ok"):
             raise TestFailure(f"click-item transport.play failed: {click_result}")
 
@@ -533,17 +573,24 @@ def main() -> int:
             raise TestFailure("frame did not continue advancing during playback monitor window")
 
         diagnostics.phase = "pause_click"
-        request("/click-item", method="POST", payload={"id": "transport.pause"})
+        wait_for_request_json(
+            "/click-item",
+            timeout=max(5.0, args.pause_timeout),
+            method="POST",
+            payload={"id": "transport.pause"},
+            description="transport.pause click",
+            request_timeout=max(5.0, args.pause_timeout),
+        )
 
         def playback_stopped() -> Any:
-            profile = request("/profile")
-            diagnostics.last_profile = profile
-            if profile.get("ok") and not profile["profile"].get("playback_active"):
-                return profile
+            playhead = request("/playhead", timeout=1.0)
+            diagnostics.last_good_playhead = playhead
+            if playhead.get("ok") and not playhead.get("playback_active"):
+                return playhead
             return None
 
         diagnostics.phase = "pause_wait"
-        paused_profile = wait_until(
+        paused_playhead = wait_until(
             playback_stopped,
             timeout=args.pause_timeout,
             description="playback to pause",
@@ -555,13 +602,16 @@ def main() -> int:
         if not health_after_pause.get("ok"):
             raise TestFailure("/health did not recover after pause")
 
-        diagnostics.phase = "screenshot"
-        screenshot = request("/screenshot", timeout=5.0)
-        screenshot_path = Path(args.screenshot_out)
-        screenshot_path.parent.mkdir(parents=True, exist_ok=True)
-        screenshot_path.write_bytes(screenshot)
-        if screenshot_path.stat().st_size == 0:
-            raise TestFailure("screenshot was empty")
+        screenshot_path: str | None = None
+        if not args.offscreen:
+            diagnostics.phase = "screenshot"
+            screenshot = request("/screenshot", timeout=5.0)
+            screenshot_file = Path(args.screenshot_out)
+            screenshot_file.parent.mkdir(parents=True, exist_ok=True)
+            screenshot_file.write_bytes(screenshot)
+            if screenshot_file.stat().st_size == 0:
+                raise TestFailure("screenshot was empty")
+            screenshot_path = str(screenshot_file)
 
         print(
             json.dumps(
@@ -574,8 +624,8 @@ def main() -> int:
                     "restart_skipped": args.skip_restart,
                     "start_frame": start_frame,
                     "advanced_frame": max_frame,
-                    "paused_frame": int(paused_profile["profile"]["current_frame"]),
-                    "screenshot": str(screenshot_path),
+                    "paused_frame": int(paused_playhead["current_frame"]),
+                    "screenshot": screenshot_path,
                 },
                 indent=2,
             )

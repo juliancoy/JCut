@@ -1,4 +1,4 @@
-#include "facestream_assignment_services.h"
+#include "facedetections_assignment_services.h"
 
 #include <QtTest/QtTest>
 
@@ -40,7 +40,7 @@ private slots:
         };
 
         const QVector<QJsonObject> selected =
-            jcut::facestream_assignment::selectRepresentativeKeyframesForIdentity(
+            jcut::facedetections_assignment::selectRepresentativeKeyframesForIdentity(
                 keyframes, 3, 24);
 
         QCOMPARE(selected.size(), 3);
@@ -58,7 +58,7 @@ private slots:
         };
 
         const QVector<QJsonObject> selected =
-            jcut::facestream_assignment::selectRepresentativeKeyframesForIdentity(
+            jcut::facedetections_assignment::selectRepresentativeKeyframesForIdentity(
                 keyframes, 3, 24);
 
         QCOMPARE(selected.size(), 3);
@@ -69,7 +69,7 @@ private slots:
 
     void clusteringAutoClustersSimilarTracksFromAggregatedEvidence()
     {
-        jcut::facestream_assignment::TrackIdentityEvidence track1;
+        jcut::facedetections_assignment::TrackIdentityEvidence track1;
         track1.trackId = 1;
         track1.cropSamples = {
             cropSample(1, 0.91, QStringLiteral("t1_a.png")),
@@ -78,7 +78,7 @@ private slots:
         track1.embedding = {1.0f, 0.0f, 0.0f};
         track1.hasEmbedding = true;
 
-        jcut::facestream_assignment::TrackIdentityEvidence track2;
+        jcut::facedetections_assignment::TrackIdentityEvidence track2;
         track2.trackId = 2;
         track2.cropSamples = {
             cropSample(2, 0.93, QStringLiteral("t2_a.png"))
@@ -86,7 +86,7 @@ private slots:
         track2.embedding = {0.98f, 0.05f, 0.0f};
         track2.hasEmbedding = true;
 
-        jcut::facestream_assignment::TrackIdentityEvidence track3;
+        jcut::facedetections_assignment::TrackIdentityEvidence track3;
         track3.trackId = 3;
         track3.cropSamples = {
             cropSample(3, 0.88, QStringLiteral("t3_a.png"))
@@ -95,7 +95,7 @@ private slots:
         track3.hasEmbedding = true;
 
         const auto result =
-            jcut::facestream_assignment::clusterTrackIdentityEvidence(
+            jcut::facedetections_assignment::clusterTrackIdentityEvidence(
                 {track1, track2, track3}, 0.70, 0.55);
 
         QVERIFY(result.ok);
@@ -117,16 +117,16 @@ private slots:
 
     void clusteringFallsBackToSingletonsWithoutEmbeddings()
     {
-        jcut::facestream_assignment::TrackIdentityEvidence track1;
+        jcut::facedetections_assignment::TrackIdentityEvidence track1;
         track1.trackId = 4;
         track1.cropSamples = {cropSample(4, 0.81, QStringLiteral("t4_a.png"))};
 
-        jcut::facestream_assignment::TrackIdentityEvidence track2;
+        jcut::facedetections_assignment::TrackIdentityEvidence track2;
         track2.trackId = 5;
         track2.cropSamples = {cropSample(5, 0.82, QStringLiteral("t5_a.png"))};
 
         const auto result =
-            jcut::facestream_assignment::clusterTrackIdentityEvidence(
+            jcut::facedetections_assignment::clusterTrackIdentityEvidence(
                 {track1, track2}, 0.70, 0.55);
 
         QVERIFY(result.ok);
@@ -164,7 +164,7 @@ private slots:
         };
 
         const auto result =
-            jcut::facestream_assignment::resolveTrackIdentityAssignments(
+            jcut::facedetections_assignment::resolveTrackIdentityAssignments(
                 rows,
                 trackCandidates,
                 QStringLiteral("2026-05-18T01:00:00Z"));
@@ -202,7 +202,7 @@ private slots:
         };
 
         const auto result =
-            jcut::facestream_assignment::resolveTrackIdentityAssignments(
+            jcut::facedetections_assignment::resolveTrackIdentityAssignments(
                 rows,
                 trackCandidates,
                 QStringLiteral("2026-05-18T01:05:00Z"));
@@ -226,4 +226,4 @@ private slots:
 };
 
 QTEST_MAIN(FacestreamAssignmentTest)
-#include "test_facestream_assignment.moc"
+#include "test_facedetections_assignment.moc"

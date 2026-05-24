@@ -8,7 +8,7 @@
 #include <QSizeF>
 #include <QVector>
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 
 struct Detection {
     QRectF box;
@@ -38,7 +38,7 @@ struct ContinuityTrack {
 
 struct ContinuityTrackingTuning {
     float trackMatchIouThreshold = 0.35f;
-    float newTrackMinConfidence = 0.45f;
+    float newTrackMinConfidence = 0.35f;
     bool primaryFaceOnly = false;
     int staleTrackFrameWindow = 48;
     int tentativeTrackHitCount = 2;
@@ -73,4 +73,4 @@ QVector<ContinuityTrack> buildContinuityTracksFromDetectionFrames(
     const QJsonArray& rawDetectionFrames,
     const ContinuityTrackingTuning& tuning);
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

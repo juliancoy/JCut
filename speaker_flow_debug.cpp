@@ -77,15 +77,15 @@ QString latestRunIdWithArtifact(const QString& clipDebugRoot)
     const QDir dir(clipDebugRoot);
     const QStringList runs = dir.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
     for (const QString& runId : runs) {
-        const QString artifactDir = dir.absoluteFilePath(runId + QStringLiteral("/facestream_artifact"));
+        const QString artifactDir = dir.absoluteFilePath(runId + QStringLiteral("/facedetections_artifact"));
         const QDir artifact(artifactDir);
-        if (QFileInfo::exists(artifact.filePath(QStringLiteral("facestream.part"))) ||
-            QFileInfo::exists(artifact.filePath(QStringLiteral("facestream.bin"))) ||
-            QFileInfo::exists(artifact.filePath(QStringLiteral("facestream.ndjson"))) ||
+        if (QFileInfo::exists(artifact.filePath(QStringLiteral("facedetections.part"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("facedetections.bin"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("facedetections.ndjson"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.json"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.bin"))) ||
-            QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facestream.bin"))) ||
-            QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facestream.json"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facedetections.bin"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facedetections.json"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("summary.json")))) {
             return runId;
         }

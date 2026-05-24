@@ -288,6 +288,16 @@ void EditorWindow::switchToProject(const QString &projectId)
         m_projectManager->switchToProject(projectId);
     }
     loadState();
+
+    if (m_inspectorTabs) {
+        for (int i = 0; i < m_inspectorTabs->count(); ++i) {
+            if (m_inspectorTabs->tabText(i).compare(QStringLiteral("Projects"), Qt::CaseInsensitive) == 0) {
+                m_inspectorTabs->setCurrentIndex(i);
+                break;
+            }
+        }
+    }
+
     refreshProjectsList();
     refreshCurrentInspectorTab();
 }
@@ -432,13 +442,10 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("previewShowSpeakerTrackPoints")] =
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
-        m_speakerShowFaceStreamBoxesCheckBox ? m_speakerShowFaceStreamBoxesCheckBox->isChecked() : false;
+        m_speakerShowFaceDetectionsBoxesCheckBox ? m_speakerShowFaceDetectionsBoxesCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowRawDetections")] =
         m_speakerShowRawDetectionsCheckBox ? m_speakerShowRawDetectionsCheckBox->isChecked() : false;
-    root[QStringLiteral("previewFacestreamOverlaySource")] =
-        m_speakerFaceStreamOverlaySourceCombo
-            ? m_speakerFaceStreamOverlaySourceCombo->currentData().toString()
-            : QStringLiteral("all");
+    root[QStringLiteral("previewFacestreamOverlaySource")] = QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
     root[QStringLiteral("previewLeadPrefetchCount")] = editor::debugLeadPrefetchCount();
@@ -610,7 +617,7 @@ QJsonObject EditorWindow::buildStateJson() const
         for (const TimelineClip &clip : m_timeline->clips())
         {
             QJsonObject clipObj = clipToJson(clip);
-            // Keep project state lightweight: dense facial tracking keyframes live in transcript facestream sidecars.
+            // Keep project state lightweight: dense facial tracking keyframes live in transcript facedetections sidecars.
             clipObj.remove(QStringLiteral("speakerFramingKeyframes"));
             timeline.push_back(clipObj);
             if (!selectedClipId.isEmpty() && clip.id == selectedClipId)

@@ -1,5 +1,5 @@
-#include "../facestream_tracking.h"
-#include "../facestream_artifact_utils.h"
+#include "../facedetections_tracking.h"
+#include "../facedetections_artifact_utils.h"
 #include "../json_io_utils.h"
 
 #include <QCoreApplication>
@@ -28,7 +28,7 @@ struct Options {
     QString clipId;
     QString outputDir;
     QString runnerPath =
-        QDir(QStringLiteral(JCUT_BINARY_DIR)).filePath(QStringLiteral("jcut_vulkan_facestream_offscreen"));
+        QDir(QStringLiteral(JCUT_BINARY_DIR)).filePath(QStringLiteral("jcut_vulkan_facedetections_offscreen"));
     QString detector = QStringLiteral("jcut-dnn");
     int startFrame = 0;
     int maxFrames = 0;
@@ -108,12 +108,12 @@ struct ArtifactInputs {
 void printUsage()
 {
     std::cout
-        << "Usage: facestream_track_coverage_harness [options] [-- passthrough-runner-args]\n"
+        << "Usage: facedetections_track_coverage_harness [options] [-- passthrough-runner-args]\n"
         << "Options:\n"
         << "  --project-state PATH         Project state JSON. Default: projects/default/state.json\n"
         << "  --clip-id ID                 Clip id to evaluate. Default: selectedClipId from the project state.\n"
         << "  --output-dir DIR             Directory for detections.bin/tracks.bin. Default: temp dir.\n"
-        << "  --runner PATH                Offscreen FaceStream runner. Default: build/jcut_vulkan_facestream_offscreen\n"
+        << "  --runner PATH                Offscreen FaceDetections runner. Default: build/jcut_vulkan_facedetections_offscreen\n"
         << "  --detector NAME              Detector for the runner. Default: jcut-dnn\n"
         << "  --start-frame N              Source frame to start scanning from. Default: 0\n"
         << "  --max-frames N               Max source frames to scan. Default: 0 (full clip)\n"
@@ -293,7 +293,7 @@ double aspectDelta(const QRectF& a, const QRectF& b)
 
 bool detectionsLookTrackableTogether(const QRectF& a, const QRectF& b)
 {
-    const double iou = jcut::facestream::continuityIou(a, b);
+    const double iou = jcut::facedetections::continuityIou(a, b);
     const double centerDistanceRatio = normalizedCenterDistance(a, b);
     if (centerDistanceRatio > 1.75 || areaRatio(a, b) > 2.5 || aspectDelta(a, b) > 0.65) {
         return false;
@@ -391,7 +391,7 @@ FrameCoverageStats evaluateFrameCoverage(qint64 frame,
         const DetectionObservation& detection = detections.at(detectionIndex);
         for (int trackIndex = 0; trackIndex < tracks.size(); ++trackIndex) {
             const TrackObservation& track = tracks.at(trackIndex);
-            const double iou = jcut::facestream::continuityIou(detection.box, track.box);
+            const double iou = jcut::facedetections::continuityIou(detection.box, track.box);
             const double centerDistanceRatio =
                 normalizedCenterDistance(detection.box, track.box);
             if (iou < 0.10 || centerDistanceRatio > 0.75) {
@@ -665,9 +665,9 @@ bool writeBinaryObject(const QString& path, const QJsonObject& root)
     return jcut::jsonio::writeBinaryJsonObject(path, root, 0x4A435554, 1, &error);
 }
 
-jcut::facestream::ContinuityTrackingTuning trackingTuningFromSummary(const QJsonObject& summary)
+jcut::facedetections::ContinuityTrackingTuning trackingTuningFromSummary(const QJsonObject& summary)
 {
-    jcut::facestream::ContinuityTrackingTuning tuning;
+    jcut::facedetections::ContinuityTrackingTuning tuning;
     if (summary.isEmpty()) {
         return tuning;
     }
@@ -686,7 +686,7 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
 {
     const QString detectionsPath = QDir(outputDir).filePath(QStringLiteral("detections.bin"));
     const QString tracksPath = QDir(outputDir).filePath(QStringLiteral("tracks.bin"));
-    const QString continuityPath = QDir(outputDir).filePath(QStringLiteral("continuity_facestream.bin"));
+    const QString continuityPath = QDir(outputDir).filePath(QStringLiteral("continuity_facedetections.bin"));
     const QString summaryPath = QDir(outputDir).filePath(QStringLiteral("summary.json"));
 
     QJsonObject detectionsRoot;
@@ -702,7 +702,7 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
 
     const QJsonArray rawFrames = detectionsRoot.value(QStringLiteral("frames")).toArray();
     const auto tuning = trackingTuningFromSummary(summaryRoot);
-    QVector<jcut::facestream::ContinuityTrack> runtimeTracks;
+    QVector<jcut::facedetections::ContinuityTrack> runtimeTracks;
     struct PersistedTrackAccumulator {
         int trackId = -1;
         int firstFrame = std::numeric_limits<int>::max();
@@ -721,12 +721,12 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
         if (frameNumber < 0 || frameSize.width() <= 0 || frameSize.height() <= 0) {
             continue;
         }
-        QVector<jcut::facestream::Detection> detections;
+        QVector<jcut::facedetections::Detection> detections;
         const QJsonArray detectionRows = frameObject.value(QStringLiteral("detections")).toArray();
         detections.reserve(detectionRows.size());
         for (const QJsonValue& detectionValue : detectionRows) {
             const QJsonObject detectionObject = detectionValue.toObject();
-            jcut::facestream::Detection detection;
+            jcut::facedetections::Detection detection;
             detection.box = QRectF(detectionObject.value(QStringLiteral("x")).toDouble(),
                                    detectionObject.value(QStringLiteral("y")).toDouble(),
                                    detectionObject.value(QStringLiteral("w")).toDouble(),
@@ -737,9 +737,9 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
                 detections.push_back(detection);
             }
         }
-        jcut::facestream::updateContinuityTracks(&runtimeTracks, detections, frameNumber, frameSize, tuning);
+        jcut::facedetections::updateContinuityTracks(&runtimeTracks, detections, frameNumber, frameSize, tuning);
         const QJsonArray frameTrackRows =
-            jcut::facestream::frameTrackDetections(runtimeTracks, frameNumber);
+            jcut::facedetections::frameTrackDetections(runtimeTracks, frameNumber);
         for (const QJsonValue& trackValue : frameTrackRows) {
             const QJsonObject trackObject = trackValue.toObject();
             const int trackId = trackObject.value(QStringLiteral("track_id")).toInt(-1);
@@ -789,7 +789,7 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
         detectionsRoot.value(QStringLiteral("frame_domain")).toString(QStringLiteral("source_absolute"));
 
     if (!writeBinaryObject(tracksPath, QJsonObject{
-            {QStringLiteral("schema"), QStringLiteral("jcut_facestream_offscreen_tracks_v1")},
+            {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
             {QStringLiteral("video"), detectionsRoot.value(QStringLiteral("video")).toString()},
             {QStringLiteral("backend"), backend},
             {QStringLiteral("frame_domain"), frameDomain},
@@ -820,9 +820,9 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
         {QStringLiteral("detector_mode"), backend}
     };
     writeBinaryObject(continuityPath, QJsonObject{
-        {QStringLiteral("schema"), QStringLiteral("jcut_facestream_v1")},
-        {QStringLiteral("continuity_facestreams_by_clip"), QJsonObject{
-            {QStringLiteral("facestream-offscreen-source"), continuityRoot}
+        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_v1")},
+        {QStringLiteral("continuity_facedetections_by_clip"), QJsonObject{
+            {QStringLiteral("facedetections-offscreen-source"), continuityRoot}
         }}
     });
     return true;
@@ -861,7 +861,7 @@ bool loadInputsFromExplicitOutputDir(const QString& outputDir, ArtifactInputs* i
         inputsOut->videoPathOverride = summaryVideo;
     }
     const QStringList requestFiles = artifactDir.entryList(
-        QStringList{QStringLiteral("*_facestream_request.json")}, QDir::Files, QDir::Name);
+        QStringList{QStringLiteral("*_facedetections_request.json")}, QDir::Files, QDir::Name);
     if (!requestFiles.isEmpty()) {
         QJsonObject requestRoot;
         if (jcut::jsonio::readJsonFile(artifactDir.filePath(requestFiles.constFirst()), &requestRoot, nullptr)) {
@@ -875,7 +875,7 @@ bool loadInputsFromExplicitOutputDir(const QString& outputDir, ArtifactInputs* i
             }
         }
     }
-    const QString ndjsonPath = QDir(outputDir).filePath(QStringLiteral("facestream.ndjson"));
+    const QString ndjsonPath = QDir(outputDir).filePath(QStringLiteral("facedetections.ndjson"));
     if (QFileInfo::exists(ndjsonPath)) {
         QFile file(ndjsonPath);
         if (file.open(QIODevice::ReadOnly)) {
@@ -949,7 +949,7 @@ bool loadInputsFromExplicitOutputDir(const QString& outputDir, ArtifactInputs* i
                     tracks.append(tracksById.value(trackId));
                 }
                 inputsOut->sourceDescription =
-                    QStringLiteral("facestream.ndjson in %1").arg(QDir(outputDir).absolutePath());
+                    QStringLiteral("facedetections.ndjson in %1").arg(QDir(outputDir).absolutePath());
                 inputsOut->detectionsRoot = QJsonObject{{QStringLiteral("frames"), frames}};
                 inputsOut->tracksRoot = QJsonObject{{QStringLiteral("tracks"), tracks}};
                 return true;
@@ -977,7 +977,7 @@ bool loadInputsFromTranscriptArtifact(const ClipSelection& selection, ArtifactIn
     const QString transcriptPath = transcriptPathForClip(selection);
     QJsonObject artifactRoot;
     if (!loadBinaryObject(QFileInfo(transcriptPath).dir().filePath(
-            QFileInfo(transcriptPath).completeBaseName() + QStringLiteral("_facestream.bin")),
+            QFileInfo(transcriptPath).completeBaseName() + QStringLiteral("_facedetections.bin")),
             &artifactRoot)) {
         return false;
     }
@@ -986,9 +986,9 @@ bool loadInputsFromTranscriptArtifact(const ClipSelection& selection, ArtifactIn
         return false;
     }
     inputsOut->sourceDescription =
-        QStringLiteral("persisted facestream sidecar %1").arg(
+        QStringLiteral("persisted facedetections sidecar %1").arg(
             QFileInfo(transcriptPath).dir().filePath(
-                QFileInfo(transcriptPath).completeBaseName() + QStringLiteral("_facestream.bin")));
+                QFileInfo(transcriptPath).completeBaseName() + QStringLiteral("_facedetections.bin")));
     return true;
 }
 
@@ -1008,7 +1008,7 @@ bool loadInputsFromLatestDebugRun(const Options& options,
     const QStringList runs =
         clipDebugRoot.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::Reversed);
     for (const QString& runId : runs) {
-        const QDir artifactDir(clipDebugRoot.filePath(runId + QStringLiteral("/facestream_artifact")));
+        const QDir artifactDir(clipDebugRoot.filePath(runId + QStringLiteral("/facedetections_artifact")));
         QJsonObject detectionsRoot;
         QJsonObject tracksRoot;
         if (loadBinaryObject(artifactDir.filePath(QStringLiteral("detections.bin")), &detectionsRoot) &&
@@ -1020,9 +1020,9 @@ bool loadInputsFromLatestDebugRun(const Options& options,
             return true;
         }
         QJsonObject continuityArtifact;
-        if (loadBinaryObject(artifactDir.filePath(QStringLiteral("continuity_facestream.bin")), &continuityArtifact)) {
+        if (loadBinaryObject(artifactDir.filePath(QStringLiteral("continuity_facedetections.bin")), &continuityArtifact)) {
             const QJsonObject continuityRoot =
-                continuityRootForClip(continuityArtifact, QStringLiteral("facestream-offscreen-source"));
+                continuityRootForClip(continuityArtifact, QStringLiteral("facedetections-offscreen-source"));
             if (buildInputsFromContinuityRoot(continuityRoot, inputsOut)) {
                 inputsOut->sourceDescription =
                     QStringLiteral("debug continuity artifact %1").arg(artifactDir.absolutePath());
@@ -1087,7 +1087,7 @@ int main(int argc, char** argv)
             << "No persisted clip artifacts were found for parity checking.\n"
             << "Looked for existing detections/tracks in:\n"
             << "  1. --output-dir (if provided)\n"
-            << "  2. sibling transcript facestream sidecar for " << selection.filePath.toStdString() << "\n"
+            << "  2. sibling transcript facedetections sidecar for " << selection.filePath.toStdString() << "\n"
             << "  3. latest debug/speaker_flow run for clip " << selection.clipId.toStdString() << "\n"
             << "Pass --rerun to recompute instead of reusing persisted artifacts.\n";
         return 1;

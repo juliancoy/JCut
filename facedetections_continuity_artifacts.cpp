@@ -1,6 +1,6 @@
-#include "facestream_runtime.h"
+#include "facedetections_runtime.h"
 
-#include "facestream_artifact_utils.h"
+#include "facedetections_artifact_utils.h"
 #include "json_io_utils.h"
 #include "speakers_tab_internal.h"
 #include "transcript_engine.h"
@@ -8,7 +8,7 @@
 #include <QDateTime>
 #include <QFileInfo>
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 namespace {
 
 QString resolvedRawTrackFrameDomain(const QJsonObject& continuityRoot)
@@ -20,7 +20,7 @@ QString resolvedRawTrackFrameDomain(const QJsonObject& continuityRoot)
     if (rawTracksFrameDomain.isEmpty()) {
         return rawFramesFrameDomain;
     }
-    if (rawTracksFrameDomain == facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute) &&
+    if (rawTracksFrameDomain == facedetectionsFrameDomainString(FacestreamFrameDomain::SourceAbsolute) &&
         !rawFramesFrameDomain.isEmpty() &&
         rawFramesFrameDomain != rawTracksFrameDomain) {
         const QJsonArray rawTracks = continuityRoot.value(QStringLiteral("raw_tracks")).toArray();
@@ -217,9 +217,9 @@ bool continuityRootHasStoredPayload(const QJsonObject& continuityRoot)
     }
 
     static const QStringList kPathLikeKeys = {
-        QStringLiteral("facestream_part"),
-        QStringLiteral("facestream_bin"),
-        QStringLiteral("facestream_ndjson"),
+        QStringLiteral("facedetections_part"),
+        QStringLiteral("facedetections_bin"),
+        QStringLiteral("facedetections_ndjson"),
         QStringLiteral("summary_json"),
         QStringLiteral("processed_artifact_path"),
         QStringLiteral("imported_from_artifact_dir")
@@ -282,13 +282,13 @@ bool saveProcessedContinuityArtifact(const QString& transcriptPath,
     QJsonObject artifactRoot;
     engine.loadFacestreamProcessedArtifact(transcriptPath, &artifactRoot);
 
-    const QString rawArtifactPath = engine.facestreamArtifactPath(transcriptPath);
+    const QString rawArtifactPath = engine.facedetectionsArtifactPath(transcriptPath);
     const QJsonObject processedRoot =
         buildProcessedContinuityRoot(clipId, rawContinuityRoot, transcriptRoot, rawArtifactPath);
 
     QJsonObject byClip = continuityFacestreamsByClipObject(artifactRoot);
     byClip[clipId] = processedRoot;
-    artifactRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facestream_processed_v1");
+    artifactRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_processed_v1");
     artifactRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     setContinuityFacestreamsByClipObject(&artifactRoot, byClip);
     if (artifactRootOut) {
@@ -315,17 +315,17 @@ QJsonObject buildContinuityRoot(const QString& runId,
     if (!streams.isEmpty()) {
         root[QStringLiteral("streams")] = streams;
         root[QStringLiteral("streams_frame_domain")] =
-            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
+            facedetectionsFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
     }
     if (!rawTracks.isEmpty()) {
         root[QStringLiteral("raw_tracks")] = rawTracks;
         root[QStringLiteral("raw_tracks_frame_domain")] =
-            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
+            facedetectionsFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
     }
     if (!rawFrames.isEmpty()) {
         root[QStringLiteral("raw_frames")] = rawFrames;
         root[QStringLiteral("raw_frames_frame_domain")] =
-            facestreamFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
+            facedetectionsFrameDomainString(FacestreamFrameDomain::SourceAbsolute);
     }
     if (!detectorMode.trimmed().isEmpty()) {
         root[QStringLiteral("detector_mode")] = detectorMode.trimmed();
@@ -350,7 +350,7 @@ bool saveContinuityArtifact(const QString& transcriptPath,
     engine.loadFacestreamArtifact(transcriptPath, &artifactRoot);
     QJsonObject continuityByClip = continuityFacestreamsByClipObject(artifactRoot);
     continuityByClip[clipId] = continuityRoot;
-    artifactRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facestream_v1");
+    artifactRoot[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_v1");
     setContinuityFacestreamsByClipObject(&artifactRoot, continuityByClip);
     if (artifactRootOut) {
         *artifactRootOut = artifactRoot;
@@ -358,4 +358,4 @@ bool saveContinuityArtifact(const QString& transcriptPath,
     return engine.saveFacestreamArtifact(transcriptPath, artifactRoot);
 }
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

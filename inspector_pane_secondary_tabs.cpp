@@ -204,7 +204,7 @@ QWidget *InspectorPane::buildPreviewTab()
         QStringLiteral("Clip the preview to the current output frame so off-frame content is hidden."));
 
     m_previewShowSpeakerTrackPointsCheckBox =
-        new QCheckBox(QStringLiteral("Show FaceStream Points"), page);
+        new QCheckBox(QStringLiteral("Show FaceDetections Points"), page);
     m_previewShowSpeakerTrackPointsCheckBox->setChecked(false);
     m_previewShowSpeakerTrackPointsCheckBox->setToolTip(
         QStringLiteral("Draw all speaker framing keyframe points on top of active clips."));
@@ -685,7 +685,18 @@ QWidget *InspectorPane::buildProjectsTab()
     m_projectSectionLabel = new QLabel(QStringLiteral("PROJECTS"), page);
     m_projectSectionLabel->setWordWrap(true);
     m_projectSectionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_projectSectionLabel->setObjectName(QStringLiteral("projects.active_summary"));
+    m_projectSectionLabel->setStyleSheet(QStringLiteral(
+        "padding:10px 12px; background:#0e151d; border:1px solid #223140; "
+        "border-radius:8px; color:#d7e5f2;"));
     layout->addWidget(m_projectSectionLabel);
+
+    m_projectPathLabel = new QLabel(QStringLiteral("Select a project to view its path."), page);
+    m_projectPathLabel->setWordWrap(true);
+    m_projectPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_projectPathLabel->setObjectName(QStringLiteral("projects.path_summary"));
+    m_projectPathLabel->setStyleSheet(QStringLiteral("color:#9fb3c8;"));
+    layout->addWidget(m_projectPathLabel);
 
     auto *buttonRow = new QHBoxLayout;
     m_newProjectButton = new QPushButton(QStringLiteral("New"), page);
@@ -697,6 +708,7 @@ QWidget *InspectorPane::buildProjectsTab()
     layout->addLayout(buttonRow);
 
     m_projectsList = new QListWidget(page);
+    m_projectsList->setObjectName(QStringLiteral("projects.list"));
     m_projectsList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_projectsList->setAlternatingRowColors(true);
     layout->addWidget(m_projectsList, 1);

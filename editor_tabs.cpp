@@ -325,6 +325,7 @@ void EditorWindow::createProjectsTab()
     m_projectsTab = std::make_unique<ProjectsTab>(
         ProjectsTab::Widgets{
             m_projectSectionLabel,
+            m_projectPathLabel,
             m_projectsList,
             m_newProjectButton,
             m_saveProjectAsButton,
@@ -445,9 +446,9 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerShowContiguousSectionsCheckBox(),
             m_inspectorPane->speakerSectionsTable(),
             m_inspectorPane->selectedSpeakerIdLabel(),
-            m_inspectorPane->selectedSpeakerFaceStreamsList(),
-            m_inspectorPane->speakerPlayheadFaceStreamsList(),
-            m_inspectorPane->speakerShowPlayheadFaceStreamsCheckBox(),
+            m_inspectorPane->selectedSpeakerFaceDetectionsList(),
+            m_inspectorPane->speakerPlayheadFaceDetectionsList(),
+            m_inspectorPane->speakerShowPlayheadFaceDetectionsCheckBox(),
             m_inspectorPane->selectedSpeakerRef1ImageLabel(),
             m_inspectorPane->selectedSpeakerRef2ImageLabel(),
             m_inspectorPane->selectedSpeakerPreviousSentenceButton(),
@@ -481,10 +482,9 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerPointstreamChipLabel(),
             m_inspectorPane->speakerTrackingChipButton(),
             m_inspectorPane->speakerStabilizeChipButton(),
-            m_inspectorPane->speakerShowFaceStreamBoxesCheckBox(),
-            m_inspectorPane->speakerFaceStreamTable(),
-            m_inspectorPane->speakerFaceStreamDetailsEdit(),
-            m_inspectorPane->speakerFaceStreamOverlaySourceCombo(),
+            m_inspectorPane->speakerShowFaceDetectionsBoxesCheckBox(),
+            m_inspectorPane->speakerFaceDetectionsTable(),
+            m_inspectorPane->speakerFaceDetectionsDetailsEdit(),
             m_inspectorPane->speakerDetectionsAvailableCheckBox(),
             m_inspectorPane->speakerTracksAvailableCheckBox(),
             m_inspectorPane->speakerRawDetectionTable(),
@@ -548,7 +548,7 @@ void EditorWindow::createSpeakersTab()
         }
     }
 
-    auto syncFaceStreamAssignmentMode = [this]() {
+    auto syncFaceDetectionsAssignmentMode = [this]() {
         if (!m_preview || !m_inspectorPane || !m_inspectorPane->tabs()) {
             return;
         }
@@ -556,17 +556,17 @@ void EditorWindow::createSpeakersTab()
         const bool speakersTabSelected =
             inspectorTabs->tabText(inspectorTabs->currentIndex())
                 .compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
-        m_preview->setFaceStreamAssignmentInteractionEnabled(speakersTabSelected);
+        m_preview->setFaceDetectionsAssignmentInteractionEnabled(speakersTabSelected);
     };
     if (m_inspectorPane && m_inspectorPane->tabs()) {
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,
-                [syncFaceStreamAssignmentMode](int) { syncFaceStreamAssignmentMode(); });
+                [syncFaceDetectionsAssignmentMode](int) { syncFaceDetectionsAssignmentMode(); });
     }
     if (m_inspectorPane && m_inspectorPane->speakersSubtabs()) {
         connect(m_inspectorPane->speakersSubtabs(), &QTabWidget::currentChanged, this,
-                [syncFaceStreamAssignmentMode](int) { syncFaceStreamAssignmentMode(); });
+                [syncFaceDetectionsAssignmentMode](int) { syncFaceDetectionsAssignmentMode(); });
     }
-    syncFaceStreamAssignmentMode();
+    syncFaceDetectionsAssignmentMode();
 
     connect(m_speakersTab.get(), &SpeakersTab::transcriptDocumentChanged, this, [this]() {
         m_transcriptEngine.invalidateCache();

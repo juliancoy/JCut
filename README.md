@@ -75,21 +75,21 @@ If built with `--with-tests`, run:
 ctest --test-dir build --output-on-failure
 ```
 
-## Vulkan FaceStream Harness
+## Vulkan FaceDetections Harness
 
-`jcut_vulkan_facestream_offscreen` runs the native Vulkan FaceStream detector outside the editor. By default it scans the full video at full frame rate; use `--max-frames` and `--stride` for bounded tests.
+`jcut_vulkan_facedetections_offscreen` runs the native Vulkan FaceDetections detector outside the editor. By default it scans the full video at full frame rate; use `--max-frames` and `--stride` for bounded tests.
 
 ```bash
-./build/jcut_vulkan_facestream_offscreen input.mp4 \
+./build/jcut_vulkan_facedetections_offscreen input.mp4 \
   --full-video \
   --params-file /tmp/jcut_runtime_params.json \
-  --out-dir /tmp/jcut_facestream
+  --out-dir /tmp/jcut_facedetections
 ```
 
 For the same detector preflight UI used by the editor, start the standalone runner with `--preflight`:
 
 ```bash
-./build/jcut_vulkan_facestream_offscreen input.mp4 --preflight --out-dir /tmp/jcut_facestream
+./build/jcut_vulkan_facedetections_offscreen input.mp4 --preflight --out-dir /tmp/jcut_facedetections
 ```
 
 Runtime tuning can be changed while the process is running by editing the JSON file passed with `--params-file`:

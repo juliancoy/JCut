@@ -37,7 +37,7 @@ QDialog* findAssignmentDialog()
     for (QWidget* widget : QApplication::topLevelWidgets()) {
         auto* dialog = qobject_cast<QDialog*>(widget);
         if (dialog &&
-            dialog->windowTitle() == QStringLiteral("FaceFind: Assign FaceStream Clusters")) {
+            dialog->windowTitle() == QStringLiteral("FaceFind: Assign FaceDetections Clusters")) {
             return dialog;
         }
     }

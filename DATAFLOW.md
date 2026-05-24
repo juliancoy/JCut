@@ -75,20 +75,20 @@ Edits to transcript or speaker metadata commonly write the transcript JSON
 directly, then emit `transcriptDocumentChanged()`, schedule project state save,
 push history if appropriate, and refresh affected views.
 
-### FaceStream Artifacts
-FaceStream continuity data is stored as transcript sidecars, not inside
+### FaceDetections Artifacts
+FaceDetections continuity data is stored as transcript sidecars, not inside
 `state.json` or history snapshots.
 
-Primary helpers are in `facestream_runtime.cpp` and `TranscriptEngine`:
+Primary helpers are in `facedetections_runtime.cpp` and `TranscriptEngine`:
 
-- raw artifact schema: `jcut_facestream_v1`
-- processed artifact schema: `jcut_facestream_processed_v1`
-- top-level map: `continuity_facestreams_by_clip`
+- raw artifact schema: `jcut_facedetections_v1`
+- processed artifact schema: `jcut_facedetections_processed_v1`
+- top-level map: `continuity_facedetections_by_clip`
 
 The raw artifact stores generated continuity roots by clip id. The processed
 artifact stores derived `streams` by clip id. Readers prefer stored streams,
 then processed sidecar streams, then derived streams from raw tracks. A legacy
-fallback still reads transcript-side `speaker_flow.clips[*].continuity_facestreams`
+fallback still reads transcript-side `speaker_flow.clips[*].continuity_facedetections`
 when needed.
 
 ## Runtime State
@@ -171,7 +171,7 @@ Refresh methods are still responsible for guarding themselves. Current patterns:
 - `TableTabBase::m_updating` suppresses handlers while a table is being rebuilt.
 - Tabs use `QSignalBlocker` for control restores and selected bulk updates.
 - `SpeakersTab` preserves the selected speaker id where possible.
-- `SpeakersTab` queues the FaceStream paths panel refresh through a single-shot
+- `SpeakersTab` queues the FaceDetections paths panel refresh through a single-shot
   40 ms timer to collapse bursts.
 - `TranscriptTab` tracks manual-selection state so playhead follow does not fight
   user table selection.
@@ -187,7 +187,7 @@ Use these as code review checks for any new or modified `refresh()` path:
 1. `refresh()` may rebuild widget state and reload local documents needed for
    display.
 2. `refresh()` must not write `state.json`, `history.json`, transcript JSON, or
-   FaceStream artifacts.
+   FaceDetections artifacts.
 3. `refresh()` should preserve the current logical selection when the selected
    object still exists.
 4. Bulk widget rebuilds must run under `m_updating`, `QSignalBlocker`, or an
@@ -254,15 +254,15 @@ the table, schedule project state save, and push history for undoable actions.
 3. Clears avatar caches when the transcript/clip changes.
 4. Loads the transcript JSON.
 5. Rebuilds the speaker table and selected speaker panel.
-6. Queues the FaceStream paths panel refresh.
+6. Queues the FaceDetections paths panel refresh.
 
-Speaker profile, reference, tracking, AI cleanup, and FaceStream assignment
+Speaker profile, reference, tracking, AI cleanup, and FaceDetections assignment
 actions mutate the transcript document and/or sidecar artifacts, then schedule
 save/history and refresh the affected UI.
 
-## FaceStream Generation and Assignment Flow
+## FaceDetections Generation and Assignment Flow
 
-FaceStream actions are editable only for mutable derived cuts. The selected clip
+FaceDetections actions are editable only for mutable derived cuts. The selected clip
 and active transcript are the input boundary.
 
 Generation/processing flow:
@@ -272,7 +272,7 @@ Generation/processing flow:
    offscreen renderer where applicable.
 3. Detections/tracks are converted into continuity roots with frame, normalized
    location, box size, confidence, detector mode, and scan range metadata.
-4. Raw continuity roots are saved to the raw FaceStream artifact by clip id.
+4. Raw continuity roots are saved to the raw FaceDetections artifact by clip id.
 5. Processed continuity roots are derived and saved to the processed artifact by
    clip id.
 6. Speaker assignment metadata in the transcript may reference stream/track
@@ -376,6 +376,6 @@ Manual checks after dataflow changes:
 - inspector refreshes do not recurse or peg CPU
 - undo/redo restores selected timeline state and refreshes tabs
 - playback does not trigger repeated state writes
-- FaceStream generation/deletion updates sidecars without bloating project state
+- FaceDetections generation/deletion updates sidecars without bloating project state
 - transcript/speaker edits persist to the active transcript and remain visible
   after project reload

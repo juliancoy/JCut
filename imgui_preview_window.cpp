@@ -1085,8 +1085,8 @@ void ImGuiPreviewWindow::pumpEvents()
 
 bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                                       int64_t frameNumber,
-                                      const QVector<jcut::facestream::ContinuityTrack>& tracks,
-                                      const QVector<jcut::facestream::Detection>& detections,
+                                      const QVector<jcut::facedetections::ContinuityTrack>& tracks,
+                                      const QVector<jcut::facedetections::Detection>& detections,
                                       const QRectF& roiRect,
                                       int detectionCount)
 {
@@ -1157,7 +1157,7 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
-    ImGui::Begin("JCut FaceStream Preview", nullptr, flags);
+    ImGui::Begin("JCut FaceDetections Preview", nullptr, flags);
     ImGui::TextUnformatted(m_impl->windowTitle.toUtf8().constData());
     if (!m_impl->statusText.trimmed().isEmpty()) {
         ImGui::Separator();
@@ -1305,28 +1305,28 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     const int alpha = static_cast<int>(std::round(255.0f * m_impl->overlayOpacity));
     const ImU32 roiColor = IM_COL32(255, 170, 51, alpha);
     const ImU32 detColor = IM_COL32(102, 255, 102, alpha);
-    auto trackColor = [alpha](jcut::facestream::ContinuityTrackState state) {
+    auto trackColor = [alpha](jcut::facedetections::ContinuityTrackState state) {
         switch (state) {
-        case jcut::facestream::ContinuityTrackState::Confirmed:
+        case jcut::facedetections::ContinuityTrackState::Confirmed:
             return IM_COL32(78, 196, 255, alpha);
-        case jcut::facestream::ContinuityTrackState::Tentative:
+        case jcut::facedetections::ContinuityTrackState::Tentative:
             return IM_COL32(255, 215, 77, alpha);
-        case jcut::facestream::ContinuityTrackState::Lost:
+        case jcut::facedetections::ContinuityTrackState::Lost:
             return IM_COL32(255, 124, 124, alpha);
-        case jcut::facestream::ContinuityTrackState::Removed:
+        case jcut::facedetections::ContinuityTrackState::Removed:
         default:
             return IM_COL32(160, 160, 160, qMin(alpha, 220));
         }
     };
-    auto trackStateLabel = [](jcut::facestream::ContinuityTrackState state) -> const char* {
+    auto trackStateLabel = [](jcut::facedetections::ContinuityTrackState state) -> const char* {
         switch (state) {
-        case jcut::facestream::ContinuityTrackState::Confirmed:
+        case jcut::facedetections::ContinuityTrackState::Confirmed:
             return "Confirmed";
-        case jcut::facestream::ContinuityTrackState::Tentative:
+        case jcut::facedetections::ContinuityTrackState::Tentative:
             return "Tentative";
-        case jcut::facestream::ContinuityTrackState::Lost:
+        case jcut::facedetections::ContinuityTrackState::Lost:
             return "Lost";
-        case jcut::facestream::ContinuityTrackState::Removed:
+        case jcut::facedetections::ContinuityTrackState::Removed:
         default:
             return "Removed";
         }
@@ -1339,7 +1339,7 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         drawList->AddRect(roiMin, roiMax, roiColor, 0.0f, 0, 2.0f);
     }
     if (m_impl->showDetections) {
-        for (const jcut::facestream::Detection& detection : detections) {
+        for (const jcut::facedetections::Detection& detection : detections) {
             const QRectF& box = detection.box;
             if (!box.isValid() || box.isEmpty()) {
                 continue;
@@ -1355,28 +1355,28 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     int confirmedCount = 0;
     int tentativeCount = 0;
     int lostCount = 0;
-    for (const jcut::facestream::ContinuityTrack& track : tracks) {
-        if (track.state == jcut::facestream::ContinuityTrackState::Removed ||
+    for (const jcut::facedetections::ContinuityTrack& track : tracks) {
+        if (track.state == jcut::facedetections::ContinuityTrackState::Removed ||
             !track.box.isValid() ||
             track.box.isEmpty()) {
             continue;
         }
-        if ((track.state == jcut::facestream::ContinuityTrackState::Confirmed && !m_impl->showConfirmedTracks) ||
-            (track.state == jcut::facestream::ContinuityTrackState::Tentative && !m_impl->showTentativeTracks) ||
-            (track.state == jcut::facestream::ContinuityTrackState::Lost && !m_impl->showLostTracks)) {
+        if ((track.state == jcut::facedetections::ContinuityTrackState::Confirmed && !m_impl->showConfirmedTracks) ||
+            (track.state == jcut::facedetections::ContinuityTrackState::Tentative && !m_impl->showTentativeTracks) ||
+            (track.state == jcut::facedetections::ContinuityTrackState::Lost && !m_impl->showLostTracks)) {
             continue;
         }
         switch (track.state) {
-        case jcut::facestream::ContinuityTrackState::Confirmed:
+        case jcut::facedetections::ContinuityTrackState::Confirmed:
             ++confirmedCount;
             break;
-        case jcut::facestream::ContinuityTrackState::Tentative:
+        case jcut::facedetections::ContinuityTrackState::Tentative:
             ++tentativeCount;
             break;
-        case jcut::facestream::ContinuityTrackState::Lost:
+        case jcut::facedetections::ContinuityTrackState::Lost:
             ++lostCount;
             break;
-        case jcut::facestream::ContinuityTrackState::Removed:
+        case jcut::facedetections::ContinuityTrackState::Removed:
             break;
         }
         const ImU32 color = trackColor(track.state);
@@ -1431,8 +1431,8 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         ImGui::Separator();
         ImGui::TextUnformatted("Active Tracks");
         ImGui::BeginChild("Track Rows", ImVec2(0.0f, 0.0f), false);
-        for (const jcut::facestream::ContinuityTrack& track : tracks) {
-            if (track.state == jcut::facestream::ContinuityTrackState::Removed) {
+        for (const jcut::facedetections::ContinuityTrack& track : tracks) {
+            if (track.state == jcut::facedetections::ContinuityTrackState::Removed) {
                 continue;
             }
             const ImU32 color = trackColor(track.state);

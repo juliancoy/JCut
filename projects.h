@@ -18,6 +18,7 @@ public:
     struct Widgets
     {
         QLabel* projectSectionLabel = nullptr;
+        QLabel* projectPathLabel = nullptr;
         QListWidget* projectsList = nullptr;
         QPushButton* newProjectButton = nullptr;
         QPushButton* saveProjectAsButton = nullptr;

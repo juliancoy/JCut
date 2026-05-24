@@ -15,7 +15,7 @@
 
 #include <memory>
 
-namespace jcut::facestream {
+namespace jcut::facedetections {
 
 TimelineClip buildFacestreamRenderClip(const TimelineClip& sourceClip,
                                        const QString& mediaPath,
@@ -108,7 +108,7 @@ QVector<VulkanPreviewFacestreamOverlay> buildDetectionPreviewOverlays(
     const QVector<QRectF>& detectionBoxes,
     const QVector<float>& confidences,
     const QRectF& roiRect = QRectF(),
-    const QString& source = QStringLiteral("facestream"));
+    const QString& source = QStringLiteral("facedetections"));
 
 void updateSingleClipPreviewInteractionState(PreviewInteractionState* state,
                                              const TimelineClip& sourceClip,
@@ -163,4 +163,4 @@ bool saveContinuityArtifact(const QString& transcriptPath,
                             const QJsonObject& continuityRoot,
                             QJsonObject* artifactRootOut = nullptr);
 
-} // namespace jcut::facestream
+} // namespace jcut::facedetections

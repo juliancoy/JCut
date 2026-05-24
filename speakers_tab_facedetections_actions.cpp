@@ -2,8 +2,8 @@
 #include "speakers_tab_internal.h"
 #include "speaker_flow_debug.h"
 
-#include "facestream_generation.h"
-#include "facestream_runtime.h"
+#include "facedetections_generation.h"
+#include "facedetections_runtime.h"
 #include "decoder_context.h"
 #include "render_internal.h"
 #include "transcript_engine.h"
@@ -68,9 +68,9 @@
 #include <vulkan/vulkan.h>
 #endif
 
-using namespace jcut::facestream;
+using namespace jcut::facedetections;
 
-void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
+void SpeakersTab::onSpeakerFaceDetectionsSettingsClicked()
 {
     QDialog dialog;
     dialog.setWindowTitle(QStringLiteral("Continuity Track Tools"));
@@ -90,22 +90,22 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
 
     auto* smoothTranslationCheck =
         new QCheckBox(QStringLiteral("Smooth translation keyframes (post-solve)"), &dialog);
-    smoothTranslationCheck->setChecked(g_facestreamSmoothingSettings.smoothTranslation);
+    smoothTranslationCheck->setChecked(g_facedetectionsSmoothingSettings.smoothTranslation);
     smoothTranslationCheck->setToolTip(
         QStringLiteral("Applies gentle post-solve smoothing to translation keys to reduce jitter and micro-shakes."));
     layout->addWidget(smoothTranslationCheck);
 
     auto* smoothScaleCheck =
         new QCheckBox(QStringLiteral("Smooth scale keyframes (post-solve)"), &dialog);
-    smoothScaleCheck->setChecked(g_facestreamSmoothingSettings.smoothScale);
+    smoothScaleCheck->setChecked(g_facedetectionsSmoothingSettings.smoothScale);
     smoothScaleCheck->setToolTip(
         QStringLiteral("Applies gentle post-solve smoothing to scale keys to reduce zoom pumping and abrupt size changes."));
     layout->addWidget(smoothScaleCheck);
 
     auto* showPreviewCheck = new QCheckBox(QStringLiteral("Show Preview"), &dialog);
     showPreviewCheck->setChecked(
-        m_widgets.speakerShowFaceStreamBoxesCheckBox &&
-        m_widgets.speakerShowFaceStreamBoxesCheckBox->isChecked());
+        m_widgets.speakerShowFaceDetectionsBoxesCheckBox &&
+        m_widgets.speakerShowFaceDetectionsBoxesCheckBox->isChecked());
     showPreviewCheck->setToolTip(
         QStringLiteral("Draw generated continuity-track boxes for the selected clip in Preview."));
     layout->addWidget(showPreviewCheck);
@@ -130,21 +130,21 @@ void SpeakersTab::onSpeakerFaceStreamSettingsClicked()
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
     connect(saveButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(showPreviewCheck, &QCheckBox::toggled, &dialog, [this](bool checked) {
-        if (m_widgets.speakerShowFaceStreamBoxesCheckBox) {
-            m_widgets.speakerShowFaceStreamBoxesCheckBox->setChecked(checked);
+        if (m_widgets.speakerShowFaceDetectionsBoxesCheckBox) {
+            m_widgets.speakerShowFaceDetectionsBoxesCheckBox->setChecked(checked);
         } else if (m_speakerDeps.refreshPreview) {
             m_speakerDeps.refreshPreview();
         }
     });
     connect(rebuildProcessedButton, &QPushButton::clicked, &dialog, [this]() {
-        rebuildProcessedFaceStreamForSelectedClip(true);
+        rebuildProcessedFaceDetectionsForSelectedClip(true);
     });
 
     if (dialog.exec() != QDialog::Accepted) {
         return;
     }
-    g_facestreamSmoothingSettings.smoothTranslation = smoothTranslationCheck->isChecked();
-    g_facestreamSmoothingSettings.smoothScale = smoothScaleCheck->isChecked();
+    g_facedetectionsSmoothingSettings.smoothTranslation = smoothTranslationCheck->isChecked();
+    g_facedetectionsSmoothingSettings.smoothScale = smoothScaleCheck->isChecked();
 }
 
 void SpeakersTab::onSpeakerGuideClicked()
@@ -299,7 +299,7 @@ bool SpeakersTab::handlePreviewBox(const QString& clipId,
     return true;
 }
 
-bool SpeakersTab::handlePreviewFaceStreamBox(const QString& clipId,
+bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                                              int trackId,
                                              const QString& streamId,
                                              int64_t sourceFrame,

@@ -4,8 +4,8 @@
 #include "speaker_document_edit_ops.h"
 
 #include "decoder_context.h"
-#include "facestream_artifact_utils.h"
-#include "facestream_time_mapping.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_time_mapping.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
@@ -142,7 +142,6 @@ bool resolvePlayheadTrackSelection(const TimelineClip& clip,
                                    const QVector<RenderSyncMarker>& renderSyncMarkers,
                                    int64_t playheadTimelineFrame,
                                    int64_t playheadSourceFrame,
-                                   const QString& sourceFilter,
                                    FacestreamResolvedSelection* selectionOut)
 {
     if (!selectionOut) {
@@ -154,7 +153,7 @@ bool resolvePlayheadTrackSelection(const TimelineClip& clip,
         streamObj.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId));
     const QString trackSource =
         streamObj.value(QStringLiteral("source")).toString().trimmed().toLower();
-    if (trackId < 0 || !facestreamOverlaySourceMatches(sourceFilter, trackSource, streamId)) {
+    if (trackId < 0) {
         return false;
     }
 
@@ -209,7 +208,7 @@ bool resolvePlayheadTrackSelection(const TimelineClip& clip,
     for (const FacestreamResolvedKeyframe& keyframe : track.keyframes) {
         sortedFrames.push_back(keyframe.frame);
     }
-    track.typicalFrameStep = qMax<int64_t>(1, facestreamTypicalFrameStep(sortedFrames));
+    track.typicalFrameStep = qMax<int64_t>(1, facedetectionsTypicalFrameStep(sortedFrames));
 
     if (!parseFacestreamFrameDomainString(
             streamObj.value(QStringLiteral("frame_domain")).toString().trimmed(),
@@ -236,19 +235,19 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
             qMax(m_maxPlayheadTrackCandidatesRefreshDurationMs,
                  m_lastPlayheadTrackCandidatesRefreshDurationMs);
     };
-    if (!m_widgets.speakerPlayheadFaceStreamsList) {
+    if (!m_widgets.speakerPlayheadFaceDetectionsList) {
         finalizeRefreshTiming();
         return;
     }
 
-    m_widgets.speakerPlayheadFaceStreamsList->clear();
+    m_widgets.speakerPlayheadFaceDetectionsList->clear();
     m_lastPlayheadTrackCandidateCount = 0;
     const QJsonArray streams = continuityStreamsForClip(clip);
     if (streams.isEmpty()) {
         auto* item = new QListWidgetItem(QStringLiteral("No Continuity Tracks"));
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         item->setSizeHint(QSize(140, 40));
-        m_widgets.speakerPlayheadFaceStreamsList->addItem(item);
+        m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
         finalizeRefreshTiming();
         return;
     }
@@ -261,11 +260,6 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
     const QHash<int, QString> assignedIdentityByTrackId = resolvedIdentityByTrackId(clip, streams);
     const qreal sourceFps = resolvedSourceFps(clip);
-    const QString sourceFilter = normalizedFacestreamOverlaySource(
-        m_widgets.speakerFaceStreamOverlaySourceCombo
-            ? m_widgets.speakerFaceStreamOverlaySourceCombo->currentData().toString()
-            : QStringLiteral("all"));
-
     for (const QJsonValue& value : streams) {
         const QJsonObject streamObj = value.toObject();
         const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
@@ -278,7 +272,6 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
                                            renderSyncMarkers,
                                            playheadTimelineFrame,
                                            playheadSourceFrame,
-                                           sourceFilter,
                                            &selection)) {
             continue;
         }
@@ -336,18 +329,15 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         if (assignedSpeakerId == speakerId) {
             item->setSelected(true);
         }
-        m_widgets.speakerPlayheadFaceStreamsList->addItem(item);
+        m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
         ++m_lastPlayheadTrackCandidateCount;
     }
 
-    if (m_widgets.speakerPlayheadFaceStreamsList->count() == 0) {
-        auto* item = new QListWidgetItem(
-            sourceFilter == QStringLiteral("all")
-                ? QStringLiteral("No Tracks At Playhead")
-                : QStringLiteral("No Tracks At Playhead For Current Filter"));
+    if (m_widgets.speakerPlayheadFaceDetectionsList->count() == 0) {
+        auto* item = new QListWidgetItem(QStringLiteral("No Tracks At Playhead"));
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         item->setSizeHint(QSize(150, 40));
-        m_widgets.speakerPlayheadFaceStreamsList->addItem(item);
+        m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
     }
     finalizeRefreshTiming();
 }
@@ -355,16 +345,16 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
 void SpeakersTab::updatePlayheadTrackCandidatesVisibility()
 {
     const bool showPlayheadTracks =
-        !m_widgets.speakerShowPlayheadFaceStreamsCheckBox ||
-        m_widgets.speakerShowPlayheadFaceStreamsCheckBox->isChecked();
-    if (m_widgets.speakerPlayheadFaceStreamsList) {
-        m_widgets.speakerPlayheadFaceStreamsList->setVisible(showPlayheadTracks);
+        !m_widgets.speakerShowPlayheadFaceDetectionsCheckBox ||
+        m_widgets.speakerShowPlayheadFaceDetectionsCheckBox->isChecked();
+    if (m_widgets.speakerPlayheadFaceDetectionsList) {
+        m_widgets.speakerPlayheadFaceDetectionsList->setVisible(showPlayheadTracks);
     }
     if (m_widgets.speakerPrecropFacesButton) {
         const bool hasSpeaker = !selectedSpeakerId().trimmed().isEmpty();
         const bool hasSelection =
-            m_widgets.speakerPlayheadFaceStreamsList &&
-            !m_widgets.speakerPlayheadFaceStreamsList->selectedItems().isEmpty();
+            m_widgets.speakerPlayheadFaceDetectionsList &&
+            !m_widgets.speakerPlayheadFaceDetectionsList->selectedItems().isEmpty();
         m_widgets.speakerPrecropFacesButton->setEnabled(
             activeCutMutable() && showPlayheadTracks && hasSpeaker && hasSelection);
     }
@@ -372,13 +362,9 @@ void SpeakersTab::updatePlayheadTrackCandidatesVisibility()
 
 void SpeakersTab::updateSelectedSpeakerPanel()
 {
-    if (QGuiApplication::platformName().compare(QStringLiteral("offscreen"), Qt::CaseInsensitive) == 0) {
-        updateSpeakerFramingTargetControls();
-        return;
-    }
     if (!m_widgets.selectedSpeakerIdLabel &&
-        !m_widgets.selectedSpeakerFaceStreamsList &&
-        !m_widgets.speakerPlayheadFaceStreamsList &&
+        !m_widgets.selectedSpeakerFaceDetectionsList &&
+        !m_widgets.speakerPlayheadFaceDetectionsList &&
         !m_widgets.selectedSpeakerRef1ImageLabel &&
         !m_widgets.selectedSpeakerRef2ImageLabel) {
         return;
@@ -386,21 +372,52 @@ void SpeakersTab::updateSelectedSpeakerPanel()
 
     const QString speakerId = selectedSpeakerId();
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (speakerId.isEmpty() || !clip || !m_transcriptSession.hasObjectDocument()) {
+    if (!clip || !m_transcriptSession.hasObjectDocument()) {
+        if (m_widgets.selectedSpeakerIdLabel) {
+            m_widgets.selectedSpeakerIdLabel->setText(
+                speakerId.isEmpty() ? QStringLiteral("No speaker selected") : speakerDisplayLabel(speakerId));
+            m_widgets.selectedSpeakerIdLabel->setToolTip(QString());
+        }
+        if (m_widgets.speakerCurrentSentenceLabel) {
+            m_widgets.speakerCurrentSentenceLabel->setText(
+                QStringLiteral("Select a speaker to assign tracks and view sentence context."));
+        }
+        if (m_widgets.selectedSpeakerFaceDetectionsList) {
+            m_widgets.selectedSpeakerFaceDetectionsList->clear();
+        }
+        if (m_widgets.speakerPlayheadFaceDetectionsList) {
+            m_widgets.speakerPlayheadFaceDetectionsList->clear();
+        }
+        updatePlayheadTrackCandidatesVisibility();
+        if (m_widgets.selectedSpeakerRef1ImageLabel) {
+            m_widgets.selectedSpeakerRef1ImageLabel->clear();
+            m_widgets.selectedSpeakerRef1ImageLabel->hide();
+        }
+        if (m_widgets.selectedSpeakerRef2ImageLabel) {
+            m_widgets.selectedSpeakerRef2ImageLabel->clear();
+            m_widgets.selectedSpeakerRef2ImageLabel->hide();
+        }
+        updateSpeakerFramingTargetControls();
+        return;
+    }
+
+    if (speakerId.isEmpty()) {
         if (m_widgets.selectedSpeakerIdLabel) {
             m_widgets.selectedSpeakerIdLabel->setText(QStringLiteral("No speaker selected"));
             m_widgets.selectedSpeakerIdLabel->setToolTip(QString());
         }
         if (m_widgets.speakerCurrentSentenceLabel) {
             m_widgets.speakerCurrentSentenceLabel->setText(
-                QStringLiteral("Select a speaker to view sentence context."));
+                QStringLiteral("Select a speaker to assign tracks and view sentence context."));
         }
-        if (m_widgets.selectedSpeakerFaceStreamsList) {
-            m_widgets.selectedSpeakerFaceStreamsList->clear();
+        if (m_widgets.selectedSpeakerFaceDetectionsList) {
+            m_widgets.selectedSpeakerFaceDetectionsList->clear();
+            auto* item = new QListWidgetItem(QStringLiteral("Select Speaker To View Assignments"));
+            item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+            item->setSizeHint(QSize(180, 40));
+            m_widgets.selectedSpeakerFaceDetectionsList->addItem(item);
         }
-        if (m_widgets.speakerPlayheadFaceStreamsList) {
-            m_widgets.speakerPlayheadFaceStreamsList->clear();
-        }
+        refreshPlayheadTrackCandidatesList(*clip, QString());
         updatePlayheadTrackCandidatesVisibility();
         if (m_widgets.selectedSpeakerRef1ImageLabel) {
             m_widgets.selectedSpeakerRef1ImageLabel->clear();
@@ -431,8 +448,8 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             currentSpeakerSentenceAtCurrentFrame(speakerId));
     }
 
-    if (m_widgets.selectedSpeakerFaceStreamsList) {
-        m_widgets.selectedSpeakerFaceStreamsList->clear();
+    if (m_widgets.selectedSpeakerFaceDetectionsList) {
+        m_widgets.selectedSpeakerFaceDetectionsList->clear();
         const QJsonArray faceRefs = speakerFaceRefs(profile);
         for (const QJsonValue& faceRefValue : faceRefs) {
             const QJsonObject faceRef = faceRefValue.toObject();
@@ -451,13 +468,13 @@ void SpeakersTab::updateSelectedSpeakerPanel()
                                  .arg(faceRef.value(QString(kSpeakerFlowAnchorSourceFrameKey)).toVariant().toLongLong()));
             item->setData(Qt::UserRole, trackId);
             item->setSizeHint(QSize(92, 96));
-            m_widgets.selectedSpeakerFaceStreamsList->addItem(item);
+            m_widgets.selectedSpeakerFaceDetectionsList->addItem(item);
         }
-        if (m_widgets.selectedSpeakerFaceStreamsList->count() == 0) {
-            auto* item = new QListWidgetItem(QStringLiteral("No FaceStreams"));
+        if (m_widgets.selectedSpeakerFaceDetectionsList->count() == 0) {
+            auto* item = new QListWidgetItem(QStringLiteral("No FaceDetections"));
             item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
             item->setSizeHint(QSize(110, 40));
-            m_widgets.selectedSpeakerFaceStreamsList->addItem(item);
+            m_widgets.selectedSpeakerFaceDetectionsList->addItem(item);
         }
     }
     refreshPlayheadTrackCandidatesList(*clip, speakerId);
@@ -1207,13 +1224,13 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
 
     QAction* enableTrackingAction = menu.addAction(QStringLiteral("Enable Speaker Tracking"));
     QAction* disableTrackingAction = menu.addAction(QStringLiteral("Disable Speaker Tracking"));
-    QMenu* autoTrackMenu = menu.addMenu(QStringLiteral("FaceStream"));
+    QMenu* autoTrackMenu = menu.addMenu(QStringLiteral("FaceDetections"));
     QAction* runAutoTrackAction = nullptr;
     QAction* viewAutoTrackAction = nullptr;
     QAction* deleteAutoTrackAction = nullptr;
-    runAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Generate FaceStream"));
-    viewAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("View FaceStream"));
-    deleteAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Delete FaceStream"));
+    runAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Generate FaceDetections"));
+    viewAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("View FaceDetections"));
+    deleteAutoTrackAction = autoTrackMenu->addAction(QStringLiteral("Delete FaceDetections"));
     menu.addSeparator();
     const QString exportLabel = selectedSpeakerIds.size() > 1
         ? QStringLiteral("Export Video (%1 Speakers)").arg(selectedSpeakerIds.size())
@@ -1247,7 +1264,7 @@ void SpeakersTab::onSpeakersTableContextMenuRequested(const QPoint& pos)
         return;
     }
     if (chosen == viewAutoTrackAction) {
-        onSpeakerViewFaceStreamClicked();
+        onSpeakerViewFaceDetectionsClicked();
         return;
     }
     if (!activeCutMutable()) {
@@ -1483,7 +1500,7 @@ void SpeakersTab::onSpeakerTrackingChipClicked()
     if (!transcriptTrackingHasPointstream(tracking)) {
         if (m_widgets.speakerTrackingStatusLabel) {
             m_widgets.speakerTrackingStatusLabel->setText(
-                QStringLiteral("Cannot enable Speaker Tracking: no pointstream exists yet. Generate FaceStream first."));
+                QStringLiteral("Cannot enable Speaker Tracking: no pointstream exists yet. Generate FaceDetections first."));
         }
         return;
     }
@@ -1515,7 +1532,7 @@ void SpeakersTab::onSpeakerStabilizeChipClicked()
     if (requestedEnabled && !hasFramingData) {
         if (m_widgets.speakerTrackingStatusLabel) {
             m_widgets.speakerTrackingStatusLabel->setText(
-                QStringLiteral("Cannot enable Face Stabilize: no runtime FaceStream binding. Generate FaceStream first."));
+                QStringLiteral("Cannot enable Face Stabilize: no runtime FaceDetections binding. Generate FaceDetections first."));
         }
         return;
     }

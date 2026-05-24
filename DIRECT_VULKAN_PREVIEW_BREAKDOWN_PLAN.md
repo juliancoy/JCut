@@ -21,7 +21,7 @@ Out of scope for the first pass:
 
 1. Major redesign of `PreviewInteractionState`
 2. OpenGL removal
-3. `vulkan_facestream_offscreen_main.cpp` decomposition
+3. `vulkan_facedetections_offscreen_main.cpp` decomposition
 4. `speakers_tab.cpp` decomposition beyond documenting follow-up opportunities
 
 ## Why This File First
@@ -56,7 +56,7 @@ This makes the presenter split high-yield: it reduces file size and removes esta
 
 ### Large But Not First-Priority
 
-1. `vulkan_facestream_offscreen_main.cpp` is large, but most of the size appears to be unique harness/runtime/checkpoint/preflight logic rather than duplication of an established shared path.
+1. `vulkan_facedetections_offscreen_main.cpp` is large, but most of the size appears to be unique harness/runtime/checkpoint/preflight logic rather than duplication of an established shared path.
 2. `offscreen_vulkan_renderer.cpp` has some reusable helpers, but most of its weight still belongs to the offscreen export path.
 3. `speakers_tab.cpp` is still too large, but it is already partially split into adjacent files and is currently dirty in the worktree, which makes it a worse first target.
 
@@ -194,7 +194,7 @@ Source files:
 
 1. `speakers_tab.cpp`
 2. `offscreen_vulkan_renderer.cpp`
-3. `vulkan_facestream_offscreen_main.cpp`
+3. `vulkan_facedetections_offscreen_main.cpp`
 
 Destination files:
 
@@ -204,7 +204,7 @@ Actions:
 
 1. Recount line totals after the presenter split and helper extraction work lands.
 2. Re-evaluate whether `speakers_tab.cpp` or `offscreen_vulkan_renderer.cpp` is the next highest-yield target.
-3. Leave `vulkan_facestream_offscreen_main.cpp` for a later pass unless duplication findings change.
+3. Leave `vulkan_facedetections_offscreen_main.cpp` for a later pass unless duplication findings change.
 
 Acceptance criteria:
 

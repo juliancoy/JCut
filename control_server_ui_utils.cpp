@@ -9,6 +9,7 @@
 #include <QContextMenuEvent>
 #include <QDoubleSpinBox>
 #include <QHeaderView>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
@@ -19,6 +20,7 @@
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QListWidget>
 
 namespace control_server {
 
@@ -279,6 +281,24 @@ QJsonObject itemViewSnapshot(QAbstractItemView* itemView) {
         };
     }
 
+    if (const auto* listWidget = qobject_cast<QListWidget*>(itemView)) {
+        QJsonArray items;
+        for (int row = 0; row < listWidget->count(); ++row) {
+            const QListWidgetItem* item = listWidget->item(row);
+            if (!item) {
+                continue;
+            }
+            items.push_back(QJsonObject{
+                {QStringLiteral("row"), row},
+                {QStringLiteral("text"), item->text()},
+                {QStringLiteral("toolTip"), item->toolTip()},
+                {QStringLiteral("selected"), item->isSelected()},
+                {QStringLiteral("selectable"), (item->flags() & Qt::ItemIsSelectable) != 0}
+            });
+        }
+        object[QStringLiteral("items")] = items;
+    }
+
     return object;
 }
 
@@ -373,6 +393,8 @@ QJsonObject widgetSnapshotRecursive(QWidget* widget,
         object[QStringLiteral("text")] = lineEdit->text();
         object[QStringLiteral("placeholder")] = lineEdit->placeholderText();
         object[QStringLiteral("readOnly")] = lineEdit->isReadOnly();
+    } else if (auto* label = qobject_cast<QLabel*>(widget)) {
+        object[QStringLiteral("text")] = label->text();
     } else if (auto* plainTextEdit = qobject_cast<QPlainTextEdit*>(widget)) {
         object[QStringLiteral("text")] = plainTextEdit->toPlainText();
         object[QStringLiteral("readOnly")] = plainTextEdit->isReadOnly();
