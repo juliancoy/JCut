@@ -7,6 +7,7 @@
 #include <QListWidgetItem>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QFont>
 
 ProjectsTab::ProjectsTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : QObject(parent)
@@ -69,14 +70,22 @@ void ProjectsTab::refresh()
             item->setToolTip(QDir::toNativeSeparators(m_deps.projectManager->projectPath(projectId)));
         }
         if (projectId == currentProject) {
+            QFont font = item->font();
+            font.setBold(true);
+            item->setFont(font);
+            item->setText(QStringLiteral("Current  %1").arg(projectId));
+            item->setStatusTip(QStringLiteral("Current project"));
             item->setSelected(true);
         }
     }
 
     if (m_widgets.projectSectionLabel) {
-        m_widgets.projectSectionLabel->setText(
-            QStringLiteral("Active Project\n%1").arg(currentProject.isEmpty() ? QStringLiteral("default")
-                                                                              : currentProject));
+        const QString projectName = currentProject.isEmpty() ? QStringLiteral("default") : currentProject;
+        m_widgets.projectSectionLabel->setText(QStringLiteral(
+            "<span style=\"color:#a9bfd4; font-size:11px; font-weight:700; letter-spacing:0.08em;\">"
+            "ACTIVE PROJECT</span><br>"
+            "<span style=\"color:#ffffff; font-size:17px; font-weight:700;\">%1</span>")
+            .arg(projectName.toHtmlEscaped()));
     }
     if (m_widgets.projectPathLabel) {
         QStringList lines;

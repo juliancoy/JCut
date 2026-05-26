@@ -201,6 +201,7 @@ def launch_editor(offscreen: bool,
         env["EDITOR_FORCE_NULL_RHI"] = "1"
     env["EDITOR_CONTROL_PORT"] = "40131" if offscreen else "40130"
     env["JCUT_UI_AUTOMATION"] = "1"
+    env["JCUT_PROJECT_ROOT"] = str(REPO_ROOT)
     return subprocess.Popen(
         cmd,
         cwd=str(REPO_ROOT),
@@ -328,12 +329,7 @@ def reset_speaker_flow_artifacts(clip_path: Path) -> None:
 
 
 def configure_editor_project_root(editor_path: Path) -> None:
-    legacy_config_path = editor_path.parent / "editor.config"
-    stable_config_path = Path.home() / ".config" / "PanelTalkEditor" / "editor.config"
-    payload = f"{REPO_ROOT}\n"
-    legacy_config_path.write_text(payload, encoding="utf-8")
-    stable_config_path.parent.mkdir(parents=True, exist_ok=True)
-    stable_config_path.write_text(payload, encoding="utf-8")
+    del editor_path
 
 
 def build_if_requested(args: argparse.Namespace) -> None:

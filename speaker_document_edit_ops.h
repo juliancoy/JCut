@@ -23,15 +23,6 @@ SpeakerDocumentEditResult applyProfileCellEdit(TranscriptDocumentSession& sessio
                                                const QString& speakerId,
                                                int column,
                                                const QString& valueText);
-SpeakerDocumentEditResult saveTrackingReferenceAt(TranscriptDocumentSession& session,
-                                                  const QString& speakerId,
-                                                  int referenceIndex,
-                                                  int64_t frame,
-                                                  qreal xNorm,
-                                                  qreal yNorm,
-                                                  qreal boxSizeNorm = -1.0);
-SpeakerDocumentEditResult clearTrackingReferences(TranscriptDocumentSession& session,
-                                                  const QString& speakerId);
 SpeakerDocumentEditResult setTrackingEnabled(TranscriptDocumentSession& session,
                                              const QString& speakerId,
                                              bool enabled);

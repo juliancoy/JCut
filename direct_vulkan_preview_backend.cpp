@@ -1207,6 +1207,63 @@ void clearBoxOutline(QVulkanDeviceFunctions* funcs,
     clearRect(funcs, cb, value, makeRect(x + w - t, y, t, h));
 }
 
+const TimelineClip* selectedClipForTargetBox(const PreviewInteractionState* state)
+{
+    if (!state) {
+        return nullptr;
+    }
+    const QString selectedId = state->selectedClipId.trimmed();
+    if (!selectedId.isEmpty()) {
+        for (const TimelineClip& clip : state->clips) {
+            const TimelineClip::TransformKeyframe targetState =
+                evaluateClipSpeakerFramingTargetAtFrame(clip, state->currentFrame);
+            if (clip.id == selectedId &&
+                qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
+                return &clip;
+            }
+        }
+    }
+    for (const TimelineClip& clip : state->clips) {
+        const TimelineClip::TransformKeyframe targetState =
+            evaluateClipSpeakerFramingTargetAtFrame(clip, state->currentFrame);
+        if (qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
+            return &clip;
+        }
+    }
+    return nullptr;
+}
+
+VkClearValue targetBoxOverlayColor()
+{
+    VkClearValue clear{};
+    clear.color.float32[0] = 1.0f;
+    clear.color.float32[1] = 0.886f;
+    clear.color.float32[2] = 0.29f;
+    clear.color.float32[3] = 0.95f;
+    return clear;
+}
+
+VkClearRect targetBoxRectForComposite(const TimelineClip& clip,
+                                      int64_t timelineFrame,
+                                      const QRectF& compositeRect,
+                                      const QSize& swapSize)
+{
+    const TimelineClip::TransformKeyframe targetState =
+        evaluateClipSpeakerFramingTargetAtFrame(clip, timelineFrame);
+    const qreal targetXNorm = qBound<qreal>(0.0, targetState.translationX, 1.0);
+    const qreal targetYNorm = qBound<qreal>(0.0, targetState.translationY, 1.0);
+    const qreal targetBoxNorm = qBound<qreal>(-1.0, targetState.scaleX, 1.0);
+    const qreal centerX = compositeRect.left() + (targetXNorm * compositeRect.width());
+    const qreal centerY = compositeRect.top() + (targetYNorm * compositeRect.height());
+    const qreal side = qBound<qreal>(
+        2.0,
+        targetBoxNorm * qMax<qreal>(1.0, qMin<qreal>(compositeRect.width(), compositeRect.height())),
+        4096.0);
+    const qreal halfSide = side * 0.5;
+    const QRectF targetRect(centerX - halfSide, centerY - halfSide, side, side);
+    return clearRectFromQRect(targetRect, swapSize);
+}
+
 } // namespace
 
 class DirectVulkanPreviewWindow final : public QVulkanWindow {
@@ -2949,6 +3006,20 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 geometry.localRect,
                 swapSize);
             clearBoxOutline(m_devFuncs, cb, facedetectionsOverlayColor(state, overlay), boxRect, qMax(1, thickness - 1));
+        }
+        if (const TimelineClip* selectedClip = selectedClipForTargetBox(state)) {
+            const TimelineClip::TransformKeyframe targetState =
+                evaluateClipSpeakerFramingTargetAtFrame(*selectedClip, state->currentFrame);
+            const qreal targetBoxNorm = qBound<qreal>(-1.0, targetState.scaleX, 1.0);
+            if (targetBoxNorm > 0.0) {
+                const int targetThickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 220);
+                clearBoxOutline(
+                    m_devFuncs,
+                    cb,
+                    targetBoxOverlayColor(),
+                    targetBoxRectForComposite(*selectedClip, state->currentFrame, compositeRect, swapSize),
+                    targetThickness);
+            }
         }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);

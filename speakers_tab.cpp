@@ -6,6 +6,7 @@
 #include "facedetections_time_mapping.h"
 #include "facedetections_artifact_utils.h"
 #include "decoder_context.h"
+#include "editor_shared_keyframes.h"
 #include "speaker_flow_debug.h"
 #include "transcript_engine.h"
 
@@ -235,715 +236,28 @@ void SpeakersTab::applyLoadedTranscriptDocumentData(const TimelineClip& clip, co
                 .arg(sidecarPresent ? QStringLiteral("Present") : QStringLiteral("Missing"))
                 .arg(mutableCut ? QStringLiteral("Derived cut") : QStringLiteral("Original cut (read-only)")));
     }
+    refreshTranscriptSpeakerViews(preferredSpeakerId, true);
+    m_updating = false;
+}
 
+void SpeakersTab::refreshTranscriptSpeakerViews(const QString& preferredSpeakerId,
+                                                bool refreshTrackPanels)
+{
     refreshSpeakersTable(m_transcriptSession.rootObject(), preferredSpeakerId);
     refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
-    requestRefreshFaceDetectionsPathsPanel();
+    if (refreshTrackPanels) {
+        requestRefreshFaceDetectionsPathsPanel();
+    }
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->setEnabled(activeCutMutable());
     }
-
-    m_updating = false;
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
-}
-
-void SpeakersTab::clearFaceDetectionsDerivedCaches()
-{
-    m_avatarCache.clear();
-    m_avatarHoverTooltipHtmlCache.clear();
-    m_continuityStreamsCache.clear();
-    m_speakersTableRefreshSignature.clear();
 }
 
 bool SpeakersTab::clipSupportsTranscript(const TimelineClip& clip) const
 {
     return clip.mediaType == ClipMediaType::Audio || clip.hasAudio;
-}
-
-
-bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
-                                       int trackId,
-                                       const QString& streamId,
-                                       int64_t sourceFrame,
-                                       qreal xNorm,
-                                       qreal yNorm,
-                                       qreal boxSizeNorm,
-                                       const QString& resolutionSource)
-{
-    if (!activeCutMutable() || trackId < 0 || speakerId.trimmed().isEmpty() ||
-        !m_transcriptSession.hasObjectDocument()) {
-        return false;
-    }
-    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip) {
-        return false;
-    }
-
-    editor::TranscriptEngine engine;
-    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
-    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
-    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
-    QJsonObject clipRoot = clipsRoot.value(clip->id).toObject();
-    clipRoot[QStringLiteral("clip_id")] = clip->id;
-    clipRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-
-    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
-    resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
-    QJsonArray nextResolvedMap;
-    bool replaced = false;
-    for (const QJsonValue& value : resolvedMap) {
-        QJsonObject row = value.toObject();
-        const int rowTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
-        if (rowTrackId == trackId) {
-            row[QStringLiteral("identity_id")] = speakerId;
-            row[QStringLiteral("stream_id")] = streamId;
-            row[QString(kSpeakerFlowAnchorSourceFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
-            row[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
-            row[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
-            row[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
-            row[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
-                ? QStringLiteral("speaker_track_picker")
-                : resolutionSource.trimmed();
-            row[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            replaced = true;
-        }
-        nextResolvedMap.push_back(row);
-    }
-    if (!replaced) {
-        QJsonObject row;
-        row[QStringLiteral("track_id")] = trackId;
-        row[QStringLiteral("identity_id")] = speakerId;
-        row[QStringLiteral("stream_id")] = streamId;
-        row[QString(kSpeakerFlowAnchorSourceFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
-        row[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
-        row[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
-        row[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
-        row[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
-            ? QStringLiteral("speaker_track_picker")
-            : resolutionSource.trimmed();
-        row[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        nextResolvedMap.push_back(row);
-    }
-    resolvedPayload[QStringLiteral("track_identity_map")] = nextResolvedMap;
-    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
-
-    QJsonObject humanRuns = clipRoot.value(QStringLiteral("human_runs")).toObject();
-    const QString runId = QStringLiteral("track_picker_%1").arg(
-        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddTHHmmsszzz")));
-    QJsonObject humanPayload;
-    humanPayload[QStringLiteral("run_id")] = runId;
-    humanPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    QJsonArray auditLog;
-    QJsonObject auditRow;
-    auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    auditRow[QStringLiteral("action")] = QStringLiteral("speaker_track_picker_identity_set");
-    auditRow[QStringLiteral("track_id")] = trackId;
-    auditRow[QStringLiteral("stream_id")] = streamId;
-    auditRow[QStringLiteral("identity_id")] = speakerId;
-    auditRow[QString(kSpeakerFlowAnchorSourceFrameKey)] = static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
-    auditRow[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
-    auditRow[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
-    auditRow[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
-    auditLog.push_back(auditRow);
-    humanPayload[QStringLiteral("audit_log")] = auditLog;
-    humanRuns[runId] = humanPayload;
-    clipRoot[QStringLiteral("human_runs")] = humanRuns;
-    clipRoot[QStringLiteral("latest_human_run_id")] = runId;
-
-    QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    QJsonObject profile = profiles.value(speakerId).toObject();
-    QJsonArray faceRefs = speakerFaceRefs(profile);
-    bool faceRefExists = false;
-    for (const QJsonValue& faceRefValue : faceRefs) {
-        const QJsonObject faceRef = faceRefValue.toObject();
-        if (faceRef.value(QStringLiteral("track_id")).toInt(-1) == trackId) {
-            faceRefExists = true;
-            break;
-        }
-    }
-    if (!faceRefExists) {
-        QJsonObject faceRef;
-        faceRef[QStringLiteral("track_id")] = trackId;
-        faceRef[QStringLiteral("stream_id")] = streamId;
-        faceRef[QString(kSpeakerFlowAnchorSourceFrameKey)] =
-            static_cast<qint64>(qMax<int64_t>(0, sourceFrame));
-        faceRef[QString(kSpeakerFlowAnchorXKey)] = qBound<qreal>(0.0, xNorm, 1.0);
-        faceRef[QString(kSpeakerFlowAnchorYKey)] = qBound<qreal>(0.0, yNorm, 1.0);
-        faceRef[QString(kSpeakerFlowAnchorBoxSizeKey)] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
-        faceRef[QStringLiteral("source")] = resolutionSource.trimmed().isEmpty()
-            ? QStringLiteral("speaker_track_picker")
-            : resolutionSource.trimmed();
-        faceRefs.push_back(faceRef);
-        profile[QString(kTranscriptSpeakerFaceRefsKey)] = faceRefs;
-        profiles[speakerId] = profile;
-        transcriptRoot[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-    }
-
-    clipsRoot[clip->id] = clipRoot;
-    speakerFlow[QStringLiteral("clips")] = clipsRoot;
-    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            root = transcriptRoot;
-            return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
-        return false;
-    }
-    m_avatarHoverTooltipHtmlCache.clear();
-
-    QJsonObject identityRoot;
-    engine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
-    QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
-    QJsonObject assignmentRoot = assignmentsByClip.value(clip->id).toObject();
-    assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    assignmentRoot[QStringLiteral("track_identity_map")] = nextResolvedMap;
-    assignmentsByClip[clip->id] = assignmentRoot;
-    identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
-    identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-    engine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot);
-
-    m_speakersTableRefreshSignature.clear();
-    m_faceStreamPanelRefreshSignature.clear();
-    emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-    refresh();
-    return true;
-}
-
-bool SpeakersTab::deassignTrackFromSpeaker(const QString& speakerId, int trackId)
-{
-    const QString trimmedSpeakerId = speakerId.trimmed();
-    if (!activeCutMutable() || trimmedSpeakerId.isEmpty() || trackId < 0 ||
-        !m_transcriptSession.hasObjectDocument()) {
-        return false;
-    }
-    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip) {
-        return false;
-    }
-
-    editor::TranscriptEngine engine;
-    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
-    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
-    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
-    QJsonObject clipRoot = clipsRoot.value(clip->id).toObject();
-    clipRoot[QStringLiteral("clip_id")] = clip->id;
-    clipRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-
-    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
-    resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
-    QJsonArray nextResolvedMap;
-    QString removedStreamId;
-    qint64 removedSourceFrame = -1;
-    qreal removedX = 0.5;
-    qreal removedY = 0.5;
-    qreal removedBoxSize = 0.2;
-    bool removed = false;
-    for (const QJsonValue& value : resolvedMap) {
-        const QJsonObject row = value.toObject();
-        if (row.value(QStringLiteral("track_id")).toInt(-1) == trackId &&
-            row.value(QStringLiteral("identity_id")).toString().trimmed() == trimmedSpeakerId) {
-            removed = true;
-            removedStreamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
-            removedSourceFrame =
-                row.value(QString(kSpeakerFlowAnchorSourceFrameKey)).toVariant().toLongLong();
-            removedX = qBound<qreal>(0.0, row.value(QString(kSpeakerFlowAnchorXKey)).toDouble(0.5), 1.0);
-            removedY = qBound<qreal>(0.0, row.value(QString(kSpeakerFlowAnchorYKey)).toDouble(0.5), 1.0);
-            removedBoxSize =
-                qBound<qreal>(0.01, row.value(QString(kSpeakerFlowAnchorBoxSizeKey)).toDouble(0.2), 1.0);
-            continue;
-        }
-        nextResolvedMap.push_back(row);
-    }
-    if (!removed) {
-        return false;
-    }
-    resolvedPayload[QStringLiteral("track_identity_map")] = nextResolvedMap;
-    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
-
-    QJsonObject humanRuns = clipRoot.value(QStringLiteral("human_runs")).toObject();
-    const QString runId = QStringLiteral("track_deassign_%1").arg(
-        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddTHHmmsszzz")));
-    QJsonObject humanPayload;
-    humanPayload[QStringLiteral("run_id")] = runId;
-    humanPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    QJsonArray auditLog;
-    QJsonObject auditRow;
-    auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    auditRow[QStringLiteral("action")] = QStringLiteral("speaker_track_picker_identity_cleared");
-    auditRow[QStringLiteral("track_id")] = trackId;
-    auditRow[QStringLiteral("stream_id")] = removedStreamId;
-    auditRow[QStringLiteral("identity_id")] = trimmedSpeakerId;
-    auditRow[QString(kSpeakerFlowAnchorSourceFrameKey)] = removedSourceFrame;
-    auditRow[QString(kSpeakerFlowAnchorXKey)] = removedX;
-    auditRow[QString(kSpeakerFlowAnchorYKey)] = removedY;
-    auditRow[QString(kSpeakerFlowAnchorBoxSizeKey)] = removedBoxSize;
-    auditLog.push_back(auditRow);
-    humanPayload[QStringLiteral("audit_log")] = auditLog;
-    humanRuns[runId] = humanPayload;
-    clipRoot[QStringLiteral("human_runs")] = humanRuns;
-    clipRoot[QStringLiteral("latest_human_run_id")] = runId;
-
-    QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    for (auto it = profiles.begin(); it != profiles.end(); ++it) {
-        QJsonObject profile = it.value().toObject();
-        const QJsonArray faceRefs = speakerFaceRefs(profile);
-        QJsonArray nextFaceRefs;
-        bool changed = false;
-        for (const QJsonValue& faceRefValue : faceRefs) {
-            const QJsonObject faceRef = faceRefValue.toObject();
-            if (faceRef.value(QStringLiteral("track_id")).toInt(-1) == trackId) {
-                changed = true;
-                continue;
-            }
-            nextFaceRefs.push_back(faceRef);
-        }
-        if (changed) {
-            profile[QString(kTranscriptSpeakerFaceRefsKey)] = nextFaceRefs;
-            it.value() = profile;
-        }
-    }
-    transcriptRoot[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-
-    clipsRoot[clip->id] = clipRoot;
-    speakerFlow[QStringLiteral("clips")] = clipsRoot;
-    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            root = transcriptRoot;
-            return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
-        return false;
-    }
-    m_avatarHoverTooltipHtmlCache.clear();
-
-    QJsonObject identityRoot;
-    engine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
-    QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
-    QJsonObject assignmentRoot = assignmentsByClip.value(clip->id).toObject();
-    assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    assignmentRoot[QStringLiteral("track_identity_map")] = nextResolvedMap;
-    assignmentsByClip[clip->id] = assignmentRoot;
-    identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
-    identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-    engine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot);
-
-    m_speakersTableRefreshSignature.clear();
-    m_faceStreamPanelRefreshSignature.clear();
-    emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-    refresh();
-    return true;
-}
-
-bool SpeakersTab::deassignSelectedSpeakerAssignedTracks()
-{
-    if (!m_widgets.selectedSpeakerFaceDetectionsList) {
-        return false;
-    }
-    const QString speakerId = selectedSpeakerId().trimmed();
-    if (speakerId.isEmpty()) {
-        return false;
-    }
-    const QList<QListWidgetItem*> selectedItems = m_widgets.selectedSpeakerFaceDetectionsList->selectedItems();
-    if (selectedItems.isEmpty()) {
-        return false;
-    }
-
-    QVector<int> selectedTrackIds;
-    selectedTrackIds.reserve(selectedItems.size());
-    for (QListWidgetItem* item : selectedItems) {
-        if (!item) {
-            continue;
-        }
-        const int trackId = item->data(Qt::UserRole).toInt();
-        if (trackId >= 0 && !selectedTrackIds.contains(trackId)) {
-            selectedTrackIds.push_back(trackId);
-        }
-    }
-
-    bool changed = false;
-    for (int trackId : selectedTrackIds) {
-        changed = deassignTrackFromSpeaker(speakerId, trackId) || changed;
-    }
-    return changed;
-}
-
-void SpeakersTab::showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos)
-{
-    if (!m_widgets.selectedSpeakerFaceDetectionsList) {
-        return;
-    }
-    if (QListWidgetItem* item = m_widgets.selectedSpeakerFaceDetectionsList->itemAt(pos)) {
-        if (!item->isSelected()) {
-            m_widgets.selectedSpeakerFaceDetectionsList->setCurrentItem(item);
-            item->setSelected(true);
-        }
-    }
-    QMenu menu(m_widgets.selectedSpeakerFaceDetectionsList);
-    QAction* deassignAction = menu.addAction(QStringLiteral("Deassign Track"));
-    const bool enabled =
-        activeCutMutable() &&
-        !selectedSpeakerId().trimmed().isEmpty() &&
-        !m_widgets.selectedSpeakerFaceDetectionsList->selectedItems().isEmpty();
-    deassignAction->setEnabled(enabled);
-    QAction* chosen = menu.exec(
-        m_widgets.selectedSpeakerFaceDetectionsList->viewport()->mapToGlobal(pos));
-    if (chosen == deassignAction) {
-        deassignSelectedSpeakerAssignedTracks();
-    }
-}
-
-bool SpeakersTab::assignTrackAnchorsToSpeakerBatch(const QString& speakerId,
-                                                   const QJsonArray& trackAnchors,
-                                                   const QString& resolutionSource,
-                                                   const QString& auditAction)
-{
-    if (!activeCutMutable() || speakerId.trimmed().isEmpty() || trackAnchors.isEmpty() ||
-        !m_transcriptSession.hasObjectDocument()) {
-        return false;
-    }
-    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (!clip) {
-        return false;
-    }
-
-    QHash<int, QJsonObject> anchorByTrackId;
-    for (const QJsonValue& value : trackAnchors) {
-        const QJsonObject row = value.toObject();
-        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
-        if (trackId < 0) {
-            continue;
-        }
-        anchorByTrackId.insert(trackId, row);
-    }
-    if (anchorByTrackId.isEmpty()) {
-        return false;
-    }
-
-    editor::TranscriptEngine engine;
-    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
-    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
-    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
-    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
-    QJsonObject clipRoot = clipsRoot.value(clip->id).toObject();
-    clipRoot[QStringLiteral("clip_id")] = clip->id;
-    clipRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-
-    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
-    resolvedPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
-    QJsonArray nextResolvedMap;
-    QSet<int> appliedTrackIds;
-    for (const QJsonValue& value : resolvedMap) {
-        QJsonObject row = value.toObject();
-        const int rowTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
-        const auto anchorIt = anchorByTrackId.constFind(rowTrackId);
-        if (anchorIt != anchorByTrackId.constEnd()) {
-            const QJsonObject anchor = anchorIt.value();
-            row[QStringLiteral("identity_id")] = speakerId;
-            row[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
-            row[QString(kSpeakerFlowAnchorSourceFrameKey)] =
-                static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
-            row[QString(kSpeakerFlowAnchorXKey)] =
-                qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-            row[QString(kSpeakerFlowAnchorYKey)] =
-                qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-            row[QString(kSpeakerFlowAnchorBoxSizeKey)] =
-                qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
-            row[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
-                ? QStringLiteral("speaker_track_picker")
-                : resolutionSource.trimmed();
-            row[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-            appliedTrackIds.insert(rowTrackId);
-        }
-        nextResolvedMap.push_back(row);
-    }
-    for (auto it = anchorByTrackId.constBegin(); it != anchorByTrackId.constEnd(); ++it) {
-        if (appliedTrackIds.contains(it.key())) {
-            continue;
-        }
-        const QJsonObject anchor = it.value();
-        QJsonObject row;
-        row[QStringLiteral("track_id")] = it.key();
-        row[QStringLiteral("identity_id")] = speakerId;
-        row[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
-        row[QString(kSpeakerFlowAnchorSourceFrameKey)] =
-            static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
-        row[QString(kSpeakerFlowAnchorXKey)] =
-            qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-        row[QString(kSpeakerFlowAnchorYKey)] =
-            qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-        row[QString(kSpeakerFlowAnchorBoxSizeKey)] =
-            qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
-        row[QStringLiteral("resolution_source")] = resolutionSource.trimmed().isEmpty()
-            ? QStringLiteral("speaker_track_picker")
-            : resolutionSource.trimmed();
-        row[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        nextResolvedMap.push_back(row);
-    }
-    resolvedPayload[QStringLiteral("track_identity_map")] = nextResolvedMap;
-    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
-
-    QJsonObject humanRuns = clipRoot.value(QStringLiteral("human_runs")).toObject();
-    const QString runId = QStringLiteral("track_batch_%1").arg(
-        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddTHHmmsszzz")));
-    QJsonObject humanPayload;
-    humanPayload[QStringLiteral("run_id")] = runId;
-    humanPayload[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    QJsonArray auditLog;
-    for (const QJsonValue& value : trackAnchors) {
-        const QJsonObject anchor = value.toObject();
-        const int trackId = anchor.value(QStringLiteral("track_id")).toInt(-1);
-        if (trackId < 0) {
-            continue;
-        }
-        QJsonObject auditRow;
-        auditRow[QStringLiteral("timestamp_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-        auditRow[QStringLiteral("action")] = auditAction.trimmed().isEmpty()
-            ? QStringLiteral("speaker_track_picker_identity_set")
-            : auditAction.trimmed();
-        auditRow[QStringLiteral("track_id")] = trackId;
-        auditRow[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
-        auditRow[QStringLiteral("identity_id")] = speakerId;
-        auditRow[QString(kSpeakerFlowAnchorSourceFrameKey)] =
-            static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
-        auditRow[QString(kSpeakerFlowAnchorXKey)] =
-            qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-        auditRow[QString(kSpeakerFlowAnchorYKey)] =
-            qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-        auditRow[QString(kSpeakerFlowAnchorBoxSizeKey)] =
-            qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
-        auditLog.push_back(auditRow);
-    }
-    humanPayload[QStringLiteral("audit_log")] = auditLog;
-    humanRuns[runId] = humanPayload;
-    clipRoot[QStringLiteral("human_runs")] = humanRuns;
-    clipRoot[QStringLiteral("latest_human_run_id")] = runId;
-
-    QJsonObject profiles = transcriptRoot.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
-    QJsonObject profile = profiles.value(speakerId).toObject();
-    QJsonArray faceRefs = speakerFaceRefs(profile);
-    for (const QJsonValue& value : trackAnchors) {
-        const QJsonObject anchor = value.toObject();
-        const int trackId = anchor.value(QStringLiteral("track_id")).toInt(-1);
-        if (trackId < 0) {
-            continue;
-        }
-        bool faceRefExists = false;
-        for (const QJsonValue& faceRefValue : faceRefs) {
-            const QJsonObject faceRef = faceRefValue.toObject();
-            if (faceRef.value(QStringLiteral("track_id")).toInt(-1) == trackId) {
-                faceRefExists = true;
-                break;
-            }
-        }
-        if (faceRefExists) {
-            continue;
-        }
-        QJsonObject faceRef;
-        faceRef[QStringLiteral("track_id")] = trackId;
-        faceRef[QStringLiteral("stream_id")] = anchor.value(QStringLiteral("stream_id")).toString().trimmed();
-        faceRef[QString(kSpeakerFlowAnchorSourceFrameKey)] =
-            static_cast<qint64>(qMax<int64_t>(0, anchor.value(QStringLiteral("source_frame")).toVariant().toLongLong()));
-        faceRef[QString(kSpeakerFlowAnchorXKey)] =
-            qBound<qreal>(0.0, anchor.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-        faceRef[QString(kSpeakerFlowAnchorYKey)] =
-            qBound<qreal>(0.0, anchor.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-        faceRef[QString(kSpeakerFlowAnchorBoxSizeKey)] =
-            qBound<qreal>(0.01, anchor.value(QStringLiteral("box")).toDouble(0.2), 1.0);
-        faceRef[QStringLiteral("source")] = resolutionSource.trimmed().isEmpty()
-            ? QStringLiteral("speaker_track_picker")
-            : resolutionSource.trimmed();
-        faceRefs.push_back(faceRef);
-    }
-    profile[QString(kTranscriptSpeakerFaceRefsKey)] = faceRefs;
-    profiles[speakerId] = profile;
-    transcriptRoot[QString(kTranscriptSpeakerProfilesKey)] = profiles;
-
-    clipsRoot[clip->id] = clipRoot;
-    speakerFlow[QStringLiteral("clips")] = clipsRoot;
-    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
-    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
-            root = transcriptRoot;
-            return true;
-        }) || !saveLoadedTranscriptDocument()) {
-        refresh();
-        return false;
-    }
-    m_avatarHoverTooltipHtmlCache.clear();
-
-    QJsonObject identityRoot;
-    engine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
-    QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
-    QJsonObject assignmentRoot = assignmentsByClip.value(clip->id).toObject();
-    assignmentRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    assignmentRoot[QStringLiteral("track_identity_map")] = nextResolvedMap;
-    assignmentsByClip[clip->id] = assignmentRoot;
-    identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
-    identityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
-    identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-    engine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot);
-
-    m_speakersTableRefreshSignature.clear();
-    m_faceStreamPanelRefreshSignature.clear();
-    emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-    refresh();
-    return true;
-}
-
-void SpeakersTab::openTrackPickerForSpeaker(const QString& speakerId)
-{
-    const QString trimmedSpeakerId = speakerId.trimmed();
-    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
-    if (trimmedSpeakerId.isEmpty() || !clip || !m_transcriptSession.hasObjectDocument()) {
-        return;
-    }
-    const QJsonArray streams = continuityStreamsForClip(*clip);
-    if (streams.isEmpty()) {
-        QMessageBox::information(nullptr,
-                                 QStringLiteral("Add Tracks"),
-                                 QStringLiteral("No continuity tracks are available for this clip."));
-        return;
-    }
-
-    QDialog dialog;
-    dialog.setWindowTitle(QStringLiteral("Add Tracks to %1").arg(speakerDisplayLabel(trimmedSpeakerId)));
-    dialog.resize(960, 640);
-    auto* layout = new QVBoxLayout(&dialog);
-    auto* help = new QLabel(
-        QStringLiteral("Select one or more continuity tracks. Each thumbnail uses the midpoint frame of that track."),
-        &dialog);
-    help->setWordWrap(true);
-    auto* list = new QListWidget(&dialog);
-    list->setViewMode(QListView::IconMode);
-    list->setFlow(QListView::LeftToRight);
-    list->setWrapping(true);
-    list->setResizeMode(QListView::Adjust);
-    list->setMovement(QListView::Static);
-    list->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    list->setIconSize(QSize(96, 96));
-    list->setSpacing(10);
-
-    const QString mediaPath = interactivePreviewMediaPathForClip(*clip);
-    std::unique_ptr<editor::DecoderContext> decoder;
-    if (!mediaPath.isEmpty()) {
-        decoder = std::make_unique<editor::DecoderContext>(mediaPath);
-        if (!decoder->initialize()) {
-            decoder.reset();
-        }
-    }
-    QHash<int64_t, QImage> frameImageCache;
-    const qreal sourceFps = resolvedSourceFps(*clip);
-    const QHash<int, QString> identityByTrackId = resolvedIdentityByTrackId(*clip, streams);
-    for (const QJsonValue& streamValue : streams) {
-        const QJsonObject streamObj = streamValue.toObject();
-        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
-        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString(
-            QStringLiteral("T%1").arg(trackId));
-        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
-        if (trackId < 0 || keyframes.isEmpty()) {
-            continue;
-        }
-        const QJsonObject midpointKeyframe = keyframes.at(keyframes.size() / 2).toObject();
-        if (midpointKeyframe.isEmpty()) {
-            continue;
-        }
-        const QString assignedSpeakerId = identityByTrackId.value(trackId).trimmed();
-        const QString assignedLabel =
-            assignedSpeakerId.isEmpty() ? QStringLiteral("Unassigned") : speakerDisplayLabel(assignedSpeakerId);
-        auto* item = new QListWidgetItem(
-            QIcon(faceStreamPreviewAvatarWithDecoder(
-                *clip,
-                trimmedSpeakerId,
-                midpointKeyframe,
-                96,
-                decoder.get(),
-                &frameImageCache,
-                sourceFps)),
-            QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
-        item->setData(Qt::UserRole, trackId);
-        item->setData(Qt::UserRole + 1, streamId);
-        item->setData(Qt::UserRole + 2, QString::fromUtf8(QJsonDocument(midpointKeyframe).toJson(QJsonDocument::Compact)));
-        item->setToolTip(
-            QStringLiteral("Track %1\nCurrent assignment: %2").arg(trackId).arg(assignedLabel));
-        item->setSizeHint(QSize(120, 130));
-        if (assignedSpeakerId == trimmedSpeakerId) {
-            item->setSelected(true);
-        }
-        list->addItem(item);
-    }
-
-    auto* buttonsRow = new QHBoxLayout;
-    auto* addButton = new QPushButton(QStringLiteral("Assign Selected"), &dialog);
-    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
-    buttonsRow->addStretch(1);
-    buttonsRow->addWidget(addButton);
-    buttonsRow->addWidget(cancelButton);
-    layout->addWidget(help);
-    layout->addWidget(list, 1);
-    layout->addLayout(buttonsRow);
-    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
-    connect(addButton, &QPushButton::clicked, &dialog, [&dialog]() { dialog.accept(); });
-
-    if (dialog.exec() != QDialog::Accepted) {
-        return;
-    }
-
-    bool changed = false;
-    for (QListWidgetItem* item : list->selectedItems()) {
-        const int trackId = item->data(Qt::UserRole).toInt();
-        const QString streamId = item->data(Qt::UserRole + 1).toString().trimmed();
-        const QJsonObject keyframe =
-            QJsonDocument::fromJson(item->data(Qt::UserRole + 2).toString().toUtf8()).object();
-        if (trackId < 0 || keyframe.isEmpty()) {
-            continue;
-        }
-        const int64_t sourceFrame =
-            qMax<int64_t>(0, keyframe.value(QString(kTranscriptSpeakerTrackingFrameKey)).toVariant().toLongLong());
-        const qreal xNorm =
-            qBound<qreal>(0.0, keyframe.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5), 1.0);
-        const qreal yNorm =
-            qBound<qreal>(0.0, keyframe.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.5), 1.0);
-        const qreal boxNorm =
-            qBound<qreal>(0.01, keyframe.value(QString(kTranscriptSpeakerTrackingBoxSizeKey)).toDouble(0.2), 1.0);
-        changed = assignTrackToSpeaker(
-                      trimmedSpeakerId,
-                      trackId,
-                      streamId.isEmpty() ? QStringLiteral("T%1").arg(trackId) : streamId,
-                      sourceFrame,
-                      xNorm,
-                      yNorm,
-                      boxNorm,
-                      QStringLiteral("speaker_track_picker")) || changed;
-    }
-    if (!changed) {
-        updateSpeakerTrackingStatusLabel();
-        updateSelectedSpeakerPanel();
-    }
 }
 
 bool SpeakersTab::rebuildProcessedFaceDetectionsForSelectedClip(bool interactive)
@@ -1050,7 +364,6 @@ void SpeakersTab::refresh()
     const QString previousClipFilePath = m_transcriptSession.clipFilePath();
     m_lastSelectionSeekSpeakerId.clear();
     m_lastSelectionSeekClipId.clear();
-    m_pendingReferencePick = 0;
 
     if (m_widgets.speakersTable) {
         m_widgets.speakersTable->clearContents();
@@ -1077,7 +390,8 @@ void SpeakersTab::refresh()
         return;
     }
 
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip->filePath);
+    const QString transcriptPath =
+        transcriptPathForRuntimeSidecarForClipFile(clip->filePath, activeTranscriptPathForClipFile(clip->filePath));
     const bool transcriptChanged =
         previousTranscriptPath != transcriptPath || previousClipFilePath != clip->filePath;
     if (transcriptChanged) {
@@ -1099,8 +413,13 @@ void SpeakersTab::refresh()
 void SpeakersTab::refreshForSubtab(const QString& subtabName)
 {
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    const QString transcriptPath = clip
+        ? transcriptPathForRuntimeSidecarForClipFile(
+              clip->filePath,
+              activeTranscriptPathForClipFile(clip->filePath))
+        : QString();
     if (!clip || !clipSupportsTranscript(*clip) || !m_transcriptSession.hasObjectDocument() ||
-        !m_transcriptSession.matches(clip->filePath, activeTranscriptPathForClipFile(clip->filePath))) {
+        !m_transcriptSession.matches(clip->filePath, transcriptPath)) {
         refresh();
         return;
     }
@@ -1862,7 +1181,6 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         }
     }
     QHash<int64_t, QImage> avatarFrameImageCache;
-    const qreal sourceFps = resolvedSourceFps(*clip);
     for (int row = 0; row < ids.size(); ++row) {
         const QString id = ids.at(row);
         const QJsonObject profileJson = profiles.value(id).toObject();
@@ -1874,11 +1192,8 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         const QJsonObject location = profileJson.value(QString(kTranscriptSpeakerLocationKey)).toObject();
         const double x = location.value(QString(kTranscriptSpeakerLocationXKey)).toDouble(0.5);
         const double y = location.value(QString(kTranscriptSpeakerLocationYKey)).toDouble(0.85);
-        const QJsonObject tracking = speakerFramingObject(profileJson);
-        const QString trackingMode =
-            tracking.value(QString(kTranscriptSpeakerTrackingModeKey)).toString(QStringLiteral("Manual"));
-        const int keyframeCount =
-            tracking.value(QString(kTranscriptSpeakerTrackingKeyframesKey)).toArray().size();
+        const QVector<int> assignedTrackIds = assignedTrackIdsBySpeaker.value(id);
+        const int assignedTrackCount = assignedTrackIds.size();
 
         auto* avatarItem = new QTableWidgetItem();
         avatarItem->setFlags(avatarItem->flags() & ~Qt::ItemIsEditable);
@@ -1891,8 +1206,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
             id,
             assignedTrackIdsBySpeaker.value(id),
             avatarDecoder.get(),
-            &avatarFrameImageCache,
-            sourceFps)));
+            &avatarFrameImageCache)));
         const uint hueHash = qHash(id);
         const QColor speakerHueTint = QColor::fromHsv(static_cast<int>(hueHash % 360), 160, 92, 105);
         avatarItem->setBackground(QBrush(speakerHueTint));
@@ -1903,7 +1217,7 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
 
         auto* displayItem = new QTableWidgetItem(displayLabel);
         displayItem->setData(Qt::UserRole, id);
-        displayItem->setData(Qt::UserRole + 10, keyframeCount > 0);
+        displayItem->setData(Qt::UserRole + 10, assignedTrackCount > 0);
         displayItem->setToolTip(QStringLiteral("Speaker ID: %1\nOrganization: %2\nSummary: %3")
                                     .arg(id,
                                          organization.isEmpty() ? QStringLiteral("None") : organization,
@@ -1912,12 +1226,22 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
         xItem->setData(Qt::UserRole, id);
         auto* yItem = new QTableWidgetItem(QString::number(y, 'f', 3));
         yItem->setData(Qt::UserRole, id);
-        auto* trackingModeItem = new QTableWidgetItem(
-            keyframeCount > 0
-                ? QStringLiteral("%1 (%2 keys)").arg(trackingMode).arg(keyframeCount)
-                : trackingMode);
-        trackingModeItem->setFlags(trackingModeItem->flags() & ~Qt::ItemIsEditable);
-        trackingModeItem->setData(Qt::UserRole, id);
+        auto* assignedTracksItem = new QTableWidgetItem(QString::number(assignedTrackCount));
+        assignedTracksItem->setFlags(assignedTracksItem->flags() & ~Qt::ItemIsEditable);
+        assignedTracksItem->setData(Qt::UserRole, id);
+        assignedTracksItem->setTextAlignment(Qt::AlignCenter);
+        assignedTracksItem->setToolTip(
+            assignedTrackIds.isEmpty()
+                ? QStringLiteral("No continuity tracks are assigned to this speaker yet.")
+                : QStringLiteral("Resolved assigned continuity track IDs: %1")
+                      .arg([&assignedTrackIds]() {
+                          QStringList parts;
+                          parts.reserve(assignedTrackIds.size());
+                          for (int trackId : assignedTrackIds) {
+                              parts.push_back(QString::number(trackId));
+                          }
+                          return parts.join(QStringLiteral(", "));
+                      }()));
         auto* addTrackButton = new QToolButton(m_widgets.speakersTable);
         addTrackButton->setObjectName(QStringLiteral("speakers.roster.add_tracks.%1").arg(id));
         addTrackButton->setText(QStringLiteral("+"));
@@ -1930,14 +1254,16 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
             updateSpeakerTrackingStatusLabel();
             updateSelectedSpeakerPanel();
             if (!uiAutomationEnabled()) {
-                openTrackPickerForSpeaker(id);
+                if (!openPlayheadTrackPickerForSpeaker(id)) {
+                    openTrackPickerForSpeaker(id);
+                }
             }
         });
         m_widgets.speakersTable->setItem(row, 0, avatarItem);
         m_widgets.speakersTable->setItem(row, 1, displayItem);
         m_widgets.speakersTable->setItem(row, 2, xItem);
         m_widgets.speakersTable->setItem(row, 3, yItem);
-        m_widgets.speakersTable->setItem(row, 4, trackingModeItem);
+        m_widgets.speakersTable->setItem(row, 4, assignedTracksItem);
         m_widgets.speakersTable->setCellWidget(row, 5, addTrackButton);
         m_widgets.speakersTable->setRowHeight(row, 34);
     }
@@ -2138,15 +1464,6 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerStabilizeChipButton->setEnabled(false);
     }
 
-    if (m_widgets.speakerSetReference1Button) {
-        m_widgets.speakerSetReference1Button->setEnabled(canEditSpeakerActions);
-    }
-    if (m_widgets.speakerSetReference2Button) {
-        m_widgets.speakerSetReference2Button->setEnabled(canEditSpeakerActions);
-    }
-    if (m_widgets.speakerClearReferencesButton) {
-        m_widgets.speakerClearReferencesButton->setEnabled(canEditSpeakerActions);
-    }
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setEnabled(canRunClipActions);
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generate Continuity Tracks"));
@@ -2201,19 +1518,8 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     if (m_widgets.speakerApplyFramingToClipCheckBox) {
         m_widgets.speakerApplyFramingToClipCheckBox->setEnabled(false);
     }
-    if (m_widgets.speakerPickReference1Button) {
-        m_widgets.speakerPickReference1Button->setEnabled(canEditSpeakerActions);
-        m_widgets.speakerPickReference1Button->setText(
-            m_pendingReferencePick == 1
-                ? QStringLiteral("[ARMED] Ref 1")
-                : QStringLiteral("Pick Ref 1 (Shift+Drag)"));
-    }
-    if (m_widgets.speakerPickReference2Button) {
-        m_widgets.speakerPickReference2Button->setEnabled(canEditSpeakerActions);
-        m_widgets.speakerPickReference2Button->setText(
-            m_pendingReferencePick == 2
-                ? QStringLiteral("[ARMED] Ref 2")
-                : QStringLiteral("Pick Ref 2 (Shift+Drag)"));
+    if (m_widgets.speakerFramingEnabledKeyframeTable) {
+        m_widgets.speakerFramingEnabledKeyframeTable->setEnabled(canEditClipFraming);
     }
 
     const bool hasClipWideFramingBinding =
@@ -2292,16 +1598,21 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         m_widgets.speakerTrackingChipButton->setEnabled(canEditSpeakerActions && hasContinuityArtifact);
     }
     if (selectedClip) {
+        const int64_t timelineFrame =
+            m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : selectedClip->startFrame;
+        const bool framingEnabledAtFrame =
+            evaluateClipSpeakerFramingEnabledAtFrame(*selectedClip, timelineFrame);
         const bool hasRuntimeBinding = !selectedClip->speakerFramingSpeakerId.trimmed().isEmpty();
         const bool hasFramingData =
             hasRuntimeBinding || !selectedClip->speakerFramingKeyframes.isEmpty();
-        const QString clipFramingState = selectedClip->speakerFramingEnabled
+        const QString clipFramingState = framingEnabledAtFrame
             ? QStringLiteral("ON")
             : QStringLiteral("OFF");
         if (m_widgets.speakerClipFramingStatusLabel) {
             m_widgets.speakerClipFramingStatusLabel->setText(
-                QStringLiteral("Face Stabilize: %1 | %2")
+                QStringLiteral("Face Stabilize: %1 | Enable: %2 keys | %3")
                     .arg(clipFramingState)
+                    .arg(selectedClip->speakerFramingEnabledKeyframes.size())
                     .arg(hasRuntimeBinding
                         ? QStringLiteral("Runtime FaceDetections")
                         : QStringLiteral("%1 keys").arg(selectedClip->speakerFramingKeyframes.size())));
@@ -2309,12 +1620,12 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         if (m_widgets.speakerStabilizeChipButton) {
             const bool canToggleStabilize = canEditFramingTargets && hasFramingData;
             m_widgets.speakerStabilizeChipButton->setText(
-                selectedClip->speakerFramingEnabled
+                framingEnabledAtFrame
                     ? QStringLiteral("Face Stabilize: ON")
                     : QStringLiteral("Face Stabilize: OFF"));
-            m_widgets.speakerStabilizeChipButton->setChecked(selectedClip->speakerFramingEnabled);
+            m_widgets.speakerStabilizeChipButton->setChecked(framingEnabledAtFrame);
             m_widgets.speakerStabilizeChipButton->setEnabled(canToggleStabilize);
-            if (!selectedClip->speakerFramingEnabled && !hasFramingData) {
+            if (!framingEnabledAtFrame && !hasFramingData) {
                 m_widgets.speakerStabilizeChipButton->setToolTip(
                     QStringLiteral("Face Stabilize needs a FaceDetections speaker binding. "
                                    "Run JCut DNN FaceDetections Generator with this clip selected."));
@@ -2329,7 +1640,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         }
         if (m_widgets.speakerApplyFramingToClipCheckBox) {
             const bool canToggleStabilizeFromCheckbox =
-                canEditFramingTargets && (selectedClip->speakerFramingEnabled || hasFramingData);
+                canEditFramingTargets && (framingEnabledAtFrame || hasFramingData);
             m_widgets.speakerApplyFramingToClipCheckBox->setEnabled(canToggleStabilizeFromCheckbox);
         }
     }
@@ -2359,7 +1670,13 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             .arg(assignedFaceDetectionsCount)
             .arg(streams.size())
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
-            .arg((selectedClip && selectedClip->speakerFramingEnabled) ? QStringLiteral("ON") : QStringLiteral("OFF"));
+            .arg(selectedClip && evaluateClipSpeakerFramingEnabledAtFrame(
+                                    *selectedClip,
+                                    m_deps.getCurrentTimelineFrame
+                                        ? m_deps.getCurrentTimelineFrame()
+                                        : selectedClip->startFrame)
+                     ? QStringLiteral("ON")
+                     : QStringLiteral("OFF"));
     const bool showPlayheadTracks =
         !m_widgets.speakerShowPlayheadFaceDetectionsCheckBox ||
         m_widgets.speakerShowPlayheadFaceDetectionsCheckBox->isChecked();

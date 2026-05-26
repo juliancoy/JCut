@@ -106,6 +106,11 @@ QString ProjectManager::defaultRootDirPath() const
 
 QString ProjectManager::rootDirPath() const
 {
+    const QString envRoot = normalizedExistingDirPath(qEnvironmentVariable("JCUT_PROJECT_ROOT"));
+    if (!envRoot.isEmpty()) {
+        return envRoot;
+    }
+
     auto readConfig = [this](const QString &path) -> QString {
         QFile configFile(path);
         if (!configFile.open(QIODevice::ReadOnly | QIODevice::Text)) {

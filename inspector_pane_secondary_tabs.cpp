@@ -687,15 +687,15 @@ QWidget *InspectorPane::buildProjectsTab()
     m_projectSectionLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_projectSectionLabel->setObjectName(QStringLiteral("projects.active_summary"));
     m_projectSectionLabel->setStyleSheet(QStringLiteral(
-        "padding:10px 12px; background:#0e151d; border:1px solid #223140; "
-        "border-radius:8px; color:#d7e5f2;"));
+        "padding:12px; background:#0b1218; border:1px solid #38495a; "
+        "border-radius:10px; color:#f4f8fc;"));
     layout->addWidget(m_projectSectionLabel);
 
     m_projectPathLabel = new QLabel(QStringLiteral("Select a project to view its path."), page);
     m_projectPathLabel->setWordWrap(true);
     m_projectPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_projectPathLabel->setObjectName(QStringLiteral("projects.path_summary"));
-    m_projectPathLabel->setStyleSheet(QStringLiteral("color:#9fb3c8;"));
+    m_projectPathLabel->setStyleSheet(QStringLiteral("color:#c1cfdd;"));
     layout->addWidget(m_projectPathLabel);
 
     auto *buttonRow = new QHBoxLayout;
@@ -710,7 +710,42 @@ QWidget *InspectorPane::buildProjectsTab()
     m_projectsList = new QListWidget(page);
     m_projectsList->setObjectName(QStringLiteral("projects.list"));
     m_projectsList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_projectsList->setAlternatingRowColors(true);
+    m_projectsList->setAlternatingRowColors(false);
+    m_projectsList->setStyleSheet(QStringLiteral(
+        "QListWidget#projects.list {"
+        "  background:#0a1117;"
+        "  border:1px solid #33475a;"
+        "  border-radius:10px;"
+        "  color:#f4f8fc;"
+        "  padding:6px;"
+        "  outline:0;"
+        "}"
+        "QListWidget#projects.list::item {"
+        "  margin:2px 0;"
+        "  padding:8px 10px;"
+        "  border:1px solid transparent;"
+        "  border-radius:7px;"
+        "  background:#15212c;"
+        "  color:#f4f8fc;"
+        "}"
+        "QListWidget#projects.list::item:hover {"
+        "  background:#213141;"
+        "  border-color:#6d8297;"
+        "}"
+        "QListWidget#projects.list::item:selected {"
+        "  background:#f4f7fb;"
+        "  color:#0b1117;"
+        "  border-color:#0b1117;"
+        "}"
+        "QListWidget#projects.list::item:selected:active {"
+        "  background:#f4f7fb;"
+        "  color:#0b1117;"
+        "}"
+        "QListWidget#projects.list::item:selected:!active {"
+        "  background:#dfe8f1;"
+        "  color:#0b1117;"
+        "}"
+    ));
     layout->addWidget(m_projectsList, 1);
 
     return page;

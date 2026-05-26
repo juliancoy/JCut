@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "opengl_preview_debug.h"
+#include "startup_project_state.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -16,12 +17,6 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 using namespace editor;
-
-namespace editor_startup {
-QJsonObject loadStartupStatePayload(const QString& projectId,
-                                    const QString& statePath,
-                                    const QString& historyPath);
-}
 
 namespace {
 bool restVulkanDiagnosticsModeEnabled()

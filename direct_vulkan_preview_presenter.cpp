@@ -9,6 +9,9 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QJsonArray>
+#include <QPaintEvent>
+#include <QPainter>
+#include <QPen>
 #include <QStackedLayout>
 #include <QTransform>
 #include <QVBoxLayout>
@@ -18,6 +21,273 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+
+namespace {
+
+struct OverlayGeometry {
+    QTransform clipToScreen;
+    QRectF localRect;
+};
+
+const TimelineClip* selectedClipForTargetBox(const PreviewInteractionState* state)
+{
+    if (!state) {
+        return nullptr;
+    }
+    const QString selectedId = state->selectedClipId.trimmed();
+    if (!selectedId.isEmpty()) {
+        for (const TimelineClip& clip : state->clips) {
+            const TimelineClip::TransformKeyframe targetState =
+                evaluateClipSpeakerFramingTargetAtFrame(clip, state->currentFrame);
+            if (clip.id == selectedId &&
+                qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
+                return &clip;
+            }
+        }
+    }
+    for (const TimelineClip& clip : state->clips) {
+        const TimelineClip::TransformKeyframe targetState =
+            evaluateClipSpeakerFramingTargetAtFrame(clip, state->currentFrame);
+        if (qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
+            return &clip;
+        }
+    }
+    return nullptr;
+}
+
+QSize sourceSizeForClipId(const PreviewInteractionState* state, const QString& clipId)
+{
+    if (!state) {
+        return QSize();
+    }
+    for (const TimelineClip& clip : state->clips) {
+        if (clip.id == clipId) {
+            return clip.sourceFrameSize;
+        }
+    }
+    return QSize();
+}
+
+TimelineClip::TransformKeyframe transientAwareTransform(
+    const PreviewInteractionState* state,
+    const QString& clipId,
+    const TimelineClip::TransformKeyframe& fallback)
+{
+    if (state &&
+        state->transient.transformOverrideActive &&
+        state->transient.transformOverrideClipId == clipId) {
+        return state->transient.transformOverride;
+    }
+    return fallback;
+}
+
+QHash<QString, OverlayGeometry> activeClipGeometryById(const PreviewInteractionState* state,
+                                                       QWidget* widget)
+{
+    QHash<QString, OverlayGeometry> geometries;
+    if (!state || !widget) {
+        return geometries;
+    }
+
+    const QRectF logicalSurfaceRect =
+        PreviewViewTransform::rectForWidget(widget, PreviewSurfaceCoordinateSpace::LogicalWidget);
+    if (logicalSurfaceRect.isEmpty()) {
+        return geometries;
+    }
+
+    const PreviewViewTransform viewTransform(
+        logicalSurfaceRect,
+        state->outputSize,
+        36.0,
+        state->previewZoom,
+        state->previewPanOffset);
+    const QPointF previewScale = viewTransform.outputScale();
+    for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
+        if (!status.active || status.drawSuppressed) {
+            continue;
+        }
+        const QRectF fitted =
+            viewTransform.fittedClipRect(sourceSizeForClipId(state, status.clipId), status.frameSize);
+        const TimelineClip::TransformKeyframe transform =
+            transientAwareTransform(state, status.clipId, status.transform);
+        PreviewClipGeometry geometry = PreviewViewTransform::clipGeometry(
+            fitted,
+            previewScale,
+            QPointF(transform.translationX, transform.translationY),
+            transform.rotation,
+            QPointF(transform.scaleX, transform.scaleY));
+        if (status.sampledFrameNeedsYFlip) {
+            geometry.clipToScreen.scale(1.0, -1.0);
+        }
+        geometries.insert(status.clipId, OverlayGeometry{geometry.clipToScreen, geometry.localRect});
+    }
+    return geometries;
+}
+
+class DirectVulkanPreviewOverlayWidget final : public QWidget {
+public:
+    explicit DirectVulkanPreviewOverlayWidget(PreviewInteractionState* state, QWidget* parent = nullptr)
+        : QWidget(parent)
+        , m_state(state)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        setAttribute(Qt::WA_NoSystemBackground, true);
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAutoFillBackground(false);
+    }
+
+protected:
+    void paintEvent(QPaintEvent* event) override
+    {
+        Q_UNUSED(event)
+        if (!m_state || m_state->viewMode == PreviewSurface::ViewMode::Audio) {
+            return;
+        }
+
+        const QHash<QString, OverlayGeometry> geometries = activeClipGeometryById(m_state, this);
+        if (geometries.isEmpty()) {
+            return;
+        }
+
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        drawContinuityOverlays(&painter, geometries);
+        drawRawDetections(&painter, geometries);
+        drawTargetBoxOverlay(&painter);
+    }
+
+private:
+    static QRectF screenBoxForOverlay(const VulkanPreviewFacestreamOverlay& overlay,
+                                      const OverlayGeometry& geometry,
+                                      const QRect& viewportRect)
+    {
+        if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
+            return QRectF();
+        }
+        const QRectF localBox =
+            PreviewViewTransform::localRectForNormalizedRect(overlay.boxNorm, geometry.localRect);
+        return geometry.clipToScreen.mapRect(localBox).normalized().intersected(QRectF(viewportRect));
+    }
+
+    void drawContinuityOverlays(QPainter* painter,
+                                const QHash<QString, OverlayGeometry>& geometries) const
+    {
+        if (!painter || !m_state || m_state->facedetectionsOverlays.isEmpty()) {
+            return;
+        }
+
+        for (const VulkanPreviewFacestreamOverlay& overlay : m_state->facedetectionsOverlays) {
+            const auto geometryIt = geometries.constFind(overlay.clipId);
+            if (geometryIt == geometries.constEnd()) {
+                continue;
+            }
+            const QRectF screenBox = screenBoxForOverlay(overlay, geometryIt.value(), rect());
+            if (screenBox.width() < 2.0 || screenBox.height() < 2.0) {
+                continue;
+            }
+
+            const bool hovered =
+                m_state->faceStreamAssignmentInteractionEnabled &&
+                overlay.trackId >= 0 &&
+                overlay.trackId == m_state->transient.hoveredFaceDetectionsTrackId &&
+                overlay.streamId == m_state->transient.hoveredFaceDetectionsId &&
+                overlay.clipId == m_state->transient.hoveredFaceDetectionsClipId;
+            const uint hueHash = qHash(
+                overlay.streamId.isEmpty() ? QString::number(overlay.trackId) : overlay.streamId);
+            QColor stroke = QColor::fromHsv(static_cast<int>(hueHash % 360), 185, 255, 245);
+            QColor fill(stroke.red(), stroke.green(), stroke.blue(), 38);
+            qreal width = 2.5;
+            if (hovered) {
+                stroke = QColor(QStringLiteral("#ffd54a"));
+                fill = QColor(255, 213, 74, 74);
+                width = 3.0;
+            }
+
+            painter->setPen(QPen(stroke, width, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+            painter->setBrush(fill);
+            painter->drawRect(screenBox.adjusted(0.5, 0.5, -0.5, -0.5));
+        }
+    }
+
+    void drawRawDetections(QPainter* painter,
+                           const QHash<QString, OverlayGeometry>& geometries) const
+    {
+        if (!painter || !m_state || m_state->rawDetectionOverlays.isEmpty()) {
+            return;
+        }
+
+        for (const VulkanPreviewFacestreamOverlay& overlay : m_state->rawDetectionOverlays) {
+            const auto geometryIt = geometries.constFind(overlay.clipId);
+            if (geometryIt == geometries.constEnd()) {
+                continue;
+            }
+            const QRectF screenBox = screenBoxForOverlay(overlay, geometryIt.value(), rect());
+            if (screenBox.width() < 2.0 || screenBox.height() < 2.0) {
+                continue;
+            }
+
+            painter->setPen(QPen(QColor(QStringLiteral("#4ade80")), 2.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+            painter->setBrush(QColor(74, 222, 128, 44));
+            painter->drawRect(screenBox.adjusted(0.5, 0.5, -0.5, -0.5));
+        }
+    }
+
+    void drawTargetBoxOverlay(QPainter* painter) const
+    {
+        if (!painter || !m_state) {
+            return;
+        }
+        const TimelineClip* selectedClip = selectedClipForTargetBox(m_state);
+        if (!selectedClip) {
+            return;
+        }
+
+        const QRectF logicalSurfaceRect =
+            PreviewViewTransform::rectForWidget(this, PreviewSurfaceCoordinateSpace::LogicalWidget);
+        if (logicalSurfaceRect.isEmpty()) {
+            return;
+        }
+        const PreviewViewTransform viewTransform(
+            logicalSurfaceRect,
+            m_state->outputSize,
+            36.0,
+            m_state->previewZoom,
+            m_state->previewPanOffset);
+        const QRectF compositeRect = viewTransform.targetRect();
+        if (compositeRect.isEmpty()) {
+            return;
+        }
+
+        const TimelineClip::TransformKeyframe targetState =
+            evaluateClipSpeakerFramingTargetAtFrame(*selectedClip, m_state->currentFrame);
+        const qreal targetXNorm = qBound<qreal>(0.0, targetState.translationX, 1.0);
+        const qreal targetYNorm = qBound<qreal>(0.0, targetState.translationY, 1.0);
+        const qreal targetBoxNorm = qBound<qreal>(-1.0, targetState.scaleX, 1.0);
+        if (targetBoxNorm <= 0.0) {
+            return;
+        }
+
+        const qreal centerX = compositeRect.left() + (targetXNorm * compositeRect.width());
+        const qreal centerY = compositeRect.top() + (targetYNorm * compositeRect.height());
+        const qreal targetSideScreenPx = qBound<qreal>(
+            2.0,
+            targetBoxNorm * qMax<qreal>(1.0, qMin<qreal>(compositeRect.width(), compositeRect.height())),
+            4096.0);
+        const qreal halfSide = targetSideScreenPx * 0.5;
+
+        const QColor accentColor(255, 226, 74, 235);
+        painter->setPen(QPen(accentColor, 2.0, Qt::DashLine));
+        painter->setBrush(QColor(255, 226, 74, 28));
+        painter->drawRect(QRectF(centerX - halfSide, centerY - halfSide, targetSideScreenPx, targetSideScreenPx));
+        painter->setPen(QPen(accentColor, 1.8));
+        painter->drawLine(QPointF(centerX - 9.0, centerY), QPointF(centerX + 9.0, centerY));
+        painter->drawLine(QPointF(centerX, centerY - 9.0), QPointF(centerX, centerY + 9.0));
+    }
+
+    PreviewInteractionState* m_state = nullptr;
+};
+
+} // namespace
 
 DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionState* state, QWidget* parent)
     : m_state(state)
@@ -110,6 +380,10 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_windowContainer->setMinimumSize(160, 120);
     m_windowContainer->setToolTip(QStringLiteral("Direct Vulkan preview presenter (%1).")
                                       .arg(directVulkanPreviewVisiblePathLabel()));
+
+    m_overlayWidget = new DirectVulkanPreviewOverlayWidget(m_state, m_placeholder.get());
+    m_overlayWidget->setGeometry(m_placeholder->rect());
+    m_overlayWidget->show();
 
     m_statusLabel = new QLabel(m_placeholder.get());
     m_statusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
@@ -306,6 +580,11 @@ void DirectVulkanPreviewPresenter::requestUpdate()
             directVulkanPreviewWindowRaise(m_window);
         }
         directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
+    }
+    if (m_overlayWidget) {
+        m_overlayWidget->setGeometry(m_placeholder->rect());
+        m_overlayWidget->raise();
+        m_overlayWidget->update();
     }
     updateAudioOverlay();
     if (m_audioInfoPanel && m_audioInfoPanel->isVisible()) {

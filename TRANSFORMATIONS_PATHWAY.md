@@ -13,7 +13,7 @@ This document captures the current transform flow for Subtitle Face Tracking and
 
 - `tracking` (transcript speaker profile framing object): speaker FaceDetections data (`keyframes`) plus explicit `enabled`.
 - `Face Stabilize` (clip-level): uses `speakerFramingKeyframes` on a selected clip.
-- `FaceBox target` (clip-level): `speakerFramingTargetXNorm`, `speakerFramingTargetYNorm`, `speakerFramingTargetBoxNorm`.
+- `target box` (clip-level): `speakerFramingTargetXNorm`, `speakerFramingTargetYNorm`, `speakerFramingTargetBoxNorm`.
 - `baked target` (clip-level solve baseline):
   - `speakerFramingBakedTargetXNorm`
   - `speakerFramingBakedTargetYNorm`
@@ -51,7 +51,7 @@ Runtime mode:
 
 1. Generate FaceDetections writes transcript speaker framing `keyframes` only.
 2. Clip stores `speakerFramingSpeakerId` binding.
-3. Face Stabilize transform is evaluated at runtime from FaceDetections sample + FaceBox target.
+3. Face Stabilize transform is evaluated at runtime from FaceDetections sample + target box.
 4. No transform bake/smoothing is applied during Generate FaceDetections.
 
 ### 3. Render transform composition
@@ -91,7 +91,7 @@ Space transition summary:
 
 ### Live target retargeting
 
-When FaceBox `X/Y` changes:
+When target-box `X/Y` changes:
 
 1. Compute output-space delta from baked target to current target.
 2. Shift existing `speakerFramingKeyframes` translation by that delta.

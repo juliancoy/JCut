@@ -259,7 +259,7 @@ private:
     
     // Prefetching
     QTimer m_prefetchTimer;
-    int m_lookaheadFrames = 30;
+    int m_lookaheadFrames = kTimelineFps;
     mutable QMutex m_pendingMutex;
     QHash<QString, PendingVisibleRequest> m_pendingVisibleRequests;
     QSet<QString> m_pendingPrefetchRequests;

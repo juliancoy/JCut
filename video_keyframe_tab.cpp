@@ -1110,8 +1110,8 @@ void VideoKeyframeTab::onFlipHorizontalClicked()
                                                       m_deps.getCurrentTimelineFrame() - clip->startFrame,
                                                       qMax<int64_t>(0, clip->durationFrames - 1));
     
-    // Calculate the end frame (1 second later = 30 frames at 30fps)
-    static constexpr int64_t kOneSecondFrames = 30;
+    // Calculate the end frame one timeline second later.
+    static constexpr int64_t kOneSecondFrames = kTimelineFps;
     const int64_t endLocalFrame = qMin<int64_t>(currentLocalFrame + kOneSecondFrames, 
                                                 qMax<int64_t>(0, clip->durationFrames - 1));
 

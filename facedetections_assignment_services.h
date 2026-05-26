@@ -5,6 +5,7 @@
 
 #include <QJsonArray>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
@@ -18,12 +19,16 @@ struct CropExtractionRequest {
     QString cropsDir;
     QString videoStem;
     QJsonArray streams;
+    int maxRepresentativeCrops = 5;
+    int minRepresentativeCropFrameSpacing = 24;
 };
 
 struct CropExtractionResult {
     bool ok = false;
     bool canceled = false;
     QString errorMessage;
+    QStringList warnings;
+    QJsonArray diagnosticRows;
     QVector<facefind::Candidate> candidates;
     QJsonArray candidateRows;
 };
@@ -39,6 +44,7 @@ struct TrackIdentityEvidence {
     QVector<facefind::Candidate> cropSamples;
     std::vector<float> embedding;
     bool hasEmbedding = false;
+    int embeddedCropCount = 0;
 };
 
 struct ClusterResult {
@@ -64,6 +70,7 @@ struct SeedTrackMatch {
     facefind::Candidate representativeCandidate;
     std::vector<float> embedding;
     bool hasEmbedding = false;
+    int embeddedCropCount = 0;
     double cosine = -1.0;
     QString decision;
 };

@@ -3570,7 +3570,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         : availableFrames;
     sourceClip.durationFrames = qMax<int64_t>(1, targetFrames);
     sourceClip.sourceDurationFrames = qMax<int64_t>(1, targetFrames);
-    sourceClip.sourceFps = static_cast<qreal>(kTimelineFps);
+    sourceClip.sourceFps = decoder.info().fps > 0.001
+        ? static_cast<qreal>(decoder.info().fps)
+        : static_cast<qreal>(kTimelineFps);
     sourceClip.playbackRate = 1.0;
     if (options.applyClipGrading && options.clipJsonPath.trimmed().isEmpty()) {
         std::cerr << "--apply-clip-grading requires --clip-json.\n";

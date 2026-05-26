@@ -170,9 +170,8 @@ bool ArcFaceNcnnEmbedder::embedFaceCrop(const QString& imagePath, std::vector<fl
     }
     ncnn::Mat input = ncnn::Mat::from_pixels_resize(
         rgb.constBits(), ncnn::Mat::PIXEL_RGB, rgb.width(), rgb.height(), 112, 112);
-    const float meanVals[3] = {127.5f, 127.5f, 127.5f};
-    const float normVals[3] = {1.0f / 128.0f, 1.0f / 128.0f, 1.0f / 128.0f};
-    input.substract_mean_normalize(meanVals, normVals);
+    // The bundled NCNN param has preprocessing layers at the graph input:
+    // subtract 127.5, then multiply by 1/128. Applying it here too collapses identity scores.
 
     ncnn::Extractor ex = m_impl->net.create_extractor();
     ex.set_light_mode(true);

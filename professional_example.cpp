@@ -325,7 +325,7 @@ public:
             }
             
             while (avcodec_receive_frame(m_codecCtx, frame) == 0) {
-                int64_t pts = av_rescale_q(frame->pts, stream->time_base, AVRational{1, 30});
+                int64_t pts = av_rescale_q(frame->pts, stream->time_base, AVRational{1, kTimelineFps});
                 if (pts >= targetFrame) {
                     currentFrame = pts;
                     break;
@@ -368,7 +368,7 @@ public:
             }
             
             while (avcodec_receive_frame(m_codecCtx, frame) == 0) {
-                int64_t pts = av_rescale_q(frame->pts, stream->time_base, AVRational{1, 30});
+                int64_t pts = av_rescale_q(frame->pts, stream->time_base, AVRational{1, kTimelineFps});
                 
                 if (pts >= frameNumber) {
                     // Got our frame

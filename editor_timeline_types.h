@@ -66,6 +66,11 @@ struct TimelineClip {
         bool linearInterpolation = true;
     };
 
+    struct BoolKeyframe {
+        int64_t frame = 0;
+        bool enabled = false;
+    };
+
     struct TitleKeyframe {
         int64_t frame = 0;
         QString text;
@@ -172,16 +177,15 @@ struct TimelineClip {
     qreal baseScaleY = 1.0;
     bool speakerFramingEnabled = false;
     QString speakerFramingSpeakerId;
-    qreal speakerFramingTargetXNorm = 0.5;
-    qreal speakerFramingTargetYNorm = 0.35;
-    qreal speakerFramingTargetBoxNorm = -1.0;
     qreal speakerFramingBakedTargetXNorm = 0.5;
     qreal speakerFramingBakedTargetYNorm = 0.35;
     qreal speakerFramingBakedTargetBoxNorm = -1.0;
     qreal speakerFramingMinConfidence = 0.08;
     bool transformSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;
+    QVector<BoolKeyframe> speakerFramingEnabledKeyframes;
     QVector<TransformKeyframe> speakerFramingKeyframes;
+    QVector<TransformKeyframe> speakerFramingTargetKeyframes;
     QVector<GradingKeyframe> gradingKeyframes;
     QVector<OpacityKeyframe> opacityKeyframes;
     QVector<TitleKeyframe> titleKeyframes;

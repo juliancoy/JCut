@@ -412,10 +412,17 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_budget.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_frame_selection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/startup_project_state.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/track_avatar_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache_requests.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache_seek_resync.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache_storage.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_edit_service.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_save_controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_document.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/clip_serialization.cpp

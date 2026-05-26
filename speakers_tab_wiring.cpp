@@ -1,4 +1,5 @@
 #include "speakers_tab.h"
+#include "facedetections_artifact_utils.h"
 #include "speakers_tab_internal.h"
 #include "speakers_table.h"
 
@@ -8,6 +9,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QEvent>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
@@ -19,6 +21,8 @@
 #include <QTimer>
 #include <QWheelEvent>
 #include <QJsonDocument>
+
+#include <limits>
 
 void SpeakersTab::wire()
 {
@@ -111,16 +115,59 @@ void SpeakersTab::wire()
                 return;
             }
             QTableWidgetItem* streamItem = m_widgets.speakerFaceDetectionsTable->item(row, 0);
-            const int64_t frame30 = streamItem
+            const int64_t storedFrame = streamItem
                 ? streamItem->data(Qt::UserRole + 2).toLongLong()
                 : -1;
-            if (frame30 >= 0 && m_deps.seekToTimelineFrame) {
+            if (storedFrame >= 0 && m_deps.seekToTimelineFrame) {
                 const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
                 if (clip) {
-                    const qreal sourceFps = resolvedSourceFps(*clip);
-                    const int64_t sourceFrame = qMax<int64_t>(
-                        0, static_cast<int64_t>(std::floor((static_cast<qreal>(frame30) / kTimelineFps) * sourceFps)));
-                    int64_t timelineFrame = clip->startFrame + (sourceFrame - clip->sourceInFrame);
+                    QJsonObject streamObj;
+                    const int rowIndex = streamItem ? streamItem->data(Qt::UserRole + 1).toInt() : -1;
+                    if (rowIndex >= 0 && rowIndex < m_faceStreamPanelRows.size()) {
+                        streamObj = m_faceStreamPanelRows.at(rowIndex).toObject();
+                    }
+                    FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
+                    if (!streamObj.isEmpty() &&
+                        !parseFacestreamFrameDomainString(
+                            streamObj.value(QStringLiteral("frame_domain")).toString(),
+                            &frameDomain)) {
+                        int64_t minFrame = std::numeric_limits<int64_t>::max();
+                        int64_t maxFrame = std::numeric_limits<int64_t>::min();
+                        const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+                        for (const QJsonValue& keyframeValue : keyframes) {
+                            const int64_t frame = keyframeValue
+                                .toObject()
+                                .value(QString(kTranscriptSpeakerTrackingFrameKey))
+                                .toVariant()
+                                .toLongLong();
+                            minFrame = qMin(minFrame, frame);
+                            maxFrame = qMax(maxFrame, frame);
+                        }
+                        if (minFrame <= maxFrame) {
+                            frameDomain = inferFacestreamFrameDomain(*clip, minFrame, maxFrame);
+                        }
+                    }
+
+                    int64_t timelineFrame = clip->startFrame + storedFrame;
+                    if (frameDomain != FacestreamFrameDomain::ClipTimeline30Fps) {
+                        const QVector<RenderSyncMarker> renderSyncMarkers =
+                            m_speakerDeps.getRenderSyncMarkers
+                                ? m_speakerDeps.getRenderSyncMarkers()
+                                : QVector<RenderSyncMarker>{};
+                        const int64_t sourceFrame =
+                            mapFacestreamFrameToSourceFrame(*clip, storedFrame, frameDomain, renderSyncMarkers);
+                        const qreal sourceFps = resolvedSourceFps(*clip);
+                        const qreal sourceOffset = qMax<qreal>(
+                            0.0,
+                            static_cast<qreal>(sourceFrame - clip->sourceInFrame));
+                        const qreal rate = qMax<qreal>(0.001, clip->playbackRate);
+                        const int64_t localTimelineFrame = qMax<int64_t>(
+                            0,
+                            static_cast<int64_t>(std::floor(
+                                (sourceOffset / (qMax<qreal>(0.001, sourceFps) * rate)) *
+                                static_cast<qreal>(kTimelineFps))));
+                        timelineFrame = clip->startFrame + localTimelineFrame;
+                    }
                     const int64_t clipEndFrame = clip->startFrame + qMax<int64_t>(0, clip->durationFrames - 1);
                     timelineFrame = qBound<int64_t>(clip->startFrame, timelineFrame, clipEndFrame);
                     m_deps.seekToTimelineFrame(timelineFrame);
@@ -163,30 +210,6 @@ void SpeakersTab::wire()
                     : detectionJson);
         });
     }
-    if (m_widgets.speakerSetReference1Button) {
-        connect(m_widgets.speakerSetReference1Button, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerSetReference1Clicked);
-    }
-    if (m_widgets.speakerSetReference2Button) {
-        connect(m_widgets.speakerSetReference2Button, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerSetReference2Clicked);
-    }
-    if (m_widgets.speakerPickReference1Button) {
-        m_widgets.speakerPickReference1Button->setToolTip(
-            QStringLiteral("Required baseline. Arm Ref 1 pick mode, then in Preview hold Shift and drag a square over the speaker head for framing."));
-        connect(m_widgets.speakerPickReference1Button, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerPickReference1Clicked);
-    }
-    if (m_widgets.speakerPickReference2Button) {
-        m_widgets.speakerPickReference2Button->setToolTip(
-            QStringLiteral("Optional quality boost. Arm Ref 2 and pick another frame for better framing interpolation."));
-        connect(m_widgets.speakerPickReference2Button, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerPickReference2Clicked);
-    }
-    if (m_widgets.speakerClearReferencesButton) {
-        connect(m_widgets.speakerClearReferencesButton, &QPushButton::clicked,
-                this, &SpeakersTab::onSpeakerClearReferencesClicked);
-    }
     if (m_widgets.speakerRunAutoTrackButton) {
         m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("GENERATE CONTINUITY TRACKS"));
         m_widgets.speakerRunAutoTrackButton->setMinimumHeight(40);
@@ -220,6 +243,12 @@ void SpeakersTab::wire()
             QStringLiteral("Open continuity-track rebuild and smoothing tools."));
         connect(m_widgets.speakerFacestreamSettingsButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerFaceDetectionsSettingsClicked);
+    }
+    if (m_widgets.speakerRefreshTrackAvatarsButton) {
+        m_widgets.speakerRefreshTrackAvatarsButton->setToolTip(
+            QStringLiteral("Regenerate and persist representative avatar crops for continuity tracks."));
+        connect(m_widgets.speakerRefreshTrackAvatarsButton, &QPushButton::clicked,
+                this, &SpeakersTab::onSpeakerRefreshTrackAvatarsClicked);
     }
     if (m_widgets.speakerTrackingChipButton) {
         m_widgets.speakerTrackingChipButton->setToolTip(
@@ -322,6 +351,23 @@ void SpeakersTab::wire()
         connect(m_widgets.speakerApplyFramingToClipCheckBox, &QCheckBox::toggled,
                 this, &SpeakersTab::onSpeakerApplyFramingToClipChanged);
     }
+    if (m_widgets.speakerFramingEnabledKeyframeTable) {
+        m_widgets.speakerFramingEnabledKeyframeTable->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.speakerFramingEnabledKeyframeTable,
+                &QTableWidget::itemSelectionChanged,
+                this,
+                &SpeakersTab::onSpeakerFramingEnabledTableSelectionChanged);
+        connect(m_widgets.speakerFramingEnabledKeyframeTable,
+                &QTableWidget::itemChanged,
+                this,
+                &SpeakersTab::onSpeakerFramingEnabledTableItemChanged);
+        connect(m_widgets.speakerFramingEnabledKeyframeTable,
+                &QWidget::customContextMenuRequested,
+                this,
+                &SpeakersTab::onSpeakerFramingEnabledTableContextMenu);
+        m_widgets.speakerFramingEnabledKeyframeTable->installEventFilter(this);
+        m_widgets.speakerFramingEnabledKeyframeTable->viewport()->installEventFilter(this);
+    }
     if (m_widgets.selectedSpeakerPreviousSentenceButton) {
         connect(m_widgets.selectedSpeakerPreviousSentenceButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerPreviousSentenceClicked);
@@ -334,95 +380,20 @@ void SpeakersTab::wire()
         connect(m_widgets.selectedSpeakerRandomSentenceButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerRandomSentenceClicked);
     }
-    if (m_widgets.selectedSpeakerRef1ImageLabel) {
-        m_widgets.selectedSpeakerRef1ImageLabel->installEventFilter(this);
-        m_widgets.selectedSpeakerRef1ImageLabel->setCursor(Qt::PointingHandCursor);
-        m_widgets.selectedSpeakerRef1ImageLabel->setToolTip(
-            QStringLiteral("Click: open Ref 1 preview/identity assignment. Shift+Drag: adjust crop."));
-    }
-    if (m_widgets.selectedSpeakerRef2ImageLabel) {
-        m_widgets.selectedSpeakerRef2ImageLabel->installEventFilter(this);
-        m_widgets.selectedSpeakerRef2ImageLabel->setCursor(Qt::PointingHandCursor);
-        m_widgets.selectedSpeakerRef2ImageLabel->setToolTip(
-            QStringLiteral("Click: open Ref 2 preview/identity assignment. Shift+Drag: adjust crop."));
-    }
     updatePlayheadTrackCandidatesVisibility();
     syncSpeakerListMode();
 }
 
 bool SpeakersTab::eventFilter(QObject* watched, QEvent* event)
 {
-    QLabel* label = qobject_cast<QLabel*>(watched);
-    const bool isRef1 = watched == m_widgets.selectedSpeakerRef1ImageLabel;
-    const bool isRef2 = watched == m_widgets.selectedSpeakerRef2ImageLabel;
-    if (!isRef1 && !isRef2) {
-        return TableTabBase::eventFilter(watched, event);
-    }
-    const int referenceIndex = isRef1 ? 1 : 2;
-
-    switch (event->type()) {
-    case QEvent::MouseButtonPress: {
-        auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (mouseEvent->button() != Qt::LeftButton) {
-            break;
+    if (event && event->type() == QEvent::KeyPress &&
+        m_widgets.speakerFramingEnabledKeyframeTable &&
+        (watched == m_widgets.speakerFramingEnabledKeyframeTable ||
+         watched == m_widgets.speakerFramingEnabledKeyframeTable->viewport())) {
+        auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Delete || keyEvent->key() == Qt::Key_Backspace) {
+            return removeSelectedSpeakerFramingEnabledKeyframes();
         }
-        const bool dragModifierPressed = (mouseEvent->modifiers() & Qt::ShiftModifier);
-        if (dragModifierPressed && beginSelectedReferenceAvatarDrag(referenceIndex, mouseEvent->pos())) {
-            if (label) {
-                label->setCursor(Qt::ClosedHandCursor);
-                label->grabMouse();
-            }
-            mouseEvent->accept();
-            return true;
-        }
-        openReferencePreviewWindow(referenceIndex);
-        mouseEvent->accept();
-        return true;
     }
-    case QEvent::MouseMove: {
-        if (!m_selectedAvatarDragActive || m_selectedAvatarDragReferenceIndex != referenceIndex) {
-            break;
-        }
-        auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        updateSelectedReferenceAvatarDrag(mouseEvent->pos());
-        mouseEvent->accept();
-        return true;
-    }
-    case QEvent::MouseButtonRelease: {
-        auto* mouseEvent = static_cast<QMouseEvent*>(event);
-        if (!m_selectedAvatarDragActive || m_selectedAvatarDragReferenceIndex != referenceIndex ||
-            mouseEvent->button() != Qt::LeftButton) {
-            break;
-        }
-        finishSelectedReferenceAvatarDrag(true);
-        if (label) {
-            label->releaseMouse();
-            label->setCursor(Qt::PointingHandCursor);
-        }
-        mouseEvent->accept();
-        return true;
-    }
-    case QEvent::Wheel: {
-        auto* wheelEvent = static_cast<QWheelEvent*>(event);
-        if (adjustSelectedReferenceAvatarZoom(referenceIndex, wheelEvent->angleDelta().y())) {
-            wheelEvent->accept();
-            return true;
-        }
-        break;
-    }
-    case QEvent::Hide:
-    case QEvent::Destroy: {
-        if (m_selectedAvatarDragActive && m_selectedAvatarDragReferenceIndex == referenceIndex) {
-            finishSelectedReferenceAvatarDrag(false);
-            if (label) {
-                label->releaseMouse();
-                label->setCursor(Qt::PointingHandCursor);
-            }
-        }
-        break;
-    }
-    default:
-        break;
-    }
-    return TableTabBase::eventFilter(watched, event);
+    return QObject::eventFilter(watched, event);
 }

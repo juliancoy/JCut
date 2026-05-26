@@ -245,7 +245,8 @@ bool SpeakersTab::runAiFindSpeakerNames()
             .arg(appliedProposals.size())
             .arg(autoApplyUnnamedProposals.size())
             .arg(overwriteExistingNameProposals.size()));
-    refresh();
+    m_speakersTableRefreshSignature.clear();
+    refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
     return true;
 }
 
@@ -339,7 +340,8 @@ bool SpeakersTab::runAiFindOrganizations()
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
     }
-    refresh();
+    m_speakersTableRefreshSignature.clear();
+    refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
     return true;
 }
 
@@ -495,7 +497,8 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
     }
-    refresh();
+    m_speakersTableRefreshSignature.clear();
+    refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
     QMessageBox::information(nullptr,
                              QStringLiteral("Clean Assignments"),
                              QStringLiteral("Reassigned %1 one-off speaker word labels.")

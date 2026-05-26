@@ -24,8 +24,6 @@ const QLatin1String kTranscriptSpeakerTrackingKey("tracking");
 const QLatin1String kTranscriptSpeakerTrackingModeKey("mode");
 const QLatin1String kTranscriptSpeakerTrackingEnabledKey("enabled");
 const QLatin1String kTranscriptSpeakerTrackingAutoStateKey("auto_state");
-const QLatin1String kTranscriptSpeakerTrackingRef1Key("ref1");
-const QLatin1String kTranscriptSpeakerTrackingRef2Key("ref2");
 const QLatin1String kTranscriptSpeakerTrackingFrameKey("frame");
 const QLatin1String kTranscriptSpeakerTrackingBoxSizeKey("box_size");
 const QLatin1String kTranscriptSpeakerTrackingBoxLeftKey("box_left");
@@ -39,28 +37,6 @@ const QLatin1String kSpeakerFlowAnchorSourceFrameKey("anchor_source_frame");
 const QLatin1String kSpeakerFlowAnchorXKey("anchor_x");
 const QLatin1String kSpeakerFlowAnchorYKey("anchor_y");
 const QLatin1String kSpeakerFlowAnchorBoxSizeKey("anchor_box_size");
-
-QJsonObject transcriptTrackingReferencePoint(const QJsonObject& tracking,
-                                             const QLatin1String& key,
-                                             bool* okOut)
-{
-    if (okOut) {
-        *okOut = false;
-    }
-    const QJsonObject ref = tracking.value(QString(key)).toObject();
-    if (ref.isEmpty()) {
-        return {};
-    }
-    if (!ref.contains(QString(kTranscriptSpeakerTrackingFrameKey)) ||
-        !ref.contains(QString(kTranscriptSpeakerLocationXKey)) ||
-        !ref.contains(QString(kTranscriptSpeakerLocationYKey))) {
-        return {};
-    }
-    if (okOut) {
-        *okOut = true;
-    }
-    return ref;
-}
 
 bool transcriptTrackingHasPointstream(const QJsonObject& tracking);
 
@@ -114,14 +90,6 @@ QJsonObject previewKeyframeFromSpeakerFaceRef(const QJsonObject& faceRef)
 void setSpeakerFramingObject(QJsonObject& profile, const QJsonObject& framing)
 {
     profile[QString(kTranscriptSpeakerFramingKey)] = framing;
-}
-
-int64_t canonicalToSourceFrameForTracking(int64_t frame30, double sourceFps)
-{
-    const double fps = sourceFps > 0.0 ? sourceFps : static_cast<double>(kTimelineFps);
-    return qMax<int64_t>(
-        0, static_cast<int64_t>(std::floor((static_cast<double>(frame30) /
-                                            static_cast<double>(kTimelineFps)) * fps)));
 }
 
 QImage toGray8(const QImage& image)

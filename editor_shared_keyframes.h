@@ -17,6 +17,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const TimelineClip& clip,
                                                                      qreal timelineFramePosition,
                                                                      const QSize& outputSize = QSize());
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtFrame(const TimelineClip& clip,
+                                                                        int64_t timelineFrame);
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtPosition(const TimelineClip& clip,
+                                                                           qreal timelineFramePosition);
+bool evaluateClipSpeakerFramingEnabledAtFrame(const TimelineClip& clip, int64_t timelineFrame);
+bool evaluateClipSpeakerFramingEnabledAtPosition(const TimelineClip& clip, qreal timelineFramePosition);
 TimelineClip::TransformKeyframe composeClipTransforms(const TimelineClip::TransformKeyframe& base,
                                                       const TimelineClip::TransformKeyframe& overlay);
 TimelineClip::TransformKeyframe evaluateClipRenderTransformAtFrame(const TimelineClip& clip,

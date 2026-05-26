@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "../editor_shared.h"
+#include "../editor_shared_keyframes.h"
 #include "../transcript_engine.h"
 
 using namespace editor;
@@ -80,6 +81,7 @@ private slots:
     void testSpeechFilterUsesActiveTranscriptCut();
     void testAllSkippedWordsYieldNoSpeechRanges();
     void testEmptyBaseRangesUseInclusiveClipEnd();
+    void testRuntimeSidecarPathPrefersEditableLegacyArtifact();
     void testSpeakerTrackingInterpolatesOverlayLocation();
     void testSpeakerTrackingIgnoresBoxSizeForPositionInterpolation();
     void testSpeakerLocationFallsBackToProfileLocation();
@@ -93,6 +95,7 @@ private slots:
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
     void testTranscriptOverlayManualPlacementOverridesSpeakerTracking();
+    void testSpeakerFramingEnabledKeyframesOverrideGlobalFallback();
     void testSpeakerTrackingConfigIncludesAutoTrackStepFrames();
     void testSpeakerTrackingConfigPatchValidatesAutoTrackStepFrames();
 };
@@ -165,6 +168,32 @@ void TestTranscriptLogic::testEmptyBaseRangesUseInclusiveClipEnd() {
     QCOMPARE(ranges.size(), 1);
     QCOMPARE(ranges.constFirst().startFrame, int64_t(0));
     QCOMPARE(ranges.constFirst().endFrame, int64_t(9));
+}
+
+void TestTranscriptLogic::testRuntimeSidecarPathPrefersEditableLegacyArtifact() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    const QString originalPath = transcriptPathForClipFile(clipPath);
+    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+    QVERIFY(writeTranscriptJson(originalPath, QJsonArray{}));
+    QVERIFY(writeTranscriptJson(editablePath, QJsonArray{}));
+
+    const QFileInfo editableInfo(editablePath);
+    const QString legacyArtifactPath =
+        editableInfo.dir().filePath(editableInfo.completeBaseName() + QStringLiteral("_facestream.bin"));
+    QFile legacyArtifact(legacyArtifactPath);
+    QVERIFY(legacyArtifact.open(QIODevice::WriteOnly));
+    legacyArtifact.write("legacy");
+    legacyArtifact.close();
+
+    setActiveTranscriptPathForClipFile(clipPath, originalPath);
+
+    QCOMPARE(transcriptPathForRuntimeSidecarForClipFile(clipPath, originalPath), editablePath);
+    QVERIFY(facedetectionsSidecarExistsForClipFile(clipPath));
 }
 
 void TestTranscriptLogic::testSpeakerTrackingInterpolatesOverlayLocation() {
@@ -648,6 +677,30 @@ void TestTranscriptLogic::testTranscriptOverlayManualPlacementOverridesSpeakerTr
 
     QVERIFY(std::abs(rect.center().x() - (540.0 - 220.0)) < 0.001);
     QVERIFY(std::abs(rect.center().y() - (960.0 + 50.0)) < 0.001);
+}
+
+void TestTranscriptLogic::testSpeakerFramingEnabledKeyframesOverrideGlobalFallback() {
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip");
+    clip.mediaType = ClipMediaType::Video;
+    clip.startFrame = 100;
+    clip.durationFrames = 90;
+    clip.sourceDurationFrames = 90;
+    clip.speakerFramingEnabled = false;
+
+    QVERIFY(!evaluateClipSpeakerFramingEnabledAtFrame(clip, 100));
+    QVERIFY(!evaluateClipSpeakerFramingEnabledAtFrame(clip, 130));
+
+    clip.speakerFramingEnabledKeyframes.push_back(TimelineClip::BoolKeyframe{0, false});
+    clip.speakerFramingEnabledKeyframes.push_back(TimelineClip::BoolKeyframe{15, true});
+    clip.speakerFramingEnabledKeyframes.push_back(TimelineClip::BoolKeyframe{45, false});
+    normalizeClipTransformKeyframes(clip);
+
+    QVERIFY(!evaluateClipSpeakerFramingEnabledAtFrame(clip, 100));
+    QVERIFY(!evaluateClipSpeakerFramingEnabledAtFrame(clip, 114));
+    QVERIFY(evaluateClipSpeakerFramingEnabledAtFrame(clip, 115));
+    QVERIFY(evaluateClipSpeakerFramingEnabledAtFrame(clip, 144));
+    QVERIFY(!evaluateClipSpeakerFramingEnabledAtFrame(clip, 145));
 }
 
 void TestTranscriptLogic::testSpeakerTrackingConfigIncludesAutoTrackStepFrames() {

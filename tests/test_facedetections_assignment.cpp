@@ -184,7 +184,7 @@ private slots:
         QCOMPARE(secondResolved.value(QStringLiteral("identity_id")).toString(), QStringLiteral("SPEAKER_00"));
     }
 
-    void assignmentResolutionUsesFallbackTrackAndManualOverrideSource()
+    void assignmentResolutionRejectsAcceptedRowsWithoutTrackIds()
     {
         QVector<facefind::Candidate> trackCandidates{
             cropSample(7, 0.95, QStringLiteral("t7_low.png")),
@@ -207,21 +207,10 @@ private slots:
                 trackCandidates,
                 QStringLiteral("2026-05-18T01:05:00Z"));
 
-        QCOMPARE(result.overrides.size(), 1);
-        QCOMPARE(result.resolvedMap.size(), 1);
-        QCOMPARE(result.assignmentsBySpeaker.size(), 1);
-        QCOMPARE(result.assignmentsBySpeaker.value(QStringLiteral("HOST")).size(), 1);
-        QCOMPARE(result.assignmentsBySpeaker.value(QStringLiteral("HOST")).first().cropPath,
-                 QStringLiteral("t7_high.png"));
-
-        const QJsonObject overrideRow = result.overrides.at(0).toObject();
-        QCOMPARE(overrideRow.value(QStringLiteral("track_id")).toInt(), 7);
-        QCOMPARE(overrideRow.value(QStringLiteral("source")).toString(), QStringLiteral("human_override"));
-        QCOMPARE(overrideRow.value(QStringLiteral("manual_override")).toBool(), true);
-
-        const QJsonObject auditRow = result.auditLog.at(0).toObject();
-        QCOMPARE(auditRow.value(QStringLiteral("timestamp_utc")).toString(),
-                 QStringLiteral("2026-05-18T01:05:00Z"));
+        QCOMPARE(result.overrides.size(), 0);
+        QCOMPARE(result.resolvedMap.size(), 0);
+        QCOMPARE(result.auditLog.size(), 0);
+        QCOMPARE(result.assignmentsBySpeaker.size(), 0);
     }
 };
 

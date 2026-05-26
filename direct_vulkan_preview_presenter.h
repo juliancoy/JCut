@@ -96,6 +96,7 @@ private:
     std::unique_ptr<QVulkanInstance> m_instance;
     std::unique_ptr<QWidget> m_placeholder;
     QPointer<QWidget> m_windowContainer;
+    QPointer<QWidget> m_overlayWidget;
     QPointer<QLabel> m_statusLabel;
     QPointer<QLabel> m_errorLabel;
     QPointer<QWidget> m_audioInfoPanel;

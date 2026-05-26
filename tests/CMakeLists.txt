@@ -17,6 +17,7 @@ set(EDITOR_TEST_TARGETS
     test_facedetections_assignment
     test_facedetections_flow
     test_facedetections_artifacts
+    test_track_avatar_geometry
     test_facefind_window
     test_vulkan_direct_render_parity
     test_facedetections_preview_smoke
@@ -45,6 +46,7 @@ endforeach()
 add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_subtitle_render.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_stats.cpp
@@ -78,6 +80,7 @@ add_executable(test_opengl_vulkan_render_exactness
     ${CMAKE_CURRENT_SOURCE_DIR}/test_opengl_vulkan_render_exactness.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_gpu.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../gl_frame_texture_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../overlay_render_backend.cpp

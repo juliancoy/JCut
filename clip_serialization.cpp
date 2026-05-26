@@ -75,9 +75,6 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("baseScaleY")] = clip.baseScaleY;
         obj[QStringLiteral("speakerFramingEnabled")] = clip.speakerFramingEnabled;
         obj[QStringLiteral("speakerFramingSpeakerId")] = clip.speakerFramingSpeakerId;
-        obj[QStringLiteral("speakerFramingTargetXNorm")] = clip.speakerFramingTargetXNorm;
-        obj[QStringLiteral("speakerFramingTargetYNorm")] = clip.speakerFramingTargetYNorm;
-        obj[QStringLiteral("speakerFramingTargetBoxNorm")] = clip.speakerFramingTargetBoxNorm;
         obj[QStringLiteral("speakerFramingBakedTargetXNorm")] = clip.speakerFramingBakedTargetXNorm;
         obj[QStringLiteral("speakerFramingBakedTargetYNorm")] = clip.speakerFramingBakedTargetYNorm;
         obj[QStringLiteral("speakerFramingBakedTargetBoxNorm")] = clip.speakerFramingBakedTargetBoxNorm;
@@ -97,6 +94,15 @@ QJsonObject clipToJson(const TimelineClip &clip)
             keyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("transformKeyframes")] = keyframes;
+        QJsonArray speakerFramingEnabledKeyframes;
+        for (const TimelineClip::BoolKeyframe& keyframe : clip.speakerFramingEnabledKeyframes)
+        {
+            QJsonObject keyframeObj;
+            keyframeObj[QStringLiteral("frame")] = static_cast<qint64>(keyframe.frame);
+            keyframeObj[QStringLiteral("enabled")] = keyframe.enabled;
+            speakerFramingEnabledKeyframes.push_back(keyframeObj);
+        }
+        obj[QStringLiteral("speakerFramingEnabledKeyframes")] = speakerFramingEnabledKeyframes;
         QJsonArray speakerFramingKeyframes;
         for (const TimelineClip::TransformKeyframe &keyframe : clip.speakerFramingKeyframes)
         {
@@ -111,6 +117,20 @@ QJsonObject clipToJson(const TimelineClip &clip)
             speakerFramingKeyframes.push_back(keyframeObj);
         }
         obj[QStringLiteral("speakerFramingKeyframes")] = speakerFramingKeyframes;
+        QJsonArray speakerFramingTargetKeyframes;
+        for (const TimelineClip::TransformKeyframe &keyframe : clip.speakerFramingTargetKeyframes)
+        {
+            QJsonObject keyframeObj;
+            keyframeObj[QStringLiteral("frame")] = static_cast<qint64>(keyframe.frame);
+            keyframeObj[QStringLiteral("translationX")] = keyframe.translationX;
+            keyframeObj[QStringLiteral("translationY")] = keyframe.translationY;
+            keyframeObj[QStringLiteral("rotation")] = keyframe.rotation;
+            keyframeObj[QStringLiteral("scaleX")] = keyframe.scaleX;
+            keyframeObj[QStringLiteral("scaleY")] = keyframe.scaleY;
+            keyframeObj[QStringLiteral("linearInterpolation")] = keyframe.linearInterpolation;
+            speakerFramingTargetKeyframes.push_back(keyframeObj);
+        }
+        obj[QStringLiteral("speakerFramingTargetKeyframes")] = speakerFramingTargetKeyframes;
         QJsonArray gradingKeyframes;
         for (const TimelineClip::GradingKeyframe &keyframe : clip.gradingKeyframes)
         {
@@ -371,15 +391,12 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.speakerFramingEnabled = obj.value(QStringLiteral("speakerFramingEnabled")).toBool(false);
         clip.speakerFramingSpeakerId =
             obj.value(QStringLiteral("speakerFramingSpeakerId")).toString().trimmed();
-        clip.speakerFramingTargetXNorm = obj.value(QStringLiteral("speakerFramingTargetXNorm")).toDouble(0.5);
-        clip.speakerFramingTargetYNorm = obj.value(QStringLiteral("speakerFramingTargetYNorm")).toDouble(0.35);
-        clip.speakerFramingTargetBoxNorm = obj.value(QStringLiteral("speakerFramingTargetBoxNorm")).toDouble(-1.0);
         clip.speakerFramingBakedTargetXNorm = obj.value(QStringLiteral("speakerFramingBakedTargetXNorm"))
-            .toDouble(clip.speakerFramingTargetXNorm);
+            .toDouble(0.5);
         clip.speakerFramingBakedTargetYNorm = obj.value(QStringLiteral("speakerFramingBakedTargetYNorm"))
-            .toDouble(clip.speakerFramingTargetYNorm);
+            .toDouble(0.35);
         clip.speakerFramingBakedTargetBoxNorm = obj.value(QStringLiteral("speakerFramingBakedTargetBoxNorm"))
-            .toDouble(clip.speakerFramingTargetBoxNorm);
+            .toDouble(-1.0);
         clip.speakerFramingMinConfidence = obj.value(QStringLiteral("speakerFramingMinConfidence")).toDouble(0.08);
         clip.transformSkipAwareTiming = obj.value(QStringLiteral("transformSkipAwareTiming")).toBool(false);
         const QJsonArray keyframes = obj.value(QStringLiteral("transformKeyframes")).toArray();
@@ -408,6 +425,20 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             clip.transformKeyframes.push_back(keyframe);
         }
         const QJsonArray speakerFramingKeyframes = obj.value(QStringLiteral("speakerFramingKeyframes")).toArray();
+        const QJsonArray speakerFramingEnabledKeyframes =
+            obj.value(QStringLiteral("speakerFramingEnabledKeyframes")).toArray();
+        for (const QJsonValue& value : speakerFramingEnabledKeyframes)
+        {
+            if (!value.isObject())
+            {
+                continue;
+            }
+            const QJsonObject keyframeObj = value.toObject();
+            TimelineClip::BoolKeyframe keyframe;
+            keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            keyframe.enabled = keyframeObj.value(QStringLiteral("enabled")).toBool(false);
+            clip.speakerFramingEnabledKeyframes.push_back(keyframe);
+        }
         for (const QJsonValue &value : speakerFramingKeyframes)
         {
             if (!value.isObject())
@@ -425,6 +456,26 @@ TimelineClip clipFromJson(const QJsonObject &obj)
             keyframe.linearInterpolation =
                 keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
             clip.speakerFramingKeyframes.push_back(keyframe);
+        }
+        const QJsonArray speakerFramingTargetKeyframes =
+            obj.value(QStringLiteral("speakerFramingTargetKeyframes")).toArray();
+        for (const QJsonValue &value : speakerFramingTargetKeyframes)
+        {
+            if (!value.isObject())
+            {
+                continue;
+            }
+            const QJsonObject keyframeObj = value.toObject();
+            TimelineClip::TransformKeyframe keyframe;
+            keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+            keyframe.translationX = keyframeObj.value(QStringLiteral("translationX")).toDouble(0.5);
+            keyframe.translationY = keyframeObj.value(QStringLiteral("translationY")).toDouble(0.35);
+            keyframe.rotation = 0.0;
+            keyframe.scaleX = keyframeObj.value(QStringLiteral("scaleX")).toDouble(-1.0);
+            keyframe.scaleY = keyframeObj.value(QStringLiteral("scaleY")).toDouble(keyframe.scaleX);
+            keyframe.linearInterpolation =
+                keyframeObj.value(QStringLiteral("linearInterpolation")).toBool(true);
+            clip.speakerFramingTargetKeyframes.push_back(keyframe);
         }
         const QJsonArray gradingKeyframes = obj.value(QStringLiteral("gradingKeyframes")).toArray();
         QVector<TimelineClip::OpacityKeyframe> migratedOpacityKeyframes;

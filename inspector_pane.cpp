@@ -1294,23 +1294,6 @@ QWidget *InspectorPane::buildSpeakersTab()
         label->setWordWrap(true);
         label->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
     };
-    auto createReferencePreviewLabel = [](QWidget *parent) {
-        auto *label = new QLabel(parent);
-        label->setAlignment(Qt::AlignCenter);
-        label->setMinimumSize(QSize(120, 120));
-        label->setMaximumSize(QSize(160, 160));
-        label->setStyleSheet(QStringLiteral(
-            "QLabel {"
-            "  border: 1px dashed #314459;"
-            "  border-radius: 8px;"
-            "  background: #142234;"
-            "  color: #8fa3b8;"
-            "  padding: 8px;"
-            "}"));
-        label->setText(QStringLiteral("No reference"));
-        label->hide();
-        return label;
-    };
     auto createChipButton = [](const QString& text, QWidget *parent) {
         auto *button = new QPushButton(text, parent);
         button->setCheckable(true);
@@ -1348,7 +1331,7 @@ QWidget *InspectorPane::buildSpeakersTab()
          QStringLiteral("Speaker"),
          QStringLiteral("X"),
          QStringLiteral("Y"),
-         QStringLiteral("Speaker Tracking"),
+         QStringLiteral("Assigned Tracks"),
          QStringLiteral("+")});
     m_speakersTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakersTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1476,7 +1459,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerRunAutoTrackButton->setObjectName(QStringLiteral("speakers.generate_facedetections"));
     m_speakerRunAutoTrackButton->setMinimumHeight(32);
     m_speakerRunAutoTrackButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    m_speakerViewFacestreamButton = new QPushButton(QStringLiteral("View Detection + Track Artifact"), page);
+    m_speakerViewFacestreamButton = new QPushButton(QStringLiteral("View Continuity Artifact"), page);
     m_speakerViewFacestreamButton->setObjectName(QStringLiteral("speakers.view_facedetections"));
     m_speakerViewFacestreamButton->setMinimumHeight(32);
     m_speakerViewFacestreamButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
@@ -1484,9 +1467,14 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFacestreamSettingsButton->setObjectName(QStringLiteral("speakers.facedetections_settings"));
     m_speakerFacestreamSettingsButton->setMinimumHeight(32);
     m_speakerFacestreamSettingsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+    m_speakerRefreshTrackAvatarsButton = new QPushButton(QStringLiteral("Refresh Track Avatars"), page);
+    m_speakerRefreshTrackAvatarsButton->setObjectName(QStringLiteral("speakers.refresh_track_avatars"));
+    m_speakerRefreshTrackAvatarsButton->setMinimumHeight(32);
+    m_speakerRefreshTrackAvatarsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
     facedetectionsActionGrid->addWidget(m_speakerRunAutoTrackButton, 0, 0);
     facedetectionsActionGrid->addWidget(m_speakerViewFacestreamButton, 0, 1);
     facedetectionsActionGrid->addWidget(m_speakerFacestreamSettingsButton, 1, 0);
+    facedetectionsActionGrid->addWidget(m_speakerRefreshTrackAvatarsButton, 1, 1);
     facedetectionsActionGrid->setColumnStretch(0, 1);
     facedetectionsActionGrid->setColumnStretch(1, 1);
 
@@ -1548,7 +1536,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *facedetectionsStageTitle = new QLabel(QStringLiteral("Continuity Tracks"), page);
     styleSectionTitle(facedetectionsStageTitle);
     auto *facedetectionsStageHelp = new QLabel(
-        QStringLiteral("Generate clip-wide face detections and continuity tracks, then inspect and assign the resulting tracks."),
+        QStringLiteral("Generate clip-wide raw detections and continuity tracks, then review the resulting track set."),
         page);
     styleSectionHelp(facedetectionsStageHelp);
 
@@ -1578,23 +1566,17 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerDebugStatusLabel->setWordWrap(true);
     m_speakerDebugStatusLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
 
-    m_selectedSpeakerRef1ImageLabel = createReferencePreviewLabel(page);
-    m_selectedSpeakerRef2ImageLabel = createReferencePreviewLabel(page);
-    m_speakerSetReference1Button = new QPushButton(QStringLiteral("Set Ref 1"), page);
-    m_speakerSetReference2Button = new QPushButton(QStringLiteral("Set Ref 2"), page);
-    m_speakerPickReference1Button = new QPushButton(QStringLiteral("Pick Ref 1 (Shift+Drag)"), page);
-    m_speakerPickReference2Button = new QPushButton(QStringLiteral("Pick Ref 2 (Shift+Drag)"), page);
-    m_speakerClearReferencesButton = new QPushButton(QStringLiteral("Clear References"), page);
     m_speakerGuideButton = new QPushButton(QStringLiteral("Open Workflow Guide"), page);
     m_speakerRefsChipLabel = new QLabel(QStringLiteral("Assigned Tracks: 0"), page);
     m_speakerPointstreamChipLabel = new QLabel(QStringLiteral("Continuity Tracks: None"), page);
     m_speakerTrackingChipButton = createChipButton(QStringLiteral("Speaker Tracking: OFF"), page);
     m_speakerStabilizeChipButton = createChipButton(QStringLiteral("Face Stabilize: OFF"), page);
-    m_speakerFramingZoomEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Face Box Target"), page);
+    m_speakerFramingZoomEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Target Box"), page);
     m_speakerFramingTargetXSpin = new QDoubleSpinBox(page);
     m_speakerFramingTargetYSpin = new QDoubleSpinBox(page);
     m_speakerFramingTargetBoxSpin = new QDoubleSpinBox(page);
     m_speakerApplyFramingToClipCheckBox = new QCheckBox(QStringLiteral("Apply Face Stabilize To Selected Clip"), page);
+    m_speakerFramingEnabledKeyframeTable = new QTableWidget(page);
     m_speakerClipFramingStatusLabel = new QLabel(QStringLiteral("Face Stabilize: OFF | 0 keys"), page);
     for (QDoubleSpinBox *spinBox :
          {m_speakerFramingTargetXSpin, m_speakerFramingTargetYSpin, m_speakerFramingTargetBoxSpin}) {
@@ -1605,6 +1587,17 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingTargetXSpin->setValue(0.5);
     m_speakerFramingTargetYSpin->setValue(0.35);
     m_speakerFramingTargetBoxSpin->setValue(0.20);
+    m_speakerFramingEnabledKeyframeTable->setObjectName(QStringLiteral("speakers.face_stabilize_keyframes"));
+    m_speakerFramingEnabledKeyframeTable->setColumnCount(2);
+    m_speakerFramingEnabledKeyframeTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Frame"), QStringLiteral("Face Stabilize")});
+    m_speakerFramingEnabledKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_speakerFramingEnabledKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_speakerFramingEnabledKeyframeTable->verticalHeader()->setVisible(false);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setStretchLastSection(true);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_speakerFramingEnabledKeyframeTable->setMinimumHeight(120);
     m_speakerClipFramingStatusLabel->setWordWrap(true);
     m_speakerRefsChipLabel->setStyleSheet(QStringLiteral(
         "QLabel { border: 1px solid #35506c; border-radius: 14px; padding: 4px 10px; background: #162739; }"));
@@ -1654,10 +1647,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *facedetectionsSection = new QWidget(content);
     facedetectionsSection->setObjectName(QStringLiteral("speakers.section.continuity"));
     auto *facedetectionsLayout = createTabLayout(facedetectionsSection);
-    auto *facedetectionsPathsTitle = new QLabel(QStringLiteral("Generated Continuity Tracks"), facedetectionsSection);
+    auto *facedetectionsPathsTitle = new QLabel(QStringLiteral("Continuity Track Results"), facedetectionsSection);
     styleSectionTitle(facedetectionsPathsTitle);
     auto *facedetectionsPathsHelp = new QLabel(
-        QStringLiteral("Inspect generated continuity tracks and raw detections for the selected clip."),
+        QStringLiteral("Inspect the generated continuity tracks here. Raw detector observations are shown separately below at the current playhead frame."),
         facedetectionsSection);
     styleSectionHelp(facedetectionsPathsHelp);
     m_speakerFaceDetectionsTable = new QTableWidget(facedetectionsSection);
@@ -1687,9 +1680,9 @@ QWidget *InspectorPane::buildSpeakersTab()
     artifactStatusRow->setContentsMargins(0, 0, 0, 0);
     artifactStatusRow->setSpacing(10);
     m_speakerDetectionsAvailableCheckBox =
-        new QCheckBox(QStringLiteral("Detections"), facedetectionsSection);
+        new QCheckBox(QStringLiteral("Raw detections available"), facedetectionsSection);
     m_speakerTracksAvailableCheckBox =
-        new QCheckBox(QStringLiteral("Tracks"), facedetectionsSection);
+        new QCheckBox(QStringLiteral("Continuity tracks available"), facedetectionsSection);
     for (QCheckBox* checkBox : {m_speakerDetectionsAvailableCheckBox, m_speakerTracksAvailableCheckBox}) {
         checkBox->setEnabled(false);
     }
@@ -1706,10 +1699,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     facedetectionsLayout->addWidget(m_speakerShowRawDetectionsCheckBox);
     facedetectionsLayout->addWidget(m_speakerFaceDetectionsTable, 1);
     facedetectionsLayout->addWidget(m_speakerFaceDetectionsDetailsEdit);
-    auto *rawDetectionsTitle = new QLabel(QStringLiteral("Raw Detections At Playhead"), facedetectionsSection);
+    auto *rawDetectionsTitle = new QLabel(QStringLiteral("Raw Detections At Current Frame"), facedetectionsSection);
     styleSectionTitle(rawDetectionsTitle);
     auto *rawDetectionsHelp = new QLabel(
-        QStringLiteral("Shows detector observations from raw_frames for the selected clip at the current playhead source frame."),
+        QStringLiteral("Shows raw detector observations for the selected clip at the current playhead source frame. This is separate from the continuity-track list above."),
         facedetectionsSection);
     styleSectionHelp(rawDetectionsHelp);
     m_speakerRawDetectionTable = new QTableWidget(facedetectionsSection);
@@ -1742,39 +1735,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto continuitySection = createSectionFrame(content, QStringLiteral("speakers_continuity_section"));
     continuitySection.second->addWidget(facedetectionsSection);
 
-    auto *referenceTitle = new QLabel(QStringLiteral("Speaker References"), page);
-    styleSectionTitle(referenceTitle);
-    auto *referenceHelp = new QLabel(
-        QStringLiteral("Capture or adjust representative speaker crops. Ref 1 is required for framing, Ref 2 is optional."),
-        page);
-    styleSectionHelp(referenceHelp);
-    auto *referencePreviewRow = new QHBoxLayout;
-    referencePreviewRow->setContentsMargins(0, 0, 0, 0);
-    referencePreviewRow->setSpacing(8);
-    auto *reference1Panel = new QWidget(content);
-    auto *reference1Layout = new QVBoxLayout(reference1Panel);
-    reference1Layout->setContentsMargins(0, 0, 0, 0);
-    reference1Layout->setSpacing(6);
-    auto *reference1Title = new QLabel(QStringLiteral("Reference 1"), reference1Panel);
-    styleSectionTitle(reference1Title);
-    reference1Layout->addWidget(reference1Title);
-    reference1Layout->addWidget(m_selectedSpeakerRef1ImageLabel, 0, Qt::AlignLeft);
-    reference1Layout->addWidget(m_speakerSetReference1Button);
-    reference1Layout->addWidget(m_speakerPickReference1Button);
-    auto *reference2Panel = new QWidget(content);
-    auto *reference2Layout = new QVBoxLayout(reference2Panel);
-    reference2Layout->setContentsMargins(0, 0, 0, 0);
-    reference2Layout->setSpacing(6);
-    auto *reference2Title = new QLabel(QStringLiteral("Reference 2"), reference2Panel);
-    styleSectionTitle(reference2Title);
-    reference2Layout->addWidget(reference2Title);
-    reference2Layout->addWidget(m_selectedSpeakerRef2ImageLabel, 0, Qt::AlignLeft);
-    reference2Layout->addWidget(m_speakerSetReference2Button);
-    reference2Layout->addWidget(m_speakerPickReference2Button);
-    referencePreviewRow->addWidget(reference1Panel);
-    referencePreviewRow->addWidget(reference2Panel);
-    referencePreviewRow->addStretch(1);
-
     auto *chipRow = new QHBoxLayout;
     chipRow->setContentsMargins(0, 0, 0, 0);
     chipRow->setSpacing(8);
@@ -1784,14 +1744,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     chipRow->addWidget(m_speakerStabilizeChipButton);
     chipRow->addStretch(1);
 
-    auto *referenceActionsRow = new QHBoxLayout;
-    referenceActionsRow->setContentsMargins(0, 0, 0, 0);
-    referenceActionsRow->setSpacing(6);
-    referenceActionsRow->addWidget(m_speakerClearReferencesButton);
-    referenceActionsRow->addWidget(m_speakerGuideButton);
-    referenceActionsRow->addStretch(1);
-
-    auto *framingTargetTitle = new QLabel(QStringLiteral("Face Target"), page);
+    auto *framingTargetTitle = new QLabel(QStringLiteral("Target"), page);
     styleSectionTitle(framingTargetTitle);
     auto *framingTargetHelp = new QLabel(
         QStringLiteral("Set the preview target position that generated face-stabilize transforms should resolve toward."),
@@ -1801,23 +1754,52 @@ QWidget *InspectorPane::buildSpeakersTab()
     framingForm->setContentsMargins(0, 0, 0, 0);
     framingForm->setHorizontalSpacing(8);
     framingForm->setVerticalSpacing(6);
-    framingForm->addRow(QStringLiteral("Face X"), m_speakerFramingTargetXSpin);
-    framingForm->addRow(QStringLiteral("Face Y"), m_speakerFramingTargetYSpin);
-    framingForm->addRow(QStringLiteral("Face Box"), m_speakerFramingTargetBoxSpin);
+
+    auto* targetXRow = new QWidget(page);
+    auto* targetXLayout = new QHBoxLayout(targetXRow);
+    targetXLayout->setContentsMargins(0, 0, 0, 0);
+    targetXLayout->setSpacing(6);
+    auto* centerTargetXButton = new QPushButton(QStringLiteral("Center"), targetXRow);
+    centerTargetXButton->setToolTip(QStringLiteral("Set Target X to the horizontal center (0.5)."));
+    centerTargetXButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    targetXLayout->addWidget(m_speakerFramingTargetXSpin, 1);
+    targetXLayout->addWidget(centerTargetXButton, 0);
+
+    auto* targetYRow = new QWidget(page);
+    auto* targetYLayout = new QHBoxLayout(targetYRow);
+    targetYLayout->setContentsMargins(0, 0, 0, 0);
+    targetYLayout->setSpacing(6);
+    auto* centerTargetYButton = new QPushButton(QStringLiteral("Center"), targetYRow);
+    centerTargetYButton->setToolTip(QStringLiteral("Set Target Y to the vertical center (0.5)."));
+    centerTargetYButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    targetYLayout->addWidget(m_speakerFramingTargetYSpin, 1);
+    targetYLayout->addWidget(centerTargetYButton, 0);
+
+    connect(centerTargetXButton, &QPushButton::clicked, page, [this]() {
+        if (m_speakerFramingTargetXSpin) {
+            m_speakerFramingTargetXSpin->setValue(0.5);
+        }
+    });
+    connect(centerTargetYButton, &QPushButton::clicked, page, [this]() {
+        if (m_speakerFramingTargetYSpin) {
+            m_speakerFramingTargetYSpin->setValue(0.5);
+        }
+    });
+
+    framingForm->addRow(QStringLiteral("Target X"), targetXRow);
+    framingForm->addRow(QStringLiteral("Target Y"), targetYRow);
+    framingForm->addRow(QStringLiteral("Target Box"), m_speakerFramingTargetBoxSpin);
 
     auto framingSection = createSectionFrame(content, QStringLiteral("speakers_framing_section"));
     framingSection.second->addWidget(framingTitle);
     framingSection.second->addWidget(framingHelp);
-    framingSection.second->addWidget(referenceTitle);
-    framingSection.second->addWidget(referenceHelp);
-    framingSection.second->addLayout(referencePreviewRow);
-    framingSection.second->addLayout(referenceActionsRow);
     framingSection.second->addLayout(chipRow);
     framingSection.second->addWidget(framingTargetTitle);
     framingSection.second->addWidget(framingTargetHelp);
     framingSection.second->addWidget(m_speakerFramingZoomEnabledCheckBox);
     framingSection.second->addLayout(framingForm);
     framingSection.second->addWidget(m_speakerApplyFramingToClipCheckBox);
+    framingSection.second->addWidget(m_speakerFramingEnabledKeyframeTable);
     framingSection.second->addWidget(m_speakerClipFramingStatusLabel);
 
     auto *debugSection = new QWidget(content);

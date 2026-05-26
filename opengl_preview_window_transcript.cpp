@@ -759,7 +759,9 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
     // active clip that has a valid target box configured.
     if (!selectedClip) {
         for (const TimelineClip& clip : activeClips) {
-            if (qBound<qreal>(-1.0, clip.speakerFramingTargetBoxNorm, 1.0) > 0.0) {
+            const TimelineClip::TransformKeyframe targetState =
+                evaluateClipSpeakerFramingTargetAtFrame(clip, m_interaction.currentFrame);
+            if (qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
                 selectedClip = &clip;
                 break;
             }
@@ -769,9 +771,11 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
         return;
     }
 
-    const qreal targetXNorm = qBound<qreal>(0.0, selectedClip->speakerFramingTargetXNorm, 1.0);
-    const qreal targetYNorm = qBound<qreal>(0.0, selectedClip->speakerFramingTargetYNorm, 1.0);
-    const qreal targetBoxNorm = qBound<qreal>(-1.0, selectedClip->speakerFramingTargetBoxNorm, 1.0);
+    const TimelineClip::TransformKeyframe targetState =
+        evaluateClipSpeakerFramingTargetAtFrame(*selectedClip, m_interaction.currentFrame);
+    const qreal targetXNorm = qBound<qreal>(0.0, targetState.translationX, 1.0);
+    const qreal targetYNorm = qBound<qreal>(0.0, targetState.translationY, 1.0);
+    const qreal targetBoxNorm = qBound<qreal>(-1.0, targetState.scaleX, 1.0);
     if (targetBoxNorm <= 0.0) {
         return;
     }
@@ -805,7 +809,7 @@ void PreviewWindow::drawSpeakerFramingTargetOverlay(QPainter* painter,
     painter->setPen(QColor(255, 238, 153, 245));
     painter->drawText(badgeRect.adjusted(8.0, 0.0, -8.0, 0.0),
                       Qt::AlignLeft | Qt::AlignVCenter,
-                      QStringLiteral("FaceBox  X:%1 Y:%2 S:%3")
+                      QStringLiteral("Target Box  X:%1 Y:%2 S:%3")
                           .arg(QString::number(targetXNorm, 'f', 2))
                           .arg(QString::number(targetYNorm, 'f', 2))
                           .arg(QString::number(targetBoxNorm, 'f', 2)));

@@ -1194,7 +1194,7 @@ void TimelineCache::schedulePredictiveLoads() {
                 continue;
             }
 
-            const int priority = qMax(12, 30 - (i + 1));
+            const int priority = qMax(12, kTimelineFps - (i + 1));
             m_prefetches++;
             scheduledThisTick++;
 
@@ -1268,7 +1268,7 @@ int TimelineCache::calculatePriority(int64_t frameNumber) const {
     if (delta <= 15) {
         return 60;
     }
-    if (delta <= 30) {
+    if (delta <= kTimelineFps) {
         return 40;
     }
     return 20;

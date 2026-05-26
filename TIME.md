@@ -5,9 +5,10 @@ This document maps the temporal domains in JCut, the conversion paths between th
 
 ## Canonical Temporal Domains
 - `absolutePlaybackSample` (48 kHz timeline sample domain): main runtime playhead state in `EditorWindow`.
-- Timeline frame domain (`kTimelineFps = 30`): UI timeline, clip placement, export ranges, render frame loop.
+- Timeline/edit frame domain (`kTimelineFps = 30`): UI timeline, clip placement, user-facing edit keyframes, export range bookkeeping, and the fixed-rate output render loop.
 - Clip-local timeline frame/sample domain: position inside a clip after subtracting clip start.
-- Source frame/sample domain: decoded media position after clip trim, playback rate, and render-sync markers.
+- Source frame/sample domain: decoded media position after clip trim, playback rate, source FPS, and render-sync markers.
+- Media transfer/decode frame domain: the actual decoded source frame index requested from the media pipeline. It is not a 30 fps clock and must not inherit `kTimelineFps` except as an explicit fallback when media FPS is unknown.
 - Transcript frame domain (`30 fps` transcript clock): transcript words/sections and follow/highlight matching.
 - Filtered timeline domain (speech ranges only): sparse timeline intervals from transcript words.
 
@@ -33,6 +34,7 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Else fallback to `SourceRelative`.
 - Important implication:
   - A wrong domain classification creates deterministic time drift even if box geometry is correct.
+  - Once a facestream keyframe is mapped to source-frame space, decoder/avatar paths must use that source frame directly. Re-scaling the mapped source frame through `kTimelineFps` is invalid.
 
 ## Core Conversion Paths
 - Timeline sample -> timeline frame:
@@ -41,6 +43,10 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - `sourceFrameForClipAtTimelinePosition(...)`
   - `sourceSampleForClipAtTimelineSample(...)`
   - Applies render-sync marker deltas via `adjustedClipLocalFrameAtTimelineFrame(...)`.
+- Facestream stored frame -> source frame:
+  - `mapFacestreamFrameToSourceFrame(...)`
+  - Applies the stream's declared/inferred `FacestreamFrameDomain`.
+  - Output is a source/decode frame, not another timeline-30 frame.
 - Timeline sample -> transcript frame:
   - `transcriptFrameForClipAtTimelineSample(...)`
   - Converts source sample to source seconds, then to transcript frame.
@@ -122,6 +128,7 @@ This document maps the temporal domains in JCut, the conversion paths between th
 ## Known High-Impact Implications
 - Mixed domains are the main drift risk.
   - Safe pattern: convert playhead -> source sample/frame once, then reuse that for transcript/follow/overlay/speaker logic.
+  - Safe facestream pattern: convert stored keyframe frame -> source frame once, then decode/crop from that source frame directly.
 - Render-sync markers are temporal modifiers.
   - Any consumer bypassing marker-adjusted mapping can desync from playback.
 - Speech-filtered playback is sparse-time traversal.

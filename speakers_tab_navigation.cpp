@@ -121,28 +121,3 @@ void SpeakersTab::onSpeakerRandomSentenceClicked()
     const QString speakerId = selectedSpeakerId();
     navigateSpeakerSentence(speakerId, SentenceNavAction::Random);
 }
-
-void SpeakersTab::onSpeakerClearReferencesClicked()
-{
-    if (!activeCutMutable()) {
-        return;
-    }
-    const QString speakerId = selectedSpeakerId();
-    if (speakerId.isEmpty()) {
-        updateSpeakerTrackingStatusLabel();
-        return;
-    }
-    if (!clearSpeakerTrackingReferences(speakerId)) {
-        refresh();
-        return;
-    }
-
-    emit transcriptDocumentChanged();
-    if (m_deps.scheduleSaveState) {
-        m_deps.scheduleSaveState();
-    }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
-    }
-    refresh();
-}

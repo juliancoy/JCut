@@ -46,20 +46,14 @@ public:
         QListWidget* selectedSpeakerFaceDetectionsList = nullptr;
         QListWidget* speakerPlayheadFaceDetectionsList = nullptr;
         QCheckBox* speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
-        QLabel* selectedSpeakerRef1ImageLabel = nullptr;
-        QLabel* selectedSpeakerRef2ImageLabel = nullptr;
         QPushButton* selectedSpeakerPreviousSentenceButton = nullptr;
         QPushButton* selectedSpeakerNextSentenceButton = nullptr;
         QPushButton* selectedSpeakerRandomSentenceButton = nullptr;
         QLabel* speakerCurrentSentenceLabel = nullptr;
-        QPushButton* speakerSetReference1Button = nullptr;
-        QPushButton* speakerSetReference2Button = nullptr;
-        QPushButton* speakerPickReference1Button = nullptr;
-        QPushButton* speakerPickReference2Button = nullptr;
-        QPushButton* speakerClearReferencesButton = nullptr;
         QPushButton* speakerRunAutoTrackButton = nullptr;
         QPushButton* speakerViewFacestreamButton = nullptr;
         QPushButton* speakerFacestreamSettingsButton = nullptr;
+        QPushButton* speakerRefreshTrackAvatarsButton = nullptr;
         QPushButton* speakerEnableTrackingButton = nullptr;
         QPushButton* speakerDisableTrackingButton = nullptr;
         QPushButton* speakerDeletePointstreamButton = nullptr;
@@ -74,6 +68,7 @@ public:
         QDoubleSpinBox* speakerFramingTargetBoxSpin = nullptr;
         QCheckBox* speakerFramingZoomEnabledCheckBox = nullptr;
         QCheckBox* speakerApplyFramingToClipCheckBox = nullptr;
+        QTableWidget* speakerFramingEnabledKeyframeTable = nullptr;
         QLabel* speakerClipFramingStatusLabel = nullptr;
         QLabel* speakerRefsChipLabel = nullptr;
         QLabel* speakerPointstreamChipLabel = nullptr;
@@ -140,17 +135,13 @@ private slots:
     void onSpeakersTableItemClicked(QTableWidgetItem* item);
     void onSpeakersSelectionChanged();
     void onSpeakersTableContextMenuRequested(const QPoint& pos);
-    void onSpeakerSetReference1Clicked();
-    void onSpeakerSetReference2Clicked();
-    void onSpeakerPickReference1Clicked();
-    void onSpeakerPickReference2Clicked();
     void onSpeakerPreviousSentenceClicked();
     void onSpeakerNextSentenceClicked();
     void onSpeakerRandomSentenceClicked();
-    void onSpeakerClearReferencesClicked();
     void onSpeakerRunAutoTrackClicked();
     void onSpeakerViewFaceDetectionsClicked();
     void onSpeakerFaceDetectionsSettingsClicked();
+    void onSpeakerRefreshTrackAvatarsClicked();
     void onSpeakerEnableTrackingClicked();
     void onSpeakerDisableTrackingClicked();
     void onSpeakerDeletePointstreamClicked();
@@ -161,6 +152,9 @@ private slots:
     void onSpeakerFramingTargetChanged();
     void onSpeakerFramingZoomEnabledChanged(bool checked);
     void onSpeakerApplyFramingToClipChanged(bool checked);
+    void onSpeakerFramingEnabledTableSelectionChanged();
+    void onSpeakerFramingEnabledTableItemChanged(QTableWidgetItem* item);
+    void onSpeakerFramingEnabledTableContextMenu(const QPoint& pos);
     void onSpeakerFaceDetectionsTableContextMenuRequested(const QPoint& pos);
     void onSpeakerFindMatchingTracksClicked();
 
@@ -172,6 +166,8 @@ private:
                                     const QString& transcriptPath,
                                     const QString& preferredSpeakerId);
     void applyLoadedTranscriptDocumentData(const TimelineClip& clip, const QString& preferredSpeakerId);
+    void refreshTranscriptSpeakerViews(const QString& preferredSpeakerId = QString(),
+                                       bool refreshTrackPanels = false);
     void requestRefreshFaceDetectionsPathsPanel();
     void refreshPlayheadTrackCandidatesList(const TimelineClip& clip, const QString& speakerId);
     void updatePlayheadTrackCandidatesVisibility();
@@ -181,17 +177,11 @@ private:
         Random
     };
 
-    bool eventFilter(QObject* watched, QEvent* event) override;
     void refreshFaceDetectionsPathsPanel();
     void refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot);
     void syncSpeakerListMode();
     bool selectSpeakerRowById(const QString& speakerId);
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
-    bool openReferencePreviewWindow(int referenceIndex);
-    QPixmap referenceFullFramePreview(const TimelineClip& clip,
-                                      const QString& speakerId,
-                                      const QJsonObject& refObj,
-                                      QSize targetSize = QSize(960, 540));
     QPixmap faceStreamPreviewAvatar(const TimelineClip& clip,
                                     const QString& speakerId,
                                     const QJsonObject& keyframeObj,
@@ -201,14 +191,27 @@ private:
                                                const QJsonObject& keyframeObj,
                                                int size,
                                                editor::DecoderContext* decoderCtx,
-                                               QHash<int64_t, QImage>* frameImageCache,
-                                               qreal sourceFps) const;
+                                               QHash<int64_t, QImage>* frameImageCache) const;
+    QJsonObject representativeKeyframeForTrack(const TimelineClip& clip,
+                                               const QJsonObject& streamObj) const;
+    QPixmap continuityTrackAvatar(const TimelineClip& clip,
+                                  const QString& speakerId,
+                                  const QJsonObject& streamObj,
+                                  int size,
+                                  editor::DecoderContext* decoderCtx = nullptr,
+                                  QHash<int64_t, QImage>* frameImageCache = nullptr) const;
     QVector<QPixmap> assignedFaceDetectionsPreviewPixmaps(const TimelineClip& clip,
                                                       const QString& speakerId) const;
     QString assignedFaceDetectionsPreviewTooltipHtml(const TimelineClip& clip,
                                                  const QString& speakerId) const;
     QJsonArray continuityStreamsForClip(const TimelineClip& clip) const;
     void clearFaceDetectionsDerivedCaches();
+    QJsonObject trackMemoryEntryForClip(const QString& clipId, int trackId) const;
+    void ensurePersistentTrackAvatarMemory(const TimelineClip& clip,
+                                           const QJsonArray& streams,
+                                           bool forceRefresh = false,
+                                           editor::DecoderContext* decoderCtx = nullptr,
+                                           QHash<int64_t, QImage>* frameImageCache = nullptr);
     QJsonObject resolveFaceDetectionsAssignmentRow(const TimelineClip& clip,
                                                const QJsonArray& streams,
                                                const QJsonObject& row) const;
@@ -226,7 +229,6 @@ private:
     QString selectedSpeakerId() const;
     QString speakerDisplayName(const QString& speakerId) const;
     QString speakerDisplayLabel(const QString& speakerId) const;
-    QString speakerTrackingSummary(const QJsonObject& profile) const;
     bool ensureAiActionReady(const QString& actionTitle) const;
     void updateSpeakerTrackingStatusLabel();
     void updateSelectedSpeakerPanel();
@@ -249,25 +251,13 @@ private:
                                 const QString& speakerId,
                                 const QVector<int>& assignedTrackIds = {},
                                 editor::DecoderContext* decoderCtx = nullptr,
-                                QHash<int64_t, QImage>* frameImageCache = nullptr,
-                                qreal sourceFps = 0.0);
-    QPixmap speakerReferenceAvatar(const TimelineClip& clip,
-                                   const QString& speakerId,
-                                   const QJsonObject& refObj,
-                                   int size = 28);
+                                QHash<int64_t, QImage>* frameImageCache = nullptr);
     QPixmap unsetSpeakerAvatar(int size) const;
     QPixmap placeholderSpeakerAvatar(const QString& speakerId) const;
     bool saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText);
-    bool saveSpeakerTrackingReferenceAt(const QString& speakerId,
-                                        int referenceIndex,
-                                        int64_t frame,
-                                        qreal xNorm,
-                                        qreal yNorm,
-                                        qreal boxSizeNorm = -1.0);
     bool deassignTrackFromSpeaker(const QString& speakerId, int trackId);
     bool deassignSelectedSpeakerAssignedTracks();
     void showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos);
-    bool saveSpeakerTrackingReference(const QString& speakerId, int referenceIndex);
     bool assignTrackToSpeaker(const QString& speakerId,
                               int trackId,
                               const QString& streamId,
@@ -280,40 +270,45 @@ private:
                                           const QJsonArray& trackAnchors,
                                           const QString& resolutionSource,
                                           const QString& auditAction);
+    bool findMatchingTracksFromSeedTrack(int seedTrackId);
+    bool openPlayheadTrackPickerForSpeaker(const QString& speakerId);
+    QJsonObject makeTrackAssignmentAnchor(int trackId,
+                                          const QString& streamId,
+                                          int64_t sourceFrame,
+                                          qreal xNorm,
+                                          qreal yNorm,
+                                          qreal boxSizeNorm) const;
+    bool persistTrackAssignments(
+        const QString& clipId,
+        const QString& speakerId,
+        const QJsonArray& trackAnchors,
+        const QString& resolutionSource,
+        const QString& auditAction,
+        const QString& runIdPrefix,
+        const std::function<bool(const QJsonObject&, const QJsonObject&)>& shouldReplaceResolvedRow,
+        const std::function<bool(const QJsonObject&, const QJsonObject&)>& faceRefMatches);
     void openTrackPickerForSpeaker(const QString& speakerId);
-    bool armReferencePickForSpeaker(const QString& speakerId, int referenceIndex);
-    bool clearSpeakerTrackingReferences(const QString& speakerId);
     bool deleteSpeakerAutoTrackPointstream(const QString& speakerId);
     bool setSpeakerTrackingEnabled(const QString& speakerId, bool enabled);
     bool setSpeakerSkipped(const QString& speakerId, bool skipped);
-    bool beginSelectedReferenceAvatarDrag(int referenceIndex, const QPoint& localPos);
-    void updateSelectedReferenceAvatarDrag(const QPoint& localPos);
-    void finishSelectedReferenceAvatarDrag(bool commit);
-    bool selectedSpeakerReferenceObject(int referenceIndex,
-                                        QString* speakerIdOut,
-                                        QJsonObject* refOut) const;
     bool saveClipSpeakerFramingTargetsFromControls();
     bool saveClipSpeakerFramingEnabledFromControls();
+    void populateSpeakerFramingEnabledKeyframeTable(const TimelineClip& clip);
+    void syncSpeakerFramingEnabledTableToPlayhead();
+    bool upsertSpeakerFramingEnabledKeyframeAtPlayhead(bool enabled);
+    bool removeSelectedSpeakerFramingEnabledKeyframes();
     void updateSpeakerFramingTargetControls();
-    bool adjustSelectedReferenceAvatarZoom(int referenceIndex, int wheelDelta);
-    QPointF referenceNormPerPixelFromSourceFrame(const TimelineClip& clip,
-                                                 const QJsonObject& refObj,
-                                                 int avatarSize) const;
 
     Widgets m_widgets;
     Dependencies m_speakerDeps;
     TranscriptDocumentSession m_transcriptSession{QStringLiteral("speakers")};
     mutable QHash<QString, QPixmap> m_avatarCache;
     mutable QHash<QString, QJsonArray> m_continuityStreamsCache;
-    int m_pendingReferencePick = 0;
-    bool m_selectedAvatarDragActive = false;
-    int m_selectedAvatarDragReferenceIndex = 0;
-    QString m_selectedAvatarDragSpeakerId;
-    QPoint m_selectedAvatarDragLastPos;
-    QJsonObject m_selectedAvatarDragRefObj;
-    QPointF m_selectedAvatarDragNormPerPixel;
     QString m_lastSelectedSpeakerIdHint;
     bool m_updatingSpeakerFramingTargetControls = false;
+    bool m_updatingSpeakerFramingEnabledTable = false;
+    QSet<int64_t> m_selectedSpeakerFramingEnabledFrames;
+    int64_t m_selectedSpeakerFramingEnabledFrame = -1;
     QString m_lastSelectionSeekSpeakerId;
     QString m_lastSelectionSeekClipId;
     bool m_refreshingFaceDetectionsPathsPanel = false;
@@ -334,4 +329,7 @@ private:
     int m_lastPlayheadTrackCandidateCount = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
     QString m_pendingPreferredSpeakerId;
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 };

@@ -45,7 +45,13 @@ QString facedetectionsProcessedPathForTranscriptPath(const QString& transcriptPa
 QString legacyFacestreamPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin"));
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
+}
+
+QString legacyFacestreamProcessedPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream_processed.bin"));
 }
 
 QString identityPathForTranscriptPath(const QString& transcriptPath)
@@ -57,7 +63,24 @@ QString identityPathForTranscriptPath(const QString& transcriptPath)
 QString legacyJsonFacestreamPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
+    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.json"));
+}
+
+QString legacyJsonFacedetectionsPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
     return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.json"));
+}
+
+QString resolvedExistingArtifactPath(const QStringList& candidates)
+{
+    for (const QString& candidatePath : candidates) {
+        const QFileInfo candidateInfo(candidatePath);
+        if (candidateInfo.exists() && candidateInfo.isFile()) {
+            return candidateInfo.absoluteFilePath();
+        }
+    }
+    return candidates.isEmpty() ? QString() : QFileInfo(candidates.constFirst()).absoluteFilePath();
 }
 
 QString transcriptTextCompanionPath(const QString& transcriptPath)
@@ -504,38 +527,54 @@ bool TranscriptEngine::loadFacestreamArtifact(const QString &transcriptPath, QJs
             return false;
         }
         QJsonDocument facedetectionsDoc;
-        if ((loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc) ||
-             loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facedetectionsDoc)) &&
-            facedetectionsDoc.isObject()) {
-            *rootOut = facedetectionsDoc.object();
-            return true;
+        const QStringList binaryCandidates{
+            facedetectionsPathForTranscriptPath(transcriptPath),
+            legacyFacestreamPathForTranscriptPath(transcriptPath),
+        };
+        for (const QString& candidatePath : binaryCandidates) {
+            if (loadFacestreamDocFromFile(candidatePath, &facedetectionsDoc) && facedetectionsDoc.isObject()) {
+                *rootOut = facedetectionsDoc.object();
+                return true;
+            }
         }
-        QFile legacyFile(legacyJsonFacestreamPathForTranscriptPath(transcriptPath));
-        if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
-            return false;
+        const QStringList jsonCandidates{
+            legacyJsonFacedetectionsPathForTranscriptPath(transcriptPath),
+            legacyJsonFacestreamPathForTranscriptPath(transcriptPath),
+        };
+        for (const QString& candidatePath : jsonCandidates) {
+            QFile legacyFile(candidatePath);
+            if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
+                continue;
+            }
+            QJsonParseError parseError;
+            const QJsonDocument legacyDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
+            if (parseError.error == QJsonParseError::NoError && legacyDoc.isObject()) {
+                *rootOut = legacyDoc.object();
+                return true;
+            }
         }
-        QJsonParseError parseError;
-        const QJsonDocument legacyDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !legacyDoc.isObject()) {
-            return false;
-        }
-        *rootOut = legacyDoc.object();
-        return true;
+        return false;
     }
 
 QString TranscriptEngine::facedetectionsArtifactPath(const QString &transcriptPath) const
     {
-        return facedetectionsPathForTranscriptPath(transcriptPath);
+        return resolvedExistingArtifactPath(QStringList{
+            facedetectionsPathForTranscriptPath(transcriptPath),
+            legacyFacestreamPathForTranscriptPath(transcriptPath),
+        });
     }
 
 bool TranscriptEngine::saveFacestreamArtifact(const QString &transcriptPath, const QJsonObject &root) const
     {
-        return saveFacestreamDocToFile(facedetectionsPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+        return saveFacestreamDocToFile(facedetectionsArtifactPath(transcriptPath), QJsonDocument(root));
     }
 
 QString TranscriptEngine::facedetectionsProcessedArtifactPath(const QString &transcriptPath) const
     {
-        return facedetectionsProcessedPathForTranscriptPath(transcriptPath);
+        return resolvedExistingArtifactPath(QStringList{
+            facedetectionsProcessedPathForTranscriptPath(transcriptPath),
+            legacyFacestreamProcessedPathForTranscriptPath(transcriptPath),
+        });
     }
 
 bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
@@ -544,17 +583,22 @@ bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcript
             return false;
         }
         QJsonDocument processedDoc;
-        if (loadFacestreamDocFromFile(facedetectionsProcessedPathForTranscriptPath(transcriptPath), &processedDoc) &&
-            processedDoc.isObject()) {
-            *rootOut = processedDoc.object();
-            return true;
+        const QStringList candidates{
+            facedetectionsProcessedPathForTranscriptPath(transcriptPath),
+            legacyFacestreamProcessedPathForTranscriptPath(transcriptPath),
+        };
+        for (const QString& candidatePath : candidates) {
+            if (loadFacestreamDocFromFile(candidatePath, &processedDoc) && processedDoc.isObject()) {
+                *rootOut = processedDoc.object();
+                return true;
+            }
         }
         return false;
     }
 
 bool TranscriptEngine::saveFacestreamProcessedArtifact(const QString &transcriptPath, const QJsonObject &root) const
     {
-        return saveFacestreamDocToFile(facedetectionsProcessedPathForTranscriptPath(transcriptPath), QJsonDocument(root));
+        return saveFacestreamDocToFile(facedetectionsProcessedArtifactPath(transcriptPath), QJsonDocument(root));
     }
 
 QString TranscriptEngine::identityArtifactPath(const QString &transcriptPath) const

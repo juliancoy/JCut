@@ -14,6 +14,8 @@ QString transcriptWorkingPathForClipFile(const QString& filePath);
 QStringList transcriptCutPathsForClipFile(const QString& filePath);
 QString activeTranscriptPathForClipFile(const QString& filePath);
 bool facedetectionsSidecarExistsForClipFile(const QString& filePath);
+QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
+                                                   const QString& preferredTranscriptPath = QString());
 void setActiveTranscriptPathForClipFile(const QString& filePath, const QString& transcriptPath);
 void clearActiveTranscriptPathForClipFile(const QString& filePath);
 void clearAllActiveTranscriptPaths();

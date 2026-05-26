@@ -19,8 +19,10 @@ inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& trans
     const QStringList candidates{
         dir.filePath(base + QStringLiteral("_facedetections.bin")),
         dir.filePath(base + QStringLiteral("_facedetections_processed.bin")),
-        dir.filePath(base + QStringLiteral("_facedetections.bin")),
+        dir.filePath(base + QStringLiteral("_facestream.bin")),
+        dir.filePath(base + QStringLiteral("_facestream_processed.bin")),
         dir.filePath(base + QStringLiteral("_facedetections.json")),
+        dir.filePath(base + QStringLiteral("_facestream.json")),
     };
     qint64 revisionMs = -1;
     for (const QString& path : candidates) {
@@ -43,6 +45,10 @@ inline QJsonObject continuityFacestreamsByClipObject(const QJsonObject& artifact
     if (!byClip.isEmpty()) {
         return byClip;
     }
+    byClip = artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
+    if (!byClip.isEmpty()) {
+        return byClip;
+    }
     return artifactRoot.value(QStringLiteral("continuity_boxstreams_by_clip")).toObject();
 }
 
@@ -56,6 +62,7 @@ inline void setContinuityFacestreamsByClipObject(QJsonObject* artifactRoot, cons
     if (!artifactRoot) {
         return;
     }
+    artifactRoot->remove(QStringLiteral("continuity_facestreams_by_clip"));
     artifactRoot->remove(QStringLiteral("continuity_boxstreams_by_clip"));
     (*artifactRoot)[QStringLiteral("continuity_facedetections_by_clip")] = byClip;
 }

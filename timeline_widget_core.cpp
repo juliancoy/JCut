@@ -181,7 +181,7 @@ void TimelineWidget::setCurrentFrame(int64_t frame) {
 int64_t TimelineWidget::totalFrames() const {
     int64_t lastFrame = 300;
     for (const TimelineClip& clip : m_clips) {
-        lastFrame = qMax(lastFrame, clip.startFrame + clip.durationFrames + 30);
+        lastFrame = qMax(lastFrame, clip.startFrame + clip.durationFrames + kTimelineFps);
     }
     return lastFrame;
 }

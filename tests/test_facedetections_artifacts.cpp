@@ -3,6 +3,7 @@
 #include "transcript_engine.h"
 
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QTemporaryDir>
@@ -224,6 +225,40 @@ private slots:
             finalClipRoot.value(QStringLiteral("resolved_current")).toObject()
                 .value(QStringLiteral("track_identity_map")).toArray();
         QCOMPARE(resolvedMap.size(), 2);
+    }
+
+    void loadLegacyFacestreamArtifactName()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString transcriptPath =
+            QDir(tempDir.path()).filePath(QStringLiteral("episode_legacy.json"));
+        editor::TranscriptEngine engine;
+
+        QVERIFY(engine.saveTranscriptJson(
+            transcriptPath,
+            QJsonDocument(QJsonObject{{QStringLiteral("segments"), QJsonArray{}}})));
+
+        const QJsonObject artifactRoot{
+            {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_v1")},
+            {QStringLiteral("continuity_facedetections_by_clip"), QJsonObject{}}
+        };
+        QVERIFY(engine.saveFacestreamArtifact(transcriptPath, artifactRoot));
+
+        const QFileInfo transcriptInfo(transcriptPath);
+        const QString canonicalPath = engine.facedetectionsArtifactPath(transcriptPath);
+        const QString legacyPath =
+            transcriptInfo.dir().filePath(transcriptInfo.completeBaseName() + QStringLiteral("_facestream.bin"));
+        QVERIFY(QFileInfo::exists(canonicalPath));
+        QVERIFY(QFile::rename(canonicalPath, legacyPath));
+        QVERIFY(!QFileInfo::exists(canonicalPath));
+
+        QJsonObject loadedArtifactRoot;
+        QVERIFY(engine.loadFacestreamArtifact(transcriptPath, &loadedArtifactRoot));
+        QCOMPARE(loadedArtifactRoot.value(QStringLiteral("schema")).toString(),
+                 QStringLiteral("jcut_facedetections_v1"));
+        QCOMPARE(engine.facedetectionsArtifactPath(transcriptPath), QFileInfo(legacyPath).absoluteFilePath());
     }
 };
 

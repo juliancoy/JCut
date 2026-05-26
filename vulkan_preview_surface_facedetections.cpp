@@ -337,8 +337,11 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
         }
         const QVector<FacestreamTrack> tracks = loadFacestreamTracksForClip(clip);
-        const bool showRawDetectionsForPreview =
-            m_showRawDetections && !m_interaction.faceStreamAssignmentInteractionEnabled;
+        // Keep raw detections visible when explicitly enabled, even while the
+        // Speakers tab turns on assignment interaction. The UI exposes these as
+        // independent preview overlays, so suppressing raw detections here
+        // makes the checkbox appear broken.
+        const bool showRawDetectionsForPreview = m_showRawDetections;
         if (showRawDetectionsForPreview) {
             const QVector<VulkanPreviewFacestreamOverlay> clipDetections =
                 rawDetectionsForClipFrame(clip, localFrame);

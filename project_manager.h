@@ -15,7 +15,7 @@ public:
     explicit ProjectManager(QObject *parent = nullptr);
     ~ProjectManager() override = default;
 
-    // Root directory configuration (stored in a stable app config location).
+    // Root directory configuration (stable app config, overridable via JCUT_PROJECT_ROOT).
     QString applicationDirPath() const;
     QString configFilePath() const;
     QString legacyConfigFilePath() const;

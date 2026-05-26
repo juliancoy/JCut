@@ -6,6 +6,7 @@
 #include "identity_resolution.h"
 
 #include <QDir>
+#include <QDebug>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -178,10 +179,36 @@ CropExtractionResult extractRepresentativeCrops(
     const std::function<bool(int, const QString&)>& progress)
 {
     CropExtractionResult result;
+    auto recordDiagnostic = [&](const QString& stage,
+                                const QString& reason,
+                                int trackId,
+                                const QString& streamId,
+                                int64_t frame = -1) {
+        QJsonObject row;
+        row[QStringLiteral("stage")] = stage;
+        row[QStringLiteral("reason")] = reason;
+        row[QStringLiteral("track_id")] = trackId;
+        if (!streamId.trimmed().isEmpty()) {
+            row[QStringLiteral("stream_id")] = streamId;
+        }
+        if (frame >= 0) {
+            row[QStringLiteral("frame")] = static_cast<qint64>(frame);
+        }
+        result.diagnosticRows.push_back(row);
+        const QString warning = QStringLiteral("%1: %2%3%4")
+            .arg(stage,
+                 reason,
+                 trackId >= 0 ? QStringLiteral(" (T%1)").arg(trackId) : QString(),
+                 frame >= 0 ? QStringLiteral(" frame %1").arg(frame) : QString());
+        result.warnings.push_back(warning);
+        qWarning().noquote() << "FaceDetections crop extraction" << warning;
+    };
 
     editor::DecoderContext decoder(request.mediaPath);
     if (!decoder.initialize()) {
         result.errorMessage = QStringLiteral("Could not decode media for FaceDetections comparison crops.");
+        result.warnings.push_back(
+            QStringLiteral("decoder: could not initialize media path '%1'").arg(request.mediaPath));
         return result;
     }
 
@@ -199,14 +226,26 @@ CropExtractionResult extractRepresentativeCrops(
 
         const QJsonObject streamObj = streamValue.toObject();
         const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
         const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
         if (trackId < 0 || keyframes.isEmpty()) {
+            recordDiagnostic(QStringLiteral("stream_skip"),
+                             trackId < 0
+                                 ? QStringLiteral("missing or invalid track_id")
+                                 : QStringLiteral("track has no keyframes"),
+                             trackId,
+                             streamId);
             continue;
         }
         FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
         if (!parseFacestreamFrameDomainString(
                 streamObj.value(QStringLiteral("frame_domain")).toString(),
                 &frameDomain)) {
+            recordDiagnostic(QStringLiteral("stream_skip"),
+                             QStringLiteral("unknown frame_domain '%1'")
+                                 .arg(streamObj.value(QStringLiteral("frame_domain")).toString()),
+                             trackId,
+                             streamId);
             continue;
         }
         int64_t streamFrameMin = std::numeric_limits<int64_t>::max();
@@ -221,7 +260,17 @@ CropExtractionResult extractRepresentativeCrops(
             }
         }
         const QVector<QJsonObject> selectedKeyframes =
-            selectRepresentativeKeyframesForIdentity(keyframes, 3, 24);
+            selectRepresentativeKeyframesForIdentity(
+                keyframes,
+                qMax(1, request.maxRepresentativeCrops),
+                qMax(0, request.minRepresentativeCropFrameSpacing));
+        if (selectedKeyframes.isEmpty()) {
+            recordDiagnostic(QStringLiteral("stream_skip"),
+                             QStringLiteral("no representative keyframes selected"),
+                             trackId,
+                             streamId);
+            continue;
+        }
         int sampleIndex = 0;
         for (const QJsonObject& keyframe : selectedKeyframes) {
             const double keyframeScore =
@@ -240,6 +289,12 @@ CropExtractionResult extractRepresentativeCrops(
             const editor::FrameHandle decoded = decoder.decodeFrame(sourceFrame);
             const QImage image = decoded.hasCpuImage() ? decoded.cpuImage() : QImage();
             if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
+                recordDiagnostic(QStringLiteral("crop_skip"),
+                                 QStringLiteral("decoder returned no image for source frame %1")
+                                     .arg(sourceFrame),
+                                 trackId,
+                                 streamId,
+                                 keyframeFrame);
                 ++sampleIndex;
                 continue;
             }
@@ -254,6 +309,11 @@ CropExtractionResult extractRepresentativeCrops(
                 xNorm, yNorm, boxNorm, QSizeF(image.width(), image.height()));
             const QRect cropRect = pixelRectFromNormalizedRect(normRect, image.size());
             if (!cropRect.isValid() || cropRect.isEmpty()) {
+                recordDiagnostic(QStringLiteral("crop_skip"),
+                                 QStringLiteral("face box produced an empty crop rectangle"),
+                                 trackId,
+                                 streamId,
+                                 keyframeFrame);
                 ++sampleIndex;
                 continue;
             }
@@ -266,6 +326,11 @@ CropExtractionResult extractRepresentativeCrops(
             const QImage crop = image.copy(cropRect)
                                     .scaled(160, 160, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
             if (crop.isNull() || !crop.save(cropPath)) {
+                recordDiagnostic(QStringLiteral("crop_skip"),
+                                 QStringLiteral("could not write crop '%1'").arg(cropPath),
+                                 trackId,
+                                 streamId,
+                                 keyframeFrame);
                 ++sampleIndex;
                 continue;
             }
@@ -538,6 +603,7 @@ ClusterResult clusterFaceTracks(
             }
             row.embedding = averageNormalizedEmbeddings(cropEmbeddings);
             row.hasEmbedding = !row.embedding.empty();
+            row.embeddedCropCount = cropEmbeddings.size();
             evidence.push_back(row);
         }
     } else {
@@ -622,6 +688,7 @@ SeedTrackMatchResult matchFaceTracksToSeed(
             }
             row.embedding = averageNormalizedEmbeddings(cropEmbeddings);
             row.hasEmbedding = !row.embedding.empty();
+            row.embeddedCropCount = cropEmbeddings.size();
             if (row.hasEmbedding) {
                 ++result.embeddedTrackCount;
             }
@@ -656,6 +723,7 @@ SeedTrackMatchResult matchFaceTracksToSeed(
         return result;
     }
 
+    constexpr int kMinAutoMatchEmbeddedCrops = 2;
     result.ok = true;
     for (const TrackIdentityEvidence& row : std::as_const(evidence)) {
         SeedTrackMatch match;
@@ -663,6 +731,7 @@ SeedTrackMatchResult matchFaceTracksToSeed(
         match.cropSamples = row.cropSamples;
         match.embedding = row.embedding;
         match.hasEmbedding = row.hasEmbedding;
+        match.embeddedCropCount = row.embeddedCropCount;
         QVector<facefind::Candidate> representativeSamples = row.cropSamples;
         std::sort(representativeSamples.begin(), representativeSamples.end(), [](const facefind::Candidate& a,
                                                                                 const facefind::Candidate& b) {
@@ -679,7 +748,10 @@ SeedTrackMatchResult matchFaceTracksToSeed(
         } else {
             match.cosine =
                 jcut::identity_resolution::cosineSimilarity(seedEvidence.embedding, row.embedding);
-            if (match.cosine >= result.autoMatchThreshold) {
+            const bool enoughEvidenceForAuto =
+                seedEvidence.embeddedCropCount >= kMinAutoMatchEmbeddedCrops &&
+                row.embeddedCropCount >= kMinAutoMatchEmbeddedCrops;
+            if (match.cosine >= result.autoMatchThreshold && enoughEvidenceForAuto) {
                 match.decision = QStringLiteral("auto_match");
             } else if (match.cosine >= result.reviewThreshold) {
                 match.decision = QStringLiteral("review");
@@ -694,6 +766,7 @@ SeedTrackMatchResult matchFaceTracksToSeed(
         rowJson[QStringLiteral("decision")] = match.decision;
         rowJson[QStringLiteral("has_embedding")] = match.hasEmbedding;
         rowJson[QStringLiteral("crop_count")] = match.cropSamples.size();
+        rowJson[QStringLiteral("embedded_crop_count")] = match.embeddedCropCount;
         rowJson[QStringLiteral("representative_crop")] = match.representativeCandidate.cropPath;
         result.matchRows.push_back(rowJson);
         result.matches.push_back(match);
@@ -759,12 +832,11 @@ AssignmentResolutionResult resolveTrackIdentityAssignments(
         }
         const QString manualOverride =
             row.value(QStringLiteral("manual_override")).toString().trimmed();
-        QJsonArray trackIds = row.value(QStringLiteral("track_ids")).toArray();
+        const QJsonArray trackIds = row.value(QStringLiteral("track_ids")).toArray();
         if (trackIds.isEmpty()) {
-            const int fallbackTrackId = row.value(QStringLiteral("track_id")).toInt(-1);
-            if (fallbackTrackId >= 0) {
-                trackIds.push_back(fallbackTrackId);
-            }
+            qWarning().noquote()
+                << "FaceDetections assignment resolution: accepted row missing track_ids; row skipped.";
+            continue;
         }
 
         for (const QJsonValue& trackValue : trackIds) {
