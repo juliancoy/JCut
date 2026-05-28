@@ -1246,6 +1246,8 @@ struct DetectorControlPanel {
     QLabel* runtimeCheckpointMs = nullptr;
     QLabel* runtimeCheckpointBacklog = nullptr;
     QLabel* runtimeWorkers = nullptr;
+    QLabel* runtimePipelineState = nullptr;
+    QLabel* runtimeNcnnBreakdown = nullptr;
     QLabel* settingsPath = nullptr;
     std::shared_ptr<bool> syncing = std::make_shared<bool>(false);
 };
@@ -1273,6 +1275,71 @@ struct DetectorStageTimingTotals {
     double avgTrackingMs() const { return average(trackingMsTotal, trackingSamples); }
     double avgCheckpointWriteMs() const { return average(checkpointWriteMsTotal, checkpointWriteSamples); }
 };
+
+struct DetectorLiveTelemetrySnapshot {
+    double avgDecoderUploadMs = 0.0;
+    double avgNcnnInputMs = 0.0;
+    double avgNcnnExtractMs = 0.0;
+    double avgNcnnExtractLevel8Ms = 0.0;
+    double avgNcnnExtractLevel16Ms = 0.0;
+    double avgNcnnExtractLevel32Ms = 0.0;
+    double avgNcnnPostMs = 0.0;
+    double avgNcnnTotalMs = 0.0;
+    int pendingSlots = 0;
+    int busyWorkers = 0;
+    int detectorWorkersActive = 0;
+    int checkpointBacklog = 0;
+    quint64 handoffDescriptorAllocs = 0;
+    quint64 handoffDescriptorFrees = 0;
+    quint64 handoffImageAllocs = 0;
+    quint64 handoffImageFrees = 0;
+    quint64 handoffImportedAllocs = 0;
+    quint64 handoffImportedFrees = 0;
+    quint64 handoffBufferAllocs = 0;
+    quint64 handoffBufferFrees = 0;
+    quint64 handoffPipelineCreates = 0;
+    quint64 preprocDescriptorAllocs = 0;
+    quint64 preprocDescriptorFrees = 0;
+    quint64 inferDescriptorAllocs = 0;
+    quint64 inferDescriptorFrees = 0;
+    quint64 preprocPipelineCreates = 0;
+};
+
+QString livePipelineStateText(const DetectorLiveTelemetrySnapshot& snapshot)
+{
+    return QStringLiteral("%1 pending slot(s), %2/%3 worker(s) busy, backlog %4")
+        .arg(qMax(0, snapshot.pendingSlots))
+        .arg(qMax(0, snapshot.busyWorkers))
+        .arg(qMax(1, snapshot.detectorWorkersActive))
+        .arg(qMax(0, snapshot.checkpointBacklog));
+}
+
+QString liveNcnnBreakdownText(const DetectorLiveTelemetrySnapshot& snapshot)
+{
+    return QStringLiteral("upload %1 ms | input %2 | ext %3 | l8 %4 | l16 %5 | l32 %6 | post %7 | total %8 | handoff ds %9/%10 img %11/%12 imp %13/%14 buf %15/%16 pipe %17 | pre ds %18/%19 inf %20/%21 pipe %22")
+        .arg(snapshot.avgDecoderUploadMs, 0, 'f', 2)
+        .arg(snapshot.avgNcnnInputMs, 0, 'f', 2)
+        .arg(snapshot.avgNcnnExtractMs, 0, 'f', 2)
+        .arg(snapshot.avgNcnnExtractLevel8Ms, 0, 'f', 2)
+        .arg(snapshot.avgNcnnExtractLevel16Ms, 0, 'f', 2)
+        .arg(snapshot.avgNcnnExtractLevel32Ms, 0, 'f', 2)
+        .arg(snapshot.avgNcnnPostMs, 0, 'f', 2)
+        .arg(snapshot.avgNcnnTotalMs, 0, 'f', 2)
+        .arg(snapshot.handoffDescriptorAllocs)
+        .arg(snapshot.handoffDescriptorFrees)
+        .arg(snapshot.handoffImageAllocs)
+        .arg(snapshot.handoffImageFrees)
+        .arg(snapshot.handoffImportedAllocs)
+        .arg(snapshot.handoffImportedFrees)
+        .arg(snapshot.handoffBufferAllocs)
+        .arg(snapshot.handoffBufferFrees)
+        .arg(snapshot.handoffPipelineCreates)
+        .arg(snapshot.preprocDescriptorAllocs)
+        .arg(snapshot.preprocDescriptorFrees)
+        .arg(snapshot.inferDescriptorAllocs)
+        .arg(snapshot.inferDescriptorFrees)
+        .arg(snapshot.preprocPipelineCreates);
+}
 
 struct LivePreviewSample {
     int frameNumber = -1;
@@ -1475,7 +1542,8 @@ void updateDetectorRuntimeStats(DetectorControlPanel* panel,
                                 int detectorPipelineSlots,
                                 double elapsedSec,
                                 AdaptiveEtaTracker* etaTracker,
-                                const DetectorStageTimingTotals* stageTimings)
+                                const DetectorStageTimingTotals* stageTimings,
+                                const DetectorLiveTelemetrySnapshot* liveTelemetry)
 {
     if (!panel || !panel->window || !panel->runtimeProgress) {
         return;
@@ -1516,6 +1584,14 @@ void updateDetectorRuntimeStats(DetectorControlPanel* panel,
                 .arg(qMax(1, detectorWorkersActive))
                 .arg(qMax(1, detectorWorkersRequested))
                 .arg(qMax(1, detectorPipelineSlots)));
+    }
+    if (liveTelemetry) {
+        if (panel->runtimePipelineState) {
+            panel->runtimePipelineState->setText(livePipelineStateText(*liveTelemetry));
+        }
+        if (panel->runtimeNcnnBreakdown) {
+            panel->runtimeNcnnBreakdown->setText(liveNcnnBreakdownText(*liveTelemetry));
+        }
     }
     if (stageTimings) {
         if (panel->runtimeDecodeMs) {
@@ -1596,8 +1672,14 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
             .arg(qMax(1, detectorWorkersActive))
             .arg(qMax(1, detectorWorkersRequested))
             .arg(qMax(1, detectorPipelineSlots)));
+    panel.runtimePipelineState = new QLabel(QStringLiteral("0 pending slot(s), 0/%1 worker(s) busy, backlog 0")
+                                                .arg(qMax(1, detectorWorkersActive)));
+    panel.runtimeNcnnBreakdown = new QLabel(QStringLiteral("upload 0.00 ms | input 0.00 | ext 0.00 | l8 0.00 | l16 0.00 | l32 0.00 | post 0.00 | total 0.00"));
+    panel.runtimePipelineState->setWordWrap(true);
+    panel.runtimeNcnnBreakdown->setWordWrap(true);
     statsForm->addRow(QStringLiteral("Frame progress"), panel.runtimeFrame);
     statsForm->addRow(QStringLiteral("Workers"), panel.runtimeWorkers);
+    statsForm->addRow(QStringLiteral("Pipeline state"), panel.runtimePipelineState);
     statsForm->addRow(QStringLiteral("Decode FPS"), panel.runtimeFps);
     statsForm->addRow(QStringLiteral("Processed FPS"), panel.runtimeProcessedFps);
     statsForm->addRow(QStringLiteral("ETA"), panel.runtimeEta);
@@ -1610,6 +1692,7 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
     statsForm->addRow(QStringLiteral("Avg tracking"), panel.runtimeTrackingMs);
     statsForm->addRow(QStringLiteral("Avg checkpoint enqueue"), panel.runtimeCheckpointMs);
     statsForm->addRow(QStringLiteral("Checkpoint backlog"), panel.runtimeCheckpointBacklog);
+    statsForm->addRow(QStringLiteral("Avg NCNN stages"), panel.runtimeNcnnBreakdown);
     root->addLayout(statsForm);
 
     auto* settingsTitle = new QLabel(QStringLiteral("Detection settings"));
@@ -3107,6 +3190,27 @@ struct DecoderDetectorWorker {
     bool busy = false;
 };
 
+VkDeviceSize scrfdTensorBytesForSourceSize(const QSize& sourceSize, int targetSize)
+{
+    const int sourceWidth = qMax(1, sourceSize.width());
+    const int sourceHeight = qMax(1, sourceSize.height());
+    targetSize = qMax(320, targetSize);
+    int resizedW = sourceWidth;
+    int resizedH = sourceHeight;
+    if (resizedW > resizedH) {
+        const float scale = static_cast<float>(targetSize) / static_cast<float>(resizedW);
+        resizedW = targetSize;
+        resizedH = qMax(1, qRound(static_cast<float>(resizedH) * scale));
+    } else {
+        const float scale = static_cast<float>(targetSize) / static_cast<float>(resizedH);
+        resizedH = targetSize;
+        resizedW = qMax(1, qRound(static_cast<float>(resizedW) * scale));
+    }
+    return static_cast<VkDeviceSize>(((resizedW + 31) / 32) * 32) *
+           static_cast<VkDeviceSize>(((resizedH + 31) / 32) * 32) *
+           static_cast<VkDeviceSize>(3 * sizeof(float));
+}
+
 
 bool prepareRes10DecoderFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDetector* preprocessor,
                               jcut::vulkan_detector::VulkanRes10NcnnFaceDetector* detector,
@@ -3247,25 +3351,7 @@ bool prepareScrfdDecoderFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDetector*
             return false;
         }
     }
-    const int sourceWidth = qMax(1, source.size.width());
-    const int sourceHeight = qMax(1, source.size.height());
-    targetSize = qMax(320, targetSize);
-    float scale = 1.0f;
-    int resizedW = sourceWidth;
-    int resizedH = sourceHeight;
-    if (resizedW > resizedH) {
-        scale = static_cast<float>(targetSize) / static_cast<float>(resizedW);
-        resizedW = targetSize;
-        resizedH = qMax(1, qRound(static_cast<float>(resizedH) * scale));
-    } else {
-        scale = static_cast<float>(targetSize) / static_cast<float>(resizedH);
-        resizedH = targetSize;
-        resizedW = qMax(1, qRound(static_cast<float>(resizedW) * scale));
-    }
-    const VkDeviceSize tensorBytes =
-        static_cast<VkDeviceSize>(((resizedW + 31) / 32) * 32) *
-        static_cast<VkDeviceSize>(((resizedH + 31) / 32) * 32) *
-        static_cast<VkDeviceSize>(3 * sizeof(float));
+    const VkDeviceSize tensorBytes = scrfdTensorBytesForSourceSize(source.size, targetSize);
     if (!vk->ensureDetectorBuffers(tensorBytes, 1, error)) {
         return false;
     }
@@ -5119,7 +5205,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
     }
 
-    const auto wallStart = std::chrono::steady_clock::now();
+    auto wallStart = std::chrono::steady_clock::now();
     processed = resume.processed;
     totalDetections = resume.totalDetections;
     appVulkanFramePathFrames = resume.appVulkanFramePathFrames;
@@ -5209,9 +5295,21 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     int lastProgressPercent = -1;
     std::chrono::steady_clock::time_point lastProgressAt = wallStart;
     std::chrono::steady_clock::time_point lastRuntimeStatsAt = wallStart - std::chrono::seconds(1);
+    std::chrono::steady_clock::time_point lastLiveTelemetryAt = wallStart - std::chrono::seconds(3);
     AdaptiveEtaTracker etaTracker;
     DetectorStageTimingTotals stageTimings;
+    DetectorStageTimingTotals lastLiveTelemetryStageTimings;
     int latestProcessedFrame = options.startFrame - 1;
+    int lastLiveTelemetryProcessed = processed;
+    int lastLiveTelemetryTotalDetections = totalDetections;
+    double lastLiveTelemetryDecoderUploadMsTotal = decoderUploadMsTotal;
+    double lastLiveTelemetryNcnnInputMsTotal = ncnnInputMsTotal;
+    double lastLiveTelemetryNcnnExtractMsTotal = ncnnExtractMsTotal;
+    double lastLiveTelemetryNcnnExtractLevel8MsTotal = ncnnExtractLevel8MsTotal;
+    double lastLiveTelemetryNcnnExtractLevel16MsTotal = ncnnExtractLevel16MsTotal;
+    double lastLiveTelemetryNcnnExtractLevel32MsTotal = ncnnExtractLevel32MsTotal;
+    double lastLiveTelemetryNcnnPostMsTotal = ncnnPostMsTotal;
+    double lastLiveTelemetryNcnnTotalMsTotal = ncnnTotalMsTotal;
     for (int completedFrame : resume.completedFrames) {
         latestProcessedFrame = qMax(latestProcessedFrame, completedFrame);
     }
@@ -5329,6 +5427,40 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         lastRuntimeStatsAt = now;
         const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
+        const int busyWorkers = std::count_if(decoderDetectorWorkers.begin(),
+                                              decoderDetectorWorkers.end(),
+                                              [](const auto& worker) { return worker && worker->busy; });
+        DetectorLiveTelemetrySnapshot liveTelemetry;
+        for (int slotIndex = 0; slotIndex < decoderDirectPipelineSlots; ++slotIndex) {
+            const auto handoffStats = decoderDirectSlots[slotIndex].handoff.resourceStats();
+            liveTelemetry.handoffDescriptorAllocs += handoffStats.descriptorAllocations;
+            liveTelemetry.handoffDescriptorFrees += handoffStats.descriptorFrees;
+            liveTelemetry.handoffImageAllocs += handoffStats.imageMemoryAllocations;
+            liveTelemetry.handoffImageFrees += handoffStats.imageMemoryFrees;
+            liveTelemetry.handoffImportedAllocs += handoffStats.importedMemoryAllocations;
+            liveTelemetry.handoffImportedFrees += handoffStats.importedMemoryFrees;
+            liveTelemetry.handoffBufferAllocs += handoffStats.stagingBufferAllocations;
+            liveTelemetry.handoffBufferFrees += handoffStats.stagingBufferFrees;
+            liveTelemetry.handoffPipelineCreates += handoffStats.computePipelineCreations;
+            const auto preprocessorStats = decoderDirectSlots[slotIndex].preprocessor.resourceStats();
+            liveTelemetry.preprocDescriptorAllocs += preprocessorStats.preprocessDescriptorAllocations;
+            liveTelemetry.preprocDescriptorFrees += preprocessorStats.preprocessDescriptorFrees;
+            liveTelemetry.inferDescriptorAllocs += preprocessorStats.inferenceDescriptorAllocations;
+            liveTelemetry.inferDescriptorFrees += preprocessorStats.inferenceDescriptorFrees;
+            liveTelemetry.preprocPipelineCreates += preprocessorStats.computePipelineCreations;
+        }
+        liveTelemetry.avgDecoderUploadMs = processed > 0 ? decoderUploadMsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnInputMs = processed > 0 ? ncnnInputMsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnExtractMs = processed > 0 ? ncnnExtractMsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnExtractLevel8Ms = processed > 0 ? ncnnExtractLevel8MsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnExtractLevel16Ms = processed > 0 ? ncnnExtractLevel16MsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnExtractLevel32Ms = processed > 0 ? ncnnExtractLevel32MsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnPostMs = processed > 0 ? ncnnPostMsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.avgNcnnTotalMs = processed > 0 ? ncnnTotalMsTotal / static_cast<double>(processed) : 0.0;
+        liveTelemetry.pendingSlots = static_cast<int>(pendingDecoderDirectSlots.size());
+        liveTelemetry.busyWorkers = busyWorkers;
+        liveTelemetry.detectorWorkersActive = detectorWorkersActive;
+        liveTelemetry.checkpointBacklog = faceStreamWriter ? faceStreamWriter->backlog() : 0;
         updateDetectorRuntimeStats(&detectorControls,
                                    frameOffset,
                                    totalFrames,
@@ -5342,7 +5474,109 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                    decoderDirectPipelineSlots,
                                    elapsedSec,
                                    &etaTracker,
-                                   &stageTimings);
+                                   &stageTimings,
+                                   &liveTelemetry);
+    };
+    auto emitLiveStageTelemetry = [&](int frameOffset,
+                                      int frameNumber,
+                                      int liveTracks,
+                                      bool force = false) {
+        const auto now = std::chrono::steady_clock::now();
+        const double sinceLastSec = std::chrono::duration<double>(now - lastLiveTelemetryAt).count();
+        if (!force && sinceLastSec < 2.0) {
+            return;
+        }
+        const int processedDelta = processed - lastLiveTelemetryProcessed;
+        if (!force && processedDelta <= 0) {
+            return;
+        }
+        lastLiveTelemetryAt = now;
+        const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
+        const int current = qBound(0, frameOffset + 1, qMax(1, totalFrames));
+        const double decodeFps = elapsedSec > 0.0 ? static_cast<double>(current) / elapsedSec : 0.0;
+        const double processedFps = elapsedSec > 0.0 ? static_cast<double>(processed) / elapsedSec : 0.0;
+        const int detectionDelta = totalDetections - lastLiveTelemetryTotalDetections;
+        const int busyWorkers = std::count_if(decoderDetectorWorkers.begin(),
+                                              decoderDetectorWorkers.end(),
+                                              [](const auto& worker) { return worker && worker->busy; });
+        DetectorLiveTelemetrySnapshot resourceTelemetry;
+        for (int slotIndex = 0; slotIndex < decoderDirectPipelineSlots; ++slotIndex) {
+            const auto handoffStats = decoderDirectSlots[slotIndex].handoff.resourceStats();
+            resourceTelemetry.handoffDescriptorAllocs += handoffStats.descriptorAllocations;
+            resourceTelemetry.handoffDescriptorFrees += handoffStats.descriptorFrees;
+            resourceTelemetry.handoffImageAllocs += handoffStats.imageMemoryAllocations;
+            resourceTelemetry.handoffImageFrees += handoffStats.imageMemoryFrees;
+            resourceTelemetry.handoffImportedAllocs += handoffStats.importedMemoryAllocations;
+            resourceTelemetry.handoffImportedFrees += handoffStats.importedMemoryFrees;
+            resourceTelemetry.handoffBufferAllocs += handoffStats.stagingBufferAllocations;
+            resourceTelemetry.handoffBufferFrees += handoffStats.stagingBufferFrees;
+            resourceTelemetry.handoffPipelineCreates += handoffStats.computePipelineCreations;
+            const auto preprocessorStats = decoderDirectSlots[slotIndex].preprocessor.resourceStats();
+            resourceTelemetry.preprocDescriptorAllocs += preprocessorStats.preprocessDescriptorAllocations;
+            resourceTelemetry.preprocDescriptorFrees += preprocessorStats.preprocessDescriptorFrees;
+            resourceTelemetry.inferDescriptorAllocs += preprocessorStats.inferenceDescriptorAllocations;
+            resourceTelemetry.inferDescriptorFrees += preprocessorStats.inferenceDescriptorFrees;
+            resourceTelemetry.preprocPipelineCreates += preprocessorStats.computePipelineCreations;
+        }
+        const auto deltaAverage = [&](double totalNow, double totalThen) {
+            const double delta = totalNow - totalThen;
+            return processedDelta > 0 ? delta / static_cast<double>(processedDelta) : 0.0;
+        };
+        const auto stageDeltaAverage = [&](double DetectorStageTimingTotals::*member) {
+            const double totalNow = stageTimings.*member;
+            const double totalThen = lastLiveTelemetryStageTimings.*member;
+            return processedDelta > 0 ? (totalNow - totalThen) / static_cast<double>(processedDelta) : 0.0;
+        };
+        std::cout << "telemetry"
+                  << " frame=" << frameNumber
+                  << " current=" << current
+                  << " processed=" << processed
+                  << " live_tracks=" << liveTracks
+                  << " det_delta=" << detectionDelta
+                  << " decode_fps=" << std::fixed << std::setprecision(2) << decodeFps
+                  << " processed_fps=" << processedFps
+                  << " pending_slots=" << pendingDecoderDirectSlots.size()
+                  << " busy_workers=" << busyWorkers
+                  << " checkpoint_backlog=" << (faceStreamWriter ? faceStreamWriter->backlog() : 0)
+                  << " avg_decode_ms=" << stageDeltaAverage(&DetectorStageTimingTotals::decodeMsTotal)
+                  << " avg_handoff_ms=" << stageDeltaAverage(&DetectorStageTimingTotals::handoffMsTotal)
+                  << " avg_infer_wall_ms=" << stageDeltaAverage(&DetectorStageTimingTotals::inferenceWallMsTotal)
+                  << " avg_tracking_ms=" << stageDeltaAverage(&DetectorStageTimingTotals::trackingMsTotal)
+                  << " avg_checkpoint_enqueue_ms=" << stageDeltaAverage(&DetectorStageTimingTotals::checkpointWriteMsTotal)
+                  << " avg_decoder_upload_ms=" << deltaAverage(decoderUploadMsTotal, lastLiveTelemetryDecoderUploadMsTotal)
+                  << " avg_ncnn_input_ms=" << deltaAverage(ncnnInputMsTotal, lastLiveTelemetryNcnnInputMsTotal)
+                  << " avg_ncnn_extract_ms=" << deltaAverage(ncnnExtractMsTotal, lastLiveTelemetryNcnnExtractMsTotal)
+                  << " avg_ncnn_extract_level8_ms=" << deltaAverage(ncnnExtractLevel8MsTotal, lastLiveTelemetryNcnnExtractLevel8MsTotal)
+                  << " avg_ncnn_extract_level16_ms=" << deltaAverage(ncnnExtractLevel16MsTotal, lastLiveTelemetryNcnnExtractLevel16MsTotal)
+                  << " avg_ncnn_extract_level32_ms=" << deltaAverage(ncnnExtractLevel32MsTotal, lastLiveTelemetryNcnnExtractLevel32MsTotal)
+                  << " avg_ncnn_post_ms=" << deltaAverage(ncnnPostMsTotal, lastLiveTelemetryNcnnPostMsTotal)
+                  << " avg_ncnn_total_ms=" << deltaAverage(ncnnTotalMsTotal, lastLiveTelemetryNcnnTotalMsTotal)
+                  << " handoff_desc_allocs=" << resourceTelemetry.handoffDescriptorAllocs
+                  << " handoff_desc_frees=" << resourceTelemetry.handoffDescriptorFrees
+                  << " handoff_img_allocs=" << resourceTelemetry.handoffImageAllocs
+                  << " handoff_img_frees=" << resourceTelemetry.handoffImageFrees
+                  << " handoff_import_allocs=" << resourceTelemetry.handoffImportedAllocs
+                  << " handoff_import_frees=" << resourceTelemetry.handoffImportedFrees
+                  << " handoff_buf_allocs=" << resourceTelemetry.handoffBufferAllocs
+                  << " handoff_buf_frees=" << resourceTelemetry.handoffBufferFrees
+                  << " handoff_pipe_creates=" << resourceTelemetry.handoffPipelineCreates
+                  << " pre_desc_allocs=" << resourceTelemetry.preprocDescriptorAllocs
+                  << " pre_desc_frees=" << resourceTelemetry.preprocDescriptorFrees
+                  << " infer_desc_allocs=" << resourceTelemetry.inferDescriptorAllocs
+                  << " infer_desc_frees=" << resourceTelemetry.inferDescriptorFrees
+                  << " pre_pipe_creates=" << resourceTelemetry.preprocPipelineCreates
+                  << "\n";
+        lastLiveTelemetryProcessed = processed;
+        lastLiveTelemetryTotalDetections = totalDetections;
+        lastLiveTelemetryDecoderUploadMsTotal = decoderUploadMsTotal;
+        lastLiveTelemetryNcnnInputMsTotal = ncnnInputMsTotal;
+        lastLiveTelemetryNcnnExtractMsTotal = ncnnExtractMsTotal;
+        lastLiveTelemetryNcnnExtractLevel8MsTotal = ncnnExtractLevel8MsTotal;
+        lastLiveTelemetryNcnnExtractLevel16MsTotal = ncnnExtractLevel16MsTotal;
+        lastLiveTelemetryNcnnExtractLevel32MsTotal = ncnnExtractLevel32MsTotal;
+        lastLiveTelemetryNcnnPostMsTotal = ncnnPostMsTotal;
+        lastLiveTelemetryNcnnTotalMsTotal = ncnnTotalMsTotal;
+        lastLiveTelemetryStageTimings = stageTimings;
     };
     auto advanceRuntimeTracks = [&](int frameNumber,
                                     const QVector<Detection>& detections,
@@ -5525,6 +5759,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                &etaTracker);
         }
         refreshRuntimeStats(frameOffset, frameNumber, liveTrackCount(tracks));
+        emitLiveStageTelemetry(frameOffset, frameNumber, liveTrackCount(tracks));
         return true;
     };
     const auto emptyProbe = jcut::vulkan_detector::HardwareInteropProbeResult{};
@@ -5535,6 +5770,121 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                !options.heuristicZeroCopyDetector &&
                (!options.scrfdDetector || !tuning.scrfdTiled);
     };
+    auto prewarmDecoderDirectResources = [&]() -> bool {
+        if (!decoderDirectPipelineEnabled() || resumeStartOffset >= totalFrames) {
+            return true;
+        }
+        const int probeFrameNumber = options.startFrame + qMax(0, resumeStartOffset);
+        editor::FrameHandle probeFrame = decoder.decodeFrame(probeFrameNumber);
+        if (probeFrame.isNull()) {
+            if (options.verbose) {
+                std::cerr << "Decoder direct prewarm skipped: failed to decode probe frame "
+                          << probeFrameNumber << ".\n";
+            }
+            return true;
+        }
+        const QSize probeFrameSize = probeFrame.size().isValid() ? probeFrame.size() : renderSize;
+        QElapsedTimer prewarmTimer;
+        prewarmTimer.start();
+        for (int slotIndex = 0; slotIndex < decoderDirectPipelineSlots; ++slotIndex) {
+            PreparedDecoderDetectionSlot& slot = decoderDirectSlots[slotIndex];
+            if (detectorWorkersActive > 1) {
+                if (slot.context.device == VK_NULL_HANDLE && !slot.context.initialize(&error)) {
+                    std::cerr << "Failed to prewarm independent Vulkan detector context for slot "
+                              << slotIndex << ": " << error.toStdString() << "\n";
+                    return false;
+                }
+            } else {
+                if (detectorContext.device == VK_NULL_HANDLE && !detectorContext.initialize(&error)) {
+                    std::cerr << "Failed to prewarm shared Vulkan detector context: "
+                              << error.toStdString() << "\n";
+                    return false;
+                }
+                if (!slot.context.attachExternalDevice(detectorContext.detectorContext(), &error)) {
+                    std::cerr << "Failed to attach prewarm slot to shared Vulkan detector context: "
+                              << error.toStdString() << "\n";
+                    return false;
+                }
+            }
+            if (!slot.handoff.isInitialized() &&
+                !slot.handoff.initialize(slot.context.detectorContext(), &error)) {
+                std::cerr << "Failed to prewarm decoder frame handoff resources for slot "
+                          << slotIndex << ": " << error.toStdString() << "\n";
+                return false;
+            }
+            if (options.scrfdDetector) {
+                if (!slot.preprocessor.isInitialized() &&
+                    !slot.preprocessor.initialize(slot.context.detectorContext(), &error)) {
+                    std::cerr << "Failed to prewarm SCRFD preprocessor for slot "
+                              << slotIndex << ": " << error.toStdString() << "\n";
+                    return false;
+                }
+                if (!slot.scrfdDetector.isInitialized()) {
+                    ScopedStderrSilencer silence(!options.verbose);
+                    if (!slot.scrfdDetector.initialize(slot.context.detectorContext(),
+                                                       scrfdParamPath,
+                                                       scrfdBinPath,
+                                                       &error)) {
+                        std::cerr << "Failed to prewarm SCRFD detector for slot "
+                                  << slotIndex << ": " << error.toStdString() << "\n";
+                        return false;
+                    }
+                }
+                if (!slot.context.ensureDetectorBuffers(
+                        scrfdTensorBytesForSourceSize(probeFrameSize, tuning.scrfdTargetSize),
+                        1,
+                        &error)) {
+                    std::cerr << "Failed to prewarm SCRFD detector buffers for slot "
+                              << slotIndex << ": " << error.toStdString() << "\n";
+                    return false;
+                }
+            } else {
+                if (!slot.preprocessor.isInitialized() &&
+                    !slot.preprocessor.initialize(slot.context.detectorContext(), &error)) {
+                    std::cerr << "Failed to prewarm Res10 preprocessor for slot "
+                              << slotIndex << ": " << error.toStdString() << "\n";
+                    return false;
+                }
+                if (!slot.res10Detector.isInitialized()) {
+                    ScopedStderrSilencer silence(!options.verbose);
+                    if (!slot.res10Detector.initialize(slot.context.detectorContext(),
+                                                       res10ParamPath,
+                                                       res10BinPath,
+                                                       &error)) {
+                        std::cerr << "Failed to prewarm Res10 detector for slot "
+                                  << slotIndex << ": " << error.toStdString() << "\n";
+                        return false;
+                    }
+                }
+                if (!slot.context.ensureDetectorBuffers(slot.preprocessor.tensorSpec().byteSize(),
+                                                        1,
+                                                        &error)) {
+                    std::cerr << "Failed to prewarm Res10 detector buffers for slot "
+                              << slotIndex << ": " << error.toStdString() << "\n";
+                    return false;
+                }
+            }
+        }
+        if (options.verbose) {
+            std::cout << "decoder_direct_prewarm_ms=" << prewarmTimer.elapsed()
+                      << " slots=" << decoderDirectPipelineSlots
+                      << " workers=" << detectorWorkersActive
+                      << " frame=" << probeFrameNumber
+                      << "\n";
+        }
+        return true;
+    };
+    if (!prewarmDecoderDirectResources()) {
+        return 2;
+    }
+    for (int slotIndex = 0; slotIndex < decoderDirectPipelineSlots; ++slotIndex) {
+        decoderDirectSlots[slotIndex].handoff.resetResourceStats();
+        decoderDirectSlots[slotIndex].preprocessor.resetResourceStats();
+    }
+    wallStart = std::chrono::steady_clock::now();
+    lastProgressAt = wallStart;
+    lastRuntimeStatsAt = wallStart - std::chrono::seconds(1);
+    lastLiveTelemetryAt = wallStart - std::chrono::seconds(3);
     auto runPreparedDecoderDetection = [&](int slotIndex) -> PreparedDecoderDetectionResult {
         PreparedDecoderDetectionResult result;
         PreparedDecoderDetectionSlot& slot = decoderDirectSlots[slotIndex];
@@ -6532,6 +6882,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         std::cout << "\n";
     }
     refreshRuntimeStats(qMax(0, totalFrames - 1), finalFrame, liveTrackCount(runtimeTracks), true);
+    emitLiveStageTelemetry(qMax(0, totalFrames - 1), finalFrame, liveTrackCount(runtimeTracks), true);
     if (faceStreamWriter) {
         QString writerCloseError;
         if (!faceStreamWriter->close(&writerCloseError)) {
@@ -6672,6 +7023,38 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         appVulkanFramePathFrames == 0 &&
         decoderVulkanUploadFallbackFrames == 0 &&
         processed > 0;
+    quint64 handoffDescriptorAllocs = 0;
+    quint64 handoffDescriptorFrees = 0;
+    quint64 handoffImageAllocs = 0;
+    quint64 handoffImageFrees = 0;
+    quint64 handoffImportedAllocs = 0;
+    quint64 handoffImportedFrees = 0;
+    quint64 handoffBufferAllocs = 0;
+    quint64 handoffBufferFrees = 0;
+    quint64 handoffPipelineCreates = 0;
+    quint64 preprocDescriptorAllocs = 0;
+    quint64 preprocDescriptorFrees = 0;
+    quint64 inferDescriptorAllocs = 0;
+    quint64 inferDescriptorFrees = 0;
+    quint64 preprocPipelineCreates = 0;
+    for (int slotIndex = 0; slotIndex < decoderDirectPipelineSlots; ++slotIndex) {
+        const auto handoffStats = decoderDirectSlots[slotIndex].handoff.resourceStats();
+        handoffDescriptorAllocs += handoffStats.descriptorAllocations;
+        handoffDescriptorFrees += handoffStats.descriptorFrees;
+        handoffImageAllocs += handoffStats.imageMemoryAllocations;
+        handoffImageFrees += handoffStats.imageMemoryFrees;
+        handoffImportedAllocs += handoffStats.importedMemoryAllocations;
+        handoffImportedFrees += handoffStats.importedMemoryFrees;
+        handoffBufferAllocs += handoffStats.stagingBufferAllocations;
+        handoffBufferFrees += handoffStats.stagingBufferFrees;
+        handoffPipelineCreates += handoffStats.computePipelineCreations;
+        const auto preprocessorStats = decoderDirectSlots[slotIndex].preprocessor.resourceStats();
+        preprocDescriptorAllocs += preprocessorStats.preprocessDescriptorAllocations;
+        preprocDescriptorFrees += preprocessorStats.preprocessDescriptorFrees;
+        inferDescriptorAllocs += preprocessorStats.inferenceDescriptorAllocations;
+        inferDescriptorFrees += preprocessorStats.inferenceDescriptorFrees;
+        preprocPipelineCreates += preprocessorStats.computePipelineCreations;
+    }
     const QJsonObject summary{
         {QStringLiteral("video"), options.videoPath},
         {QStringLiteral("output_dir"), QDir(options.outputDir).absolutePath()},
@@ -6782,6 +7165,20 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         {QStringLiteral("stage_inference_samples"), stageTimings.inferenceSamples},
         {QStringLiteral("stage_tracking_samples"), stageTimings.trackingSamples},
         {QStringLiteral("stage_checkpoint_enqueue_samples"), stageTimings.checkpointWriteSamples},
+        {QStringLiteral("resource_handoff_descriptor_allocations"), static_cast<double>(handoffDescriptorAllocs)},
+        {QStringLiteral("resource_handoff_descriptor_frees"), static_cast<double>(handoffDescriptorFrees)},
+        {QStringLiteral("resource_handoff_image_allocations"), static_cast<double>(handoffImageAllocs)},
+        {QStringLiteral("resource_handoff_image_frees"), static_cast<double>(handoffImageFrees)},
+        {QStringLiteral("resource_handoff_imported_allocations"), static_cast<double>(handoffImportedAllocs)},
+        {QStringLiteral("resource_handoff_imported_frees"), static_cast<double>(handoffImportedFrees)},
+        {QStringLiteral("resource_handoff_buffer_allocations"), static_cast<double>(handoffBufferAllocs)},
+        {QStringLiteral("resource_handoff_buffer_frees"), static_cast<double>(handoffBufferFrees)},
+        {QStringLiteral("resource_handoff_pipeline_creations"), static_cast<double>(handoffPipelineCreates)},
+        {QStringLiteral("resource_preprocess_descriptor_allocations"), static_cast<double>(preprocDescriptorAllocs)},
+        {QStringLiteral("resource_preprocess_descriptor_frees"), static_cast<double>(preprocDescriptorFrees)},
+        {QStringLiteral("resource_inference_descriptor_allocations"), static_cast<double>(inferDescriptorAllocs)},
+        {QStringLiteral("resource_inference_descriptor_frees"), static_cast<double>(inferDescriptorFrees)},
+        {QStringLiteral("resource_preprocess_pipeline_creations"), static_cast<double>(preprocPipelineCreates)},
         {QStringLiteral("wall_sec"), std::chrono::duration<double>(wallEnd - wallStart).count()},
         {QStringLiteral("decode_zero_copy"), decodeZeroCopy},
         {QStringLiteral("qimage_materialized"), options.materializedGenerateFacestream},

@@ -69,6 +69,14 @@ struct NcnnInferenceStats {
     double totalMs = 0.0;
 };
 
+struct ZeroCopyDetectorResourceStats {
+    quint64 preprocessDescriptorAllocations = 0;
+    quint64 preprocessDescriptorFrees = 0;
+    quint64 inferenceDescriptorAllocations = 0;
+    quint64 inferenceDescriptorFrees = 0;
+    quint64 computePipelineCreations = 0;
+};
+
 class VulkanZeroCopyFaceDetector {
 public:
     VulkanZeroCopyFaceDetector();
@@ -105,6 +113,8 @@ public:
                          QString* errorMessage = nullptr);
 
     QString backendId() const;
+    ZeroCopyDetectorResourceStats resourceStats() const;
+    void resetResourceStats();
 
 private:
     bool createDescriptorResources(QString* errorMessage);
@@ -146,9 +156,12 @@ private:
     VkCommandBuffer m_preprocessCommandBuffer = VK_NULL_HANDLE;
     VkFence m_preprocessFence = VK_NULL_HANDLE;
     VkDescriptorSet m_pendingPreprocessDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_reusablePreprocessDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_reusableInferenceDescriptorSet = VK_NULL_HANDLE;
     bool m_preprocessPending = false;
     VkSampler m_sampler = VK_NULL_HANDLE;
     bool m_initialized = false;
+    ZeroCopyDetectorResourceStats m_resourceStats;
 };
 
 } // namespace jcut::vulkan_detector

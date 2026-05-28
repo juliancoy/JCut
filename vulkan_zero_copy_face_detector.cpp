@@ -73,13 +73,17 @@ bool validContext(const VulkanDeviceContext& context)
 
 void freeDescriptorSetIfNeeded(VkDevice device,
                                VkDescriptorPool pool,
-                               VkDescriptorSet* descriptorSet)
+                               VkDescriptorSet* descriptorSet,
+                               quint64* freeCounter)
 {
     if (device == VK_NULL_HANDLE || pool == VK_NULL_HANDLE || !descriptorSet ||
         *descriptorSet == VK_NULL_HANDLE) {
         return;
     }
     vkFreeDescriptorSets(device, pool, 1, descriptorSet);
+    if (freeCounter) {
+        ++(*freeCounter);
+    }
     *descriptorSet = VK_NULL_HANDLE;
 }
 
@@ -138,7 +142,11 @@ void VulkanZeroCopyFaceDetector::release()
 {
     const VkDevice device = m_context.device;
     if (device != VK_NULL_HANDLE) {
-        freeDescriptorSetIfNeeded(device, m_descriptorPool, &m_pendingPreprocessDescriptorSet);
+        freeDescriptorSetIfNeeded(device, m_descriptorPool, &m_pendingPreprocessDescriptorSet, nullptr);
+        freeDescriptorSetIfNeeded(device, m_descriptorPool, &m_reusablePreprocessDescriptorSet,
+                                  &m_resourceStats.preprocessDescriptorFrees);
+        freeDescriptorSetIfNeeded(device, m_inferenceDescriptorPool, &m_reusableInferenceDescriptorSet,
+                                  &m_resourceStats.inferenceDescriptorFrees);
         if (m_fence != VK_NULL_HANDLE) {
             vkDestroyFence(device, m_fence, nullptr);
         }
@@ -199,6 +207,8 @@ void VulkanZeroCopyFaceDetector::release()
     m_preprocessCommandBuffer = VK_NULL_HANDLE;
     m_preprocessFence = VK_NULL_HANDLE;
     m_pendingPreprocessDescriptorSet = VK_NULL_HANDLE;
+    m_reusablePreprocessDescriptorSet = VK_NULL_HANDLE;
+    m_reusableInferenceDescriptorSet = VK_NULL_HANDLE;
     m_preprocessPending = false;
     m_sampler = VK_NULL_HANDLE;
     m_context = {};
@@ -256,16 +266,19 @@ bool VulkanZeroCopyFaceDetector::preprocessScrfdToTensor(const VulkanExternalIma
         return false;
     }
 
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_descriptorSetLayout;
-    if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        setError(errorMessage, QStringLiteral("failed to allocate SCRFD preprocessing descriptor set"));
-        return false;
+    if (m_reusablePreprocessDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_descriptorSetLayout;
+        if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &m_reusablePreprocessDescriptorSet) != VK_SUCCESS) {
+            setError(errorMessage, QStringLiteral("failed to allocate SCRFD preprocessing descriptor set"));
+            return false;
+        }
+        ++m_resourceStats.preprocessDescriptorAllocations;
     }
+    VkDescriptorSet descriptorSet = m_reusablePreprocessDescriptorSet;
 
     VkDescriptorImageInfo imageInfo{};
     imageInfo.sampler = m_sampler;
@@ -294,7 +307,6 @@ bool VulkanZeroCopyFaceDetector::preprocessScrfdToTensor(const VulkanExternalIma
 
     const bool ok = submitScrfdPreprocess(descriptorSet, source, *layout, errorMessage);
     if (!ok) {
-        freeDescriptorSetIfNeeded(m_context.device, m_descriptorPool, &descriptorSet);
         return false;
     }
     m_pendingPreprocessDescriptorSet = descriptorSet;
@@ -317,6 +329,16 @@ QString VulkanZeroCopyFaceDetector::backendId() const
     return QStringLiteral("jcut_vulkan_zero_copy_face_detector_v1");
 }
 
+ZeroCopyDetectorResourceStats VulkanZeroCopyFaceDetector::resourceStats() const
+{
+    return m_resourceStats;
+}
+
+void VulkanZeroCopyFaceDetector::resetResourceStats()
+{
+    m_resourceStats = {};
+}
+
 bool VulkanZeroCopyFaceDetector::preprocessToTensor(const VulkanExternalImage& source,
                                                     const VulkanTensorBuffer& outputTensor,
                                                     QString* errorMessage)
@@ -337,16 +359,19 @@ bool VulkanZeroCopyFaceDetector::preprocessToTensor(const VulkanExternalImage& s
         return false;
     }
 
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_descriptorSetLayout;
-    if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        setError(errorMessage, QStringLiteral("failed to allocate zero-copy detector descriptor set"));
-        return false;
+    if (m_reusablePreprocessDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_descriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_descriptorSetLayout;
+        if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &m_reusablePreprocessDescriptorSet) != VK_SUCCESS) {
+            setError(errorMessage, QStringLiteral("failed to allocate zero-copy detector descriptor set"));
+            return false;
+        }
+        ++m_resourceStats.preprocessDescriptorAllocations;
     }
+    VkDescriptorSet descriptorSet = m_reusablePreprocessDescriptorSet;
 
     VkDescriptorImageInfo imageInfo{};
     imageInfo.sampler = m_sampler;
@@ -375,7 +400,6 @@ bool VulkanZeroCopyFaceDetector::preprocessToTensor(const VulkanExternalImage& s
 
     const bool ok = submitPreprocess(descriptorSet, source, errorMessage);
     if (!ok) {
-        freeDescriptorSetIfNeeded(m_context.device, m_descriptorPool, &descriptorSet);
         return false;
     }
     m_pendingPreprocessDescriptorSet = descriptorSet;
@@ -386,14 +410,14 @@ bool VulkanZeroCopyFaceDetector::preprocessToTensor(const VulkanExternalImage& s
 bool VulkanZeroCopyFaceDetector::finishPendingPreprocess(QString* errorMessage)
 {
     if (!m_preprocessPending) {
-        freeDescriptorSetIfNeeded(m_context.device, m_descriptorPool, &m_pendingPreprocessDescriptorSet);
+        m_pendingPreprocessDescriptorSet = VK_NULL_HANDLE;
         return true;
     }
     if (vkWaitForFences(m_context.device, 1, &m_preprocessFence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
         setError(errorMessage, QStringLiteral("timed out waiting for zero-copy detector preprocessing"));
         return false;
     }
-    freeDescriptorSetIfNeeded(m_context.device, m_descriptorPool, &m_pendingPreprocessDescriptorSet);
+    m_pendingPreprocessDescriptorSet = VK_NULL_HANDLE;
     m_preprocessPending = false;
     return true;
 }
@@ -418,16 +442,19 @@ bool VulkanZeroCopyFaceDetector::inferFromTensor(const VulkanTensorBuffer& input
         return false;
     }
 
-    VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_inferenceDescriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_inferenceDescriptorSetLayout;
-    if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &descriptorSet) != VK_SUCCESS) {
-        setError(errorMessage, QStringLiteral("failed to allocate Vulkan face inference descriptor set"));
-        return false;
+    if (m_reusableInferenceDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_inferenceDescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_inferenceDescriptorSetLayout;
+        if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &m_reusableInferenceDescriptorSet) != VK_SUCCESS) {
+            setError(errorMessage, QStringLiteral("failed to allocate Vulkan face inference descriptor set"));
+            return false;
+        }
+        ++m_resourceStats.inferenceDescriptorAllocations;
     }
+    VkDescriptorSet descriptorSet = m_reusableInferenceDescriptorSet;
 
     VkDescriptorBufferInfo tensorInfo{};
     tensorInfo.buffer = inputTensor.buffer;
@@ -452,7 +479,6 @@ bool VulkanZeroCopyFaceDetector::inferFromTensor(const VulkanTensorBuffer& input
     vkUpdateDescriptorSets(m_context.device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
 
     const bool ok = submitInference(descriptorSet, outputDetections, maxDetections, threshold, errorMessage);
-    vkFreeDescriptorSets(m_context.device, m_inferenceDescriptorPool, 1, &descriptorSet);
     if (!finishPendingPreprocess(errorMessage)) {
         return false;
     }
@@ -539,6 +565,7 @@ bool VulkanZeroCopyFaceDetector::createPipeline(QString* errorMessage)
         setError(errorMessage, QStringLiteral("failed to create zero-copy detector preprocessing pipeline"));
         return false;
     }
+    ++m_resourceStats.computePipelineCreations;
     return true;
 }
 
@@ -583,6 +610,7 @@ bool VulkanZeroCopyFaceDetector::createScrfdPipeline(QString* errorMessage)
         setError(errorMessage, QStringLiteral("failed to create SCRFD preprocessing pipeline"));
         return false;
     }
+    ++m_resourceStats.computePipelineCreations;
     return true;
 }
 
@@ -664,6 +692,7 @@ bool VulkanZeroCopyFaceDetector::createInferencePipeline(QString* errorMessage)
         setError(errorMessage, QStringLiteral("failed to create Vulkan face inference pipeline"));
         return false;
     }
+    ++m_resourceStats.computePipelineCreations;
     return true;
 }
 

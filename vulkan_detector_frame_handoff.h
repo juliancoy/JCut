@@ -27,6 +27,18 @@ struct HardwareInteropProbeResult {
     QString path; // "cuda", "vaapi", or ""
 };
 
+struct FrameHandoffResourceStats {
+    quint64 descriptorAllocations = 0;
+    quint64 descriptorFrees = 0;
+    quint64 imageMemoryAllocations = 0;
+    quint64 imageMemoryFrees = 0;
+    quint64 stagingBufferAllocations = 0;
+    quint64 stagingBufferFrees = 0;
+    quint64 importedMemoryAllocations = 0;
+    quint64 importedMemoryFrees = 0;
+    quint64 computePipelineCreations = 0;
+};
+
 class VulkanDetectorFrameHandoff final {
 public:
     VulkanDetectorFrameHandoff();
@@ -57,6 +69,8 @@ public:
     bool importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
                               QString* errorMessage = nullptr);
     QString lastHardwareDirectAttemptReason() const { return m_lastHardwareDirectAttemptReason; }
+    FrameHandoffResourceStats resourceStats() const { return m_resourceStats; }
+    void resetResourceStats();
 
     VulkanExternalImage externalImage() const;
 
@@ -86,7 +100,7 @@ private:
                                   QString* errorMessage);
     bool ensureStagingBuffer(VkDeviceSize bytes, QString* errorMessage);
     void transitionImage(VkImageLayout oldLayout, VkImageLayout newLayout);
-    void destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory);
+    void destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory, quint64* freeCounter = nullptr);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
 
     VulkanDeviceContext m_context;
@@ -133,12 +147,14 @@ private:
     VkPipelineLayout m_nv12PipelineLayout = VK_NULL_HANDLE;
     VkPipeline m_nv12Pipeline = VK_NULL_HANDLE;
     VkDescriptorSet m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet m_reusableNv12DescriptorSet = VK_NULL_HANDLE;
     bool m_uploadPending = false;
     QElapsedTimer m_pendingUploadTimer;
 
     FrameHandoffMode m_lastMode = FrameHandoffMode::Invalid;
     HardwareInteropProbeResult m_lastProbe;
     QString m_lastHardwareDirectAttemptReason;
+    FrameHandoffResourceStats m_resourceStats;
 };
 
 } // namespace jcut::vulkan_detector

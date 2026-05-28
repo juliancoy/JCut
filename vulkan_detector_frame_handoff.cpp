@@ -86,6 +86,11 @@ VulkanDetectorFrameHandoff::~VulkanDetectorFrameHandoff()
     release();
 }
 
+void VulkanDetectorFrameHandoff::resetResourceStats()
+{
+    m_resourceStats = {};
+}
+
 bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, QString* errorMessage)
 {
     release();
@@ -140,21 +145,33 @@ void VulkanDetectorFrameHandoff::release()
         destroyCudaExternalMemory(m_cudaExternalUvMemory, m_cudaExternalUvDevicePtr, m_cudaImportContext);
 #endif
         m_cudaImportContext = nullptr;
-        destroyBuffer(m_cudaExportBuffer, m_cudaExportMemory);
-        destroyBuffer(m_cudaExportUvBuffer, m_cudaExportUvMemory);
+        destroyBuffer(m_cudaExportBuffer, m_cudaExportMemory, &m_resourceStats.stagingBufferFrees);
+        destroyBuffer(m_cudaExportUvBuffer, m_cudaExportUvMemory, &m_resourceStats.stagingBufferFrees);
         m_cudaExportSize = 0;
         m_cudaExportUvSize = 0;
         if (m_nv12Pipeline != VK_NULL_HANDLE) vkDestroyPipeline(m_context.device, m_nv12Pipeline, nullptr);
         if (m_nv12PipelineLayout != VK_NULL_HANDLE) vkDestroyPipelineLayout(m_context.device, m_nv12PipelineLayout, nullptr);
+        if (m_reusableNv12DescriptorSet != VK_NULL_HANDLE &&
+            m_nv12DescriptorPool != VK_NULL_HANDLE) {
+            vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &m_reusableNv12DescriptorSet);
+            ++m_resourceStats.descriptorFrees;
+            m_reusableNv12DescriptorSet = VK_NULL_HANDLE;
+        }
         if (m_nv12DescriptorPool != VK_NULL_HANDLE) vkDestroyDescriptorPool(m_context.device, m_nv12DescriptorPool, nullptr);
         if (m_nv12DescriptorSetLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(m_context.device, m_nv12DescriptorSetLayout, nullptr);
         if (m_importedImageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_importedImageView, nullptr);
         if (m_importedImage != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_importedImage, nullptr);
-        if (m_importedImageMemory != VK_NULL_HANDLE) vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
+        if (m_importedImageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
+            ++m_resourceStats.importedMemoryFrees;
+        }
         if (m_imageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_imageView, nullptr);
         if (m_image != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_image, nullptr);
-        if (m_imageMemory != VK_NULL_HANDLE) vkFreeMemory(m_context.device, m_imageMemory, nullptr);
-        destroyBuffer(m_stagingBuffer, m_stagingMemory);
+        if (m_imageMemory != VK_NULL_HANDLE) {
+            vkFreeMemory(m_context.device, m_imageMemory, nullptr);
+            ++m_resourceStats.imageMemoryFrees;
+        }
+        destroyBuffer(m_stagingBuffer, m_stagingMemory, &m_resourceStats.stagingBufferFrees);
         if (m_fence != VK_NULL_HANDLE) vkDestroyFence(m_context.device, m_fence, nullptr);
         if (m_commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(m_context.device, m_commandPool, nullptr);
     }
@@ -189,6 +206,7 @@ void VulkanDetectorFrameHandoff::release()
     m_nv12PipelineLayout = VK_NULL_HANDLE;
     m_nv12Pipeline = VK_NULL_HANDLE;
     m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
+    m_reusableNv12DescriptorSet = VK_NULL_HANDLE;
     m_uploadPending = false;
     m_initialized = false;
     m_lastMode = FrameHandoffMode::Invalid;
@@ -204,7 +222,10 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const QSize& size,
     }
     if (m_imageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_imageView, nullptr);
     if (m_image != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_image, nullptr);
-    if (m_imageMemory != VK_NULL_HANDLE) vkFreeMemory(m_context.device, m_imageMemory, nullptr);
+    if (m_imageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_context.device, m_imageMemory, nullptr);
+        ++m_resourceStats.imageMemoryFrees;
+    }
     m_image = VK_NULL_HANDLE;
     m_imageMemory = VK_NULL_HANDLE;
     m_imageView = VK_NULL_HANDLE;
@@ -250,6 +271,7 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const QSize& size,
         if (errorMessage) *errorMessage = QStringLiteral("Failed to allocate/bind Vulkan handoff image memory.");
         return false;
     }
+    ++m_resourceStats.imageMemoryAllocations;
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     viewInfo.image = m_image;
@@ -277,7 +299,10 @@ bool VulkanDetectorFrameHandoff::ensureImportedImageResources(const QSize& size,
     }
     if (m_importedImageView != VK_NULL_HANDLE) vkDestroyImageView(m_context.device, m_importedImageView, nullptr);
     if (m_importedImage != VK_NULL_HANDLE) vkDestroyImage(m_context.device, m_importedImage, nullptr);
-    if (m_importedImageMemory != VK_NULL_HANDLE) vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
+    if (m_importedImageMemory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
+        ++m_resourceStats.importedMemoryFrees;
+    }
     m_importedImage = VK_NULL_HANDLE;
     m_importedImageMemory = VK_NULL_HANDLE;
     m_importedImageView = VK_NULL_HANDLE;
@@ -321,7 +346,7 @@ bool VulkanDetectorFrameHandoff::ensureStagingBuffer(VkDeviceSize bytes, QString
     if (bytes <= m_stagingSize && m_stagingBuffer != VK_NULL_HANDLE && m_stagingMemory != VK_NULL_HANDLE) {
         return true;
     }
-    destroyBuffer(m_stagingBuffer, m_stagingMemory);
+    destroyBuffer(m_stagingBuffer, m_stagingMemory, &m_resourceStats.stagingBufferFrees);
     VkBufferCreateInfo info{};
     info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     info.size = bytes;
@@ -349,6 +374,7 @@ bool VulkanDetectorFrameHandoff::ensureStagingBuffer(VkDeviceSize bytes, QString
         if (errorMessage) *errorMessage = QStringLiteral("Failed to allocate/bind Vulkan handoff staging memory.");
         return false;
     }
+    ++m_resourceStats.stagingBufferAllocations;
     m_stagingSize = bytes;
     return true;
 }
@@ -362,7 +388,7 @@ bool VulkanDetectorFrameHandoff::ensureCudaExportBuffer(VkDeviceSize bytes,
     if (buffer != VK_NULL_HANDLE && memory != VK_NULL_HANDLE && size >= bytes) {
         return true;
     }
-    destroyBuffer(buffer, memory);
+    destroyBuffer(buffer, memory, &m_resourceStats.stagingBufferFrees);
     size = 0;
 
     VkExternalMemoryBufferCreateInfo extBuf{};
@@ -398,6 +424,7 @@ bool VulkanDetectorFrameHandoff::ensureCudaExportBuffer(VkDeviceSize bytes,
         if (errorMessage) *errorMessage = QStringLiteral("failed to allocate/bind CUDA-export Vulkan memory");
         return false;
     }
+    ++m_resourceStats.stagingBufferAllocations;
     size = req.size;
     return true;
 }
@@ -486,6 +513,7 @@ bool VulkanDetectorFrameHandoff::createNv12ConversionPipeline(QString* errorMess
         if (errorMessage) *errorMessage = QStringLiteral("failed to create NV12 conversion compute pipeline");
         return false;
     }
+    ++m_resourceStats.computePipelineCreations;
     return true;
 }
 
@@ -506,16 +534,19 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
     if (!ensureNv12ConversionResources(errorMessage)) {
         return false;
     }
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = m_nv12DescriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &m_nv12DescriptorSetLayout;
-    if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &set) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("failed to allocate NV12 conversion descriptor set");
-        return false;
+    if (m_reusableNv12DescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo allocInfo{};
+        allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocInfo.descriptorPool = m_nv12DescriptorPool;
+        allocInfo.descriptorSetCount = 1;
+        allocInfo.pSetLayouts = &m_nv12DescriptorSetLayout;
+        if (vkAllocateDescriptorSets(m_context.device, &allocInfo, &m_reusableNv12DescriptorSet) != VK_SUCCESS) {
+            if (errorMessage) *errorMessage = QStringLiteral("failed to allocate NV12 conversion descriptor set");
+            return false;
+        }
+        ++m_resourceStats.descriptorAllocations;
     }
+    VkDescriptorSet set = m_reusableNv12DescriptorSet;
 
     VkDescriptorBufferInfo yInfo{};
     yInfo.buffer = m_cudaExportBuffer;
@@ -551,7 +582,6 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (vkBeginCommandBuffer(m_commandBuffer, &begin) != VK_SUCCESS) {
-        vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &set);
         if (errorMessage) *errorMessage = QStringLiteral("vkBeginCommandBuffer failed for NV12 conversion");
         return false;
     }
@@ -628,7 +658,6 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
                          1,
                          &barrier);
     if (vkEndCommandBuffer(m_commandBuffer) != VK_SUCCESS) {
-        vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &set);
         if (errorMessage) *errorMessage = QStringLiteral("vkEndCommandBuffer failed for NV12 conversion");
         return false;
     }
@@ -637,7 +666,6 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_commandBuffer;
     if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
-        vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &set);
         if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit/wait failed for NV12 conversion");
         return false;
     }
@@ -807,12 +835,7 @@ bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, QString* 
         *uploadMs = 0.0;
     }
     if (!m_uploadPending) {
-        if (m_pendingNv12DescriptorSet != VK_NULL_HANDLE &&
-            m_context.device != VK_NULL_HANDLE &&
-            m_nv12DescriptorPool != VK_NULL_HANDLE) {
-            vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &m_pendingNv12DescriptorSet);
-            m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
-        }
+        m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
         return true;
     }
     if (vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
@@ -821,11 +844,7 @@ bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, QString* 
         }
         return false;
     }
-    if (m_pendingNv12DescriptorSet != VK_NULL_HANDLE &&
-        m_nv12DescriptorPool != VK_NULL_HANDLE) {
-        vkFreeDescriptorSets(m_context.device, m_nv12DescriptorPool, 1, &m_pendingNv12DescriptorSet);
-        m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
-    }
+    m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
     m_uploadPending = false;
     if (uploadMs) {
         *uploadMs = static_cast<double>(m_pendingUploadTimer.nsecsElapsed()) / 1'000'000.0;
@@ -1156,6 +1175,7 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
 
     if (m_importedImageMemory != VK_NULL_HANDLE) {
         vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
+        ++m_resourceStats.importedMemoryFrees;
         m_importedImageMemory = VK_NULL_HANDLE;
     }
 
@@ -1201,12 +1221,14 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
         vkBindImageMemory(m_context.device, m_importedImage, m_importedImageMemory, 0) != VK_SUCCESS) {
         if (m_importedImageMemory != VK_NULL_HANDLE) {
             vkFreeMemory(m_context.device, m_importedImageMemory, nullptr);
+            ++m_resourceStats.importedMemoryFrees;
             m_importedImageMemory = VK_NULL_HANDLE;
         }
         if (errorMessage) *errorMessage = QStringLiteral("Failed to import/bind offscreen Vulkan image memory.");
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
+    ++m_resourceStats.importedMemoryAllocations;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1345,10 +1367,15 @@ VulkanExternalImage VulkanDetectorFrameHandoff::externalImage() const
     return image;
 }
 
-void VulkanDetectorFrameHandoff::destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
+void VulkanDetectorFrameHandoff::destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory, quint64* freeCounter)
 {
     if (buffer != VK_NULL_HANDLE) vkDestroyBuffer(m_context.device, buffer, nullptr);
-    if (memory != VK_NULL_HANDLE) vkFreeMemory(m_context.device, memory, nullptr);
+    if (memory != VK_NULL_HANDLE) {
+        vkFreeMemory(m_context.device, memory, nullptr);
+        if (freeCounter) {
+            ++(*freeCounter);
+        }
+    }
     buffer = VK_NULL_HANDLE;
     memory = VK_NULL_HANDLE;
 }
