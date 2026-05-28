@@ -2,6 +2,7 @@
 #include "opengl_preview_debug.h"
 #include "debug_controls.h"
 
+#include <QDateTime>
 #include <QSet>
 #include <limits>
 #include <algorithm>
@@ -38,6 +39,27 @@ QJsonArray pipelineStagesToJson(const QVector<PreviewSurface::PipelineStageSnaps
 }
 
 } // namespace
+
+void appendRuntimePatch(QJsonArray* log,
+                        qint64* sequence,
+                        const QString& domain,
+                        const QJsonObject& patch)
+{
+    if (!log || !sequence || patch.isEmpty()) {
+        return;
+    }
+    ++(*sequence);
+    log->push_back(QJsonObject{
+        {QStringLiteral("sequence"), *sequence},
+        {QStringLiteral("domain"), domain},
+        {QStringLiteral("applied_utc_ms"), QDateTime::currentDateTimeUtc().toMSecsSinceEpoch()},
+        {QStringLiteral("patch"), patch}
+    });
+    constexpr int kRuntimePatchLogLimit = 32;
+    while (log->size() > kRuntimePatchLogLimit) {
+        log->removeAt(0);
+    }
+}
 
 QJsonObject EditorWindow::startupProfileSnapshot() const
 {
@@ -113,6 +135,8 @@ QJsonObject EditorWindow::profilingSnapshot() const
     }
 
     snapshot[QStringLiteral("startup")] = startupProfileSnapshot();
+    snapshot[QStringLiteral("startup_optimization")] = startupOptimizationSnapshot();
+    snapshot[QStringLiteral("runtime_patches")] = runtimePatchesSnapshot();
     snapshot[QStringLiteral("optimized_profile")] = optimizedProfileSnapshot();
     snapshot[QStringLiteral("export")] = QJsonObject{
         {QStringLiteral("active"), m_renderInProgress},
@@ -129,13 +153,43 @@ QJsonObject EditorWindow::profilingSnapshot() const
                m_speakersTab->lastFaceDetectionsPanelRefreshDurationMs()},
               {QStringLiteral("max_facedetections_panel_refresh_duration_ms"),
                m_speakersTab->maxFaceDetectionsPanelRefreshDurationMs()},
+              {QStringLiteral("last_playhead_track_candidates_refresh_duration_ms"),
+               m_speakersTab->lastPlayheadTrackCandidatesRefreshDurationMs()},
+              {QStringLiteral("max_playhead_track_candidates_refresh_duration_ms"),
+               m_speakersTab->maxPlayheadTrackCandidatesRefreshDurationMs()},
+              {QStringLiteral("last_playhead_track_candidate_count"),
+               m_speakersTab->lastPlayheadTrackCandidateCount()},
               {QStringLiteral("last_raw_detections_panel_refresh_duration_ms"),
                m_speakersTab->lastRawDetectionsPanelRefreshDurationMs()},
               {QStringLiteral("max_raw_detections_panel_refresh_duration_ms"),
-               m_speakersTab->maxRawDetectionsPanelRefreshDurationMs()}}
+               m_speakersTab->maxRawDetectionsPanelRefreshDurationMs()},
+              {QStringLiteral("section_selection"),
+               m_speakersTab->speakerSectionSelectionTimingProfile()}}
         : QJsonObject{};
 
     return snapshot;
+}
+
+QJsonObject EditorWindow::runtimePatchesSnapshot() const
+{
+    QJsonArray active;
+    for (const QJsonValue& value : m_runtimePatchLog) {
+        const QJsonObject event = value.toObject();
+        active.push_back(QJsonObject{
+            {QStringLiteral("sequence"), event.value(QStringLiteral("sequence"))},
+            {QStringLiteral("domain"), event.value(QStringLiteral("domain"))},
+            {QStringLiteral("applied_utc_ms"), event.value(QStringLiteral("applied_utc_ms"))},
+            {QStringLiteral("patch"), event.value(QStringLiteral("patch"))}
+        });
+    }
+    return QJsonObject{
+        {QStringLiteral("active_count"), active.size()},
+        {QStringLiteral("active_patches"), active},
+        {QStringLiteral("has_active_patches"), !active.isEmpty()},
+        {QStringLiteral("note"), active.isEmpty()
+             ? QStringLiteral("No runtime REST patches have been applied in this process.")
+             : QStringLiteral("Runtime patches are process-local overrides applied through REST endpoints.")}
+    };
 }
 
 QJsonObject EditorWindow::pipelineSnapshot() const
@@ -169,9 +223,12 @@ QJsonObject EditorWindow::throttleConfigSnapshot() const
          m_preview ? m_preview->playbackTuning().sourceLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.sourceLookaheadFrames},
         {QStringLiteral("preview_proxy_lookahead_frames"),
          m_preview ? m_preview->playbackTuning().proxyLookaheadFrames : defaultOptimizedPreviewProfile().previewTuning.proxyLookaheadFrames},
+        {QStringLiteral("startup_optimization"), startupOptimizationSnapshot()},
+        {QStringLiteral("runtime_patches"), runtimePatchesSnapshot()},
         {QStringLiteral("optimized_profile_path"), optimizedProfilePath()},
         {QStringLiteral("optimized_profile_loaded"), m_optimizedProfileLoaded},
         {QStringLiteral("optimized_profile_generated_this_run"), m_optimizedProfileGeneratedThisRun},
+        {QStringLiteral("optimized_profile_deprecated_alias"), true},
         {QStringLiteral("speaker_tracking_max_speed_permille_per_frame"),
          speakerTrackingConfig.value(QStringLiteral("max_speed_permille_per_frame")).toInt(40)},
         {QStringLiteral("speaker_tracking_smoothing_permille"),
@@ -281,6 +338,10 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
     if (m_transcriptTab) {
         m_transcriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
     }
+    appendRuntimePatch(&m_runtimePatchLog,
+                       &m_runtimePatchSequence,
+                       QStringLiteral("editor_throttles"),
+                       patch);
     return throttleConfigSnapshot();
 }
 
@@ -362,5 +423,9 @@ QJsonObject EditorWindow::applyPlaybackConfigPatch(const QJsonObject& patch)
         applyPlaybackRuntimeConfig(config);
     }
 
+    appendRuntimePatch(&m_runtimePatchLog,
+                       &m_runtimePatchSequence,
+                       QStringLiteral("playback"),
+                       patch);
     return playbackConfigSnapshot();
 }

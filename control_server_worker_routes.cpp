@@ -1098,7 +1098,17 @@ bool ControlServerWorker::handleThrottleRoutes(QTcpSocket* socket, const Request
         };
     };
 
-    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/throttles")) {
+    const QString routePath = request.url.path();
+    const bool throttleReadRoute =
+        routePath == QStringLiteral("/throttles") ||
+        routePath == QStringLiteral("/throttle") ||
+        routePath == QStringLiteral("/throttle/config") ||
+        routePath == QStringLiteral("/config/throttle");
+    const bool throttleWriteRoute =
+        routePath == QStringLiteral("/throttles") ||
+        routePath == QStringLiteral("/throttle");
+
+    if (request.method == QStringLiteral("GET") && throttleReadRoute) {
         QJsonObject editorThrottles;
         if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &editorThrottles, [this]() {
                 return m_getThrottlesCallback ? m_getThrottlesCallback() : QJsonObject{};
@@ -1114,7 +1124,7 @@ bool ControlServerWorker::handleThrottleRoutes(QTcpSocket* socket, const Request
         return true;
     }
 
-    if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/throttles")) {
+    if (request.method == QStringLiteral("POST") && throttleWriteRoute) {
         QString error;
         const QJsonObject body = parseJsonObject(request.body, &error);
         if (!error.isEmpty()) {

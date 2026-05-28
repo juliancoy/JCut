@@ -186,26 +186,33 @@ private:
                 continue;
             }
 
-            const bool hovered =
-                m_state->faceStreamAssignmentInteractionEnabled &&
-                overlay.trackId >= 0 &&
-                overlay.trackId == m_state->transient.hoveredFaceDetectionsTrackId &&
-                overlay.streamId == m_state->transient.hoveredFaceDetectionsId &&
-                overlay.clipId == m_state->transient.hoveredFaceDetectionsClipId;
-            const uint hueHash = qHash(
-                overlay.streamId.isEmpty() ? QString::number(overlay.trackId) : overlay.streamId);
-            QColor stroke = QColor::fromHsv(static_cast<int>(hueHash % 360), 185, 255, 245);
-            QColor fill(stroke.red(), stroke.green(), stroke.blue(), 38);
+            QColor stroke(QStringLiteral("#a855f7"));
+            QColor fill(168, 85, 247, 54);
             qreal width = 2.5;
-            if (hovered) {
-                stroke = QColor(QStringLiteral("#ffd54a"));
-                fill = QColor(255, 213, 74, 74);
+            const bool assignedToSelectedSpeaker =
+                overlay.trackId >= 0 &&
+                m_state->selectedSpeakerAssignedFaceTrackIds.contains(overlay.trackId);
+            const bool hovered =
+                overlay.trackId >= 0 &&
+                m_state->transient.hoveredFaceDetectionsTrackId == overlay.trackId &&
+                m_state->transient.hoveredFaceDetectionsClipId == overlay.clipId &&
+                m_state->transient.hoveredFaceDetectionsId == overlay.streamId;
+            if (assignedToSelectedSpeaker) {
+                stroke = QColor(QStringLiteral("#4ade80"));
+                fill = QColor(74, 222, 128, 70);
                 width = 3.0;
+            }
+            QRectF drawBox = screenBox;
+            if (hovered) {
+                drawBox = screenBox.adjusted(-7.0, -7.0, 7.0, 7.0);
+                stroke = QColor(QStringLiteral("#f5d0fe"));
+                fill = QColor(216, 180, 254, 92);
+                width = 4.5;
             }
 
             painter->setPen(QPen(stroke, width, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
             painter->setBrush(fill);
-            painter->drawRect(screenBox.adjusted(0.5, 0.5, -0.5, -0.5));
+            painter->drawRect(drawBox.adjusted(0.5, 0.5, -0.5, -0.5));
         }
     }
 
@@ -226,8 +233,8 @@ private:
                 continue;
             }
 
-            painter->setPen(QPen(QColor(QStringLiteral("#4ade80")), 2.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
-            painter->setBrush(QColor(74, 222, 128, 44));
+            painter->setPen(QPen(QColor(QStringLiteral("#a855f7")), 2.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin));
+            painter->setBrush(QColor(168, 85, 247, 44));
             painter->drawRect(screenBox.adjusted(0.5, 0.5, -0.5, -0.5));
         }
     }
@@ -476,6 +483,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested,
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested,
+    std::function<void(const QString&)> faceStreamBoxClickStatus,
     std::function<void(const QString&)> createKeyframeRequested)
 {
     if (!m_window) {
@@ -491,6 +499,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
         std::move(speakerPointRequested),
         std::move(speakerBoxRequested),
         std::move(faceStreamBoxRequested),
+        std::move(faceStreamBoxClickStatus),
         std::move(createKeyframeRequested));
 }
 

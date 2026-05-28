@@ -1304,19 +1304,12 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     const float scaleY = fitted.y / static_cast<float>(std::max(1, external.size.height()));
     const int alpha = static_cast<int>(std::round(255.0f * m_impl->overlayOpacity));
     const ImU32 roiColor = IM_COL32(255, 170, 51, alpha);
-    const ImU32 detColor = IM_COL32(102, 255, 102, alpha);
+    const ImU32 detColor = IM_COL32(168, 85, 247, alpha);
     auto trackColor = [alpha](jcut::facedetections::ContinuityTrackState state) {
-        switch (state) {
-        case jcut::facedetections::ContinuityTrackState::Confirmed:
-            return IM_COL32(78, 196, 255, alpha);
-        case jcut::facedetections::ContinuityTrackState::Tentative:
-            return IM_COL32(255, 215, 77, alpha);
-        case jcut::facedetections::ContinuityTrackState::Lost:
-            return IM_COL32(255, 124, 124, alpha);
-        case jcut::facedetections::ContinuityTrackState::Removed:
-        default:
+        if (state == jcut::facedetections::ContinuityTrackState::Removed) {
             return IM_COL32(160, 160, 160, qMin(alpha, 220));
         }
+        return IM_COL32(168, 85, 247, alpha);
     };
     auto trackStateLabel = [](jcut::facedetections::ContinuityTrackState state) -> const char* {
         switch (state) {

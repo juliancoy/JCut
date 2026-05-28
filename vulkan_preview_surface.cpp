@@ -196,6 +196,11 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
                     faceStreamBoxRequested(clipId, trackId, streamId, sourceFrame, xNorm, yNorm, side);
                 }
             },
+            [this](const QString& message) {
+                if (faceStreamBoxClickStatus) {
+                    faceStreamBoxClickStatus(message);
+                }
+            },
             [this](const QString& clipId) {
                 if (createKeyframeRequested) {
                     createKeyframeRequested(clipId);
@@ -455,6 +460,8 @@ void VulkanPreviewSurface::setOutputSize(const QSize& size)
 void VulkanPreviewSurface::setHideOutsideOutputWindow(bool hide)
 {
     m_hideOutsideOutputWindow = hide;
+    m_interaction.hideOutsideOutputWindow = hide;
+    requestNativeUpdate();
 }
 
 void VulkanPreviewSurface::setBypassGrading(bool bypass)
@@ -527,6 +534,15 @@ void VulkanPreviewSurface::setShowRawDetections(bool show)
     }
     m_showRawDetections = show;
     refreshFacestreamOverlays();
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds)
+{
+    if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {
+        return;
+    }
+    m_interaction.selectedSpeakerAssignedFaceTrackIds = trackIds;
     requestNativeUpdate();
 }
 

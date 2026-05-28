@@ -2390,6 +2390,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         persistSpeakerFlowSnapshot(QJsonObject(), humanPayload, resolvedPayload);
     }
 
+    m_trackIdentityResolutionCache.clear();
     m_speakersTableRefreshSignature.clear();
     m_faceStreamPanelRefreshSignature.clear();
 

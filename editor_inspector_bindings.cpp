@@ -310,7 +310,10 @@ void EditorWindow::setupSpeechFilterControls()
         if (m_preview) m_preview->setExportRanges(ranges);
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
-            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
+            m_audioEngine->setTranscriptNormalizeRanges(
+                m_previewAudioDynamics.transcriptNormalizeEnabled
+                    ? effectiveTranscriptNormalizeRanges()
+                    : QVector<ExportRangeSegment>{});
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);

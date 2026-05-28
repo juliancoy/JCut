@@ -42,45 +42,10 @@ QString facedetectionsProcessedPathForTranscriptPath(const QString& transcriptPa
     return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin"));
 }
 
-QString legacyFacestreamPathForTranscriptPath(const QString& transcriptPath)
-{
-    const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin"));
-}
-
-QString legacyFacestreamProcessedPathForTranscriptPath(const QString& transcriptPath)
-{
-    const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream_processed.bin"));
-}
-
 QString identityPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
     return info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin"));
-}
-
-QString legacyJsonFacestreamPathForTranscriptPath(const QString& transcriptPath)
-{
-    const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.json"));
-}
-
-QString legacyJsonFacedetectionsPathForTranscriptPath(const QString& transcriptPath)
-{
-    const QFileInfo info(transcriptPath);
-    return info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.json"));
-}
-
-QString resolvedExistingArtifactPath(const QStringList& candidates)
-{
-    for (const QString& candidatePath : candidates) {
-        const QFileInfo candidateInfo(candidatePath);
-        if (candidateInfo.exists() && candidateInfo.isFile()) {
-            return candidateInfo.absoluteFilePath();
-        }
-    }
-    return candidates.isEmpty() ? QString() : QFileInfo(candidates.constFirst()).absoluteFilePath();
 }
 
 QString transcriptTextCompanionPath(const QString& transcriptPath)
@@ -327,17 +292,8 @@ bool mergeFacestreamSpeakerProfiles(const QString& transcriptPath, QJsonObject* 
         return false;
     }
     QJsonDocument facedetectionsDoc;
-    if (!loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc) &&
-        !loadFacestreamDocFromFile(legacyFacestreamPathForTranscriptPath(transcriptPath), &facedetectionsDoc)) {
-        QFile legacyFile(legacyJsonFacestreamPathForTranscriptPath(transcriptPath));
-        if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
-            return false;
-        }
-        QJsonParseError parseError;
-        facedetectionsDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
-        if (parseError.error != QJsonParseError::NoError || !facedetectionsDoc.isObject()) {
-            return false;
-        }
+    if (!loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc)) {
+        return false;
     }
     if (!facedetectionsDoc.isObject()) {
         return false;
@@ -527,41 +483,17 @@ bool TranscriptEngine::loadFacestreamArtifact(const QString &transcriptPath, QJs
             return false;
         }
         QJsonDocument facedetectionsDoc;
-        const QStringList binaryCandidates{
-            facedetectionsPathForTranscriptPath(transcriptPath),
-            legacyFacestreamPathForTranscriptPath(transcriptPath),
-        };
-        for (const QString& candidatePath : binaryCandidates) {
-            if (loadFacestreamDocFromFile(candidatePath, &facedetectionsDoc) && facedetectionsDoc.isObject()) {
-                *rootOut = facedetectionsDoc.object();
-                return true;
-            }
-        }
-        const QStringList jsonCandidates{
-            legacyJsonFacedetectionsPathForTranscriptPath(transcriptPath),
-            legacyJsonFacestreamPathForTranscriptPath(transcriptPath),
-        };
-        for (const QString& candidatePath : jsonCandidates) {
-            QFile legacyFile(candidatePath);
-            if (!legacyFile.exists() || !legacyFile.open(QIODevice::ReadOnly)) {
-                continue;
-            }
-            QJsonParseError parseError;
-            const QJsonDocument legacyDoc = QJsonDocument::fromJson(legacyFile.readAll(), &parseError);
-            if (parseError.error == QJsonParseError::NoError && legacyDoc.isObject()) {
-                *rootOut = legacyDoc.object();
-                return true;
-            }
+        if (loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc) &&
+            facedetectionsDoc.isObject()) {
+            *rootOut = facedetectionsDoc.object();
+            return true;
         }
         return false;
     }
 
 QString TranscriptEngine::facedetectionsArtifactPath(const QString &transcriptPath) const
     {
-        return resolvedExistingArtifactPath(QStringList{
-            facedetectionsPathForTranscriptPath(transcriptPath),
-            legacyFacestreamPathForTranscriptPath(transcriptPath),
-        });
+        return QFileInfo(facedetectionsPathForTranscriptPath(transcriptPath)).absoluteFilePath();
     }
 
 bool TranscriptEngine::saveFacestreamArtifact(const QString &transcriptPath, const QJsonObject &root) const
@@ -571,10 +503,7 @@ bool TranscriptEngine::saveFacestreamArtifact(const QString &transcriptPath, con
 
 QString TranscriptEngine::facedetectionsProcessedArtifactPath(const QString &transcriptPath) const
     {
-        return resolvedExistingArtifactPath(QStringList{
-            facedetectionsProcessedPathForTranscriptPath(transcriptPath),
-            legacyFacestreamProcessedPathForTranscriptPath(transcriptPath),
-        });
+        return QFileInfo(facedetectionsProcessedPathForTranscriptPath(transcriptPath)).absoluteFilePath();
     }
 
 bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcriptPath, QJsonObject *rootOut) const
@@ -583,15 +512,10 @@ bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcript
             return false;
         }
         QJsonDocument processedDoc;
-        const QStringList candidates{
-            facedetectionsProcessedPathForTranscriptPath(transcriptPath),
-            legacyFacestreamProcessedPathForTranscriptPath(transcriptPath),
-        };
-        for (const QString& candidatePath : candidates) {
-            if (loadFacestreamDocFromFile(candidatePath, &processedDoc) && processedDoc.isObject()) {
-                *rootOut = processedDoc.object();
-                return true;
-            }
+        if (loadFacestreamDocFromFile(facedetectionsProcessedPathForTranscriptPath(transcriptPath), &processedDoc) &&
+            processedDoc.isObject()) {
+            *rootOut = processedDoc.object();
+            return true;
         }
         return false;
     }
@@ -772,21 +696,8 @@ bool TranscriptEngine::transcriptSourceWordRanges(const QString& transcriptPath,
         return true;
     }
 
-    QVector<ExportRangeSegment> sourceWordRanges;
-    const int64_t prependFrames =
-        qMax<int64_t>(0, static_cast<int64_t>(std::floor((transcriptPrependMs / 1000.0) * kTimelineFps)));
-    const int64_t postpendFrames =
-        qMax<int64_t>(0, static_cast<int64_t>(std::ceil((transcriptPostpendMs / 1000.0) * kTimelineFps)));
-    for (const TranscriptSection& section : runtimeDocument->sections) {
-        for (const TranscriptWord& word : section.words) {
-            if (word.skipped || word.text.trimmed().isEmpty()) {
-                continue;
-            }
-            const int64_t startFrame = qMax<int64_t>(0, word.startFrame - prependFrames);
-            const int64_t endFrame = qMax<int64_t>(startFrame, word.endFrame + postpendFrames);
-            sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
-        }
-    }
+    QVector<ExportRangeSegment> sourceWordRanges =
+        transcriptPaddedWordRanges(runtimeDocument->sections, transcriptPrependMs, transcriptPostpendMs);
 
     sourceWordRanges = mergeRanges(sourceWordRanges);
 
@@ -1050,21 +961,8 @@ QVector<ExportRangeSegment> TranscriptEngine::transcriptWordExportRangesDiscrete
             continue;
         }
 
-        QVector<ExportRangeSegment> sourceWordRanges;
-        const int64_t prependFrames =
-            qMax<int64_t>(0, static_cast<int64_t>(std::floor((transcriptPrependMs / 1000.0) * kTimelineFps)));
-        const int64_t postpendFrames =
-            qMax<int64_t>(0, static_cast<int64_t>(std::ceil((transcriptPostpendMs / 1000.0) * kTimelineFps)));
-        for (const TranscriptSection& section : runtimeDocument->sections) {
-            for (const TranscriptWord& word : section.words) {
-                if (word.skipped || word.text.trimmed().isEmpty()) {
-                    continue;
-                }
-                const int64_t startFrame = qMax<int64_t>(0, word.startFrame - prependFrames);
-                const int64_t endFrame = qMax<int64_t>(startFrame, word.endFrame + postpendFrames);
-                sourceWordRanges.push_back(ExportRangeSegment{startFrame, endFrame});
-            }
-        }
+        QVector<ExportRangeSegment> sourceWordRanges =
+            transcriptPaddedWordRanges(runtimeDocument->sections, transcriptPrependMs, transcriptPostpendMs);
 
         QVector<ExportRangeSegment> normalizeWordRanges = sourceWordRanges;
         if (safeNeighborWordRadius > 0 && sourceWordRanges.size() > 1) {

@@ -1779,6 +1779,7 @@ void EditorWindow::runAiFindSpeakerNames()
 
     invalidateTranscriptSpeakerProfileCache(transcriptPath);
     m_transcriptEngine.invalidateCache();
+    invalidatePlaybackRangeCaches();
     if (m_transcriptTab) {
         m_transcriptTab->refresh();
     }

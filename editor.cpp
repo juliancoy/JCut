@@ -142,6 +142,13 @@ EditorWindow::EditorWindow(quint16 controlPort)
                     return;
                 }
                 m_appliedTranscriptNormalizeRefreshGeneration = completedGeneration;
+                const QString completedSignature =
+                    m_transcriptNormalizeRefreshWatcher.property("signature").toString();
+                if (!completedSignature.isEmpty()) {
+                    m_effectiveTranscriptNormalizeRangesCacheSignature = completedSignature;
+                    m_effectiveTranscriptNormalizeRangesCache =
+                        m_transcriptNormalizeRefreshWatcher.result();
+                }
                 if (m_audioEngine) {
                     m_audioEngine->setTranscriptNormalizeRanges(
                         m_transcriptNormalizeRefreshWatcher.result());
@@ -326,7 +333,10 @@ void EditorWindow::bindTimelineMediaState(const QString& selectedClipId,
     if (m_audioEngine) {
         m_audioEngine->setTimelineClips(m_timeline->clips());
         m_audioEngine->setExportRanges(playbackRanges);
-        m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
+        m_audioEngine->setTranscriptNormalizeRanges(
+            m_previewAudioDynamics.transcriptNormalizeEnabled
+                ? effectiveTranscriptNormalizeRanges()
+                : QVector<ExportRangeSegment>{});
         m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
         m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
         m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
@@ -659,6 +669,12 @@ void EditorWindow::syncTranscriptTableToPlayhead()
         m_timeline->renderSyncMarkers());
     if (m_transcriptTab) {
         m_transcriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
+    }
+    if (m_speakerTranscriptTab) {
+        m_speakerTranscriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
+    }
+    if (m_speakersTab) {
+        m_speakersTab->syncIdentityToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
     }
 }
 
@@ -1348,6 +1364,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
 
     m_transcriptPrependMs = transcriptPrependMs;
     m_transcriptPostpendMs = transcriptPostpendMs;
+    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
     m_speechFilterFadeSamples = qMax(0, speechFilterFadeSamples);
     m_speechFilterRangeCrossfade = speechFilterRangeCrossfade;
     

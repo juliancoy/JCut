@@ -9,6 +9,7 @@ class QCheckBox;
 class QComboBox;
 class QLabel;
 class QSlider;
+class QSpinBox;
 class QWidget;
 
 namespace jcut::facedetections {
@@ -134,6 +135,11 @@ struct FaceDetectionsPreflightDialogOptions {
     bool showUseProxySourceToggle = false;
     bool useProxySourceChecked = false;
     QString useProxySourceLabel = QStringLiteral("Use proxy media as FaceDetections input");
+    bool showDetectorWorkersControl = false;
+    int detectorWorkers = 2;
+    int minDetectorWorkers = 1;
+    int maxDetectorWorkers = 10;
+    QString detectorWorkersLabel = QStringLiteral("Detector workers");
 };
 
 struct FaceDetectionsPreflightDialogResult {
@@ -142,6 +148,7 @@ struct FaceDetectionsPreflightDialogResult {
     bool applyClipGrading = false;
     bool restartFromScratch = false;
     bool useProxySource = false;
+    int detectorWorkers = 2;
     QString saveError;
 };
 

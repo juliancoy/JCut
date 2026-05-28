@@ -1,4 +1,5 @@
 #include "facedetections_runtime.h"
+#include "facedetections_time_mapping.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -120,6 +121,8 @@ private slots:
         const QJsonObject processedRoot = processedByClip.value(clipId).toObject();
         QVERIFY(jcut::facedetections::continuityRootHasStoredPayload(processedRoot));
         QVERIFY(jcut::facedetections::continuityRootHasTracks(processedRoot, transcriptRoot));
+        QCOMPARE(processedRoot.value(QStringLiteral("streams_frame_domain")).toString(),
+                 QStringLiteral("source_absolute"));
 
         const QJsonArray processedStreams =
             processedRoot.value(QStringLiteral("streams")).toArray();
@@ -127,6 +130,8 @@ private slots:
 
         const QJsonObject stream0 = processedStreams.at(0).toObject();
         QCOMPARE(stream0.value(QStringLiteral("track_id")).toInt(), 3);
+        QCOMPARE(stream0.value(QStringLiteral("frame_domain")).toString(),
+                 QStringLiteral("source_absolute"));
         const QJsonArray keyframes0 = stream0.value(QStringLiteral("keyframes")).toArray();
         QCOMPARE(keyframes0.size(), 2);
         QCOMPARE(keyframes0.at(0).toObject().value(QStringLiteral("frame")).toInt(), 0);
@@ -143,6 +148,34 @@ private slots:
             jcut::facedetections::continuityStreamsForRoot(rawRootForRuntime, transcriptRoot);
         QCOMPARE(derivedStreams.size(), 2);
         QCOMPARE(derivedStreams.at(0).toObject().value(QStringLiteral("keyframes")).toArray().size(), 2);
+    }
+
+    void sourceAbsoluteScanRangeUsesSourceDurationNotTimelineDuration()
+    {
+        TimelineClip clip;
+        clip.sourceInFrame = 0;
+        clip.durationFrames = 398252;
+        clip.sourceDurationFrames = 796503;
+
+        const auto range = facedetectionsSourceAbsoluteScanRangeForClip(clip);
+
+        QVERIFY(range.valid);
+        QCOMPARE(range.startFrame, 0LL);
+        QCOMPARE(range.endFrameExclusive, 796503LL);
+        QCOMPARE(range.frameCount, 796503LL);
+    }
+
+    void sourceAbsoluteScanRangeRejectsInvalidSourceDuration()
+    {
+        TimelineClip clip;
+        clip.sourceInFrame = 100;
+        clip.durationFrames = 398252;
+        clip.sourceDurationFrames = 100;
+
+        const auto range = facedetectionsSourceAbsoluteScanRangeForClip(clip);
+
+        QVERIFY(!range.valid);
+        QVERIFY(range.error.contains(QStringLiteral("sourceInFrame=100")));
     }
 };
 

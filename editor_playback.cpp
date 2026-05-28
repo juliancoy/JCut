@@ -4,6 +4,7 @@
 
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QSignalBlocker>
 #include <QtConcurrent/QtConcurrentRun>
 
@@ -161,6 +162,11 @@ int64_t EditorWindow::filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSa
 QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
 {
     if (!m_timeline) return {};
+    const QString signature = playbackRangeCacheSignature(false);
+    if (m_effectivePlaybackRangesCacheSignature == signature) {
+        return m_effectivePlaybackRangesCache;
+    }
+
     QVector<ExportRangeSegment> ranges = m_timeline->exportRanges();
     if (speechFilterPlaybackEnabled()) {
         ranges = m_transcriptEngine.transcriptWordExportRanges(ranges,
@@ -197,7 +203,9 @@ QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
             normalized.push_back(range);
         }
     }
-    return normalized;
+    m_effectivePlaybackRangesCacheSignature = signature;
+    m_effectivePlaybackRangesCache = normalized;
+    return m_effectivePlaybackRangesCache;
 }
 
 QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() const
@@ -206,17 +214,80 @@ QVector<ExportRangeSegment> EditorWindow::effectiveTranscriptNormalizeRanges() c
         return {};
     }
     const int neighborWordRadius = speechFilterPlaybackEnabled() ? 10 : 0;
-    return m_transcriptEngine.transcriptWordExportRangesDiscrete(
+    const QString signature = playbackRangeCacheSignature(true, neighborWordRadius);
+    if (m_effectiveTranscriptNormalizeRangesCacheSignature == signature) {
+        return m_effectiveTranscriptNormalizeRangesCache;
+    }
+
+    m_effectiveTranscriptNormalizeRangesCache = m_transcriptEngine.transcriptWordExportRangesDiscrete(
         m_timeline->exportRanges(),
         m_timeline->clips(),
         m_timeline->renderSyncMarkers(),
         m_transcriptPrependMs,
         m_transcriptPostpendMs,
         neighborWordRadius);
+    m_effectiveTranscriptNormalizeRangesCacheSignature = signature;
+    return m_effectiveTranscriptNormalizeRangesCache;
+}
+
+QString EditorWindow::playbackRangeCacheSignature(bool discrete, int neighborWordRadius) const
+{
+    if (!m_timeline) {
+        return QStringLiteral("no_timeline");
+    }
+    QString signature;
+    signature.reserve(512);
+    signature += discrete ? QStringLiteral("discrete|") : QStringLiteral("effective|");
+    signature += QStringLiteral("speech=%1|pre=%2|post=%3|radius=%4|")
+                     .arg(speechFilterPlaybackEnabled() ? 1 : 0)
+                     .arg(m_transcriptPrependMs)
+                     .arg(m_transcriptPostpendMs)
+                     .arg(qBound(0, neighborWordRadius, 10));
+    for (const ExportRangeSegment& range : m_timeline->exportRanges()) {
+        signature += QStringLiteral("range:%1-%2|").arg(range.startFrame).arg(range.endFrame);
+    }
+    for (const RenderSyncMarker& marker : m_timeline->renderSyncMarkers()) {
+        signature += QStringLiteral("marker:%1:%2:%3:%4|")
+                         .arg(marker.clipId)
+                         .arg(marker.frame)
+                         .arg(static_cast<int>(marker.action))
+                         .arg(marker.count);
+    }
+    for (const TimelineClip& clip : m_timeline->clips()) {
+        const QFileInfo transcriptInfo(m_transcriptEngine.transcriptPathForClip(clip));
+        signature += QStringLiteral("clip:%1:%2:%3:%4:%5:%6:%7:%8:%9:%10|")
+                         .arg(clip.id)
+                         .arg(clip.startFrame)
+                         .arg(clip.startSubframeSamples)
+                         .arg(clip.durationFrames)
+                         .arg(clip.sourceInFrame)
+                         .arg(clip.sourceInSubframeSamples)
+                         .arg(clip.sourceDurationFrames)
+                         .arg(clip.playbackRate, 0, 'g', 12)
+                         .arg(clip.filePath)
+                         .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : -1);
+    }
+    return signature;
+}
+
+void EditorWindow::invalidatePlaybackRangeCaches()
+{
+    m_effectivePlaybackRangesCacheSignature.clear();
+    m_effectivePlaybackRangesCache.clear();
+    m_effectiveTranscriptNormalizeRangesCacheSignature.clear();
+    m_effectiveTranscriptNormalizeRangesCache.clear();
 }
 
 void EditorWindow::scheduleTranscriptNormalizeRangeRefresh(int delayMs)
 {
+    if (!m_previewAudioDynamics.transcriptNormalizeEnabled) {
+        ++m_transcriptNormalizeRefreshGeneration;
+        m_transcriptNormalizeRefreshTimer.stop();
+        if (m_audioEngine) {
+            m_audioEngine->setTranscriptNormalizeRanges({});
+        }
+        return;
+    }
     ++m_transcriptNormalizeRefreshGeneration;
     const int clampedDelayMs = qMax(0, delayMs);
     if (m_transcriptNormalizeRefreshWatcher.isRunning()) {
@@ -238,6 +309,13 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
     if (m_transcriptNormalizeRefreshWatcher.isRunning()) {
         return;
     }
+    if (!m_previewAudioDynamics.transcriptNormalizeEnabled) {
+        m_appliedTranscriptNormalizeRefreshGeneration = m_transcriptNormalizeRefreshGeneration;
+        if (m_audioEngine) {
+            m_audioEngine->setTranscriptNormalizeRanges({});
+        }
+        return;
+    }
     if (!m_timeline) {
         m_appliedTranscriptNormalizeRefreshGeneration = m_transcriptNormalizeRefreshGeneration;
         if (m_audioEngine) {
@@ -253,8 +331,17 @@ void EditorWindow::startTranscriptNormalizeRangeRefresh()
     const int transcriptPrependMs = m_transcriptPrependMs;
     const int transcriptPostpendMs = m_transcriptPostpendMs;
     const int neighborWordRadius = speechFilterPlaybackEnabled() ? 10 : 0;
+    const QString normalizeSignature = playbackRangeCacheSignature(true, neighborWordRadius);
+    if (m_effectiveTranscriptNormalizeRangesCacheSignature == normalizeSignature) {
+        m_appliedTranscriptNormalizeRefreshGeneration = generation;
+        if (m_audioEngine) {
+            m_audioEngine->setTranscriptNormalizeRanges(m_effectiveTranscriptNormalizeRangesCache);
+        }
+        return;
+    }
 
     m_transcriptNormalizeRefreshWatcher.setProperty("generation", generation);
+    m_transcriptNormalizeRefreshWatcher.setProperty("signature", normalizeSignature);
     m_transcriptNormalizeRefreshWatcher.setFuture(QtConcurrent::run(
         [baseRanges, clips, markers, transcriptPrependMs, transcriptPostpendMs, neighborWordRadius]() {
             TranscriptEngine engine;
@@ -520,9 +607,6 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
             syncKeyframeTableToPlayhead();
             syncGradingTableToPlayhead();
             m_titlesTab->syncTableToPlayhead();
-            if (m_speakersTab) {
-                m_speakersTab->syncCurrentSpeakerSentenceToPlayhead();
-            }
             if (m_inspectorPane && m_inspectorPane->tabs()) {
                 const int inspectorIndex = m_inspectorPane->tabs()->currentIndex();
                 if (inspectorIndex >= 0 &&
@@ -540,7 +624,7 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
         syncGradingTableToPlayhead();
         m_titlesTab->syncTableToPlayhead();
         if (m_speakersTab) {
-            m_speakersTab->syncCurrentSpeakerSentenceToPlayhead();
+            m_speakersTab->syncCurrentSpeakerSentenceToPlayhead(/*duringPlayback=*/false);
         }
         m_lastPlaybackUiSyncMs = tickNowMs;
     }
@@ -766,7 +850,10 @@ void EditorWindow::setPlaybackActive(bool playing)
         const auto ranges = effectivePlaybackRanges();
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
-            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
+            m_audioEngine->setTranscriptNormalizeRanges(
+                m_previewAudioDynamics.transcriptNormalizeEnabled
+                    ? effectiveTranscriptNormalizeRanges()
+                    : QVector<ExportRangeSegment>{});
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
             m_audioEngine->setPlaybackWarpMode(
@@ -800,6 +887,9 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_playbackTimer.stop();
         m_fastPlaybackActive.store(false);
         m_preview->setPlaybackState(false);
+        if (m_speakersTab) {
+            m_speakersTab->flushDeferredPlaybackRefreshes();
+        }
     }
     updateTransportLabels();
     refreshCurrentInspectorTab();

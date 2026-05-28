@@ -334,6 +334,20 @@ VkClearRect clearRectFromQRect(const QRectF& qrect, const QSize& swapSize)
     return rect;
 }
 
+VkRect2D scissorFromQRect(const QRectF& qrect, const QSize& swapSize)
+{
+    const int maxW = std::max(1, swapSize.width());
+    const int maxH = std::max(1, swapSize.height());
+    const QRect bounded = qrect.normalized().toAlignedRect().intersected(QRect(0, 0, maxW, maxH));
+    VkRect2D scissor{};
+    scissor.offset = {bounded.x(), bounded.y()};
+    scissor.extent = {
+        static_cast<uint32_t>(std::max(1, bounded.width())),
+        static_cast<uint32_t>(std::max(1, bounded.height()))
+    };
+    return scissor;
+}
+
 VkClearValue selectionOutlineColor()
 {
     VkClearValue clear{};
@@ -534,10 +548,14 @@ void clearVulkanDragOverrides(PreviewInteractionState* state)
 
 QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
                                      const TimelineClip& clip,
-                                     const PreviewViewTransform& viewTransform)
+                                     const PreviewViewTransform& viewTransform,
+                                     bool requireInteraction = true)
 {
     const TimelineClip effectiveClip = clipWithTransientTranscriptOverride(state, clip);
-    if (!state || !clipSupportsTranscriptOverlay(effectiveClip) || !state->transcriptOverlayInteractionEnabled) {
+    if (!state || !clipSupportsTranscriptOverlay(effectiveClip)) {
+        return QRectF();
+    }
+    if (requireInteraction && !state->transcriptOverlayInteractionEnabled) {
         return QRectF();
     }
     const QSize safeOutputSize = state->outputSize.isValid() ? state->outputSize : QSize(1080, 1920);
@@ -729,9 +747,19 @@ bool lookupVulkanInteractionInfo(const VulkanInteractionOverlayInfos& infos,
 bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
                                      const VulkanInteractionOverlayInfos& infos,
                                      const QPointF& surfacePosition,
-                                     const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback)
+                                     const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
+                                     const std::function<void(const QString&)>& statusCallback)
 {
     if (!state || !callback) {
+        if (statusCallback) {
+            statusCallback(QStringLiteral("Face box click ignored: FaceDetections click callback is not installed."));
+        }
+        return false;
+    }
+    if (state->facedetectionsOverlays.isEmpty()) {
+        if (statusCallback) {
+            statusCallback(QStringLiteral("Face box click ignored: no FaceDetections boxes are available at this frame."));
+        }
         return false;
     }
     const VulkanPreviewFacestreamOverlay* nearestOverlay = nullptr;
@@ -782,6 +810,12 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
         const QPointF center = overlay.boxNorm.center();
         const qreal boxSideNorm =
             qBound<qreal>(0.01, qMax(overlay.boxNorm.width(), overlay.boxNorm.height()), 1.0);
+        qInfo().noquote()
+            << QStringLiteral("Face box click dispatch: clip=%1 track=%2 stream=%3 source_frame=%4")
+                   .arg(overlay.clipId)
+                   .arg(overlay.trackId)
+                   .arg(overlay.streamId.isEmpty() ? QStringLiteral("<empty>") : overlay.streamId)
+                   .arg(overlay.sourceFrame);
         callback(overlay.clipId,
                  overlay.trackId,
                  overlay.streamId,
@@ -795,6 +829,12 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
         const QPointF center = nearestOverlay->boxNorm.center();
         const qreal boxSideNorm =
             qBound<qreal>(0.01, qMax(nearestOverlay->boxNorm.width(), nearestOverlay->boxNorm.height()), 1.0);
+        qInfo().noquote()
+            << QStringLiteral("Face box click dispatch nearest: clip=%1 track=%2 stream=%3 source_frame=%4")
+                   .arg(nearestOverlay->clipId)
+                   .arg(nearestOverlay->trackId)
+                   .arg(nearestOverlay->streamId.isEmpty() ? QStringLiteral("<empty>") : nearestOverlay->streamId)
+                   .arg(nearestOverlay->sourceFrame);
         callback(nearestOverlay->clipId,
                  nearestOverlay->trackId,
                  nearestOverlay->streamId,
@@ -803,6 +843,9 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
                  center.y(),
                  boxSideNorm);
         return true;
+    }
+    if (statusCallback) {
+        statusCallback(QStringLiteral("Face box click ignored: no FaceDetections box at the clicked location."));
     }
     return false;
 }
@@ -1108,9 +1151,9 @@ VkClearValue facedetectionsOverlayColor(const PreviewInteractionState* state,
 {
     if (overlay.source.compare(QStringLiteral("raw_detection"), Qt::CaseInsensitive) == 0) {
         VkClearValue raw{};
-        raw.color.float32[0] = 0.29f;
-        raw.color.float32[1] = 0.87f;
-        raw.color.float32[2] = 0.50f;
+        raw.color.float32[0] = 0.659f;
+        raw.color.float32[1] = 0.333f;
+        raw.color.float32[2] = 0.969f;
         raw.color.float32[3] = 0.90f;
         return raw;
     }
@@ -1124,24 +1167,30 @@ VkClearValue facedetectionsOverlayColor(const PreviewInteractionState* state,
     }
     if (state &&
         overlay.trackId >= 0 &&
-        overlay.trackId == state->transient.hoveredFaceDetectionsTrackId &&
-        overlay.clipId == state->transient.hoveredFaceDetectionsClipId &&
-        overlay.streamId == state->transient.hoveredFaceDetectionsId) {
+        state->transient.hoveredFaceDetectionsTrackId == overlay.trackId &&
+        state->transient.hoveredFaceDetectionsClipId == overlay.clipId &&
+        state->transient.hoveredFaceDetectionsId == overlay.streamId) {
         VkClearValue hovered{};
-        hovered.color.float32[0] = 1.0f;
-        hovered.color.float32[1] = 0.835f;
-        hovered.color.float32[2] = 0.29f;
-        hovered.color.float32[3] = 0.95f;
+        hovered.color.float32[0] = 0.96f;
+        hovered.color.float32[1] = 0.82f;
+        hovered.color.float32[2] = 0.99f;
+        hovered.color.float32[3] = 1.0f;
         return hovered;
     }
-    const uint hueHash = qHash(overlay.streamId.isEmpty()
-                                   ? QString::number(overlay.trackId)
-                                   : overlay.streamId);
-    QColor color = QColor::fromHsv(static_cast<int>(hueHash % 360), 210, 255);
+    if (state &&
+        overlay.trackId >= 0 &&
+        state->selectedSpeakerAssignedFaceTrackIds.contains(overlay.trackId)) {
+        VkClearValue assigned{};
+        assigned.color.float32[0] = 0.29f;
+        assigned.color.float32[1] = 0.87f;
+        assigned.color.float32[2] = 0.50f;
+        assigned.color.float32[3] = 0.95f;
+        return assigned;
+    }
     VkClearValue clear{};
-    clear.color.float32[0] = static_cast<float>(color.redF());
-    clear.color.float32[1] = static_cast<float>(color.greenF());
-    clear.color.float32[2] = static_cast<float>(color.blueF());
+    clear.color.float32[0] = 0.659f;
+    clear.color.float32[1] = 0.333f;
+    clear.color.float32[2] = 0.969f;
     clear.color.float32[3] = static_cast<float>(std::clamp(0.55 + (overlay.confidence * 0.35), 0.55, 0.95));
     return clear;
 }
@@ -1296,6 +1345,7 @@ public:
                                  std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
                                  std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested = {},
                                  std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested = {},
+                                 std::function<void(const QString&)> faceStreamBoxClickStatus = {},
                                  std::function<void(const QString&)> createKeyframeRequested = {})
     {
         m_selectionRequested = std::move(selectionRequested);
@@ -1306,6 +1356,7 @@ public:
         m_speakerPointRequested = std::move(speakerPointRequested);
         m_speakerBoxRequested = std::move(speakerBoxRequested);
         m_faceStreamBoxRequested = std::move(faceStreamBoxRequested);
+        m_faceStreamBoxClickStatus = std::move(faceStreamBoxClickStatus);
         m_createKeyframeRequested = std::move(createKeyframeRequested);
     }
 
@@ -1474,7 +1525,8 @@ protected:
         }
 
         if (m_faceStreamBoxRequested &&
-            dispatchFaceDetectionsBoxAtPosition(m_state, infos, surfacePosition, m_faceStreamBoxRequested)) {
+            dispatchFaceDetectionsBoxAtPosition(
+                m_state, infos, surfacePosition, m_faceStreamBoxRequested, m_faceStreamBoxClickStatus)) {
             requestUpdate();
             event->accept();
             return;
@@ -2116,6 +2168,7 @@ private:
     std::function<void(const QString&, qreal, qreal)> m_speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> m_speakerBoxRequested;
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> m_faceStreamBoxRequested;
+    std::function<void(const QString&)> m_faceStreamBoxClickStatus;
     std::function<void(const QString&)> m_createKeyframeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> m_resizeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> m_moveRequested;
@@ -2832,9 +2885,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     }
                 }
                 VkRect2D scissor{};
-                scissor.offset = {0, 0};
-                scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
-                                  static_cast<uint32_t>(std::max(1, swapSize.height()))};
+                if (state->hideOutsideOutputWindow) {
+                    scissor = scissorFromQRect(compositeRect, swapSize);
+                } else {
+                    scissor.offset = {0, 0};
+                    scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                                      static_cast<uint32_t>(std::max(1, swapSize.height()))};
+                }
                 m_pipeline->bindAndDraw(cb, viewport, scissor, m_resources->descriptorSet(), push);
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
@@ -2881,7 +2938,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                             transcriptPath,
                             sections,
                             sourceFrame);
-                        const QRectF bounds = transcriptOverlayBoundsForClip(state, clip, viewTransform);
+                        const QRectF bounds = transcriptOverlayBoundsForClip(
+                            state,
+                            clip,
+                            viewTransform,
+                            /*requireInteraction=*/false);
                         const QRectF localBounds(0.0, 0.0, outputRect.width(), outputRect.height());
                         const QRectF localTextBounds = localBounds.adjusted(18.0, 14.0, -18.0, -14.0);
                         const qreal fontPixelSize = effectiveClip.transcriptOverlay.fontPointSize;
@@ -2987,12 +3048,26 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 continue;
             }
             const PreviewClipGeometry& geometry = it.value();
+            QRectF boxNorm = overlay.boxNorm;
+            const bool hovered =
+                overlay.trackId >= 0 &&
+                state->transient.hoveredFaceDetectionsTrackId == overlay.trackId &&
+                state->transient.hoveredFaceDetectionsClipId == overlay.clipId &&
+                state->transient.hoveredFaceDetectionsId == overlay.streamId;
+            if (hovered) {
+                boxNorm = boxNorm.adjusted(-0.01, -0.01, 0.01, 0.01).intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+            }
             const VkClearRect boxRect = normalizedBoxToSwapchainRect(
-                overlay.boxNorm,
+                boxNorm,
                 geometry.clipToScreen,
                 geometry.localRect,
                 swapSize);
-            clearBoxOutline(m_devFuncs, cb, facedetectionsOverlayColor(state, overlay), boxRect, thickness);
+            clearBoxOutline(
+                m_devFuncs,
+                cb,
+                facedetectionsOverlayColor(state, overlay),
+                boxRect,
+                hovered ? qMax(thickness + 3, thickness * 2) : thickness);
         }
         for (const VulkanPreviewFacestreamOverlay& overlay : state->rawDetectionOverlays) {
             const auto it = activeClipGeometry.constFind(overlay.clipId);
@@ -3137,6 +3212,7 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested,
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested,
+    std::function<void(const QString&)> faceStreamBoxClickStatus,
     std::function<void(const QString&)> createKeyframeRequested)
 {
     if (!window) {
@@ -3150,6 +3226,7 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
                                     std::move(speakerPointRequested),
                                     std::move(speakerBoxRequested),
                                     std::move(faceStreamBoxRequested),
+                                    std::move(faceStreamBoxClickStatus),
                                     std::move(createKeyframeRequested));
 }
 

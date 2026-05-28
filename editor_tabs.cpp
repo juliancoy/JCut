@@ -32,6 +32,7 @@ void EditorWindow::refreshInspectorTabByName(const QString& tabName)
         if (m_transcriptTab) m_transcriptTab->refresh();
     } else if (normalized.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0) {
         if (m_speakersTab) m_speakersTab->refresh();
+        if (m_speakerTranscriptTab) m_speakerTranscriptTab->refresh();
     } else if (normalized.compare(QStringLiteral("Properties"), Qt::CaseInsensitive) == 0) {
         if (m_propertiesTab) m_propertiesTab->refresh();
     } else if (normalized.compare(QStringLiteral("Clips"), Qt::CaseInsensitive) == 0) {
@@ -175,6 +176,9 @@ void EditorWindow::refreshTimelineSelectionInspectorViews()
     if (m_transcriptTab) {
         m_transcriptTab->refresh();
     }
+    if (m_speakerTranscriptTab) {
+        m_speakerTranscriptTab->refresh();
+    }
     if (m_outputTab) {
         m_outputTab->refresh();
     }
@@ -207,6 +211,9 @@ void EditorWindow::refreshPreviewTransformInspectorViews()
     if (m_transcriptTab) {
         m_transcriptTab->refresh();
     }
+    if (m_speakerTranscriptTab) {
+        m_speakerTranscriptTab->refresh();
+    }
     refreshCurrentInspectorTab();
 }
 
@@ -214,6 +221,9 @@ void EditorWindow::refreshTranscriptDerivedInspectorViews(bool includeHistoryTab
 {
     if (m_transcriptTab) {
         m_transcriptTab->refresh();
+    }
+    if (m_speakerTranscriptTab) {
+        m_speakerTranscriptTab->refresh();
     }
     if (m_speakersTab) {
         m_speakersTab->refresh();
@@ -227,6 +237,9 @@ void EditorWindow::refreshSpeechFilterInspectorViews()
 {
     if (m_transcriptTab) {
         m_transcriptTab->refresh();
+    }
+    if (m_speakerTranscriptTab) {
+        m_speakerTranscriptTab->refresh();
     }
 }
 
@@ -382,6 +395,7 @@ void EditorWindow::createTranscriptTab()
 
     connect(m_transcriptTab.get(), &TranscriptTab::transcriptDocumentChanged, this, [this]() {
         m_transcriptEngine.invalidateCache();
+        invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         setTransformSkipAwareTimelineRanges(
             speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
@@ -411,8 +425,10 @@ void EditorWindow::createTranscriptTab()
         m_speechFilterEnabled = m_transcriptTab->speechFilterEnabled();
         m_transcriptPrependMs = m_transcriptTab->transcriptPrependMs();
         m_transcriptPostpendMs = m_transcriptTab->transcriptPostpendMs();
+        setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
         m_speechFilterFadeSamples = m_transcriptTab->speechFilterFadeSamples();
         m_transcriptEngine.invalidateCache();
+        invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         setTransformSkipAwareTimelineRanges(
             speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
@@ -438,11 +454,63 @@ void EditorWindow::createTranscriptTab()
 
 void EditorWindow::createSpeakersTab()
 {
+    m_speakerTranscriptTable = m_inspectorPane->speakerTranscriptTable();
+    TranscriptTab::Widgets speakerTranscriptWidgets;
+    speakerTranscriptWidgets.transcriptTable = m_speakerTranscriptTable;
+    m_speakerTranscriptTab = std::make_unique<TranscriptTab>(
+        speakerTranscriptWidgets,
+        TranscriptTab::Dependencies{
+            [this]() { return m_timeline ? m_timeline->selectedClip() : nullptr; },
+            [this](const QString& id, const std::function<void(TimelineClip&)>& updater) {
+                return m_timeline && m_timeline->updateClipById(id, updater);
+            },
+            [this]() { scheduleSaveState(); },
+            [this]() { pushHistorySnapshot(); },
+            [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Speakers")); },
+            [this]() {
+                if (m_preview && m_timeline) {
+                    m_preview->setTimelineTracks(m_timeline->tracks());
+                    m_preview->setTimelineClips(m_timeline->clips());
+                }
+            },
+            [this]() { return effectivePlaybackRanges(); },
+            [this](int64_t frame) { setCurrentFrame(frame); }});
+    m_speakerTranscriptTab->wire();
+    m_speakerTranscriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
+    connect(m_speakerTranscriptTab.get(), &TranscriptTab::transcriptDocumentChanged, this, [this]() {
+        m_transcriptEngine.invalidateCache();
+        invalidatePlaybackRangeCaches();
+        const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+        setTransformSkipAwareTimelineRanges(
+            speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});
+        if (m_preview) {
+            if (const TimelineClip* clip = m_timeline ? m_timeline->selectedClip() : nullptr) {
+                m_preview->invalidateTranscriptOverlayCache(clip->filePath);
+            } else {
+                m_preview->invalidateTranscriptOverlayCache();
+            }
+            m_preview->setExportRanges(ranges);
+        }
+        if (m_audioEngine) {
+            m_audioEngine->setExportRanges(ranges);
+            m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
+            m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
+            m_audioEngine->setPlaybackWarpMode(m_playbackAudioWarpMode);
+            m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setTranscriptNormalizeEnabled(
+                m_previewAudioDynamics.transcriptNormalizeEnabled);
+            m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
+        }
+        scheduleTranscriptNormalizeRangeRefresh(50);
+        refreshTranscriptDerivedInspectorViews(true);
+    });
+
     m_speakersTab = std::make_unique<SpeakersTab>(
         SpeakersTab::Widgets{
             m_inspectorPane->speakersInspectorClipLabel(),
             m_inspectorPane->speakersInspectorDetailsLabel(),
             m_inspectorPane->speakersTable(),
+            m_inspectorPane->speakerHideUnidentifiedCheckBox(),
             m_inspectorPane->speakerShowContiguousSectionsCheckBox(),
             m_inspectorPane->speakerSectionsTable(),
             m_inspectorPane->selectedSpeakerIdLabel(),
@@ -451,6 +519,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerShowPlayheadFaceDetectionsCheckBox(),
             m_inspectorPane->selectedSpeakerPreviousSentenceButton(),
             m_inspectorPane->selectedSpeakerNextSentenceButton(),
+            m_inspectorPane->selectedSpeakerNextSectionButton(),
             m_inspectorPane->selectedSpeakerRandomSentenceButton(),
             m_inspectorPane->speakerCurrentSentenceLabel(),
             m_inspectorPane->speakerRunAutoTrackButton(),
@@ -470,6 +539,11 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerFramingTargetYSpin(),
             m_inspectorPane->speakerFramingTargetBoxSpin(),
             m_inspectorPane->speakerFramingZoomEnabledCheckBox(),
+            m_inspectorPane->speakerFramingCenterSmoothingFramesSpin(),
+            m_inspectorPane->speakerFramingZoomSmoothingFramesSpin(),
+            m_inspectorPane->speakerFramingSmoothingModeCombo(),
+            m_inspectorPane->speakerFramingSmoothingStrengthSpin(),
+            m_inspectorPane->speakerFramingGapHoldFramesSpin(),
             m_inspectorPane->speakerApplyFramingToClipCheckBox(),
             m_inspectorPane->speakerFramingEnabledKeyframeTable(),
             m_inspectorPane->speakerClipFramingStatusLabel(),
@@ -507,7 +581,13 @@ void EditorWindow::createSpeakersTab()
                 m_preview->setTimelineClips(m_timeline->clips());
                 m_preview->asWidget()->update();
             },
+            [this](const QSet<int>& trackIds) {
+                if (m_preview) {
+                    m_preview->setSelectedSpeakerAssignedFaceTrackIds(trackIds);
+                }
+            },
             {},
+            [this]() -> bool { return m_playbackTimer.isActive(); },
             [this](QString* errorOut) -> bool {
                 refreshAiIntegrationState();
                 if (!m_featureAiSpeakerCleanup) {
@@ -532,6 +612,11 @@ void EditorWindow::createSpeakersTab()
             },
             [this](const QStringList& speakerIds) {
                 exportVideoForSpeakersOnSelectedClip(speakerIds);
+            },
+            [this](bool suppressed) {
+                if (m_audioEngine) {
+                    m_audioEngine->setBackgroundDecodeSuppressed(suppressed);
+                }
             }});
     m_speakersTab->wire();
     if (m_inspectorPane) {
@@ -565,6 +650,7 @@ void EditorWindow::createSpeakersTab()
 
     connect(m_speakersTab.get(), &SpeakersTab::transcriptDocumentChanged, this, [this]() {
         m_transcriptEngine.invalidateCache();
+        invalidatePlaybackRangeCaches();
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         setTransformSkipAwareTimelineRanges(
             speechFilterPlaybackEnabled() ? ranges : QVector<ExportRangeSegment>{});

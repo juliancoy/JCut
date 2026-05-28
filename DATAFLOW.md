@@ -86,10 +86,8 @@ Primary helpers are in `facedetections_runtime.cpp` and `TranscriptEngine`:
 - top-level map: `continuity_facedetections_by_clip`
 
 The raw artifact stores generated continuity roots by clip id. The processed
-artifact stores derived `streams` by clip id. Readers prefer stored streams,
-then processed sidecar streams, then derived streams from raw tracks. A legacy
-fallback still reads transcript-side `speaker_flow.clips[*].continuity_facedetections`
-when needed.
+artifact stores derived `streams` by clip id. Readers use the canonical
+FaceDetections sidecars; transcript-side continuity payloads are not supported.
 
 ## Runtime State
 

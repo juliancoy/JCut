@@ -39,6 +39,14 @@ struct FacestreamResolvedSelection {
     bool interpolated = false;
 };
 
+struct FacestreamSourceScanRange {
+    int64_t startFrame = 0;
+    int64_t endFrameExclusive = 0;
+    int64_t frameCount = 0;
+    bool valid = false;
+    QString error;
+};
+
 QString normalizedFacestreamOverlaySource(QString source);
 
 bool facedetectionsOverlaySourceMatches(const QString& sourceFilter,
@@ -48,6 +56,8 @@ bool facedetectionsOverlaySourceMatches(const QString& sourceFilter,
 FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
                                                int64_t keyframeMin,
                                                int64_t keyframeMax);
+
+FacestreamSourceScanRange facedetectionsSourceAbsoluteScanRangeForClip(const TimelineClip& clip);
 
 int64_t facedetectionsLookupFrameForDomain(FacestreamFrameDomain domain,
                                       int64_t localTimelineFrame,

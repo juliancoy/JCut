@@ -33,6 +33,14 @@ bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clip
                                                              qreal minConfidence,
                                                              QPointF* locationOut,
                                                              qreal* boxSizeOut);
+QString transcriptActiveSpeakerForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                        int64_t sourceFrame);
+bool transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                                   int64_t sourceFrame,
+                                                                   qreal minConfidence,
+                                                                   QPointF* locationOut,
+                                                                   qreal* boxSizeOut,
+                                                                   QString* speakerIdOut = nullptr);
 void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath = QString());
 void invalidateTranscriptJsonCache(const QString& transcriptPath = QString());
 QJsonObject transcriptSpeakerTrackingConfigSnapshot();
@@ -40,6 +48,13 @@ bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch,
                                                QString* errorOut = nullptr);
 QJsonObject transcriptSpeakerTrackingProfilingSnapshot();
 void resetTranscriptSpeakerTrackingProfiling();
+void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs);
+ExportRangeSegment transcriptPaddedWordRange(const TranscriptWord& word,
+                                             int prependMs,
+                                             int postpendMs);
+QVector<ExportRangeSegment> transcriptPaddedWordRanges(const QVector<TranscriptSection>& sections,
+                                                       int prependMs,
+                                                       int postpendMs);
 QPointF transcriptOverlayTranslationForOutput(const TimelineClip& clip,
                                               const QSize& outputSize,
                                               const QString& transcriptPath,

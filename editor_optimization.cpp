@@ -164,11 +164,31 @@ QJsonObject EditorWindow::optimizedProfileSnapshot() const
 {
     const QFileInfo info(optimizedProfilePath());
     return QJsonObject{
+        {QStringLiteral("deprecated_alias"), true},
+        {QStringLiteral("not_runtime_patch"), true},
+        {QStringLiteral("replacement"), QStringLiteral("startup_optimization")},
         {QStringLiteral("loaded"), m_optimizedProfileLoaded},
         {QStringLiteral("generated_this_run"), m_optimizedProfileGeneratedThisRun},
         {QStringLiteral("path"), info.absoluteFilePath()},
         {QStringLiteral("exists"), info.exists()},
         {QStringLiteral("backend"), m_preview ? backendFamilyForName(m_preview->backendName()) : QString()},
+        {QStringLiteral("profile"), m_optimizedProfile}
+    };
+}
+
+QJsonObject EditorWindow::startupOptimizationSnapshot() const
+{
+    const QFileInfo info(optimizedProfilePath());
+    return QJsonObject{
+        {QStringLiteral("loaded"), m_optimizedProfileLoaded},
+        {QStringLiteral("generated_this_run"), m_optimizedProfileGeneratedThisRun},
+        {QStringLiteral("path"), info.absoluteFilePath()},
+        {QStringLiteral("exists"), info.exists()},
+        {QStringLiteral("backend"), m_preview ? backendFamilyForName(m_preview->backendName()) : QString()},
+        {QStringLiteral("source"), m_optimizedProfileLoaded
+             ? (m_optimizedProfileGeneratedThisRun ? QStringLiteral("generated") : QStringLiteral("disk"))
+             : QStringLiteral("none")},
+        {QStringLiteral("not_runtime_patch"), true},
         {QStringLiteral("profile"), m_optimizedProfile}
     };
 }

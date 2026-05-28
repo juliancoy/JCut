@@ -54,6 +54,27 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - `TranscriptTab::parseTranscriptRows(...)`
   - `TranscriptEngine::transcriptWordExportRanges(...)`
 
+## FaceDetections Click / Track Assignment Timing
+- FaceDetections continuity track frames are media source frames.
+  - `source_absolute` samples, preview box clicks, and track assignment anchors are in the clip's decoded media source-frame domain.
+  - This domain uses `resolvedSourceFps(clip)`, not `kTimelineFps`.
+- Transcript speaker lookup is in transcript-frame time.
+  - Transcript JSON stores word/section times in seconds.
+  - Runtime transcript frame lookup converts seconds with `kTimelineFps`.
+  - Active speaker lookup, transcript section selection, and speaker gap-hold decisions must therefore use transcript frames.
+- Required conversion for a FaceDetections click:
+  - `mediaSourceFrame = clicked source frame`
+  - `sourceSeconds = mediaSourceFrame / resolvedSourceFps(clip)`
+  - `transcriptFrame = floor(sourceSeconds * kTimelineFps)`
+- Required storage rule after assignment:
+  - Preserve `mediaSourceFrame` for the FaceDetections track anchor and geometry paths.
+  - Use `transcriptFrame` only to resolve the active transcript speaker/section.
+- Required logging rule:
+  - Any FaceDetections assignment or rejection log must name the domains explicitly: media source frame, transcript frame, source FPS, and whether gap hold was used.
+- Explicit failure case:
+  - Never compare a FaceDetections media source frame directly to transcript frames.
+  - Example: on a 60 fps source, media source frame `258214` is about `4303.57s` and maps to transcript frame `129107` at 30 fps; treating `258214` as a transcript frame incorrectly means about `8607.13s`.
+
 ## Runtime Clock Paths
 - Audio-master path:
   - `EditorWindow::advanceFrame()` uses `AudioEngine::currentSample()` when `shouldUseAudioMasterClock(...)` is true.
@@ -67,6 +88,12 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - `PlaybackClockSource`: `auto|audio|timeline`.
   - `PlaybackAudioWarpMode`: `disabled|varispeed|time_stretch`.
   - Normalization can force `disabled -> varispeed` at non-1.0 speed.
+- Precomputed time-stretch audio:
+  - In `time_stretch` mode at 200% or 300%, `AudioEngine` may read from precomputed pitch-preserved audio buffers.
+  - This does not create a new clock domain. `AudioEngine::currentSample()` still reports the effective audible position in 48 kHz timeline-sample space.
+  - Timeline sample -> source sample still uses `sourceSampleForClipAtTimelineSample(...)` with render-sync markers and clip playback rate.
+  - The precomputed buffer index is derived from that mapped source sample by dividing by the global time-stretch speed (`2` or `3`).
+  - If the precomputed buffer is not ready, the fallback is explicit: audio holds silence and increments `time_stretch_cache_miss_count`; it must not silently fall back to pitch-shifted varispeed audio.
 
 ## Transcript / Speech Filter Paths
 - Source of transcript truth per clip:

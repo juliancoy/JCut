@@ -74,6 +74,13 @@ public:
     void setShowSpeakerTrackBoxes(bool show);
     void setShowRawDetections(bool show);
     void setFacestreamOverlaySource(const QString& source);
+    void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override {
+        if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {
+            return;
+        }
+        m_interaction.selectedSpeakerAssignedFaceTrackIds = trackIds;
+        scheduleRepaint();
+    }
     void setAudioSpeakerHoverModalEnabled(bool enabled);
     void setAudioWaveformVisible(bool visible);
     void setAudioVisualizationMode(AudioVisualizationMode mode) { m_interaction.audioVisualizationMode = mode; update(); }

@@ -443,6 +443,7 @@ void TranscriptTab::refresh()
     if (m_widgets.transcriptPostpendMsSpin) {
         m_transcriptPostpendMs = qMax(0, m_widgets.transcriptPostpendMsSpin->value());
     }
+    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
     if (m_widgets.speechFilterFadeSamplesSpin) {
         m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
     }
@@ -1121,6 +1122,7 @@ void TranscriptTab::onCenterVerticalClicked()
 void TranscriptTab::onPrependMsChanged(int value)
 {
     m_transcriptPrependMs = qMax(0, value);
+    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
     refresh();
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
@@ -1130,6 +1132,7 @@ void TranscriptTab::onPrependMsChanged(int value)
 void TranscriptTab::onPostpendMsChanged(int value)
 {
     m_transcriptPostpendMs = qMax(0, value);
+    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
     refresh();
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),

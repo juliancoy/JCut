@@ -8,6 +8,7 @@
 #include <QImage>
 #include <QJsonObject>
 #include <QPointF>
+#include <QSet>
 #include <QSize>
 #include <QString>
 #include <QVector>
@@ -100,6 +101,7 @@ public:
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;
     virtual void setShowRawDetections(bool show) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;
+    virtual void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) = 0;
     virtual void setAudioSpeakerHoverModalEnabled(bool enabled) = 0;
     virtual void setAudioWaveformVisible(bool visible) = 0;
     virtual void setAudioVisualizationMode(AudioVisualizationMode mode) = 0;
@@ -147,4 +149,5 @@ public:
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested;
+    std::function<void(const QString&)> faceStreamBoxClickStatus;
 };

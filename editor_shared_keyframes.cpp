@@ -1,6 +1,12 @@
 #include "editor_shared.h"
+#include "editor_shared_timing.h"
+#include "facedetections_artifact_utils.h"
+#include "facedetections_time_mapping.h"
+#include "transcript_engine.h"
 #include "transform_skip_aware_timing.h"
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QHash>
 #include <QFileInfo>
 #include <QMutex>
@@ -18,6 +24,9 @@ constexpr qreal kGradingEpsilon = 0.000001;
 constexpr qreal kDefaultSpeakerFramingTargetXNorm = 0.5;
 constexpr qreal kDefaultSpeakerFramingTargetYNorm = 0.35;
 constexpr qreal kDefaultSpeakerFramingTargetBoxNorm = -1.0;
+constexpr int kSpeakerFramingSmoothingMovingAverage = 0;
+constexpr int kSpeakerFramingSmoothingLowPass = 1;
+constexpr int kSpeakerFramingSmoothingBoth = 2;
 
 QRect fitRectForSourceInOutput(const QSize& source, const QSize& output) {
     const QSize safeOutput = output.isValid() ? output : QSize(1080, 1920);
@@ -32,6 +41,9 @@ QRect fitRectForSourceInOutput(const QSize& source, const QSize& output) {
 }
 
 QSize sourceSizeForClipCached(const TimelineClip& clip, const QSize& outputSize) {
+    if (clip.sourceFrameSize.isValid()) {
+        return clip.sourceFrameSize;
+    }
     static QMutex mutex;
     static QHash<QString, QSize> cacheByPath;
     const QString mediaPath = interactivePreviewMediaPathForClip(clip);
@@ -53,6 +65,309 @@ QSize sourceSizeForClipCached(const TimelineClip& clip, const QSize& outputSize)
         cacheByPath[path] = resolved;
     }
     return resolved;
+}
+
+bool streamSampleAtFrame(const TimelineClip& clip,
+                         const QJsonObject& streamObj,
+                         int64_t timelineFrame,
+                         int64_t mediaSourceFrame,
+                         int centerSmoothingFrames,
+                         int zoomSmoothingFrames,
+                         int smoothingMode,
+                         qreal smoothingStrength,
+                         int gapHoldFrames,
+                         QPointF* locationOut,
+                         qreal* boxSizeOut)
+{
+    const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
+    if (keyframes.isEmpty()) {
+        return false;
+    }
+
+    FacestreamFrameDomain domain = FacestreamFrameDomain::SourceRelative;
+    if (!parseFacestreamFrameDomainString(streamObj.value(QStringLiteral("frame_domain")).toString(), &domain)) {
+        int64_t minFrame = std::numeric_limits<int64_t>::max();
+        int64_t maxFrame = std::numeric_limits<int64_t>::min();
+        for (const QJsonValue& value : keyframes) {
+            const QJsonObject keyframe = value.toObject();
+            if (!keyframe.contains(QStringLiteral("frame"))) {
+                continue;
+            }
+            const int64_t frame = keyframe.value(QStringLiteral("frame")).toVariant().toLongLong();
+            minFrame = qMin(minFrame, frame);
+            maxFrame = qMax(maxFrame, frame);
+        }
+        domain = inferFacestreamFrameDomain(clip, minFrame, maxFrame);
+    }
+
+    const int64_t localTimelineFrame = qMax<int64_t>(0, timelineFrame - clip.startFrame);
+    const int64_t localMediaSourceFrame = qMax<int64_t>(0, mediaSourceFrame - qMax<int64_t>(0, clip.sourceInFrame));
+    const int64_t lookupFrame = facedetectionsLookupFrameForDomain(
+        domain, localTimelineFrame, localMediaSourceFrame, mediaSourceFrame);
+
+    QVector<FacestreamResolvedKeyframe> points;
+    points.reserve(keyframes.size());
+    for (const QJsonValue& value : keyframes) {
+        const QJsonObject keyframeObj = value.toObject();
+        if (!keyframeObj.contains(QStringLiteral("frame"))) {
+            continue;
+        }
+        FacestreamResolvedKeyframe point;
+        point.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+        point.xNorm = qBound<qreal>(
+            0.0, keyframeObj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
+        point.yNorm = qBound<qreal>(
+            0.0, keyframeObj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
+        point.boxSizeNorm = qBound<qreal>(
+            0.01,
+            keyframeObj.value(QStringLiteral("box_size"))
+                .toDouble(keyframeObj.value(QStringLiteral("box")).toDouble(0.2)),
+            1.0);
+        point.confidence = qBound<qreal>(
+            0.0, keyframeObj.value(QStringLiteral("confidence")).toDouble(
+                     keyframeObj.value(QStringLiteral("confidence")).toDouble(1.0)),
+            1.0);
+        point.hasCenterBox = true;
+        points.push_back(point);
+    }
+    if (points.isEmpty()) {
+        return false;
+    }
+    std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
+        return a.frame < b.frame;
+    });
+
+    QVector<int64_t> frames;
+    frames.reserve(points.size());
+    for (const FacestreamResolvedKeyframe& point : points) {
+        frames.push_back(point.frame);
+    }
+    const int64_t typicalStep = qMax<int64_t>(1, facedetectionsTypicalFrameStep(frames));
+    const int64_t edgeHoldFrames = qMax<int64_t>(
+        facedetectionsMaxEdgeHoldFrames(typicalStep),
+        qBound(0, gapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames));
+
+    const auto nextIt = std::lower_bound(
+        points.constBegin(),
+        points.constEnd(),
+        lookupFrame,
+        [](const FacestreamResolvedKeyframe& point, int64_t frame) {
+            return point.frame < frame;
+        });
+    const FacestreamResolvedKeyframe* previous =
+        (nextIt != points.constBegin()) ? &(*(nextIt - 1)) : nullptr;
+    const FacestreamResolvedKeyframe* next =
+        (nextIt != points.constEnd()) ? &(*nextIt) : nullptr;
+
+    FacestreamResolvedKeyframe sample;
+    if (next && next->frame == lookupFrame) {
+        sample = *next;
+    } else if (previous && previous->frame == lookupFrame) {
+        sample = *previous;
+    } else if (previous && next &&
+               facedetectionsShouldBridgeGap(previous->frame, next->frame, typicalStep)) {
+        const int64_t span = qMax<int64_t>(1, next->frame - previous->frame);
+        const qreal t = qBound<qreal>(
+            0.0, static_cast<qreal>(lookupFrame - previous->frame) / static_cast<qreal>(span), 1.0);
+        sample.xNorm = previous->xNorm + ((next->xNorm - previous->xNorm) * t);
+        sample.yNorm = previous->yNorm + ((next->yNorm - previous->yNorm) * t);
+        sample.boxSizeNorm = previous->boxSizeNorm + ((next->boxSizeNorm - previous->boxSizeNorm) * t);
+    } else if (previous && qAbs(previous->frame - lookupFrame) <= edgeHoldFrames) {
+        sample = *previous;
+    } else if (next && qAbs(next->frame - lookupFrame) <= edgeHoldFrames) {
+        sample = *next;
+    } else {
+        return false;
+    }
+
+    const int centerWindowFrames =
+        qBound(0, centerSmoothingFrames, TimelineClip::kSpeakerFramingSmoothingMaxFrames);
+    const int zoomWindowFrames =
+        qBound(0, zoomSmoothingFrames, TimelineClip::kSpeakerFramingSmoothingMaxFrames);
+    const qreal smoothBlend =
+        qBound<qreal>(0.0, smoothingStrength, TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+    if (smoothBlend > 0.0 && (centerWindowFrames > 1 || zoomWindowFrames > 1)) {
+        struct SmoothSums {
+            qreal movingSum = 0.0;
+            int movingCount = 0;
+            qreal lowPassSum = 0.0;
+            qreal lowPassWeight = 0.0;
+        };
+        auto addSmoothSample = [lookupFrame](SmoothSums& sums,
+                                             qreal value,
+                                             int64_t frame,
+                                             int windowFrames) {
+            if (windowFrames <= 1) {
+                return;
+            }
+            sums.movingSum += value;
+            ++sums.movingCount;
+            const qreal halfWindow = qMax<qreal>(1.0, static_cast<qreal>(windowFrames - 1) / 2.0);
+            const qreal distance = qAbs(static_cast<qreal>(frame - lookupFrame));
+            const qreal weight = std::exp(-distance / halfWindow);
+            sums.lowPassSum += value * weight;
+            sums.lowPassWeight += weight;
+        };
+        auto resolvedSmoothValue = [](qreal original,
+                                      const SmoothSums& sums,
+                                      int mode,
+                                      qreal strength) {
+            if (sums.movingCount <= 0 || sums.lowPassWeight <= 0.0) {
+                return original;
+            }
+            const qreal movingAverage =
+                sums.movingSum / static_cast<qreal>(sums.movingCount);
+            const qreal lowPass = sums.lowPassSum / sums.lowPassWeight;
+            qreal smoothed = movingAverage;
+            switch (qBound(0, mode, 2)) {
+            case kSpeakerFramingSmoothingLowPass:
+                smoothed = lowPass;
+                break;
+            case kSpeakerFramingSmoothingBoth:
+                smoothed = (movingAverage + lowPass) * 0.5;
+                break;
+            case kSpeakerFramingSmoothingMovingAverage:
+            default:
+                smoothed = movingAverage;
+                break;
+            }
+            return original + ((smoothed - original) *
+                               qBound<qreal>(0.0,
+                                             strength,
+                                             TimelineClip::kSpeakerFramingSmoothingStrengthMax));
+        };
+
+        const int centerBefore = centerWindowFrames / 2;
+        const int centerAfter = centerWindowFrames - centerBefore - 1;
+        const int64_t centerStartFrame = lookupFrame - centerBefore;
+        const int64_t centerEndFrame = lookupFrame + centerAfter;
+        SmoothSums centerXSums;
+        SmoothSums centerYSums;
+        if (centerWindowFrames > 1) {
+            addSmoothSample(centerXSums, sample.xNorm, lookupFrame, centerWindowFrames);
+            addSmoothSample(centerYSums, sample.yNorm, lookupFrame, centerWindowFrames);
+        }
+
+        const int zoomBefore = zoomWindowFrames / 2;
+        const int zoomAfter = zoomWindowFrames - zoomBefore - 1;
+        const int64_t zoomStartFrame = lookupFrame - zoomBefore;
+        const int64_t zoomEndFrame = lookupFrame + zoomAfter;
+        SmoothSums zoomSums;
+        if (zoomWindowFrames > 1) {
+            addSmoothSample(zoomSums, sample.boxSizeNorm, lookupFrame, zoomWindowFrames);
+        }
+        for (const FacestreamResolvedKeyframe& point : points) {
+            if (point.frame == lookupFrame || point.boxSizeNorm <= 0.0) {
+                continue;
+            }
+            if (centerWindowFrames > 1 &&
+                point.frame >= centerStartFrame &&
+                point.frame <= centerEndFrame) {
+                addSmoothSample(centerXSums, point.xNorm, point.frame, centerWindowFrames);
+                addSmoothSample(centerYSums, point.yNorm, point.frame, centerWindowFrames);
+            }
+            if (zoomWindowFrames > 1 &&
+                point.frame >= zoomStartFrame &&
+                point.frame <= zoomEndFrame) {
+                addSmoothSample(zoomSums, point.boxSizeNorm, point.frame, zoomWindowFrames);
+            }
+        }
+        if (centerWindowFrames > 1) {
+            sample.xNorm = qBound<qreal>(
+                0.0, resolvedSmoothValue(sample.xNorm, centerXSums, smoothingMode, smoothBlend), 1.0);
+            sample.yNorm = qBound<qreal>(
+                0.0, resolvedSmoothValue(sample.yNorm, centerYSums, smoothingMode, smoothBlend), 1.0);
+        }
+        if (zoomWindowFrames > 1) {
+            sample.boxSizeNorm = qBound<qreal>(
+                0.01, resolvedSmoothValue(sample.boxSizeNorm, zoomSums, smoothingMode, smoothBlend), 1.0);
+        }
+    }
+
+    if (locationOut) {
+        *locationOut = QPointF(sample.xNorm, sample.yNorm);
+    }
+    if (boxSizeOut) {
+        *boxSizeOut = sample.boxSizeNorm;
+    }
+    return sample.boxSizeNorm > 0.0;
+}
+
+bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
+                                             const QString& speakerId,
+                                             int64_t timelineFrame,
+                                             int64_t mediaSourceFrame,
+                                             QPointF* locationOut,
+                                             qreal* boxSizeOut)
+{
+    if (clip.id.trimmed().isEmpty() || speakerId.trimmed().isEmpty()) {
+        return false;
+    }
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+    if (transcriptPath.trimmed().isEmpty()) {
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    QJsonObject identityRoot;
+    if (!engine.loadIdentityArtifact(transcriptPath, &identityRoot)) {
+        return false;
+    }
+    const QJsonObject assignmentRoot =
+        identityRoot.value(QStringLiteral("identity_assignments_by_clip"))
+            .toObject()
+            .value(clip.id)
+            .toObject();
+    const QJsonArray identityMap = assignmentRoot.value(QStringLiteral("track_identity_map")).toArray();
+    QSet<int> assignedTrackIds;
+    QSet<QString> assignedStreamIds;
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    for (const QJsonValue& value : identityMap) {
+        const QJsonObject row = value.toObject();
+        if (row.value(QStringLiteral("identity_id")).toString().trimmed() != trimmedSpeakerId) {
+            continue;
+        }
+        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            assignedTrackIds.insert(trackId);
+        }
+        const QString streamId = row.value(QStringLiteral("stream_id")).toString().trimmed();
+        if (!streamId.isEmpty()) {
+            assignedStreamIds.insert(streamId);
+        }
+    }
+    if (assignedTrackIds.isEmpty() && assignedStreamIds.isEmpty()) {
+        return false;
+    }
+
+    QJsonObject processedRoot;
+    if (!engine.loadFacestreamProcessedArtifact(transcriptPath, &processedRoot)) {
+        return false;
+    }
+    const QJsonArray streams =
+        continuityRootForClip(processedRoot, clip.id).value(QStringLiteral("streams")).toArray();
+    for (const QJsonValue& value : streams) {
+        const QJsonObject streamObj = value.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
+        if (!assignedTrackIds.contains(trackId) && !assignedStreamIds.contains(streamId)) {
+            continue;
+        }
+        if (streamSampleAtFrame(clip,
+                                streamObj,
+                                timelineFrame,
+                                mediaSourceFrame,
+                                clip.speakerFramingCenterSmoothingFrames,
+                                clip.speakerFramingZoomSmoothingFrames,
+                                clip.speakerFramingSmoothingMode,
+                                clip.speakerFramingSmoothingStrength,
+                                clip.speakerFramingGapHoldFrames,
+                                locationOut,
+                                boxSizeOut)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool nearlyEqual(qreal a, qreal b) {
@@ -328,8 +643,23 @@ void normalizeClipTransformKeyframes(TimelineClip& clip) {
     clip.speakerFramingBakedTargetXNorm = qBound<qreal>(0.0, clip.speakerFramingBakedTargetXNorm, 1.0);
     clip.speakerFramingBakedTargetYNorm = qBound<qreal>(0.0, clip.speakerFramingBakedTargetYNorm, 1.0);
     clip.speakerFramingBakedTargetBoxNorm = qBound<qreal>(-1.0, clip.speakerFramingBakedTargetBoxNorm, 1.0);
-    clip.speakerFramingSpeakerId = clip.speakerFramingSpeakerId.trimmed();
     clip.speakerFramingMinConfidence = qBound<qreal>(0.0, clip.speakerFramingMinConfidence, 1.0);
+    clip.speakerFramingCenterSmoothingFrames =
+        qBound(0,
+               clip.speakerFramingCenterSmoothingFrames,
+               TimelineClip::kSpeakerFramingSmoothingMaxFrames);
+    clip.speakerFramingZoomSmoothingFrames =
+        qBound(0,
+               clip.speakerFramingZoomSmoothingFrames,
+               TimelineClip::kSpeakerFramingSmoothingMaxFrames);
+    clip.speakerFramingSmoothingMode = qBound(0, clip.speakerFramingSmoothingMode, 2);
+    clip.speakerFramingSmoothingStrength =
+        qBound<qreal>(
+            0.0,
+            clip.speakerFramingSmoothingStrength,
+            TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+    clip.speakerFramingGapHoldFrames =
+        qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
 }
 
 void normalizeClipGradingKeyframes(TimelineClip& clip) {
@@ -725,10 +1055,6 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
     const int64_t localFrame = qBound<int64_t>(
         0, timelineFrame - clip.startFrame, qMax<int64_t>(0, clip.durationFrames - 1));
     if (clip.speakerFramingKeyframes.isEmpty()) {
-        const QString speakerId = clip.speakerFramingSpeakerId.trimmed();
-        if (speakerId.isEmpty()) {
-            return state;
-        }
         const TimelineClip::TransformKeyframe target =
             evaluateClipSpeakerFramingTargetAtFrame(clip, timelineFrame);
         const qreal targetXNorm = qBound<qreal>(0.0, target.translationX, 1.0);
@@ -737,12 +1063,53 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         if (targetBoxNorm <= 0.0) {
             return state;
         }
-        const int64_t sourceFrame = qMax<int64_t>(0, clip.sourceInFrame + localFrame);
+        const int64_t mediaSourceFrame =
+            sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(timelineFrame), {});
+        const qreal sourceFps = resolvedSourceFps(clip);
+        const int64_t transcriptFrame = qMax<int64_t>(
+            0,
+            static_cast<int64_t>(std::floor(
+                (static_cast<qreal>(mediaSourceFrame) / qMax<qreal>(1.0, sourceFps)) *
+                static_cast<qreal>(kTimelineFps))));
+        const int speakerGapHoldFrames =
+            qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
+        QString activeSpeaker =
+            transcriptActiveSpeakerForClipFileAtSourceFrame(clip.filePath, transcriptFrame);
+        for (int offset = 1; activeSpeaker.isEmpty() && offset <= speakerGapHoldFrames; ++offset) {
+            activeSpeaker = transcriptActiveSpeakerForClipFileAtSourceFrame(
+                clip.filePath, qMax<int64_t>(0, transcriptFrame - offset));
+            if (activeSpeaker.isEmpty()) {
+                activeSpeaker = transcriptActiveSpeakerForClipFileAtSourceFrame(
+                    clip.filePath, transcriptFrame + offset);
+            }
+        }
         QPointF location;
         qreal boxSize = -1.0;
-        if (!transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
-                clip.filePath, speakerId, sourceFrame, clip.speakerFramingMinConfidence, &location, &boxSize) ||
-            boxSize <= 0.0) {
+        bool hasSample = false;
+        if (!activeSpeaker.isEmpty()) {
+            hasSample = assignedContinuityTrackSampleForSpeaker(
+                clip, activeSpeaker, timelineFrame, mediaSourceFrame, &location, &boxSize);
+        }
+        if (!hasSample && !activeSpeaker.isEmpty()) {
+            hasSample = transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+                clip.filePath,
+                activeSpeaker,
+                transcriptFrame,
+                clip.speakerFramingMinConfidence,
+                &location,
+                &boxSize);
+        }
+        if (!hasSample && activeSpeaker.isEmpty()) {
+            QString profileSpeaker;
+            hasSample = transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(
+                clip.filePath,
+                transcriptFrame,
+                clip.speakerFramingMinConfidence,
+                &location,
+                &boxSize,
+                &profileSpeaker);
+        }
+        if (!hasSample || boxSize <= 0.0) {
             return state;
         }
         const QSize safeOutput = outputSize.isValid() ? outputSize : QSize(1080, 1920);

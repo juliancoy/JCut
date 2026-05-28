@@ -47,6 +47,7 @@ public:
     void setShowSpeakerTrackBoxes(bool show) override;
     void setShowRawDetections(bool show) override;
     void setFacestreamOverlaySource(const QString& source) override;
+    void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
     void setAudioWaveformVisible(bool visible) override;
     void setAudioVisualizationMode(AudioVisualizationMode mode) override;

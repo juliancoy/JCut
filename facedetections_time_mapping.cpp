@@ -62,6 +62,22 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
     return FacestreamFrameDomain::SourceRelative;
 }
 
+FacestreamSourceScanRange facedetectionsSourceAbsoluteScanRangeForClip(const TimelineClip& clip)
+{
+    FacestreamSourceScanRange range;
+    range.startFrame = qMax<int64_t>(0, clip.sourceInFrame);
+    range.endFrameExclusive = qMax<int64_t>(0, clip.sourceDurationFrames);
+    if (range.endFrameExclusive <= range.startFrame) {
+        range.error = QStringLiteral("Invalid source-frame scan range: sourceInFrame=%1 sourceDurationFrames=%2")
+                          .arg(range.startFrame)
+                          .arg(clip.sourceDurationFrames);
+        return range;
+    }
+    range.frameCount = range.endFrameExclusive - range.startFrame;
+    range.valid = true;
+    return range;
+}
+
 int64_t facedetectionsLookupFrameForDomain(FacestreamFrameDomain domain,
                                       int64_t localTimelineFrame,
                                       int64_t localSourceFrame,

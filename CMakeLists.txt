@@ -387,6 +387,7 @@ if(TARGET jcut_vulkan_shaders)
 endif()
 
 set(EDITOR_TEST_SUPPORT_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/async_decoder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decode_trace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/detector_settings.cpp

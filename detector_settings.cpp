@@ -15,6 +15,7 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QSlider>
+#include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -1052,6 +1053,10 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
     result.applyClipGrading = options.applyClipGradingChecked;
     result.restartFromScratch = options.restartFromScratchChecked;
     result.useProxySource = options.useProxySourceChecked;
+    result.detectorWorkers =
+        std::clamp(options.detectorWorkers,
+                   qMax(1, options.minDetectorWorkers),
+                   qMax(qMax(1, options.minDetectorWorkers), options.maxDetectorWorkers));
     if (!settings) {
         result.saveError = QStringLiteral("Detector settings are unavailable.");
         return result;
@@ -1134,6 +1139,23 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
         layout->addWidget(useProxySourceCheckbox);
     }
 
+    QSpinBox* detectorWorkersSpin = nullptr;
+    if (options.showDetectorWorkersControl) {
+        detectorWorkersSpin = new QSpinBox(&preflightDialog);
+        const int minWorkers = qMax(1, options.minDetectorWorkers);
+        const int maxWorkers = qMax(minWorkers, options.maxDetectorWorkers);
+        detectorWorkersSpin->setRange(minWorkers, maxWorkers);
+        detectorWorkersSpin->setValue(std::clamp(options.detectorWorkers, minWorkers, maxWorkers));
+        detectorWorkersSpin->setToolTip(QStringLiteral(
+            "Number of independent detector workers. Higher values can improve throughput on some GPUs, but too many workers can reduce performance through GPU/context contention."));
+        auto* workersForm = new QFormLayout;
+        workersForm->addRow(options.detectorWorkersLabel.trimmed().isEmpty()
+                                ? QStringLiteral("Detector workers")
+                                : options.detectorWorkersLabel,
+                            detectorWorkersSpin);
+        layout->addLayout(workersForm);
+    }
+
     DetectorSettingsPanel detectorPanel =
         createDetectorSettingsPanel(settings,
                                     detector,
@@ -1170,6 +1192,8 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
         restartFromScratchCheckbox ? restartFromScratchCheckbox->isChecked() : options.restartFromScratchChecked;
     result.useProxySource =
         useProxySourceCheckbox ? useProxySourceCheckbox->isChecked() : options.useProxySourceChecked;
+    result.detectorWorkers =
+        detectorWorkersSpin ? detectorWorkersSpin->value() : result.detectorWorkers;
     settings->useProxySource = result.useProxySource;
     if (QFileInfo::exists(settingsPath) ||
         !detectorRuntimeSettingsEqual(*settings, immutableDefaultDetectorSettings())) {

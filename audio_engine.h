@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "audio_time_stretch.h"
 #include "ffmpeg_compat.h"
 #include "decoder_ffmpeg_utils.h"
 #include "preview_surface.h"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -170,6 +172,21 @@ public:
         m_compressorEnabled.store(settings.compressorEnabled, std::memory_order_release);
         m_compressorThresholdDb.store(settings.compressorThresholdDb, std::memory_order_release);
         m_compressorRatio.store(settings.compressorRatio, std::memory_order_release);
+    }
+
+    void setBackgroundDecodeSuppressed(bool suppressed) {
+        {
+            std::lock_guard<std::mutex> lock(m_stateMutex);
+            if (m_backgroundDecodeSuppressed == suppressed) {
+                return;
+            }
+            m_backgroundDecodeSuppressed = suppressed;
+            if (!suppressed) {
+                scheduleDecodesLocked(m_timelineClips);
+                prioritizeDecodesNearSampleLocked(m_timelineSampleCursor);
+            }
+        }
+        m_decodeCondition.notify_all();
     }
 
     bool initialize() {
@@ -446,6 +463,24 @@ public:
         snapshot[QStringLiteral("playback_warp_mode")] =
             playbackAudioWarpModeToString(static_cast<PlaybackAudioWarpMode>(
                 m_playbackWarpMode.load(std::memory_order_acquire)));
+        snapshot[QStringLiteral("time_stretch_cache_miss_count")] =
+            static_cast<qint64>(m_timeStretchCacheMissCount.load(std::memory_order_acquire));
+        snapshot[QStringLiteral("muted")] = muted();
+        snapshot[QStringLiteral("volume_percent")] = volumePercent();
+        snapshot[QStringLiteral("last_mix_prepared_clip_count")] =
+            m_lastMixPreparedClipCount.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("last_mix_cache_hit_count")] =
+            m_lastMixCacheHitCount.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("last_mix_cache_miss_count")] =
+            m_lastMixCacheMissCount.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("last_mix_invalid_audio_count")] =
+            m_lastMixInvalidAudioCount.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("last_mix_peak_per_mille")] =
+            m_lastMixPeakPermille.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("last_mix_rms_per_mille")] =
+            m_lastMixRmsPermille.load(std::memory_order_acquire);
+        snapshot[QStringLiteral("last_mix_nonzero_sample_count")] =
+            m_lastMixNonzeroSampleCount.load(std::memory_order_acquire);
 
         std::lock_guard<std::mutex> lock(m_stateMutex);
         if (!m_rtaudio) {
@@ -512,6 +547,13 @@ private:
         bool valid = false;
         bool fullyDecoded = false;
     };
+
+    static int precomputedTimeStretchSpeedKey(qreal playbackRate) {
+        const int rounded = qRound(playbackRate);
+        return (rounded == 2 || rounded == 3) && qAbs(playbackRate - rounded) < 0.0001
+            ? rounded
+            : 0;
+    }
 
     struct MixContext {
         QVector<TimelineClip> clips;
@@ -1013,6 +1055,43 @@ private:
         return m_audioCache.value(path);
     }
 
+    AudioClipCacheEntry timeStretchCacheForPathCopy(const QString& path, int speedKey) const {
+        if (speedKey <= 1) {
+            return {};
+        }
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        const auto pathIt = m_timeStretchAudioCache.constFind(path);
+        if (pathIt == m_timeStretchAudioCache.cend()) {
+            return {};
+        }
+        return pathIt.value().value(speedKey);
+    }
+
+    AudioClipCacheEntry buildTimeStretchCacheEntry(const AudioClipCacheEntry& decoded, int speedKey) const {
+        AudioClipCacheEntry warped;
+        if (!decoded.valid || decoded.samples.isEmpty() || (speedKey != 2 && speedKey != 3)) {
+            return warped;
+        }
+        warped.samples = timeStretchPreservePitchSola(decoded.samples, decoded.channelCount, speedKey);
+        warped.sampleRate = decoded.sampleRate;
+        warped.channelCount = decoded.channelCount;
+        warped.valid = !warped.samples.isEmpty();
+        warped.fullyDecoded = decoded.fullyDecoded;
+        return warped;
+    }
+
+    QHash<int, AudioClipCacheEntry> buildPrecomputedTimeStretchEntries(
+        const AudioClipCacheEntry& decoded) const {
+        QHash<int, AudioClipCacheEntry> warpedBySpeed;
+        for (const int speedKey : {2, 3}) {
+            AudioClipCacheEntry warped = buildTimeStretchCacheEntry(decoded, speedKey);
+            if (warped.valid) {
+                warpedBySpeed.insert(speedKey, std::move(warped));
+            }
+        }
+        return warpedBySpeed;
+    }
+
     QVector<ExportRangeSegment> exportRangesCopy() const {
         std::lock_guard<std::mutex> lock(m_exportRangesMutex);
         return m_exportRanges;
@@ -1045,22 +1124,71 @@ private:
             int64_t sourceInSample = 0;
             float transcriptNormalizeGain = 1.0f;
             QVector<TranscriptNormalizeSegment> transcriptNormalizeSegments;
+            qreal precomputedTimeStretchSpeed = 1.0;
         };
         QVector<PreparedClipAudio> preparedClips;
         preparedClips.reserve(context.clips.size());
+        int cacheHitCount = 0;
+        int cacheMissCount = 0;
+        int invalidAudioCount = 0;
+        const PlaybackAudioWarpMode warpMode = static_cast<PlaybackAudioWarpMode>(
+            m_playbackWarpMode.load(std::memory_order_acquire));
+        const int timeStretchSpeedKey =
+            warpMode == PlaybackAudioWarpMode::TimeStretch
+                ? precomputedTimeStretchSpeedKey(clampedRate)
+                : 0;
+        auto audioIndexForSourceSample = [timeStretchSpeedKey](int64_t sourceSample) -> int64_t {
+            if (timeStretchSpeedKey <= 1) {
+                return sourceSample;
+            }
+            return qMax<int64_t>(
+                0,
+                static_cast<int64_t>(std::floor(
+                    static_cast<long double>(sourceSample) /
+                    static_cast<long double>(timeStretchSpeedKey))));
+        };
         for (const TimelineClip& clip : context.clips) {
             if (!clipAudioPlaybackEnabled(clip)) {
                 continue;
             }
-            const QString audioPath = playbackAudioPathForClip(clip);
-            const AudioClipCacheEntry audio = clipCacheForPathCopy(audioPath);
+            const QString audioPath = clipAudioPathForScheduling(clip);
+            AudioClipCacheEntry audio;
+            bool usingPrecomputedTimeStretch = false;
+            if (timeStretchSpeedKey > 1) {
+                audio = timeStretchCacheForPathCopy(audioPath, timeStretchSpeedKey);
+                usingPrecomputedTimeStretch = audio.valid;
+                if (!usingPrecomputedTimeStretch) {
+                    ++cacheMissCount;
+                    m_timeStretchCacheMissCount.fetch_add(1, std::memory_order_relaxed);
+                    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                    const qint64 previousWarning =
+                        m_lastTimeStretchCacheMissWarningMs.load(std::memory_order_acquire);
+                    if (now - previousWarning >= kAudioInitWarningThrottleMs) {
+                        m_lastTimeStretchCacheMissWarningMs.store(now, std::memory_order_release);
+                        qWarning().noquote()
+                            << QStringLiteral("Audio time-stretch cache miss: speed=%1x path=\"%2\"; "
+                                              "holding silence instead of falling back to pitch-shifted varispeed audio.")
+                                   .arg(timeStretchSpeedKey)
+                                   .arg(audioPath);
+                    }
+                    continue;
+                }
+            } else {
+                audio = clipCacheForPathCopy(audioPath);
+            }
             if (!audio.valid) {
+                if (audioPath.isEmpty()) {
+                    ++cacheMissCount;
+                } else {
+                    ++invalidAudioCount;
+                }
                 continue;
             }
+            ++cacheHitCount;
             const int64_t clipStartSample = clipTimelineStartSamples(clip);
             const int64_t sourceInSample = clipSourceInSamples(clip);
             const int64_t clipAvailableSamples =
-                (audio.samples.size() / m_channelCount) - sourceInSample;
+                (audio.samples.size() / m_channelCount) - audioIndexForSourceSample(sourceInSample);
             if (clipAvailableSamples <= 0) {
                 continue;
             }
@@ -1075,6 +1203,7 @@ private:
             prepared.clipStartSample = clipStartSample;
             prepared.clipEndSample = clipEndSample;
             prepared.sourceInSample = sourceInSample;
+            prepared.precomputedTimeStretchSpeed = usingPrecomputedTimeStretch ? timeStretchSpeedKey : 1.0;
             preparedClips.push_back(prepared);
         }
 
@@ -1103,9 +1232,21 @@ private:
                         *prepared.clip, overlapEndExclusive - 1, context.renderSyncMarkers) + 1;
                     const int64_t clipSampleCount =
                         static_cast<int64_t>(prepared.audio.samples.size() / m_channelCount);
-                    const int64_t clampedStart = qBound<int64_t>(0, sourceStartSample, clipSampleCount);
+                    const int64_t normalizedSourceStart =
+                        prepared.precomputedTimeStretchSpeed > 1.0
+                            ? static_cast<int64_t>(std::floor(
+                                  static_cast<long double>(sourceStartSample) /
+                                  static_cast<long double>(prepared.precomputedTimeStretchSpeed)))
+                            : sourceStartSample;
+                    const int64_t normalizedSourceEndExclusive =
+                        prepared.precomputedTimeStretchSpeed > 1.0
+                            ? static_cast<int64_t>(std::ceil(
+                                  static_cast<long double>(sourceEndSampleExclusive) /
+                                  static_cast<long double>(prepared.precomputedTimeStretchSpeed)))
+                            : sourceEndSampleExclusive;
+                    const int64_t clampedStart = qBound<int64_t>(0, normalizedSourceStart, clipSampleCount);
                     const int64_t clampedEndExclusive =
-                        qBound<int64_t>(clampedStart, sourceEndSampleExclusive, clipSampleCount);
+                        qBound<int64_t>(clampedStart, normalizedSourceEndExclusive, clipSampleCount);
                     float transcriptPeak = 0.0f;
                     for (int64_t sample = clampedStart; sample < clampedEndExclusive; ++sample) {
                         const int index = static_cast<int>(sample * m_channelCount);
@@ -1225,8 +1366,13 @@ private:
                     continue;
                 }
 
-                const int64_t inFrame = sourceSampleForClipAtTimelineSample(
+                int64_t inFrame = sourceSampleForClipAtTimelineSample(
                     clip, timelineSamplePos, context.renderSyncMarkers);
+                if (prepared.precomputedTimeStretchSpeed > 1.0) {
+                    inFrame = static_cast<int64_t>(std::floor(
+                        static_cast<long double>(inFrame) /
+                        static_cast<long double>(prepared.precomputedTimeStretchSpeed)));
+                }
                 if (inFrame < 0 || inFrame >= (audio.samples.size() / m_channelCount)) {
                     continue;
                 }
@@ -1262,8 +1408,13 @@ private:
                 }
 
                 if (secondarySpeechGain > 0.0f && secondaryTimelineSample >= 0) {
-                    const int64_t secondaryInFrame = sourceSampleForClipAtTimelineSample(
+                    int64_t secondaryInFrame = sourceSampleForClipAtTimelineSample(
                         clip, secondaryTimelineSample, context.renderSyncMarkers);
+                    if (prepared.precomputedTimeStretchSpeed > 1.0) {
+                        secondaryInFrame = static_cast<int64_t>(std::floor(
+                            static_cast<long double>(secondaryInFrame) /
+                            static_cast<long double>(prepared.precomputedTimeStretchSpeed)));
+                    }
                     if (secondaryInFrame >= 0 &&
                         secondaryInFrame < (audio.samples.size() / m_channelCount)) {
                         const int secondaryInIndex = static_cast<int>(secondaryInFrame * m_channelCount);
@@ -1432,9 +1583,27 @@ private:
         }
 
         const float masterGain = context.muted ? 0.0f : static_cast<float>(context.volume);
+        double sumSquares = 0.0;
+        float peak = 0.0f;
+        int nonzeroSamples = 0;
         for (int i = 0; i < frames * m_channelCount; ++i) {
             output[i] = qBound(-1.0f, output[i] * masterGain, 1.0f);
+            const float absSample = std::abs(output[i]);
+            peak = qMax(peak, absSample);
+            sumSquares += static_cast<double>(output[i]) * static_cast<double>(output[i]);
+            if (absSample > 0.000001f) {
+                ++nonzeroSamples;
+            }
         }
+        const int sampleCount = qMax(1, frames * m_channelCount);
+        const float rms = static_cast<float>(std::sqrt(sumSquares / static_cast<double>(sampleCount)));
+        m_lastMixPreparedClipCount.store(preparedClips.size(), std::memory_order_release);
+        m_lastMixCacheHitCount.store(cacheHitCount, std::memory_order_release);
+        m_lastMixCacheMissCount.store(cacheMissCount, std::memory_order_release);
+        m_lastMixInvalidAudioCount.store(invalidAudioCount, std::memory_order_release);
+        m_lastMixPeakPermille.store(qRound(peak * 1000.0f), std::memory_order_release);
+        m_lastMixRmsPermille.store(qRound(rms * 1000.0f), std::memory_order_release);
+        m_lastMixNonzeroSampleCount.store(nonzeroSamples, std::memory_order_release);
     }
 
     // --- Worker threads ---
@@ -1445,7 +1614,8 @@ private:
             {
                 std::unique_lock<std::mutex> lock(m_stateMutex);
                 m_decodeCondition.wait(lock, [this]() {
-                    return !m_running || !m_pendingDecodePaths.empty();
+                    return !m_running ||
+                           (!m_backgroundDecodeSuppressed && !m_pendingDecodePaths.empty());
                 });
                 if (!m_running) {
                     break;
@@ -1457,6 +1627,8 @@ private:
             AudioClipCacheEntry decoded = decodeClipAudio(
                 nextTask.path,
                 nextTask.fullDecode ? -1 : kInitialDecodeFrames);
+            QHash<int, AudioClipCacheEntry> warpedBySpeed =
+                buildPrecomputedTimeStretchEntries(decoded);
 
             {
                 std::lock_guard<std::mutex> lock(m_stateMutex);
@@ -1464,10 +1636,16 @@ private:
                 if (nextTask.fullDecode) {
                     if (decoded.valid) {
                         m_audioCache.insert(nextTask.path, decoded);
+                        if (!warpedBySpeed.isEmpty()) {
+                            m_timeStretchAudioCache.insert(nextTask.path, std::move(warpedBySpeed));
+                        }
                     }
                 } else {
                     if (decoded.valid) {
                         m_audioCache.insert(nextTask.path, decoded);
+                        if (!warpedBySpeed.isEmpty()) {
+                            m_timeStretchAudioCache.insert(nextTask.path, std::move(warpedBySpeed));
+                        }
                         enqueueDecodePathLocked(nextTask.path, false, true);
                     }
                 }
@@ -1563,6 +1741,7 @@ private:
     QVector<ExportRangeSegment> m_exportRanges;
     QVector<ExportRangeSegment> m_transcriptNormalizeRanges;
     QHash<QString, AudioClipCacheEntry> m_audioCache;
+    QHash<QString, QHash<int, AudioClipCacheEntry>> m_timeStretchAudioCache;
     std::deque<DecodeTask> m_pendingDecodePaths;
     QSet<QString> m_pendingDecodeSet;
     QSet<QString> m_scheduledDecodePaths;
@@ -1577,6 +1756,7 @@ private:
     bool m_initialized = false;
     std::atomic<bool> m_running{false};
     std::atomic<bool> m_playing{false};
+    bool m_backgroundDecodeSuppressed = false;
     bool m_muted = false;
     qreal m_volume = 0.8;
     int64_t m_timelineSampleCursor = 0;
@@ -1584,6 +1764,15 @@ private:
     std::atomic<int> m_underrunCount{0};
     std::atomic<int> m_lastOutputLeft{0};
     std::atomic<int> m_lastOutputRight{0};
+    std::atomic<int> m_lastMixPreparedClipCount{0};
+    std::atomic<int> m_lastMixCacheHitCount{0};
+    std::atomic<int> m_lastMixCacheMissCount{0};
+    std::atomic<int> m_lastMixInvalidAudioCount{0};
+    std::atomic<int> m_lastMixPeakPermille{0};
+    std::atomic<int> m_lastMixRmsPermille{0};
+    std::atomic<int> m_lastMixNonzeroSampleCount{0};
+    std::atomic<qint64> m_lastTimeStretchCacheMissWarningMs{0};
+    std::atomic<qint64> m_timeStretchCacheMissCount{0};
     std::atomic<qreal> m_playbackRate{1.0};
     std::atomic<int> m_playbackWarpMode{static_cast<int>(PlaybackAudioWarpMode::Disabled)};
 

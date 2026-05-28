@@ -50,9 +50,10 @@ Auto-Track writes transcript speaker framing `keyframes`, then sets `enabled=tru
 Runtime mode:
 
 1. Generate FaceDetections writes transcript speaker framing `keyframes` only.
-2. Clip stores `speakerFramingSpeakerId` binding.
-3. Face Stabilize transform is evaluated at runtime from FaceDetections sample + target box.
-4. No transform bake/smoothing is applied during Generate FaceDetections.
+2. Clip keyframes only whether Face Stabilize is enabled and where the target box is.
+3. Active speaker identity descends directly from the transcript at the current source frame.
+4. Face Stabilize transform is evaluated at runtime from that speaker's FaceDetections sample + target box.
+5. No transform bake/smoothing is applied during Generate FaceDetections.
 
 ### 3. Render transform composition
 

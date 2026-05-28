@@ -5,6 +5,7 @@
 
 #include <QFile>
 #include <QFileInfo>
+#include <QDebug>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QToolButton>
@@ -138,7 +139,10 @@ void EditorWindow::connectTimelineSignals()
         if (m_audioEngine) {
             m_audioEngine->setTimelineClips(m_timeline->clips());
             m_audioEngine->setExportRanges(effectivePlaybackRanges());
-            m_audioEngine->setTranscriptNormalizeRanges(effectiveTranscriptNormalizeRanges());
+            m_audioEngine->setTranscriptNormalizeRanges(
+                m_previewAudioDynamics.transcriptNormalizeEnabled
+                    ? effectiveTranscriptNormalizeRanges()
+                    : QVector<ExportRangeSegment>{});
             m_audioEngine->setRenderSyncMarkers(m_timeline->renderSyncMarkers());
             m_audioEngine->setSpeechFilterFadeSamples(m_speechFilterFadeSamples);
             m_audioEngine->setSpeechFilterRangeCrossfadeEnabled(m_speechFilterRangeCrossfade);
@@ -218,6 +222,7 @@ void EditorWindow::connectTimelineSignals()
         }
         clearActiveTranscriptPathForClipFile(filePath);
         m_transcriptEngine.invalidateCache();
+        invalidatePlaybackRangeCaches();
         if (m_preview) {
             m_preview->invalidateTranscriptOverlayCache(filePath);
         }
@@ -346,6 +351,12 @@ void EditorWindow::connectPreviewSignals()
         if (m_speakersTab) {
             m_speakersTab->handlePreviewFaceDetectionsBox(
                 clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
+        }
+    };
+    m_preview->faceStreamBoxClickStatus = [this](const QString& message) {
+        qInfo().noquote() << message;
+        if (m_speakersTab) {
+            m_speakersTab->showPreviewFaceDetectionsClickStatus(message);
         }
     };
     m_preview->createKeyframeRequested = [this](const QString &clipId) {

@@ -9,6 +9,7 @@
 #include <cmath>
 #include <QFile>
 #include <QFileInfo>
+#include <QDebug>
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QJsonArray>
@@ -131,10 +132,11 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
         return it->points;
     }
 
-    // Canonical runtime source: continuity FaceDetections tracks from artifact sidecar.
+    // Canonical runtime source: processed continuity FaceDetections streams.
     editor::TranscriptEngine engine;
     QJsonObject artifactRoot;
-    if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
+    if (engine.loadFacestreamProcessedArtifact(transcriptPath, &artifactRoot) ||
+        engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
         const QJsonArray streams = jcut::facedetections::continuityStreamsForRoot(
             continuityRoot,
@@ -481,21 +483,34 @@ void PreviewWindow::drawSpeakerTrackPointsOverlay(QPainter* painter, const QList
             boxPath.lineTo(p3);
             boxPath.lineTo(p4);
             boxPath.closeSubpath();
-            const bool hovered =
-                m_interaction.faceStreamAssignmentInteractionEnabled &&
+            const bool assignedToSelectedSpeaker =
                 candidate.point.trackId >= 0 &&
-                candidate.point.trackId == m_interaction.transient.hoveredFaceDetectionsTrackId &&
-                candidate.point.streamId == m_interaction.transient.hoveredFaceDetectionsId &&
-                clip.id == m_interaction.transient.hoveredFaceDetectionsClipId;
-            const QColor boxStroke = hovered
-                ? QColor(QStringLiteral("#ffd54a"))
-                : QColor(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 235);
-            const QColor boxFill = hovered
-                ? QColor(255, 213, 74, 54)
-                : QColor(candidate.color.red(), candidate.color.green(), candidate.color.blue(), 42);
-            painter->setPen(QPen(boxStroke, 2.0));
+                m_interaction.selectedSpeakerAssignedFaceTrackIds.contains(candidate.point.trackId);
+            const bool hovered =
+                candidate.point.trackId >= 0 &&
+                m_interaction.transient.hoveredFaceDetectionsTrackId == candidate.point.trackId &&
+                m_interaction.transient.hoveredFaceDetectionsClipId == clip.id &&
+                m_interaction.transient.hoveredFaceDetectionsId == candidate.point.streamId;
+            QColor boxStroke(QStringLiteral("#a855f7"));
+            QColor boxFill(168, 85, 247, 54);
+            qreal strokeWidth = 2.0;
+            if (assignedToSelectedSpeaker) {
+                boxStroke = QColor(QStringLiteral("#4ade80"));
+                boxFill = QColor(74, 222, 128, 58);
+                strokeWidth = 3.0;
+            }
+            QPainterPath drawPath = boxPath;
+            if (hovered) {
+                const QRectF hoverRect = boxPath.boundingRect().adjusted(-7.0, -7.0, 7.0, 7.0);
+                drawPath = QPainterPath();
+                drawPath.addRoundedRect(hoverRect, 3.0, 3.0);
+                boxStroke = QColor(QStringLiteral("#f5d0fe"));
+                boxFill = QColor(216, 180, 254, 92);
+                strokeWidth = 4.5;
+            }
+            painter->setPen(QPen(boxStroke, strokeWidth));
             painter->setBrush(boxFill);
-            painter->drawPath(boxPath);
+            painter->drawPath(drawPath);
         }
     }
 
@@ -537,8 +552,8 @@ void PreviewWindow::drawRawDetectionOverlay(QPainter* painter, const QList<Timel
             boxPath.lineTo(p3);
             boxPath.lineTo(p4);
             boxPath.closeSubpath();
-            painter->setPen(QPen(QColor(QStringLiteral("#4ade80")), 1.5));
-            painter->setBrush(QColor(74, 222, 128, 32));
+            painter->setPen(QPen(QColor(QStringLiteral("#a855f7")), 1.5));
+            painter->setBrush(QColor(168, 85, 247, 32));
             painter->drawPath(boxPath);
         }
     }
@@ -549,6 +564,9 @@ bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(const QPointF& position)
 {
     if (!faceStreamBoxRequested ||
         (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled)) {
+        if (faceStreamBoxClickStatus) {
+            faceStreamBoxClickStatus(QStringLiteral("Face box click ignored: FaceDetections assignment is not active."));
+        }
         return false;
     }
     const QList<TimelineClip> activeClips = getActiveClips();
@@ -628,12 +646,34 @@ bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(const QPointF& position)
             boxPath.lineTo(p3);
             boxPath.lineTo(p4);
             boxPath.closeSubpath();
-            if (!boxPath.contains(position)) {
-                continue;
+            QPainterPath hitPath = boxPath;
+            const QRectF hitBounds = boxPath.boundingRect();
+            constexpr qreal kMinOverlayHitSizePx = 22.0;
+            constexpr qreal kNearestOverlayRadiusPx = 32.0;
+            if (hitBounds.width() < kMinOverlayHitSizePx || hitBounds.height() < kMinOverlayHitSizePx) {
+                const QPointF center = hitBounds.center();
+                hitPath.addRect(QRectF(center.x() - (kMinOverlayHitSizePx * 0.5),
+                                       center.y() - (kMinOverlayHitSizePx * 0.5),
+                                       kMinOverlayHitSizePx,
+                                       kMinOverlayHitSizePx));
+            }
+            if (!hitPath.contains(position)) {
+                const QPointF center = hitBounds.center();
+                const qreal dx = position.x() - center.x();
+                const qreal dy = position.y() - center.y();
+                if ((dx * dx + dy * dy) > (kNearestOverlayRadiusPx * kNearestOverlayRadiusPx)) {
+                    continue;
+                }
             }
             const QPointF center = candidate.boxNorm.center();
             const qreal side =
                 qBound<qreal>(0.01, qMax(candidate.boxNorm.width(), candidate.boxNorm.height()), 1.0);
+            qInfo().noquote()
+                << QStringLiteral("Face box click dispatch: clip=%1 track=%2 stream=%3 source_frame=%4")
+                       .arg(clip.id)
+                       .arg(candidate.point.trackId)
+                       .arg(candidate.point.streamId.isEmpty() ? QStringLiteral("<empty>") : candidate.point.streamId)
+                       .arg(candidate.point.sourceFrame);
             faceStreamBoxRequested(clip.id,
                                    candidate.point.trackId,
                                    candidate.point.streamId,
@@ -643,6 +683,9 @@ bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(const QPointF& position)
                                    side);
             return true;
         }
+    }
+    if (faceStreamBoxClickStatus) {
+        faceStreamBoxClickStatus(QStringLiteral("Face box click ignored: no FaceDetections box at the clicked location."));
     }
     return false;
 }
@@ -707,8 +750,24 @@ bool PreviewWindow::updateHoveredFaceDetectionsBox(const QPointF& position)
             boxPath.lineTo(mapNormalizedClipPointToScreen(info, QPointF(rightNorm, bottomNorm)));
             boxPath.lineTo(mapNormalizedClipPointToScreen(info, QPointF(leftNorm, bottomNorm)));
             boxPath.closeSubpath();
-            if (!boxPath.contains(position)) {
-                continue;
+            QPainterPath hitPath = boxPath;
+            const QRectF hitBounds = boxPath.boundingRect();
+            constexpr qreal kMinOverlayHitSizePx = 22.0;
+            constexpr qreal kNearestOverlayRadiusPx = 32.0;
+            if (hitBounds.width() < kMinOverlayHitSizePx || hitBounds.height() < kMinOverlayHitSizePx) {
+                const QPointF center = hitBounds.center();
+                hitPath.addRect(QRectF(center.x() - (kMinOverlayHitSizePx * 0.5),
+                                       center.y() - (kMinOverlayHitSizePx * 0.5),
+                                       kMinOverlayHitSizePx,
+                                       kMinOverlayHitSizePx));
+            }
+            if (!hitPath.contains(position)) {
+                const QPointF center = hitBounds.center();
+                const qreal dx = position.x() - center.x();
+                const qreal dy = position.y() - center.y();
+                if ((dx * dx + dy * dy) > (kNearestOverlayRadiusPx * kNearestOverlayRadiusPx)) {
+                    continue;
+                }
             }
             const int64_t distance = std::llabs(pointSourceFrame - currentSourceFrame);
             if (distance > nearestDistance) {

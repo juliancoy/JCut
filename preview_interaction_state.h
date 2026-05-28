@@ -8,6 +8,7 @@
 #include <QPointF>
 #include <QRect>
 #include <QRectF>
+#include <QSet>
 #include <QSize>
 #include <QSizeF>
 #include <QString>
@@ -120,6 +121,7 @@ struct PreviewInteractionState {
     QVector<VulkanPreviewClipFrameStatus> vulkanFrameStatuses;
     QVector<VulkanPreviewFacestreamOverlay> facedetectionsOverlays;
     QVector<VulkanPreviewFacestreamOverlay> rawDetectionOverlays;
+    QSet<int> selectedSpeakerAssignedFaceTrackIds;
     QVector<RenderSyncMarker> renderSyncMarkers;
     QVector<ExportRangeSegment> exportRanges;
     QString selectedClipId;
@@ -129,6 +131,7 @@ struct PreviewInteractionState {
     PreviewSurface::LoiaconoSpectrumSettings loiaconoSpectrumSettings;
     bool audioSpeakerHoverModalEnabled = true;
     bool audioWaveformVisible = true;
+    bool hideOutsideOutputWindow = false;
     qreal previewZoom = 1.0;
     QPointF previewPanOffset;
     bool correctionDrawMode = false;

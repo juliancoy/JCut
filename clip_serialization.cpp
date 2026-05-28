@@ -74,11 +74,15 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("baseScaleX")] = clip.baseScaleX;
         obj[QStringLiteral("baseScaleY")] = clip.baseScaleY;
         obj[QStringLiteral("speakerFramingEnabled")] = clip.speakerFramingEnabled;
-        obj[QStringLiteral("speakerFramingSpeakerId")] = clip.speakerFramingSpeakerId;
         obj[QStringLiteral("speakerFramingBakedTargetXNorm")] = clip.speakerFramingBakedTargetXNorm;
         obj[QStringLiteral("speakerFramingBakedTargetYNorm")] = clip.speakerFramingBakedTargetYNorm;
         obj[QStringLiteral("speakerFramingBakedTargetBoxNorm")] = clip.speakerFramingBakedTargetBoxNorm;
         obj[QStringLiteral("speakerFramingMinConfidence")] = clip.speakerFramingMinConfidence;
+        obj[QStringLiteral("speakerFramingCenterSmoothingFrames")] = clip.speakerFramingCenterSmoothingFrames;
+        obj[QStringLiteral("speakerFramingZoomSmoothingFrames")] = clip.speakerFramingZoomSmoothingFrames;
+        obj[QStringLiteral("speakerFramingSmoothingMode")] = clip.speakerFramingSmoothingMode;
+        obj[QStringLiteral("speakerFramingSmoothingStrength")] = clip.speakerFramingSmoothingStrength;
+        obj[QStringLiteral("speakerFramingGapHoldFrames")] = clip.speakerFramingGapHoldFrames;
         obj[QStringLiteral("transformSkipAwareTiming")] = clip.transformSkipAwareTiming;
         QJsonArray keyframes;
         for (const TimelineClip::TransformKeyframe &keyframe : clip.transformKeyframes)
@@ -389,8 +393,6 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.baseScaleX = obj.value(QStringLiteral("baseScaleX")).toDouble(1.0);
         clip.baseScaleY = obj.value(QStringLiteral("baseScaleY")).toDouble(1.0);
         clip.speakerFramingEnabled = obj.value(QStringLiteral("speakerFramingEnabled")).toBool(false);
-        clip.speakerFramingSpeakerId =
-            obj.value(QStringLiteral("speakerFramingSpeakerId")).toString().trimmed();
         clip.speakerFramingBakedTargetXNorm = obj.value(QStringLiteral("speakerFramingBakedTargetXNorm"))
             .toDouble(0.5);
         clip.speakerFramingBakedTargetYNorm = obj.value(QStringLiteral("speakerFramingBakedTargetYNorm"))
@@ -398,6 +400,23 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.speakerFramingBakedTargetBoxNorm = obj.value(QStringLiteral("speakerFramingBakedTargetBoxNorm"))
             .toDouble(-1.0);
         clip.speakerFramingMinConfidence = obj.value(QStringLiteral("speakerFramingMinConfidence")).toDouble(0.08);
+        clip.speakerFramingCenterSmoothingFrames =
+            qBound(0,
+                   obj.value(QStringLiteral("speakerFramingCenterSmoothingFrames")).toInt(0),
+                   TimelineClip::kSpeakerFramingSmoothingMaxFrames);
+        clip.speakerFramingZoomSmoothingFrames =
+            qBound(0,
+                   obj.value(QStringLiteral("speakerFramingZoomSmoothingFrames")).toInt(0),
+                   TimelineClip::kSpeakerFramingSmoothingMaxFrames);
+        clip.speakerFramingSmoothingMode =
+            obj.value(QStringLiteral("speakerFramingSmoothingMode")).toInt(0);
+        clip.speakerFramingSmoothingStrength =
+            qBound<qreal>(
+                0.0,
+                obj.value(QStringLiteral("speakerFramingSmoothingStrength")).toDouble(1.0),
+                TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+        clip.speakerFramingGapHoldFrames =
+            obj.value(QStringLiteral("speakerFramingGapHoldFrames")).toInt(0);
         clip.transformSkipAwareTiming = obj.value(QStringLiteral("transformSkipAwareTiming")).toBool(false);
         const QJsonArray keyframes = obj.value(QStringLiteral("transformKeyframes")).toArray();
         for (const QJsonValue &value : keyframes)

@@ -95,6 +95,7 @@ public:
     QLabel *speakersInspectorClipLabel() const { return m_speakersInspectorClipLabel; }
     QLabel *speakersInspectorDetailsLabel() const { return m_speakersInspectorDetailsLabel; }
     QTableWidget *speakersTable() const { return m_speakersTable; }
+    QCheckBox *speakerHideUnidentifiedCheckBox() const { return m_speakerHideUnidentifiedCheckBox; }
     QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
@@ -103,8 +104,10 @@ public:
     QCheckBox *speakerShowPlayheadFaceDetectionsCheckBox() const { return m_speakerShowPlayheadFaceDetectionsCheckBox; }
     QPushButton *selectedSpeakerPreviousSentenceButton() const { return m_selectedSpeakerPreviousSentenceButton; }
     QPushButton *selectedSpeakerNextSentenceButton() const { return m_selectedSpeakerNextSentenceButton; }
+    QPushButton *selectedSpeakerNextSectionButton() const { return m_selectedSpeakerNextSectionButton; }
     QPushButton *selectedSpeakerRandomSentenceButton() const { return m_selectedSpeakerRandomSentenceButton; }
     QLabel *speakerCurrentSentenceLabel() const { return m_speakerCurrentSentenceLabel; }
+    QTableWidget *speakerTranscriptTable() const { return m_speakerTranscriptTable; }
     QPushButton *speakerRunAutoTrackButton() const { return m_speakerRunAutoTrackButton; }
     QPushButton *speakerViewFacestreamButton() const { return m_speakerViewFacestreamButton; }
     QPushButton *speakerFacestreamSettingsButton() const { return m_speakerFacestreamSettingsButton; }
@@ -122,6 +125,11 @@ public:
     QDoubleSpinBox *speakerFramingTargetYSpin() const { return m_speakerFramingTargetYSpin; }
     QDoubleSpinBox *speakerFramingTargetBoxSpin() const { return m_speakerFramingTargetBoxSpin; }
     QCheckBox *speakerFramingZoomEnabledCheckBox() const { return m_speakerFramingZoomEnabledCheckBox; }
+    QSpinBox *speakerFramingCenterSmoothingFramesSpin() const { return m_speakerFramingCenterSmoothingFramesSpin; }
+    QSpinBox *speakerFramingZoomSmoothingFramesSpin() const { return m_speakerFramingZoomSmoothingFramesSpin; }
+    QComboBox *speakerFramingSmoothingModeCombo() const { return m_speakerFramingSmoothingModeCombo; }
+    QDoubleSpinBox *speakerFramingSmoothingStrengthSpin() const { return m_speakerFramingSmoothingStrengthSpin; }
+    QSpinBox *speakerFramingGapHoldFramesSpin() const { return m_speakerFramingGapHoldFramesSpin; }
     QCheckBox *speakerShowFaceDetectionsBoxesCheckBox() const { return m_speakerShowFaceDetectionsBoxesCheckBox; }
     QCheckBox *speakerShowRawDetectionsCheckBox() const { return m_speakerShowRawDetectionsCheckBox; }
     QCheckBox *speakerApplyFramingToClipCheckBox() const { return m_speakerApplyFramingToClipCheckBox; }
@@ -610,6 +618,7 @@ private:
     QLabel *m_speakersInspectorClipLabel = nullptr;
     QLabel *m_speakersInspectorDetailsLabel = nullptr;
     SpeakersTable *m_speakersTable = nullptr;
+    QCheckBox *m_speakerHideUnidentifiedCheckBox = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
@@ -618,8 +627,10 @@ private:
     QCheckBox *m_speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
     QPushButton *m_selectedSpeakerPreviousSentenceButton = nullptr;
     QPushButton *m_selectedSpeakerNextSentenceButton = nullptr;
+    QPushButton *m_selectedSpeakerNextSectionButton = nullptr;
     QPushButton *m_selectedSpeakerRandomSentenceButton = nullptr;
     QLabel *m_speakerCurrentSentenceLabel = nullptr;
+    QTableWidget *m_speakerTranscriptTable = nullptr;
     QPushButton *m_speakerRunAutoTrackButton = nullptr;
     QPushButton *m_speakerViewFacestreamButton = nullptr;
     QPushButton *m_speakerFacestreamSettingsButton = nullptr;
@@ -641,6 +652,11 @@ private:
     QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetBoxSpin = nullptr;
     QCheckBox *m_speakerFramingZoomEnabledCheckBox = nullptr;
+    QSpinBox *m_speakerFramingCenterSmoothingFramesSpin = nullptr;
+    QSpinBox *m_speakerFramingZoomSmoothingFramesSpin = nullptr;
+    QComboBox *m_speakerFramingSmoothingModeCombo = nullptr;
+    QDoubleSpinBox *m_speakerFramingSmoothingStrengthSpin = nullptr;
+    QSpinBox *m_speakerFramingGapHoldFramesSpin = nullptr;
     QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QCheckBox *m_speakerApplyFramingToClipCheckBox = nullptr;

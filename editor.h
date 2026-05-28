@@ -137,6 +137,8 @@ private:
     QJsonObject profilingSnapshot() const;
     QJsonObject pipelineSnapshot() const;
     QJsonObject startupProfileSnapshot() const;
+    QJsonObject startupOptimizationSnapshot() const;
+    QJsonObject runtimePatchesSnapshot() const;
     QJsonObject throttleConfigSnapshot() const;
     QJsonObject applyThrottleConfigPatch(const QJsonObject& patch);
     QJsonObject playbackConfigSnapshot() const;
@@ -196,6 +198,8 @@ private:
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
+    QString playbackRangeCacheSignature(bool discrete, int neighborWordRadius = 0) const;
+    void invalidatePlaybackRangeCaches();
     void scheduleTranscriptNormalizeRangeRefresh(int delayMs = 0);
     void startTranscriptNormalizeRangeRefresh();
     int64_t nextPlaybackFrame(int64_t currentFrame) const;
@@ -562,6 +566,7 @@ private:
 
     QTableWidget *m_videoKeyframeTable = nullptr;
     QTableWidget *m_transcriptTable = nullptr;
+    QTableWidget *m_speakerTranscriptTable = nullptr;
     QTableWidget *m_syncTable = nullptr;
     QTableWidget *m_opacityKeyframeTable = nullptr;
 
@@ -575,6 +580,7 @@ private:
     std::unique_ptr<ControlServer> m_controlServer;
     std::unique_ptr<AudioEngine> m_audioEngine;
     std::unique_ptr<TranscriptTab> m_transcriptTab;
+    std::unique_ptr<TranscriptTab> m_speakerTranscriptTab;
     std::unique_ptr<GradingTab> m_gradingTab;
     std::unique_ptr<OpacityTab> m_opacityTab;
     std::unique_ptr<EffectsTab> m_effectsTab;
@@ -690,6 +696,10 @@ private:
     bool m_updatingTranscriptInspector = false;
     bool m_updatingSyncInspector = false;
     QHash<QString, int64_t> m_previewDragAnchorFrameByClip;
+    mutable QString m_effectivePlaybackRangesCacheSignature;
+    mutable QVector<ExportRangeSegment> m_effectivePlaybackRangesCache;
+    mutable QString m_effectiveTranscriptNormalizeRangesCacheSignature;
+    mutable QVector<ExportRangeSegment> m_effectiveTranscriptNormalizeRangesCache;
 
     std::atomic<qint64> m_fastCurrentFrame{0};
     std::atomic<bool> m_fastPlaybackActive{false};
@@ -722,6 +732,8 @@ private:
     bool m_optimizedProfileLoaded = false;
     bool m_optimizedProfileGeneratedThisRun = false;
     bool m_optimizedProfileEnsureScheduled = false;
+    QJsonArray m_runtimePatchLog;
+    qint64 m_runtimePatchSequence = 0;
     QString m_deferredHistoryLoadProjectId;
 };
 

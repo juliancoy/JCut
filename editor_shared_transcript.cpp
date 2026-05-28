@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <limits>
 
 QString transcriptPathForClipFile(const QString& filePath) {
     const QFileInfo info(filePath);
@@ -373,6 +374,16 @@ std::atomic<int>& speakerTrackingKalmanMeasurementNoisePermille() {
 
 std::atomic<int>& speakerTrackingAutoTrackStepFrames() {
     static std::atomic<int> value{6};
+    return value;
+}
+
+std::atomic<int>& transcriptOverlayPrependMs() {
+    static std::atomic<int> value{150};
+    return value;
+}
+
+std::atomic<int>& transcriptOverlayPostpendMs() {
+    static std::atomic<int> value{70};
     return value;
 }
 
@@ -1018,6 +1029,52 @@ bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clip
         runtime, sourceFrame, minConfidence, locationOut, boxSizeOut);
 }
 
+QString transcriptActiveSpeakerForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                        int64_t sourceFrame)
+{
+    if (clipFilePath.isEmpty() || sourceFrame < 0) {
+        return QString();
+    }
+    const QString transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+    if (transcriptPath.isEmpty()) {
+        return QString();
+    }
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    if (!runtimeDocument) {
+        return QString();
+    }
+    return activeSpeakerForSourceFrame(runtimeDocument->sections, sourceFrame).trimmed();
+}
+
+bool transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,
+                                                                   int64_t sourceFrame,
+                                                                   qreal minConfidence,
+                                                                   QPointF* locationOut,
+                                                                   qreal* boxSizeOut,
+                                                                   QString* speakerIdOut)
+{
+    if (speakerIdOut) {
+        speakerIdOut->clear();
+    }
+    const QString speakerId =
+        transcriptActiveSpeakerForClipFileAtSourceFrame(clipFilePath, sourceFrame);
+    if (speakerId.isEmpty()) {
+        if (locationOut) {
+            *locationOut = QPointF();
+        }
+        if (boxSizeOut) {
+            *boxSizeOut = -1.0;
+        }
+        return false;
+    }
+    if (speakerIdOut) {
+        *speakerIdOut = speakerId;
+    }
+    return transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+        clipFilePath, speakerId, sourceFrame, minConfidence, locationOut, boxSizeOut);
+}
+
 void invalidateTranscriptSpeakerProfileCache(const QString& transcriptPath) {
     QMutexLocker locker(&speakerProfileCacheMutex());
     if (transcriptPath.isEmpty()) {
@@ -1211,6 +1268,70 @@ void resetTranscriptSpeakerTrackingProfiling() {
     speakerTrackingLookupNsTotal().store(0);
 }
 
+void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs) {
+    transcriptOverlayPrependMs().store(qMax(0, prependMs));
+    transcriptOverlayPostpendMs().store(qMax(0, postpendMs));
+}
+
+int64_t transcriptPrependFramesForMs(int prependMs) {
+    return qMax<int64_t>(
+        0,
+        static_cast<int64_t>(std::floor((qMax(0, prependMs) / 1000.0) * kTimelineFps)));
+}
+
+int64_t transcriptPostpendFramesForMs(int postpendMs) {
+    return qMax<int64_t>(
+        0,
+        static_cast<int64_t>(std::ceil((qMax(0, postpendMs) / 1000.0) * kTimelineFps)));
+}
+
+ExportRangeSegment transcriptPaddedWordRange(const TranscriptWord& word,
+                                             int prependMs,
+                                             int postpendMs) {
+    const int64_t startFrame =
+        qMax<int64_t>(0, word.startFrame - transcriptPrependFramesForMs(prependMs));
+    const int64_t endFrame =
+        qMax<int64_t>(startFrame, word.endFrame + transcriptPostpendFramesForMs(postpendMs));
+    return ExportRangeSegment{startFrame, endFrame};
+}
+
+QVector<ExportRangeSegment> transcriptPaddedWordRanges(const QVector<TranscriptSection>& sections,
+                                                       int prependMs,
+                                                       int postpendMs) {
+    QVector<ExportRangeSegment> ranges;
+    for (const TranscriptSection& section : sections) {
+        ranges.reserve(ranges.size() + section.words.size());
+        for (const TranscriptWord& word : section.words) {
+            if (word.skipped || word.text.trimmed().isEmpty()) {
+                continue;
+            }
+            ranges.push_back(transcriptPaddedWordRange(word, prependMs, postpendMs));
+        }
+    }
+    return ranges;
+}
+
+TranscriptSection transcriptSectionWithWordTimingPadding(const TranscriptSection& section,
+                                                         int prependMs,
+                                                         int postpendMs) {
+    TranscriptSection padded = section;
+    if (padded.words.isEmpty()) {
+        return padded;
+    }
+    int64_t sectionStart = std::numeric_limits<int64_t>::max();
+    int64_t sectionEnd = 0;
+    for (TranscriptWord& word : padded.words) {
+        const ExportRangeSegment range = transcriptPaddedWordRange(word, prependMs, postpendMs);
+        word.startFrame = range.startFrame;
+        word.endFrame = range.endFrame;
+        sectionStart = qMin(sectionStart, range.startFrame);
+        sectionEnd = qMax(sectionEnd, range.endFrame);
+    }
+    padded.startFrame = sectionStart == std::numeric_limits<int64_t>::max() ? section.startFrame : sectionStart;
+    padded.endFrame = qMax(padded.startFrame, sectionEnd);
+    return padded;
+}
+
 QPointF transcriptOverlayTranslationForOutput(const TimelineClip& clip,
                                               const QSize& outputSize,
                                               const QString& transcriptPath,
@@ -1290,12 +1411,16 @@ TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(
     if (sections.isEmpty()) {
         return {};
     }
+    const int prependMs = transcriptOverlayPrependMs().load();
+    const int postpendMs = transcriptOverlayPostpendMs().load();
     for (const TranscriptSection& section : sections) {
-        if (sourceFrame < section.startFrame) {
+        const TranscriptSection paddedSection =
+            transcriptSectionWithWordTimingPadding(section, prependMs, postpendMs);
+        if (sourceFrame < paddedSection.startFrame) {
             return {};
         }
-        if (sourceFrame <= section.endFrame) {
-            return layoutTranscriptSection(section,
+        if (sourceFrame <= paddedSection.endFrame) {
+            return layoutTranscriptSection(paddedSection,
                                            sourceFrame,
                                            transcriptOverlayEffectiveCharsForBox(clip),
                                            transcriptOverlayEffectiveLinesForBox(clip),

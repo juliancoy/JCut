@@ -16,6 +16,7 @@
 #include <QPushButton>
 #include <QListWidget>
 #include <QSignalBlocker>
+#include <QSpinBox>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
@@ -29,10 +30,20 @@ void SpeakersTab::wire()
     if (!m_faceStreamPanelRefreshTimer) {
         m_faceStreamPanelRefreshTimer = new QTimer(this);
         m_faceStreamPanelRefreshTimer->setSingleShot(true);
-        m_faceStreamPanelRefreshTimer->setInterval(40);
+        m_faceStreamPanelRefreshTimer->setInterval(200);
         connect(m_faceStreamPanelRefreshTimer, &QTimer::timeout, this, [this]() {
             m_faceStreamPanelRefreshQueued = false;
             refreshFaceDetectionsPathsPanel();
+        });
+    }
+    if (!m_selectedSpeakerPanelRefreshTimer) {
+        m_selectedSpeakerPanelRefreshTimer = new QTimer(this);
+        m_selectedSpeakerPanelRefreshTimer->setSingleShot(true);
+        m_selectedSpeakerPanelRefreshTimer->setInterval(80);
+        connect(m_selectedSpeakerPanelRefreshTimer, &QTimer::timeout, this, [this]() {
+            m_selectedSpeakerPanelRefreshQueued = false;
+            updateSpeakerTrackingStatusLabel();
+            updateSelectedSpeakerPanel();
         });
     }
     if (m_widgets.speakersTable) {
@@ -70,33 +81,62 @@ void SpeakersTab::wire()
                     }
                 });
     }
+    if (m_widgets.speakerHideUnidentifiedCheckBox) {
+        connect(m_widgets.speakerHideUnidentifiedCheckBox, &QCheckBox::toggled, this, [this]() {
+            m_speakersTableRefreshSignature.clear();
+            if (m_transcriptSession.hasObjectDocument()) {
+                refreshSpeakersTable(m_transcriptSession.rootObject(), selectedSpeakerId());
+            }
+        });
+    }
     if (m_widgets.speakerSectionsTable) {
+        m_widgets.speakerSectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
         connect(m_widgets.speakerSectionsTable,
                 &QTableWidget::itemSelectionChanged,
                 this,
                 [this]() {
                     const int row =
                         m_widgets.speakerSectionsTable ? m_widgets.speakerSectionsTable->currentRow() : -1;
+                    m_sectionSelectionTiming.begin(row);
                     if (row < 0) {
+                        m_sectionSelectionTiming.finishSkipped(QStringLiteral("no_current_row"));
                         return;
                     }
                     QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
                     if (!speakerItem) {
+                        m_sectionSelectionTiming.finishSkipped(QStringLiteral("missing_speaker_item"));
                         return;
                     }
                     const QString speakerId = speakerItem->data(Qt::UserRole).toString().trimmed();
                     if (speakerId.isEmpty()) {
+                        m_sectionSelectionTiming.finishSkipped(QStringLiteral("empty_speaker_id"));
                         return;
                     }
-                    selectSpeakerRowById(speakerId);
-                    m_lastSelectedSpeakerIdHint = speakerId;
-                    updateSpeakerTrackingStatusLabel();
-                    updateSelectedSpeakerPanel();
                     const int64_t timelineFrame = speakerItem->data(Qt::UserRole + 1).toLongLong();
+                    m_sectionSelectionTiming.setSectionContext(speakerId, timelineFrame);
+                    m_sectionSelectionTiming.markStep(QStringLiteral("row_lookup_duration_ms"));
+                    selectSpeakerRowById(speakerId);
+                    m_sectionSelectionTiming.markStep(QStringLiteral("select_speaker_row_duration_ms"));
+                    m_lastSelectedSpeakerIdHint = speakerId;
+                    updateSpeakerTrackingStatusLabelFast();
+                    m_sectionSelectionTiming.markStep(QStringLiteral("tracking_status_duration_ms"));
+                    updateSelectedSpeakerPanelFast();
+                    m_sectionSelectionTiming.markStep(QStringLiteral("fast_panel_duration_ms"));
                     if (timelineFrame >= 0 && m_deps.seekToTimelineFrame) {
+                        m_skipNextPlayheadTrackCandidateRefresh = true;
                         m_deps.seekToTimelineFrame(timelineFrame);
+                        m_sectionSelectionTiming.markStep(QStringLiteral("seek_duration_ms"));
+                    } else {
+                        m_sectionSelectionTiming.markStep(QStringLiteral("seek_skipped_duration_ms"));
                     }
+                    scheduleSelectedSpeakerPanelRefresh();
+                    m_sectionSelectionTiming.markStep(QStringLiteral("schedule_panel_refresh_duration_ms"));
+                    m_sectionSelectionTiming.finish();
                 });
+        connect(m_widgets.speakerSectionsTable,
+                &QWidget::customContextMenuRequested,
+                this,
+                &SpeakersTab::onSpeakerSectionsTableContextMenuRequested);
     }
     if (m_widgets.speakerFaceDetectionsTable) {
         m_widgets.speakerFaceDetectionsTable->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -347,6 +387,26 @@ void SpeakersTab::wire()
         connect(m_widgets.speakerFramingZoomEnabledCheckBox, &QCheckBox::toggled,
                 this, &SpeakersTab::onSpeakerFramingZoomEnabledChanged);
     }
+    if (m_widgets.speakerFramingCenterSmoothingFramesSpin) {
+        connect(m_widgets.speakerFramingCenterSmoothingFramesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int) { onSpeakerFramingTargetChanged(); });
+    }
+    if (m_widgets.speakerFramingZoomSmoothingFramesSpin) {
+        connect(m_widgets.speakerFramingZoomSmoothingFramesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int) { onSpeakerFramingTargetChanged(); });
+    }
+    if (m_widgets.speakerFramingSmoothingModeCombo) {
+        connect(m_widgets.speakerFramingSmoothingModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
+                this, [this](int) { onSpeakerFramingTargetChanged(); });
+    }
+    if (m_widgets.speakerFramingSmoothingStrengthSpin) {
+        connect(m_widgets.speakerFramingSmoothingStrengthSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double) { onSpeakerFramingTargetChanged(); });
+    }
+    if (m_widgets.speakerFramingGapHoldFramesSpin) {
+        connect(m_widgets.speakerFramingGapHoldFramesSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, [this](int) { onSpeakerFramingTargetChanged(); });
+    }
     if (m_widgets.speakerApplyFramingToClipCheckBox) {
         connect(m_widgets.speakerApplyFramingToClipCheckBox, &QCheckBox::toggled,
                 this, &SpeakersTab::onSpeakerApplyFramingToClipChanged);
@@ -375,6 +435,10 @@ void SpeakersTab::wire()
     if (m_widgets.selectedSpeakerNextSentenceButton) {
         connect(m_widgets.selectedSpeakerNextSentenceButton, &QPushButton::clicked,
                 this, &SpeakersTab::onSpeakerNextSentenceClicked);
+    }
+    if (m_widgets.selectedSpeakerNextSectionButton) {
+        connect(m_widgets.selectedSpeakerNextSectionButton, &QPushButton::clicked,
+                this, &SpeakersTab::onSpeakerNextSectionClicked);
     }
     if (m_widgets.selectedSpeakerRandomSentenceButton) {
         connect(m_widgets.selectedSpeakerRandomSentenceButton, &QPushButton::clicked,

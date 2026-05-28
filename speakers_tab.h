@@ -2,18 +2,21 @@
 
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QElapsedTimer>
 #include <QFutureWatcher>
 #include <QPixmap>
 #include <QTableWidget>
 #include <QPoint>
 #include <QHash>
 #include <QPoint>
+#include <QSet>
 #include <QStringList>
 #include <functional>
 
 #include "editor_action_result.h"
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
+#include "speaker_section_selection_timing_service.h"
 #include "table_tab_base.h"
 #include "transcript_document_io.h"
 #include "transcript_document_session.h"
@@ -22,6 +25,7 @@ class QLabel;
 class QListWidget;
 class QPushButton;
 class QDoubleSpinBox;
+class QSpinBox;
 class QCheckBox;
 class QComboBox;
 class QPlainTextEdit;
@@ -40,6 +44,7 @@ public:
         QLabel* speakersInspectorClipLabel = nullptr;
         QLabel* speakersInspectorDetailsLabel = nullptr;
         QTableWidget* speakersTable = nullptr;
+        QCheckBox* speakerHideUnidentifiedCheckBox = nullptr;
         QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
         QTableWidget* speakerSectionsTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
@@ -48,6 +53,7 @@ public:
         QCheckBox* speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
         QPushButton* selectedSpeakerPreviousSentenceButton = nullptr;
         QPushButton* selectedSpeakerNextSentenceButton = nullptr;
+        QPushButton* selectedSpeakerNextSectionButton = nullptr;
         QPushButton* selectedSpeakerRandomSentenceButton = nullptr;
         QLabel* speakerCurrentSentenceLabel = nullptr;
         QPushButton* speakerRunAutoTrackButton = nullptr;
@@ -67,6 +73,11 @@ public:
         QDoubleSpinBox* speakerFramingTargetYSpin = nullptr;
         QDoubleSpinBox* speakerFramingTargetBoxSpin = nullptr;
         QCheckBox* speakerFramingZoomEnabledCheckBox = nullptr;
+        QSpinBox* speakerFramingCenterSmoothingFramesSpin = nullptr;
+        QSpinBox* speakerFramingZoomSmoothingFramesSpin = nullptr;
+        QComboBox* speakerFramingSmoothingModeCombo = nullptr;
+        QDoubleSpinBox* speakerFramingSmoothingStrengthSpin = nullptr;
+        QSpinBox* speakerFramingGapHoldFramesSpin = nullptr;
         QCheckBox* speakerApplyFramingToClipCheckBox = nullptr;
         QTableWidget* speakerFramingEnabledKeyframeTable = nullptr;
         QLabel* speakerClipFramingStatusLabel = nullptr;
@@ -88,9 +99,12 @@ public:
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
         std::function<QSize()> getOutputSize;
         std::function<void()> refreshPreview;
+        std::function<void(const QSet<int>&)> setPreviewAssignedFaceTrackIds;
         std::function<void(const QString&)> setPreviewMode;
+        std::function<bool()> isPlaybackActive;
         std::function<bool(QString*)> ensureAiSession;
         std::function<void(const QStringList&)> exportSpeakersVideo;
+        std::function<void(bool)> setAudioBackgroundDecodeSuppressed;
     };
 
     explicit SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -99,7 +113,11 @@ public:
     void wire();
     void refresh();
     void refreshForSubtab(const QString& subtabName);
-    void syncCurrentSpeakerSentenceToPlayhead();
+    void flushDeferredPlaybackRefreshes();
+    void syncIdentityToPlayhead(int64_t absolutePlaybackSample,
+                                double sourceSeconds,
+                                int64_t sourceFrame);
+    void syncCurrentSpeakerSentenceToPlayhead(bool duringPlayback = false);
     bool generateFaceDetectionsForSelectedClip();
     bool deleteFaceDetectionsForSelectedClip(bool confirmDialog = true,
                                          QString* errorOut = nullptr);
@@ -114,6 +132,7 @@ public:
                                     qreal xNorm,
                                     qreal yNorm,
                                     qreal boxSizeNorm);
+    void showPreviewFaceDetectionsClickStatus(const QString& message);
     bool runAiFindSpeakerNames();
     bool runAiFindOrganizations();
     bool runAiCleanSpuriousAssignments();
@@ -124,8 +143,10 @@ public:
     qint64 maxFaceDetectionsPanelRefreshDurationMs() const { return m_maxFaceDetectionsPanelRefreshDurationMs; }
     qint64 lastPlayheadTrackCandidatesRefreshDurationMs() const { return m_lastPlayheadTrackCandidatesRefreshDurationMs; }
     qint64 maxPlayheadTrackCandidatesRefreshDurationMs() const { return m_maxPlayheadTrackCandidatesRefreshDurationMs; }
+    int lastPlayheadTrackCandidateCount() const { return m_lastPlayheadTrackCandidateCount; }
     qint64 lastRawDetectionsPanelRefreshDurationMs() const { return m_lastRawDetectionsPanelRefreshDurationMs; }
     qint64 maxRawDetectionsPanelRefreshDurationMs() const { return m_maxRawDetectionsPanelRefreshDurationMs; }
+    QJsonObject speakerSectionSelectionTimingProfile() const { return m_sectionSelectionTiming.profileSnapshot(); }
 
 signals:
     void transcriptDocumentChanged();
@@ -135,8 +156,10 @@ private slots:
     void onSpeakersTableItemClicked(QTableWidgetItem* item);
     void onSpeakersSelectionChanged();
     void onSpeakersTableContextMenuRequested(const QPoint& pos);
+    void onSpeakerSectionsTableContextMenuRequested(const QPoint& pos);
     void onSpeakerPreviousSentenceClicked();
     void onSpeakerNextSentenceClicked();
+    void onSpeakerNextSectionClicked();
     void onSpeakerRandomSentenceClicked();
     void onSpeakerRunAutoTrackClicked();
     void onSpeakerViewFaceDetectionsClicked();
@@ -174,6 +197,7 @@ private:
     enum class SentenceNavAction {
         Previous,
         Next,
+        NextSection,
         Random
     };
 
@@ -181,6 +205,7 @@ private:
     void refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot);
     void syncSpeakerListMode();
     bool selectSpeakerRowById(const QString& speakerId);
+    bool selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame);
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
     QPixmap faceStreamPreviewAvatar(const TimelineClip& clip,
                                     const QString& speakerId,
@@ -215,6 +240,14 @@ private:
     QJsonObject resolveFaceDetectionsAssignmentRow(const TimelineClip& clip,
                                                const QJsonArray& streams,
                                                const QJsonObject& row) const;
+    struct TrackIdentityResolutionCache {
+        QString signature;
+        QHash<int, QString> identityByTrackId;
+        QHash<QString, QVector<int>> trackIdsByIdentity;
+    };
+    const TrackIdentityResolutionCache& trackIdentityResolutionCacheForClip(
+        const TimelineClip& clip,
+        const QJsonArray& streams) const;
     QHash<int, QString> resolvedIdentityByTrackId(const TimelineClip& clip,
                                                   const QJsonArray& streams) const;
     QVector<int> resolvedAssignedTrackIdsForSpeaker(const TimelineClip& clip,
@@ -229,15 +262,23 @@ private:
     QString selectedSpeakerId() const;
     QString speakerDisplayName(const QString& speakerId) const;
     QString speakerDisplayLabel(const QString& speakerId) const;
+    QString activeSpeakerIdAtSourceFrame(int64_t sourceFrame) const;
+    QString activeSpeakerIdNearSourceFrame(int64_t sourceFrame,
+                                           int gapHoldFrames,
+                                           int64_t* resolvedSourceFrameOut = nullptr) const;
     bool ensureAiActionReady(const QString& actionTitle) const;
     void updateSpeakerTrackingStatusLabel();
+    void updateSpeakerTrackingStatusLabelFast();
     void updateSelectedSpeakerPanel();
+    void updateSelectedSpeakerPanelFast();
+    void scheduleSelectedSpeakerPanelRefresh(int delayMs = 80);
     QString currentSpeakerSentenceAtCurrentFrame(const QString& speakerId) const;
     int64_t currentSourceFrameForClip(const TimelineClip& clip) const;
     void refreshSpeakersTable(const QJsonObject& transcriptRoot,
                               const QString& preferredSpeakerId = QString());
     void seekToSpeakerFirstWord(const QString& speakerId);
     bool seekToSpeakerSegmentRelative(const QString& speakerId, int direction);
+    bool seekToSpeakerNextSection(const QString& speakerId);
     bool seekToSpeakerRandomSentence(const QString& speakerId);
     bool cycleFramingModeForSpeaker(const QString& speakerId);
     bool navigateSpeakerSentence(const QString& speakerId, SentenceNavAction action);
@@ -291,6 +332,10 @@ private:
     bool deleteSpeakerAutoTrackPointstream(const QString& speakerId);
     bool setSpeakerTrackingEnabled(const QString& speakerId, bool enabled);
     bool setSpeakerSkipped(const QString& speakerId, bool skipped);
+    bool setSpeakerSectionSkipped(const QString& speakerId,
+                                  int64_t startTimelineFrame,
+                                  int64_t endTimelineFrame,
+                                  bool skipped);
     bool saveClipSpeakerFramingTargetsFromControls();
     bool saveClipSpeakerFramingEnabledFromControls();
     void populateSpeakerFramingEnabledKeyframeTable(const TimelineClip& clip);
@@ -304,6 +349,7 @@ private:
     TranscriptDocumentSession m_transcriptSession{QStringLiteral("speakers")};
     mutable QHash<QString, QPixmap> m_avatarCache;
     mutable QHash<QString, QJsonArray> m_continuityStreamsCache;
+    mutable QHash<QString, TrackIdentityResolutionCache> m_trackIdentityResolutionCache;
     QString m_lastSelectedSpeakerIdHint;
     bool m_updatingSpeakerFramingTargetControls = false;
     bool m_updatingSpeakerFramingEnabledTable = false;
@@ -311,12 +357,21 @@ private:
     int64_t m_selectedSpeakerFramingEnabledFrame = -1;
     QString m_lastSelectionSeekSpeakerId;
     QString m_lastSelectionSeekClipId;
+    bool m_skipNextPlayheadTrackCandidateRefresh = false;
     bool m_refreshingFaceDetectionsPathsPanel = false;
     bool m_faceStreamPanelRefreshQueued = false;
+    bool m_selectedSpeakerPanelRefreshQueued = false;
     QTimer* m_faceStreamPanelRefreshTimer = nullptr;
+    QTimer* m_selectedSpeakerPanelRefreshTimer = nullptr;
     QString m_speakersTableRefreshSignature;
+    bool m_faceStreamPanelRefreshDeferredForPlayback = false;
+    QString m_lastPlayheadSyncedSpeakerId;
+    int64_t m_lastPlayheadSyncedSourceFrame = -1;
     QString m_faceStreamPanelRefreshSignature;
     QJsonArray m_faceStreamPanelRows;
+    QElapsedTimer m_playbackSpeakerPanelThrottle;
+    int64_t m_lastPlaybackSpeakerPanelSourceFrame = -1;
+    QString m_lastPlaybackSpeakerPanelSpeakerId;
     mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
     qint64 m_lastSpeakersTableRefreshDurationMs = 0;
     qint64 m_maxSpeakersTableRefreshDurationMs = 0;
@@ -326,6 +381,7 @@ private:
     qint64 m_maxPlayheadTrackCandidatesRefreshDurationMs = 0;
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
+    SpeakerSectionSelectionTimingService m_sectionSelectionTiming;
     int m_lastPlayheadTrackCandidateCount = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
     QString m_pendingPreferredSpeakerId;

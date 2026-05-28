@@ -37,6 +37,8 @@ enum class TrackVisualMode {
 
 struct TimelineClip {
     static constexpr int kGradingCurveLutSize = 256;
+    static constexpr int kSpeakerFramingSmoothingMaxFrames = 500;
+    static constexpr int kSpeakerFramingGapHoldMaxFrames = 240;
 
     struct TransformKeyframe {
         int64_t frame = 0;
@@ -176,11 +178,16 @@ struct TimelineClip {
     qreal baseScaleX = 1.0;
     qreal baseScaleY = 1.0;
     bool speakerFramingEnabled = false;
-    QString speakerFramingSpeakerId;
     qreal speakerFramingBakedTargetXNorm = 0.5;
     qreal speakerFramingBakedTargetYNorm = 0.35;
     qreal speakerFramingBakedTargetBoxNorm = -1.0;
     qreal speakerFramingMinConfidence = 0.08;
+    int speakerFramingCenterSmoothingFrames = 0;
+    int speakerFramingZoomSmoothingFrames = 0;
+    int speakerFramingSmoothingMode = 0;
+    qreal speakerFramingSmoothingStrength = 1.0;
+    int speakerFramingGapHoldFrames = 0;
+    static constexpr qreal kSpeakerFramingSmoothingStrengthMax = 5.0;
     bool transformSkipAwareTiming = true;
     QVector<TransformKeyframe> transformKeyframes;
     QVector<BoolKeyframe> speakerFramingEnabledKeyframes;

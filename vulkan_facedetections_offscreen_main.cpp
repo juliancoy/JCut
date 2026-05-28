@@ -33,13 +33,16 @@
 #include <QComboBox>
 #include <QDebug>
 #include <QFormLayout>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLocalSocket>
 #include <QPainter>
 #include <QPushButton>
 #include <QProgressBar>
+#include <QScrollArea>
 #include <QSet>
 #include <QSlider>
+#include <QProcess>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
@@ -51,16 +54,20 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 #include <cstdlib>
 #include <deque>
 #include <fcntl.h>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <iostream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -100,6 +107,7 @@ struct Options {
     QString clipJsonPath;
     QString previewSocket;
     bool livePreview = false;
+    bool controlWindow = false;
     bool writePreviewFiles = false;
     bool applyClipGrading = false;
     bool materializedGenerateFacestream = false;
@@ -112,6 +120,12 @@ struct Options {
     bool progress = isatty(STDOUT_FILENO);
     int logInterval = 0; // 0 => summary only unless --verbose is set
     bool preflight = false;
+    int detectorPipelineSlots = 4;
+    int detectorWorkers = 1;
+    bool asyncCheckpointWriter = true;
+    int checkpointWriterQueueCapacity = 256;
+    bool benchmarkPipelineSlots = false;
+    QVector<int> benchmarkPipelineSlotValues{1, 4, 8};
     editor::DecodePreference decodePreference = editor::DecodePreference::HardwareZeroCopy;
 };
 
@@ -548,12 +562,17 @@ void usage(const char* argv0)
               << " [--res10-param PATH] [--res10-bin PATH] [--scrfd-param PATH] [--scrfd-bin PATH]"
               << " [--scrfd-model 500m|1g|2.5g|10g|34g]"
               << " [--scrfd-target-size N] [--scrfd-tiling] [--no-scrfd-tiling]"
-              << " [--preview-window] [--no-preview-window] [--preview-files]"
+              << " [--preview-window] [--no-preview-window] [--control-window] [--no-control-window] [--preview-files]"
               << " [--preflight]"
               << " [--materialized-generate-facedetections]"
               << " [--require-zero-copy]"
               << " [--require-hardware-vulkan-frame-path]"
               << " [--allow-cpu-upload-fallback]"
+              << " [--detector-pipeline-slots N] (1-10)"
+              << " [--detector-workers N] (1-10)"
+              << " [--benchmark-pipeline-slots [CSV]]"
+              << " [--checkpoint-writer-queue N]"
+              << " [--async-checkpoint-writer] [--sync-checkpoint-writer]"
               << " [--progress] [--no-progress]"
               << " [--verbose] [--log-interval N]"
               << " [--decode software|hardware|auto|hardware_zero_copy]\n";
@@ -710,8 +729,13 @@ bool parseArgs(int argc, char** argv, Options* options)
             options->previewSocket = QString::fromLocal8Bit(v);
         } else if (arg == "--preview-window") {
             options->livePreview = true;
+            options->controlWindow = true;
         } else if (arg == "--no-preview-window") {
             options->livePreview = false;
+        } else if (arg == "--control-window") {
+            options->controlWindow = true;
+        } else if (arg == "--no-control-window") {
+            options->controlWindow = false;
         } else if (arg == "--preflight") {
             options->preflight = true;
         } else if (arg == "--preview-files") {
@@ -726,6 +750,47 @@ bool parseArgs(int argc, char** argv, Options* options)
             options->requireHardwareVulkanFramePath = true;
         } else if (arg == "--allow-cpu-upload-fallback") {
             options->allowCpuUploadFallback = true;
+        } else if (arg == "--detector-pipeline-slots") {
+            const char* v = next("--detector-pipeline-slots");
+            if (!v) return false;
+            options->detectorPipelineSlots = std::clamp(std::atoi(v), 1, 10);
+        } else if (arg == "--detector-workers") {
+            const char* v = next("--detector-workers");
+            if (!v) return false;
+            options->detectorWorkers = std::clamp(std::atoi(v), 1, 10);
+        } else if (arg == "--benchmark-pipeline-slots") {
+            options->benchmarkPipelineSlots = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const QStringList parts = QString::fromLocal8Bit(argv[++i]).split(',', Qt::SkipEmptyParts);
+                QVector<int> slotValues;
+                slotValues.reserve(parts.size());
+                for (const QString& part : parts) {
+                    bool ok = false;
+                    const int slotValue = part.trimmed().toInt(&ok);
+                    if (!ok) {
+                        std::cerr << "Invalid --benchmark-pipeline-slots value: "
+                                  << part.toStdString() << "\n";
+                        return false;
+                    }
+                    const int clamped = std::clamp(slotValue, 1, 10);
+                    if (!slotValues.contains(clamped)) {
+                        slotValues.push_back(clamped);
+                    }
+                }
+                if (slotValues.isEmpty()) {
+                    std::cerr << "--benchmark-pipeline-slots requires at least one slot value.\n";
+                    return false;
+                }
+                options->benchmarkPipelineSlotValues = slotValues;
+            }
+        } else if (arg == "--checkpoint-writer-queue") {
+            const char* v = next("--checkpoint-writer-queue");
+            if (!v) return false;
+            options->checkpointWriterQueueCapacity = std::clamp(std::atoi(v), 1, 4096);
+        } else if (arg == "--async-checkpoint-writer") {
+            options->asyncCheckpointWriter = true;
+        } else if (arg == "--sync-checkpoint-writer") {
+            options->asyncCheckpointWriter = false;
         } else if (arg == "--verbose") {
             options->verbose = true;
             options->progress = false;
@@ -1174,8 +1239,46 @@ struct DetectorControlPanel {
     QLabel* runtimeElapsed = nullptr;
     QLabel* runtimeDetections = nullptr;
     QLabel* runtimeTracks = nullptr;
+    QLabel* runtimeDecodeMs = nullptr;
+    QLabel* runtimeHandoffMs = nullptr;
+    QLabel* runtimeInferenceMs = nullptr;
+    QLabel* runtimeTrackingMs = nullptr;
+    QLabel* runtimeCheckpointMs = nullptr;
+    QLabel* runtimeCheckpointBacklog = nullptr;
+    QLabel* runtimeWorkers = nullptr;
     QLabel* settingsPath = nullptr;
     std::shared_ptr<bool> syncing = std::make_shared<bool>(false);
+};
+
+struct DetectorStageTimingTotals {
+    double decodeMsTotal = 0.0;
+    double handoffMsTotal = 0.0;
+    double inferenceWallMsTotal = 0.0;
+    double trackingMsTotal = 0.0;
+    double checkpointWriteMsTotal = 0.0;
+    int decodeSamples = 0;
+    int handoffSamples = 0;
+    int inferenceSamples = 0;
+    int trackingSamples = 0;
+    int checkpointWriteSamples = 0;
+
+    static double average(double total, int samples)
+    {
+        return samples > 0 ? total / static_cast<double>(samples) : 0.0;
+    }
+
+    double avgDecodeMs() const { return average(decodeMsTotal, decodeSamples); }
+    double avgHandoffMs() const { return average(handoffMsTotal, handoffSamples); }
+    double avgInferenceWallMs() const { return average(inferenceWallMsTotal, inferenceSamples); }
+    double avgTrackingMs() const { return average(trackingMsTotal, trackingSamples); }
+    double avgCheckpointWriteMs() const { return average(checkpointWriteMsTotal, checkpointWriteSamples); }
+};
+
+struct LivePreviewSample {
+    int frameNumber = -1;
+    QVector<jcut::facedetections::ContinuityTrack> tracks;
+    QVector<jcut::facedetections::Detection> detections;
+    QString titlePrefix;
 };
 
 QString percentText(float value)
@@ -1191,6 +1294,11 @@ QString areaRatioText(float value)
 QString aspectText(float value)
 {
     return QStringLiteral("%1").arg(static_cast<double>(value), 0, 'f', 2);
+}
+
+QString millisecondsText(double value)
+{
+    return QStringLiteral("%1 ms").arg(value, 0, 'f', 2);
 }
 
 RuntimeTuning runtimeTuningFromDetectorSettings(const jcut::facedetections::DetectorRuntimeSettings& settings)
@@ -1361,8 +1469,13 @@ void updateDetectorRuntimeStats(DetectorControlPanel* panel,
                                 int processed,
                                 int totalDetections,
                                 int currentLiveTracks,
+                                int checkpointBacklog,
+                                int detectorWorkersRequested,
+                                int detectorWorkersActive,
+                                int detectorPipelineSlots,
                                 double elapsedSec,
-                                AdaptiveEtaTracker* etaTracker)
+                                AdaptiveEtaTracker* etaTracker,
+                                const DetectorStageTimingTotals* stageTimings)
 {
     if (!panel || !panel->window || !panel->runtimeProgress) {
         return;
@@ -1394,6 +1507,33 @@ void updateDetectorRuntimeStats(DetectorControlPanel* panel,
     panel->runtimeElapsed->setText(formatDuration(elapsedSec));
     panel->runtimeDetections->setText(QStringLiteral("%1").arg(totalDetections));
     panel->runtimeTracks->setText(QStringLiteral("%1").arg(currentLiveTracks));
+    if (panel->runtimeCheckpointBacklog) {
+        panel->runtimeCheckpointBacklog->setText(QString::number(qMax(0, checkpointBacklog)));
+    }
+    if (panel->runtimeWorkers) {
+        panel->runtimeWorkers->setText(
+            QStringLiteral("%1 active / %2 requested, %3 slot(s)")
+                .arg(qMax(1, detectorWorkersActive))
+                .arg(qMax(1, detectorWorkersRequested))
+                .arg(qMax(1, detectorPipelineSlots)));
+    }
+    if (stageTimings) {
+        if (panel->runtimeDecodeMs) {
+            panel->runtimeDecodeMs->setText(millisecondsText(stageTimings->avgDecodeMs()));
+        }
+        if (panel->runtimeHandoffMs) {
+            panel->runtimeHandoffMs->setText(millisecondsText(stageTimings->avgHandoffMs()));
+        }
+        if (panel->runtimeInferenceMs) {
+            panel->runtimeInferenceMs->setText(millisecondsText(stageTimings->avgInferenceWallMs()));
+        }
+        if (panel->runtimeTrackingMs) {
+            panel->runtimeTrackingMs->setText(millisecondsText(stageTimings->avgTrackingMs()));
+        }
+        if (panel->runtimeCheckpointMs) {
+            panel->runtimeCheckpointMs->setText(millisecondsText(stageTimings->avgCheckpointWriteMs()));
+        }
+    }
 }
 
 DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
@@ -1403,13 +1543,81 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
                                                 bool* applyClipGrading,
                                                 bool allowApplyClipGrading,
                                                 ImGuiPreviewWindow* previewWindow,
-                                                bool* paused)
+                                                bool* paused,
+                                                int detectorWorkersRequested,
+                                                int detectorWorkersActive,
+                                                int detectorPipelineSlots)
 {
     DetectorControlPanel panel;
     panel.window = new QWidget;
-    panel.window->setWindowTitle(QStringLiteral("JCut Detector Settings"));
+    panel.window->setWindowTitle(QStringLiteral("JCut Face Detection"));
     panel.window->setMinimumWidth(420);
-    auto* root = new QVBoxLayout(panel.window);
+    panel.window->resize(520, 760);
+    auto* windowLayout = new QVBoxLayout(panel.window);
+    windowLayout->setContentsMargins(0, 0, 0, 0);
+    auto* scrollArea = new QScrollArea(panel.window);
+    scrollArea->setWidgetResizable(true);
+    scrollArea->setFrameShape(QFrame::NoFrame);
+    scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    auto* content = new QWidget(scrollArea);
+    auto* root = new QVBoxLayout(content);
+    scrollArea->setWidget(content);
+    windowLayout->addWidget(scrollArea);
+
+    auto* statsTitle = new QLabel(QStringLiteral("Detection status"));
+    QFont statsFont = statsTitle->font();
+    statsFont.setBold(true);
+    statsTitle->setFont(statsFont);
+    root->addWidget(statsTitle);
+
+    panel.runtimeProgress = new QProgressBar;
+    panel.runtimeProgress->setRange(0, 100);
+    panel.runtimeProgress->setValue(0);
+    panel.runtimeProgress->setFormat(QStringLiteral("%p%"));
+    root->addWidget(panel.runtimeProgress);
+
+    auto* statsForm = new QFormLayout;
+    panel.runtimeFrame = new QLabel(QStringLiteral("0 / 0"));
+    panel.runtimeFps = new QLabel(QStringLiteral("0.00"));
+    panel.runtimeProcessedFps = new QLabel(QStringLiteral("0.00"));
+    panel.runtimeEta = new QLabel(QStringLiteral("--:--"));
+    panel.runtimeElapsed = new QLabel(QStringLiteral("00:00"));
+    panel.runtimeDetections = new QLabel(QStringLiteral("0"));
+    panel.runtimeTracks = new QLabel(QStringLiteral("0"));
+    panel.runtimeDecodeMs = new QLabel(QStringLiteral("0.00 ms"));
+    panel.runtimeHandoffMs = new QLabel(QStringLiteral("0.00 ms"));
+    panel.runtimeInferenceMs = new QLabel(QStringLiteral("0.00 ms"));
+    panel.runtimeTrackingMs = new QLabel(QStringLiteral("0.00 ms"));
+    panel.runtimeCheckpointMs = new QLabel(QStringLiteral("0.00 ms"));
+    panel.runtimeCheckpointBacklog = new QLabel(QStringLiteral("0"));
+    panel.runtimeWorkers = new QLabel(
+        QStringLiteral("%1 active / %2 requested, %3 slot(s)")
+            .arg(qMax(1, detectorWorkersActive))
+            .arg(qMax(1, detectorWorkersRequested))
+            .arg(qMax(1, detectorPipelineSlots)));
+    statsForm->addRow(QStringLiteral("Frame progress"), panel.runtimeFrame);
+    statsForm->addRow(QStringLiteral("Workers"), panel.runtimeWorkers);
+    statsForm->addRow(QStringLiteral("Decode FPS"), panel.runtimeFps);
+    statsForm->addRow(QStringLiteral("Processed FPS"), panel.runtimeProcessedFps);
+    statsForm->addRow(QStringLiteral("ETA"), panel.runtimeEta);
+    statsForm->addRow(QStringLiteral("Elapsed"), panel.runtimeElapsed);
+    statsForm->addRow(QStringLiteral("Detections"), panel.runtimeDetections);
+    statsForm->addRow(QStringLiteral("Live tracks"), panel.runtimeTracks);
+    statsForm->addRow(QStringLiteral("Avg decode"), panel.runtimeDecodeMs);
+    statsForm->addRow(QStringLiteral("Avg handoff/prep"), panel.runtimeHandoffMs);
+    statsForm->addRow(QStringLiteral("Avg inference wall"), panel.runtimeInferenceMs);
+    statsForm->addRow(QStringLiteral("Avg tracking"), panel.runtimeTrackingMs);
+    statsForm->addRow(QStringLiteral("Avg checkpoint enqueue"), panel.runtimeCheckpointMs);
+    statsForm->addRow(QStringLiteral("Checkpoint backlog"), panel.runtimeCheckpointBacklog);
+    root->addLayout(statsForm);
+
+    auto* settingsTitle = new QLabel(QStringLiteral("Detection settings"));
+    QFont settingsFont = settingsTitle->font();
+    settingsFont.setBold(true);
+    settingsTitle->setFont(settingsFont);
+    root->addWidget(settingsTitle);
+
     auto* form = new QFormLayout;
     root->addLayout(form);
     const std::shared_ptr<bool> syncing = panel.syncing;
@@ -1923,35 +2131,6 @@ DetectorControlPanel createDetectorControlPanel(RuntimeTuning* tuning,
                              previewWindow->setOverlayOpacity(static_cast<float>(value) / 100.0f);
                          });
     }
-
-    auto* statsTitle = new QLabel(QStringLiteral("Runtime stats"));
-    QFont statsFont = statsTitle->font();
-    statsFont.setBold(true);
-    statsTitle->setFont(statsFont);
-    root->addWidget(statsTitle);
-
-    panel.runtimeProgress = new QProgressBar;
-    panel.runtimeProgress->setRange(0, 100);
-    panel.runtimeProgress->setValue(0);
-    panel.runtimeProgress->setFormat(QStringLiteral("%p%"));
-    root->addWidget(panel.runtimeProgress);
-
-    auto* statsForm = new QFormLayout;
-    panel.runtimeFrame = new QLabel(QStringLiteral("0 / 0"));
-    panel.runtimeFps = new QLabel(QStringLiteral("0.00"));
-    panel.runtimeProcessedFps = new QLabel(QStringLiteral("0.00"));
-    panel.runtimeEta = new QLabel(QStringLiteral("--:--"));
-    panel.runtimeElapsed = new QLabel(QStringLiteral("00:00"));
-    panel.runtimeDetections = new QLabel(QStringLiteral("0"));
-    panel.runtimeTracks = new QLabel(QStringLiteral("0"));
-    statsForm->addRow(QStringLiteral("Frame progress"), panel.runtimeFrame);
-    statsForm->addRow(QStringLiteral("Decode FPS"), panel.runtimeFps);
-    statsForm->addRow(QStringLiteral("Processed FPS"), panel.runtimeProcessedFps);
-    statsForm->addRow(QStringLiteral("ETA"), panel.runtimeEta);
-    statsForm->addRow(QStringLiteral("Elapsed"), panel.runtimeElapsed);
-    statsForm->addRow(QStringLiteral("Detections"), panel.runtimeDetections);
-    statsForm->addRow(QStringLiteral("Live tracks"), panel.runtimeTracks);
-    root->addLayout(statsForm);
 
     panel.settingsPath = new QLabel(settingsPath);
     panel.settingsPath->setToolTip(QStringLiteral("Detector settings are saved here automatically and loaded the next time this video is opened."));
@@ -2892,20 +3071,42 @@ QVector<Detection> detectScrfdFromDecoderFrame(jcut::vulkan_detector::VulkanZero
     return out;
 }
 
+struct PreparedDecoderDetectionResult {
+    QVector<Detection> detections;
+    jcut::vulkan_detector::NcnnInferenceStats ncnnStats;
+    jcut::vulkan_detector::HardwareInteropProbeResult handoffProbe;
+    QString error;
+    QString hardwareDirectAttemptReason;
+    double vulkanDetectMs = 0.0;
+    bool ok = false;
+};
+
 struct PreparedDecoderDetectionSlot {
     VulkanHarnessContext context;
     jcut::vulkan_detector::VulkanDetectorFrameHandoff handoff;
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector preprocessor;
+    jcut::vulkan_detector::VulkanRes10NcnnFaceDetector res10Detector;
+    jcut::vulkan_detector::VulkanScrfdNcnnFaceDetector scrfdDetector;
     editor::FrameHandle decodedFrame;
     jcut::vulkan_detector::ScrfdTensorLayout scrfdLayout;
     int frameNumber = -1;
     int frameOffset = -1;
     QSize detectionFrameSize;
     double decoderUploadMs = 0.0;
+    int workerIndex = 0;
     bool hardwareDirectHandoff = false;
     bool decoderVulkanUploadFallback = false;
     bool active = false;
+    bool detectionRunning = false;
+    std::future<PreparedDecoderDetectionResult> detectionFuture;
 };
+
+constexpr int kMaxDecoderDirectPipelineSlots = 10;
+
+struct DecoderDetectorWorker {
+    bool busy = false;
+};
+
 
 bool prepareRes10DecoderFrame(jcut::vulkan_detector::VulkanZeroCopyFaceDetector* preprocessor,
                               jcut::vulkan_detector::VulkanRes10NcnnFaceDetector* detector,
@@ -3272,12 +3473,231 @@ bool appendBinaryJsonRecord(QFile* file, const QJsonObject& object)
     return jcut::jsonio::appendBinaryJsonRecord(file, object, 0x4A465352, 1, nullptr);
 }
 
+class AsyncFaceStreamWriter {
+public:
+    explicit AsyncFaceStreamWriter(int capacity)
+        : m_capacity(std::max(1, capacity))
+    {
+    }
+
+    ~AsyncFaceStreamWriter()
+    {
+        QString ignored;
+        close(&ignored);
+    }
+
+    bool open(const QString& path, QString* error)
+    {
+        if (path.isEmpty()) {
+            if (error) *error = QStringLiteral("Async checkpoint writer path is empty.");
+            return false;
+        }
+        QFile probe(path);
+        if (!probe.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            if (error) {
+                *error = QStringLiteral("Failed to open streaming facedetections checkpoint: %1")
+                    .arg(path);
+            }
+            return false;
+        }
+        probe.close();
+        m_path = path;
+        m_thread = std::thread([this]() { run(); });
+        return true;
+    }
+
+    bool enqueue(const QJsonObject& object, QString* error)
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        if (m_stopping || m_failed) {
+            if (error) {
+                *error = m_error.isEmpty()
+                    ? QStringLiteral("Async checkpoint writer is not accepting records.")
+                    : m_error;
+            }
+            return false;
+        }
+        QElapsedTimer waitTimer;
+        bool waited = false;
+        while (!m_failed && !m_stopping && static_cast<int>(m_queue.size()) >= m_capacity) {
+            if (!waited) {
+                waited = true;
+                waitTimer.start();
+                ++m_backpressureWaits;
+            }
+            m_notFull.wait(lock);
+        }
+        if (waited) {
+            m_backpressureMs += static_cast<double>(waitTimer.nsecsElapsed()) / 1'000'000.0;
+        }
+        if (m_stopping || m_failed) {
+            if (error) {
+                *error = m_error.isEmpty()
+                    ? QStringLiteral("Async checkpoint writer stopped before enqueue completed.")
+                    : m_error;
+            }
+            return false;
+        }
+        m_queue.push_back(object);
+        ++m_recordsQueued;
+        m_maxBacklog = std::max(m_maxBacklog, static_cast<int>(m_queue.size()));
+        m_notEmpty.notify_one();
+        return true;
+    }
+
+    bool close(QString* error)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (m_closed) {
+                if (error && !m_error.isEmpty()) {
+                    *error = m_error;
+                }
+                return !m_failed;
+            }
+            m_stopping = true;
+        }
+        m_notEmpty.notify_all();
+        m_notFull.notify_all();
+        if (m_thread.joinable()) {
+            m_thread.join();
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_closed = true;
+            if (error && !m_error.isEmpty()) {
+                *error = m_error;
+            }
+            return !m_failed;
+        }
+    }
+
+    int backlog() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return static_cast<int>(m_queue.size());
+    }
+
+    int maxBacklog() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_maxBacklog;
+    }
+
+    int recordsQueued() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_recordsQueued;
+    }
+
+    int recordsWritten() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_recordsWritten;
+    }
+
+    int backpressureWaits() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_backpressureWaits;
+    }
+
+    double backpressureMs() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_backpressureMs;
+    }
+
+    double writeMsTotal() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_writeMsTotal;
+    }
+
+private:
+    void failLocked(const QString& error)
+    {
+        m_failed = true;
+        if (m_error.isEmpty()) {
+            m_error = error;
+        }
+    }
+
+    void run()
+    {
+        QFile file(m_path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                failLocked(QStringLiteral("Async checkpoint writer failed to open %1").arg(m_path));
+            }
+            m_notFull.notify_all();
+            return;
+        }
+        while (true) {
+            QJsonObject object;
+            {
+                std::unique_lock<std::mutex> lock(m_mutex);
+                m_notEmpty.wait(lock, [&]() {
+                    return m_stopping || m_failed || !m_queue.empty();
+                });
+                if ((m_stopping || m_failed) && m_queue.empty()) {
+                    break;
+                }
+                object = m_queue.front();
+                m_queue.pop_front();
+                m_notFull.notify_one();
+            }
+            QElapsedTimer timer;
+            timer.start();
+            const bool ok = appendBinaryJsonRecord(&file, object);
+            const double writeMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                m_writeMsTotal += writeMs;
+                if (ok) {
+                    ++m_recordsWritten;
+                } else {
+                    failLocked(QStringLiteral("Async checkpoint writer failed while appending %1")
+                                   .arg(m_path));
+                }
+            }
+            if (!ok) {
+                m_notFull.notify_all();
+                break;
+            }
+        }
+        file.flush();
+    }
+
+    QString m_path;
+    const int m_capacity = 1;
+    mutable std::mutex m_mutex;
+    std::condition_variable m_notEmpty;
+    std::condition_variable m_notFull;
+    std::deque<QJsonObject> m_queue;
+    std::thread m_thread;
+    bool m_stopping = false;
+    bool m_failed = false;
+    bool m_closed = false;
+    QString m_error;
+    int m_maxBacklog = 0;
+    int m_recordsQueued = 0;
+    int m_recordsWritten = 0;
+    int m_backpressureWaits = 0;
+    double m_backpressureMs = 0.0;
+    double m_writeMsTotal = 0.0;
+};
+
 struct FaceDetectionsResumeState {
     QSet<int> completedFrames;
     QJsonArray frameRows;
     QJsonArray rawDetectionFrames;
     QHash<int, int> rawDetectionFrameIndexByFrame;
     QHash<int, QJsonArray> trackDetectionsByFrame;
+    QVector<Track> runtimeTracks;
+    bool loadedFromCompactIndex = false;
+    bool fullPayloadDeferred = false;
     int processed = 0;
     int totalDetections = 0;
     int appVulkanFramePathFrames = 0;
@@ -3301,6 +3721,271 @@ struct FaceDetectionsResumeState {
     double ncnnPostMsTotal = 0.0;
     double ncnnTotalMsTotal = 0.0;
 };
+
+QString faceDetectionsResumeIndexPath(const QString& faceStreamPath)
+{
+    return faceStreamPath + QStringLiteral(".resume_index.json");
+}
+
+QString continuityTrackStateToResumeString(jcut::facedetections::ContinuityTrackState state)
+{
+    switch (state) {
+    case jcut::facedetections::ContinuityTrackState::Confirmed:
+        return QStringLiteral("confirmed");
+    case jcut::facedetections::ContinuityTrackState::Lost:
+        return QStringLiteral("lost");
+    case jcut::facedetections::ContinuityTrackState::Removed:
+        return QStringLiteral("removed");
+    case jcut::facedetections::ContinuityTrackState::Tentative:
+    default:
+        return QStringLiteral("tentative");
+    }
+}
+
+jcut::facedetections::ContinuityTrackState continuityTrackStateFromResumeString(const QString& value)
+{
+    if (value == QStringLiteral("confirmed")) {
+        return jcut::facedetections::ContinuityTrackState::Confirmed;
+    }
+    if (value == QStringLiteral("lost")) {
+        return jcut::facedetections::ContinuityTrackState::Lost;
+    }
+    if (value == QStringLiteral("removed")) {
+        return jcut::facedetections::ContinuityTrackState::Removed;
+    }
+    return jcut::facedetections::ContinuityTrackState::Tentative;
+}
+
+QJsonArray completedFrameRangesToJson(const QSet<int>& frames)
+{
+    QList<int> sorted = frames.values();
+    std::sort(sorted.begin(), sorted.end());
+    QJsonArray ranges;
+    if (sorted.isEmpty()) {
+        return ranges;
+    }
+    int start = sorted.first();
+    int previous = start;
+    for (int i = 1; i < sorted.size(); ++i) {
+        const int frame = sorted.at(i);
+        if (frame == previous + 1) {
+            previous = frame;
+            continue;
+        }
+        ranges.append(QJsonArray{start, previous});
+        start = previous = frame;
+    }
+    ranges.append(QJsonArray{start, previous});
+    return ranges;
+}
+
+QSet<int> completedFrameRangesFromJson(const QJsonArray& ranges)
+{
+    QSet<int> frames;
+    for (const QJsonValue& value : ranges) {
+        const QJsonArray range = value.toArray();
+        if (range.size() < 2) {
+            continue;
+        }
+        const int start = range.at(0).toInt(-1);
+        const int end = range.at(1).toInt(-1);
+        if (start < 0 || end < start) {
+            continue;
+        }
+        for (int frame = start; frame <= end; ++frame) {
+            frames.insert(frame);
+        }
+    }
+    return frames;
+}
+
+QJsonObject continuityTrackToResumeJson(const Track& track)
+{
+    QJsonArray recentDetections;
+    if (!track.detections.isEmpty()) {
+        recentDetections.append(track.detections.last());
+    }
+    return QJsonObject{
+        {QStringLiteral("id"), track.id},
+        {QStringLiteral("box_x"), track.box.x()},
+        {QStringLiteral("box_y"), track.box.y()},
+        {QStringLiteral("box_w"), track.box.width()},
+        {QStringLiteral("box_h"), track.box.height()},
+        {QStringLiteral("predicted_x"), track.predictedBox.x()},
+        {QStringLiteral("predicted_y"), track.predictedBox.y()},
+        {QStringLiteral("predicted_w"), track.predictedBox.width()},
+        {QStringLiteral("predicted_h"), track.predictedBox.height()},
+        {QStringLiteral("center_vx"), track.centerVelocity.x()},
+        {QStringLiteral("center_vy"), track.centerVelocity.y()},
+        {QStringLiteral("size_vw"), track.sizeVelocity.width()},
+        {QStringLiteral("size_vh"), track.sizeVelocity.height()},
+        {QStringLiteral("first_frame"), track.firstFrame},
+        {QStringLiteral("last_frame"), track.lastFrame},
+        {QStringLiteral("hits"), track.hits},
+        {QStringLiteral("misses"), track.misses},
+        {QStringLiteral("state"), continuityTrackStateToResumeString(track.state)},
+        {QStringLiteral("recent_detections"), recentDetections}
+    };
+}
+
+QVector<Track> continuityTracksFromResumeJson(const QJsonArray& rows)
+{
+    QVector<Track> tracks;
+    tracks.reserve(rows.size());
+    for (const QJsonValue& value : rows) {
+        const QJsonObject object = value.toObject();
+        Track track;
+        track.id = object.value(QStringLiteral("id")).toInt(-1);
+        track.box = QRectF(object.value(QStringLiteral("box_x")).toDouble(),
+                           object.value(QStringLiteral("box_y")).toDouble(),
+                           object.value(QStringLiteral("box_w")).toDouble(),
+                           object.value(QStringLiteral("box_h")).toDouble());
+        track.predictedBox = QRectF(object.value(QStringLiteral("predicted_x")).toDouble(track.box.x()),
+                                    object.value(QStringLiteral("predicted_y")).toDouble(track.box.y()),
+                                    object.value(QStringLiteral("predicted_w")).toDouble(track.box.width()),
+                                    object.value(QStringLiteral("predicted_h")).toDouble(track.box.height()));
+        track.centerVelocity = QPointF(object.value(QStringLiteral("center_vx")).toDouble(),
+                                       object.value(QStringLiteral("center_vy")).toDouble());
+        track.sizeVelocity = QSizeF(object.value(QStringLiteral("size_vw")).toDouble(),
+                                    object.value(QStringLiteral("size_vh")).toDouble());
+        track.firstFrame = object.value(QStringLiteral("first_frame")).toInt(-1);
+        track.lastFrame = object.value(QStringLiteral("last_frame")).toInt(-1);
+        track.hits = object.value(QStringLiteral("hits")).toInt(0);
+        track.misses = object.value(QStringLiteral("misses")).toInt(0);
+        track.state = continuityTrackStateFromResumeString(object.value(QStringLiteral("state")).toString());
+        track.detections = object.value(QStringLiteral("recent_detections")).toArray();
+        if (track.id >= 0 && track.box.isValid() && !track.box.isEmpty()) {
+            tracks.push_back(track);
+        }
+    }
+    return tracks;
+}
+
+bool saveFaceDetectionsResumeIndex(const QString& indexPath,
+                                   const QString& faceStreamPath,
+                                   const QString& videoPath,
+                                   const QString& backend,
+                                   int startFrame,
+                                   int endFrame,
+                                   const FaceDetectionsResumeState& state,
+                                   const QVector<Track>& runtimeTracks,
+                                   QString* error)
+{
+    QFileInfo partInfo(faceStreamPath);
+    QJsonArray trackRows;
+    for (const Track& track : runtimeTracks) {
+        if (track.state != jcut::facedetections::ContinuityTrackState::Removed) {
+            trackRows.append(continuityTrackToResumeJson(track));
+        }
+    }
+    const QJsonObject root{
+        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_resume_index_v1")},
+        {QStringLiteral("video"), videoPath},
+        {QStringLiteral("backend"), backend},
+        {QStringLiteral("start_frame"), startFrame},
+        {QStringLiteral("end_frame"), endFrame},
+        {QStringLiteral("part_path"), QFileInfo(faceStreamPath).absoluteFilePath()},
+        {QStringLiteral("part_size"), static_cast<qint64>(partInfo.exists() ? partInfo.size() : 0)},
+        {QStringLiteral("part_mtime_ms"), partInfo.exists() ? partInfo.lastModified().toMSecsSinceEpoch() : 0},
+        {QStringLiteral("completed_ranges"), completedFrameRangesToJson(state.completedFrames)},
+        {QStringLiteral("processed"), state.processed},
+        {QStringLiteral("total_detections"), state.totalDetections},
+        {QStringLiteral("app_vulkan_frame_path_frames"), state.appVulkanFramePathFrames},
+        {QStringLiteral("decoder_direct_handoff_frames"), state.decoderDirectHandoffFrames},
+        {QStringLiteral("decoder_vulkan_upload_fallback_frames"), state.decoderVulkanUploadFallbackFrames},
+        {QStringLiteral("hardware_direct_handoff_frames"), state.hardwareDirectHandoffFrames},
+        {QStringLiteral("hardware_interop_probe_supported_frames"), state.hardwareInteropProbeSupportedFrames},
+        {QStringLiteral("hardware_interop_probe_failed_frames"), state.hardwareInteropProbeFailedFrames},
+        {QStringLiteral("hardware_frames"), state.hardwareFrames},
+        {QStringLiteral("cpu_frames"), state.cpuFrames},
+        {QStringLiteral("render_decode_ms_total"), state.renderDecodeMsTotal},
+        {QStringLiteral("render_composite_ms_total"), state.renderCompositeMsTotal},
+        {QStringLiteral("render_readback_ms_total"), state.renderReadbackMsTotal},
+        {QStringLiteral("decoder_upload_ms_total"), state.decoderUploadMsTotal},
+        {QStringLiteral("vulkan_detect_ms_total"), state.vulkanDetectMsTotal},
+        {QStringLiteral("ncnn_input_ms_total"), state.ncnnInputMsTotal},
+        {QStringLiteral("ncnn_extract_ms_total"), state.ncnnExtractMsTotal},
+        {QStringLiteral("ncnn_extract_level8_ms_total"), state.ncnnExtractLevel8MsTotal},
+        {QStringLiteral("ncnn_extract_level16_ms_total"), state.ncnnExtractLevel16MsTotal},
+        {QStringLiteral("ncnn_extract_level32_ms_total"), state.ncnnExtractLevel32MsTotal},
+        {QStringLiteral("ncnn_post_ms_total"), state.ncnnPostMsTotal},
+        {QStringLiteral("ncnn_total_ms_total"), state.ncnnTotalMsTotal},
+        {QStringLiteral("runtime_tracks"), trackRows}
+    };
+    return jcut::jsonio::writeJsonFile(indexPath, root, false, error);
+}
+
+bool loadFaceDetectionsResumeIndex(const QString& indexPath,
+                                   const QString& faceStreamPath,
+                                   const QString& videoPath,
+                                   const QString& backend,
+                                   int startFrame,
+                                   int endFrame,
+                                   FaceDetectionsResumeState* state,
+                                   QString* error)
+{
+    if (!state || !QFileInfo::exists(indexPath)) {
+        return false;
+    }
+    QJsonObject root;
+    if (!jcut::jsonio::readJsonFile(indexPath, &root, error)) {
+        return false;
+    }
+    if (root.value(QStringLiteral("schema")).toString() !=
+        QStringLiteral("jcut_facedetections_resume_index_v1")) {
+        if (error) *error = QStringLiteral("Resume index has an unknown schema.");
+        return false;
+    }
+    const int indexedStartFrame = root.value(QStringLiteral("start_frame")).toInt(-1);
+    const int indexedEndFrame = root.value(QStringLiteral("end_frame")).toInt(-1);
+    if (root.value(QStringLiteral("video")).toString() != videoPath ||
+        root.value(QStringLiteral("backend")).toString() != backend ||
+        indexedStartFrame != startFrame ||
+        indexedEndFrame < startFrame ||
+        indexedEndFrame > endFrame) {
+        if (error) *error = QStringLiteral("Resume index is for a different run.");
+        return false;
+    }
+    const QFileInfo partInfo(faceStreamPath);
+    if (!partInfo.exists() || partInfo.size() < root.value(QStringLiteral("part_size")).toInteger(0)) {
+        if (error) *error = QStringLiteral("Resume index is newer than facedetections.part.");
+        return false;
+    }
+    state->completedFrames = completedFrameRangesFromJson(root.value(QStringLiteral("completed_ranges")).toArray());
+    for (auto it = state->completedFrames.begin(); it != state->completedFrames.end();) {
+        if (*it < startFrame || *it > endFrame) {
+            it = state->completedFrames.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    state->processed = root.value(QStringLiteral("processed")).toInt(state->completedFrames.size());
+    state->totalDetections = root.value(QStringLiteral("total_detections")).toInt(0);
+    state->appVulkanFramePathFrames = root.value(QStringLiteral("app_vulkan_frame_path_frames")).toInt(0);
+    state->decoderDirectHandoffFrames = root.value(QStringLiteral("decoder_direct_handoff_frames")).toInt(0);
+    state->decoderVulkanUploadFallbackFrames = root.value(QStringLiteral("decoder_vulkan_upload_fallback_frames")).toInt(0);
+    state->hardwareDirectHandoffFrames = root.value(QStringLiteral("hardware_direct_handoff_frames")).toInt(0);
+    state->hardwareInteropProbeSupportedFrames = root.value(QStringLiteral("hardware_interop_probe_supported_frames")).toInt(0);
+    state->hardwareInteropProbeFailedFrames = root.value(QStringLiteral("hardware_interop_probe_failed_frames")).toInt(0);
+    state->hardwareFrames = root.value(QStringLiteral("hardware_frames")).toInt(0);
+    state->cpuFrames = root.value(QStringLiteral("cpu_frames")).toInt(0);
+    state->renderDecodeMsTotal = root.value(QStringLiteral("render_decode_ms_total")).toDouble(0.0);
+    state->renderCompositeMsTotal = root.value(QStringLiteral("render_composite_ms_total")).toDouble(0.0);
+    state->renderReadbackMsTotal = root.value(QStringLiteral("render_readback_ms_total")).toDouble(0.0);
+    state->decoderUploadMsTotal = root.value(QStringLiteral("decoder_upload_ms_total")).toDouble(0.0);
+    state->vulkanDetectMsTotal = root.value(QStringLiteral("vulkan_detect_ms_total")).toDouble(0.0);
+    state->ncnnInputMsTotal = root.value(QStringLiteral("ncnn_input_ms_total")).toDouble(0.0);
+    state->ncnnExtractMsTotal = root.value(QStringLiteral("ncnn_extract_ms_total")).toDouble(0.0);
+    state->ncnnExtractLevel8MsTotal = root.value(QStringLiteral("ncnn_extract_level8_ms_total")).toDouble(0.0);
+    state->ncnnExtractLevel16MsTotal = root.value(QStringLiteral("ncnn_extract_level16_ms_total")).toDouble(0.0);
+    state->ncnnExtractLevel32MsTotal = root.value(QStringLiteral("ncnn_extract_level32_ms_total")).toDouble(0.0);
+    state->ncnnPostMsTotal = root.value(QStringLiteral("ncnn_post_ms_total")).toDouble(0.0);
+    state->ncnnTotalMsTotal = root.value(QStringLiteral("ncnn_total_ms_total")).toDouble(0.0);
+    state->runtimeTracks = continuityTracksFromResumeJson(root.value(QStringLiteral("runtime_tracks")).toArray());
+    state->loadedFromCompactIndex = true;
+    state->fullPayloadDeferred = true;
+    return true;
+}
 
 bool loadFaceDetectionsResume(const QString& path,
                           const QString& videoPath,
@@ -3429,6 +4114,173 @@ bool loadFaceDetectionsResume(const QString& path,
     return true;
 }
 
+QStringList benchmarkBaseArgs(int argc, char** argv)
+{
+    QStringList args;
+    for (int i = 1; i < argc; ++i) {
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        if (arg == QStringLiteral("--benchmark-pipeline-slots")) {
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                ++i;
+            }
+            continue;
+        }
+        if (arg == QStringLiteral("--out-dir") ||
+            arg == QStringLiteral("--detector-pipeline-slots")) {
+            if (i + 1 < argc) {
+                ++i;
+            }
+            continue;
+        }
+        args.push_back(arg);
+    }
+    return args;
+}
+
+QJsonObject benchmarkSummaryRow(int slotCount,
+                                int exitCode,
+                                QProcess::ExitStatus exitStatus,
+                                const QString& outputDir,
+                                const QJsonObject& summary)
+{
+    const int processedFrames = summary.value(QStringLiteral("processed_frames")).toInt(0);
+    const double wallSec = summary.value(QStringLiteral("wall_sec")).toDouble(0.0);
+    const double processedFps = wallSec > 0.0
+        ? static_cast<double>(processedFrames) / wallSec
+        : 0.0;
+    return QJsonObject{
+        {QStringLiteral("detector_pipeline_slots"), slotCount},
+        {QStringLiteral("exit_code"), exitCode},
+        {QStringLiteral("exit_status"), exitStatus == QProcess::NormalExit
+             ? QStringLiteral("normal")
+             : QStringLiteral("crashed")},
+        {QStringLiteral("ok"), exitStatus == QProcess::NormalExit && exitCode == 0},
+        {QStringLiteral("output_dir"), QDir(outputDir).absolutePath()},
+        {QStringLiteral("processed_frames"), processedFrames},
+        {QStringLiteral("wall_sec"), wallSec},
+        {QStringLiteral("processed_fps"), processedFps},
+        {QStringLiteral("decoded_frames"), summary.value(QStringLiteral("decoded_frames")).toInt(0)},
+        {QStringLiteral("total_detections"), summary.value(QStringLiteral("total_detections")).toInt(0)},
+        {QStringLiteral("avg_stage_decode_ms"), summary.value(QStringLiteral("avg_stage_decode_ms")).toDouble(0.0)},
+        {QStringLiteral("avg_stage_handoff_prepare_ms"), summary.value(QStringLiteral("avg_stage_handoff_prepare_ms")).toDouble(0.0)},
+        {QStringLiteral("avg_stage_inference_wall_ms"), summary.value(QStringLiteral("avg_stage_inference_wall_ms")).toDouble(0.0)},
+        {QStringLiteral("avg_stage_tracking_ms"), summary.value(QStringLiteral("avg_stage_tracking_ms")).toDouble(0.0)},
+        {QStringLiteral("avg_stage_checkpoint_enqueue_ms"), summary.value(QStringLiteral("avg_stage_checkpoint_enqueue_ms")).toDouble(0.0)},
+        {QStringLiteral("checkpoint_writer_avg_write_ms"), summary.value(QStringLiteral("checkpoint_writer_avg_write_ms")).toDouble(0.0)},
+        {QStringLiteral("checkpoint_writer_max_backlog"), summary.value(QStringLiteral("checkpoint_writer_max_backlog")).toInt(0)},
+        {QStringLiteral("checkpoint_writer_backpressure_ms"), summary.value(QStringLiteral("checkpoint_writer_backpressure_ms")).toDouble(0.0)},
+        {QStringLiteral("detector_workers_requested"), summary.value(QStringLiteral("detector_workers_requested")).toInt(1)},
+        {QStringLiteral("detector_workers_active"), summary.value(QStringLiteral("detector_workers_active")).toInt(1)},
+        {QStringLiteral("detector_workers_note"), summary.value(QStringLiteral("detector_workers_note")).toString()},
+        {QStringLiteral("require_zero_copy_satisfied"), summary.value(QStringLiteral("require_zero_copy_satisfied")).toBool(false)},
+        {QStringLiteral("decode_zero_copy"), summary.value(QStringLiteral("decode_zero_copy")).toBool(false)}
+    };
+}
+
+int runPipelineSlotBenchmark(int argc, char** argv, const Options& options)
+{
+    const QString executable = QCoreApplication::applicationFilePath();
+    if (executable.isEmpty() || !QFileInfo::exists(executable)) {
+        std::cerr << "Pipeline benchmark failed: cannot resolve current executable path.\n";
+        return 2;
+    }
+    if (options.preflight) {
+        std::cerr << "--benchmark-pipeline-slots cannot be combined with --preflight.\n";
+        return 2;
+    }
+
+    const QString benchmarkRoot = QDir(options.outputDir).absoluteFilePath(
+        QStringLiteral("pipeline_benchmark_%1")
+            .arg(QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"))));
+    if (!QDir().mkpath(benchmarkRoot)) {
+        std::cerr << "Pipeline benchmark failed: cannot create output directory "
+                  << benchmarkRoot.toStdString() << "\n";
+        return 2;
+    }
+
+    const QStringList baseArgs = benchmarkBaseArgs(argc, argv);
+    QJsonArray runs;
+    int bestSlots = -1;
+    double bestProcessedFps = -1.0;
+    bool allOk = true;
+
+    for (int slotCount : options.benchmarkPipelineSlotValues) {
+        const QString runDir = QDir(benchmarkRoot).absoluteFilePath(
+            QStringLiteral("slots_%1").arg(slotCount));
+        QDir(runDir).removeRecursively();
+        if (!QDir().mkpath(runDir)) {
+            std::cerr << "Pipeline benchmark failed: cannot create run directory "
+                  << runDir.toStdString() << "\n";
+            return 2;
+        }
+
+        QStringList childArgs = baseArgs;
+        childArgs << QStringLiteral("--out-dir") << runDir
+                  << QStringLiteral("--detector-pipeline-slots") << QString::number(slotCount)
+                  << QStringLiteral("--no-preview-window")
+                  << QStringLiteral("--no-control-window")
+                  << QStringLiteral("--no-progress");
+
+        QProcess process;
+        process.setProcessChannelMode(QProcess::MergedChannels);
+        process.start(executable, childArgs);
+        if (!process.waitForStarted()) {
+            std::cerr << "Pipeline benchmark failed to start child for slots="
+                      << slotCount << ": "
+                      << process.errorString().toStdString() << "\n";
+            return 2;
+        }
+        process.waitForFinished(-1);
+        const QByteArray output = process.readAllStandardOutput();
+        const int exitCode = process.exitCode();
+        const QProcess::ExitStatus exitStatus = process.exitStatus();
+        if (exitStatus != QProcess::NormalExit || exitCode != 0) {
+            allOk = false;
+            std::cerr << "Pipeline benchmark child failed for slots="
+                      << slotCount << " exit_code=" << exitCode
+                      << " status=" << (exitStatus == QProcess::NormalExit ? "normal" : "crashed")
+                      << "\n"
+                      << output.constData() << "\n";
+        }
+
+        QJsonObject summary;
+        QString readError;
+        const QString summaryPath = QDir(runDir).filePath(QStringLiteral("summary.json"));
+        if (!jcut::jsonio::readJsonFile(summaryPath, &summary, &readError)) {
+            allOk = false;
+            std::cerr << "Pipeline benchmark could not read summary for slots="
+                      << slotCount << ": " << readError.toStdString() << "\n";
+        }
+        const QJsonObject row = benchmarkSummaryRow(slotCount, exitCode, exitStatus, runDir, summary);
+        runs.append(row);
+        const double processedFps = row.value(QStringLiteral("processed_fps")).toDouble(0.0);
+        if (row.value(QStringLiteral("ok")).toBool(false) && processedFps > bestProcessedFps) {
+            bestProcessedFps = processedFps;
+            bestSlots = slotCount;
+        }
+    }
+
+    QJsonArray slotsTested;
+    for (int slotCount : options.benchmarkPipelineSlotValues) {
+        slotsTested.append(slotCount);
+    }
+    const QJsonObject result{
+        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_pipeline_benchmark_v1")},
+        {QStringLiteral("created_utc_ms"), QDateTime::currentDateTimeUtc().toMSecsSinceEpoch()},
+        {QStringLiteral("video"), options.videoPath},
+        {QStringLiteral("benchmark_root"), benchmarkRoot},
+        {QStringLiteral("slots_tested"), slotsTested},
+        {QStringLiteral("best_detector_pipeline_slots"), bestSlots},
+        {QStringLiteral("best_processed_fps"), bestProcessedFps},
+        {QStringLiteral("runs"), runs},
+        {QStringLiteral("note"), QStringLiteral("Benchmark child runs force preview/control/progress off and isolate output directories so resumable checkpoint files do not contaminate comparisons.")}
+    };
+    const QString resultPath = QDir(benchmarkRoot).filePath(QStringLiteral("pipeline_benchmark_summary.json"));
+    writeJson(resultPath, result);
+    std::cout << "pipeline_benchmark " << jcut::jsonio::serializeCompact(result).constData() << "\n";
+    return allOk ? 0 : 2;
+}
+
 } // namespace
 
 static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
@@ -3451,6 +4303,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     if (!QFileInfo::exists(options.videoPath)) {
         std::cerr << "Video not found: " << options.videoPath.toStdString() << "\n";
         return 2;
+    }
+    if (options.benchmarkPipelineSlots) {
+        return runPipelineSlotBenchmark(argc, argv, options);
     }
     if (options.preflight) {
         const bool platformIsOffscreen =
@@ -3497,7 +4352,18 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     false,
                     !options.clipJsonPath.trimmed().isEmpty(),
                     options.applyClipGrading,
-                    QStringLiteral("Apply clip grading during detection")
+                    QStringLiteral("Apply clip grading during detection"),
+                    false,
+                    false,
+                    QStringLiteral("Restart from scratch (delete facedetections.part)"),
+                    false,
+                    false,
+                    QStringLiteral("Use proxy media as FaceDetections input"),
+                    true,
+                    options.detectorWorkers,
+                    1,
+                    10,
+                    QStringLiteral("Detector workers")
                 });
         if (!preflight.accepted) {
             return 0;
@@ -3508,6 +4374,11 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         options.livePreview = preflight.livePreview;
         options.applyClipGrading = preflight.applyClipGrading;
+        options.detectorWorkers = std::clamp(preflight.detectorWorkers, 1, 10);
+        options.detectorPipelineSlots =
+            std::clamp(qMax(options.detectorPipelineSlots, options.detectorWorkers),
+                       1,
+                       10);
         options.stride = detectorSettings.stride;
         options.maxDetections = detectorSettings.maxDetections;
         options.scrfdTargetSize = detectorSettings.scrfdTargetSize;
@@ -3547,6 +4418,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         QString::fromLocal8Bit(qgetenv("QT_QPA_PLATFORM")).compare(QStringLiteral("offscreen"),
                                                                    Qt::CaseInsensitive) == 0;
     std::unique_ptr<ImGuiPreviewWindow> livePreviewWindow;
+    const bool showControlWindow = options.controlWindow && !platformIsOffscreen;
 
     editor::setDebugDecodePreference(options.decodePreference);
     editor::DecoderContext decoder(options.videoPath);
@@ -3652,11 +4524,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                      "Disable clip grading and materialized compatibility mode.\n";
         return 2;
     }
-    const bool previewRequested = static_cast<bool>(livePreviewWindow) || previewSocketPtr || options.writePreviewFiles;
-    bool previewRequiresSynchronizedDetection =
-        static_cast<bool>(livePreviewWindow) || (previewSocketPtr != nullptr);
-    const int effectivePreviewStride =
-        livePreviewWindow ? 1 : qMax(1, options.previewStride);
+    const bool blockingPreviewRequested = previewSocketPtr || options.writePreviewFiles;
+    const bool previewRequested = blockingPreviewRequested;
+    bool previewRequiresSynchronizedDetection = previewSocketPtr != nullptr;
+    const int effectivePreviewStride = qMax(1, options.previewStride);
     bool previewPipelinePrimed = !previewRequested;
     QString lastPreviewStatusText;
     auto setPreviewStatusText = [&](const QString& text) {
@@ -3802,7 +4673,15 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector zeroCopyDetector;
     jcut::vulkan_detector::VulkanRes10NcnnFaceDetector res10Detector;
     jcut::vulkan_detector::VulkanScrfdNcnnFaceDetector scrfdDetector;
-    PreparedDecoderDetectionSlot decoderDirectSlots[2];
+    const int decoderDirectPipelineSlots =
+        std::clamp(options.detectorPipelineSlots, 1, kMaxDecoderDirectPipelineSlots);
+    const int detectorWorkersActive = std::clamp(options.detectorWorkers, 1, kMaxDecoderDirectPipelineSlots);
+    std::vector<std::unique_ptr<DecoderDetectorWorker>> decoderDetectorWorkers;
+    decoderDetectorWorkers.reserve(detectorWorkersActive);
+    for (int i = 0; i < detectorWorkersActive; ++i) {
+        decoderDetectorWorkers.push_back(std::make_unique<DecoderDetectorWorker>());
+    }
+    PreparedDecoderDetectionSlot decoderDirectSlots[kMaxDecoderDirectPipelineSlots];
     std::deque<int> pendingDecoderDirectSlots;
     int nextDecoderDirectSlot = 0;
     RuntimeTuning tuning{
@@ -3846,6 +4725,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         livePreviewWindow->setDetectionLineThickness(previewDebugSettings.detectionLineThickness);
         livePreviewWindow->setTrackLineThickness(previewDebugSettings.trackLineThickness);
         livePreviewWindow->setOverlayOpacity(previewDebugSettings.overlayOpacity);
+    }
+    if (showControlWindow || livePreviewWindow) {
         detectorControls = createDetectorControlPanel(&tuning,
                                                       options.detector,
                                                       options.scrfdTargetSize,
@@ -3853,7 +4734,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                                       &options.applyClipGrading,
                                                       !options.clipJsonPath.trimmed().isEmpty(),
                                                       livePreviewWindow.get(),
-                                                      &runtimePaused);
+                                                      &runtimePaused,
+                                                      options.detectorWorkers,
+                                                      detectorWorkersActive,
+                                                      decoderDirectPipelineSlots);
         detectorControls.window->show();
         QString saveError;
         if (saveRuntimeTuningFile(detectorSettingsPath,
@@ -3883,6 +4767,12 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         return count;
     };
+    int livePreviewQueued = 0;
+    int livePreviewPresented = 0;
+    int livePreviewDropped = 0;
+    int livePreviewDetectorThreadRenders = 0;
+    int livePreviewPresentSamples = 0;
+    double livePreviewPresentMsTotal = 0.0;
     auto presentLivePreviewWindow = [&](const render_detail::OffscreenVulkanFrame& frame,
                                         int frameNumber,
                                         const QVector<Track>& previewTracks,
@@ -3915,6 +4805,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         if (!livePreviewWindow) {
             return false;
         }
+        QElapsedTimer previewTimer;
+        previewTimer.start();
         render_detail::OffscreenVulkanFrame previewFrame;
         QString previewError;
         if (!jcut::facedetections::renderFrameToVulkan(&appFrameProvider,
@@ -3929,11 +4821,58 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             setPreviewStatusText(previewError);
             return false;
         }
-        return presentLivePreviewWindow(previewFrame,
-                                        frameNumber,
-                                        previewTracks,
-                                        previewDetections,
-                                        titlePrefix);
+        ++livePreviewDetectorThreadRenders;
+        const bool presented = presentLivePreviewWindow(previewFrame,
+                                                        frameNumber,
+                                                        previewTracks,
+                                                        previewDetections,
+                                                        titlePrefix);
+        livePreviewPresentMsTotal += static_cast<double>(previewTimer.nsecsElapsed()) / 1'000'000.0;
+        ++livePreviewPresentSamples;
+        return presented;
+    };
+    auto opportunisticLivePreviewDue = [&](int frameNumber) {
+        return livePreviewWindow &&
+               !runtimePaused &&
+               (frameNumber % effectivePreviewStride) == 0;
+    };
+    std::deque<LivePreviewSample> livePreviewQueue;
+    constexpr int kLivePreviewQueueCapacity = 3;
+    constexpr double kLivePreviewMinPresentIntervalSec = 0.35;
+    auto lastLivePreviewPresentAt = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    auto enqueueLivePreviewSample = [&](int frameNumber,
+                                        const QVector<Track>& tracks,
+                                        const QVector<Detection>& detections,
+                                        const QString& titlePrefix) {
+        if (!opportunisticLivePreviewDue(frameNumber)) {
+            return;
+        }
+        while (static_cast<int>(livePreviewQueue.size()) >= kLivePreviewQueueCapacity) {
+            livePreviewQueue.pop_front();
+            ++livePreviewDropped;
+        }
+        livePreviewQueue.push_back(LivePreviewSample{frameNumber, tracks, detections, titlePrefix});
+        ++livePreviewQueued;
+    };
+    auto drainLivePreviewQueue = [&](bool force = false) {
+        if (!livePreviewWindow || livePreviewQueue.empty() || runtimePaused) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const double sinceLastSec = std::chrono::duration<double>(now - lastLivePreviewPresentAt).count();
+        if (!force && sinceLastSec < kLivePreviewMinPresentIntervalSec) {
+            return;
+        }
+        LivePreviewSample sample = std::move(livePreviewQueue.back());
+        livePreviewDropped += qMax(0, static_cast<int>(livePreviewQueue.size()) - 1);
+        livePreviewQueue.clear();
+        if (renderAndPresentLivePreviewWindow(sample.frameNumber,
+                                              sample.tracks,
+                                              sample.detections,
+                                              sample.titlePrefix)) {
+            ++livePreviewPresented;
+            lastLivePreviewPresentAt = now;
+        }
     };
     auto emitPreview = [&](const QImage& image,
                            int frameNumber,
@@ -3981,9 +4920,6 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             return true;
         }
         if (!previewRequiresSynchronizedDetection) {
-            if (livePreviewWindow) {
-                renderAndPresentLivePreviewWindow(frameNumber, tracks, detections, titlePrefix);
-            }
             if (previewSocketPtr || (options.writePreviewFiles && previewWritten < options.previewFrames)) {
                 const QImage previewImage = previewImageProvider();
                 if (!previewImage.isNull()) {
@@ -4026,9 +4962,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             return true;
         }
         if (!previewRequiresSynchronizedDetection) {
-            if (livePreviewWindow) {
-                presentLivePreviewWindow(frame, frameNumber, tracks, detections, titlePrefix);
-            }
+            enqueueLivePreviewSample(frameNumber, tracks, detections, titlePrefix);
             if (previewSocketPtr || (options.writePreviewFiles && previewWritten < options.previewFrames)) {
                 const QImage previewImage = previewImageProvider();
                 if (!previewImage.isNull()) {
@@ -4061,23 +4995,48 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     const int totalFrames = static_cast<int>(qMax<int64_t>(1, targetFrames));
     const int finalFrame = qMax(0, options.startFrame + totalFrames - 1);
     const QString faceStreamPath = QDir(options.outputDir).filePath(QStringLiteral("facedetections.part"));
+    const QString resumeIndexPath = faceDetectionsResumeIndexPath(faceStreamPath);
     FaceDetectionsResumeState resume;
     QString resumeError;
-    if (!loadFaceDetectionsResume(faceStreamPath,
-                              options.videoPath,
-                              backend,
-                              options.startFrame,
-                              finalFrame,
-                              &resume,
-                              &resumeError)) {
-        const QString stalePath = faceStreamPath + QStringLiteral(".stale");
-        QFile::remove(stalePath);
-        QFile::rename(faceStreamPath, stalePath);
+    QElapsedTimer resumeLoadTimer;
+    resumeLoadTimer.start();
+    if (!loadFaceDetectionsResumeIndex(resumeIndexPath,
+                                       faceStreamPath,
+                                       options.videoPath,
+                                       backend,
+                                       options.startFrame,
+                                       finalFrame,
+                                       &resume,
+                                       &resumeError)) {
         if (options.verbose && !resumeError.isEmpty()) {
-            std::cerr << "Ignoring previous facedetections checkpoint: "
-                      << resumeError.toStdString() << "\n";
+            std::cerr << "Fast facedetections resume index unavailable: "
+                      << resumeError.toStdString()
+                      << "; falling back to checkpoint replay.\n";
         }
-        resume = FaceDetectionsResumeState{};
+        resumeError.clear();
+        if (!loadFaceDetectionsResume(faceStreamPath,
+                                  options.videoPath,
+                                  backend,
+                                  options.startFrame,
+                                  finalFrame,
+                                  &resume,
+                                  &resumeError)) {
+            const QString stalePath = faceStreamPath + QStringLiteral(".stale");
+            QFile::remove(stalePath);
+            QFile::rename(faceStreamPath, stalePath);
+            QFile::remove(resumeIndexPath);
+            if (options.verbose && !resumeError.isEmpty()) {
+                std::cerr << "Ignoring previous facedetections checkpoint: "
+                          << resumeError.toStdString() << "\n";
+            }
+            resume = FaceDetectionsResumeState{};
+        }
+    } else if (options.verbose) {
+        std::cout << "resumed_facedetections_index=\""
+                  << resumeIndexPath.toStdString()
+                  << "\" completed_frames=" << resume.completedFrames.size()
+                  << " load_ms=" << resumeLoadTimer.elapsed()
+                  << "\n";
     }
     int resumeStartOffset = 0;
     while (resumeStartOffset < totalFrames &&
@@ -4186,15 +5145,48 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
     }
 
-    QFile faceStreamFile(faceStreamPath);
     const bool faceStreamExists = QFileInfo::exists(faceStreamPath) && QFileInfo(faceStreamPath).size() > 0;
-    if (!faceStreamFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        std::cerr << "Failed to open streaming facedetections checkpoint: "
-                  << faceStreamPath.toStdString() << "\n";
-        return 2;
+    QFile faceStreamFile;
+    std::unique_ptr<AsyncFaceStreamWriter> faceStreamWriter;
+    if (options.asyncCheckpointWriter) {
+        faceStreamWriter = std::make_unique<AsyncFaceStreamWriter>(options.checkpointWriterQueueCapacity);
+        QString writerError;
+        if (!faceStreamWriter->open(faceStreamPath, &writerError)) {
+            std::cerr << writerError.toStdString() << "\n";
+            return 2;
+        }
+    } else {
+        faceStreamFile.setFileName(faceStreamPath);
+        if (!faceStreamFile.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+            std::cerr << "Failed to open streaming facedetections checkpoint: "
+                      << faceStreamPath.toStdString() << "\n";
+            return 2;
+        }
     }
+    int faceStreamRecordsSubmitted = 0;
+    int faceStreamRecordsWrittenSync = 0;
+    auto appendFaceStreamRecord = [&](const QJsonObject& object, QString* error) -> bool {
+        if (faceStreamWriter) {
+            if (!faceStreamWriter->enqueue(object, error)) {
+                return false;
+            }
+            ++faceStreamRecordsSubmitted;
+            return true;
+        }
+        if (!appendBinaryJsonRecord(&faceStreamFile, object)) {
+            if (error) {
+                *error = QStringLiteral("Failed to append streaming facedetections checkpoint: %1")
+                    .arg(faceStreamPath);
+            }
+            return false;
+        }
+        ++faceStreamRecordsSubmitted;
+        ++faceStreamRecordsWrittenSync;
+        return true;
+    };
     if (!faceStreamExists) {
-        appendBinaryJsonRecord(&faceStreamFile, QJsonObject{
+        QString writerError;
+        if (!appendFaceStreamRecord(QJsonObject{
             {QStringLiteral("type"), QStringLiteral("meta")},
             {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_part_v1")},
             {QStringLiteral("video"), options.videoPath},
@@ -4203,7 +5195,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             {QStringLiteral("end_frame"), finalFrame},
             {QStringLiteral("stride"), tuning.stride},
             {QStringLiteral("created_utc_ms"), QDateTime::currentDateTimeUtc().toMSecsSinceEpoch()}
-        });
+        }, &writerError)) {
+            std::cerr << writerError.toStdString() << "\n";
+            return 2;
+        }
     }
     if (options.verbose && !resume.completedFrames.isEmpty()) {
         std::cout << "resumed_facedetections_checkpoint=\""
@@ -4213,7 +5208,9 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
     }
     int lastProgressPercent = -1;
     std::chrono::steady_clock::time_point lastProgressAt = wallStart;
+    std::chrono::steady_clock::time_point lastRuntimeStatsAt = wallStart - std::chrono::seconds(1);
     AdaptiveEtaTracker etaTracker;
+    DetectorStageTimingTotals stageTimings;
     int latestProcessedFrame = options.startFrame - 1;
     for (int completedFrame : resume.completedFrames) {
         latestProcessedFrame = qMax(latestProcessedFrame, completedFrame);
@@ -4222,10 +5219,45 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                              livePreviewWindow.get(),
                              options.startFrame,
                              qMax(options.startFrame, latestProcessedFrame));
-    QVector<Track> runtimeTracks =
-        jcut::facedetections::buildContinuityTracksFromDetectionFrames(
-            rawDetectionFrames,
-            trackingTuningForRuntime(tuning));
+    QVector<Track> runtimeTracks = resume.loadedFromCompactIndex
+        ? resume.runtimeTracks
+        : jcut::facedetections::buildContinuityTracksFromDetectionFrames(
+              rawDetectionFrames,
+              trackingTuningForRuntime(tuning));
+    int lastResumeIndexSaveProcessed = resume.processed;
+    auto saveCompactResumeIndex = [&](bool force = false) {
+        if (resume.completedFrames.isEmpty()) {
+            return;
+        }
+        if (!force && (processed - lastResumeIndexSaveProcessed) < 100) {
+            return;
+        }
+        if (faceStreamWriter &&
+            (faceStreamWriter->backlog() > 0 ||
+             faceStreamWriter->recordsWritten() < faceStreamRecordsSubmitted)) {
+            return;
+        }
+        if (faceStreamFile.isOpen()) {
+            faceStreamFile.flush();
+        }
+        QString indexError;
+        if (!saveFaceDetectionsResumeIndex(resumeIndexPath,
+                                           faceStreamPath,
+                                           options.videoPath,
+                                           backend,
+                                           options.startFrame,
+                                           finalFrame,
+                                           resume,
+                                           runtimeTracks,
+                                           &indexError)) {
+            if (options.verbose && !indexError.isEmpty()) {
+                std::cerr << "Failed to save facedetections resume index: "
+                          << indexError.toStdString() << "\n";
+            }
+            return;
+        }
+        lastResumeIndexSaveProcessed = processed;
+    };
     auto detectionsForFrame = [&](int frameNumber) {
         QVector<Detection> frameDetections;
         const int index = rawDetectionFrameIndexByFrame.value(frameNumber, -1);
@@ -4282,14 +5314,48 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         return frameTracks;
     };
+    auto refreshRuntimeStats = [&](int frameOffset,
+                                   int frameNumber,
+                                   int liveTracks,
+                                   bool force = false) {
+        if (!detectorControls.window) {
+            return;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const double sinceLastSec =
+            std::chrono::duration<double>(now - lastRuntimeStatsAt).count();
+        if (!force && sinceLastSec < 0.25) {
+            return;
+        }
+        lastRuntimeStatsAt = now;
+        const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
+        updateDetectorRuntimeStats(&detectorControls,
+                                   frameOffset,
+                                   totalFrames,
+                                   frameNumber,
+                                   processed,
+                                   totalDetections,
+                                   liveTracks,
+                                   faceStreamWriter ? faceStreamWriter->backlog() : 0,
+                                   options.detectorWorkers,
+                                   detectorWorkersActive,
+                                   decoderDirectPipelineSlots,
+                                   elapsedSec,
+                                   &etaTracker,
+                                   &stageTimings);
+    };
     auto advanceRuntimeTracks = [&](int frameNumber,
                                     const QVector<Detection>& detections,
                                     const QSize& detectionFrameSize) -> QVector<Track> {
+        QElapsedTimer timer;
+        timer.start();
         jcut::facedetections::updateContinuityTracks(&runtimeTracks,
                                                  detections,
                                                  frameNumber,
                                                  detectionFrameSize,
                                                  trackingTuningForRuntime(tuning));
+        stageTimings.trackingMsTotal += static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+        ++stageTimings.trackingSamples;
         return runtimeTracks;
     };
     auto recordProcessedFrame = [&](int frameOffset,
@@ -4313,6 +5379,14 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         renderReadbackMsTotal += renderStats.readbackMs;
         decoderUploadMsTotal += decoderUploadMs;
         vulkanDetectMsTotal += vulkanDetectMs;
+        if (renderStats.decodeMs > 0.0) {
+            stageTimings.decodeMsTotal += renderStats.decodeMs;
+            ++stageTimings.decodeSamples;
+        }
+        if (vulkanDetectMs > 0.0) {
+            stageTimings.inferenceWallMsTotal += vulkanDetectMs;
+            ++stageTimings.inferenceSamples;
+        }
         ncnnInputMsTotal += ncnnStats.inputMs;
         ncnnExtractMsTotal += ncnnStats.extractMs;
         ncnnExtractLevel8MsTotal += ncnnStats.extractLevel8Ms;
@@ -4371,12 +5445,40 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         streamRow.insert(QStringLiteral("detection_boxes"),
                          rawDetectionFrame.value(QStringLiteral("detections")).toArray());
         streamRow.insert(QStringLiteral("track_detections"), trackDetections);
-        if (!appendBinaryJsonRecord(&faceStreamFile, streamRow)) {
-            std::cerr << "Failed to append streaming facedetections checkpoint: "
-                      << faceStreamPath.toStdString() << "\n";
+        QElapsedTimer checkpointTimer;
+        checkpointTimer.start();
+        QString checkpointError;
+        if (!appendFaceStreamRecord(streamRow, &checkpointError)) {
+            std::cerr << checkpointError.toStdString() << "\n";
             return false;
         }
+        stageTimings.checkpointWriteMsTotal +=
+            static_cast<double>(checkpointTimer.nsecsElapsed()) / 1'000'000.0;
+        ++stageTimings.checkpointWriteSamples;
         resume.completedFrames.insert(frameNumber);
+        resume.processed = processed;
+        resume.totalDetections = totalDetections;
+        resume.appVulkanFramePathFrames = appVulkanFramePathFrames;
+        resume.decoderDirectHandoffFrames = decoderDirectHandoffFrames;
+        resume.decoderVulkanUploadFallbackFrames = decoderVulkanUploadFallbackFrames;
+        resume.hardwareDirectHandoffFrames = hardwareDirectHandoffFrames;
+        resume.hardwareInteropProbeSupportedFrames = hardwareInteropProbeSupportedFrames;
+        resume.hardwareInteropProbeFailedFrames = hardwareInteropProbeFailedFrames;
+        resume.hardwareFrames = hardwareFrames;
+        resume.cpuFrames = cpuFrames;
+        resume.renderDecodeMsTotal = renderDecodeMsTotal;
+        resume.renderCompositeMsTotal = renderCompositeMsTotal;
+        resume.renderReadbackMsTotal = renderReadbackMsTotal;
+        resume.decoderUploadMsTotal = decoderUploadMsTotal;
+        resume.vulkanDetectMsTotal = vulkanDetectMsTotal;
+        resume.ncnnInputMsTotal = ncnnInputMsTotal;
+        resume.ncnnExtractMsTotal = ncnnExtractMsTotal;
+        resume.ncnnExtractLevel8MsTotal = ncnnExtractLevel8MsTotal;
+        resume.ncnnExtractLevel16MsTotal = ncnnExtractLevel16MsTotal;
+        resume.ncnnExtractLevel32MsTotal = ncnnExtractLevel32MsTotal;
+        resume.ncnnPostMsTotal = ncnnPostMsTotal;
+        resume.ncnnTotalMsTotal = ncnnTotalMsTotal;
+        saveCompactResumeIndex(false);
         const bool logThisFrame =
             options.verbose ||
             (options.logInterval > 0 && (processed % options.logInterval) == 0);
@@ -4422,19 +5524,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                processed > 0 ? vulkanDetectMsTotal / processed : 0.0,
                                &etaTracker);
         }
-        if (detectorControls.window) {
-            const auto now = std::chrono::steady_clock::now();
-            const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
-            updateDetectorRuntimeStats(&detectorControls,
-                                       frameOffset,
-                                       totalFrames,
-                                       frameNumber,
-                                       processed,
-                                       totalDetections,
-                                       liveTrackCount(tracks),
-                                       elapsedSec,
-                                       &etaTracker);
-        }
+        refreshRuntimeStats(frameOffset, frameNumber, liveTrackCount(tracks));
         return true;
     };
     const auto emptyProbe = jcut::vulkan_detector::HardwareInteropProbeResult{};
@@ -4445,46 +5535,81 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                !options.heuristicZeroCopyDetector &&
                (!options.scrfdDetector || !tuning.scrfdTiled);
     };
+    auto runPreparedDecoderDetection = [&](int slotIndex) -> PreparedDecoderDetectionResult {
+        PreparedDecoderDetectionResult result;
+        PreparedDecoderDetectionSlot& slot = decoderDirectSlots[slotIndex];
+        if (!slot.active || slot.workerIndex < 0 ||
+            slot.workerIndex >= static_cast<int>(decoderDetectorWorkers.size())) {
+            result.error = QStringLiteral("Invalid prepared decoder detection slot.");
+            return result;
+        }
+        QString localError;
+        if (options.scrfdDetector) {
+            result.detections = finalizePreparedScrfdDecoderFrame(&slot.preprocessor,
+                                                                  &slot.scrfdDetector,
+                                                                  &slot.context,
+                                                                  &slot.handoff,
+                                                                  slot.scrfdLayout,
+                                                                  slot.detectionFrameSize,
+                                                                  tuning.threshold,
+                                                                  &result.vulkanDetectMs,
+                                                                  &localError);
+            result.ncnnStats = slot.scrfdDetector.lastInferenceStats();
+        } else {
+            result.detections = finalizePreparedRes10DecoderFrame(&slot.preprocessor,
+                                                                  &slot.res10Detector,
+                                                                  &slot.context,
+                                                                  &slot.handoff,
+                                                                  slot.detectionFrameSize,
+                                                                  tuning.threshold,
+                                                                  &result.vulkanDetectMs,
+                                                                  &localError);
+            result.ncnnStats = slot.res10Detector.lastInferenceStats();
+        }
+        result.error = localError;
+        result.handoffProbe = slot.handoff.lastProbe();
+        result.hardwareDirectAttemptReason = slot.handoff.lastHardwareDirectAttemptReason();
+        result.ok = localError.isEmpty() || !result.detections.isEmpty();
+        return result;
+    };
+    auto startPreparedDecoderDetection = [&](int slotIndex) {
+        PreparedDecoderDetectionSlot& slot = decoderDirectSlots[slotIndex];
+        slot.detectionRunning = true;
+        decoderDetectorWorkers[slot.workerIndex]->busy = true;
+        if (detectorWorkersActive > 1) {
+            slot.detectionFuture = std::async(std::launch::async, [&, slotIndex]() {
+                return runPreparedDecoderDetection(slotIndex);
+            });
+        } else {
+            std::promise<PreparedDecoderDetectionResult> promise;
+            promise.set_value(runPreparedDecoderDetection(slotIndex));
+            slot.detectionFuture = promise.get_future();
+        }
+    };
     auto finalizePreparedDecoderSlot = [&](int slotIndex) -> bool {
         PreparedDecoderDetectionSlot& slot = decoderDirectSlots[slotIndex];
         if (!slot.active) {
             return true;
         }
-        QVector<Detection> detections;
-        double vulkanDetectMs = 0.0;
-        jcut::vulkan_detector::NcnnInferenceStats ncnnStats;
-        error.clear();
-        if (options.scrfdDetector) {
-            detections = finalizePreparedScrfdDecoderFrame(&slot.preprocessor,
-                                                           &scrfdDetector,
-                                                           &slot.context,
-                                                           &slot.handoff,
-                                                           slot.scrfdLayout,
-                                                           slot.detectionFrameSize,
-                                                           tuning.threshold,
-                                                           &vulkanDetectMs,
-                                                           &error);
-            ncnnStats = scrfdDetector.lastInferenceStats();
-        } else {
-            detections = finalizePreparedRes10DecoderFrame(&slot.preprocessor,
-                                                           &res10Detector,
-                                                           &slot.context,
-                                                           &slot.handoff,
-                                                           slot.detectionFrameSize,
-                                                           tuning.threshold,
-                                                           &vulkanDetectMs,
-                                                           &error);
-            ncnnStats = res10Detector.lastInferenceStats();
+        if (!slot.detectionRunning) {
+            startPreparedDecoderDetection(slotIndex);
         }
+        PreparedDecoderDetectionResult result = slot.detectionFuture.get();
+        slot.detectionRunning = false;
+        if (slot.workerIndex >= 0 &&
+            slot.workerIndex < static_cast<int>(decoderDetectorWorkers.size())) {
+            decoderDetectorWorkers[slot.workerIndex]->busy = false;
+        }
+        QVector<Detection> detections = result.detections;
         if (slot.decoderVulkanUploadFallback) {
             ++decoderVulkanUploadFallbackFrames;
         }
         if (!slot.hardwareDirectHandoff && !options.allowCpuUploadFallback) {
-            const QString reason = slot.handoff.lastHardwareDirectAttemptReason().isEmpty()
-                ? (error.isEmpty()
+            const QString reason = result.hardwareDirectAttemptReason.isEmpty()
+                ? (result.error.isEmpty()
                        ? QStringLiteral("No supported hardware-direct decoder-to-Vulkan handoff path is available.")
-                       : error)
-                : slot.handoff.lastHardwareDirectAttemptReason();
+                       : result.error)
+                : result.hardwareDirectAttemptReason;
             lastHardwareDirectAttemptReason = reason;
             std::cerr << "CPU upload fallback requires explicit approval via --allow-cpu-upload-fallback. "
                       << "Hardware-direct reason: "
@@ -4499,19 +5624,19 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         if (options.requireHardwareVulkanFramePath && !slot.hardwareDirectHandoff) {
             std::cerr << "Hardware Vulkan frame path required, but hardware-direct handoff was not achieved at frame "
                       << slot.frameNumber << ". Reason: "
-                      << slot.handoff.lastHardwareDirectAttemptReason().toStdString()
+                      << result.hardwareDirectAttemptReason.toStdString()
                       << "\n";
             slot.active = false;
             return false;
         }
-        if (!error.isEmpty() && detections.isEmpty()) {
-            lastHardwareDirectAttemptReason = slot.handoff.lastHardwareDirectAttemptReason();
+        if (!result.error.isEmpty() && detections.isEmpty()) {
+            lastHardwareDirectAttemptReason = result.hardwareDirectAttemptReason;
             std::cerr << "Decoder Vulkan handoff detection failed at frame "
-                      << slot.frameNumber << ": " << error.toStdString() << "\n";
+                      << slot.frameNumber << ": " << result.error.toStdString() << "\n";
             slot.active = false;
             return false;
         }
-        lastHardwareDirectAttemptReason = slot.handoff.lastHardwareDirectAttemptReason();
+        lastHardwareDirectAttemptReason = result.hardwareDirectAttemptReason;
         const QVector<Detection> rawDetections = detections;
         DetectionSanitizeStats sanitizeStats;
         detections = sanitizeDetections(
@@ -4530,6 +5655,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         const QVector<Track> detectionPreviewTracks =
             advanceRuntimeTracks(slot.frameNumber, detections, slot.detectionFrameSize);
+        enqueueLivePreviewSample(slot.frameNumber,
+                                 detectionPreviewTracks,
+                                 detections,
+                                 QStringLiteral("JCut DNN FaceDetections Generator"));
         if (!requireSynchronizedPreview(
                 slot.frameNumber,
                 slot.decodedFrame,
@@ -4560,21 +5689,25 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                                    slot.decoderVulkanUploadFallback,
                                                    slot.hardwareDirectHandoff,
                                                    slot.decoderUploadMs,
-                                                   vulkanDetectMs,
-                                                   ncnnStats,
-                                                   slot.handoff.lastProbe(),
-                                                   slot.handoff.lastHardwareDirectAttemptReason());
+                                                   result.vulkanDetectMs,
+                                                   result.ncnnStats,
+                                                   result.handoffProbe,
+                                                   result.hardwareDirectAttemptReason);
         slot.active = false;
         return recorded;
     };
-    auto prepareDecoderDirectSlot = [&](int frameOffset, int frameNumber) -> bool {
+    auto prepareDecoderDirectSlot = [&](int frameOffset, int frameNumber, int workerIndex) -> bool {
         PreparedDecoderDetectionSlot& slot = decoderDirectSlots[nextDecoderDirectSlot];
         if (slot.active) {
             std::cerr << "Decoder direct pipeline slot exhaustion at frame "
                       << frameNumber << ".\n";
             return false;
         }
+        QElapsedTimer decodeTimer;
+        decodeTimer.start();
         slot.decodedFrame = decoder.decodeFrame(frameNumber);
+        stageTimings.decodeMsTotal += static_cast<double>(decodeTimer.nsecsElapsed()) / 1'000'000.0;
+        ++stageTimings.decodeSamples;
         if (slot.decodedFrame.isNull()) {
             return false;
         }
@@ -4584,17 +5717,26 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         if (slot.decodedFrame.hasCpuImage()) {
             ++cpuFrames;
         }
-        if (detectorContext.device == VK_NULL_HANDLE) {
+        if (detectorWorkersActive > 1) {
+            if (slot.context.device == VK_NULL_HANDLE && !slot.context.initialize(&error)) {
+                std::cerr << "Failed to initialize independent Vulkan detector context for worker "
+                          << workerIndex << " at frame "
+                          << frameNumber << ": " << error.toStdString() << "\n";
+                return false;
+            }
+        } else if (detectorContext.device == VK_NULL_HANDLE) {
             if (!detectorContext.initialize(&error)) {
                 std::cerr << "Failed to initialize shared Vulkan detector context for decoder handoff at frame "
                           << frameNumber << ": " << error.toStdString() << "\n";
                 return false;
             }
         }
-        if (!slot.context.attachExternalDevice(detectorContext.detectorContext(), &error)) {
-            std::cerr << "Failed to attach decoder pipeline slot to shared Vulkan detector context at frame "
-                      << frameNumber << ": " << error.toStdString() << "\n";
-            return false;
+        if (detectorWorkersActive <= 1) {
+            if (!slot.context.attachExternalDevice(detectorContext.detectorContext(), &error)) {
+                std::cerr << "Failed to attach decoder pipeline slot to shared Vulkan detector context at frame "
+                          << frameNumber << ": " << error.toStdString() << "\n";
+                return false;
+            }
         }
         if (!slot.handoff.isInitialized()) {
             if (!slot.handoff.initialize(slot.context.detectorContext(), &error)) {
@@ -4622,14 +5764,18 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         slot.frameOffset = frameOffset;
         slot.detectionFrameSize = slot.decodedFrame.size().isValid() ? slot.decodedFrame.size() : renderSize;
         slot.decoderUploadMs = 0.0;
+        slot.workerIndex = workerIndex;
         slot.hardwareDirectHandoff = false;
         slot.decoderVulkanUploadFallback = false;
+        slot.detectionRunning = false;
         slot.scrfdLayout = {};
         error.clear();
         bool prepared = false;
+        QElapsedTimer handoffTimer;
+        handoffTimer.start();
         if (options.scrfdDetector) {
             prepared = prepareScrfdDecoderFrame(&slot.preprocessor,
-                                                &scrfdDetector,
+                                                &slot.scrfdDetector,
                                                 &slot.context,
                                                 &slot.handoff,
                                                 slot.decodedFrame,
@@ -4645,7 +5791,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                                 &error);
         } else {
             prepared = prepareRes10DecoderFrame(&slot.preprocessor,
-                                                &res10Detector,
+                                                &slot.res10Detector,
                                                 &slot.context,
                                                 &slot.handoff,
                                                 slot.decodedFrame,
@@ -4658,6 +5804,8 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                                 &slot.detectionFrameSize,
                                                 &error);
         }
+        stageTimings.handoffMsTotal += static_cast<double>(handoffTimer.nsecsElapsed()) / 1'000'000.0;
+        ++stageTimings.handoffSamples;
         if (!prepared) {
             if (!error.isEmpty()) {
                 std::cerr << "Decoder Vulkan handoff preparation failed at frame "
@@ -4668,8 +5816,25 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         slot.decoderVulkanUploadFallback = slot.handoff.usedCpuUpload();
         slot.active = true;
         pendingDecoderDirectSlots.push_back(nextDecoderDirectSlot);
-        nextDecoderDirectSlot = (nextDecoderDirectSlot + 1) % 2;
+        startPreparedDecoderDetection(nextDecoderDirectSlot);
+        nextDecoderDirectSlot = (nextDecoderDirectSlot + 1) % decoderDirectPipelineSlots;
         return true;
+    };
+    auto freeDecoderWorkerIndex = [&]() -> int {
+        for (int i = 0; i < static_cast<int>(decoderDetectorWorkers.size()); ++i) {
+            if (!decoderDetectorWorkers[i]->busy) {
+                return i;
+            }
+        }
+        return -1;
+    };
+    auto finalizeOldestPendingDecoderSlot = [&]() -> bool {
+        if (pendingDecoderDirectSlots.empty()) {
+            return true;
+        }
+        const int slotIndex = pendingDecoderDirectSlots.front();
+        pendingDecoderDirectSlots.pop_front();
+        return finalizePreparedDecoderSlot(slotIndex);
     };
     for (int frameOffset = resumeStartOffset; frameOffset < totalFrames; ++frameOffset) {
         const int frameNumber = options.startFrame + frameOffset;
@@ -4677,7 +5842,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             ++decoded;
             const bool previewFrameDue =
                 !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
-            if (livePreviewWindow && previewFrameDue) {
+            if (blockingPreviewRequested && previewFrameDue) {
                 const QVector<Track>& resumedTracks = runtimeTracks;
                 const QVector<Detection> resumedDetections;
                 if (preferDecoderDirectDetection) {
@@ -4735,19 +5900,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     }
                 }
             }
-            if (detectorControls.window) {
-                const auto now = std::chrono::steady_clock::now();
-                const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
-                updateDetectorRuntimeStats(&detectorControls,
-                                           frameOffset,
-                                           totalFrames,
-                                           frameNumber,
-                                           processed,
-                                           totalDetections,
-                                           0,
-                                           elapsedSec,
-                                           &etaTracker);
-            }
+            refreshRuntimeStats(frameOffset, frameNumber, 0);
             if (options.progress &&
                 shouldRenderProgress(frameOffset,
                                      totalFrames,
@@ -4784,6 +5937,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                          qMax(options.startFrame, latestProcessedFrame));
                 livePreviewWindow->pumpEvents();
                 runtimePaused = livePreviewWindow->processingPausedRequested();
+                drainLivePreviewQueue();
             }
         }
         while (runtimePaused) {
@@ -4811,6 +5965,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 if (previewFrame >= options.startFrame && previewFrame <= latestProcessedFrame &&
                     (livePreviewWindow->lastPresentedSourceFrame() != previewFrame ||
                      livePreviewWindow->previewRefreshRequested())) {
+                    livePreviewQueue.clear();
                     renderAndPresentLivePreviewWindow(previewFrame,
                                                      tracksForFrame(previewFrame),
                                                      detectionsForFrame(previewFrame),
@@ -4878,19 +6033,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         }
         ++decoded;
         if ((frameNumber % tuning.stride) != 0) {
-            if (detectorControls.window) {
-                const auto now = std::chrono::steady_clock::now();
-                const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
-                updateDetectorRuntimeStats(&detectorControls,
-                                           frameOffset,
-                                           totalFrames,
-                                           frameNumber,
-                                           processed,
-                                           totalDetections,
-                                           0,
-                                           elapsedSec,
-                                           &etaTracker);
-            }
+            refreshRuntimeStats(frameOffset, frameNumber, 0);
             continue;
         }
 
@@ -4905,7 +6048,11 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
 
         if (zeroCopyVulkanDetector) {
             auto processDecoderFrameDirectly = [&]() -> bool {
+                QElapsedTimer decodeTimer;
+                decodeTimer.start();
                 editor::FrameHandle decodedFrame = decoder.decodeFrame(frameNumber);
+                stageTimings.decodeMsTotal += static_cast<double>(decodeTimer.nsecsElapsed()) / 1'000'000.0;
+                ++stageTimings.decodeSamples;
                 if (decodedFrame.isNull()) {
                     return false;
                 }
@@ -5035,6 +6182,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 }
                 const QVector<Track> detectionPreviewTracks =
                     advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
+                enqueueLivePreviewSample(frameNumber,
+                                         detectionPreviewTracks,
+                                         detections,
+                                         QStringLiteral("JCut DNN FaceDetections Generator"));
                 if (!requireSynchronizedPreview(
                         frameNumber,
                         decodedFrame,
@@ -5060,30 +6211,26 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             bool frameProcessed = false;
             if (preferDecoderDirectDetection) {
                 if (decoderDirectPipelineEnabled()) {
-                    if (!prepareDecoderDirectSlot(frameOffset, frameNumber)) {
-                        continue;
-                    }
-                    if (pendingDecoderDirectSlots.size() < 2) {
-                        if (detectorControls.window) {
-                            const auto now = std::chrono::steady_clock::now();
-                            const double elapsedSec = std::chrono::duration<double>(now - wallStart).count();
-                            updateDetectorRuntimeStats(&detectorControls,
-                                                       frameOffset,
-                                                       totalFrames,
-                                                       frameNumber,
-                                                       processed,
-                                                       totalDetections,
-                                                       0,
-                                                       elapsedSec,
-                                                       &etaTracker);
+                    while (pendingDecoderDirectSlots.size() >= static_cast<size_t>(decoderDirectPipelineSlots) ||
+                           freeDecoderWorkerIndex() < 0) {
+                        if (!finalizeOldestPendingDecoderSlot()) {
+                            continue;
                         }
+                        drainLivePreviewQueue();
+                    }
+                    const int workerIndex = freeDecoderWorkerIndex();
+                    if (workerIndex < 0 || !prepareDecoderDirectSlot(frameOffset, frameNumber, workerIndex)) {
                         continue;
                     }
-                    const int slotIndex = pendingDecoderDirectSlots.front();
-                    pendingDecoderDirectSlots.pop_front();
-                    if (!finalizePreparedDecoderSlot(slotIndex)) {
+                    if (pendingDecoderDirectSlots.size() < static_cast<size_t>(decoderDirectPipelineSlots) &&
+                        freeDecoderWorkerIndex() >= 0) {
+                        refreshRuntimeStats(frameOffset, frameNumber, 0);
                         continue;
                     }
+                    if (!finalizeOldestPendingDecoderSlot()) {
+                        continue;
+                    }
+                    drainLivePreviewQueue();
                     continue;
                 }
                 frameProcessed = processDecoderFrameDirectly();
@@ -5180,8 +6327,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
                 const bool needsPreviewFrame =
                     previewFrameDue &&
-                    (livePreviewWindow ||
-                     previewSocketPtr ||
+                    (previewSocketPtr ||
                      (options.writePreviewFiles && previewWritten < options.previewFrames));
                 if (needsPreviewFrame) {
                     if (!requireSynchronizedOffscreenPreview(
@@ -5202,6 +6348,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                         return 2;
                     }
                 }
+                enqueueLivePreviewSample(frameNumber,
+                                         detectionPreviewTracks,
+                                         detections,
+                                         QStringLiteral("JCut DNN FaceDetections Generator"));
             }
         } else {
 #if JCUT_HAVE_OPENCV
@@ -5327,8 +6477,7 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                 !previewPipelinePrimed || ((frameNumber % effectivePreviewStride) == 0);
             const bool needsPreviewFrame =
                 previewFrameDue &&
-                (livePreviewWindow ||
-                 previewSocketPtr ||
+                (previewSocketPtr ||
                  (options.writePreviewFiles && previewWritten < options.previewFrames));
             if (needsPreviewFrame) {
                 if (!requireSynchronizedOffscreenPreview(
@@ -5341,6 +6490,10 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                     return 2;
                 }
             }
+            enqueueLivePreviewSample(frameNumber,
+                                     detectionPreviewTracks,
+                                     detections,
+                                     QStringLiteral("JCut Materialized Generate FaceDetections"));
             if (needsPreviewFrame && !previewRequiresSynchronizedDetection) {
                 emitPreview(frameImage,
                             frameNumber,
@@ -5366,16 +6519,64 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
                                   decoderFrameHandoff.lastHardwareDirectAttemptReason())) {
             return 2;
         }
+        drainLivePreviewQueue();
     }
     while (!pendingDecoderDirectSlots.empty()) {
-        const int slotIndex = pendingDecoderDirectSlots.front();
-        pendingDecoderDirectSlots.pop_front();
-        if (!finalizePreparedDecoderSlot(slotIndex)) {
+        if (!finalizeOldestPendingDecoderSlot()) {
             continue;
         }
+        drainLivePreviewQueue();
     }
+    drainLivePreviewQueue(true);
     if (options.progress) {
         std::cout << "\n";
+    }
+    refreshRuntimeStats(qMax(0, totalFrames - 1), finalFrame, liveTrackCount(runtimeTracks), true);
+    if (faceStreamWriter) {
+        QString writerCloseError;
+        if (!faceStreamWriter->close(&writerCloseError)) {
+            std::cerr << writerCloseError.toStdString() << "\n";
+            return 2;
+        }
+    }
+    saveCompactResumeIndex(true);
+    if (resume.fullPayloadDeferred) {
+        if (livePreviewWindow) {
+            setPreviewStatusText(QStringLiteral(
+                "Finalizing FaceDetections artifacts: replaying checkpoint payload..."));
+            appPtr->processEvents();
+        }
+        FaceDetectionsResumeState fullResume;
+        QString fullResumeError;
+        QElapsedTimer fullReplayTimer;
+        fullReplayTimer.start();
+        if (!loadFaceDetectionsResume(faceStreamPath,
+                                      options.videoPath,
+                                      backend,
+                                      options.startFrame,
+                                      finalFrame,
+                                      &fullResume,
+                                      &fullResumeError)) {
+            std::cerr << "Failed to replay facedetections checkpoint for final artifacts: "
+                      << fullResumeError.toStdString() << "\n";
+            return 2;
+        }
+        frameRows = fullResume.frameRows;
+        rawDetectionFrames = fullResume.rawDetectionFrames;
+        trackDetectionsByFrame = fullResume.trackDetectionsByFrame;
+        rawDetectionFrameIndexByFrame.clear();
+        for (int i = 0; i < rawDetectionFrames.size(); ++i) {
+            const int frameNumber = rawDetectionFrames.at(i).toObject().value(QStringLiteral("frame")).toInt(-1);
+            if (frameNumber >= 0) {
+                rawDetectionFrameIndexByFrame.insert(frameNumber, i);
+            }
+        }
+        if (options.verbose) {
+            std::cout << "final_facedetections_checkpoint_replay_ms="
+                      << fullReplayTimer.elapsed()
+                      << " frames=" << rawDetectionFrames.size()
+                      << "\n";
+        }
     }
     const auto wallEnd = std::chrono::steady_clock::now();
     struct PersistedTrackAccumulator {
@@ -5507,6 +6708,25 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
          !options.requireHardwareVulkanFramePath || decoderVulkanUploadFallbackFrames == 0 || hardwareDirectHandoffFrames > 0},
         {QStringLiteral("decoded_frames"), decoded},
         {QStringLiteral("processed_frames"), processed},
+        {QStringLiteral("decoder_direct_pipeline_slots"), decoderDirectPipelineSlots},
+        {QStringLiteral("detector_workers_requested"), options.detectorWorkers},
+        {QStringLiteral("detector_workers_active"), detectorWorkersActive},
+        {QStringLiteral("detector_workers_note"),
+         detectorWorkersActive > 1
+             ? QStringLiteral("Independent detector workers active; each prepared slot owns an independent Vulkan device/queue and detector instance. Worker permits bound concurrency while results are consumed in frame order.")
+             : QStringLiteral("Single detector worker active.")},
+        {QStringLiteral("async_checkpoint_writer_enabled"), static_cast<bool>(faceStreamWriter)},
+        {QStringLiteral("checkpoint_writer_queue_capacity"), options.checkpointWriterQueueCapacity},
+        {QStringLiteral("checkpoint_writer_current_backlog"), faceStreamWriter ? faceStreamWriter->backlog() : 0},
+        {QStringLiteral("checkpoint_writer_max_backlog"), faceStreamWriter ? faceStreamWriter->maxBacklog() : 0},
+        {QStringLiteral("checkpoint_writer_records_queued"), faceStreamWriter ? faceStreamWriter->recordsQueued() : faceStreamRecordsSubmitted},
+        {QStringLiteral("checkpoint_writer_records_written"), faceStreamWriter ? faceStreamWriter->recordsWritten() : faceStreamRecordsWrittenSync},
+        {QStringLiteral("checkpoint_writer_backpressure_waits"), faceStreamWriter ? faceStreamWriter->backpressureWaits() : 0},
+        {QStringLiteral("checkpoint_writer_backpressure_ms"), faceStreamWriter ? faceStreamWriter->backpressureMs() : 0.0},
+        {QStringLiteral("checkpoint_writer_avg_write_ms"),
+         (faceStreamWriter && faceStreamWriter->recordsWritten() > 0)
+             ? faceStreamWriter->writeMsTotal() / static_cast<double>(faceStreamWriter->recordsWritten())
+             : stageTimings.avgCheckpointWriteMs()},
         {QStringLiteral("sampling_note"), QStringLiteral("processed_frames increments only on frames where frame_number %% stride == 0")},
         {QStringLiteral("cpu_frames"), cpuFrames},
         {QStringLiteral("hardware_frames"), hardwareFrames},
@@ -5525,6 +6745,20 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         {QStringLiteral("track_count"), trackRows.size()},
         {QStringLiteral("preview_frames_written"), previewWritten},
         {QStringLiteral("preview_stride"), options.previewStride},
+        {QStringLiteral("live_preview_enabled"), static_cast<bool>(livePreviewWindow)},
+        {QStringLiteral("live_preview_on_detection_critical_path"), livePreviewDetectorThreadRenders > 0},
+        {QStringLiteral("live_preview_detector_thread_app_renders"), livePreviewDetectorThreadRenders},
+        {QStringLiteral("live_preview_buffer_capacity"), kLivePreviewQueueCapacity},
+        {QStringLiteral("live_preview_min_present_interval_sec"), kLivePreviewMinPresentIntervalSec},
+        {QStringLiteral("live_preview_samples_queued"), livePreviewQueued},
+        {QStringLiteral("live_preview_samples_presented"), livePreviewPresented},
+        {QStringLiteral("live_preview_samples_dropped"), livePreviewDropped},
+        {QStringLiteral("live_preview_present_samples"), livePreviewPresentSamples},
+        {QStringLiteral("live_preview_present_ms_total"), livePreviewPresentMsTotal},
+        {QStringLiteral("live_preview_avg_present_ms"), livePreviewPresentSamples > 0
+            ? livePreviewPresentMsTotal / static_cast<double>(livePreviewPresentSamples)
+            : 0.0},
+        {QStringLiteral("preview_requires_synchronized_detection"), previewRequiresSynchronizedDetection},
         {QStringLiteral("scrfd_model_variant"), normalizedScrfdModelVariant},
         {QStringLiteral("avg_render_decode_ms"), processed ? renderDecodeMsTotal / processed : 0.0},
         {QStringLiteral("avg_render_composite_ms"), processed ? renderCompositeMsTotal / processed : 0.0},
@@ -5538,6 +6772,16 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
         {QStringLiteral("avg_ncnn_extract_level32_ms"), processed ? ncnnExtractLevel32MsTotal / processed : 0.0},
         {QStringLiteral("avg_ncnn_post_ms"), processed ? ncnnPostMsTotal / processed : 0.0},
         {QStringLiteral("avg_ncnn_total_ms"), processed ? ncnnTotalMsTotal / processed : 0.0},
+        {QStringLiteral("avg_stage_decode_ms"), stageTimings.avgDecodeMs()},
+        {QStringLiteral("avg_stage_handoff_prepare_ms"), stageTimings.avgHandoffMs()},
+        {QStringLiteral("avg_stage_inference_wall_ms"), stageTimings.avgInferenceWallMs()},
+        {QStringLiteral("avg_stage_tracking_ms"), stageTimings.avgTrackingMs()},
+        {QStringLiteral("avg_stage_checkpoint_enqueue_ms"), stageTimings.avgCheckpointWriteMs()},
+        {QStringLiteral("stage_decode_samples"), stageTimings.decodeSamples},
+        {QStringLiteral("stage_handoff_prepare_samples"), stageTimings.handoffSamples},
+        {QStringLiteral("stage_inference_samples"), stageTimings.inferenceSamples},
+        {QStringLiteral("stage_tracking_samples"), stageTimings.trackingSamples},
+        {QStringLiteral("stage_checkpoint_enqueue_samples"), stageTimings.checkpointWriteSamples},
         {QStringLiteral("wall_sec"), std::chrono::duration<double>(wallEnd - wallStart).count()},
         {QStringLiteral("decode_zero_copy"), decodeZeroCopy},
         {QStringLiteral("qimage_materialized"), options.materializedGenerateFacestream},

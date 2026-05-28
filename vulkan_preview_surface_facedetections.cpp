@@ -152,9 +152,15 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     }
 
     editor::TranscriptEngine engine;
+    QJsonObject processedArtifactRoot;
+    if (engine.loadFacestreamProcessedArtifact(transcriptPath, &processedArtifactRoot)) {
+        entry.tracks += parseContinuityTracksForClip(clip, processedArtifactRoot);
+    }
     QJsonObject artifactRoot;
     if (engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
-        entry.tracks += parseContinuityTracksForClip(clip, artifactRoot);
+        if (entry.tracks.isEmpty()) {
+            entry.tracks += parseContinuityTracksForClip(clip, artifactRoot);
+        }
         entry.rawDetections += parseRawDetectionsForClip(clip, artifactRoot);
         for (const VulkanPreviewFacestreamOverlay& detection : entry.rawDetections) {
             entry.rawDetectionsBySourceFrame[detection.sourceFrame].push_back(detection);
