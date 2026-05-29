@@ -2,10 +2,15 @@
 
 #include <QDataStream>
 #include <QFile>
+#include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QString>
+#include <QVector>
 
 #include <nlohmann/json.hpp>
 
@@ -204,6 +209,40 @@ inline bool readBinaryJsonObject(const QString& path,
     if (objectOut) {
         *objectOut = QJsonObject{};
     }
+    const QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1").arg(path);
+        }
+        return false;
+    }
+
+    struct BinaryJsonCacheEntry {
+        qint64 modifiedMs = 0;
+        qint64 fileSize = 0;
+        QJsonObject object;
+    };
+    constexpr int kMaxBinaryJsonCacheEntries = 8;
+    static QMutex cacheMutex;
+    static QHash<QString, BinaryJsonCacheEntry> cache;
+    const QString canonicalPath = info.canonicalFilePath().isEmpty()
+        ? info.absoluteFilePath()
+        : info.canonicalFilePath();
+    const QString cacheKey =
+        QStringLiteral("%1|%2|%3").arg(canonicalPath).arg(expectedMagic).arg(expectedVersion);
+    {
+        QMutexLocker locker(&cacheMutex);
+        const auto cached = cache.constFind(cacheKey);
+        if (cached != cache.cend() &&
+            cached->modifiedMs == info.lastModified().toMSecsSinceEpoch() &&
+            cached->fileSize == info.size()) {
+            if (objectOut) {
+                *objectOut = cached->object;
+            }
+            return true;
+        }
+    }
+
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         if (errorOut) {
@@ -225,7 +264,25 @@ inline bool readBinaryJsonObject(const QString& path,
         }
         return false;
     }
-    return parseObjectBytes(qUncompress(compressed), objectOut, errorOut);
+    QJsonObject parsedObject;
+    if (!parseObjectBytes(qUncompress(compressed), &parsedObject, errorOut)) {
+        return false;
+    }
+    {
+        QMutexLocker locker(&cacheMutex);
+        if (cache.size() >= kMaxBinaryJsonCacheEntries && !cache.contains(cacheKey)) {
+            cache.erase(cache.begin());
+        }
+        cache.insert(cacheKey,
+                     BinaryJsonCacheEntry{
+                         info.lastModified().toMSecsSinceEpoch(),
+                         info.size(),
+                         parsedObject});
+    }
+    if (objectOut) {
+        *objectOut = parsedObject;
+    }
+    return true;
 }
 
 inline bool appendBinaryJsonRecord(QFile* file,
@@ -267,6 +324,71 @@ inline bool appendBinaryJsonRecord(QFile* file,
 inline bool parseRecordPayload(const QByteArray& payload, QJsonObject* objectOut, QString* errorOut = nullptr)
 {
     return parseObjectBytes(payload, objectOut, errorOut);
+}
+
+inline bool readBinaryJsonRecords(const QString& path,
+                                  QVector<QJsonObject>* recordsOut,
+                                  quint32 expectedMagic = 0x4A465352,
+                                  quint32 expectedVersion = 1,
+                                  QString* errorOut = nullptr)
+{
+    if (recordsOut) {
+        recordsOut->clear();
+    }
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1").arg(path);
+        }
+        return false;
+    }
+
+    QDataStream stream(&file);
+    stream.setVersion(QDataStream::Qt_6_0);
+    QVector<QJsonObject> records;
+    while (!stream.atEnd()) {
+        quint32 magic = 0;
+        quint32 version = 0;
+        quint32 compressedSize = 0;
+        stream >> magic;
+        stream >> version;
+        stream >> compressedSize;
+        if (stream.status() != QDataStream::Ok ||
+            magic != expectedMagic ||
+            version != expectedVersion) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Invalid binary JSON record header in %1").arg(path);
+            }
+            return false;
+        }
+        if (compressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
+            if (errorOut) {
+                *errorOut = QStringLiteral("Binary JSON record is too large in %1").arg(path);
+            }
+            return false;
+        }
+        QByteArray compressed;
+        compressed.resize(static_cast<int>(compressedSize));
+        if (compressedSize > 0) {
+            const int bytesRead = stream.readRawData(compressed.data(), static_cast<int>(compressedSize));
+            if (bytesRead != static_cast<int>(compressedSize)) {
+                if (errorOut) {
+                    *errorOut = QStringLiteral("Truncated binary JSON record in %1").arg(path);
+                }
+                return false;
+            }
+        }
+        QJsonObject object;
+        if (!parseRecordPayload(qUncompress(compressed), &object, errorOut)) {
+            return false;
+        }
+        records.push_back(object);
+    }
+
+    if (recordsOut) {
+        *recordsOut = records;
+    }
+    return true;
 }
 
 } // namespace jcut::jsonio

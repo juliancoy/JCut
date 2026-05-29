@@ -3559,6 +3559,90 @@ bool appendBinaryJsonRecord(QFile* file, const QJsonObject& object)
     return jcut::jsonio::appendBinaryJsonRecord(file, object, 0x4A465352, 1, nullptr);
 }
 
+bool writeBinaryJsonRecordFile(const QString& path,
+                               const std::function<bool(QFile*)>& writeRecords)
+{
+    const QString tempPath = path + QStringLiteral(".tmp");
+    QFile::remove(tempPath);
+    QFile file(tempPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return false;
+    }
+    if (!writeRecords(&file)) {
+        file.close();
+        QFile::remove(tempPath);
+        return false;
+    }
+    if (!file.flush()) {
+        file.close();
+        QFile::remove(tempPath);
+        return false;
+    }
+    file.close();
+    QFile::remove(path);
+    return QFile::rename(tempPath, path);
+}
+
+bool writeDetectionsRecordArtifact(const QString& path,
+                                   const QString& videoPath,
+                                   const QString& backend,
+                                   const QJsonArray& rawDetectionFrames)
+{
+    return writeBinaryJsonRecordFile(path, [&](QFile* file) {
+        if (!appendBinaryJsonRecord(file, QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("meta")},
+                {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_detections_v1")},
+                {QStringLiteral("video"), videoPath},
+                {QStringLiteral("backend"), backend},
+                {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")}
+            })) {
+            return false;
+        }
+        for (const QJsonValue& frameValue : rawDetectionFrames) {
+            QJsonObject frame = frameValue.toObject();
+            frame[QStringLiteral("type")] = QStringLiteral("frame");
+            if (!appendBinaryJsonRecord(file, frame)) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
+bool writeTracksRecordArtifact(const QString& path,
+                               const QString& videoPath,
+                               const QString& backend,
+                               const QJsonArray& trackRows,
+                               const QJsonArray& frameRows)
+{
+    return writeBinaryJsonRecordFile(path, [&](QFile* file) {
+        if (!appendBinaryJsonRecord(file, QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("meta")},
+                {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
+                {QStringLiteral("video"), videoPath},
+                {QStringLiteral("backend"), backend},
+                {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")}
+            })) {
+            return false;
+        }
+        for (const QJsonValue& trackValue : trackRows) {
+            QJsonObject track = trackValue.toObject();
+            track[QStringLiteral("type")] = QStringLiteral("track");
+            if (!appendBinaryJsonRecord(file, track)) {
+                return false;
+            }
+        }
+        for (const QJsonValue& frameValue : frameRows) {
+            QJsonObject frameSummary = frameValue.toObject();
+            frameSummary[QStringLiteral("type")] = QStringLiteral("frame_summary");
+            if (!appendBinaryJsonRecord(file, frameSummary)) {
+                return false;
+            }
+        }
+        return true;
+    });
+}
+
 class AsyncFaceStreamWriter {
 public:
     explicit AsyncFaceStreamWriter(int capacity)
@@ -6984,31 +7068,39 @@ static int runVulkanFacestreamOffscreenWithArgv(int argc, char** argv)
             {QStringLiteral("detections"), accumulator.detections}
         });
     }
-    writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("detections.bin")), QJsonObject{
-        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_detections_v1")},
-        {QStringLiteral("video"), options.videoPath},
-        {QStringLiteral("backend"), backend},
-        {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")},
-        {QStringLiteral("frames"), rawDetectionFrames}
-    });
-    writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("tracks.bin")), QJsonObject{
-        {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
-        {QStringLiteral("video"), options.videoPath},
-        {QStringLiteral("backend"), backend},
-        {QStringLiteral("frame_domain"), QStringLiteral("source_absolute")},
-        {QStringLiteral("tracks"), trackRows},
-        {QStringLiteral("frame_summaries"), frameRows}
-    });
-    const QJsonObject continuityRoot = jcut::facedetections::buildContinuityRoot(
-        QStringLiteral("offscreen"),
-        false,
-        0,
-        qMax(0, options.startFrame + totalFrames - 1),
-        QJsonArray{},
-        trackRows,
-        rawDetectionFrames,
-        backend);
-    writeBinaryJsonObject(QDir(options.outputDir).filePath(QStringLiteral("continuity_facedetections.bin")), QJsonObject{
+    const QDir outputDir(options.outputDir);
+    const QString detectionsArtifactPath = outputDir.filePath(QStringLiteral("detections.bin"));
+    const QString tracksArtifactPath = outputDir.filePath(QStringLiteral("tracks.bin"));
+    const QString continuityArtifactPath = outputDir.filePath(QStringLiteral("continuity_facedetections.bin"));
+    if (!writeDetectionsRecordArtifact(detectionsArtifactPath, options.videoPath, backend, rawDetectionFrames)) {
+        std::cerr << "Failed to write detections artifact: "
+                  << detectionsArtifactPath.toStdString() << "\n";
+        return 2;
+    }
+    if (!writeTracksRecordArtifact(tracksArtifactPath, options.videoPath, backend, trackRows, frameRows)) {
+        std::cerr << "Failed to write tracks artifact: "
+                  << tracksArtifactPath.toStdString() << "\n";
+        return 2;
+    }
+    const QJsonObject continuityRoot{
+        {QStringLiteral("run_id"), QStringLiteral("offscreen")},
+        {QStringLiteral("updated_at_utc"), QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+        {QStringLiteral("only_dialogue"), false},
+        {QStringLiteral("scan_start_frame"), 0},
+        {QStringLiteral("scan_end_frame"), qMax(0, options.startFrame + totalFrames - 1)},
+        {QStringLiteral("raw_tracks_artifact_path"), tracksArtifactPath},
+        {QStringLiteral("raw_frames_artifact_path"), detectionsArtifactPath},
+        {QStringLiteral("continuity_artifact_path"), continuityArtifactPath},
+        {QStringLiteral("raw_tracks_count"), trackRows.size()},
+        {QStringLiteral("raw_frames_count"), rawDetectionFrames.size()},
+        {QStringLiteral("raw_tracks_schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
+        {QStringLiteral("raw_frames_schema"), QStringLiteral("jcut_facedetections_offscreen_detections_v1")},
+        {QStringLiteral("raw_tracks_frame_domain"), QStringLiteral("source_absolute")},
+        {QStringLiteral("raw_frames_frame_domain"), QStringLiteral("source_absolute")},
+        {QStringLiteral("streams_frame_domain"), QStringLiteral("source_absolute")},
+        {QStringLiteral("detector_mode"), backend}
+    };
+    writeBinaryJsonObject(continuityArtifactPath, QJsonObject{
         {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_v1")},
         {QStringLiteral("continuity_facedetections_by_clip"), QJsonObject{
             {QStringLiteral("facedetections-offscreen-source"), continuityRoot}

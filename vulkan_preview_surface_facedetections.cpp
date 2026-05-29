@@ -59,7 +59,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
         continuityRoot,
         QStringLiteral("streams_frame_domain"),
         &fallbackFrameDomain);
-    const QJsonArray streams = jcut::facedetections::continuityStreamsForRoot(continuityRoot);
+    const QJsonArray streams = jcut::facedetections::storedContinuityStreamsForRoot(continuityRoot);
     tracks.reserve(streams.size());
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject streamObj = streamValue.toObject();

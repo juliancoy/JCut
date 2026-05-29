@@ -182,7 +182,8 @@ private slots:
     void onSpeakerFindMatchingTracksClicked();
 
 private:
-    bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator);
+    bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
+                                        bool clearDerivedCaches = true);
     bool saveLoadedTranscriptDocument();
     void queueLoadedTranscriptDocumentSave();
     void startTranscriptLoadRequest(const QString& clipFilePath,
@@ -360,6 +361,7 @@ private:
     bool m_skipNextPlayheadTrackCandidateRefresh = false;
     bool m_refreshingFaceDetectionsPathsPanel = false;
     bool m_faceStreamPanelRefreshQueued = false;
+    bool m_assignmentHistorySnapshotQueued = false;
     bool m_selectedSpeakerPanelRefreshQueued = false;
     QTimer* m_faceStreamPanelRefreshTimer = nullptr;
     QTimer* m_selectedSpeakerPanelRefreshTimer = nullptr;

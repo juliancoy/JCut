@@ -21,7 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 ONSCREEN_BASE_URL = "http://127.0.0.1:40130"
 OFFSCREEN_BASE_URL = "http://127.0.0.1:40131"
 BASE_URL = ONSCREEN_BASE_URL
-EDITOR_PROCESS_PATTERN = f"{REPO_ROOT}/(build|build-asan)/(editor|jcut)"
+EDITOR_PROCESS_PATTERNS = (
+    f"{REPO_ROOT}/(build|build-asan)/(editor|jcut)",
+    f"{REPO_ROOT.name}/(build|build-asan)/(editor|jcut)",
+    r"(^| )\./(build|build-asan)/(editor|jcut)( |$)",
+)
+EDITOR_LOCK_PATH = Path("/tmp/PanelTalkEditor.lock")
 
 
 class TestFailure(RuntimeError):
@@ -44,6 +49,8 @@ class Diagnostics:
     last_profile: dict[str, Any] | None = None
     last_health: dict[str, Any] | None = None
     last_pid: int | None = None
+    max_playhead_latency_ms: float = 0.0
+    max_profile_latency_ms: float = 0.0
 
     def add_playhead_sample(self, status: str, detail: str, payload: dict[str, Any] | None = None) -> None:
         self.playhead_samples.append(
@@ -88,54 +95,85 @@ def find_widget(node: dict[str, Any], widget_id: str) -> dict[str, Any] | None:
 
 
 def kill_existing_editors() -> None:
-    probe = subprocess.run(
-        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
-        text=True,
-        capture_output=True,
-        cwd=str(REPO_ROOT),
-    )
-    if probe.returncode not in (0, 1):
-        raise TestFailure(f"failed to probe existing editor processes: {probe.stderr.strip()}")
-    if probe.returncode == 1:
-        return
-
-    for line in probe.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        pid = int(line)
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            continue
-
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
+    for pattern in EDITOR_PROCESS_PATTERNS:
         probe = subprocess.run(
-            ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
+            ["pgrep", "-f", pattern],
             text=True,
             capture_output=True,
             cwd=str(REPO_ROOT),
         )
+        if probe.returncode not in (0, 1):
+            raise TestFailure(f"failed to probe existing editor processes: {probe.stderr.strip()}")
         if probe.returncode == 1:
+            continue
+
+        for line in probe.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            pid = int(line)
+            if pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        any_running = False
+        for pattern in EDITOR_PROCESS_PATTERNS:
+            probe = subprocess.run(
+                ["pgrep", "-f", pattern],
+                text=True,
+                capture_output=True,
+                cwd=str(REPO_ROOT),
+            )
+            if probe.returncode == 0:
+                any_running = True
+                break
+            if probe.returncode != 1:
+                raise TestFailure(f"failed to reprobe existing editor processes: {probe.stderr.strip()}")
+        if not any_running:
+            remove_stale_editor_lock()
             return
         time.sleep(0.1)
 
-    probe = subprocess.run(
-        ["pgrep", "-f", EDITOR_PROCESS_PATTERN],
-        text=True,
-        capture_output=True,
-        cwd=str(REPO_ROOT),
-    )
-    for line in probe.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        pid = int(line)
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            continue
+    for pattern in EDITOR_PROCESS_PATTERNS:
+        probe = subprocess.run(
+            ["pgrep", "-f", pattern],
+            text=True,
+            capture_output=True,
+            cwd=str(REPO_ROOT),
+        )
+        for line in probe.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            pid = int(line)
+            if pid == os.getpid():
+                continue
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                continue
+    remove_stale_editor_lock()
+
+
+def remove_stale_editor_lock() -> None:
+    if not EDITOR_LOCK_PATH.exists():
+        return
+    try:
+        first_line = EDITOR_LOCK_PATH.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+        pid = int(first_line.strip())
+    except (IndexError, OSError, ValueError):
+        return
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        EDITOR_LOCK_PATH.unlink(missing_ok=True)
+    except PermissionError:
+        return
 
 
 def wait_until(predicate, timeout: float, interval: float = 0.1, description: str = "condition") -> Any:
@@ -270,15 +308,31 @@ def wait_for_playhead_progress(
     stall_timeout: float,
     max_consecutive_failures: int,
     poll_interval: float,
+    max_playhead_latency_ms: float,
+    max_profile_latency_ms: float,
+    max_heartbeat_age_ms: int,
+    profile_interval: float,
 ) -> int:
     deadline = time.time() + monitor_seconds
     max_frame = -1
     last_frame: int | None = None
     last_advance_at = time.time()
+    last_profile_at = 0.0
     consecutive_failures = 0
 
     while time.time() < deadline:
+        request_started = time.perf_counter()
         ok, result = try_request("/playhead", timeout=1.0)
+        playhead_latency_ms = (time.perf_counter() - request_started) * 1000.0
+        diagnostics.max_playhead_latency_ms = max(
+            diagnostics.max_playhead_latency_ms,
+            playhead_latency_ms,
+        )
+        if max_playhead_latency_ms > 0 and playhead_latency_ms > max_playhead_latency_ms:
+            raise TestFailure(
+                f"/playhead latency {playhead_latency_ms:.1f}ms exceeded budget "
+                f"{max_playhead_latency_ms:.1f}ms"
+            )
         if ok:
             playhead = result
             diagnostics.last_good_playhead = playhead
@@ -304,6 +358,36 @@ def wait_for_playhead_progress(
             raise TestFailure(
                 f"playhead stalled for {stall_timeout:.1f}s during playback monitor window"
             )
+
+        now = time.time()
+        if profile_interval > 0 and now - last_profile_at >= profile_interval:
+            last_profile_at = now
+            profile_started = time.perf_counter()
+            ok, profile_result = try_request("/profile", timeout=2.0)
+            profile_latency_ms = (time.perf_counter() - profile_started) * 1000.0
+            diagnostics.max_profile_latency_ms = max(
+                diagnostics.max_profile_latency_ms,
+                profile_latency_ms,
+            )
+            if max_profile_latency_ms > 0 and profile_latency_ms > max_profile_latency_ms:
+                raise TestFailure(
+                    f"/profile latency {profile_latency_ms:.1f}ms exceeded budget "
+                    f"{max_profile_latency_ms:.1f}ms"
+                )
+            if not ok:
+                raise TestFailure(f"/profile failed during responsiveness monitor: {profile_result}")
+            diagnostics.last_profile = profile_result
+            profile = profile_result.get("profile", profile_result)
+            heartbeat_age_ms = int(profile.get("main_thread_heartbeat_age_ms", -1))
+            if max_heartbeat_age_ms > 0 and heartbeat_age_ms > max_heartbeat_age_ms:
+                raise TestFailure(
+                    f"main-thread heartbeat age {heartbeat_age_ms}ms exceeded budget "
+                    f"{max_heartbeat_age_ms}ms"
+                )
+            if profile.get("stall_active"):
+                raise TestFailure("profile reported stall_active=true during responsiveness monitor")
+            if profile.get("ui_thread_responsive") is False:
+                raise TestFailure("profile reported ui_thread_responsive=false during responsiveness monitor")
 
         time.sleep(poll_interval)
 
@@ -378,10 +462,12 @@ def write_failure_artifacts(
         "error": error,
         "phase": diagnostics.phase,
         "pid": diagnostics.last_pid,
-        "last_good_playhead": diagnostics.last_good_playhead,
-        "last_profile": diagnostics.last_profile,
-        "last_health": diagnostics.last_health,
-        "recent_playhead_samples": [
+                "last_good_playhead": diagnostics.last_good_playhead,
+                "last_profile": diagnostics.last_profile,
+                "last_health": diagnostics.last_health,
+                "max_playhead_latency_ms": round(diagnostics.max_playhead_latency_ms, 1),
+                "max_profile_latency_ms": round(diagnostics.max_profile_latency_ms, 1),
+                "recent_playhead_samples": [
             {
                 "t": round(sample.timestamp, 3),
                 "status": sample.status,
@@ -417,6 +503,10 @@ def main() -> int:
     parser.add_argument("--stall-timeout", type=float, default=2.5)
     parser.add_argument("--poll-interval", type=float, default=0.25)
     parser.add_argument("--max-playhead-failures", type=int, default=4)
+    parser.add_argument("--profile-interval", type=float, default=0.0)
+    parser.add_argument("--max-playhead-latency-ms", type=float, default=0.0)
+    parser.add_argument("--max-profile-latency-ms", type=float, default=0.0)
+    parser.add_argument("--max-heartbeat-age-ms", type=int, default=0)
     parser.add_argument("--pause-timeout", type=float, default=5.0)
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-restart", action="store_true")
@@ -566,6 +656,10 @@ def main() -> int:
                 stall_timeout=args.stall_timeout,
                 max_consecutive_failures=args.max_playhead_failures,
                 poll_interval=args.poll_interval,
+                max_playhead_latency_ms=args.max_playhead_latency_ms,
+                max_profile_latency_ms=args.max_profile_latency_ms,
+                max_heartbeat_age_ms=args.max_heartbeat_age_ms,
+                profile_interval=args.profile_interval,
             ),
         )
 
@@ -625,6 +719,8 @@ def main() -> int:
                     "start_frame": start_frame,
                     "advanced_frame": max_frame,
                     "paused_frame": int(paused_playhead["current_frame"]),
+                    "max_playhead_latency_ms": round(diagnostics.max_playhead_latency_ms, 1),
+                    "max_profile_latency_ms": round(diagnostics.max_profile_latency_ms, 1),
                     "screenshot": screenshot_path,
                 },
                 indent=2,

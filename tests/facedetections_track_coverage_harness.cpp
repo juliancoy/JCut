@@ -656,7 +656,53 @@ QString transcriptPathForClip(const ClipSelection& selection)
 bool loadBinaryObject(const QString& path, QJsonObject* rootOut)
 {
     QString error;
-    return jcut::jsonio::readBinaryJsonObject(path, rootOut, 0x4A435554, 1, &error);
+    if (jcut::jsonio::readBinaryJsonObject(path, rootOut, 0x4A435554, 1, &error)) {
+        return true;
+    }
+
+    QVector<QJsonObject> records;
+    if (!jcut::jsonio::readBinaryJsonRecords(path, &records, 0x4A465352, 1, &error) ||
+        records.isEmpty()) {
+        return false;
+    }
+    QJsonObject root;
+    QJsonArray frames;
+    QJsonArray tracks;
+    QJsonArray frameSummaries;
+    for (const QJsonObject& record : records) {
+        const QString type = record.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("meta")) {
+            root[QStringLiteral("schema")] = record.value(QStringLiteral("schema"));
+            root[QStringLiteral("video")] = record.value(QStringLiteral("video"));
+            root[QStringLiteral("backend")] = record.value(QStringLiteral("backend"));
+            root[QStringLiteral("frame_domain")] = record.value(QStringLiteral("frame_domain"));
+        } else if (type == QStringLiteral("frame")) {
+            QJsonObject frame = record;
+            frame.remove(QStringLiteral("type"));
+            frames.push_back(frame);
+        } else if (type == QStringLiteral("track")) {
+            QJsonObject track = record;
+            track.remove(QStringLiteral("type"));
+            tracks.push_back(track);
+        } else if (type == QStringLiteral("frame_summary")) {
+            QJsonObject frameSummary = record;
+            frameSummary.remove(QStringLiteral("type"));
+            frameSummaries.push_back(frameSummary);
+        }
+    }
+    if (!frames.isEmpty()) {
+        root[QStringLiteral("frames")] = frames;
+    }
+    if (!tracks.isEmpty()) {
+        root[QStringLiteral("tracks")] = tracks;
+    }
+    if (!frameSummaries.isEmpty()) {
+        root[QStringLiteral("frame_summaries")] = frameSummaries;
+    }
+    if (rootOut) {
+        *rootOut = root;
+    }
+    return !root.isEmpty();
 }
 
 bool writeBinaryObject(const QString& path, const QJsonObject& root)
@@ -813,10 +859,16 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
         {QStringLiteral("only_dialogue"), false},
         {QStringLiteral("scan_start_frame"), scanStart},
         {QStringLiteral("scan_end_frame"), scanEnd},
-        {QStringLiteral("raw_tracks"), trackRows},
+        {QStringLiteral("raw_tracks_artifact_path"), tracksPath},
+        {QStringLiteral("raw_frames_artifact_path"), detectionsPath},
+        {QStringLiteral("continuity_artifact_path"), continuityPath},
+        {QStringLiteral("raw_tracks_count"), trackRows.size()},
+        {QStringLiteral("raw_frames_count"), rawFrames.size()},
+        {QStringLiteral("raw_tracks_schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
+        {QStringLiteral("raw_frames_schema"), QStringLiteral("jcut_facedetections_offscreen_detections_v1")},
         {QStringLiteral("raw_tracks_frame_domain"), frameDomain},
-        {QStringLiteral("raw_frames"), rawFrames},
         {QStringLiteral("raw_frames_frame_domain"), frameDomain},
+        {QStringLiteral("streams_frame_domain"), frameDomain},
         {QStringLiteral("detector_mode"), backend}
     };
     writeBinaryObject(continuityPath, QJsonObject{

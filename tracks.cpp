@@ -33,6 +33,7 @@
 #include <QSignalBlocker>
 #include <QTableWidget>
 #include <QThread>
+#include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
 
@@ -236,7 +237,6 @@ QPixmap SpeakersTab::faceStreamPreviewAvatarWithDecoder(const TimelineClip& clip
         editor::DecoderContext* activeDecoder = decoderCtx;
         if (!activeDecoder) {
             if (shouldAvoidTransientUiThreadDecoder()) {
-                m_avatarCache.insert(cacheKey, avatar);
                 return avatar;
             }
             const QString mediaPath = interactivePreviewMediaPathForClip(clip);
@@ -395,9 +395,12 @@ QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
     if (transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot) ||
         transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
-        streams = jcut::facedetections::continuityStreamsForRoot(
-            continuityRoot,
-            m_transcriptSession.rootObject());
+        streams = jcut::facedetections::storedContinuityStreamsForRoot(continuityRoot);
+        if (streams.isEmpty() && continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed().isEmpty()) {
+            streams = jcut::facedetections::continuityStreamsForRoot(
+                continuityRoot,
+                m_transcriptSession.rootObject());
+        }
         if (!streams.isEmpty()) {
             m_continuityStreamsCache.insert(cacheKey, streams);
             return streams;
@@ -936,15 +939,21 @@ void SpeakersTab::refreshFaceDetectionsPathsPanel()
         return rawRoot.isEmpty() ? root : rawRoot;
     };
     continuityRoot = resolveRawContinuityRoot(continuityRoot);
+    const QString externalRawTracksPath =
+        continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
+    const QString externalRawFramesPath =
+        continuityRoot.value(QStringLiteral("raw_frames_artifact_path")).toString().trimmed();
+    const bool hasExternalRawTracks = !externalRawTracksPath.isEmpty();
+    const bool hasExternalRawFrames = !externalRawFramesPath.isEmpty();
     if (m_widgets.speakerDetectionsAvailableCheckBox) {
         QSignalBlocker block(m_widgets.speakerDetectionsAvailableCheckBox);
         m_widgets.speakerDetectionsAvailableCheckBox->setChecked(
-            !continuityRoot.value(QStringLiteral("raw_frames")).toArray().isEmpty());
+            hasExternalRawFrames || !continuityRoot.value(QStringLiteral("raw_frames")).toArray().isEmpty());
     }
     if (m_widgets.speakerTracksAvailableCheckBox) {
         QSignalBlocker block(m_widgets.speakerTracksAvailableCheckBox);
         m_widgets.speakerTracksAvailableCheckBox->setChecked(
-            !continuityRoot.value(QStringLiteral("raw_tracks")).toArray().isEmpty());
+            hasExternalRawTracks || !continuityRoot.value(QStringLiteral("raw_tracks")).toArray().isEmpty());
     }
 
     const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
@@ -958,10 +967,29 @@ void SpeakersTab::refreshFaceDetectionsPathsPanel()
             continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false),
             continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed());
     }
-    if (streams.isEmpty()) {
+    if (streams.isEmpty() && !hasExternalRawTracks) {
         streams = continuityStreamsForClip(*clip);
     }
     m_faceStreamPanelRefreshSignature = refreshSignature;
+
+    if (streams.isEmpty() && hasExternalRawTracks) {
+        if (m_widgets.speakerFaceDetectionsDetailsEdit) {
+            const qint64 trackCount = continuityRoot.value(QStringLiteral("raw_tracks_count")).toInteger(-1);
+            const qint64 frameCount = continuityRoot.value(QStringLiteral("raw_frames_count")).toInteger(-1);
+            m_widgets.speakerFaceDetectionsDetailsEdit->setPlainText(
+                QStringLiteral("FaceDetections tracks are stored in compact external record artifacts.\n\n"
+                               "Tracks: %1\n"
+                               "Frames: %2\n"
+                               "Track artifact: %3\n\n"
+                               "The full all-track table is intentionally not materialized on the UI thread.")
+                    .arg(trackCount >= 0 ? QString::number(trackCount) : QStringLiteral("available"))
+                    .arg(frameCount >= 0 ? QString::number(frameCount) : QStringLiteral("available"))
+                    .arg(externalRawTracksPath));
+        }
+        refreshRawDetectionsPanel(continuityRoot);
+        return;
+    }
+
     const QHash<int, QString> identityByTrackId = resolvedIdentityByTrackId(*clip, streams);
 
     struct StreamRow {
@@ -1460,7 +1488,7 @@ bool SpeakersTab::persistTrackAssignments(
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
             root = transcriptRoot;
             return true;
-        }) || !saveLoadedTranscriptDocument()) {
+        }, false) || !saveLoadedTranscriptDocument()) {
         refresh();
         return false;
     }
@@ -1486,10 +1514,32 @@ bool SpeakersTab::persistTrackAssignments(
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();
     }
-    if (m_deps.pushHistorySnapshot) {
-        m_deps.pushHistorySnapshot();
+    if (m_deps.pushHistorySnapshot && !m_assignmentHistorySnapshotQueued) {
+        m_assignmentHistorySnapshotQueued = true;
+        QTimer::singleShot(350, this, [this]() {
+            m_assignmentHistorySnapshotQueued = false;
+            if (m_deps.pushHistorySnapshot) {
+                m_deps.pushHistorySnapshot();
+            }
+        });
     }
-    refresh();
+    if (m_widgets.speakerFaceDetectionsTable) {
+        const QString assignmentLabel = speakerDisplayLabel(trimmedSpeakerId);
+        for (int row = 0; row < m_widgets.speakerFaceDetectionsTable->rowCount(); ++row) {
+            QTableWidgetItem* trackItem = m_widgets.speakerFaceDetectionsTable->item(row, 1);
+            QTableWidgetItem* assignmentItem = m_widgets.speakerFaceDetectionsTable->item(row, 2);
+            bool trackIdOk = false;
+            const int rowTrackId = trackItem ? trackItem->text().trimmed().toInt(&trackIdOk) : -1;
+            if (!trackIdOk || !assignmentItem || !anchorByTrackId.contains(rowTrackId)) {
+                continue;
+            }
+            assignmentItem->setText(assignmentLabel);
+            assignmentItem->setToolTip(
+                QStringLiteral("Assigned to speaker identity: %1").arg(trimmedSpeakerId));
+        }
+    }
+    updateSpeakerTrackingStatusLabelFast();
+    scheduleSelectedSpeakerPanelRefresh();
     return true;
 }
 

@@ -1,6 +1,7 @@
 #include "transcript_engine.h"
 
 #include "editor_shared.h"
+#include "json_io_utils.h"
 
 #include <QFile>
 #include <QFileInfo>
@@ -188,6 +189,24 @@ QByteArray facedetectionsMagic()
     return QByteArrayLiteral("JCUTBOX1");
 }
 
+bool parseFacestreamCborDocument(const QByteArray& cborBytes, QJsonDocument* outDoc)
+{
+    if (!outDoc) {
+        return false;
+    }
+    try {
+        const auto cbor = jcut::jsonio::Json::from_cbor(cborBytes.begin(), cborBytes.end());
+        if (!cbor.is_object()) {
+            return false;
+        }
+        const QJsonObject object = jcut::jsonio::fromJson(cbor).toObject();
+        *outDoc = QJsonDocument(object);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
 {
     if (!outDoc) {
@@ -215,29 +234,44 @@ bool loadFacestreamDocFromFile(const QString& path, QJsonDocument* outDoc)
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
     }
-    const QByteArray payload = file.readAll();
-    if (payload.size() < facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2)) {
+    const QByteArray magic = facedetectionsMagic();
+    if (file.size() < magic.size() + static_cast<int>(sizeof(quint32) * 2)) {
         return false;
     }
-    if (!payload.startsWith(facedetectionsMagic())) {
+    if (file.read(magic.size()) != magic) {
         return false;
     }
-    const char* raw = payload.constData() + facedetectionsMagic().size();
-    const quint32 version = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
-    raw += sizeof(quint32);
-    const quint32 jsonSize = qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(raw));
-    raw += sizeof(quint32);
-    if (version != 1) {
+    const QByteArray versionBytes = file.read(static_cast<qint64>(sizeof(quint32)));
+    const QByteArray sizeBytes = file.read(static_cast<qint64>(sizeof(quint32)));
+    if (versionBytes.size() != static_cast<int>(sizeof(quint32)) ||
+        sizeBytes.size() != static_cast<int>(sizeof(quint32))) {
         return false;
     }
-    const int headerSize = facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2);
-    if (jsonSize > static_cast<quint32>(payload.size() - headerSize)) {
+    const quint32 version =
+        qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(versionBytes.constData()));
+    const quint32 storedSize =
+        qFromLittleEndian<quint32>(reinterpret_cast<const uchar*>(sizeBytes.constData()));
+    const qint64 headerSize = magic.size() + static_cast<qint64>(sizeof(quint32) * 2);
+    if (storedSize > static_cast<quint64>(file.size() - headerSize)) {
         return false;
     }
-    const QByteArray jsonBytes(raw, static_cast<int>(jsonSize));
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(jsonBytes, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
+    if (storedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
+        return false;
+    }
+    const QByteArray storedBytes = file.read(static_cast<qint64>(storedSize));
+    if (storedBytes.size() != static_cast<int>(storedSize)) {
+        return false;
+    }
+
+    QJsonDocument doc;
+    if (version != 2) {
+        return false;
+    }
+    const QByteArray cborBytes = qUncompress(storedBytes);
+    if (cborBytes.isEmpty() && !storedBytes.isEmpty()) {
+        return false;
+    }
+    if (!parseFacestreamCborDocument(cborBytes, &doc)) {
         return false;
     }
     {
@@ -253,18 +287,21 @@ bool saveFacestreamDocToFile(const QString& path, const QJsonDocument& doc)
     if (!doc.isObject()) {
         return false;
     }
-    const QByteArray jsonBytes = doc.toJson(QJsonDocument::Compact);
-    if (jsonBytes.size() > std::numeric_limits<quint32>::max()) {
+    const auto cborVector = jcut::jsonio::Json::to_cbor(jcut::jsonio::toJson(doc.object()));
+    const QByteArray cborBytes(reinterpret_cast<const char*>(cborVector.data()),
+                               static_cast<int>(cborVector.size()));
+    const QByteArray compressedBytes = qCompress(cborBytes, 6);
+    if (compressedBytes.size() > std::numeric_limits<quint32>::max()) {
         return false;
     }
     QByteArray payload;
-    payload.reserve(facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2) + jsonBytes.size());
+    payload.reserve(facedetectionsMagic().size() + static_cast<int>(sizeof(quint32) * 2) + compressedBytes.size());
     payload.append(facedetectionsMagic());
-    quint32 version = qToLittleEndian<quint32>(1);
-    quint32 jsonSize = qToLittleEndian<quint32>(static_cast<quint32>(jsonBytes.size()));
+    quint32 version = qToLittleEndian<quint32>(2);
+    quint32 storedSize = qToLittleEndian<quint32>(static_cast<quint32>(compressedBytes.size()));
     payload.append(reinterpret_cast<const char*>(&version), sizeof(quint32));
-    payload.append(reinterpret_cast<const char*>(&jsonSize), sizeof(quint32));
-    payload.append(jsonBytes);
+    payload.append(reinterpret_cast<const char*>(&storedSize), sizeof(quint32));
+    payload.append(compressedBytes);
 
     QSaveFile out(path);
     if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {

@@ -253,6 +253,7 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/vulkan_facedetections_offscreen_main\\.cpp$"
     ".*/vulkan_facedetections_preview_main\\.cpp$"
     ".*/vulkan_facedetections_test_ui_main\\.cpp$"
+    ".*/migrate_facedetections_artifacts_main\\.cpp$"
     ".*/vulkan_zero_copy_video_preprocess_main\\.cpp$"
 )
 
@@ -398,10 +399,12 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_effects.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_keyframes.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_keyframes_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_media.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_render_sync.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_timing.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_transcript.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_shared_transcript_overlay.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facefind_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_handle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_assignment_services.cpp
@@ -503,8 +506,20 @@ add_executable(project_roundtrip_cli
 target_link_libraries(project_roundtrip_cli
     PRIVATE
         Qt6::Core
-        Qt6::Widgets
+    Qt6::Widgets
 )
+
+add_executable(jcut_migrate_facedetections_artifacts
+    ${CMAKE_CURRENT_SOURCE_DIR}/migrate_facedetections_artifacts_main.cpp
+)
+target_link_libraries(jcut_migrate_facedetections_artifacts
+    PRIVATE
+        editor_test_support
+)
+set_target_properties(jcut_migrate_facedetections_artifacts PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+jcut_force_bundled_ffmpeg_runtime(jcut_migrate_facedetections_artifacts)
 
 if(APPLE)
     set_target_properties(editor PROPERTIES MACOSX_BUNDLE TRUE)

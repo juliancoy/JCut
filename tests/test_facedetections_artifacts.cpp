@@ -111,6 +111,14 @@ private slots:
         };
         QVERIFY(engine.saveFacestreamArtifact(transcriptPath, facedetectionsArtifact));
         QVERIFY(QFileInfo::exists(engine.facedetectionsArtifactPath(transcriptPath)));
+        {
+            QFile artifactFile(engine.facedetectionsArtifactPath(transcriptPath));
+            QVERIFY(artifactFile.open(QIODevice::ReadOnly));
+            const QByteArray savedBytes = artifactFile.readAll();
+            QVERIFY(savedBytes.startsWith("JCUTBOX1"));
+            QVERIFY(savedBytes.size() > 16);
+            QVERIFY(!savedBytes.contains("\"continuity_facedetections_by_clip\""));
+        }
 
         jcut::facedetections_assignment::TrackIdentityEvidence identityA;
         identityA.trackId = trackRows.at(0).toObject().value(QStringLiteral("track_id")).toInt();

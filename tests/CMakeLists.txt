@@ -182,6 +182,30 @@ set_tests_properties(test_rest_smoke_offscreen PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
+add_test(
+    NAME test_ui_responsiveness_budget_offscreen
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/rest_smoke_test.py
+            --offscreen
+            --skip-build
+            --skip-restart
+            --startup-timeout 30
+            --play-timeout 25
+            --advance-timeout 25
+            --pause-timeout 10
+            --monitor-seconds 6
+            --poll-interval 0.2
+            --profile-interval 1.0
+            --stall-timeout 2.0
+            --max-playhead-latency-ms 750
+            --max-profile-latency-ms 1500
+            --max-heartbeat-age-ms 1500
+)
+set_tests_properties(test_ui_responsiveness_budget_offscreen PROPERTIES
+    TIMEOUT 120
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
 add_executable(facedetections_midpoint_detection_harness
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_midpoint_detection_harness.cpp
 )

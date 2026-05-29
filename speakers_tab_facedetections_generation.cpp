@@ -615,17 +615,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
 
     QJsonObject continuityRoot = continuityRootForClip(generatedArtifact, QStringLiteral("facedetections-offscreen-source"));
-    QJsonObject rawDetectionsArtifact;
-    if ((!jcut::facedetections::readBinaryJsonObject(detectionsPath, &rawDetectionsArtifact, &parseError) &&
-         !readJsonObject(detectionsPath, &rawDetectionsArtifact, &parseError)) &&
-        QFileInfo::exists(detectionsPath)) {
-        speaker_flow_debug::persistIndex(
-            indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
-            m_transcriptSession.transcriptPath(), QStringLiteral("stage_6_facedetections"), QStringLiteral("error"),
-            parseError, {requestPath, facedetectionsPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
-        showAutomationAwareWarning(QStringLiteral("JCut DNN Detection + Continuity Generator"), parseError);
-        return;
-    }
     QJsonObject rawTracksArtifact;
     if (!jcut::facedetections::readBinaryJsonObject(tracksPath, &rawTracksArtifact, &parseError) &&
         !readJsonObject(tracksPath, &rawTracksArtifact, &parseError)) {
@@ -638,19 +627,22 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
 
     const QJsonArray rawTracks = rawTracksArtifact.value(QStringLiteral("tracks")).toArray();
-    QJsonArray rawFrames = rawDetectionsArtifact.value(QStringLiteral("frames")).toArray();
-    if (rawFrames.isEmpty()) {
-        rawFrames = rawTracksArtifact.value(QStringLiteral("frames")).toArray();
-    }
-    continuityRoot[QStringLiteral("raw_tracks")] = rawTracks;
-    continuityRoot[QStringLiteral("raw_frames")] = rawFrames;
+    const QJsonArray rawFrames = rawTracksArtifact.value(QStringLiteral("frames")).toArray();
+    const int rawFramesCount = rawFrames.isEmpty() && QFileInfo::exists(detectionsPath)
+        ? -1
+        : rawFrames.size();
+    continuityRoot[QStringLiteral("raw_tracks_artifact_path")] = tracksPath;
+    continuityRoot[QStringLiteral("raw_frames_artifact_path")] = detectionsPath;
+    continuityRoot[QStringLiteral("continuity_artifact_path")] = outputPath;
+    continuityRoot[QStringLiteral("raw_tracks_count")] = rawTracks.size();
+    continuityRoot[QStringLiteral("raw_frames_count")] = rawFramesCount;
     continuityRoot[QStringLiteral("raw_tracks_schema")] = rawTracksArtifact.value(QStringLiteral("schema")).toString();
-    continuityRoot[QStringLiteral("raw_frames_schema")] = rawDetectionsArtifact.value(QStringLiteral("schema")).toString();
-    const QString rawFramesFrameDomain =
-        rawDetectionsArtifact.value(QStringLiteral("frame_domain")).toString(
-            facedetectionsFrameDomainString(FacestreamFrameDomain::SourceAbsolute));
+    continuityRoot[QStringLiteral("raw_frames_schema")] =
+        QStringLiteral("jcut_facedetections_offscreen_detections_v1");
     const QString rawTracksFrameDomain =
-        rawTracksArtifact.value(QStringLiteral("frame_domain")).toString(rawFramesFrameDomain);
+        rawTracksArtifact.value(QStringLiteral("frame_domain")).toString(
+            facedetectionsFrameDomainString(FacestreamFrameDomain::SourceAbsolute));
+    const QString rawFramesFrameDomain = rawTracksFrameDomain;
     continuityRoot[QStringLiteral("raw_tracks_frame_domain")] = rawTracksFrameDomain;
     continuityRoot[QStringLiteral("raw_frames_frame_domain")] = rawFramesFrameDomain;
     continuityRoot[QStringLiteral("streams_frame_domain")] =
@@ -725,7 +717,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     showAutomationAwareInfo(
         QStringLiteral("JCut DNN Detection + Continuity Generator"),
         QStringLiteral("Imported raw detections and continuity tracks.\n\nFrames: %1\nTracks: %2\nArtifact: %3")
-            .arg(rawFrames.size())
+            .arg(rawFramesCount < 0 ? QStringLiteral("referenced") : QString::number(rawFramesCount))
             .arg(rawTracks.size())
             .arg(artifactDir));
     refresh();

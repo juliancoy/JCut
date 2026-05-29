@@ -228,12 +228,15 @@ SpeakersTab::SpeakersTab(const Widgets& widgets, const Dependencies& deps, QObje
     });
 }
 
-bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)
+bool SpeakersTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
+                                                 bool clearDerivedCaches)
 {
     if (!m_transcriptSession.mutateRoot(mutator)) {
         return false;
     }
-    clearFaceDetectionsDerivedCaches();
+    if (clearDerivedCaches) {
+        clearFaceDetectionsDerivedCaches();
+    }
     return true;
 }
 
@@ -1308,9 +1311,10 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
     QSignalBlocker blocker(m_widgets.speakersTable);
     m_widgets.speakersTable->clearContents();
     m_widgets.speakersTable->setRowCount(ids.size());
+    const bool playbackActive = m_speakerDeps.isPlaybackActive && m_speakerDeps.isPlaybackActive();
     const QString avatarMediaPath = interactivePreviewMediaPathForClip(*clip);
     std::unique_ptr<editor::DecoderContext> avatarDecoder;
-    if (!avatarMediaPath.isEmpty()) {
+    if (!playbackActive && !avatarMediaPath.isEmpty()) {
         avatarDecoder = std::make_unique<editor::DecoderContext>(avatarMediaPath);
         if (!avatarDecoder->initialize()) {
             avatarDecoder.reset();

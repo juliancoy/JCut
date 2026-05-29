@@ -1,17 +1,18 @@
 #include "editor_shared.h"
+#include "editor_shared_keyframes_cache.h"
 #include "editor_shared_timing.h"
 #include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
 #include "transcript_engine.h"
 #include "transform_skip_aware_timing.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
-#include <QHash>
 #include <QFileInfo>
-#include <QMutex>
-#include <QMutexLocker>
 #include <QSet>
+#include <QStringList>
 #include <QtGlobal>
 
 #include <algorithm>
@@ -27,6 +28,14 @@ constexpr qreal kDefaultSpeakerFramingTargetBoxNorm = -1.0;
 constexpr int kSpeakerFramingSmoothingMovingAverage = 0;
 constexpr int kSpeakerFramingSmoothingLowPass = 1;
 constexpr int kSpeakerFramingSmoothingBoth = 2;
+constexpr qint64 kMaxSynchronousContinuityArtifactBytes = 128ll * 1024ll * 1024ll;
+
+void appendReferencedArtifactPath(QStringList* paths, const QJsonObject& root, const QString& key)
+{
+    if (!paths) return;
+    const QString path = root.value(key).toString().trimmed();
+    if (!path.isEmpty() && !paths->contains(path)) paths->push_back(path);
+}
 
 QRect fitRectForSourceInOutput(const QSize& source, const QSize& output) {
     const QSize safeOutput = output.isValid() ? output : QSize(1080, 1920);
@@ -307,8 +316,34 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     if (transcriptPath.trimmed().isEmpty()) {
         return false;
     }
-
+    const QString trimmedSpeakerId = speakerId.trimmed();
     editor::TranscriptEngine engine;
+    const QString identityPath = engine.identityArtifactPath(transcriptPath);
+    const QString rawArtifactPath = engine.facedetectionsArtifactPath(transcriptPath);
+    const QString processedPath = engine.facedetectionsProcessedArtifactPath(transcriptPath);
+    const QString cacheKey = assignedContinuityCacheKey(transcriptPath, clip.id, trimmedSpeakerId);
+
+    QVector<QJsonObject> cachedStreams;
+    if (cachedAssignedContinuityStreams(
+            cacheKey, transcriptPath, identityPath, processedPath, &cachedStreams)) {
+        for (const QJsonObject& streamObj : cachedStreams) {
+            if (streamSampleAtFrame(clip,
+                                    streamObj,
+                                    timelineFrame,
+                                    mediaSourceFrame,
+                                    clip.speakerFramingCenterSmoothingFrames,
+                                    clip.speakerFramingZoomSmoothingFrames,
+                                    clip.speakerFramingSmoothingMode,
+                                    clip.speakerFramingSmoothingStrength,
+                                    clip.speakerFramingGapHoldFrames,
+                                    locationOut,
+                                    boxSizeOut)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     QJsonObject identityRoot;
     if (!engine.loadIdentityArtifact(transcriptPath, &identityRoot)) {
         return false;
@@ -321,7 +356,6 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     const QJsonArray identityMap = assignmentRoot.value(QStringLiteral("track_identity_map")).toArray();
     QSet<int> assignedTrackIds;
     QSet<QString> assignedStreamIds;
-    const QString trimmedSpeakerId = speakerId.trimmed();
     for (const QJsonValue& value : identityMap) {
         const QJsonObject row = value.toObject();
         if (row.value(QStringLiteral("identity_id")).toString().trimmed() != trimmedSpeakerId) {
@@ -340,19 +374,53 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
         return false;
     }
 
-    QJsonObject processedRoot;
-    if (!engine.loadFacestreamProcessedArtifact(transcriptPath, &processedRoot)) {
-        return false;
+    QJsonObject continuityRoot;
+    QStringList referencedPaths;
+    appendReferencedArtifactPath(&referencedPaths, QJsonObject{{QStringLiteral("path"), rawArtifactPath}}, QStringLiteral("path"));
+
+    if (QFileInfo(rawArtifactPath).size() <= kMaxSynchronousContinuityArtifactBytes) {
+        QJsonObject rawRoot;
+        if (engine.loadFacestreamArtifact(transcriptPath, &rawRoot)) {
+            continuityRoot = continuityRootForClip(rawRoot, clip.id);
+        }
     }
-    const QJsonArray streams =
-        continuityRootForClip(processedRoot, clip.id).value(QStringLiteral("streams")).toArray();
+
+    if (continuityRoot.isEmpty()) {
+        if (QFileInfo(processedPath).size() > kMaxSynchronousContinuityArtifactBytes) {
+            storeAssignedContinuityStreams(
+                cacheKey, transcriptPath, identityPath, processedPath, referencedPaths, QVector<QJsonObject>{});
+            return false;
+        }
+        QJsonObject processedRoot;
+        if (!engine.loadFacestreamProcessedArtifact(transcriptPath, &processedRoot)) {
+            return false;
+        }
+        continuityRoot = continuityRootForClip(processedRoot, clip.id);
+    }
+    appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("source_raw_artifact_path"));
+    appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("processed_artifact_path"));
+    appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("raw_tracks_artifact_path"));
+    appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("raw_frames_artifact_path"));
+    appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("continuity_artifact_path"));
+
+    QJsonDocument transcriptDoc;
+    if (continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false)) {
+        engine.loadTranscriptJson(transcriptPath, &transcriptDoc);
+    }
+    const QJsonArray streams = jcut::facedetections::continuityStreamsForAssignments(
+        continuityRoot,
+        assignedTrackIds,
+        assignedStreamIds,
+        transcriptDoc.object());
+    QVector<QJsonObject> matchingStreams;
+    matchingStreams.reserve(streams.size());
     for (const QJsonValue& value : streams) {
         const QJsonObject streamObj = value.toObject();
-        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
-        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
-        if (!assignedTrackIds.contains(trackId) && !assignedStreamIds.contains(streamId)) {
-            continue;
-        }
+        matchingStreams.push_back(streamObj);
+    }
+    storeAssignedContinuityStreams(
+        cacheKey, transcriptPath, identityPath, processedPath, referencedPaths, matchingStreams);
+    for (const QJsonObject& streamObj : matchingStreams) {
         if (streamSampleAtFrame(clip,
                                 streamObj,
                                 timelineFrame,

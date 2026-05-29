@@ -11,6 +11,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QRect>
+#include <QSet>
 #include <QString>
 
 #include <memory>
@@ -129,6 +130,14 @@ QJsonArray buildContinuityStreams(const QJsonArray& tracks,
 
 QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
                                     const QJsonObject& transcriptRoot = QJsonObject{});
+
+QJsonArray storedContinuityStreamsForRoot(const QJsonObject& continuityRoot,
+                                          qint64 maxReferencedArtifactBytes = 128ll * 1024ll * 1024ll);
+
+QJsonArray continuityStreamsForAssignments(const QJsonObject& continuityRoot,
+                                           const QSet<int>& trackIds,
+                                           const QSet<QString>& streamIds,
+                                           const QJsonObject& transcriptRoot = QJsonObject{});
 
 bool continuityRootHasTracks(const QJsonObject& continuityRoot,
                              const QJsonObject& transcriptRoot = QJsonObject{});

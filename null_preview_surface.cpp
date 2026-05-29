@@ -25,8 +25,20 @@ NullPreviewSurface::NullPreviewSurface(QWidget* parent)
 }
 
 void NullPreviewSurface::setPlaybackState(bool playing) { m_playing = playing; requestRepaint(); }
-void NullPreviewSurface::setCurrentFrame(int64_t frame) { m_currentFrame = qMax<int64_t>(0, frame); requestRepaint(); }
-void NullPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition) { m_currentSample = qMax<int64_t>(0, samplePosition); requestRepaint(); }
+void NullPreviewSurface::setCurrentFrame(int64_t frame)
+{
+    m_currentFrame = qMax<int64_t>(0, frame);
+    if (!m_playing) {
+        requestRepaint();
+    }
+}
+void NullPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
+{
+    m_currentSample = qMax<int64_t>(0, samplePosition);
+    if (!m_playing) {
+        requestRepaint();
+    }
+}
 void NullPreviewSurface::setClipCount(int count) { m_clipCount = qMax(0, count); requestRepaint(); }
 void NullPreviewSurface::setSelectedClipId(const QString& clipId) { m_selectedClipId = clipId; requestRepaint(); }
 void NullPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips) { m_clips = clips; requestRepaint(); }
