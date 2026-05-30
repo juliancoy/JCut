@@ -31,6 +31,54 @@ struct FacestreamDocCacheEntry {
 QMutex g_facedetectionsDocCacheMutex;
 QHash<QString, FacestreamDocCacheEntry> g_facedetectionsDocCache;
 
+QString originalTranscriptPathForEditableTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    const QString base = info.completeBaseName();
+    if (!base.endsWith(QStringLiteral("_editable"))) {
+        return QString();
+    }
+    return info.dir().filePath(base.left(base.size() - QStringLiteral("_editable").size()) +
+                               QStringLiteral(".json"));
+}
+
+QString editableTranscriptPathForTranscriptPath(const QString& transcriptPath)
+{
+    const QFileInfo info(transcriptPath);
+    const QString base = info.completeBaseName();
+    if (base.endsWith(QStringLiteral("_editable"))) {
+        return info.absoluteFilePath();
+    }
+    return info.dir().filePath(base + QStringLiteral("_editable.json"));
+}
+
+QStringList transcriptSidecarCandidatePaths(const QString& transcriptPath)
+{
+    QStringList paths;
+    const QString exact = QFileInfo(transcriptPath).absoluteFilePath();
+    const QString original = QFileInfo(originalTranscriptPathForEditableTranscriptPath(exact)).absoluteFilePath();
+    const QString editable = QFileInfo(editableTranscriptPathForTranscriptPath(exact)).absoluteFilePath();
+    paths << exact << original << editable;
+    paths.removeDuplicates();
+    paths.erase(std::remove_if(paths.begin(),
+                               paths.end(),
+                               [](const QString& path) {
+                                   return path.trimmed().isEmpty() || !QFileInfo::exists(path);
+                               }),
+                paths.end());
+    return paths;
+}
+
+bool facestreamArtifactRootHasUsablePayload(const QJsonObject& root)
+{
+    const QJsonObject current =
+        root.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
+    if (!current.isEmpty()) {
+        return true;
+    }
+    return !root.value(QStringLiteral("continuity_facestreams_by_clip")).toObject().isEmpty();
+}
+
 QString facedetectionsPathForTranscriptPath(const QString& transcriptPath)
 {
     const QFileInfo info(transcriptPath);
@@ -519,10 +567,25 @@ bool TranscriptEngine::loadFacestreamArtifact(const QString &transcriptPath, QJs
         if (!rootOut) {
             return false;
         }
-        QJsonDocument facedetectionsDoc;
-        if (loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(transcriptPath), &facedetectionsDoc) &&
-            facedetectionsDoc.isObject()) {
-            *rootOut = facedetectionsDoc.object();
+        QJsonObject fallbackRoot;
+        bool haveFallback = false;
+        for (const QString& candidatePath : transcriptSidecarCandidatePaths(transcriptPath)) {
+            QJsonDocument facedetectionsDoc;
+            if (loadFacestreamDocFromFile(facedetectionsPathForTranscriptPath(candidatePath), &facedetectionsDoc) &&
+                facedetectionsDoc.isObject()) {
+                const QJsonObject root = facedetectionsDoc.object();
+                if (facestreamArtifactRootHasUsablePayload(root)) {
+                    *rootOut = root;
+                    return true;
+                }
+                if (!haveFallback && candidatePath == QFileInfo(transcriptPath).absoluteFilePath()) {
+                    fallbackRoot = root;
+                    haveFallback = true;
+                }
+            }
+        }
+        if (haveFallback) {
+            *rootOut = fallbackRoot;
             return true;
         }
         return false;
@@ -548,10 +611,25 @@ bool TranscriptEngine::loadFacestreamProcessedArtifact(const QString &transcript
         if (!rootOut) {
             return false;
         }
-        QJsonDocument processedDoc;
-        if (loadFacestreamDocFromFile(facedetectionsProcessedPathForTranscriptPath(transcriptPath), &processedDoc) &&
-            processedDoc.isObject()) {
-            *rootOut = processedDoc.object();
+        QJsonObject fallbackRoot;
+        bool haveFallback = false;
+        for (const QString& candidatePath : transcriptSidecarCandidatePaths(transcriptPath)) {
+            QJsonDocument processedDoc;
+            if (loadFacestreamDocFromFile(facedetectionsProcessedPathForTranscriptPath(candidatePath), &processedDoc) &&
+                processedDoc.isObject()) {
+                const QJsonObject root = processedDoc.object();
+                if (facestreamArtifactRootHasUsablePayload(root)) {
+                    *rootOut = root;
+                    return true;
+                }
+                if (!haveFallback && candidatePath == QFileInfo(transcriptPath).absoluteFilePath()) {
+                    fallbackRoot = root;
+                    haveFallback = true;
+                }
+            }
+        }
+        if (haveFallback) {
+            *rootOut = fallbackRoot;
             return true;
         }
         return false;

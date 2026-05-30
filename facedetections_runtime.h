@@ -134,10 +134,23 @@ QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
 QJsonArray storedContinuityStreamsForRoot(const QJsonObject& continuityRoot,
                                           qint64 maxReferencedArtifactBytes = 128ll * 1024ll * 1024ll);
 
+QJsonArray continuityTrackSummariesForRoot(const QJsonObject& continuityRoot,
+                                           const QJsonObject& transcriptRoot = QJsonObject{});
+
+QJsonArray continuityStreamsNearFrame(const QJsonObject& continuityRoot,
+                                      int64_t frame,
+                                      int64_t extraWindowFrames = 0,
+                                      const QJsonObject& transcriptRoot = QJsonObject{});
+
 QJsonArray continuityStreamsForAssignments(const QJsonObject& continuityRoot,
                                            const QSet<int>& trackIds,
                                            const QSet<QString>& streamIds,
                                            const QJsonObject& transcriptRoot = QJsonObject{});
+
+QJsonArray rawFramesForContinuityRoot(const QJsonObject& continuityRoot);
+QJsonArray rawFramesNearFrameForContinuityRoot(const QJsonObject& continuityRoot,
+                                               int64_t frame,
+                                               int64_t extraWindowFrames = 0);
 
 bool continuityRootHasTracks(const QJsonObject& continuityRoot,
                              const QJsonObject& transcriptRoot = QJsonObject{});

@@ -593,6 +593,11 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     
     m_timeline->setCurrentFrame(bounded);
     m_preview->setCurrentPlaybackSample(boundedSample);
+    if (!m_startupReadinessVideoSampleApplied.exchange(true)) {
+        startupReadinessMark(QStringLiteral("video.playback_sample_applied"),
+                             QJsonObject{{QStringLiteral("frame"), static_cast<qint64>(bounded)},
+                                         {QStringLiteral("sample"), static_cast<qint64>(boundedSample)}});
+    }
     
     m_ignoreSeekSignal = true;
     m_seekSlider->setValue(static_cast<int>(qMin<int64_t>(bounded, INT_MAX)));
@@ -870,11 +875,22 @@ void EditorWindow::setPlaybackActive(bool playing)
             runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
         if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
             m_audioEngine->start(m_timeline->currentFrame());
+            if (!m_startupReadinessAudioStarted.exchange(true)) {
+                startupReadinessMark(QStringLiteral("audio.start.invoked"),
+                                     QJsonObject{{QStringLiteral("frame"),
+                                                  static_cast<qint64>(m_timeline->currentFrame())},
+                                                 {QStringLiteral("warp_mode"),
+                                                  playbackAudioWarpModeToString(runtimeWarpMode)},
+                                                 {QStringLiteral("speed"), m_playbackSpeed}});
+            }
         }
         if (m_preview) {
             m_preview->setExportRanges(ranges);
         }
         advanceFrame();
+        if (!m_startupReadinessFirstPlaybackTick.exchange(true)) {
+            startupReadinessMark(QStringLiteral("playback.first_tick"));
+        }
         m_playbackTimer.start();
         m_fastPlaybackActive.store(true);
         m_preview->setPlaybackState(true);

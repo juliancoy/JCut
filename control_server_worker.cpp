@@ -43,6 +43,28 @@
 
 namespace control_server {
 
+namespace {
+
+bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& fastSnapshot)
+{
+    if (snapshot.isEmpty()) {
+        return false;
+    }
+    const bool playbackActive = fastSnapshot.value(QStringLiteral("playback_active")).toBool(false);
+    const qint64 fastCurrentFrame = fastSnapshot.value(QStringLiteral("current_frame")).toInteger(0);
+    const QJsonArray timeline = snapshot.value(QStringLiteral("timeline")).toArray();
+    const QString selectedClipId = snapshot.value(QStringLiteral("selectedClipId")).toString().trimmed();
+    if ((playbackActive || fastCurrentFrame > 0) && timeline.isEmpty()) {
+        return false;
+    }
+    if (!timeline.isEmpty() && selectedClipId.isEmpty() && playbackActive) {
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
 ControlServerWorker::ControlServerWorker(QWidget* window,
                                          std::function<QJsonObject()> fastSnapshotCallback,
                                          std::function<QJsonObject()> stateSnapshotCallback,
@@ -154,7 +176,8 @@ void ControlServerWorker::refreshBackgroundCaches() {
     }
 
     const bool stateInDemand =
-        m_lastStateSnapshot.isEmpty() || (now - m_lastStateDemandMs) <= m_snapshotDemandWindowMs;
+        !stateSnapshotLooksCoherent(m_lastStateSnapshot, snapshot) ||
+        (now - m_lastStateDemandMs) <= m_snapshotDemandWindowMs;
     const bool projectInDemand =
         m_lastProjectSnapshot.isEmpty() || (now - m_lastProjectDemandMs) <= m_snapshotDemandWindowMs;
     const bool historyInDemand =
@@ -582,6 +605,12 @@ bool ControlServerWorker::refreshStateCacheFromUi(int timeoutMs, QString* errorO
         selectedResolution.value(QStringLiteral("selectedClipResolutionConsistent")).toBool(true);
     m_lastStateSnapshot = snapshot;
     m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
+    if (!stateSnapshotLooksCoherent(snapshot, fastSnapshot())) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("state snapshot incomplete");
+        }
+        return false;
+    }
     ++m_stateSnapshotSuccessCount;
     return true;
 }

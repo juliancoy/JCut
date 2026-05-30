@@ -1,9 +1,11 @@
 #include "facedetections_artifact_utils.h"
+#include "json_io_utils.h"
 #include "transcript_engine.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDataStream>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -12,7 +14,11 @@
 #include <QJsonObject>
 #include <QTextStream>
 
+#include <functional>
+
 namespace {
+constexpr quint32 kLegacyBinaryJsonMagic = 0x4A435554;
+constexpr quint32 kRecordBinaryJsonMagic = 0x4A465352;
 
 struct ClipMigration {
     QString clipId;
@@ -61,6 +67,189 @@ bool backupExistingFile(const QString& path, const QString& stamp, QString* erro
     }
     out() << "Backed up " << path << " -> " << backupPath << "\n";
     return true;
+}
+
+quint32 binaryArtifactMagicAtPath(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return 0;
+    }
+    QDataStream stream(&file);
+    stream.setVersion(QDataStream::Qt_6_0);
+    quint32 magic = 0;
+    stream >> magic;
+    return stream.status() == QDataStream::Ok ? magic : 0;
+}
+
+bool writeRecordArtifactFile(const QString& path,
+                             const std::function<bool(QFile*)>& writeRecords,
+                             QString* errorOut)
+{
+    const QString tempPath = path + QStringLiteral(".records-tmp");
+    QFile::remove(tempPath);
+    QFile file(tempPath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1 for writing.").arg(tempPath);
+        }
+        return false;
+    }
+    if (!writeRecords(&file)) {
+        file.close();
+        QFile::remove(tempPath);
+        if (errorOut && errorOut->isEmpty()) {
+            *errorOut = QStringLiteral("Failed to write record artifact %1.").arg(tempPath);
+        }
+        return false;
+    }
+    if (!file.flush()) {
+        file.close();
+        QFile::remove(tempPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to flush record artifact %1.").arg(tempPath);
+        }
+        return false;
+    }
+    file.close();
+    QFile::remove(path);
+    if (!QFile::rename(tempPath, path)) {
+        QFile::remove(tempPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to replace %1 with converted record artifact.").arg(path);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool appendRecord(QFile* file, const QJsonObject& object, QString* errorOut)
+{
+    return jcut::jsonio::appendBinaryJsonRecord(file, object, kRecordBinaryJsonMagic, 1, errorOut);
+}
+
+QJsonObject metaRecordForLegacyRoot(const QJsonObject& root,
+                                    const QString& fallbackSchema,
+                                    const QString& fallbackFrameDomain)
+{
+    QJsonObject meta{
+        {QStringLiteral("type"), QStringLiteral("meta")},
+        {QStringLiteral("schema"), root.value(QStringLiteral("schema")).toString(fallbackSchema)},
+        {QStringLiteral("frame_domain"),
+         root.value(QStringLiteral("frame_domain")).toString(fallbackFrameDomain)}
+    };
+    const QString video = root.value(QStringLiteral("video")).toString().trimmed();
+    const QString backend = root.value(QStringLiteral("backend")).toString().trimmed();
+    if (!video.isEmpty()) {
+        meta[QStringLiteral("video")] = video;
+    }
+    if (!backend.isEmpty()) {
+        meta[QStringLiteral("backend")] = backend;
+    }
+    return meta;
+}
+
+bool convertLegacyDetectionsArtifact(const QString& path,
+                                     const QJsonObject& root,
+                                     QString* errorOut)
+{
+    const QJsonArray frames = root.value(QStringLiteral("frames")).toArray();
+    return writeRecordArtifactFile(path, [&](QFile* file) {
+        if (!appendRecord(file,
+                          metaRecordForLegacyRoot(
+                              root,
+                              QStringLiteral("jcut_facedetections_offscreen_detections_v1"),
+                              QStringLiteral("source_absolute")),
+                          errorOut)) {
+            return false;
+        }
+        for (const QJsonValue& value : frames) {
+            QJsonObject frame = value.toObject();
+            frame[QStringLiteral("type")] = QStringLiteral("frame");
+            if (!appendRecord(file, frame, errorOut)) {
+                return false;
+            }
+        }
+        return true;
+    }, errorOut);
+}
+
+bool convertLegacyTracksArtifact(const QString& path,
+                                 const QJsonObject& root,
+                                 QString* errorOut)
+{
+    const QJsonArray tracks = root.value(QStringLiteral("tracks")).toArray();
+    QJsonArray frameSummaries = root.value(QStringLiteral("frame_summaries")).toArray();
+    if (frameSummaries.isEmpty()) {
+        frameSummaries = root.value(QStringLiteral("frames")).toArray();
+    }
+    return writeRecordArtifactFile(path, [&](QFile* file) {
+        if (!appendRecord(file,
+                          metaRecordForLegacyRoot(
+                              root,
+                              QStringLiteral("jcut_facedetections_offscreen_tracks_v1"),
+                              QStringLiteral("source_absolute")),
+                          errorOut)) {
+            return false;
+        }
+        for (const QJsonValue& value : tracks) {
+            QJsonObject track = value.toObject();
+            track[QStringLiteral("type")] = QStringLiteral("track");
+            if (!appendRecord(file, track, errorOut)) {
+                return false;
+            }
+        }
+        for (const QJsonValue& value : frameSummaries) {
+            QJsonObject frameSummary = value.toObject();
+            frameSummary[QStringLiteral("type")] = QStringLiteral("frame_summary");
+            if (!appendRecord(file, frameSummary, errorOut)) {
+                return false;
+            }
+        }
+        return true;
+    }, errorOut);
+}
+
+bool convertLegacyArtifactIfNeeded(const QString& path,
+                                   const QString& kind,
+                                   const QString& stamp,
+                                   bool dryRun,
+                                   bool backup,
+                                   QString* errorOut)
+{
+    if (path.trimmed().isEmpty() || !QFileInfo::exists(path)) {
+        return true;
+    }
+    const quint32 magic = binaryArtifactMagicAtPath(path);
+    if (magic == kRecordBinaryJsonMagic) {
+        out() << "Already record artifact: " << path << "\n";
+        return true;
+    }
+    if (magic != kLegacyBinaryJsonMagic) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Unsupported %1 artifact format: %2").arg(kind, path);
+        }
+        return false;
+    }
+    out() << "Will convert legacy " << kind << " artifact to record format: " << path << "\n";
+    if (dryRun) {
+        return true;
+    }
+
+    QJsonObject root;
+    if (!jcut::jsonio::readBinaryJsonObject(path, &root, kLegacyBinaryJsonMagic, 1, errorOut)) {
+        return false;
+    }
+    if (backup && !backupExistingFile(path, stamp, errorOut)) {
+        return false;
+    }
+    const bool ok = kind == QStringLiteral("detections")
+        ? convertLegacyDetectionsArtifact(path, root, errorOut)
+        : convertLegacyTracksArtifact(path, root, errorOut);
+    if (ok) {
+        out() << "Converted " << path << "\n";
+    }
+    return ok;
 }
 
 QFileInfo latestRunTracksArtifact(const QDir& clipDir)
@@ -223,10 +412,30 @@ int main(int argc, char** argv)
     const QString rawSidecarPath = engine.facedetectionsArtifactPath(transcriptPath);
     const QString processedSidecarPath =
         engine.facedetectionsProcessedArtifactPath(transcriptPath);
+    const bool dryRun = parser.isSet(dryRunOption);
+    const bool backup = !parser.isSet(noBackupOption);
+    const QString stamp =
+        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddHHmmss"));
+    QString error;
 
     QJsonObject rawByClip;
     QJsonObject processedByClip;
     for (const ClipMigration& migration : migrations) {
+        if (!convertLegacyArtifactIfNeeded(migration.tracksPath,
+                                           QStringLiteral("tracks"),
+                                           stamp,
+                                           dryRun,
+                                           backup,
+                                           &error) ||
+            !convertLegacyArtifactIfNeeded(migration.detectionsPath,
+                                           QStringLiteral("detections"),
+                                           stamp,
+                                           dryRun,
+                                           backup,
+                                           &error)) {
+            err() << error << "\n";
+            return 4;
+        }
         const QJsonObject rawRoot = continuityRootForMigration(migration);
         rawByClip[migration.clipId] = rawRoot;
         processedByClip[migration.clipId] =
@@ -248,17 +457,14 @@ int main(int argc, char** argv)
         QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     setContinuityFacestreamsByClipObject(&processedArtifact, processedByClip);
 
-    if (parser.isSet(dryRunOption)) {
+    if (dryRun) {
         out() << "Dry run complete. Would write:\n"
               << "  " << rawSidecarPath << "\n"
               << "  " << processedSidecarPath << "\n";
         return 0;
     }
 
-    const QString stamp =
-        QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMddHHmmss"));
-    QString error;
-    if (!parser.isSet(noBackupOption)) {
+    if (backup) {
         if (!backupExistingFile(rawSidecarPath, stamp, &error) ||
             !backupExistingFile(processedSidecarPath, stamp, &error)) {
             err() << error << "\n";

@@ -37,7 +37,12 @@ inline QString continuityFacestreamsByClipKey()
 
 inline QJsonObject continuityFacestreamsByClipObject(const QJsonObject& artifactRoot)
 {
-    return artifactRoot.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
+    const QJsonObject current =
+        artifactRoot.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
+    if (!current.isEmpty()) {
+        return current;
+    }
+    return artifactRoot.value(QStringLiteral("continuity_facestreams_by_clip")).toObject();
 }
 
 inline QJsonObject continuityRootForClip(const QJsonObject& artifactRoot, const QString& clipId)

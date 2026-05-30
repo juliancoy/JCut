@@ -103,6 +103,25 @@ QJsonObject EditorWindow::startupProfileSnapshot() const
     };
 }
 
+QJsonObject EditorWindow::startupReadinessSnapshot() const
+{
+    std::lock_guard<std::mutex> lock(m_startupReadinessMutex);
+    QJsonObject snapshot = m_startupReadinessSnapshot;
+    const qint64 elapsedMs =
+        m_startupProfileCompleted && m_startupProfileCompletedMs >= 0
+            ? m_startupProfileCompletedMs
+            : (m_startupProfileTimer.isValid() ? m_startupProfileTimer.elapsed() : 0);
+    snapshot[QStringLiteral("completed")] = m_startupProfileCompleted;
+    snapshot[QStringLiteral("elapsed_ms")] = elapsedMs;
+    snapshot[QStringLiteral("total_ms")] = elapsedMs;
+    snapshot[QStringLiteral("ready_to_play")] =
+        snapshot.value(QStringLiteral("readiness")).toObject()
+            .value(QStringLiteral("startup_load_complete")).toBool(false);
+    snapshot[QStringLiteral("note")] = QStringLiteral(
+        "Cheap startup/readiness trace. It is safe for REST fast snapshots and does not require a live UI profile.");
+    return snapshot;
+}
+
 QJsonObject EditorWindow::profilingSnapshot() const
 {
     const qint64 now = nowMs();
@@ -135,6 +154,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
     }
 
     snapshot[QStringLiteral("startup")] = startupProfileSnapshot();
+    snapshot[QStringLiteral("startup_readiness")] = startupReadinessSnapshot();
     snapshot[QStringLiteral("startup_optimization")] = startupOptimizationSnapshot();
     snapshot[QStringLiteral("runtime_patches")] = runtimePatchesSnapshot();
     snapshot[QStringLiteral("optimized_profile")] = optimizedProfileSnapshot();
@@ -163,6 +183,8 @@ QJsonObject EditorWindow::profilingSnapshot() const
                m_speakersTab->lastRawDetectionsPanelRefreshDurationMs()},
               {QStringLiteral("max_raw_detections_panel_refresh_duration_ms"),
                m_speakersTab->maxRawDetectionsPanelRefreshDurationMs()},
+              {QStringLiteral("face_detections_debug"),
+               m_speakersTab->faceDetectionsDebugSnapshot()},
               {QStringLiteral("section_selection"),
                m_speakersTab->speakerSectionSelectionTimingProfile()}}
         : QJsonObject{};

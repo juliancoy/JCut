@@ -93,6 +93,79 @@ void EditorWindow::startupProfileMark(const QString& phase, const QJsonObject& e
         mark[QStringLiteral("extra")] = extra;
     }
     m_startupProfileEvents.push_back(mark);
+    startupReadinessMark(phase, extra);
+}
+
+void EditorWindow::startupReadinessMark(const QString& phase, const QJsonObject& extra)
+{
+    if (!m_startupProfileTimer.isValid()) {
+        m_startupProfileTimer.start();
+    }
+    const qint64 nowMs = m_startupProfileTimer.elapsed();
+    QJsonObject readinessUpdate{
+        {QStringLiteral("phase"), phase},
+        {QStringLiteral("t_ms"), nowMs},
+        {QStringLiteral("delta_ms"), 0}
+    };
+    if (!extra.isEmpty()) {
+        readinessUpdate[QStringLiteral("extra")] = extra;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_startupReadinessMutex);
+        QJsonArray milestones = m_startupReadinessSnapshot.value(QStringLiteral("milestones")).toArray();
+        milestones.push_back(readinessUpdate);
+        constexpr int kStartupReadinessMilestoneLimit = 96;
+        while (milestones.size() > kStartupReadinessMilestoneLimit) {
+            milestones.removeAt(0);
+        }
+        m_startupReadinessSnapshot[QStringLiteral("started")] = true;
+        m_startupReadinessSnapshot[QStringLiteral("completed")] = m_startupProfileCompleted;
+        m_startupReadinessSnapshot[QStringLiteral("ready_to_play")] = false;
+        m_startupReadinessSnapshot[QStringLiteral("last_phase")] = phase;
+        m_startupReadinessSnapshot[QStringLiteral("elapsed_ms")] = nowMs;
+        m_startupReadinessSnapshot[QStringLiteral("milestones")] = milestones;
+
+        const QJsonObject previousReadiness =
+            m_startupReadinessSnapshot.value(QStringLiteral("readiness")).toObject();
+        QJsonObject readiness;
+        readiness[QStringLiteral("ui_constructed")] =
+            phase == QStringLiteral("ctor.sync_complete") ||
+            previousReadiness.value(QStringLiteral("ui_constructed")).toBool(false);
+        readiness[QStringLiteral("project_state_loaded")] =
+            phase == QStringLiteral("startup_load.state_loaded") ||
+            phase == QStringLiteral("startup_load.autosave_ready") ||
+            phase == QStringLiteral("startup_load.complete") ||
+            previousReadiness.value(QStringLiteral("project_state_loaded")).toBool(false);
+        readiness[QStringLiteral("timeline_bound")] =
+            phase == QStringLiteral("apply_state.timeline_bind.end") ||
+            previousReadiness.value(QStringLiteral("timeline_bound")).toBool(false);
+        readiness[QStringLiteral("audio_bind_scheduled")] =
+            phase == QStringLiteral("apply_state.audio_bind.deferred") ||
+            phase == QStringLiteral("apply_state.audio_bind.end") ||
+            previousReadiness.value(QStringLiteral("audio_bind_scheduled")).toBool(false);
+        readiness[QStringLiteral("preview_bind_scheduled")] =
+            phase == QStringLiteral("apply_state.preview_bind.deferred") ||
+            phase == QStringLiteral("apply_state.preview_bind.end") ||
+            previousReadiness.value(QStringLiteral("preview_bind_scheduled")).toBool(false);
+        readiness[QStringLiteral("startup_load_complete")] =
+            phase == QStringLiteral("startup_load.complete") ||
+            previousReadiness.value(QStringLiteral("startup_load_complete")).toBool(false);
+        readiness[QStringLiteral("first_playback_tick")] =
+            phase == QStringLiteral("playback.first_tick") ||
+            previousReadiness.value(QStringLiteral("first_playback_tick")).toBool(false);
+        readiness[QStringLiteral("audio_started")] =
+            phase == QStringLiteral("audio.start.invoked") ||
+            previousReadiness.value(QStringLiteral("audio_started")).toBool(false);
+        readiness[QStringLiteral("video_playback_sample_applied")] =
+            phase == QStringLiteral("video.playback_sample_applied") ||
+            previousReadiness.value(QStringLiteral("video_playback_sample_applied")).toBool(false);
+        readiness[QStringLiteral("ready_to_play")] =
+            readiness.value(QStringLiteral("startup_load_complete")).toBool(false) &&
+            readiness.value(QStringLiteral("video_playback_sample_applied")).toBool(false);
+        m_startupReadinessSnapshot[QStringLiteral("readiness")] = readiness;
+        m_startupReadinessSnapshot[QStringLiteral("ready_to_play")] =
+            readiness.value(QStringLiteral("ready_to_play")).toBool(false);
+    }
 }
 
 // ============================================================================
@@ -886,7 +959,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
-        root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
+        root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(true);
     const bool previewShowRawDetections =
         root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
     const QString previewFacestreamOverlaySource = QStringLiteral("all");

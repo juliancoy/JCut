@@ -398,7 +398,8 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
                 {QStringLiteral("main_thread_heartbeat_ms"), heartbeatMs},
                 {QStringLiteral("main_thread_heartbeat_age_ms"), heartbeatMs > 0 ? now - heartbeatMs : -1},
                 {QStringLiteral("last_playhead_advance_ms"), playheadMs},
-                {QStringLiteral("last_playhead_advance_age_ms"), playheadMs > 0 ? now - playheadMs : -1}};
+                {QStringLiteral("last_playhead_advance_age_ms"), playheadMs > 0 ? now - playheadMs : -1},
+                {QStringLiteral("startup_readiness"), startupReadinessSnapshot()}};
         },
         [this]() {
             return buildStateJson();

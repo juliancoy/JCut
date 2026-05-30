@@ -1512,7 +1512,7 @@ QWidget *InspectorPane::buildSpeakersTab()
 
     m_speakerShowFaceDetectionsBoxesCheckBox =
         new QCheckBox(QStringLiteral("Show Continuity Tracks in Preview"), page);
-    m_speakerShowFaceDetectionsBoxesCheckBox->setChecked(false);
+    m_speakerShowFaceDetectionsBoxesCheckBox->setChecked(true);
     m_speakerShowFaceDetectionsBoxesCheckBox->setToolTip(
         QStringLiteral("Draw generated continuity-track boxes for active clips in Preview."));
     m_speakerShowRawDetectionsCheckBox =

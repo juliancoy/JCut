@@ -141,13 +141,16 @@ private:
     void applyAdaptivePlaybackTuning();
     void updateAdaptivePlaybackTuning(qint64 nowMs);
     void refreshFacestreamOverlays();
-    QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip);
+    QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip,
+                                                         int64_t sourceFrame);
     QVector<VulkanPreviewFacestreamOverlay> rawDetectionsForClipFrame(const TimelineClip& clip,
                                                                       int64_t sourceFrame);
     QVector<FacestreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
-                                                         const QJsonObject& artifactRoot) const;
+                                                          const QJsonArray& streams,
+                                                          const QJsonObject& continuityRoot) const;
     QVector<VulkanPreviewFacestreamOverlay> parseRawDetectionsForClip(const TimelineClip& clip,
-                                                                      const QJsonObject& artifactRoot) const;
+                                                                      const QJsonObject& artifactRoot,
+                                                                      int64_t sourceFrame) const;
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
     void recordPlaybackSmoothnessSample(int exactCount,
@@ -209,6 +212,8 @@ private:
     int64_t m_visibleRequestNullCallbacks = 0;
     QString m_lastVisibleRequestCallbackPayload;
     QVector<PlaybackSmoothnessSample> m_playbackSmoothnessSamples;
+    QJsonObject m_lastFacedetectionsQueryDebug;
     bool m_frameStatusRefreshQueued = false;
     bool m_frameStatusRefreshNeedsVisibleRequest = false;
+    qint64 m_lastFrameStatusTrimMs = 0;
 };

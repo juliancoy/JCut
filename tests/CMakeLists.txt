@@ -8,6 +8,7 @@ set(EDITOR_TEST_TARGETS
     test_transcript_tab_follow
     test_playback_policy
     test_audio_time_stretch
+    test_audio_time_stretch_cache
     test_transform_skip_aware_timing
     test_preview_geometry
     test_waveform_service

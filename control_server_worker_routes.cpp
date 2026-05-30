@@ -35,6 +35,24 @@
 namespace control_server {
 namespace {
 
+bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& fastSnapshot)
+{
+    if (snapshot.isEmpty()) {
+        return false;
+    }
+    const bool playbackActive = fastSnapshot.value(QStringLiteral("playback_active")).toBool(false);
+    const qint64 fastCurrentFrame = fastSnapshot.value(QStringLiteral("current_frame")).toInteger(0);
+    const QJsonArray timeline = snapshot.value(QStringLiteral("timeline")).toArray();
+    const QString selectedClipId = snapshot.value(QStringLiteral("selectedClipId")).toString().trimmed();
+    if ((playbackActive || fastCurrentFrame > 0) && timeline.isEmpty()) {
+        return false;
+    }
+    if (!timeline.isEmpty() && selectedClipId.isEmpty() && playbackActive) {
+        return false;
+    }
+    return true;
+}
+
 QByteArray cachedControlServerRootHtml()
 {
     static QByteArray cachedHtml;
@@ -467,11 +485,26 @@ bool ControlServerWorker::handlePlayhead(QTcpSocket* socket, const Request& requ
 }
 
 bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& request) {
-    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/state")) {
-        if (m_lastStateSnapshot.isEmpty()) {
-            const QString error = m_lastStateRefreshError.isEmpty()
+    const auto ensureUsableStateSnapshot = [this](QString* errorOut) {
+        if (stateSnapshotLooksCoherent(m_lastStateSnapshot, fastSnapshot())) {
+            return true;
+        }
+        QString refreshError;
+        if (refreshStateCacheFromUi(m_uiInvokeTimeoutMs, &refreshError) &&
+            stateSnapshotLooksCoherent(m_lastStateSnapshot, fastSnapshot())) {
+            return true;
+        }
+        if (errorOut) {
+            *errorOut = refreshError.isEmpty()
                 ? QStringLiteral("state snapshot unavailable; cache warming")
-                : m_lastStateRefreshError;
+                : refreshError;
+        }
+        return !m_lastStateSnapshot.isEmpty();
+    };
+
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/state")) {
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
             writeError(socket, 503, error);
             return true;
         }
@@ -504,10 +537,8 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
     }
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/timeline")) {
-        if (m_lastStateSnapshot.isEmpty()) {
-            const QString error = m_lastStateRefreshError.isEmpty()
-                ? QStringLiteral("state snapshot unavailable; cache warming")
-                : m_lastStateRefreshError;
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
             writeError(socket, 503, error);
             return true;
         }
@@ -527,10 +558,8 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
     }
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/tracks")) {
-        if (m_lastStateSnapshot.isEmpty()) {
-            const QString error = m_lastStateRefreshError.isEmpty()
-                ? QStringLiteral("state snapshot unavailable; cache warming")
-                : m_lastStateRefreshError;
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
             writeError(socket, 503, error);
             return true;
         }
@@ -586,10 +615,8 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
     }
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/clips")) {
-        if (m_lastStateSnapshot.isEmpty()) {
-            const QString error = m_lastStateRefreshError.isEmpty()
-                ? QStringLiteral("state snapshot unavailable; cache warming")
-                : m_lastStateRefreshError;
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
             writeError(socket, 503, error);
             return true;
         }
@@ -639,10 +666,8 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
     }
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/clip")) {
-        if (m_lastStateSnapshot.isEmpty()) {
-            const QString error = m_lastStateRefreshError.isEmpty()
-                ? QStringLiteral("state snapshot unavailable; cache warming")
-                : m_lastStateRefreshError;
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
             writeError(socket, 503, error);
             return true;
         }
@@ -672,10 +697,8 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
     }
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/keyframes")) {
-        if (m_lastStateSnapshot.isEmpty()) {
-            const QString error = m_lastStateRefreshError.isEmpty()
-                ? QStringLiteral("state snapshot unavailable; cache warming")
-                : m_lastStateRefreshError;
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
             writeError(socket, 503, error);
             return true;
         }
@@ -839,11 +862,11 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
         const QUrlQuery query(request.url);
         const bool liveRequested =
             queryBool(query, QStringLiteral("live")) || queryBool(query, QStringLiteral("refresh"));
+        const bool forceLive =
+            queryBool(query, QStringLiteral("force")) || queryBool(query, QStringLiteral("blocking"));
         const QJsonObject snapshot = fastSnapshot();
         const bool playbackActive = snapshot.value(QStringLiteral("playback_active")).toBool();
-        const bool uiResponsive =
-            snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
-            m_uiHeartbeatStaleMs;
+        const bool uiResponsive = uiThreadResponsive(snapshot);
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         const qint64 ageMs = m_lastProfileSnapshotMs > 0 ? now - m_lastProfileSnapshotMs : -1;
         const bool cacheFresh = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
@@ -851,12 +874,15 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
         QString refreshSkippedReason;
 
         if (liveRequested) {
-            m_lastProfileDemandMs = now;
             if (playbackActive && cacheFresh) {
                 refreshSkippedReason = QStringLiteral("playback_active_cache_fresh");
+            } else if (playbackActive && !forceLive) {
+                refreshSkippedReason = QStringLiteral("playback_active_live_deferred_use_force_to_block");
             } else if (!refreshProfileCacheFromUi(m_uiInvokeTimeoutMs, &liveError)) {
+                m_lastProfileDemandMs = now;
                 m_lastProfileRefreshError = liveError;
             } else {
+                m_lastProfileDemandMs = now;
                 m_lastProfileRefreshError.clear();
             }
         } else if (m_lastProfileSnapshot.isEmpty() && !playbackActive) {
@@ -877,6 +903,7 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
                 {QStringLiteral("ok"), false},
                 {QStringLiteral("live"), false},
                 {QStringLiteral("live_requested"), liveRequested},
+                {QStringLiteral("force_live"), forceLive},
                 {QStringLiteral("ui_thread_responsive"), uiResponsive},
                 {QStringLiteral("ui_error"), error},
                 {QStringLiteral("refresh_skipped_reason"), refreshSkippedReason},
@@ -894,6 +921,7 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), live},
             {QStringLiteral("live_requested"), liveRequested},
+            {QStringLiteral("force_live"), forceLive},
             {QStringLiteral("ui_thread_responsive"), uiResponsive},
             {QStringLiteral("ui_error"), m_lastProfileRefreshError},
             {QStringLiteral("refresh_skipped_reason"), refreshSkippedReason},
@@ -980,6 +1008,18 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
     }
 
     if (request.method == QStringLiteral("GET") &&
+        request.url.path() == QStringLiteral("/startup/readiness")) {
+        const QJsonObject snapshot = fastSnapshot();
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("startup_readiness"),
+             snapshot.value(QStringLiteral("startup_readiness")).toObject()},
+            {QStringLiteral("fast_snapshot"), snapshot}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") &&
         request.url.path() == QStringLiteral("/profile/cached")) {
         if (m_lastProfileSnapshot.isEmpty()) {
             writeError(socket, 404, QStringLiteral("no cached profile snapshot"));
@@ -1002,6 +1042,8 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
              snapshot.value(QStringLiteral("main_thread_heartbeat_age_ms")).toInteger(-1) <=
                  m_uiHeartbeatStaleMs},
             {QStringLiteral("fast_snapshot"), snapshot},
+            {QStringLiteral("startup_readiness"),
+             snapshot.value(QStringLiteral("startup_readiness")).toObject()},
             {QStringLiteral("profile_cache"), profileCacheMeta()},
             {QStringLiteral("state_cache"), stateCacheMeta()},
             {QStringLiteral("project_cache"), projectCacheMeta()},

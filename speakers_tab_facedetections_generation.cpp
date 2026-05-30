@@ -604,7 +604,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
 
     QString parseError;
     QJsonObject generatedArtifact;
-    if (!jcut::facedetections::readBinaryJsonObject(outputPath, &generatedArtifact, &parseError) &&
+    if (!jcut::jsonio::readBinaryJsonObject(outputPath, &generatedArtifact, 0x4A435554, 1, &parseError) &&
         !readJsonObject(outputPath, &generatedArtifact, &parseError)) {
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),

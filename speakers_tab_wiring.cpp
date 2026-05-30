@@ -1,7 +1,9 @@
 #include "speakers_tab.h"
 #include "facedetections_artifact_utils.h"
+#include "facedetections_runtime.h"
 #include "speakers_tab_internal.h"
 #include "speakers_table.h"
+#include "transcript_engine.h"
 
 #include <QAbstractItemView>
 #include <QAction>
@@ -217,7 +219,29 @@ void SpeakersTab::wire()
             if (streamItem) {
                 const int rowIndex = streamItem->data(Qt::UserRole + 1).toInt();
                 if (rowIndex >= 0 && rowIndex < m_faceStreamPanelRows.size()) {
-                    const QJsonObject streamObj = m_faceStreamPanelRows.at(rowIndex).toObject();
+                    QJsonObject streamObj = m_faceStreamPanelRows.at(rowIndex).toObject();
+                    if (!streamObj.contains(QStringLiteral("keyframes"))) {
+                        const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+                        if (clip) {
+                            editor::TranscriptEngine transcriptEngine;
+                            QJsonObject artifactRoot;
+                            if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot) ||
+                                transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
+                                const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip->id);
+                                const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+                                const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString().trimmed();
+                                const QJsonArray loadedStreams =
+                                    jcut::facedetections::continuityStreamsForAssignments(
+                                        continuityRoot,
+                                        trackId >= 0 ? QSet<int>{trackId} : QSet<int>{},
+                                        streamId.isEmpty() ? QSet<QString>{} : QSet<QString>{streamId},
+                                        m_transcriptSession.rootObject());
+                                if (!loadedStreams.isEmpty()) {
+                                    streamObj = loadedStreams.first().toObject();
+                                }
+                            }
+                        }
+                    }
                     streamJson = QString::fromUtf8(QJsonDocument(streamObj).toJson(QJsonDocument::Indented));
                 }
             }

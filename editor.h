@@ -65,6 +65,7 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 
 namespace editor {
 
@@ -137,6 +138,7 @@ private:
     QJsonObject profilingSnapshot() const;
     QJsonObject pipelineSnapshot() const;
     QJsonObject startupProfileSnapshot() const;
+    QJsonObject startupReadinessSnapshot() const;
     QJsonObject startupOptimizationSnapshot() const;
     QJsonObject runtimePatchesSnapshot() const;
     QJsonObject throttleConfigSnapshot() const;
@@ -148,6 +150,7 @@ private:
     QJsonObject ensureOptimizedProfile();
     void scheduleOptimizedProfileEnsure();
     void startupProfileMark(const QString& phase, const QJsonObject& extra = QJsonObject());
+    void startupReadinessMark(const QString& phase, const QJsonObject& extra = QJsonObject());
 
     void syncTranscriptTableToPlayhead();
     void syncKeyframeTableToPlayhead();
@@ -711,11 +714,16 @@ private:
     std::atomic<qint64> m_lastInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_maxInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_inspectorRefreshSlowCount{0};
+    std::atomic<bool> m_startupReadinessFirstPlaybackTick{false};
+    std::atomic<bool> m_startupReadinessAudioStarted{false};
+    std::atomic<bool> m_startupReadinessVideoSampleApplied{false};
     QElapsedTimer m_startupProfileTimer;
     qint64 m_startupProfileLastMarkMs = 0;
     qint64 m_startupProfileCompletedMs = -1;
     bool m_startupProfileCompleted = false;
     QJsonArray m_startupProfileEvents;
+    mutable std::mutex m_startupReadinessMutex;
+    QJsonObject m_startupReadinessSnapshot;
     qint64 m_playbackUiSyncMinIntervalMs = 100;
     qint64 m_playbackStateSaveMinIntervalMs = 1000;
     qint64 m_slowSeekWarnThresholdMs = 20;

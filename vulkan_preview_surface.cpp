@@ -925,9 +925,12 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         m_lastVisibleRequestDecision = QStringLiteral("dispatch");
         m_lastVisibleRequestBlockReason.clear();
         ++m_visibleRequestDispatched;
-        m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle frame) {
+        const QString requestedClipId = clip.id;
+        const int64_t requestedFrame = localFrame;
+        m_cache->requestFrame(clip.id, localFrame, [this, requestedClipId, requestedFrame](FrameHandle frame) {
                 ++m_visibleRequestCallbacks;
-                if (frame.isNull()) {
+                const bool nullFrame = frame.isNull();
+                if (nullFrame) {
                     ++m_visibleRequestNullCallbacks;
                     m_lastVisibleRequestCallbackPayload = QStringLiteral("null");
                 } else if (frame.hasHardwareFrame()) {
@@ -944,8 +947,12 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                 }
                 QMetaObject::invokeMethod(
                     m_pipelineOwner.get(),
-                    [this]() {
-                        queueFrameStatusRefresh(true);
+                    [this, requestedClipId, requestedFrame, nullFrame]() {
+                        const bool affectsCurrent = loadedFrameAffectsCurrentView(requestedClipId, requestedFrame);
+                        if (m_interaction.playing && !affectsCurrent) {
+                            return;
+                        }
+                        queueFrameStatusRefresh(nullFrame && affectsCurrent);
                     },
                     Qt::QueuedConnection);
             });
@@ -1008,7 +1015,11 @@ void VulkanPreviewSurface::queueFrameStatusRefresh(bool requestVisibleFrames)
             refreshVulkanFrameStatuses();
             if (requestVisibleFrames) {
                 if (m_cache) {
-                    m_cache->trimCache();
+                    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                    if (now - m_lastFrameStatusTrimMs >= 500) {
+                        m_cache->trimCache();
+                        m_lastFrameStatusTrimMs = now;
+                    }
                 }
                 requestFramesForCurrentPosition();
             }

@@ -142,7 +142,6 @@ if(EXISTS "${MOTIVE3D_INCLUDE_DIR}")
         "${MOTIVE3D_INCLUDE_DIR}/glm"
         "${MOTIVE3D_INCLUDE_DIR}/tinygltf"
         "${MOTIVE3D_INCLUDE_DIR}/ufbx"
-        "${MOTIVE3D_INCLUDE_DIR}/glfw/include"
         "${MOTIVE3D_INCLUDE_DIR}"
     )
 endif()
@@ -389,6 +388,7 @@ endif()
 
 set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/audio_time_stretch_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/async_decoder.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/decode_trace.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/detector_settings.cpp

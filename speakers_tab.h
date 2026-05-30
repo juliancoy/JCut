@@ -147,6 +147,7 @@ public:
     qint64 lastRawDetectionsPanelRefreshDurationMs() const { return m_lastRawDetectionsPanelRefreshDurationMs; }
     qint64 maxRawDetectionsPanelRefreshDurationMs() const { return m_maxRawDetectionsPanelRefreshDurationMs; }
     QJsonObject speakerSectionSelectionTimingProfile() const { return m_sectionSelectionTiming.profileSnapshot(); }
+    QJsonObject faceDetectionsDebugSnapshot() const;
 
 signals:
     void transcriptDocumentChanged();
@@ -383,6 +384,7 @@ private:
     qint64 m_maxPlayheadTrackCandidatesRefreshDurationMs = 0;
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
+    QJsonObject m_lastFaceDetectionsDebugSnapshot;
     SpeakerSectionSelectionTimingService m_sectionSelectionTiming;
     int m_lastPlayheadTrackCandidateCount = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;

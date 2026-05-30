@@ -76,6 +76,31 @@ QHash<QString, QString>& activeTranscriptPathByClipFile() {
     return paths;
 }
 
+bool continuitySidecarHasUsablePayloadForTranscriptPath(const QString& transcriptPath)
+{
+    const QString trimmedPath = transcriptPath.trimmed();
+    if (trimmedPath.isEmpty()) {
+        return false;
+    }
+
+    editor::TranscriptEngine engine;
+    auto hasByClipPayload = [](const QJsonObject& root) {
+        const QJsonObject byClip =
+            root.value(QStringLiteral("continuity_facedetections_by_clip")).toObject();
+        if (!byClip.isEmpty()) {
+            return true;
+        }
+        return !root.value(QStringLiteral("continuity_facestreams_by_clip")).toObject().isEmpty();
+    };
+
+    QJsonObject artifactRoot;
+    if (engine.loadFacestreamProcessedArtifact(trimmedPath, &artifactRoot) && hasByClipPayload(artifactRoot)) {
+        return true;
+    }
+    artifactRoot = QJsonObject{};
+    return engine.loadFacestreamArtifact(trimmedPath, &artifactRoot) && hasByClipPayload(artifactRoot);
+}
+
 struct SpeakerTrackingKeyframe {
     int64_t frame = 0;
     qreal x = 0.5;
@@ -768,7 +793,7 @@ QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
         originalPath,
     };
     for (const QString& candidatePath : candidates) {
-        if (sidecarExistsForTranscriptPath(candidatePath)) {
+        if (continuitySidecarHasUsablePayloadForTranscriptPath(candidatePath)) {
             return candidatePath;
         }
     }
