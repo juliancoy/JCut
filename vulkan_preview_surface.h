@@ -120,6 +120,29 @@ private:
         QVector<int64_t> rawDetectionSourceFrames;
         int64_t rawDetectionTypicalFrameStep = 1;
     };
+    struct FacestreamOverlayRequestClip {
+        TimelineClip clip;
+        int64_t localFrame = 0;
+        int64_t localSourceFrame = 0;
+        int64_t localTimelineFrame = 0;
+        QSize clipFrameSize;
+        QVector<RenderSyncMarker> renderSyncMarkers;
+        FacestreamOverlayCacheEntry cacheEntry;
+    };
+    struct FacestreamOverlaySnapshot {
+        uint64_t requestId = 0;
+        QString requestKey;
+        int64_t currentSample = 0;
+        int64_t currentFrame = 0;
+        QVector<VulkanPreviewFacestreamOverlay> overlays;
+        QVector<VulkanPreviewFacestreamOverlay> rawDetections;
+        QJsonObject debug;
+        qint64 prepMs = 0;
+        int requestClipCount = 0;
+        int trackCandidateCount = 0;
+        int overlayMatchCount = 0;
+        int rawDetectionMatchCount = 0;
+    };
     struct PlaybackSmoothnessSample {
         qint64 timestampMs = 0;
         int exactCount = 0;
@@ -137,6 +160,12 @@ private:
         bool playing = false;
     };
 
+    static QRectF facestreamKeyframeBoxNorm(const FacestreamKeyframe& keyframe,
+                                            const QSize& clipFrameSize);
+    static QVector<VulkanPreviewFacestreamOverlay> rawDetectionsFromCacheEntry(
+        const FacestreamOverlayCacheEntry& entry,
+        int64_t sourceFrame);
+
     void requestNativeUpdate();
     void updateNativeTitle();
     void ensureFramePipeline();
@@ -150,6 +179,15 @@ private:
     void applyAdaptivePlaybackTuning();
     void updateAdaptivePlaybackTuning(qint64 nowMs);
     void refreshFacestreamOverlays();
+    void requestFacestreamOverlaySnapshotAsync(
+        const QString& requestKey,
+        const QVector<FacestreamOverlayRequestClip>& requestClips,
+        const QString& selectedClipId,
+        const QString& sourceFilter,
+        bool showSpeakerTrackBoxes,
+        bool showRawDetections,
+        bool assignmentInteractionEnabled);
+    void applyFacestreamOverlaySnapshot(const FacestreamOverlaySnapshot& snapshot);
     QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip,
                                                          int64_t sourceFrame);
     QVector<VulkanPreviewFacestreamOverlay> rawDetectionsForClipFrame(const TimelineClip& clip,
@@ -227,6 +265,23 @@ private:
     QString m_lastVisibleRequestCallbackPayload;
     QVector<PlaybackSmoothnessSample> m_playbackSmoothnessSamples;
     QJsonObject m_lastFacedetectionsQueryDebug;
+    QString m_appliedFacestreamOverlaySnapshotKey;
+    QString m_pendingFacestreamOverlaySnapshotKey;
+    uint64_t m_nextFacestreamOverlayRequestId = 0;
+    uint64_t m_latestAppliedFacestreamOverlayRequestId = 0;
+    bool m_facedetectionsOverlayWorkerPending = false;
+    qint64 m_lastFacedetectionsOverlayPrepMs = 0;
+    qint64 m_lastFacedetectionsOverlayApplyLatencyMs = 0;
+    qint64 m_lastFacedetectionsOverlayAppliedAtMs = 0;
+    qint64 m_lastFacedetectionsOverlayQueuedAtMs = 0;
+    int64_t m_facedetectionsOverlayWorkerStarted = 0;
+    int64_t m_facedetectionsOverlayWorkerApplied = 0;
+    int64_t m_facedetectionsOverlayWorkerDropped = 0;
+    int64_t m_facedetectionsOverlayWorkerCoalesced = 0;
+    int m_lastFacedetectionsOverlayRequestClipCount = 0;
+    int m_lastFacedetectionsOverlayTrackCandidateCount = 0;
+    int m_lastFacedetectionsOverlayMatchCount = 0;
+    int m_lastFacedetectionsRawDetectionMatchCount = 0;
     bool m_frameStatusRefreshQueued = false;
     bool m_frameStatusRefreshNeedsVisibleRequest = false;
     qint64 m_lastFrameStatusTrimMs = 0;

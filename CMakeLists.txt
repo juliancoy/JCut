@@ -293,6 +293,8 @@ set(JCUT_VULKAN_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/vulkan_
 set(JCUT_VULKAN_SHADER_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/effects.frag
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/text.vert
+    ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/text.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform.vert
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform.frag
     ${CMAKE_CURRENT_SOURCE_DIR}/shaders/vulkan/audio_waveform_process.comp
@@ -604,7 +606,7 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/overlay_render_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp

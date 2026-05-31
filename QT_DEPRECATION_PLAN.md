@@ -52,8 +52,8 @@ Implication:
 
 Relevant files:
 
-- [overlay_render_backend.h](/home/julian/Documents/JCut/overlay_render_backend.h:12)
-- [overlay_render_backend.cpp](/home/julian/Documents/JCut/overlay_render_backend.cpp:1)
+- [cpu_cpu_overlay_render_backend.h](/home/julian/Documents/JCut/cpu_cpu_overlay_render_backend.h:12)
+- [cpu_cpu_overlay_render_backend.cpp](/home/julian/Documents/JCut/cpu_cpu_overlay_render_backend.cpp:1)
 - [titles.cpp](/home/julian/Documents/JCut/titles.cpp:106)
 - [render_decode.cpp](/home/julian/Documents/JCut/render_decode.cpp:237)
 
@@ -152,7 +152,7 @@ Relevant files:
 
 - [render_decode.cpp](/home/julian/Documents/JCut/render_decode.cpp:237)
 - [titles.h](/home/julian/Documents/JCut/titles.h:57)
-- [overlay_render_backend.h](/home/julian/Documents/JCut/overlay_render_backend.h:29)
+- [cpu_cpu_overlay_render_backend.h](/home/julian/Documents/JCut/cpu_cpu_overlay_render_backend.h:29)
 
 Impact:
 
@@ -222,7 +222,7 @@ Exit criteria:
 
 Primary files:
 
-- [overlay_render_backend.h](/home/julian/Documents/JCut/overlay_render_backend.h)
+- [cpu_cpu_overlay_render_backend.h](/home/julian/Documents/JCut/cpu_cpu_overlay_render_backend.h)
 - [render_decode.cpp](/home/julian/Documents/JCut/render_decode.cpp)
 - [titles.h](/home/julian/Documents/JCut/titles.h)
 - [offscreen_vulkan_renderer.cpp](/home/julian/Documents/JCut/offscreen_vulkan_renderer.cpp)

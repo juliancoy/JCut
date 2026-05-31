@@ -6,7 +6,7 @@
 #include "debug_controls.h"
 #include "gl_frame_texture_shared.h"
 #include "media_pipeline_shared.h"
-#include "overlay_render_backend.h"
+#include "cpu_cpu_overlay_render_backend.h"
 #include "render_cpu_fallback.h"
 #include "ffmpeg_compat.h"
 

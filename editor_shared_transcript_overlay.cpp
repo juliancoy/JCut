@@ -39,10 +39,12 @@ int64_t transcriptPostpendFramesForMs(int postpendMs) {
 ExportRangeSegment transcriptPaddedWordRange(const TranscriptWord& word,
                                              int prependMs,
                                              int postpendMs) {
+    const int64_t prependFrames = transcriptPrependFramesForMs(prependMs);
+    const int64_t postpendFrames = transcriptPostpendFramesForMs(postpendMs);
     const int64_t startFrame =
-        qMax<int64_t>(0, word.startFrame - transcriptPrependFramesForMs(prependMs));
+        qMax<int64_t>(0, word.startFrame - prependFrames);
     const int64_t endFrame =
-        qMax<int64_t>(startFrame, word.endFrame + transcriptPostpendFramesForMs(postpendMs));
+        qMax<int64_t>(startFrame, word.endFrame + postpendFrames);
     return ExportRangeSegment{startFrame, endFrame};
 }
 
@@ -85,6 +87,15 @@ TranscriptSection transcriptSectionWithWordTimingPadding(const TranscriptSection
 
 namespace {
 
+ExportRangeSegment transcriptPaddedWordRangeForFrames(const TranscriptWord& word,
+                                                      int64_t prependFrames,
+                                                      int64_t postpendFrames)
+{
+    const int64_t startFrame = qMax<int64_t>(0, word.startFrame - prependFrames);
+    const int64_t endFrame = qMax<int64_t>(startFrame, word.endFrame + postpendFrames);
+    return ExportRangeSegment{startFrame, endFrame};
+}
+
 struct ResolvedTranscriptOverlaySection {
     TranscriptSection section;
     int activeWordIndex = -1;
@@ -117,17 +128,33 @@ ResolvedTranscriptOverlaySection resolveTranscriptOverlaySectionAtSourceFrame(
 {
     const int prependMs = transcriptOverlayPrependMs().load();
     const int postpendMs = transcriptOverlayPostpendMs().load();
+    const int64_t prependFrames = transcriptPrependFramesForMs(prependMs);
+    const int64_t postpendFrames = transcriptPostpendFramesForMs(postpendMs);
     for (const TranscriptSection& section : sections) {
-        TranscriptSection paddedSection =
-            transcriptSectionWithWordTimingPadding(section, prependMs, postpendMs);
-        if (sourceFrame < paddedSection.startFrame) {
+        if (section.words.isEmpty()) {
+            continue;
+        }
+        const int64_t paddedStartFrame =
+            qMax<int64_t>(0, section.words.constFirst().startFrame - prependFrames);
+        const int64_t paddedEndFrame =
+            qMax<int64_t>(paddedStartFrame, section.words.constLast().endFrame + postpendFrames);
+        if (sourceFrame < paddedStartFrame) {
             return {};
         }
-        if (sourceFrame > paddedSection.endFrame) {
+        if (sourceFrame > paddedEndFrame) {
             continue;
         }
 
         ResolvedTranscriptOverlaySection resolved;
+        TranscriptSection paddedSection = section;
+        paddedSection.startFrame = paddedStartFrame;
+        paddedSection.endFrame = paddedEndFrame;
+        for (TranscriptWord& word : paddedSection.words) {
+            const ExportRangeSegment range =
+                transcriptPaddedWordRangeForFrames(word, prependFrames, postpendFrames);
+            word.startFrame = range.startFrame;
+            word.endFrame = range.endFrame;
+        }
         resolved.activeWordIndex = transcriptOverlayActiveWordIndexForSection(paddedSection, sourceFrame);
         resolved.valid = resolved.activeWordIndex >= 0 && resolved.activeWordIndex < paddedSection.words.size();
         resolved.section = std::move(paddedSection);

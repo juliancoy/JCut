@@ -12,6 +12,7 @@
 #include "vulkan_audio_tab.h"
 #include "vulkan_pipeline.h"
 #include "vulkan_resources.h"
+#include "vulkan_text_renderer.h"
 #include "waveform_service.h"
 #include "loiacono/loiacono_rolling.h"
 
@@ -48,7 +49,6 @@
 #include <QWheelEvent>
 #include <QStackedLayout>
 #include <QTransform>
-#include <QTextDocument>
 #include <QVulkanFunctions>
 #include <QVulkanWindow>
 #include <QWidget>
@@ -73,6 +73,7 @@ extern "C" {
 
 namespace {
 constexpr qint64 kPipelineThumbnailReadbackMinIntervalMs = 250;
+constexpr bool kAllowCpuRasterTextOverlaysInDirectVulkanPreview = false;
 
 bool envFlagEnabled(const char* name)
 {
@@ -150,68 +151,6 @@ void setFontPixelSizeRobust(QFont* font, qreal pixelSize, const QPaintDevice* de
     font->setPointSizeF((pixelSize * 72.0) / dpiY);
 }
 
-QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color)
-{
-    const QString safeTitle = title.trimmed().toHtmlEscaped();
-    if (safeTitle.isEmpty()) {
-        return QString();
-    }
-    return QStringLiteral(
-               "<div style=\"text-align:center;"
-               " font-weight:700;"
-               " letter-spacing:0.02em;"
-               " font-size:0.62em;"
-               " margin:0 0 0.30em 0;"
-               " color:%1;\">%2</div>")
-        .arg(color.name(QColor::HexRgb), safeTitle);
-}
-
-QString transcriptOverlayTextureKey(const TimelineClip& clip,
-                                    const QRectF& bounds,
-                                    const QRectF& textBounds,
-                                    qreal fontPixelSize,
-                                    const QString& shadowHtml,
-                                    const QString& textHtml)
-{
-    const QString keyMaterial =
-        clip.id + QLatin1Char('|') +
-        QString::number(qRound(bounds.width())) + QLatin1Char('|') +
-        QString::number(qRound(bounds.height())) + QLatin1Char('|') +
-        QString::number(qRound(textBounds.width())) + QLatin1Char('|') +
-        QString::number(qRound(textBounds.height())) + QLatin1Char('|') +
-        clip.transcriptOverlay.fontFamily + QLatin1Char('|') +
-        QString::number(fontPixelSize, 'f', 3) + QLatin1Char('|') +
-        (clip.transcriptOverlay.bold ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
-        (clip.transcriptOverlay.italic ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
-        (clip.transcriptOverlay.showBackground ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
-        shadowHtml + QLatin1Char('|') + textHtml;
-    const QByteArray digest = QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1);
-    return QString::fromLatin1(digest.toHex());
-}
-
-QString speakerOverlayTextureKey(const QSize& imageSize,
-                                 const render_detail::SpeakerLabelOverlaySpec& spec)
-{
-    const QString keyMaterial =
-        QString::number(imageSize.width()) + QLatin1Char('|') +
-        QString::number(imageSize.height()) + QLatin1Char('|') +
-        (spec.showName ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
-        (spec.showOrganization ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
-        spec.name + QLatin1Char('|') +
-        spec.organization + QLatin1Char('|') +
-        QString::number(spec.nameTextScale, 'f', 3) + QLatin1Char('|') +
-        QString::number(spec.organizationTextScale, 'f', 3) + QLatin1Char('|') +
-        QString::number(spec.nameVerticalPosition, 'f', 3) + QLatin1Char('|') +
-        QString::number(spec.organizationVerticalPosition, 'f', 3) + QLatin1Char('|') +
-        spec.fontFamily + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(spec.nameColor.rgba())) + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(spec.organizationColor.rgba())) + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(spec.backgroundColor.rgba())) + QLatin1Char('|') +
-        QString::number(static_cast<quint32>(spec.borderColor.rgba()));
-    const QByteArray digest = QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1);
-    return QString::fromLatin1(digest.toHex());
-}
-
 QString playbackStatusOverlayTextureKey(const QSize& imageSize, const QString& text, qreal progress)
 {
     const QString keyMaterial =
@@ -284,88 +223,6 @@ render_detail::OverlayImage renderPlaybackStatusOverlay(const QSize& imageSize, 
     return overlay;
 }
 
-render_detail::OverlayImage renderTranscriptOverlay(const TimelineClip& clip,
-                                                    const QRectF& bounds,
-                                                    const QRectF& textBounds,
-                                                    qreal fontPixelSize,
-                                                    const QString& shadowHtml,
-                                                    const QString& textHtml)
-{
-    const int imageWidth = qMax(1, qRound(bounds.width()));
-    const int imageHeight = qMax(1, qRound(bounds.height()));
-    QImage image(imageWidth, imageHeight, QImage::Format_RGBA8888_Premultiplied);
-    image.fill(Qt::transparent);
-
-    QPainter painter(&image);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::TextAntialiasing, true);
-
-    if (clip.transcriptOverlay.showBackground) {
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(0, 0, 0, 120));
-        painter.drawRoundedRect(QRectF(0.0, 0.0, imageWidth, imageHeight), 14.0, 14.0);
-    }
-
-    QFont font(clip.transcriptOverlay.fontFamily);
-    if (fontPixelSize <= 0.0) {
-        render_detail::OverlayImage overlay;
-        overlay.width = image.width();
-        overlay.height = image.height();
-        overlay.rgbaPremultiplied = QByteArray(
-            reinterpret_cast<const char*>(image.constBits()),
-            static_cast<int>(image.sizeInBytes()));
-        return overlay;
-    }
-    setFontPixelSizeRobust(&font, fontPixelSize, painter.device());
-    font.setBold(clip.transcriptOverlay.bold);
-    font.setItalic(clip.transcriptOverlay.italic);
-
-    QTextDocument shadowDoc;
-    shadowDoc.setDefaultFont(font);
-    shadowDoc.setDocumentMargin(0.0);
-    shadowDoc.setTextWidth(textBounds.width());
-    shadowDoc.setHtml(shadowHtml);
-
-    QTextDocument textDoc;
-    textDoc.setDefaultFont(font);
-    textDoc.setDocumentMargin(0.0);
-    textDoc.setTextWidth(textBounds.width());
-    textDoc.setHtml(textHtml);
-
-    const qreal widthScale = textDoc.size().width() > textBounds.width()
-                                 ? textBounds.width() / textDoc.size().width()
-                                 : 1.0;
-    const qreal heightScale = textDoc.size().height() > textBounds.height()
-                                  ? textBounds.height() / textDoc.size().height()
-                                  : 1.0;
-    const qreal docScale = qMin(widthScale, heightScale);
-    const qreal scaledDocHeight = textDoc.size().height() * docScale;
-    const qreal textY = textBounds.top() + qMax<qreal>(0.0, (textBounds.height() - scaledDocHeight) / 2.0);
-
-    painter.translate(textBounds.left() + 3.0, textY + 3.0);
-    if (docScale < 0.999) {
-        painter.scale(docScale, docScale);
-    }
-    shadowDoc.drawContents(&painter);
-    if (docScale < 0.999) {
-        painter.scale(1.0 / docScale, 1.0 / docScale);
-    }
-    painter.translate(-3.0, -3.0);
-    if (docScale < 0.999) {
-        painter.scale(docScale, docScale);
-    }
-    textDoc.drawContents(&painter);
-    painter.end();
-
-    render_detail::OverlayImage overlay;
-    overlay.width = image.width();
-    overlay.height = image.height();
-    overlay.rgbaPremultiplied = QByteArray(
-        reinterpret_cast<const char*>(image.constBits()),
-        static_cast<int>(image.sizeInBytes()));
-    return overlay;
-}
-
 class DirectVulkanPreviewRenderer final : public QVulkanWindowRenderer {
 public:
     DirectVulkanPreviewRenderer(DirectVulkanPreviewWindow* owner, QVulkanWindow* window)
@@ -406,19 +263,12 @@ private:
     QVulkanWindow* m_window = nullptr;
     QVulkanDeviceFunctions* m_devFuncs = nullptr;
     std::unique_ptr<VulkanResources> m_resources;
-    std::vector<std::unique_ptr<VulkanResources>> m_transcriptOverlayResources;
-    std::vector<QString> m_transcriptOverlayTextureKeys;
-    std::vector<bool> m_transcriptOverlayTextureReady;
-    std::unique_ptr<VulkanResources> m_speakerOverlayResources;
     std::unique_ptr<VulkanResources> m_playbackStatusOverlayResources;
     std::unique_ptr<VulkanPipeline> m_pipeline;
+    std::unique_ptr<VulkanTextRenderer> m_textRenderer;
     std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
     std::unique_ptr<DirectVulkanFrameHandoffPipeline> m_frameHandoffPipeline;
-    QHash<QString, render_detail::OverlayImage> m_transcriptOverlayLookaheadImages;
-    QVector<QString> m_transcriptOverlayLookaheadOrder;
-    QString m_speakerOverlayTextureKey;
     QString m_playbackStatusOverlayTextureKey;
-    bool m_speakerOverlayTextureReady = false;
     bool m_playbackStatusOverlayTextureReady = false;
     std::vector<ReadbackSlot> m_readbackSlots;
     std::vector<ReadbackSlot> m_decoderReadbackSlots;
@@ -2389,13 +2239,6 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
-    m_speakerOverlayResources = std::make_unique<VulkanResources>();
-    if (!m_speakerOverlayResources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
-        if (m_owner) {
-            m_owner->markFailure(QStringLiteral("Failed to initialize speaker overlay Vulkan resources."));
-        }
-        return;
-    }
     m_playbackStatusOverlayResources = std::make_unique<VulkanResources>();
     if (!m_playbackStatusOverlayResources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
         if (m_owner) {
@@ -2429,6 +2272,19 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
+    m_textRenderer = std::make_unique<VulkanTextRenderer>();
+    if (!m_textRenderer->initialize(m_window->physicalDevice(),
+                                    m_window->device(),
+                                    m_devFuncs,
+                                    m_window->defaultRenderPass(),
+                                    &error)) {
+        if (m_owner) {
+            m_owner->markFailure(error.isEmpty()
+                                     ? QStringLiteral("Failed to initialize Vulkan text renderer.")
+                                     : error);
+        }
+        return;
+    }
     m_audioTab = std::make_unique<jcut::VulkanAudioTab>();
     if (!m_audioTab->initialize(m_window->physicalDevice(),
                                 m_window->device(),
@@ -2457,15 +2313,8 @@ void DirectVulkanPreviewRenderer::releaseResources()
         m_frameHandoffPipeline.reset();
     }
     m_audioTab.reset();
+    m_textRenderer.reset();
     m_pipeline.reset();
-    m_transcriptOverlayResources.clear();
-    m_transcriptOverlayTextureKeys.clear();
-    m_transcriptOverlayTextureReady.clear();
-    m_transcriptOverlayLookaheadImages.clear();
-    m_transcriptOverlayLookaheadOrder.clear();
-    m_speakerOverlayResources.reset();
-    m_speakerOverlayTextureKey.clear();
-    m_speakerOverlayTextureReady = false;
     m_playbackStatusOverlayResources.reset();
     m_playbackStatusOverlayTextureKey.clear();
     m_playbackStatusOverlayTextureReady = false;
@@ -2885,8 +2734,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         QRectF bounds;
         bool ready = false;
     };
-    QHash<QString, PreparedOverlayTexture> preparedTranscriptOverlays;
-    PreparedOverlayTexture preparedSpeakerOverlay;
+    struct PreparedTranscriptText {
+        TimelineClip clip;
+        TranscriptOverlayLayout layout;
+        QRectF outputRect;
+        QRectF bounds;
+        QString speakerTitle;
+        bool ready = false;
+    };
+    QHash<QString, PreparedTranscriptText> preparedTranscriptOverlays;
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
     const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
     const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
@@ -2923,18 +2779,6 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
     }
     const bool canDrawOverlays = m_pipeline && m_pipeline->isReady();
-    auto ensureTranscriptOverlayResource = [this](size_t index) -> VulkanResources* {
-        while (m_transcriptOverlayResources.size() <= index) {
-            auto resources = std::make_unique<VulkanResources>();
-            if (!resources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
-                return nullptr;
-            }
-            m_transcriptOverlayResources.push_back(std::move(resources));
-            m_transcriptOverlayTextureKeys.push_back(QString());
-            m_transcriptOverlayTextureReady.push_back(false);
-        }
-        return m_transcriptOverlayResources[index].get();
-    };
     if (state && canDrawOverlays) {
         const QRectF fullSwapRect(QPointF(0, 0), QSizeF(swapSize));
         const PreviewViewTransform overlayViewTransform(fullSwapRect,
@@ -2944,15 +2788,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                         state->previewPanOffset);
         struct TranscriptOverlayCandidate {
             bool valid = false;
-            QString key;
-            render_detail::OverlayImage image;
+            TimelineClip clip;
+            TranscriptOverlayLayout layout;
+            QRectF outputRect;
             QRectF bounds;
+            QString speakerTitle;
         };
         auto buildTranscriptOverlayCandidate =
             [&](const TimelineClip& clip,
                 const TimelineClip& effectiveClip,
-                int64_t samplePosition,
-                bool renderImage) -> TranscriptOverlayCandidate {
+                int64_t samplePosition) -> TranscriptOverlayCandidate {
             TranscriptOverlayCandidate candidate;
             const QString transcriptPath = activeTranscriptPathForClipFile(effectiveClip.filePath);
             if (transcriptPath.isEmpty()) {
@@ -2995,68 +2840,18 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 fontPixelSize <= 0.0) {
                 return candidate;
             }
-            const QColor highlightFillColor(QStringLiteral("#fff2a8"));
-            const QColor highlightTextColor(QStringLiteral("#181818"));
-            QString titleShadowHtml;
-            QString titleTextHtml;
+            QString speakerTitle;
             if (effectiveClip.transcriptOverlay.showSpeakerTitle) {
-                const QString titleText =
-                    transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame);
-                if (effectiveClip.transcriptOverlay.showShadow) {
-                    titleShadowHtml = transcriptSpeakerTitleHtml(titleText, QColor(0, 0, 0, 200));
-                }
-                titleTextHtml = transcriptSpeakerTitleHtml(titleText, effectiveClip.transcriptOverlay.textColor);
-            }
-            const QString shadowHtml = effectiveClip.transcriptOverlay.showShadow
-                ? (titleShadowHtml + transcriptOverlayHtml(
-                    overlayLayout,
-                    QColor(0, 0, 0, 200),
-                    QColor(0, 0, 0, 200),
-                    QColor(0, 0, 0, 0)))
-                : QString();
-            const QString textHtml = titleTextHtml + transcriptOverlayHtml(
-                overlayLayout,
-                effectiveClip.transcriptOverlay.textColor,
-                highlightTextColor,
-                highlightFillColor);
-            if (textHtml.isEmpty()) {
-                return candidate;
+                speakerTitle = transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame).trimmed();
             }
             candidate.valid = true;
+            candidate.clip = effectiveClip;
+            candidate.layout = overlayLayout;
+            candidate.outputRect = outputRect;
             candidate.bounds = bounds;
-            candidate.key = transcriptOverlayTextureKey(
-                effectiveClip,
-                bounds,
-                localTextBounds,
-                fontPixelSize,
-                shadowHtml,
-                textHtml);
-            if (renderImage) {
-                candidate.image = renderTranscriptOverlay(
-                    effectiveClip,
-                    localBounds,
-                    localTextBounds,
-                    fontPixelSize,
-                    shadowHtml,
-                    textHtml);
-            }
+            candidate.speakerTitle = speakerTitle;
             return candidate;
         };
-        auto rememberLookaheadImage = [this](const QString& key, const render_detail::OverlayImage& image) {
-            if (key.isEmpty() || image.isNull()) {
-                return;
-            }
-            if (!m_transcriptOverlayLookaheadImages.contains(key)) {
-                m_transcriptOverlayLookaheadOrder.push_back(key);
-            }
-            m_transcriptOverlayLookaheadImages.insert(key, image);
-            constexpr int kMaxLookaheadTextImages = 48;
-            while (m_transcriptOverlayLookaheadOrder.size() > kMaxLookaheadTextImages) {
-                const QString evicted = m_transcriptOverlayLookaheadOrder.takeFirst();
-                m_transcriptOverlayLookaheadImages.remove(evicted);
-            }
-        };
-        size_t transcriptOverlayIndex = 0;
         for (const TimelineClip& clip : state->clips) {
             const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
             if (!status || !status->active || status->drawSuppressed) {
@@ -3066,115 +2861,23 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (!clipSupportsTranscriptOverlay(effectiveClip)) {
                 continue;
             }
-            VulkanResources* overlayResources = ensureTranscriptOverlayResource(transcriptOverlayIndex++);
-            if (!overlayResources || !overlayResources->isReady() ||
-                overlayResources->descriptorSet() == VK_NULL_HANDLE) {
-                continue;
-            }
             const TranscriptOverlayCandidate candidate =
                 buildTranscriptOverlayCandidate(
                     clip,
                     effectiveClip,
-                    state->currentSample,
-                    /*renderImage=*/false);
+                    state->currentSample);
             if (!candidate.valid) {
-                if (transcriptOverlayIndex > 0 && transcriptOverlayIndex - 1 < m_transcriptOverlayTextureReady.size()) {
-                    m_transcriptOverlayTextureReady[transcriptOverlayIndex - 1] = false;
-                    m_transcriptOverlayTextureKeys[transcriptOverlayIndex - 1].clear();
-                }
                 continue;
             }
-            const size_t overlayResourceIndex = transcriptOverlayIndex - 1;
-            bool textureReady =
-                overlayResourceIndex < m_transcriptOverlayTextureReady.size() &&
-                m_transcriptOverlayTextureReady[overlayResourceIndex] &&
-                candidate.key == m_transcriptOverlayTextureKeys[overlayResourceIndex];
-            if (!textureReady) {
-                render_detail::OverlayImage overlayImage =
-                    m_transcriptOverlayLookaheadImages.take(candidate.key);
-                if (overlayImage.isNull()) {
-                    overlayImage = buildTranscriptOverlayCandidate(
-                        clip,
-                        effectiveClip,
-                        state->currentSample,
-                        /*renderImage=*/true).image;
-                }
-                textureReady = !overlayImage.isNull() && overlayResources->uploadImageTexture(cb, overlayImage);
-                if (textureReady && overlayResourceIndex < m_transcriptOverlayTextureReady.size()) {
-                    m_transcriptOverlayTextureReady[overlayResourceIndex] = true;
-                    m_transcriptOverlayTextureKeys[overlayResourceIndex] = candidate.key;
-                }
-            }
-            if (textureReady) {
-                preparedTranscriptOverlays.insert(
-                    clip.id,
-                    PreparedOverlayTexture{overlayResources, candidate.bounds, true});
-            }
-
-            if (state->playing) {
-                int renderedLookahead = 0;
-                constexpr int kTextLookaheadFrames = 8;
-                constexpr int kMaxTextLookaheadRendersPerFrame = 2;
-                for (int offset = 1;
-                     offset <= kTextLookaheadFrames &&
-                     renderedLookahead < kMaxTextLookaheadRendersPerFrame;
-                     ++offset) {
-                    const int64_t lookaheadSample = state->currentSample + frameToSamples(offset);
-                    const TranscriptOverlayCandidate lookaheadCandidate =
-                        buildTranscriptOverlayCandidate(
-                            clip,
-                            effectiveClip,
-                            lookaheadSample,
-                            /*renderImage=*/false);
-                    if (!lookaheadCandidate.valid ||
-                        m_transcriptOverlayLookaheadImages.contains(lookaheadCandidate.key) ||
-                        lookaheadCandidate.key == candidate.key) {
-                        continue;
-                    }
-                    const TranscriptOverlayCandidate renderedCandidate =
-                        buildTranscriptOverlayCandidate(
-                            clip,
-                            effectiveClip,
-                            lookaheadSample,
-                            /*renderImage=*/true);
-                    if (renderedCandidate.valid && !renderedCandidate.image.isNull()) {
-                        rememberLookaheadImage(renderedCandidate.key, renderedCandidate.image);
-                        ++renderedLookahead;
-                    }
-                }
-            }
-        }
-        if (m_speakerOverlayResources && m_speakerOverlayResources->isReady() &&
-            m_speakerOverlayResources->descriptorSet() != VK_NULL_HANDLE &&
-            (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
-            const render_detail::SpeakerLabelOverlaySpec spec =
-                currentSpeakerLabelOverlaySpecForState(state);
-            const bool hasVisibleLabel =
-                (spec.showName && !spec.name.trimmed().isEmpty()) ||
-                (spec.showOrganization && !spec.organization.trimmed().isEmpty());
-            if (hasVisibleLabel) {
-                const QString textureKey = speakerOverlayTextureKey(state->outputSize, spec);
-                bool textureReady = m_speakerOverlayTextureReady && textureKey == m_speakerOverlayTextureKey;
-                if (!textureReady) {
-                    const render_detail::OverlayImage overlayImage =
-                        render_detail::overlayRenderBackend().renderSpeakerLabelOverlay(state->outputSize, spec);
-                    textureReady = !overlayImage.isNull() &&
-                        m_speakerOverlayResources->uploadImageTexture(cb, overlayImage);
-                    if (textureReady) {
-                        m_speakerOverlayTextureKey = textureKey;
-                        m_speakerOverlayTextureReady = true;
-                    }
-                }
-                if (textureReady) {
-                    preparedSpeakerOverlay = PreparedOverlayTexture{
-                        m_speakerOverlayResources.get(),
-                        overlayViewTransform.targetRect(),
-                        true};
-                }
-            } else {
-                m_speakerOverlayTextureKey.clear();
-                m_speakerOverlayTextureReady = false;
-            }
+            preparedTranscriptOverlays.insert(
+                clip.id,
+                PreparedTranscriptText{
+                    candidate.clip,
+                    candidate.layout,
+                    candidate.outputRect,
+                    candidate.bounds,
+                    candidate.speakerTitle,
+                    true});
         }
         if (m_playbackStatusOverlayResources &&
             m_playbackStatusOverlayResources->isReady() &&
@@ -3186,14 +2889,21 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 bool textureReady =
                     m_playbackStatusOverlayTextureReady &&
                     textureKey == m_playbackStatusOverlayTextureKey;
+                if (!kAllowCpuRasterTextOverlaysInDirectVulkanPreview) {
+                    textureReady = false;
+                    m_playbackStatusOverlayTextureKey.clear();
+                    m_playbackStatusOverlayTextureReady = false;
+                }
                 if (!textureReady) {
-                    const render_detail::OverlayImage overlayImage =
-                        renderPlaybackStatusOverlay(swapSize, statusText, statusProgress);
-                    textureReady = !overlayImage.isNull() &&
-                        m_playbackStatusOverlayResources->uploadImageTexture(cb, overlayImage);
-                    if (textureReady) {
-                        m_playbackStatusOverlayTextureKey = textureKey;
-                        m_playbackStatusOverlayTextureReady = true;
+                    if (kAllowCpuRasterTextOverlaysInDirectVulkanPreview) {
+                        const render_detail::OverlayImage overlayImage =
+                            renderPlaybackStatusOverlay(swapSize, statusText, statusProgress);
+                        textureReady = !overlayImage.isNull() &&
+                            m_playbackStatusOverlayResources->uploadImageTexture(cb, overlayImage);
+                        if (textureReady) {
+                            m_playbackStatusOverlayTextureKey = textureKey;
+                            m_playbackStatusOverlayTextureReady = true;
+                        }
                     }
                 }
                 if (textureReady) {
@@ -3427,30 +3137,17 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const auto transcriptOverlayIt = preparedTranscriptOverlays.constFind(clip.id);
             if (transcriptOverlayIt != preparedTranscriptOverlays.constEnd() &&
                 transcriptOverlayIt.value().ready &&
-                transcriptOverlayIt.value().resources &&
-                transcriptOverlayIt.value().resources->descriptorSet() != VK_NULL_HANDLE) {
-                const QRectF& bounds = transcriptOverlayIt.value().bounds;
-                PreviewClipGeometry overlayGeometry;
-                overlayGeometry.localRect = QRectF(-bounds.width() / 2.0,
-                                                   -bounds.height() / 2.0,
-                                                   bounds.width(),
-                                                   bounds.height());
-                overlayGeometry.clipToScreen.translate(bounds.center().x(), bounds.center().y());
-                overlayGeometry.bounds = bounds;
-                VulkanPipeline::Push overlayPush{};
-                mvpForVulkanClipTransform(overlayGeometry.clipToScreen,
-                                          overlayGeometry.localRect,
-                                          swapSize,
-                                          overlayPush.mvp);
-                VkRect2D overlayScissor{};
-                overlayScissor.offset = {0, 0};
-                overlayScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
-                                         static_cast<uint32_t>(std::max(1, swapSize.height()))};
-                m_pipeline->bindAndDraw(cb,
-                                        viewport,
-                                        overlayScissor,
-                                        transcriptOverlayIt.value().resources->descriptorSet(),
-                                        overlayPush);
+                m_textRenderer &&
+                m_textRenderer->isReady()) {
+                const PreparedTranscriptText& transcript = transcriptOverlayIt.value();
+                m_textRenderer->drawTranscriptOverlay(cb,
+                                                      swapSize,
+                                                      state->outputSize,
+                                                      compositeRect,
+                                                      transcript.clip,
+                                                      transcript.layout,
+                                                      transcript.outputRect,
+                                                      transcript.speakerTitle);
             }
             QRectF selectionBounds = transformedBounds;
             if (selected) {
@@ -3472,10 +3169,21 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
             }
         }
-        if (preparedSpeakerOverlay.ready &&
-            preparedSpeakerOverlay.resources &&
-            preparedSpeakerOverlay.resources->descriptorSet() != VK_NULL_HANDLE) {
-            drawPreparedOverlay(preparedSpeakerOverlay);
+        if (m_textRenderer &&
+            m_textRenderer->isReady() &&
+            (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
+            const render_detail::SpeakerLabelOverlaySpec spec =
+                currentSpeakerLabelOverlaySpecForState(state);
+            const bool hasVisibleLabel =
+                (spec.showName && !spec.name.trimmed().isEmpty()) ||
+                (spec.showOrganization && !spec.organization.trimmed().isEmpty());
+            if (hasVisibleLabel) {
+                m_textRenderer->drawSpeakerLabel(cb,
+                                                 swapSize,
+                                                 state->outputSize,
+                                                 compositeRect,
+                                                 spec);
+            }
         }
         drawPreparedOverlay(preparedPlaybackStatusOverlay);
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);

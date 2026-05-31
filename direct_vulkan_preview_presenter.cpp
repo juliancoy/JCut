@@ -27,6 +27,8 @@
 
 namespace {
 
+constexpr bool kAllowQtPainterOverlayInDirectVulkanPreview = false;
+
 struct OverlayGeometry {
     QTransform clipToScreen;
     QRectF localRect;
@@ -143,6 +145,9 @@ protected:
     void paintEvent(QPaintEvent* event) override
     {
         Q_UNUSED(event)
+        if (!kAllowQtPainterOverlayInDirectVulkanPreview) {
+            return;
+        }
         if (!m_state || m_state->viewMode == PreviewSurface::ViewMode::Audio) {
             return;
         }
@@ -1088,7 +1093,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("vulkan_curve_lut_supported"), true},
         {QStringLiteral("vulkan_curve_lut_applied"), curveLutApplied},
         {QStringLiteral("vulkan_correction_masks_supported"), true},
-        {QStringLiteral("vulkan_correction_masks_cpu_upload_supported"), true},
+        {QStringLiteral("vulkan_correction_masks_cpu_upload_supported"), false},
         {QStringLiteral("vulkan_correction_masks_applied"), correctionsApplied},
         {QStringLiteral("last_curve_lut_applied"), m_stats.lastCurveLutApplied},
         {QStringLiteral("last_effects_path"), m_stats.lastEffectsPath},

@@ -153,7 +153,7 @@ void TestTemporalSyncContract::pitchPreservingClockGatePreventsTimerFallback()
 
     input.pitchPreservingAudioRequired = false;
     decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTimelineTimer);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
 }
 
 QTEST_MAIN(TestTemporalSyncContract)

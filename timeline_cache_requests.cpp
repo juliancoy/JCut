@@ -502,7 +502,8 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
         if (isDisplayableCandidate(playbackExact)) {
             return true;
         }
-        if (allowApproximateFrame &&
+        if ((!requireHardwareOrGpuPayload || m_state.load() == PlaybackState::Playing) &&
+            allowApproximateFrame &&
             isDisplayableCandidate(playbackBuffer->getLatestAtOrBefore(frameNumber))) {
             return true;
         }
@@ -513,7 +514,8 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
         if (isDisplayableCandidate(cacheExact)) {
             return true;
         }
-        if (allowApproximateFrame &&
+        if ((!requireHardwareOrGpuPayload || m_state.load() == PlaybackState::Playing) &&
+            allowApproximateFrame &&
             isDisplayableCandidate(cache->getLatestAtOrBefore(frameNumber))) {
             return true;
         }

@@ -9,6 +9,10 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QElapsedTimer>
+#include <QDateTime>
+#include <QMetaObject>
+#include <QPointer>
+#include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
 #include <cmath>
@@ -49,6 +53,59 @@ bool clipSupportsDrawableTranscriptOverlayForSelection(const TimelineClip& clip,
 }
 
 } // namespace
+
+QRectF VulkanPreviewSurface::facestreamKeyframeBoxNorm(const FacestreamKeyframe& keyframe,
+                                                       const QSize& clipFrameSize)
+{
+    if (keyframe.hasCenterBox) {
+        if (!clipFrameSize.isValid()) {
+            return QRectF();
+        }
+        return normalizedCenterBoxRect(
+            keyframe.xNorm,
+            keyframe.yNorm,
+            keyframe.boxSizeNorm,
+            QSizeF(clipFrameSize.width(), clipFrameSize.height()));
+    }
+    return keyframe.boxNorm;
+}
+
+QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::rawDetectionsFromCacheEntry(
+    const FacestreamOverlayCacheEntry& entry,
+    int64_t sourceFrame)
+{
+    const auto exact = entry.rawDetectionsBySourceFrame.constFind(sourceFrame);
+    if (exact != entry.rawDetectionsBySourceFrame.constEnd()) {
+        return exact.value();
+    }
+    if (entry.rawDetectionSourceFrames.isEmpty()) {
+        return {};
+    }
+
+    const auto nextIt = std::lower_bound(
+        entry.rawDetectionSourceFrames.constBegin(),
+        entry.rawDetectionSourceFrames.constEnd(),
+        sourceFrame);
+    const int64_t typicalStep = qMax<int64_t>(1, entry.rawDetectionTypicalFrameStep);
+    const int64_t edgeHoldFrames = facedetectionsMaxEdgeHoldFrames(typicalStep);
+    const int64_t* previous =
+        (nextIt != entry.rawDetectionSourceFrames.constBegin()) ? &(*(nextIt - 1)) : nullptr;
+    const int64_t* next =
+        (nextIt != entry.rawDetectionSourceFrames.constEnd()) ? &(*nextIt) : nullptr;
+
+    if (previous && next && facedetectionsShouldBridgeGap(*previous, *next, typicalStep)) {
+        const int64_t previousDistance = qAbs(sourceFrame - *previous);
+        const int64_t nextDistance = qAbs(*next - sourceFrame);
+        return entry.rawDetectionsBySourceFrame.value(previousDistance <= nextDistance ? *previous : *next);
+    }
+    if (previous && qAbs(sourceFrame - *previous) <= edgeHoldFrames) {
+        return entry.rawDetectionsBySourceFrame.value(*previous);
+    }
+    if (next && qAbs(*next - sourceFrame) <= edgeHoldFrames) {
+        return entry.rawDetectionsBySourceFrame.value(*next);
+    }
+    return {};
+}
 
 QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContinuityTracksForClip(
     const TimelineClip& clip,
@@ -425,57 +482,100 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
     if (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled && !m_showRawDetections) {
         m_interaction.facedetectionsOverlays = overlays;
         m_interaction.rawDetectionOverlays = rawDetections;
+        m_appliedFacestreamOverlaySnapshotKey.clear();
         return;
     }
-    auto keyframeBoxNorm = [](const FacestreamKeyframe& keyframe,
-                              const QSize& clipFrameSize) -> QRectF {
-        if (keyframe.hasCenterBox) {
-            if (!clipFrameSize.isValid()) {
-                return QRectF();
-            }
-            return normalizedCenterBoxRect(
-                keyframe.xNorm,
-                keyframe.yNorm,
-                keyframe.boxSizeNorm,
-                QSizeF(clipFrameSize.width(), clipFrameSize.height()));
-        }
-        return keyframe.boxNorm;
-    };
-    auto rawDetectionsFromCacheEntry =
-        [](const FacestreamOverlayCacheEntry& entry, int64_t sourceFrame) -> QVector<VulkanPreviewFacestreamOverlay> {
-        const auto exact = entry.rawDetectionsBySourceFrame.constFind(sourceFrame);
-        if (exact != entry.rawDetectionsBySourceFrame.constEnd()) {
-            return exact.value();
-        }
-        if (entry.rawDetectionSourceFrames.isEmpty()) {
-            return {};
-        }
-
-        const auto nextIt = std::lower_bound(
-            entry.rawDetectionSourceFrames.constBegin(),
-            entry.rawDetectionSourceFrames.constEnd(),
-            sourceFrame);
-        const int64_t typicalStep = qMax<int64_t>(1, entry.rawDetectionTypicalFrameStep);
-        const int64_t edgeHoldFrames = facedetectionsMaxEdgeHoldFrames(typicalStep);
-        const int64_t* previous =
-            (nextIt != entry.rawDetectionSourceFrames.constBegin()) ? &(*(nextIt - 1)) : nullptr;
-        const int64_t* next =
-            (nextIt != entry.rawDetectionSourceFrames.constEnd()) ? &(*nextIt) : nullptr;
-
-        if (previous && next && facedetectionsShouldBridgeGap(*previous, *next, typicalStep)) {
-            const int64_t previousDistance = qAbs(sourceFrame - *previous);
-            const int64_t nextDistance = qAbs(*next - sourceFrame);
-            return entry.rawDetectionsBySourceFrame.value(previousDistance <= nextDistance ? *previous : *next);
-        }
-        if (previous && qAbs(sourceFrame - *previous) <= edgeHoldFrames) {
-            return entry.rawDetectionsBySourceFrame.value(*previous);
-        }
-        if (next && qAbs(*next - sourceFrame) <= edgeHoldFrames) {
-            return entry.rawDetectionsBySourceFrame.value(*next);
-        }
-        return {};
-    };
     const QString sourceFilter = normalizedFacestreamOverlaySource(m_facedetectionsOverlaySource);
+
+    if (m_interaction.playing) {
+        QVector<FacestreamOverlayRequestClip> requestClips;
+        QStringList keyParts;
+        keyParts.reserve(m_interaction.clips.size() + 4);
+        keyParts << QString::number(m_interaction.currentSample)
+                 << sourceFilter
+                 << QString::number(m_showSpeakerTrackBoxes)
+                 << QString::number(m_showRawDetections)
+                 << QString::number(m_interaction.faceStreamAssignmentInteractionEnabled);
+        bool playbackSuppressedColdLookup = false;
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
+                continue;
+            }
+            if (!visualClipActiveAtSample(clip,
+                                          m_interaction.tracks,
+                                          m_interaction.currentSample,
+                                          m_interaction.currentFramePosition,
+                                          m_bypassGrading)) {
+                continue;
+            }
+            const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+            const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
+            const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(clipPath);
+            if (cachedEntryIt == m_facedetectionsOverlayCache.constEnd()) {
+                playbackSuppressedColdLookup = true;
+                if (clip.id == m_interaction.selectedClipId) {
+                    m_lastFacedetectionsQueryDebug = QJsonObject{
+                        {QStringLiteral("status"), QStringLiteral("playback_cold_overlay_lookup_suppressed_preserving_previous")},
+                        {QStringLiteral("clip_id"), clip.id},
+                        {QStringLiteral("playback_active"), true},
+                        {QStringLiteral("previous_overlay_count"), previousOverlays.size()},
+                        {QStringLiteral("previous_raw_detection_count"), previousRawDetections.size()},
+                        {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
+                        {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
+                        {QStringLiteral("show_raw_detections"), m_showRawDetections},
+                        {QStringLiteral("assignment_interaction_enabled"),
+                         m_interaction.faceStreamAssignmentInteractionEnabled}
+                    };
+                }
+                continue;
+            }
+
+            QSize clipFrameSize;
+            for (const VulkanPreviewClipFrameStatus& status : m_interaction.vulkanFrameStatuses) {
+                if (status.clipId == clip.id && status.frameSize.isValid()) {
+                    clipFrameSize = status.frameSize;
+                    break;
+                }
+            }
+
+            FacestreamOverlayRequestClip requestClip;
+            requestClip.clip = clip;
+            requestClip.localFrame = localFrame;
+            requestClip.localSourceFrame = qMax<int64_t>(0, localFrame - qMax<int64_t>(0, clip.sourceInFrame));
+            requestClip.localTimelineFrame = qMax<int64_t>(
+                0,
+                static_cast<int64_t>(std::floor(m_interaction.currentFramePosition)) - clip.startFrame);
+            requestClip.clipFrameSize = clipFrameSize;
+            requestClip.renderSyncMarkers = m_interaction.renderSyncMarkers;
+            requestClip.cacheEntry = cachedEntryIt.value();
+            requestClips.push_back(requestClip);
+            keyParts << QStringLiteral("%1:%2:%3").arg(clip.id).arg(localFrame).arg(cachedEntryIt.value().signature);
+        }
+
+        const QString requestKey = keyParts.join(QLatin1Char('|'));
+        if (requestKey == m_appliedFacestreamOverlaySnapshotKey) {
+            return;
+        }
+        if (requestClips.isEmpty()) {
+            if (playbackSuppressedColdLookup) {
+                m_interaction.facedetectionsOverlays = previousOverlays;
+                m_interaction.rawDetectionOverlays = previousRawDetections;
+            } else {
+                m_interaction.facedetectionsOverlays = overlays;
+                m_interaction.rawDetectionOverlays = rawDetections;
+            }
+            return;
+        }
+        requestFacestreamOverlaySnapshotAsync(requestKey,
+                                             requestClips,
+                                             m_interaction.selectedClipId,
+                                             sourceFilter,
+                                             m_showSpeakerTrackBoxes,
+                                             m_showRawDetections,
+                                             m_interaction.faceStreamAssignmentInteractionEnabled);
+        return;
+    }
+
     bool playbackSuppressedColdLookup = false;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
@@ -589,7 +689,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             overlay.source = selection.keyframe.source.isEmpty() ? track.source : selection.keyframe.source;
             overlay.trackId = track.trackId;
             overlay.sourceFrame = selection.sourceFrame;
-            overlay.boxNorm = keyframeBoxNorm(selection.keyframe, clipFrameSize);
+            overlay.boxNorm = facestreamKeyframeBoxNorm(selection.keyframe, clipFrameSize);
             if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
                 continue;
             }
@@ -623,6 +723,201 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
     }
     m_interaction.facedetectionsOverlays = overlays;
     m_interaction.rawDetectionOverlays = rawDetections;
+}
+
+void VulkanPreviewSurface::requestFacestreamOverlaySnapshotAsync(
+    const QString& requestKey,
+    const QVector<FacestreamOverlayRequestClip>& requestClips,
+    const QString& selectedClipId,
+    const QString& sourceFilter,
+    bool showSpeakerTrackBoxes,
+    bool showRawDetections,
+    bool assignmentInteractionEnabled)
+{
+    if (!m_pipelineOwner) {
+        return;
+    }
+    if (m_facedetectionsOverlayWorkerPending) {
+        if (requestKey != m_pendingFacestreamOverlaySnapshotKey) {
+            ++m_facedetectionsOverlayWorkerCoalesced;
+        }
+        return;
+    }
+
+    m_facedetectionsOverlayWorkerPending = true;
+    m_pendingFacestreamOverlaySnapshotKey = requestKey;
+    m_lastFacedetectionsOverlayQueuedAtMs = QDateTime::currentMSecsSinceEpoch();
+    m_lastFacedetectionsOverlayRequestClipCount = requestClips.size();
+    ++m_facedetectionsOverlayWorkerStarted;
+    const uint64_t requestId = ++m_nextFacestreamOverlayRequestId;
+    const int64_t currentSample = m_interaction.currentSample;
+    const int64_t currentFrame = m_interaction.currentFrame;
+    const qint64 queuedAtMs = m_lastFacedetectionsOverlayQueuedAtMs;
+    const QPointer<QObject> receiver(m_pipelineOwner.get());
+
+    (void)QtConcurrent::run([receiver,
+                             this,
+                             requestId,
+                             requestKey,
+                             requestClips,
+                             selectedClipId,
+                             sourceFilter,
+                             showSpeakerTrackBoxes,
+                             showRawDetections,
+                             assignmentInteractionEnabled,
+                             currentSample,
+                             currentFrame,
+                             queuedAtMs]() {
+        QElapsedTimer timer;
+        timer.start();
+        FacestreamOverlaySnapshot snapshot;
+        snapshot.requestId = requestId;
+        snapshot.requestKey = requestKey;
+        snapshot.currentSample = currentSample;
+        snapshot.currentFrame = currentFrame;
+        snapshot.requestClipCount = requestClips.size();
+
+        for (const FacestreamOverlayRequestClip& requestClip : requestClips) {
+            const TimelineClip& clip = requestClip.clip;
+            const QVector<FacestreamTrack>& tracks = requestClip.cacheEntry.tracks;
+            snapshot.trackCandidateCount += tracks.size();
+
+            if (showRawDetections) {
+                const QVector<VulkanPreviewFacestreamOverlay> clipDetections =
+                    rawDetectionsFromCacheEntry(requestClip.cacheEntry, requestClip.localFrame);
+                for (const VulkanPreviewFacestreamOverlay& detection : clipDetections) {
+                    if (detection.boxNorm.isValid() && !detection.boxNorm.isEmpty()) {
+                        snapshot.rawDetections.push_back(detection);
+                    }
+                }
+                if (clip.id == selectedClipId) {
+                    snapshot.rawDetectionMatchCount = clipDetections.size();
+                }
+            }
+
+            int selectedClipOverlayCount = 0;
+            if (showSpeakerTrackBoxes || assignmentInteractionEnabled) {
+                for (const FacestreamTrack& track : tracks) {
+                    if (track.keyframes.isEmpty()) {
+                        continue;
+                    }
+                    if (!facedetectionsOverlaySourceMatches(sourceFilter, track.source, track.streamId)) {
+                        continue;
+                    }
+                    FacestreamResolvedSelection selection;
+                    if (!resolveFacestreamTrackAtPlayhead(
+                            clip,
+                            track,
+                            requestClip.renderSyncMarkers,
+                            clip.startFrame + requestClip.localTimelineFrame,
+                            requestClip.localFrame,
+                            &selection)) {
+                        continue;
+                    }
+
+                    VulkanPreviewFacestreamOverlay overlay;
+                    overlay.clipId = clip.id;
+                    overlay.streamId = track.streamId;
+                    overlay.source = selection.keyframe.source.isEmpty() ? track.source : selection.keyframe.source;
+                    overlay.trackId = track.trackId;
+                    overlay.sourceFrame = selection.sourceFrame;
+                    overlay.boxNorm = facestreamKeyframeBoxNorm(selection.keyframe, requestClip.clipFrameSize);
+                    if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
+                        continue;
+                    }
+                    overlay.confidence = selection.keyframe.confidence;
+                    snapshot.overlays.push_back(overlay);
+                    ++selectedClipOverlayCount;
+                }
+            }
+
+            if (clip.id == selectedClipId) {
+                snapshot.overlayMatchCount = selectedClipOverlayCount;
+                snapshot.debug = QJsonObject{
+                    {QStringLiteral("status"), QStringLiteral("playback_worker_overlay")},
+                    {QStringLiteral("clip_id"), clip.id},
+                    {QStringLiteral("playback_active"), true},
+                    {QStringLiteral("cached_track_count"), tracks.size()},
+                    {QStringLiteral("cached_raw_detection_frame_count"),
+                     requestClip.cacheEntry.rawDetectionSourceFrames.size()},
+                    {QStringLiteral("requested_source_frame"), static_cast<qint64>(requestClip.localFrame)},
+                    {QStringLiteral("selected_clip_source_frame"), static_cast<qint64>(requestClip.localFrame)},
+                    {QStringLiteral("selected_clip_local_source_frame"),
+                     static_cast<qint64>(requestClip.localSourceFrame)},
+                    {QStringLiteral("selected_clip_local_timeline_frame"),
+                     static_cast<qint64>(requestClip.localTimelineFrame)},
+                    {QStringLiteral("selected_clip_track_candidates"), tracks.size()},
+                    {QStringLiteral("selected_clip_overlay_matches"), selectedClipOverlayCount},
+                    {QStringLiteral("selected_clip_raw_detection_matches"), snapshot.rawDetectionMatchCount},
+                    {QStringLiteral("show_speaker_track_boxes"), showSpeakerTrackBoxes},
+                    {QStringLiteral("show_raw_detections"), showRawDetections},
+                    {QStringLiteral("overlay_source_filter"), sourceFilter},
+                    {QStringLiteral("assignment_interaction_enabled"), assignmentInteractionEnabled},
+                    {QStringLiteral("worker_thread"), true}
+                };
+            }
+        }
+
+        snapshot.prepMs = timer.elapsed();
+        if (snapshot.debug.isEmpty()) {
+            snapshot.debug = QJsonObject{
+                {QStringLiteral("status"), QStringLiteral("playback_worker_overlay")},
+                {QStringLiteral("playback_active"), true},
+                {QStringLiteral("request_clip_count"), snapshot.requestClipCount},
+                {QStringLiteral("worker_thread"), true}
+            };
+        }
+        snapshot.debug.insert(QStringLiteral("worker_prep_ms"), snapshot.prepMs);
+
+        if (!receiver) {
+            return;
+        }
+        QMetaObject::invokeMethod(
+            receiver,
+            [this, snapshot, queuedAtMs]() {
+                m_lastFacedetectionsOverlayApplyLatencyMs =
+                    qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - queuedAtMs);
+                applyFacestreamOverlaySnapshot(snapshot);
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void VulkanPreviewSurface::applyFacestreamOverlaySnapshot(const FacestreamOverlaySnapshot& snapshot)
+{
+    const QString expectedKey = m_pendingFacestreamOverlaySnapshotKey;
+    m_facedetectionsOverlayWorkerPending = false;
+    m_pendingFacestreamOverlaySnapshotKey.clear();
+    m_lastFacedetectionsOverlayPrepMs = snapshot.prepMs;
+    m_lastFacedetectionsOverlayRequestClipCount = snapshot.requestClipCount;
+    m_lastFacedetectionsOverlayTrackCandidateCount = snapshot.trackCandidateCount;
+    m_lastFacedetectionsOverlayMatchCount = snapshot.overlayMatchCount;
+    m_lastFacedetectionsRawDetectionMatchCount = snapshot.rawDetectionMatchCount;
+
+    if (!m_interaction.playing || snapshot.requestKey != expectedKey) {
+        ++m_facedetectionsOverlayWorkerDropped;
+        return;
+    }
+
+    if (snapshot.requestId < m_latestAppliedFacestreamOverlayRequestId) {
+        ++m_facedetectionsOverlayWorkerDropped;
+        return;
+    }
+    m_latestAppliedFacestreamOverlayRequestId = snapshot.requestId;
+    m_appliedFacestreamOverlaySnapshotKey = snapshot.requestKey;
+    m_interaction.facedetectionsOverlays = snapshot.overlays;
+    m_interaction.rawDetectionOverlays = snapshot.rawDetections;
+    m_lastFacedetectionsQueryDebug = snapshot.debug;
+    m_lastFacedetectionsQueryDebug.insert(QStringLiteral("overlay_preparation_thread"),
+                                          QStringLiteral("worker"));
+    m_lastFacedetectionsQueryDebug.insert(QStringLiteral("overlay_apply_latency_ms"),
+                                          m_lastFacedetectionsOverlayApplyLatencyMs);
+    m_lastFacedetectionsOverlayAppliedAtMs = QDateTime::currentMSecsSinceEpoch();
+    ++m_facedetectionsOverlayWorkerApplied;
+    requestNativeUpdate();
+    if (m_interaction.playing && snapshot.currentSample != m_interaction.currentSample) {
+        refreshFacestreamOverlays();
+    }
 }
 
 bool VulkanPreviewSurface::selectedOverlayIsTranscript() const

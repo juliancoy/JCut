@@ -156,8 +156,9 @@ void TestPlaybackPolicy::testPlaybackClockCoordinator() {
 
     input.pitchPreservingAudioRequired = false;
     decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTimelineTimer);
-    QCOMPARE(decision.reason, QStringLiteral("audio_clock_regressed"));
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
+    QCOMPARE(decision.reason, QStringLiteral("audio_master_resync"));
+    QVERIFY(decision.resetTimerContinuity);
 
     input.pitchPreservingAudioRequired = true;
     input.audioSample = frameToSamples(120);

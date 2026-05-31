@@ -44,8 +44,8 @@ PlaybackClockDecision evaluatePlaybackClock(const PlaybackClockInput& input)
             decision.reason = QStringLiteral("audio_clock_regressed");
             return decision;
         }
-        decision.action = PlaybackClockAction::UseTimelineTimer;
-        decision.reason = QStringLiteral("audio_clock_regressed");
+        decision.action = PlaybackClockAction::UseAudioSample;
+        decision.reason = QStringLiteral("audio_master_resync");
         return decision;
     }
 

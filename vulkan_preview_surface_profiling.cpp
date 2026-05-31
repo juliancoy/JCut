@@ -47,7 +47,48 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("current_speaker_label_debug"),
                     currentSpeakerLabelDebugForState(&m_interaction));
     snapshot.insert(QStringLiteral("vulkan_decode_preference"), editor::decodePreferenceToString(editor::debugDecodePreference()));
-    snapshot.insert(QStringLiteral("vulkan_cpu_upload_permitted"), true);
+    snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"), true);
+    snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_visible_zero_copy_contract"),
+                    QStringLiteral("visible video frames must arrive as hardware/external Vulkan payloads; CPU image upload is rejected"));
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_cpu_rasterization_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_qt_painter_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_speaker_label_gpu_text_enabled"), true);
+    snapshot.insert(QStringLiteral("vulkan_transcript_overlay_gpu_text_enabled"), true);
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_gpu_native"), true);
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_contract"),
+                    QStringLiteral("direct Vulkan preview draws speaker labels and transcript subtitles through a Vulkan glyph-atlas text pass; Qt/QPainter and whole-label CPU image uploads are disabled"));
+    snapshot.insert(QStringLiteral("vulkan_overlay_preparation_thread"),
+                    m_interaction.playing ? QStringLiteral("worker") : QStringLiteral("ui"));
+    snapshot.insert(QStringLiteral("vulkan_overlay_preparation_gpu_zero_copy"), false);
+    snapshot.insert(QStringLiteral("vulkan_overlay_preparation_contract"),
+                    QStringLiteral("speaker/face overlay lookup prepares CPU metadata; the presenter draws the resulting overlay primitives on the GPU"));
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_pending"), m_facedetectionsOverlayWorkerPending);
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_pending_key"), m_pendingFacestreamOverlaySnapshotKey);
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_applied_key"), m_appliedFacestreamOverlaySnapshotKey);
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_started"),
+                    static_cast<double>(m_facedetectionsOverlayWorkerStarted));
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_applied"),
+                    static_cast<double>(m_facedetectionsOverlayWorkerApplied));
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_dropped"),
+                    static_cast<double>(m_facedetectionsOverlayWorkerDropped));
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_coalesced"),
+                    static_cast<double>(m_facedetectionsOverlayWorkerCoalesced));
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_prep_ms"), m_lastFacedetectionsOverlayPrepMs);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_apply_latency_ms"),
+                    m_lastFacedetectionsOverlayApplyLatencyMs);
+    snapshot.insert(QStringLiteral("vulkan_overlay_snapshot_age_ms"),
+                    m_lastFacedetectionsOverlayAppliedAtMs > 0
+                        ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_lastFacedetectionsOverlayAppliedAtMs)
+                        : -1);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_request_clip_count"),
+                    m_lastFacedetectionsOverlayRequestClipCount);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_track_candidate_count"),
+                    m_lastFacedetectionsOverlayTrackCandidateCount);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_match_count"),
+                    m_lastFacedetectionsOverlayMatchCount);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_raw_detection_match_count"),
+                    m_lastFacedetectionsRawDetectionMatchCount);
     snapshot.insert(QStringLiteral("vulkan_visible_backlog_limit"), m_playbackTuning.visibleBacklogLimit);
     snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), effectivePlaybackLookaheadFrames());
     snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), m_playbackTuning.sourceLookaheadFrames);

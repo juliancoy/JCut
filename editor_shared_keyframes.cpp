@@ -183,14 +183,18 @@ bool streamSampleAtFrame(const TimelineClip& clip,
 
     FacestreamFrameDomain domain = FacestreamFrameDomain::SourceRelative;
     if (!parseFacestreamFrameDomainString(stream.summary.frameDomain, &domain)) {
-        int64_t minFrame = std::numeric_limits<int64_t>::max();
-        int64_t maxFrame = std::numeric_limits<int64_t>::min();
-        for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
-            if (keyframe.frame < 0) {
-                continue;
+        int64_t minFrame = stream.summary.minFrame;
+        int64_t maxFrame = stream.summary.maxFrame;
+        if (minFrame < 0 || maxFrame < minFrame) {
+            minFrame = std::numeric_limits<int64_t>::max();
+            maxFrame = std::numeric_limits<int64_t>::min();
+            for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
+                if (keyframe.frame < 0) {
+                    continue;
+                }
+                minFrame = qMin<int64_t>(minFrame, keyframe.frame);
+                maxFrame = qMax<int64_t>(maxFrame, keyframe.frame);
             }
-            minFrame = qMin(minFrame, static_cast<int64_t>(keyframe.frame));
-            maxFrame = qMax(maxFrame, static_cast<int64_t>(keyframe.frame));
         }
         domain = inferFacestreamFrameDomain(clip, minFrame, maxFrame);
     }
@@ -200,12 +204,32 @@ bool streamSampleAtFrame(const TimelineClip& clip,
     const int64_t lookupFrame = facedetectionsLookupFrameForDomain(
         domain, localTimelineFrame, localMediaSourceFrame, mediaSourceFrame);
 
-    QVector<FacestreamResolvedKeyframe> points;
-    points.reserve(stream.keyframes.size());
-    for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
-        if (keyframe.frame < 0) {
-            continue;
-        }
+    const auto firstValidIt = std::find_if(
+        stream.keyframes.constBegin(),
+        stream.keyframes.constEnd(),
+        [](const jcut::facedetections::FacestreamKeyframe& keyframe) {
+            return keyframe.frame >= 0;
+        });
+    if (firstValidIt == stream.keyframes.constEnd()) {
+        return false;
+    }
+    const int64_t typicalStep = qMax<int64_t>(1, stream.summary.typicalFrameStep);
+    const int64_t edgeHoldFrames = qMax<int64_t>(
+        facedetectionsMaxEdgeHoldFrames(typicalStep),
+        qBound(0, gapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames));
+
+    const auto nextIt = std::lower_bound(
+        firstValidIt,
+        stream.keyframes.constEnd(),
+        lookupFrame,
+        [](const jcut::facedetections::FacestreamKeyframe& point, int64_t frame) {
+            return point.frame < frame;
+        });
+    const jcut::facedetections::FacestreamKeyframe* previous =
+        (nextIt != firstValidIt) ? &(*(nextIt - 1)) : nullptr;
+    const jcut::facedetections::FacestreamKeyframe* next =
+        (nextIt != stream.keyframes.constEnd()) ? &(*nextIt) : nullptr;
+    auto resolvedPoint = [](const jcut::facedetections::FacestreamKeyframe& keyframe) {
         FacestreamResolvedKeyframe point;
         point.frame = keyframe.frame;
         point.xNorm = qBound<qreal>(0.0, keyframe.x, 1.0);
@@ -213,54 +237,33 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         point.boxSizeNorm = qBound<qreal>(0.01, keyframe.box, 1.0);
         point.confidence = qBound<qreal>(0.0, keyframe.confidence, 1.0);
         point.hasCenterBox = true;
-        points.push_back(point);
-    }
-    if (points.isEmpty()) {
-        return false;
-    }
-    std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
-        return a.frame < b.frame;
-    });
-
-    QVector<int64_t> frames;
-    frames.reserve(points.size());
-    for (const FacestreamResolvedKeyframe& point : points) {
-        frames.push_back(point.frame);
-    }
-    const int64_t typicalStep = qMax<int64_t>(1, facedetectionsTypicalFrameStep(frames));
-    const int64_t edgeHoldFrames = qMax<int64_t>(
-        facedetectionsMaxEdgeHoldFrames(typicalStep),
-        qBound(0, gapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames));
-
-    const auto nextIt = std::lower_bound(
-        points.constBegin(),
-        points.constEnd(),
-        lookupFrame,
-        [](const FacestreamResolvedKeyframe& point, int64_t frame) {
-            return point.frame < frame;
-        });
-    const FacestreamResolvedKeyframe* previous =
-        (nextIt != points.constBegin()) ? &(*(nextIt - 1)) : nullptr;
-    const FacestreamResolvedKeyframe* next =
-        (nextIt != points.constEnd()) ? &(*nextIt) : nullptr;
+        return point;
+    };
 
     FacestreamResolvedKeyframe sample;
     if (next && next->frame == lookupFrame) {
-        sample = *next;
+        sample = resolvedPoint(*next);
     } else if (previous && previous->frame == lookupFrame) {
-        sample = *previous;
+        sample = resolvedPoint(*previous);
     } else if (previous && next &&
                facedetectionsShouldBridgeGap(previous->frame, next->frame, typicalStep)) {
         const int64_t span = qMax<int64_t>(1, next->frame - previous->frame);
         const qreal t = qBound<qreal>(
             0.0, static_cast<qreal>(lookupFrame - previous->frame) / static_cast<qreal>(span), 1.0);
-        sample.xNorm = previous->xNorm + ((next->xNorm - previous->xNorm) * t);
-        sample.yNorm = previous->yNorm + ((next->yNorm - previous->yNorm) * t);
-        sample.boxSizeNorm = previous->boxSizeNorm + ((next->boxSizeNorm - previous->boxSizeNorm) * t);
+        const FacestreamResolvedKeyframe previousPoint = resolvedPoint(*previous);
+        const FacestreamResolvedKeyframe nextPoint = resolvedPoint(*next);
+        sample.xNorm = previousPoint.xNorm + ((nextPoint.xNorm - previousPoint.xNorm) * t);
+        sample.yNorm = previousPoint.yNorm + ((nextPoint.yNorm - previousPoint.yNorm) * t);
+        sample.boxSizeNorm =
+            previousPoint.boxSizeNorm + ((nextPoint.boxSizeNorm - previousPoint.boxSizeNorm) * t);
+        sample.confidence =
+            previousPoint.confidence + ((nextPoint.confidence - previousPoint.confidence) * t);
+        sample.frame = lookupFrame;
+        sample.hasCenterBox = true;
     } else if (previous && qAbs(previous->frame - lookupFrame) <= edgeHoldFrames) {
-        sample = *previous;
+        sample = resolvedPoint(*previous);
     } else if (next && qAbs(next->frame - lookupFrame) <= edgeHoldFrames) {
-        sample = *next;
+        sample = resolvedPoint(*next);
     } else {
         return false;
     }
@@ -290,10 +293,11 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         if (zoomWindowFrames > 1) {
             zoomSamples.push_back({std::log(sample.boxSizeNorm), lookupFrame, sample.confidence});
         }
-        for (const FacestreamResolvedKeyframe& point : points) {
-            if (point.frame == lookupFrame || point.boxSizeNorm <= 0.0) {
+        for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
+            if (keyframe.frame < 0 || keyframe.frame == lookupFrame || keyframe.box <= 0.0) {
                 continue;
             }
+            const FacestreamResolvedKeyframe point = resolvedPoint(keyframe);
             if (centerWindowFrames > 1 &&
                 point.frame >= centerStartFrame &&
                 point.frame <= centerEndFrame) {
