@@ -78,6 +78,7 @@ public:
                         std::function<QJsonObject(const QJsonObject&)> setThrottlesCallback,
                         std::function<QJsonObject()> getPlaybackConfigCallback,
                         std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
+                        std::function<QJsonObject()> audioSnapshotCallback,
                         std::function<QJsonObject()> renderResultCallback);
     ~ControlServerWorker() override;
 
@@ -153,6 +154,7 @@ private:
     bool handleProfileRoutes(QTcpSocket* socket, const Request& request);
     bool handleThrottleRoutes(QTcpSocket* socket, const Request& request);
     bool handlePlaybackRoutes(QTcpSocket* socket, const Request& request);
+    bool handleAudioRoutes(QTcpSocket* socket, const Request& request);
     bool handleDebugRoutes(QTcpSocket* socket, const Request& request);
     bool handleRenderRoutes(QTcpSocket* socket, const Request& request);
     bool handleHardwareRoutes(QTcpSocket* socket, const Request& request);
@@ -172,6 +174,7 @@ private:
     std::function<QJsonObject(const QJsonObject&)> m_setThrottlesCallback;
     std::function<QJsonObject()> m_getPlaybackConfigCallback;
     std::function<QJsonObject(const QJsonObject&)> m_setPlaybackConfigCallback;
+    std::function<QJsonObject()> m_audioSnapshotCallback;
     std::function<QJsonObject()> m_renderResultCallback;
     std::unique_ptr<QTcpServer> m_server;
     std::unique_ptr<QTimer> m_refreshTimer;

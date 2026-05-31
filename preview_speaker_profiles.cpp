@@ -245,6 +245,64 @@ QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* stat
     return active;
 }
 
+CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* state)
+{
+    if (!state) {
+        return {};
+    }
+
+    QList<TimelineClip> candidates;
+    for (const TimelineClip& clip : state->clips) {
+        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        if (transcriptPath.isEmpty()) {
+            continue;
+        }
+        const int64_t clipStartSample = clipTimelineStartSamples(clip);
+        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
+            candidates.push_back(clip);
+        }
+    }
+    std::sort(candidates.begin(), candidates.end(), [state](const TimelineClip& a, const TimelineClip& b) {
+        const bool aSelected = !state->selectedClipId.isEmpty() && a.id == state->selectedClipId;
+        const bool bSelected = !state->selectedClipId.isEmpty() && b.id == state->selectedClipId;
+        if (aSelected != bSelected) {
+            return aSelected;
+        }
+        if (a.trackIndex != b.trackIndex) {
+            return a.trackIndex < b.trackIndex;
+        }
+        return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
+    });
+
+    for (const TimelineClip& clip : candidates) {
+        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+            loadTranscriptRuntimeDocument(transcriptPath);
+        const QVector<TranscriptSection>& sections =
+            runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
+        if (sections.isEmpty()) {
+            continue;
+        }
+        const int64_t sourceFrame =
+            transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
+        const QString speakerId = speakerAtSourceFrame(sections, sourceFrame);
+        if (speakerId.isEmpty()) {
+            continue;
+        }
+        const HoverSpeakerProfile* profile = hoverSpeakerProfileFor(transcriptPath, speakerId);
+        CurrentSpeakerLabel label;
+        label.speakerId = speakerId;
+        label.name = profile && !profile->name.trimmed().isEmpty()
+            ? profile->name.trimmed()
+            : speakerId;
+        label.organization = profile ? profile->organization.trimmed() : QString();
+        return label;
+    }
+
+    return {};
+}
+
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame)
 {
     for (const TranscriptSection& section : sections) {

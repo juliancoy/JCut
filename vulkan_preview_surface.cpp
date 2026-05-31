@@ -196,6 +196,17 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
                     faceStreamBoxRequested(clipId, trackId, streamId, sourceFrame, xNorm, yNorm, side);
                 }
             },
+            [this](const QString& clipId,
+                   int trackId,
+                   const QString& streamId,
+                   int64_t sourceFrame,
+                   qreal xNorm,
+                   qreal yNorm,
+                   qreal side) {
+                if (faceStreamBoxFocusClearRequested) {
+                    faceStreamBoxFocusClearRequested(clipId, trackId, streamId, sourceFrame, xNorm, yNorm, side);
+                }
+            },
             [this](const QString& message) {
                 if (faceStreamBoxClickStatus) {
                     faceStreamBoxClickStatus(message);
@@ -534,6 +545,24 @@ void VulkanPreviewSurface::setShowRawDetections(bool show)
     }
     m_showRawDetections = show;
     refreshFacestreamOverlays();
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setShowCurrentSpeakerName(bool show)
+{
+    if (m_interaction.showCurrentSpeakerName == show) {
+        return;
+    }
+    m_interaction.showCurrentSpeakerName = show;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setShowCurrentSpeakerOrganization(bool show)
+{
+    if (m_interaction.showCurrentSpeakerOrganization == show) {
+        return;
+    }
+    m_interaction.showCurrentSpeakerOrganization = show;
     requestNativeUpdate();
 }
 

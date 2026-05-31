@@ -224,6 +224,7 @@ void ControlServerWorker::handleRequest(QTcpSocket* socket, const Request& reque
     if (handleProfileRoutes(socket, request)) return;
     if (handleThrottleRoutes(socket, request)) return;
     if (handlePlaybackRoutes(socket, request)) return;
+    if (handleAudioRoutes(socket, request)) return;
     if (handleDebugRoutes(socket, request)) return;
     if (handleRenderRoutes(socket, request)) return;
     if (handleHardwareRoutes(socket, request)) return;
@@ -281,6 +282,7 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /menu</strong> - Active popup menu snapshot, including submenus</div>
         <div class="endpoint"><strong>GET /throttles</strong> - Current throttle configuration</div>
         <div class="endpoint"><strong>GET /playback</strong> - Current playback policy configuration</div>
+        <div class="endpoint"><strong>GET /audio</strong> - Audio loading, buffering, and mixer state</div>
         <div class="endpoint"><strong>GET /paradigms</strong> - Architecture organizational paradigms and file positioning</div>
 
         <h2>Controls:</h2>
@@ -1330,6 +1332,29 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
             {QStringLiteral("editor"), result}
+        });
+        return true;
+    }
+
+    return false;
+}
+
+bool ControlServerWorker::handleAudioRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/audio")) {
+        QJsonObject audio;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &audio, [this]() {
+                return m_audioSnapshotCallback ? m_audioSnapshotCallback() : QJsonObject{};
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for audio snapshot"));
+            return true;
+        }
+        if (audio.isEmpty()) {
+            audio = QJsonObject{{QStringLiteral("ok"), false},
+                                {QStringLiteral("error"), QStringLiteral("audio snapshot callback not configured")}};
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), audio.value(QStringLiteral("ok")).toBool(true)},
+            {QStringLiteral("audio"), audio}
         });
         return true;
     }

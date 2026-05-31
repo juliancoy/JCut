@@ -560,12 +560,15 @@ void PreviewWindow::drawRawDetectionOverlay(QPainter* painter, const QList<Timel
     painter->restore();
 }
 
-bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(const QPointF& position)
+bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(
+    const QPointF& position,
+    const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
+    const QString& inactiveMessage)
 {
-    if (!faceStreamBoxRequested ||
+    if (!callback ||
         (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled)) {
         if (faceStreamBoxClickStatus) {
-            faceStreamBoxClickStatus(QStringLiteral("Face box click ignored: FaceDetections assignment is not active."));
+            faceStreamBoxClickStatus(inactiveMessage);
         }
         return false;
     }
@@ -674,13 +677,13 @@ bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(const QPointF& position)
                        .arg(candidate.point.trackId)
                        .arg(candidate.point.streamId.isEmpty() ? QStringLiteral("<empty>") : candidate.point.streamId)
                        .arg(candidate.point.sourceFrame);
-            faceStreamBoxRequested(clip.id,
-                                   candidate.point.trackId,
-                                   candidate.point.streamId,
-                                   candidate.point.sourceFrame,
-                                   center.x(),
-                                   center.y(),
-                                   side);
+            callback(clip.id,
+                     candidate.point.trackId,
+                     candidate.point.streamId,
+                     candidate.point.sourceFrame,
+                     center.x(),
+                     center.y(),
+                     side);
             return true;
         }
     }

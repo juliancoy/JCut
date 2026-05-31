@@ -192,6 +192,25 @@ QJsonObject EditorWindow::profilingSnapshot() const
     return snapshot;
 }
 
+QJsonObject EditorWindow::audioDebugSnapshot() const
+{
+    QJsonObject audio = m_audioEngine ? m_audioEngine->profilingSnapshot() : QJsonObject{};
+    audio[QStringLiteral("ok")] = m_audioEngine != nullptr;
+    if (!m_audioEngine) {
+        audio[QStringLiteral("error")] = QStringLiteral("audio engine is not initialized");
+    }
+    audio[QStringLiteral("playback")] = playbackConfigSnapshot();
+    audio[QStringLiteral("editor_playback_active")] = m_playbackTimer.isActive();
+    audio[QStringLiteral("editor_current_frame")] =
+        m_timeline ? static_cast<qint64>(m_timeline->currentFrame()) : 0;
+    audio[QStringLiteral("absolute_playback_sample")] =
+        static_cast<qint64>(m_absolutePlaybackSample);
+    audio[QStringLiteral("filtered_playback_sample")] =
+        static_cast<qint64>(m_filteredPlaybackSample);
+    audio[QStringLiteral("last_playback_stop_reason")] = m_lastPlaybackStopReason;
+    return audio;
+}
+
 QJsonObject EditorWindow::runtimePatchesSnapshot() const
 {
     QJsonArray active;

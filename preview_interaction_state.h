@@ -45,6 +45,7 @@ struct PreviewInteractionTransientState {
     QString hoveredFaceDetectionsClipId;
     QString hoveredFaceDetectionsId;
     int hoveredFaceDetectionsTrackId = -1;
+    bool faceDetectionsRightClickHandled = false;
     QPointF lastMousePos = QPointF(-10000.0, -10000.0);
 };
 
@@ -138,5 +139,7 @@ struct PreviewInteractionState {
     bool transcriptOverlayInteractionEnabled = false;
     bool titleOverlayInteractionOnly = false;
     bool faceStreamAssignmentInteractionEnabled = false;
+    bool showCurrentSpeakerName = false;
+    bool showCurrentSpeakerOrganization = false;
     PreviewInteractionTransientState transient;
 };

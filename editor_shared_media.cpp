@@ -627,10 +627,17 @@ qreal normalizedPlaybackSpeed(qreal speed) {
 }
 
 PlaybackAudioWarpMode normalizedPlaybackAudioWarpMode(qreal playbackSpeed, PlaybackAudioWarpMode mode) {
-    const bool speedIsUnity = qAbs(normalizedPlaybackSpeed(playbackSpeed) - 1.0) < 0.0001;
-    if (!speedIsUnity && mode == PlaybackAudioWarpMode::Disabled) {
-        // Non-unity preview without audio warping causes unstable/no-audio playback.
-        return PlaybackAudioWarpMode::Varispeed;
+    const qreal normalizedSpeed = normalizedPlaybackSpeed(playbackSpeed);
+    const bool speedIsUnity = qAbs(normalizedSpeed - 1.0) < 0.0001;
+    if (speedIsUnity) {
+        return mode;
+    }
+
+    if (mode == PlaybackAudioWarpMode::Disabled) {
+        return PlaybackAudioWarpMode::TimeStretch;
+    }
+    if (mode == PlaybackAudioWarpMode::Varispeed) {
+        return PlaybackAudioWarpMode::TimeStretch;
     }
     return mode;
 }

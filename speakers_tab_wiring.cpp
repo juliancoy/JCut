@@ -423,8 +423,12 @@ void SpeakersTab::wire()
         connect(m_widgets.speakerFramingSmoothingModeCombo, qOverload<int>(&QComboBox::currentIndexChanged),
                 this, [this](int) { onSpeakerFramingTargetChanged(); });
     }
-    if (m_widgets.speakerFramingSmoothingStrengthSpin) {
-        connect(m_widgets.speakerFramingSmoothingStrengthSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+    if (m_widgets.speakerFramingCenterSmoothingStrengthSpin) {
+        connect(m_widgets.speakerFramingCenterSmoothingStrengthSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, [this](double) { onSpeakerFramingTargetChanged(); });
+    }
+    if (m_widgets.speakerFramingZoomSmoothingStrengthSpin) {
+        connect(m_widgets.speakerFramingZoomSmoothingStrengthSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
                 this, [this](double) { onSpeakerFramingTargetChanged(); });
     }
     if (m_widgets.speakerFramingGapHoldFramesSpin) {

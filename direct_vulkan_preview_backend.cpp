@@ -850,6 +850,21 @@ bool dispatchFaceDetectionsBoxAtPosition(const PreviewInteractionState* state,
     return false;
 }
 
+bool dispatchFaceDetectionsFocusClearAtPosition(
+    const PreviewInteractionState* state,
+    const VulkanInteractionOverlayInfos& infos,
+    const QPointF& surfacePosition,
+    const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
+    const std::function<void(const QString&)>& statusCallback)
+{
+    return dispatchFaceDetectionsBoxAtPosition(
+        state,
+        infos,
+        surfacePosition,
+        callback,
+        statusCallback);
+}
+
 bool lookupVulkanInteractionInfo(const VulkanInteractionOverlayInfos& infos,
                                  const QString& clipId,
                                  VulkanInteractionOverlayInfo* outInfo);
@@ -1345,6 +1360,7 @@ public:
                                  std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
                                  std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested = {},
                                  std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested = {},
+                                 std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxFocusClearRequested = {},
                                  std::function<void(const QString&)> faceStreamBoxClickStatus = {},
                                  std::function<void(const QString&)> createKeyframeRequested = {})
     {
@@ -1356,6 +1372,7 @@ public:
         m_speakerPointRequested = std::move(speakerPointRequested);
         m_speakerBoxRequested = std::move(speakerBoxRequested);
         m_faceStreamBoxRequested = std::move(faceStreamBoxRequested);
+        m_faceStreamBoxFocusClearRequested = std::move(faceStreamBoxFocusClearRequested);
         m_faceStreamBoxClickStatus = std::move(faceStreamBoxClickStatus);
         m_createKeyframeRequested = std::move(createKeyframeRequested);
     }
@@ -1427,7 +1444,7 @@ protected:
 
     void mousePressEvent(QMouseEvent* event) override
     {
-        if (!event || event->button() != Qt::LeftButton || !m_state) {
+        if (!event || !m_state) {
             QVulkanWindow::mousePressEvent(event);
             return;
         }
@@ -1436,6 +1453,24 @@ protected:
         const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
         m_state->transient.lastMousePos = surfacePosition;
+        if (event->button() == Qt::RightButton && m_faceStreamBoxFocusClearRequested) {
+            const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
+            if (dispatchFaceDetectionsFocusClearAtPosition(
+                    m_state,
+                    infos,
+                    surfacePosition,
+                    m_faceStreamBoxFocusClearRequested,
+                    m_faceStreamBoxClickStatus)) {
+                m_state->transient.faceDetectionsRightClickHandled = true;
+                requestUpdate();
+                event->accept();
+                return;
+            }
+        }
+        if (event->button() != Qt::LeftButton) {
+            QVulkanWindow::mousePressEvent(event);
+            return;
+        }
         if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
             if (m_state->viewMode == PreviewSurface::ViewMode::Audio && m_playbackSampleRequested) {
                 int64_t targetSample = 0;
@@ -1941,7 +1976,7 @@ protected:
         }
 
         if (event->type() == QEvent::ContextMenu) {
-            const auto* contextMenu = static_cast<QContextMenuEvent*>(event);
+            auto* contextMenu = static_cast<QContextMenuEvent*>(event);
             if (!contextMenu || !m_state) {
                 return QVulkanWindow::event(event);
             }
@@ -1950,6 +1985,22 @@ protected:
             const QPointF surfacePosition = PreviewViewTransform::pointForWindowPoint(
                 this, contextMenu->pos(), PreviewSurfaceCoordinateSpace::DeviceSurface);
             const VulkanInteractionOverlayInfos infos = collectVulkanInteractionInfos(m_state, surfaceRect);
+            if (m_state->transient.faceDetectionsRightClickHandled) {
+                m_state->transient.faceDetectionsRightClickHandled = false;
+                contextMenu->accept();
+                return true;
+            }
+            if (m_faceStreamBoxFocusClearRequested &&
+                dispatchFaceDetectionsFocusClearAtPosition(
+                    m_state,
+                    infos,
+                    surfacePosition,
+                    m_faceStreamBoxFocusClearRequested,
+                    m_faceStreamBoxClickStatus)) {
+                requestUpdate();
+                contextMenu->accept();
+                return true;
+            }
             QString hitClipId = clipIdAtPositionForVulkan(infos, surfacePosition);
             if (m_state->titleOverlayInteractionOnly && !clipIdIsTitleForVulkan(m_state, hitClipId)) {
                 hitClipId.clear();
@@ -2168,6 +2219,7 @@ private:
     std::function<void(const QString&, qreal, qreal)> m_speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> m_speakerBoxRequested;
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> m_faceStreamBoxRequested;
+    std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> m_faceStreamBoxFocusClearRequested;
     std::function<void(const QString&)> m_faceStreamBoxClickStatus;
     std::function<void(const QString&)> m_createKeyframeRequested;
     std::function<void(const QString&, qreal, qreal, bool)> m_resizeRequested;
@@ -3212,6 +3264,7 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested,
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested,
+    std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxFocusClearRequested,
     std::function<void(const QString&)> faceStreamBoxClickStatus,
     std::function<void(const QString&)> createKeyframeRequested)
 {
@@ -3226,6 +3279,7 @@ void directVulkanPreviewWindowSetInteractionCallbacks(
                                     std::move(speakerPointRequested),
                                     std::move(speakerBoxRequested),
                                     std::move(faceStreamBoxRequested),
+                                    std::move(faceStreamBoxFocusClearRequested),
                                     std::move(faceStreamBoxClickStatus),
                                     std::move(createKeyframeRequested));
 }

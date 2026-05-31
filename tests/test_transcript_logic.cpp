@@ -918,11 +918,6 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
     segment[QStringLiteral("words")] = QJsonArray{word};
     QJsonObject root;
     root[QStringLiteral("segments")] = QJsonArray{segment};
-    QVERIFY(writeTranscriptDocument(transcriptPath, root));
-
-    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
-    invalidateTranscriptJsonCache(transcriptPath);
-    invalidateTranscriptSpeakerProfileCache(transcriptPath);
 
     TimelineClip clip;
     clip.id = QStringLiteral("clip");
@@ -937,25 +932,35 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
         TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
 
-    TranscriptEngine engine;
     QJsonObject identityRow;
     identityRow[QStringLiteral("identity_id")] = QStringLiteral("S1");
     identityRow[QStringLiteral("track_id")] = 1;
     identityRow[QStringLiteral("stream_id")] = QStringLiteral("T1");
-    QJsonObject assignmentRoot;
-    assignmentRoot[QStringLiteral("track_identity_map")] = QJsonArray{identityRow};
-    QJsonObject byClipIdentity;
-    byClipIdentity[clip.id] = assignmentRoot;
-    QJsonObject identityRoot;
-    identityRoot[QStringLiteral("identity_assignments_by_clip")] = byClipIdentity;
-    QVERIFY(engine.saveIdentityArtifact(transcriptPath, identityRoot));
+    QJsonObject resolvedCurrent;
+    resolvedCurrent[QStringLiteral("track_identity_map")] = QJsonArray{identityRow};
+    QJsonObject clipFlow;
+    clipFlow[QStringLiteral("resolved_current")] = resolvedCurrent;
+    QJsonObject flowClips;
+    flowClips[clip.id] = clipFlow;
+    QJsonObject speakerFlow;
+    speakerFlow[QStringLiteral("clips")] = flowClips;
+    root[QStringLiteral("speaker_flow")] = speakerFlow;
+    QVERIFY(writeTranscriptDocument(transcriptPath, root));
 
-    auto keyframe = [](int frame, double x) {
+    setActiveTranscriptPathForClipFile(clipPath, transcriptPath);
+    invalidateTranscriptJsonCache(transcriptPath);
+    invalidateTranscriptSpeakerProfileCache(transcriptPath);
+
+    TranscriptEngine engine;
+
+    auto keyframe = [](int frame, double x, double box = 0.20) {
         QJsonObject obj;
         obj[QStringLiteral("frame")] = frame;
         obj[QStringLiteral("x")] = x;
         obj[QStringLiteral("y")] = 0.50;
-        obj[QStringLiteral("box_size")] = 0.20;
+        obj[QStringLiteral("box")] = box;
+        obj[QStringLiteral("box_size")] = box;
+        obj[QStringLiteral("score")] = 1.0;
         obj[QStringLiteral("confidence")] = 1.0;
         return obj;
     };
@@ -963,13 +968,16 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
     stream[QStringLiteral("track_id")] = 1;
     stream[QStringLiteral("stream_id")] = QStringLiteral("T1");
     stream[QStringLiteral("frame_domain")] = QStringLiteral("source_absolute");
-    stream[QStringLiteral("keyframes")] = QJsonArray{
-        keyframe(0, 0.20),
-        keyframe(10, 0.80),
-        keyframe(20, 0.20),
+    const QJsonArray detections{
+        keyframe(0, 0.20, 0.20),
+        keyframe(10, 0.80, 0.50),
+        keyframe(20, 0.20, 0.20),
     };
+    stream[QStringLiteral("keyframes")] = detections;
+    stream[QStringLiteral("detections")] = detections;
     QJsonObject continuityRoot;
-    continuityRoot[QStringLiteral("streams")] = QJsonArray{stream};
+    continuityRoot[QStringLiteral("raw_tracks")] = QJsonArray{stream};
+    continuityRoot[QStringLiteral("raw_tracks_frame_domain")] = QStringLiteral("source_absolute");
     QJsonObject byClip;
     byClip[clip.id] = continuityRoot;
     QJsonObject processedRoot;
@@ -993,14 +1001,14 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
     QVERIFY(smoothedTransform.translationX > unsmoothedTransform.translationX);
 
     TimelineClip rawBlend = smoothed;
-    rawBlend.speakerFramingSmoothingStrength = 0.0;
+    rawBlend.speakerFramingCenterSmoothingStrength = 0.0;
     normalizeClipTransformKeyframes(rawBlend);
     const TimelineClip::TransformKeyframe rawBlendTransform =
         evaluateClipSpeakerFramingAtFrame(rawBlend, 10, QSize(1000, 1000));
     QVERIFY(std::abs(rawBlendTransform.translationX - unsmoothedTransform.translationX) < 0.001);
 
     TimelineClip halfBlend = smoothed;
-    halfBlend.speakerFramingSmoothingStrength = 0.5;
+    halfBlend.speakerFramingCenterSmoothingStrength = 0.5;
     normalizeClipTransformKeyframes(halfBlend);
     const TimelineClip::TransformKeyframe halfBlendTransform =
         evaluateClipSpeakerFramingAtFrame(halfBlend, 10, QSize(1000, 1000));
@@ -1008,12 +1016,28 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
     QVERIFY(halfBlendTransform.translationX < smoothedTransform.translationX);
 
     TimelineClip amplifiedBlend = smoothed;
-    amplifiedBlend.speakerFramingSmoothingStrength = 3.0;
+    amplifiedBlend.speakerFramingCenterSmoothingStrength = 3.0;
     normalizeClipTransformKeyframes(amplifiedBlend);
-    QCOMPARE(amplifiedBlend.speakerFramingSmoothingStrength, 3.0);
+    QCOMPARE(amplifiedBlend.speakerFramingCenterSmoothingStrength, 3.0);
     const TimelineClip::TransformKeyframe amplifiedBlendTransform =
         evaluateClipSpeakerFramingAtFrame(amplifiedBlend, 10, QSize(1000, 1000));
     QVERIFY(amplifiedBlendTransform.translationX > smoothedTransform.translationX);
+
+    TimelineClip zoomOnly = clip;
+    zoomOnly.speakerFramingCenterSmoothingFrames = 0;
+    zoomOnly.speakerFramingZoomSmoothingFrames = 21;
+    zoomOnly.speakerFramingZoomSmoothingStrength = 1.0;
+    normalizeClipTransformKeyframes(zoomOnly);
+    const TimelineClip::TransformKeyframe zoomOnlyTransform =
+        evaluateClipSpeakerFramingAtFrame(zoomOnly, 10, QSize(1000, 1000));
+    QVERIFY(zoomOnlyTransform.scaleX > unsmoothedTransform.scaleX);
+
+    TimelineClip rawZoom = zoomOnly;
+    rawZoom.speakerFramingZoomSmoothingStrength = 0.0;
+    normalizeClipTransformKeyframes(rawZoom);
+    const TimelineClip::TransformKeyframe rawZoomTransform =
+        evaluateClipSpeakerFramingAtFrame(rawZoom, 10, QSize(1000, 1000));
+    QVERIFY(std::abs(rawZoomTransform.scaleX - unsmoothedTransform.scaleX) < 0.001);
 }
 
 void TestTranscriptLogic::testSpeakerTrackingConfigIncludesAutoTrackStepFrames() {

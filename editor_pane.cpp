@@ -312,6 +312,7 @@ void EditorPane::setupTransportControls()
     m_playbackSpeedCombo->addItem(QStringLiteral("50%"), 0.5);
     m_playbackSpeedCombo->addItem(QStringLiteral("75%"), 0.75);
     m_playbackSpeedCombo->addItem(QStringLiteral("100%"), 1.0);
+    m_playbackSpeedCombo->addItem(QStringLiteral("125%"), 1.25);
     m_playbackSpeedCombo->addItem(QStringLiteral("150%"), 1.5);
     m_playbackSpeedCombo->addItem(QStringLiteral("200%"), 2.0);
     m_playbackSpeedCombo->addItem(QStringLiteral("300%"), 3.0);
@@ -372,7 +373,7 @@ void EditorPane::setupTransportControls()
     m_audioNowPlayingLabel = new QLabel(QStringLiteral("Audio idle"));
     m_audioNowPlayingLabel->setObjectName(QStringLiteral("transport.audio_status"));
     m_audioNowPlayingLabel->setMinimumWidth(0);
-    m_audioNowPlayingLabel->setMaximumWidth(80);
+    m_audioNowPlayingLabel->setMaximumWidth(160);
     m_audioNowPlayingLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     m_zoomFitButton = new QPushButton(QStringLiteral("Zoom Fit"));

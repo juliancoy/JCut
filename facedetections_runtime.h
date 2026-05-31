@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "facedetections_types.h"
 #include "frame_handle.h"
 #include "preview_interaction_state.h"
 #include "render.h"
@@ -136,6 +137,19 @@ QJsonArray storedContinuityStreamsForRoot(const QJsonObject& continuityRoot,
 
 QJsonArray continuityTrackSummariesForRoot(const QJsonObject& continuityRoot,
                                            const QJsonObject& transcriptRoot = QJsonObject{});
+QVector<FacestreamTrackSummary> continuityTrackSummaryModelsForRoot(
+    const QJsonObject& continuityRoot,
+    const QJsonObject& transcriptRoot = QJsonObject{});
+QVector<FacestreamTrack> continuityTrackModelsNearFrameForRoot(
+    const QJsonObject& continuityRoot,
+    int64_t frame,
+    int64_t extraWindowFrames = 0,
+    const QJsonObject& transcriptRoot = QJsonObject{});
+QVector<FacestreamTrack> continuityTrackModelsForAssignments(
+    const QJsonObject& continuityRoot,
+    const QSet<int>& trackIds,
+    const QSet<QString>& streamIds,
+    const QJsonObject& transcriptRoot = QJsonObject{});
 
 QJsonArray continuityStreamsNearFrame(const QJsonObject& continuityRoot,
                                       int64_t frame,
@@ -151,6 +165,10 @@ QJsonArray rawFramesForContinuityRoot(const QJsonObject& continuityRoot);
 QJsonArray rawFramesNearFrameForContinuityRoot(const QJsonObject& continuityRoot,
                                                int64_t frame,
                                                int64_t extraWindowFrames = 0);
+QVector<FacestreamFrameDetections> frameDetectionModelsNearFrameForRoot(
+    const QJsonObject& continuityRoot,
+    int64_t frame,
+    int64_t extraWindowFrames = 0);
 
 bool continuityRootHasTracks(const QJsonObject& continuityRoot,
                              const QJsonObject& transcriptRoot = QJsonObject{});
@@ -179,6 +197,21 @@ QJsonObject buildContinuityRoot(const QString& runId,
 bool readBinaryJsonObject(const QString& path,
                           QJsonObject* objectOut,
                           QString* errorOut = nullptr);
+
+bool writeIndexedTrackArtifact(const QString& indexPath,
+                               const QString& dataPath,
+                               const QString& videoPath,
+                               const QString& backend,
+                               const QJsonArray& tracks,
+                               const QJsonArray& frameSummaries = QJsonArray{},
+                               QString* errorOut = nullptr);
+
+bool writeIndexedFrameArtifact(const QString& indexPath,
+                               const QString& dataPath,
+                               const QString& videoPath,
+                               const QString& backend,
+                               const QJsonArray& frames,
+                               QString* errorOut = nullptr);
 
 bool saveContinuityArtifact(const QString& transcriptPath,
                             const QString& clipId,

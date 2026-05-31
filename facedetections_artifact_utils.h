@@ -19,6 +19,10 @@ inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& trans
     const QStringList candidates{
         dir.filePath(base + QStringLiteral("_facedetections.bin")),
         dir.filePath(base + QStringLiteral("_facedetections_processed.bin")),
+        dir.filePath(QStringLiteral("facedetections_artifact/tracks.idx")),
+        dir.filePath(QStringLiteral("facedetections_artifact/tracks.dat")),
+        dir.filePath(QStringLiteral("facedetections_artifact/detections.idx")),
+        dir.filePath(QStringLiteral("facedetections_artifact/detections.dat")),
     };
     qint64 revisionMs = -1;
     for (const QString& path : candidates) {

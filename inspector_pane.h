@@ -97,6 +97,8 @@ public:
     QTableWidget *speakersTable() const { return m_speakersTable; }
     QCheckBox *speakerHideUnidentifiedCheckBox() const { return m_speakerHideUnidentifiedCheckBox; }
     QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
+    QCheckBox *speakerShowCurrentSpeakerNameCheckBox() const { return m_speakerShowCurrentSpeakerNameCheckBox; }
+    QCheckBox *speakerShowCurrentSpeakerOrganizationCheckBox() const { return m_speakerShowCurrentSpeakerOrganizationCheckBox; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QListWidget *selectedSpeakerFaceDetectionsList() const { return m_selectedSpeakerFaceDetectionsList; }
@@ -128,7 +130,8 @@ public:
     QSpinBox *speakerFramingCenterSmoothingFramesSpin() const { return m_speakerFramingCenterSmoothingFramesSpin; }
     QSpinBox *speakerFramingZoomSmoothingFramesSpin() const { return m_speakerFramingZoomSmoothingFramesSpin; }
     QComboBox *speakerFramingSmoothingModeCombo() const { return m_speakerFramingSmoothingModeCombo; }
-    QDoubleSpinBox *speakerFramingSmoothingStrengthSpin() const { return m_speakerFramingSmoothingStrengthSpin; }
+    QDoubleSpinBox *speakerFramingCenterSmoothingStrengthSpin() const { return m_speakerFramingCenterSmoothingStrengthSpin; }
+    QDoubleSpinBox *speakerFramingZoomSmoothingStrengthSpin() const { return m_speakerFramingZoomSmoothingStrengthSpin; }
     QSpinBox *speakerFramingGapHoldFramesSpin() const { return m_speakerFramingGapHoldFramesSpin; }
     QCheckBox *speakerShowFaceDetectionsBoxesCheckBox() const { return m_speakerShowFaceDetectionsBoxesCheckBox; }
     QCheckBox *speakerShowRawDetectionsCheckBox() const { return m_speakerShowRawDetectionsCheckBox; }
@@ -620,6 +623,8 @@ private:
     SpeakersTable *m_speakersTable = nullptr;
     QCheckBox *m_speakerHideUnidentifiedCheckBox = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
+    QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
+    QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QListWidget *m_selectedSpeakerFaceDetectionsList = nullptr;
@@ -655,7 +660,8 @@ private:
     QSpinBox *m_speakerFramingCenterSmoothingFramesSpin = nullptr;
     QSpinBox *m_speakerFramingZoomSmoothingFramesSpin = nullptr;
     QComboBox *m_speakerFramingSmoothingModeCombo = nullptr;
-    QDoubleSpinBox *m_speakerFramingSmoothingStrengthSpin = nullptr;
+    QDoubleSpinBox *m_speakerFramingCenterSmoothingStrengthSpin = nullptr;
+    QDoubleSpinBox *m_speakerFramingZoomSmoothingStrengthSpin = nullptr;
     QSpinBox *m_speakerFramingGapHoldFramesSpin = nullptr;
     QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;

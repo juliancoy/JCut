@@ -339,6 +339,77 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         drawAudioBadge(painter, compositeRect, activeAudioClips);
     }
     drawSpeakerPickOverlay(painter);
+    drawCurrentSpeakerLabelOverlay(painter, compositeRect);
+    painter->restore();
+}
+
+void PreviewWindow::drawCurrentSpeakerLabelOverlay(QPainter* painter, const QRect& compositeRect)
+{
+    if (!painter ||
+        (!m_interaction.showCurrentSpeakerName && !m_interaction.showCurrentSpeakerOrganization)) {
+        return;
+    }
+    const CurrentSpeakerLabel label = currentSpeakerLabelForState(&m_interaction);
+    QStringList lines;
+    if (m_interaction.showCurrentSpeakerName && !label.name.trimmed().isEmpty()) {
+        lines.push_back(label.name.trimmed());
+    }
+    if (m_interaction.showCurrentSpeakerOrganization && !label.organization.trimmed().isEmpty()) {
+        lines.push_back(label.organization.trimmed());
+    }
+    if (lines.isEmpty()) {
+        return;
+    }
+
+    painter->save();
+    QFont nameFont = painter->font();
+    nameFont.setBold(true);
+    nameFont.setPointSizeF(qMax<qreal>(11.0, nameFont.pointSizeF() + 3.0));
+    QFont orgFont = painter->font();
+    orgFont.setPointSizeF(qMax<qreal>(9.0, orgFont.pointSizeF() + 1.0));
+
+    const int maxTextWidth = qMax(180, static_cast<int>(compositeRect.width() * 0.72));
+    const int paddingX = 18;
+    const int paddingY = 10;
+    int contentHeight = 0;
+    int contentWidth = 0;
+    QVector<QRect> lineRects;
+    lineRects.reserve(lines.size());
+    for (int i = 0; i < lines.size(); ++i) {
+        const QFontMetrics fm(i == 0 && m_interaction.showCurrentSpeakerName ? nameFont : orgFont);
+        const QRect bounds = fm.boundingRect(QRect(0, 0, maxTextWidth, 120),
+                                             Qt::AlignCenter | Qt::TextWordWrap,
+                                             lines.at(i));
+        lineRects.push_back(bounds);
+        contentHeight += bounds.height();
+        if (i > 0) {
+            contentHeight += 4;
+        }
+        contentWidth = qMax(contentWidth, bounds.width());
+    }
+
+    const int cardWidth = qMin(maxTextWidth + (paddingX * 2), qMax(contentWidth + (paddingX * 2), 220));
+    const int cardHeight = contentHeight + (paddingY * 2);
+    const QRect cardRect(compositeRect.center().x() - cardWidth / 2,
+                         compositeRect.bottom() - cardHeight - 22,
+                         cardWidth,
+                         cardHeight);
+    painter->setPen(QPen(QColor(225, 236, 247, 120), 1.0));
+    painter->setBrush(QColor(8, 13, 20, 190));
+    painter->drawRoundedRect(cardRect, 8, 8);
+
+    int y = cardRect.top() + paddingY;
+    for (int i = 0; i < lines.size(); ++i) {
+        const bool nameLine = i == 0 && m_interaction.showCurrentSpeakerName;
+        painter->setFont(nameLine ? nameFont : orgFont);
+        painter->setPen(nameLine ? QColor(QStringLiteral("#f4f8fc")) : QColor(QStringLiteral("#b9d0e5")));
+        const QRect textRect(cardRect.left() + paddingX,
+                             y,
+                             cardRect.width() - (paddingX * 2),
+                             lineRects.at(i).height());
+        painter->drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, lines.at(i));
+        y += lineRects.at(i).height() + 4;
+    }
     painter->restore();
 }
 

@@ -46,6 +46,8 @@ public:
         QTableWidget* speakersTable = nullptr;
         QCheckBox* speakerHideUnidentifiedCheckBox = nullptr;
         QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
+        QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
+        QCheckBox* speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
         QTableWidget* speakerSectionsTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
         QListWidget* selectedSpeakerFaceDetectionsList = nullptr;
@@ -76,7 +78,8 @@ public:
         QSpinBox* speakerFramingCenterSmoothingFramesSpin = nullptr;
         QSpinBox* speakerFramingZoomSmoothingFramesSpin = nullptr;
         QComboBox* speakerFramingSmoothingModeCombo = nullptr;
-        QDoubleSpinBox* speakerFramingSmoothingStrengthSpin = nullptr;
+        QDoubleSpinBox* speakerFramingCenterSmoothingStrengthSpin = nullptr;
+        QDoubleSpinBox* speakerFramingZoomSmoothingStrengthSpin = nullptr;
         QSpinBox* speakerFramingGapHoldFramesSpin = nullptr;
         QCheckBox* speakerApplyFramingToClipCheckBox = nullptr;
         QTableWidget* speakerFramingEnabledKeyframeTable = nullptr;
@@ -132,6 +135,13 @@ public:
                                     qreal xNorm,
                                     qreal yNorm,
                                     qreal boxSizeNorm);
+    bool handlePreviewFaceDetectionsBoxFocusClear(const QString& clipId,
+                                    int trackId,
+                                    const QString& streamId,
+                                    int64_t sourceFrame,
+                                    qreal xNorm,
+                                    qreal yNorm,
+                                    qreal boxSizeNorm);
     void showPreviewFaceDetectionsClickStatus(const QString& message);
     bool runAiFindSpeakerNames();
     bool runAiFindOrganizations();
@@ -144,6 +154,8 @@ public:
     qint64 lastPlayheadTrackCandidatesRefreshDurationMs() const { return m_lastPlayheadTrackCandidatesRefreshDurationMs; }
     qint64 maxPlayheadTrackCandidatesRefreshDurationMs() const { return m_maxPlayheadTrackCandidatesRefreshDurationMs; }
     int lastPlayheadTrackCandidateCount() const { return m_lastPlayheadTrackCandidateCount; }
+    QString lastPlayheadTrackCandidatesBlockReason() const { return m_lastPlayheadTrackCandidatesBlockReason; }
+    qint64 playheadTrackCandidatesBlockedCount() const { return m_playheadTrackCandidatesBlockedCount; }
     qint64 lastRawDetectionsPanelRefreshDurationMs() const { return m_lastRawDetectionsPanelRefreshDurationMs; }
     qint64 maxRawDetectionsPanelRefreshDurationMs() const { return m_maxRawDetectionsPanelRefreshDurationMs; }
     QJsonObject speakerSectionSelectionTimingProfile() const { return m_sectionSelectionTiming.profileSnapshot(); }
@@ -186,6 +198,7 @@ private:
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
                                         bool clearDerivedCaches = true);
     bool saveLoadedTranscriptDocument();
+    bool saveLoadedTranscriptDocumentNow();
     void queueLoadedTranscriptDocumentSave();
     void startTranscriptLoadRequest(const QString& clipFilePath,
                                     const QString& transcriptPath,
@@ -308,7 +321,8 @@ private:
                               qreal xNorm,
                               qreal yNorm,
                               qreal boxSizeNorm,
-                              const QString& resolutionSource);
+                              const QString& resolutionSource,
+                              bool evictExistingForSpeaker = false);
     bool assignTrackAnchorsToSpeakerBatch(const QString& speakerId,
                                           const QJsonArray& trackAnchors,
                                           const QString& resolutionSource,
@@ -328,8 +342,8 @@ private:
         const QString& resolutionSource,
         const QString& auditAction,
         const QString& runIdPrefix,
-        const std::function<bool(const QJsonObject&, const QJsonObject&)>& shouldReplaceResolvedRow,
-        const std::function<bool(const QJsonObject&, const QJsonObject&)>& faceRefMatches);
+        const std::function<bool(const QJsonObject&, const QJsonObject&)>& faceRefMatches,
+        bool evictExistingForSpeaker = false);
     void openTrackPickerForSpeaker(const QString& speakerId);
     bool deleteSpeakerAutoTrackPointstream(const QString& speakerId);
     bool setSpeakerTrackingEnabled(const QString& speakerId, bool enabled);
@@ -387,6 +401,8 @@ private:
     QJsonObject m_lastFaceDetectionsDebugSnapshot;
     SpeakerSectionSelectionTimingService m_sectionSelectionTiming;
     int m_lastPlayheadTrackCandidateCount = 0;
+    QString m_lastPlayheadTrackCandidatesBlockReason;
+    qint64 m_playheadTrackCandidatesBlockedCount = 0;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
     QString m_pendingPreferredSpeakerId;
 

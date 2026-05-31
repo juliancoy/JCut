@@ -360,7 +360,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 QStringLiteral("This flow runs raw face detection, then forms identity-agnostic continuity tracks, then imports those artefacts for the selected clip.\n\n"
                                "Detector: SCRFD ncnn Vulkan only. CPU detector fallback is not used."),
                 QStringLiteral("Input defaults to source media. Enable proxy input explicitly if you want detection and continuity generation to scan the proxy instead. "
-                               "Artifact: facedetections.part + tracks.bin + continuity_facedetections.bin. Interrupted runs resume only when the input path still matches the checkpointed run."),
+                               "Artifact: facedetections.part + tracks.idx/tracks.dat + detections.idx/detections.dat + continuity_facedetections.bin. Interrupted runs resume only when the input path still matches the checkpointed run."),
                 QStringLiteral("Proceed"),
                 QStringLiteral("Cancel"),
                 QSize(760, 420),
@@ -428,8 +428,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const bool initialRunHasCheckpoint =
         QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("facedetections.part")));
     const bool initialRunHasCompletedOutputs =
-        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("detections.bin"))) ||
-        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("tracks.bin"))) ||
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("detections.idx"))) ||
+        QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("tracks.idx"))) ||
         QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("continuity_facedetections.bin"))) ||
         QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("summary.json")));
     const bool shouldForceFreshRun =
@@ -445,8 +445,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const QString requestPath = QDir(debugRun.runDir).absoluteFilePath(
         QStringLiteral("%1_facedetections_request.json").arg(debugRun.videoStem));
     const QString outputPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("continuity_facedetections.bin"));
-    const QString detectionsPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("detections.bin"));
-    const QString tracksPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("tracks.bin"));
+    const QString detectionsPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("detections.idx"));
+    const QString tracksPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("tracks.idx"));
     const QString summaryPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("summary.json"));
     const QString facedetectionsPartPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("facedetections.part"));
     const QString clipJsonPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("clip_input.json"));

@@ -73,6 +73,8 @@ public:
     void setShowSpeakerTrackPoints(bool show);
     void setShowSpeakerTrackBoxes(bool show);
     void setShowRawDetections(bool show);
+    void setShowCurrentSpeakerName(bool show) override;
+    void setShowCurrentSpeakerOrganization(bool show) override;
     void setFacestreamOverlaySource(const QString& source);
     void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override {
         if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {
@@ -189,11 +191,15 @@ private:
     const QVector<TranscriptSection>& transcriptSectionsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& speakerTrackPointsForClip(const TimelineClip& clip) const;
     const QVector<SpeakerTrackPoint>& rawDetectionPointsForClip(const TimelineClip& clip) const;
-    bool dispatchFaceDetectionsBoxAtPosition(const QPointF& position);
+    bool dispatchFaceDetectionsBoxAtPosition(
+        const QPointF& position,
+        const std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)>& callback,
+        const QString& inactiveMessage);
     bool updateHoveredFaceDetectionsBox(const QPointF& position);
     void clearHoveredFaceDetectionsBox();
     void drawSpeakerTrackPointsOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
     void drawRawDetectionOverlay(QPainter* painter, const QList<TimelineClip>& activeClips);
+    void drawCurrentSpeakerLabelOverlay(QPainter* painter, const QRect& compositeRect);
     void drawSpeakerFramingTargetOverlay(QPainter* painter,
                                          const QList<TimelineClip>& activeClips,
                                          const QRect& compositeRect);

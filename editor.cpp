@@ -962,6 +962,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(true);
     const bool previewShowRawDetections =
         root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
+    const bool previewShowCurrentSpeakerName =
+        root.value(QStringLiteral("previewShowCurrentSpeakerName")).toBool(false);
+    const bool previewShowCurrentSpeakerOrganization =
+        root.value(QStringLiteral("previewShowCurrentSpeakerOrganization")).toBool(false);
     const QString previewFacestreamOverlaySource = QStringLiteral("all");
     const int autosaveIntervalMinutes = qBound(
         1,
@@ -1051,9 +1055,18 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const PlaybackClockSource playbackClockSource = playbackClockSourceFromString(
         root.value(QStringLiteral("playbackClockSource"))
             .toString(playbackClockSourceToString(PlaybackClockSource::Auto)));
-    const PlaybackAudioWarpMode playbackAudioWarpMode = playbackAudioWarpModeFromString(
+    PlaybackAudioWarpMode playbackAudioWarpMode = playbackAudioWarpModeFromString(
         root.value(QStringLiteral("playbackAudioWarpMode"))
             .toString(playbackAudioWarpModeToString(PlaybackAudioWarpMode::Disabled)));
+    const int roundedPlaybackSpeed = qRound(playbackSpeed);
+    const bool hasPitchPreservingPreview =
+        (roundedPlaybackSpeed == 2 || roundedPlaybackSpeed == 3) &&
+        qAbs(playbackSpeed - static_cast<qreal>(roundedPlaybackSpeed)) < 0.0001;
+    if (hasPitchPreservingPreview &&
+        playbackAudioWarpMode == PlaybackAudioWarpMode::Varispeed &&
+        !root.value(QStringLiteral("playbackAudioWarpModeExplicit")).toBool(false)) {
+        playbackAudioWarpMode = PlaybackAudioWarpMode::TimeStretch;
+    }
     const bool playbackLoopEnabled =
         root.value(QStringLiteral("playbackLoopEnabled")).toBool(false);
     const qreal timelineZoom = root.value(QStringLiteral("timelineZoom")).toDouble(4.0);
@@ -1338,6 +1351,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_speakerShowRawDetectionsCheckBox);
         m_speakerShowRawDetectionsCheckBox->setChecked(previewShowRawDetections);
     }
+    if (m_speakerShowCurrentSpeakerNameCheckBox) {
+        QSignalBlocker block(m_speakerShowCurrentSpeakerNameCheckBox);
+        m_speakerShowCurrentSpeakerNameCheckBox->setChecked(previewShowCurrentSpeakerName);
+    }
+    if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
+        QSignalBlocker block(m_speakerShowCurrentSpeakerOrganizationCheckBox);
+        m_speakerShowCurrentSpeakerOrganizationCheckBox->setChecked(previewShowCurrentSpeakerOrganization);
+    }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
         m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
@@ -1541,6 +1562,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setShowSpeakerTrackPoints(previewShowSpeakerTrackPoints);
         m_preview->setShowSpeakerTrackBoxes(previewShowSpeakerTrackBoxes);
         m_preview->setShowRawDetections(previewShowRawDetections);
+        m_preview->setShowCurrentSpeakerName(previewShowCurrentSpeakerName);
+        m_preview->setShowCurrentSpeakerOrganization(previewShowCurrentSpeakerOrganization);
         m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;

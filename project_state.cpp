@@ -395,6 +395,12 @@ QJsonObject EditorWindow::buildStateJson() const
         m_speakerShowFaceDetectionsBoxesCheckBox ? m_speakerShowFaceDetectionsBoxesCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowRawDetections")] =
         m_speakerShowRawDetectionsCheckBox ? m_speakerShowRawDetectionsCheckBox->isChecked() : false;
+    root[QStringLiteral("previewShowCurrentSpeakerName")] =
+        m_speakerShowCurrentSpeakerNameCheckBox ? m_speakerShowCurrentSpeakerNameCheckBox->isChecked() : false;
+    root[QStringLiteral("previewShowCurrentSpeakerOrganization")] =
+        m_speakerShowCurrentSpeakerOrganizationCheckBox
+            ? m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked()
+            : false;
     root[QStringLiteral("previewFacestreamOverlaySource")] = QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
@@ -481,6 +487,7 @@ QJsonObject EditorWindow::buildStateJson() const
         playbackClockSourceToString(playbackConfig.clockSource);
     root[QStringLiteral("playbackAudioWarpMode")] =
         playbackAudioWarpModeToString(playbackConfig.audioWarpMode);
+    root[QStringLiteral("playbackAudioWarpModeExplicit")] = true;
     root[QStringLiteral("playbackLoopEnabled")] = playbackConfig.loopEnabled;
     root[QStringLiteral("previewViewMode")] = m_previewViewMode;
     root[QStringLiteral("render_backend")] = m_renderBackendPreference;

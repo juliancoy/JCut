@@ -185,7 +185,8 @@ struct TimelineClip {
     int speakerFramingCenterSmoothingFrames = 0;
     int speakerFramingZoomSmoothingFrames = 0;
     int speakerFramingSmoothingMode = 0;
-    qreal speakerFramingSmoothingStrength = 1.0;
+    qreal speakerFramingCenterSmoothingStrength = 1.0;
+    qreal speakerFramingZoomSmoothingStrength = 1.0;
     int speakerFramingGapHoldFrames = 0;
     static constexpr qreal kSpeakerFramingSmoothingStrengthMax = 5.0;
     bool transformSkipAwareTiming = true;

@@ -83,7 +83,7 @@ QString latestRunIdWithArtifact(const QString& clipDebugRoot)
             QFileInfo::exists(artifact.filePath(QStringLiteral("facedetections.bin"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("facedetections.ndjson"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.json"))) ||
-            QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.bin"))) ||
+            QFileInfo::exists(artifact.filePath(QStringLiteral("tracks.idx"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facedetections.bin"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("continuity_facedetections.json"))) ||
             QFileInfo::exists(artifact.filePath(QStringLiteral("summary.json")))) {

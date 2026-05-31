@@ -1,5 +1,8 @@
 #include "facedetections_assignment_services.h"
 #include "facedetections_tracking.h"
+#include "facedetections_artifact_utils.h"
+#include "speaker_track_assignment_service.h"
+#include "speakers_tab_internal.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -233,6 +236,70 @@ private slots:
             finalClipRoot.value(QStringLiteral("resolved_current")).toObject()
                 .value(QStringLiteral("track_identity_map")).toArray();
         QCOMPARE(resolvedMap.size(), 2);
+    }
+
+    void storedTrackIdentityMapIsCanonicalOverAnchorMatch()
+    {
+        TimelineClip clip;
+        clip.id = QStringLiteral("clip_001");
+        clip.startFrame = 0;
+        clip.durationFrames = 1000;
+        clip.sourceFps = 30.0;
+
+        const QJsonArray streams{
+            QJsonObject{
+                {QStringLiteral("track_id"), 339},
+                {QStringLiteral("stream_id"), QStringLiteral("T339")},
+                {QStringLiteral("frame_domain"), facedetectionsFrameDomainString(FacestreamFrameDomain::SourceRelative)},
+                {QStringLiteral("keyframes"), QJsonArray{
+                     QJsonObject{
+                         {QString(kTranscriptSpeakerTrackingFrameKey), 100},
+                         {QString(kTranscriptSpeakerLocationXKey), 0.5},
+                         {QString(kTranscriptSpeakerLocationYKey), 0.5},
+                         {QString(kTranscriptSpeakerTrackingBoxSizeKey), 0.2}
+                     }
+                 }}
+            },
+            QJsonObject{
+                {QStringLiteral("track_id"), 340},
+                {QStringLiteral("stream_id"), QStringLiteral("T340")},
+                {QStringLiteral("frame_domain"), facedetectionsFrameDomainString(FacestreamFrameDomain::SourceRelative)},
+                {QStringLiteral("keyframes"), QJsonArray{
+                     QJsonObject{
+                         {QString(kTranscriptSpeakerTrackingFrameKey), 900},
+                         {QString(kTranscriptSpeakerLocationXKey), 0.9},
+                         {QString(kTranscriptSpeakerLocationYKey), 0.9},
+                         {QString(kTranscriptSpeakerTrackingBoxSizeKey), 0.1}
+                     }
+                 }}
+            }
+        };
+        const QJsonObject assignmentRow{
+            {QStringLiteral("track_id"), 340},
+            {QStringLiteral("stream_id"), QStringLiteral("T340")},
+            {QStringLiteral("identity_id"), QStringLiteral("speaker_julian")},
+            {QString(kSpeakerFlowAnchorSourceFrameKey), 100},
+            {QString(kSpeakerFlowAnchorXKey), 0.5},
+            {QString(kSpeakerFlowAnchorYKey), 0.5},
+            {QString(kSpeakerFlowAnchorBoxSizeKey), 0.2}
+        };
+        const QJsonObject transcriptRoot{
+            {QStringLiteral("speaker_flow"), QJsonObject{
+                 {QStringLiteral("clips"), QJsonObject{
+                      {clip.id, QJsonObject{
+                           {QStringLiteral("resolved_current"), QJsonObject{
+                                {QStringLiteral("track_identity_map"), QJsonArray{assignmentRow}}
+                            }}
+                       }}
+                  }}
+             }}
+        };
+
+        const jcut::speakertrack::ResolvedAssignments resolved =
+            jcut::speakertrack::resolveAssignments(transcriptRoot, clip, streams, {});
+        QCOMPARE(resolved.identityByTrackId.value(340), QStringLiteral("speaker_julian"));
+        QVERIFY(!resolved.identityByTrackId.contains(339));
+        QCOMPARE(resolved.trackIdsByIdentity.value(QStringLiteral("speaker_julian")).value(0), 340);
     }
 
 };

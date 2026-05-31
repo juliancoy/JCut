@@ -5,6 +5,14 @@
 #include <algorithm>
 #include <cmath>
 
+#ifndef JCUT_HAVE_RUBBERBAND
+#define JCUT_HAVE_RUBBERBAND 0
+#endif
+
+#if JCUT_HAVE_RUBBERBAND
+#include <rubberband/RubberBandStretcher.h>
+#endif
+
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
 
@@ -52,6 +60,130 @@ double overlapCorrelation(const QVector<float>& output,
     }
     return dot / std::sqrt(outEnergy * inEnergy);
 }
+}
+
+QVector<float> timeStretchPreservePitch(const QVector<float>& interleavedSamples,
+                                        int channelCount,
+                                        int sampleRate,
+                                        double speed,
+                                        AudioTimeStretchBackend backend)
+{
+    if (backend == AudioTimeStretchBackend::Sola) {
+        return timeStretchPreservePitchSola(interleavedSamples, channelCount, speed);
+    }
+
+    if (backend == AudioTimeStretchBackend::RubberBand ||
+        backend == AudioTimeStretchBackend::Default) {
+        QVector<float> rubberBandOutput =
+            timeStretchPreservePitchRubberBand(interleavedSamples, channelCount, sampleRate, speed);
+        if (!rubberBandOutput.isEmpty() ||
+            interleavedSamples.isEmpty() ||
+            speed <= 0.0) {
+            return rubberBandOutput;
+        }
+    }
+
+    return timeStretchPreservePitchSola(interleavedSamples, channelCount, speed);
+}
+
+QVector<float> timeStretchPreservePitchRubberBand(const QVector<float>& interleavedSamples,
+                                                  int channelCount,
+                                                  int sampleRate,
+                                                  double speed)
+{
+#if JCUT_HAVE_RUBBERBAND
+    const int channels = qMax(1, channelCount);
+    const int effectiveSampleRate = qMax(1, sampleRate);
+    if (interleavedSamples.isEmpty() || channels <= 0 || speed <= 0.0) {
+        return {};
+    }
+    if (std::abs(speed - 1.0) < 0.0001) {
+        return interleavedSamples;
+    }
+
+    const int inputFrames = static_cast<int>(interleavedSamples.size() / channels);
+    if (inputFrames <= 0) {
+        return {};
+    }
+
+    QVector<QVector<float>> planarInput(channels);
+    for (int ch = 0; ch < channels; ++ch) {
+        planarInput[ch].resize(inputFrames);
+    }
+    for (int frame = 0; frame < inputFrames; ++frame) {
+        for (int ch = 0; ch < channels; ++ch) {
+            planarInput[ch][frame] = interleavedSamples[static_cast<qsizetype>(frame) * channels + ch];
+        }
+    }
+
+    QVector<const float*> inputPointers(channels);
+    for (int ch = 0; ch < channels; ++ch) {
+        inputPointers[ch] = planarInput[ch].constData();
+    }
+
+    const double timeRatio = 1.0 / speed;
+    RubberBand::RubberBandStretcher::Options options =
+        RubberBand::RubberBandStretcher::OptionProcessOffline |
+        RubberBand::RubberBandStretcher::OptionEngineFiner |
+        RubberBand::RubberBandStretcher::OptionChannelsTogether;
+    RubberBand::RubberBandStretcher stretcher(
+        static_cast<size_t>(effectiveSampleRate),
+        static_cast<size_t>(channels),
+        options,
+        timeRatio,
+        1.0);
+
+    stretcher.study(inputPointers.constData(), static_cast<size_t>(inputFrames), true);
+    stretcher.process(inputPointers.constData(), static_cast<size_t>(inputFrames), true);
+
+    const int expectedFrames = qMax(1, static_cast<int>(std::llround(inputFrames / speed)));
+    QVector<QVector<float>> planarOutput(channels);
+    for (int ch = 0; ch < channels; ++ch) {
+        planarOutput[ch].resize(expectedFrames);
+    }
+    QVector<float*> outputPointers(channels);
+    for (int ch = 0; ch < channels; ++ch) {
+        outputPointers[ch] = planarOutput[ch].data();
+    }
+
+    int retrievedFrames = 0;
+    while (retrievedFrames < expectedFrames) {
+        const int available = stretcher.available();
+        if (available <= 0) {
+            break;
+        }
+        const int framesToRead = qMin(available, expectedFrames - retrievedFrames);
+        QVector<float*> blockPointers(channels);
+        for (int ch = 0; ch < channels; ++ch) {
+            blockPointers[ch] = outputPointers[ch] + retrievedFrames;
+        }
+        const int readFrames = static_cast<int>(
+            stretcher.retrieve(blockPointers.constData(), static_cast<size_t>(framesToRead)));
+        if (readFrames <= 0) {
+            break;
+        }
+        retrievedFrames += readFrames;
+    }
+
+    if (retrievedFrames <= 0) {
+        return {};
+    }
+
+    QVector<float> output(static_cast<qsizetype>(retrievedFrames) * channels);
+    for (int frame = 0; frame < retrievedFrames; ++frame) {
+        for (int ch = 0; ch < channels; ++ch) {
+            output[static_cast<qsizetype>(frame) * channels + ch] =
+                std::clamp(planarOutput[ch][frame], -1.0f, 1.0f);
+        }
+    }
+    return output;
+#else
+    Q_UNUSED(sampleRate);
+    Q_UNUSED(speed);
+    Q_UNUSED(channelCount);
+    Q_UNUSED(interleavedSamples);
+    return {};
+#endif
 }
 
 QVector<float> timeStretchPreservePitchSola(const QVector<float>& interleavedSamples,

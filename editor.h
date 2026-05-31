@@ -145,6 +145,7 @@ private:
     QJsonObject applyThrottleConfigPatch(const QJsonObject& patch);
     QJsonObject playbackConfigSnapshot() const;
     QJsonObject applyPlaybackConfigPatch(const QJsonObject& patch);
+    QJsonObject audioDebugSnapshot() const;
     QString optimizedProfilePath() const;
     QJsonObject optimizedProfileSnapshot() const;
     QJsonObject ensureOptimizedProfile();
@@ -277,6 +278,7 @@ private:
     bool shouldUseAudioMasterClock() const;
     qreal effectiveAudioWarpRate() const;
     void reconcileActivePlaybackAudioState();
+    void requestPlaybackAudioWarmup(bool startWhenReady);
     void updatePlaybackTimerInterval();
     void setPlaybackActive(bool playing);
     void stopPlaybackWithReason(const QString& reason);
@@ -438,6 +440,8 @@ private:
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
     QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
+    QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
+    QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;
@@ -637,6 +641,10 @@ private:
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
     QString m_lastPlaybackStopReason = QStringLiteral("none");
+    bool m_playbackAudioWarmupPending = false;
+    bool m_retimingAudioForPlayback = false;
+    bool m_startPlaybackAfterAudioWarmup = false;
+    int m_playbackAudioWarmupRequestId = 0;
     double m_timelineAdvanceCarrySamples = 0.0;
     int64_t m_lastTimelineAdvanceTickMs = 0;
     QTimer m_transcriptClickSeekTimer;

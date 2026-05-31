@@ -14,11 +14,15 @@
 #include <QMutexLocker>
 #include <QSet>
 
+#include <limits>
+#include <string>
+
 namespace jcut::facedetections {
 namespace {
 constexpr qint64 kMaxInteractiveContinuityObjectBytes = 128ll * 1024ll * 1024ll;
-constexpr quint32 kLegacyBinaryJsonMagic = 0x4A435554;
-constexpr quint32 kRecordBinaryJsonMagic = 0x4A465352;
+constexpr quint32 kIndexedTrackArtifactMagic = 0x4A465449; // JFTI
+constexpr quint32 kIndexedFrameArtifactMagic = 0x4A464649; // JFFI
+constexpr quint32 kIndexedArtifactVersion = 1;
 
 struct TrackArtifactIndexEntry {
     int trackId = -1;
@@ -28,17 +32,42 @@ struct TrackArtifactIndexEntry {
     qint64 maxFrame = -1;
     int detectionCount = 0;
     qint64 typicalFrameStep = 1;
-    qint64 recordOffset = -1;
+    qint64 dataOffset = -1;
+    quint32 compressedSize = 0;
+};
+
+struct IndexedObjectEntry {
+    QString type;
+    qint64 frame = -1;
+    qint64 dataOffset = -1;
     quint32 compressedSize = 0;
 };
 
 struct TrackArtifactIndex {
     QString path;
+    QString dataPath;
     qint64 size = -1;
     qint64 mtimeMs = -1;
     QString frameDomain = QStringLiteral("source_absolute");
+    QString schema;
+    QString video;
+    QString backend;
     QVector<TrackArtifactIndexEntry> entries;
-    QHash<qint64, QJsonObject> loadedTrackRecordsByOffset;
+    QVector<IndexedObjectEntry> frameSummaryEntries;
+    QHash<qint64, QJsonObject> loadedTrackRecordsByDataOffset;
+    QHash<QString, FacestreamTrack> loadedTrackModelsByCacheKey;
+};
+
+struct FrameArtifactIndex {
+    QString path;
+    QString dataPath;
+    qint64 size = -1;
+    qint64 mtimeMs = -1;
+    QString frameDomain;
+    QString schema;
+    QString video;
+    QString backend;
+    QVector<IndexedObjectEntry> entries;
 };
 
 QMutex& trackArtifactIndexMutex()
@@ -50,6 +79,18 @@ QMutex& trackArtifactIndexMutex()
 QHash<QString, TrackArtifactIndex>& trackArtifactIndices()
 {
     static QHash<QString, TrackArtifactIndex> indices;
+    return indices;
+}
+
+QMutex& frameArtifactIndexMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QHash<QString, FrameArtifactIndex>& frameArtifactIndices()
+{
+    static QHash<QString, FrameArtifactIndex> indices;
     return indices;
 }
 
@@ -66,7 +107,7 @@ quint32 binaryArtifactMagicAtPath(const QString& path)
     return stream.status() == QDataStream::Ok ? magic : 0;
 }
 
-bool recordArtifactToRoot(const QString& path, QJsonObject* rootOut);
+bool indexedArtifactToRoot(const QString& path, QJsonObject* rootOut);
 
 qint64 minFrameForTrackRecord(const QJsonObject& trackRecord)
 {
@@ -115,6 +156,184 @@ QJsonObject trackSummaryObject(const TrackArtifactIndexEntry& entry,
         summary[QStringLiteral("source")] = entry.source;
     }
     return summary;
+}
+
+FacestreamTrackSummary trackSummaryModelFromIndexEntry(const TrackArtifactIndexEntry& entry,
+                                                       const QString& frameDomain,
+                                                       const QString& detectorMode)
+{
+    FacestreamTrackSummary summary;
+    summary.trackId = entry.trackId;
+    summary.streamId =
+        entry.streamId.isEmpty() && entry.trackId >= 0 ? QStringLiteral("T%1").arg(entry.trackId) : entry.streamId;
+    summary.source = entry.source.isEmpty() ? detectorMode : entry.source;
+    summary.frameDomain = frameDomain.trimmed();
+    summary.minFrame = entry.minFrame;
+    summary.maxFrame = entry.maxFrame;
+    summary.keyframeCount = entry.detectionCount;
+    summary.typicalFrameStep = qMax<qint64>(1, entry.typicalFrameStep);
+    return summary;
+}
+
+FacestreamTrackSummary trackSummaryModelFromObject(const QJsonObject& summary)
+{
+    FacestreamTrackSummary model;
+    model.trackId = summary.value(QStringLiteral("track_id")).toInt(-1);
+    model.streamId = summary.value(QStringLiteral("stream_id")).toString().trimmed();
+    model.source = summary.value(QStringLiteral("source")).toString().trimmed();
+    model.frameDomain = summary.value(QStringLiteral("frame_domain")).toString().trimmed();
+    model.minFrame = summary.value(QStringLiteral("min_frame")).toVariant().toLongLong();
+    model.maxFrame = summary.value(QStringLiteral("max_frame")).toVariant().toLongLong();
+    model.keyframeCount = summary.value(QStringLiteral("keyframe_count")).toInt(0);
+    model.typicalFrameStep =
+        qMax<qint64>(1, summary.value(QStringLiteral("typical_frame_step")).toVariant().toLongLong());
+    return model;
+}
+
+bool frameIsInTranscriptDialogue(qint64 frame, const QJsonObject& transcriptRoot)
+{
+    const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
+    if (segments.isEmpty()) {
+        return false;
+    }
+    const double t = static_cast<double>(frame) / static_cast<double>(kTimelineFps);
+    for (const QJsonValue& segValue : segments) {
+        const QJsonArray words = segValue.toObject().value(QStringLiteral("words")).toArray();
+        for (const QJsonValue& wordValue : words) {
+            const QJsonObject wordObj = wordValue.toObject();
+            if (wordObj.value(QStringLiteral("skipped")).toBool(false)) {
+                continue;
+            }
+            const double ws = wordObj.value(QStringLiteral("start")).toDouble(-1.0);
+            const double we = wordObj.value(QStringLiteral("end")).toDouble(-1.0);
+            if (ws >= 0.0 && we >= ws && t >= ws && t <= we) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+FacestreamTrack trackModelFromRawRecordWithSummary(const QJsonObject& trackObj,
+                                                   const FacestreamTrackSummary& summary,
+                                                   bool onlyDialogue,
+                                                   const QJsonObject& transcriptRoot)
+{
+    FacestreamTrack track;
+    track.summary = summary;
+    const QJsonArray detections = trackObj.value(QStringLiteral("detections")).toArray();
+    track.keyframes.reserve(detections.size());
+    for (const QJsonValue& detValue : detections) {
+        const QJsonObject det = detValue.toObject();
+        const qint64 frame = qMax<qint64>(
+            0,
+            det.value(QStringLiteral("frame")).toVariant().toLongLong());
+        if (onlyDialogue && !frameIsInTranscriptDialogue(frame, transcriptRoot)) {
+            continue;
+        }
+        FacestreamKeyframe keyframe;
+        keyframe.frame = frame;
+        keyframe.sourceFrame = frame;
+        keyframe.x = static_cast<float>(
+            qBound(0.0, det.value(QStringLiteral("x")).toDouble(0.5), 1.0));
+        keyframe.y = static_cast<float>(
+            qBound(0.0, det.value(QStringLiteral("y")).toDouble(0.5), 1.0));
+        keyframe.box = static_cast<float>(
+            qBound(0.01, det.value(QStringLiteral("box")).toDouble(0.2), 1.0));
+        keyframe.confidence = static_cast<float>(
+            qBound(0.0, det.value(QStringLiteral("score")).toDouble(0.0), 1.0));
+        track.keyframes.push_back(keyframe);
+    }
+    if (track.keyframes.isEmpty()) {
+        return {};
+    }
+    return track;
+}
+
+FacestreamTrack trackModelFromRawRecord(const QJsonObject& trackObj,
+                                        const QString& frameDomain,
+                                        const QString& detectorMode,
+                                        bool onlyDialogue,
+                                        const QJsonObject& transcriptRoot)
+{
+    FacestreamTrackSummary summary;
+    summary.trackId = trackObj.value(QStringLiteral("track_id")).toInt(-1);
+    summary.streamId =
+        trackObj.value(QStringLiteral("stream_id")).toString(
+            summary.trackId >= 0 ? QStringLiteral("T%1").arg(summary.trackId) : QString{});
+    summary.source = trackObj.value(QStringLiteral("source")).toString();
+    summary.minFrame = minFrameForTrackRecord(trackObj);
+    summary.maxFrame = maxFrameForTrackRecord(trackObj);
+    summary.keyframeCount = trackObj.value(QStringLiteral("detections")).toArray().size();
+    summary.typicalFrameStep = typicalFrameStepForTrackRecord(trackObj);
+    summary.frameDomain = frameDomain.trimmed();
+    if (summary.source.isEmpty()) {
+        summary.source = detectorMode;
+    }
+    if (summary.streamId.isEmpty() && summary.trackId >= 0) {
+        summary.streamId = QStringLiteral("T%1").arg(summary.trackId);
+    }
+    return trackModelFromRawRecordWithSummary(trackObj, summary, onlyDialogue, transcriptRoot);
+}
+
+FacestreamFrameDetections frameDetectionModelFromRecord(const QJsonObject& frameObj)
+{
+    FacestreamFrameDetections frame;
+    frame.frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+    if (frame.frame < 0) {
+        return {};
+    }
+    const QJsonArray rows = frameObj.value(QStringLiteral("detections")).toArray();
+    frame.detections.reserve(rows.size());
+    for (const QJsonValue& detValue : rows) {
+        const QJsonObject detObj = detValue.toObject();
+        const qreal frameWidth = qMax<qreal>(
+            1.0,
+            frameObj.value(QStringLiteral("frame_width")).toDouble(
+                detObj.value(QStringLiteral("frame_width")).toDouble(0.0)));
+        const qreal frameHeight = qMax<qreal>(
+            1.0,
+            frameObj.value(QStringLiteral("frame_height")).toDouble(
+                detObj.value(QStringLiteral("frame_height")).toDouble(0.0)));
+        frame.frameWidth = frameWidth;
+        frame.frameHeight = frameHeight;
+        const qreal x = qBound<qreal>(
+            0.0,
+            detObj.value(QStringLiteral("x_norm")).toDouble(
+                detObj.value(QStringLiteral("x")).toDouble(0.0) / frameWidth),
+            1.0);
+        const qreal y = qBound<qreal>(
+            0.0,
+            detObj.value(QStringLiteral("y_norm")).toDouble(
+                detObj.value(QStringLiteral("y")).toDouble(0.0) / frameHeight),
+            1.0);
+        const qreal w = qBound<qreal>(
+            0.0,
+            detObj.value(QStringLiteral("w_norm")).toDouble(
+                detObj.value(QStringLiteral("w")).toDouble(0.0) / frameWidth),
+            1.0);
+        const qreal h = qBound<qreal>(
+            0.0,
+            detObj.value(QStringLiteral("h_norm")).toDouble(
+                detObj.value(QStringLiteral("h")).toDouble(0.0) / frameHeight),
+            1.0);
+        if (w <= 0.0 || h <= 0.0) {
+            continue;
+        }
+        FacestreamDetection detection;
+        detection.frame = frame.frame;
+        detection.box = QRectF(x, y, w, h).intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+        detection.confidence = static_cast<float>(qBound<qreal>(
+            0.0,
+            detObj.value(QStringLiteral("confidence")).toDouble(
+                detObj.value(QStringLiteral("score")).toDouble(0.0)),
+            1.0));
+        detection.trackId = detObj.value(QStringLiteral("track_id")).toInt(-1);
+        if (detection.box.isValid() && !detection.box.isEmpty()) {
+            frame.detections.push_back(detection);
+        }
+    }
+    return frame;
 }
 
 QJsonObject streamSummaryObject(const QJsonObject& streamObj)
@@ -186,50 +405,49 @@ bool trackSummaryMatchesFrame(const QJsonObject& summary,
     return frame >= (minFrame - holdFrames) && frame <= (maxFrame + holdFrames);
 }
 
-bool readTrackRecordAtOffset(const QString& path,
-                             qint64 recordOffset,
-                             quint32 compressedSize,
-                             QJsonObject* recordOut)
+bool readIndexedObjectAtOffset(const QString& dataPath,
+                               qint64 dataOffset,
+                               quint32 compressedSize,
+                               QJsonObject* recordOut)
 {
     if (recordOut) {
         *recordOut = QJsonObject{};
     }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly) || !file.seek(recordOffset)) {
-        return false;
-    }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_6_0);
-    quint32 magic = 0;
-    quint32 version = 0;
-    quint32 encodedSize = 0;
-    stream >> magic;
-    stream >> version;
-    stream >> encodedSize;
-        if (stream.status() != QDataStream::Ok ||
-        magic != kRecordBinaryJsonMagic ||
-        version != 1 ||
-        encodedSize != compressedSize ||
-        compressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
+    QFile file(dataPath);
+    if (!file.open(QIODevice::ReadOnly) ||
+        dataOffset < 0 ||
+        compressedSize > static_cast<quint32>(std::numeric_limits<int>::max()) ||
+        !file.seek(dataOffset)) {
         return false;
     }
 
     QByteArray compressed(static_cast<int>(compressedSize), Qt::Uninitialized);
     if (compressedSize > 0 &&
-        stream.readRawData(compressed.data(), static_cast<int>(compressedSize)) !=
+        file.read(compressed.data(), static_cast<int>(compressedSize)) !=
             static_cast<int>(compressedSize)) {
         return false;
     }
 
     QJsonObject record;
-    if (!jcut::jsonio::parseRecordPayload(qUncompress(compressed), &record, nullptr)) {
+    if (!jcut::jsonio::parseCborObjectBytes(qUncompress(compressed), &record, nullptr)) {
         return false;
     }
     if (recordOut) {
         *recordOut = record;
     }
     return true;
+}
+
+QString resolvedIndexedDataPath(const QFileInfo& indexInfo, const QString& storedDataPath)
+{
+    const QString trimmed = storedDataPath.trimmed();
+    if (trimmed.isEmpty()) {
+        return {};
+    }
+    const QFileInfo dataInfo(trimmed);
+    return dataInfo.isAbsolute()
+        ? dataInfo.absoluteFilePath()
+        : indexInfo.dir().absoluteFilePath(trimmed);
 }
 
 bool rebuildTrackArtifactIndex(const QString& path, TrackArtifactIndex* indexOut)
@@ -255,55 +473,57 @@ bool rebuildTrackArtifactIndex(const QString& path, TrackArtifactIndex* indexOut
     index.path = info.absoluteFilePath();
     index.size = info.size();
     index.mtimeMs = info.lastModified().toMSecsSinceEpoch();
-
-    while (!stream.atEnd()) {
-        const qint64 recordOffset = file.pos();
-        quint32 magic = 0;
-        quint32 version = 0;
-        quint32 compressedSize = 0;
-        stream >> magic;
-        stream >> version;
-        stream >> compressedSize;
-        if (stream.status() != QDataStream::Ok ||
-            magic != kRecordBinaryJsonMagic ||
-            version != 1 ||
-            compressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
+    quint32 magic = 0;
+    quint32 version = 0;
+    QString dataPath;
+    qint64 entryCount = 0;
+    stream >> magic
+           >> version
+           >> index.schema
+           >> index.video
+           >> index.backend
+           >> index.frameDomain
+           >> dataPath
+           >> entryCount;
+    if (stream.status() != QDataStream::Ok ||
+        magic != kIndexedTrackArtifactMagic ||
+        version != kIndexedArtifactVersion ||
+        entryCount < 0) {
+        return false;
+    }
+    index.dataPath = resolvedIndexedDataPath(info, dataPath);
+    if (index.dataPath.isEmpty() || !QFileInfo::exists(index.dataPath)) {
+        return false;
+    }
+    for (qint64 i = 0; i < entryCount; ++i) {
+        QString type;
+        stream >> type;
+        if (type == QStringLiteral("track")) {
+            TrackArtifactIndexEntry entry;
+            stream >> entry.trackId
+                   >> entry.streamId
+                   >> entry.source
+                   >> entry.minFrame
+                   >> entry.maxFrame
+                   >> entry.detectionCount
+                   >> entry.typicalFrameStep
+                   >> entry.dataOffset
+                   >> entry.compressedSize;
+            if (stream.status() != QDataStream::Ok) {
+                return false;
+            }
+            index.entries.push_back(entry);
+        } else if (type == QStringLiteral("frame_summary")) {
+            IndexedObjectEntry entry;
+            entry.type = type;
+            stream >> entry.frame >> entry.dataOffset >> entry.compressedSize;
+            if (stream.status() != QDataStream::Ok) {
+                return false;
+            }
+            index.frameSummaryEntries.push_back(entry);
+        } else {
             return false;
         }
-
-        QByteArray compressed(static_cast<int>(compressedSize), Qt::Uninitialized);
-        if (compressedSize > 0 &&
-            stream.readRawData(compressed.data(), static_cast<int>(compressedSize)) !=
-                static_cast<int>(compressedSize)) {
-            return false;
-        }
-
-        QJsonObject record;
-        if (!jcut::jsonio::parseRecordPayload(qUncompress(compressed), &record, nullptr)) {
-            return false;
-        }
-
-        const QString type = record.value(QStringLiteral("type")).toString();
-        if (type == QStringLiteral("meta")) {
-            index.frameDomain =
-                record.value(QStringLiteral("frame_domain")).toString(index.frameDomain);
-            continue;
-        }
-        if (type != QStringLiteral("track")) {
-            continue;
-        }
-
-        TrackArtifactIndexEntry entry;
-        entry.trackId = record.value(QStringLiteral("track_id")).toInt(-1);
-        entry.streamId = record.value(QStringLiteral("stream_id")).toString().trimmed();
-        entry.source = record.value(QStringLiteral("source")).toString().trimmed();
-        entry.detectionCount = record.value(QStringLiteral("detections")).toArray().size();
-        entry.minFrame = minFrameForTrackRecord(record);
-        entry.maxFrame = maxFrameForTrackRecord(record);
-        entry.typicalFrameStep = typicalFrameStepForTrackRecord(record);
-        entry.recordOffset = recordOffset;
-        entry.compressedSize = compressedSize;
-        index.entries.push_back(entry);
     }
 
     *indexOut = index;
@@ -344,11 +564,101 @@ bool trackArtifactIndexForPath(const QString& path, TrackArtifactIndex* indexOut
     return true;
 }
 
+bool rebuildFrameArtifactIndex(const QString& path, FrameArtifactIndex* indexOut)
+{
+    if (!indexOut) {
+        return false;
+    }
+    QFileInfo info(path);
+    if (!info.exists() || !info.isFile()) {
+        return false;
+    }
+    QFile file(info.absoluteFilePath());
+    if (!file.open(QIODevice::ReadOnly)) {
+        return false;
+    }
+
+    QDataStream stream(&file);
+    stream.setVersion(QDataStream::Qt_6_0);
+    FrameArtifactIndex index;
+    index.path = info.absoluteFilePath();
+    index.size = info.size();
+    index.mtimeMs = info.lastModified().toMSecsSinceEpoch();
+
+    quint32 magic = 0;
+    quint32 version = 0;
+    QString dataPath;
+    qint64 entryCount = 0;
+    stream >> magic
+           >> version
+           >> index.schema
+           >> index.video
+           >> index.backend
+           >> index.frameDomain
+           >> dataPath
+           >> entryCount;
+    if (stream.status() != QDataStream::Ok ||
+        magic != kIndexedFrameArtifactMagic ||
+        version != kIndexedArtifactVersion ||
+        entryCount < 0) {
+        return false;
+    }
+    index.dataPath = resolvedIndexedDataPath(info, dataPath);
+    if (index.dataPath.isEmpty() || !QFileInfo::exists(index.dataPath)) {
+        return false;
+    }
+    for (qint64 i = 0; i < entryCount; ++i) {
+        IndexedObjectEntry entry;
+        stream >> entry.type >> entry.frame >> entry.dataOffset >> entry.compressedSize;
+        if (stream.status() != QDataStream::Ok || entry.type != QStringLiteral("frame")) {
+            return false;
+        }
+        index.entries.push_back(entry);
+    }
+
+    *indexOut = index;
+    return true;
+}
+
+bool frameArtifactIndexForPath(const QString& path, FrameArtifactIndex* indexOut)
+{
+    if (!indexOut) {
+        return false;
+    }
+    const QString normalizedPath = QFileInfo(path).absoluteFilePath();
+    if (normalizedPath.isEmpty()) {
+        return false;
+    }
+
+    QFileInfo info(normalizedPath);
+    if (!info.exists() || !info.isFile()) {
+        return false;
+    }
+
+    QMutexLocker locker(&frameArtifactIndexMutex());
+    auto& indices = frameArtifactIndices();
+    auto it = indices.find(normalizedPath);
+    if (it != indices.end() &&
+        it->size == info.size() &&
+        it->mtimeMs == info.lastModified().toMSecsSinceEpoch()) {
+        *indexOut = it.value();
+        return true;
+    }
+
+    FrameArtifactIndex rebuilt;
+    if (!rebuildFrameArtifactIndex(normalizedPath, &rebuilt)) {
+        return false;
+    }
+    it = indices.insert(normalizedPath, rebuilt);
+    *indexOut = it.value();
+    return true;
+}
+
 QJsonObject cachedTrackRecordForEntry(const QString& path,
                                       const TrackArtifactIndexEntry& entry)
 {
     const QString normalizedPath = QFileInfo(path).absoluteFilePath();
-    if (normalizedPath.isEmpty() || entry.recordOffset < 0 || entry.compressedSize == 0) {
+    if (normalizedPath.isEmpty() || entry.dataOffset < 0 || entry.compressedSize == 0) {
         return {};
     }
 
@@ -356,15 +666,19 @@ QJsonObject cachedTrackRecordForEntry(const QString& path,
         QMutexLocker locker(&trackArtifactIndexMutex());
         auto it = trackArtifactIndices().find(normalizedPath);
         if (it != trackArtifactIndices().end()) {
-            const auto cached = it->loadedTrackRecordsByOffset.constFind(entry.recordOffset);
-            if (cached != it->loadedTrackRecordsByOffset.cend()) {
+            const auto cached = it->loadedTrackRecordsByDataOffset.constFind(entry.dataOffset);
+            if (cached != it->loadedTrackRecordsByDataOffset.cend()) {
                 return cached.value();
             }
         }
     }
 
+    TrackArtifactIndex index;
+    if (!trackArtifactIndexForPath(normalizedPath, &index)) {
+        return {};
+    }
     QJsonObject record;
-    if (!readTrackRecordAtOffset(normalizedPath, entry.recordOffset, entry.compressedSize, &record)) {
+    if (!readIndexedObjectAtOffset(index.dataPath, entry.dataOffset, entry.compressedSize, &record)) {
         return {};
     }
 
@@ -373,11 +687,81 @@ QJsonObject cachedTrackRecordForEntry(const QString& path,
     if (it == trackArtifactIndices().end()) {
         return record;
     }
-    if (it->loadedTrackRecordsByOffset.size() >= 256) {
-        it->loadedTrackRecordsByOffset.clear();
+    if (it->loadedTrackRecordsByDataOffset.size() >= 256) {
+        it->loadedTrackRecordsByDataOffset.clear();
     }
-    it->loadedTrackRecordsByOffset.insert(entry.recordOffset, record);
+    it->loadedTrackRecordsByDataOffset.insert(entry.dataOffset, record);
     return record;
+}
+
+QString trackModelCacheKeyForEntry(const TrackArtifactIndexEntry& entry,
+                                   const QString& frameDomain,
+                                   const QString& detectorMode)
+{
+    return QStringLiteral("%1:%2:%3:%4")
+        .arg(entry.dataOffset)
+        .arg(entry.compressedSize)
+        .arg(frameDomain.trimmed(), detectorMode.trimmed());
+}
+
+FacestreamTrack cachedTrackModelForEntry(const QString& path,
+                                         const TrackArtifactIndexEntry& entry,
+                                         const QString& frameDomain,
+                                         const QString& detectorMode,
+                                         bool onlyDialogue,
+                                         const QJsonObject& transcriptRoot)
+{
+    // Dialogue filtering depends on mutable transcript content; keep that path uncached for correctness.
+    if (onlyDialogue) {
+        QJsonObject record = cachedTrackRecordForEntry(path, entry);
+        if (record.isEmpty()) {
+            return {};
+        }
+        record.remove(QStringLiteral("type"));
+        return trackModelFromRawRecordWithSummary(
+            record,
+            trackSummaryModelFromIndexEntry(entry, frameDomain, detectorMode),
+            onlyDialogue,
+            transcriptRoot);
+    }
+
+    const QString normalizedPath = QFileInfo(path).absoluteFilePath();
+    const QString cacheKey = trackModelCacheKeyForEntry(entry, frameDomain, detectorMode);
+    {
+        QMutexLocker locker(&trackArtifactIndexMutex());
+        auto it = trackArtifactIndices().find(normalizedPath);
+        if (it != trackArtifactIndices().end()) {
+            const auto cached = it->loadedTrackModelsByCacheKey.constFind(cacheKey);
+            if (cached != it->loadedTrackModelsByCacheKey.cend()) {
+                return cached.value();
+            }
+        }
+    }
+
+    QJsonObject record = cachedTrackRecordForEntry(normalizedPath, entry);
+    if (record.isEmpty()) {
+        return {};
+    }
+    record.remove(QStringLiteral("type"));
+    FacestreamTrack track = trackModelFromRawRecordWithSummary(
+        record,
+        trackSummaryModelFromIndexEntry(entry, frameDomain, detectorMode),
+        false,
+        {});
+    if (track.keyframes.isEmpty()) {
+        return {};
+    }
+
+    QMutexLocker locker(&trackArtifactIndexMutex());
+    auto it = trackArtifactIndices().find(normalizedPath);
+    if (it == trackArtifactIndices().end()) {
+        return track;
+    }
+    if (it->loadedTrackModelsByCacheKey.size() >= 512) {
+        it->loadedTrackModelsByCacheKey.clear();
+    }
+    it->loadedTrackModelsByCacheKey.insert(cacheKey, track);
+    return track;
 }
 
 bool streamMatchesAssignments(const QJsonObject& streamObj,
@@ -419,43 +803,21 @@ bool recordArtifactTracksForAssignments(const QString& path,
     if (trimmedPath.isEmpty() || (trackIds.isEmpty() && streamIds.isEmpty())) {
         return false;
     }
-    QFile file(trimmedPath);
-    if (!file.open(QIODevice::ReadOnly)) {
+
+    TrackArtifactIndex index;
+    if (!trackArtifactIndexForPath(trimmedPath, &index)) {
         return false;
     }
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_6_0);
     QJsonArray tracks;
-    while (!stream.atEnd()) {
-        quint32 magic = 0;
-        quint32 version = 0;
-        quint32 compressedSize = 0;
-        stream >> magic;
-        stream >> version;
-        stream >> compressedSize;
-        if (stream.status() != QDataStream::Ok || magic != kRecordBinaryJsonMagic || version != 1 ||
-            compressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
-            return false;
-        }
-        QByteArray compressed(static_cast<int>(compressedSize), Qt::Uninitialized);
-        if (compressedSize > 0 &&
-            stream.readRawData(compressed.data(), static_cast<int>(compressedSize)) !=
-                static_cast<int>(compressedSize)) {
-            return false;
-        }
-        QJsonObject record;
-        if (!jcut::jsonio::parseRecordPayload(qUncompress(compressed), &record, nullptr)) {
-            return false;
-        }
-        if (record.value(QStringLiteral("type")).toString() != QStringLiteral("track")) {
-            continue;
-        }
-        const int trackId = record.value(QStringLiteral("track_id")).toInt(-1);
-        const QString streamId = record.value(QStringLiteral("stream_id")).toString().trimmed();
-        if ((trackId >= 0 && trackIds.contains(trackId)) ||
-            (!streamId.isEmpty() && streamIds.contains(streamId)) ||
-            (trackId >= 0 && streamIds.contains(QStringLiteral("T%1").arg(trackId)))) {
+    for (const TrackArtifactIndexEntry& entry : std::as_const(index.entries)) {
+        if ((entry.trackId >= 0 && trackIds.contains(entry.trackId)) ||
+            (!entry.streamId.isEmpty() && streamIds.contains(entry.streamId)) ||
+            (entry.trackId >= 0 && streamIds.contains(QStringLiteral("T%1").arg(entry.trackId)))) {
+            QJsonObject record = cachedTrackRecordForEntry(trimmedPath, entry);
+            if (record.isEmpty()) {
+                continue;
+            }
             record.remove(QStringLiteral("type"));
             tracks.push_back(record);
         }
@@ -473,74 +835,72 @@ QJsonObject readArtifactRootAtPath(const QString& path)
         return {};
     }
     QJsonObject root;
-    if (!recordArtifactToRoot(trimmedPath, &root)) {
+    if (!indexedArtifactToRoot(trimmedPath, &root)) {
         return {};
     }
     return root;
 }
 
-bool recordArtifactToRoot(const QString& path, QJsonObject* rootOut)
+bool indexedArtifactToRoot(const QString& path, QJsonObject* rootOut)
 {
-    QVector<QJsonObject> records;
-    if (!jcut::jsonio::readBinaryJsonRecords(path, &records, kRecordBinaryJsonMagic, 1, nullptr) ||
-        records.isEmpty()) {
-        return false;
-    }
-
+    const quint32 magic = binaryArtifactMagicAtPath(path);
     QJsonObject root;
-    QJsonArray frames;
-    QJsonArray tracks;
-    QJsonArray frameSummaries;
-    QString schema;
-    QString video;
-    QString backend;
-    QString frameDomain = QStringLiteral("source_absolute");
-    for (const QJsonObject& record : records) {
-        const QString type = record.value(QStringLiteral("type")).toString();
-        if (type == QStringLiteral("meta")) {
-            schema = record.value(QStringLiteral("schema")).toString(schema);
-            video = record.value(QStringLiteral("video")).toString(video);
-            backend = record.value(QStringLiteral("backend")).toString(backend);
-            frameDomain = record.value(QStringLiteral("frame_domain")).toString(frameDomain);
-            continue;
+    if (magic == kIndexedTrackArtifactMagic) {
+        TrackArtifactIndex index;
+        if (!trackArtifactIndexForPath(path, &index)) {
+            return false;
         }
-        if (type == QStringLiteral("frame")) {
-            QJsonObject frame = record;
-            frame.remove(QStringLiteral("type"));
-            frames.push_back(frame);
-            continue;
-        }
-        if (type == QStringLiteral("track")) {
-            QJsonObject track = record;
+        root[QStringLiteral("schema")] = index.schema;
+        root[QStringLiteral("video")] = index.video;
+        root[QStringLiteral("backend")] = index.backend;
+        root[QStringLiteral("frame_domain")] = index.frameDomain;
+        QJsonArray tracks;
+        for (const TrackArtifactIndexEntry& entry : std::as_const(index.entries)) {
+            QJsonObject track = cachedTrackRecordForEntry(path, entry);
+            if (track.isEmpty()) {
+                return false;
+            }
             track.remove(QStringLiteral("type"));
             tracks.push_back(track);
-            continue;
         }
-        if (type == QStringLiteral("frame_summary")) {
-            QJsonObject summary = record;
+        QJsonArray frameSummaries;
+        for (const IndexedObjectEntry& entry : std::as_const(index.frameSummaryEntries)) {
+            QJsonObject summary;
+            if (!readIndexedObjectAtOffset(index.dataPath, entry.dataOffset, entry.compressedSize, &summary)) {
+                return false;
+            }
             summary.remove(QStringLiteral("type"));
             frameSummaries.push_back(summary);
         }
-    }
-
-    if (!schema.isEmpty()) {
-        root[QStringLiteral("schema")] = schema;
-    }
-    if (!video.isEmpty()) {
-        root[QStringLiteral("video")] = video;
-    }
-    if (!backend.isEmpty()) {
-        root[QStringLiteral("backend")] = backend;
-    }
-    root[QStringLiteral("frame_domain")] = frameDomain;
-    if (!frames.isEmpty()) {
-        root[QStringLiteral("frames")] = frames;
-    }
-    if (!tracks.isEmpty()) {
-        root[QStringLiteral("tracks")] = tracks;
-    }
-    if (!frameSummaries.isEmpty()) {
-        root[QStringLiteral("frame_summaries")] = frameSummaries;
+        if (!tracks.isEmpty()) {
+            root[QStringLiteral("tracks")] = tracks;
+        }
+        if (!frameSummaries.isEmpty()) {
+            root[QStringLiteral("frame_summaries")] = frameSummaries;
+        }
+    } else if (magic == kIndexedFrameArtifactMagic) {
+        FrameArtifactIndex index;
+        if (!frameArtifactIndexForPath(path, &index)) {
+            return false;
+        }
+        root[QStringLiteral("schema")] = index.schema;
+        root[QStringLiteral("video")] = index.video;
+        root[QStringLiteral("backend")] = index.backend;
+        root[QStringLiteral("frame_domain")] = index.frameDomain;
+        QJsonArray frames;
+        for (const IndexedObjectEntry& entry : std::as_const(index.entries)) {
+            QJsonObject frameRecord;
+            if (!readIndexedObjectAtOffset(index.dataPath, entry.dataOffset, entry.compressedSize, &frameRecord)) {
+                return false;
+            }
+            frameRecord.remove(QStringLiteral("type"));
+            frames.push_back(frameRecord);
+        }
+        if (!frames.isEmpty()) {
+            root[QStringLiteral("frames")] = frames;
+        }
+    } else {
+        return false;
     }
     if (rootOut) {
         *rootOut = root;
@@ -596,7 +956,7 @@ QString rawFramesArtifactPathForContinuityRoot(const QJsonObject& continuityRoot
         continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString().trimmed();
     return artifactDir.isEmpty()
         ? QString()
-        : QDir(artifactDir).absoluteFilePath(QStringLiteral("detections.bin"));
+        : QDir(artifactDir).absoluteFilePath(QStringLiteral("detections.idx"));
 }
 
 QJsonArray rawFrameRecordsNearPath(const QString& path,
@@ -611,56 +971,29 @@ QJsonArray rawFrameRecordsNearPath(const QString& path,
     if (path.trimmed().isEmpty()) {
         return frames;
     }
-    QFile file(path);
-    if (!file.open(QIODevice::ReadOnly)) {
+    FrameArtifactIndex index;
+    if (!frameArtifactIndexForPath(path, &index)) {
         return frames;
     }
-
+    if (validRecordFileOut) {
+        *validRecordFileOut = true;
+    }
     const qint64 window = qMax<qint64>(0, extraWindowFrames);
     const qint64 lowerFrame = frame - window;
     const qint64 upperFrame = frame + window;
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_6_0);
-    while (!stream.atEnd()) {
-        quint32 magic = 0;
-        quint32 version = 0;
-        quint32 compressedSize = 0;
-        stream >> magic;
-        stream >> version;
-        stream >> compressedSize;
-        if (stream.status() != QDataStream::Ok ||
-            magic != kRecordBinaryJsonMagic ||
-            version != 1 ||
-            compressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
-            return {};
-        }
-        if (validRecordFileOut) {
-            *validRecordFileOut = true;
-        }
-
-        QByteArray compressed(static_cast<int>(compressedSize), Qt::Uninitialized);
-        if (compressedSize > 0 &&
-            stream.readRawData(compressed.data(), static_cast<int>(compressedSize)) !=
-                static_cast<int>(compressedSize)) {
-            return {};
-        }
-        QJsonObject record;
-        if (!jcut::jsonio::parseRecordPayload(qUncompress(compressed), &record, nullptr)) {
-            return {};
-        }
-        if (record.value(QStringLiteral("type")).toString() == QStringLiteral("meta")) {
+    for (const IndexedObjectEntry& entry : std::as_const(index.entries)) {
+        if (entry.frame < 0) {
             continue;
         }
-        const qint64 recordFrame = record.contains(QStringLiteral("frame"))
-            ? record.value(QStringLiteral("frame")).toVariant().toLongLong()
-            : -1;
-        if (recordFrame < 0) {
-            continue;
-        }
-        if (recordFrame > upperFrame) {
+        if (entry.frame > upperFrame) {
             break;
         }
-        if (recordFrame >= lowerFrame) {
+        if (entry.frame >= lowerFrame) {
+            QJsonObject record;
+            if (!readIndexedObjectAtOffset(index.dataPath, entry.dataOffset, entry.compressedSize, &record)) {
+                return {};
+            }
+            record.remove(QStringLiteral("type"));
             frames.append(record);
         }
     }
@@ -782,6 +1115,61 @@ QJsonArray rawFramesNearFrameForContinuityRoot(const QJsonObject& continuityRoot
                                                int64_t extraWindowFrames)
 {
     return rawFramesNearFrameForContinuityRootImpl(continuityRoot, frame, extraWindowFrames);
+}
+
+QVector<FacestreamFrameDetections> frameDetectionModelsNearFrameForRoot(
+    const QJsonObject& continuityRoot,
+    int64_t frame,
+    int64_t extraWindowFrames)
+{
+    QVector<FacestreamFrameDetections> models;
+    const qint64 window = qMax<qint64>(0, extraWindowFrames);
+    const qint64 lowerFrame = frame - window;
+    const qint64 upperFrame = frame + window;
+    const QJsonArray inlineFrames = continuityRoot.value(QStringLiteral("raw_frames")).toArray();
+    if (!inlineFrames.isEmpty()) {
+        models.reserve(inlineFrames.size());
+        for (const QJsonValue& frameValue : inlineFrames) {
+            const QJsonObject frameObj = frameValue.toObject();
+            const qint64 rawFrame = frameObj.contains(QStringLiteral("frame"))
+                ? frameObj.value(QStringLiteral("frame")).toVariant().toLongLong()
+                : -1;
+            if (rawFrame < lowerFrame || rawFrame > upperFrame) {
+                continue;
+            }
+            FacestreamFrameDetections model = frameDetectionModelFromRecord(frameObj);
+            if (model.frame >= 0) {
+                models.push_back(model);
+            }
+        }
+        return models;
+    }
+
+    FrameArtifactIndex index;
+    if (!frameArtifactIndexForPath(rawFramesArtifactPathForContinuityRoot(continuityRoot), &index)) {
+        return {};
+    }
+    for (const IndexedObjectEntry& entry : std::as_const(index.entries)) {
+        if (entry.frame < 0) {
+            continue;
+        }
+        if (entry.frame > upperFrame) {
+            break;
+        }
+        if (entry.frame < lowerFrame) {
+            continue;
+        }
+        QJsonObject record;
+        if (!readIndexedObjectAtOffset(index.dataPath, entry.dataOffset, entry.compressedSize, &record)) {
+            return {};
+        }
+        record.remove(QStringLiteral("type"));
+        FacestreamFrameDetections model = frameDetectionModelFromRecord(record);
+        if (model.frame >= 0) {
+            models.push_back(model);
+        }
+    }
+    return models;
 }
 
 QJsonArray buildContinuityStreams(const QJsonArray& tracks,
@@ -978,6 +1366,98 @@ QJsonArray continuityTrackSummariesForRoot(const QJsonObject& continuityRoot,
     return {};
 }
 
+QVector<FacestreamTrackSummary> continuityTrackSummaryModelsForRoot(
+    const QJsonObject& continuityRoot,
+    const QJsonObject& transcriptRoot)
+{
+    const QJsonArray summaries = continuityTrackSummariesForRoot(continuityRoot, transcriptRoot);
+    QVector<FacestreamTrackSummary> models;
+    models.reserve(summaries.size());
+    for (const QJsonValue& value : summaries) {
+        models.push_back(trackSummaryModelFromObject(value.toObject()));
+    }
+    return models;
+}
+
+QVector<FacestreamTrack> continuityTrackModelsNearFrameForRoot(
+    const QJsonObject& continuityRoot,
+    int64_t frame,
+    int64_t extraWindowFrames,
+    const QJsonObject& transcriptRoot)
+{
+    const QString detectorMode =
+        continuityRoot.value(QStringLiteral("detector_mode")).toString().trimmed();
+    const bool onlyDialogue = continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false);
+    const QString frameDomain = resolvedRawTrackFrameDomain(continuityRoot);
+
+    const QJsonArray inlineTracks = continuityRoot.value(QStringLiteral("raw_tracks")).toArray();
+    if (!inlineTracks.isEmpty()) {
+        QVector<FacestreamTrack> tracks;
+        tracks.reserve(inlineTracks.size());
+        for (const QJsonValue& value : inlineTracks) {
+            const QJsonObject trackObj = value.toObject();
+            if (!trackSummaryMatchesFrame(rawTrackSummaryObject(trackObj, frameDomain),
+                                          frame,
+                                          extraWindowFrames)) {
+                continue;
+            }
+            FacestreamTrack track = trackModelFromRawRecord(
+                trackObj,
+                frameDomain,
+                detectorMode,
+                onlyDialogue,
+                transcriptRoot);
+            if (!track.keyframes.isEmpty()) {
+                tracks.push_back(track);
+            }
+        }
+        return tracks;
+    }
+
+    const QString rawTracksPath =
+        continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
+    if (!rawTracksPath.isEmpty()) {
+        TrackArtifactIndex index;
+        if (trackArtifactIndexForPath(rawTracksPath, &index)) {
+            QVector<FacestreamTrack> tracks;
+            for (const TrackArtifactIndexEntry& entry : std::as_const(index.entries)) {
+                if (!trackSummaryMatchesFrame(trackSummaryObject(entry, frameDomain),
+                                              frame,
+                                              extraWindowFrames)) {
+                    continue;
+                }
+                FacestreamTrack track = cachedTrackModelForEntry(
+                    rawTracksPath,
+                    entry,
+                    frameDomain,
+                    detectorMode,
+                    onlyDialogue,
+                    transcriptRoot);
+                if (!track.keyframes.isEmpty()) {
+                    tracks.push_back(track);
+                }
+            }
+            return tracks;
+        }
+    }
+
+    const QString processedArtifactPath =
+        continuityRoot.value(QStringLiteral("processed_artifact_path")).toString().trimmed();
+    const QString clipId = continuityRoot.value(QStringLiteral("clip_id")).toString().trimmed();
+    if (!processedArtifactPath.isEmpty() && !clipId.isEmpty()) {
+        QJsonObject processedArtifact;
+        if (readBinaryJsonObject(processedArtifactPath, &processedArtifact, nullptr)) {
+            return continuityTrackModelsNearFrameForRoot(
+                continuityRootForClip(processedArtifact, clipId),
+                frame,
+                extraWindowFrames,
+                transcriptRoot);
+        }
+    }
+
+    return {};
+}
+
 QJsonArray continuityStreamsNearFrame(const QJsonObject& continuityRoot,
                                       int64_t frame,
                                       int64_t extraWindowFrames,
@@ -1116,6 +1596,86 @@ QJsonArray continuityStreamsForAssignments(const QJsonObject& continuityRoot,
         QJsonObject processedArtifact;
         if (readBinaryJsonObject(processedArtifactPath, &processedArtifact, nullptr)) {
             return continuityStreamsForAssignments(
+                continuityRootForClip(processedArtifact, clipId),
+                trackIds,
+                streamIds,
+                transcriptRoot);
+        }
+    }
+
+    return {};
+}
+
+QVector<FacestreamTrack> continuityTrackModelsForAssignments(
+    const QJsonObject& continuityRoot,
+    const QSet<int>& trackIds,
+    const QSet<QString>& streamIds,
+    const QJsonObject& transcriptRoot)
+{
+    if (trackIds.isEmpty() && streamIds.isEmpty()) {
+        return {};
+    }
+    const QString detectorMode =
+        continuityRoot.value(QStringLiteral("detector_mode")).toString().trimmed();
+    const bool onlyDialogue = continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false);
+    const QString frameDomain = resolvedRawTrackFrameDomain(continuityRoot);
+
+    QVector<FacestreamTrack> tracks;
+    const QJsonArray inlineTracks = continuityRoot.value(QStringLiteral("raw_tracks")).toArray();
+    if (!inlineTracks.isEmpty()) {
+        tracks.reserve(inlineTracks.size());
+        for (const QJsonValue& value : inlineTracks) {
+            const QJsonObject trackObj = value.toObject();
+            const int trackId = trackObj.value(QStringLiteral("track_id")).toInt(-1);
+            const QString streamId = trackObj.value(QStringLiteral("stream_id")).toString().trimmed();
+            if ((trackId >= 0 && trackIds.contains(trackId)) ||
+                (!streamId.isEmpty() && streamIds.contains(streamId)) ||
+                (trackId >= 0 && streamIds.contains(QStringLiteral("T%1").arg(trackId)))) {
+                FacestreamTrack track =
+                    trackModelFromRawRecord(trackObj, frameDomain, detectorMode, onlyDialogue, transcriptRoot);
+                if (!track.keyframes.isEmpty()) {
+                    tracks.push_back(track);
+                }
+            }
+        }
+        return tracks;
+    }
+
+    const QString rawTracksPath =
+        continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
+    if (!rawTracksPath.isEmpty()) {
+        TrackArtifactIndex index;
+        if (trackArtifactIndexForPath(rawTracksPath, &index)) {
+            for (const TrackArtifactIndexEntry& entry : std::as_const(index.entries)) {
+                if (!((entry.trackId >= 0 && trackIds.contains(entry.trackId)) ||
+                      (!entry.streamId.isEmpty() && streamIds.contains(entry.streamId)) ||
+                      (entry.trackId >= 0 && streamIds.contains(QStringLiteral("T%1").arg(entry.trackId))))) {
+                    continue;
+                }
+                FacestreamTrack track = cachedTrackModelForEntry(
+                    rawTracksPath,
+                    entry,
+                    frameDomain,
+                    detectorMode,
+                    onlyDialogue,
+                    transcriptRoot);
+                if (!track.keyframes.isEmpty()) {
+                    tracks.push_back(track);
+                }
+            }
+            return tracks;
+        }
+    }
+
+    const QString processedArtifactPath =
+        continuityRoot.value(QStringLiteral("processed_artifact_path")).toString().trimmed();
+    const QString clipId = continuityRoot.value(QStringLiteral("clip_id")).toString().trimmed();
+    if (!processedArtifactPath.isEmpty() &&
+        !clipId.isEmpty() &&
+        QFileInfo(processedArtifactPath).size() <= kMaxInteractiveContinuityObjectBytes) {
+        QJsonObject processedArtifact;
+        if (readBinaryJsonObject(processedArtifactPath, &processedArtifact, nullptr)) {
+            return continuityTrackModelsForAssignments(
                 continuityRootForClip(processedArtifact, clipId),
                 trackIds,
                 streamIds,
@@ -1312,22 +1872,276 @@ QJsonObject buildContinuityRoot(const QString& runId,
     return root;
 }
 
+namespace {
+
+bool replaceWithTempFile(const QString& finalPath,
+                         const QString& tempPath,
+                         QString* errorOut)
+{
+    QFile::remove(finalPath);
+    if (!QFile::rename(tempPath, finalPath)) {
+        QFile::remove(tempPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to replace %1").arg(finalPath);
+        }
+        return false;
+    }
+    return true;
+}
+
+bool writeCompressedIndexedObject(QFile* dataFile,
+                                  const QJsonObject& object,
+                                  qint64* offsetOut,
+                                  quint32* compressedSizeOut,
+                                  QString* errorOut)
+{
+    if (!dataFile || !dataFile->isOpen()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Indexed artifact data file is not open.");
+        }
+        return false;
+    }
+    const QByteArray compressed = qCompress(jcut::jsonio::serializeCbor(object), 6);
+    if (compressed.size() > std::numeric_limits<quint32>::max()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Indexed artifact record is too large.");
+        }
+        return false;
+    }
+    const qint64 offset = dataFile->pos();
+    if (dataFile->write(compressed) != compressed.size()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to write indexed artifact data record.");
+        }
+        return false;
+    }
+    if (offsetOut) {
+        *offsetOut = offset;
+    }
+    if (compressedSizeOut) {
+        *compressedSizeOut = static_cast<quint32>(compressed.size());
+    }
+    return true;
+}
+
+QString indexStoredDataPath(const QString& indexPath, const QString& dataPath)
+{
+    const QFileInfo indexInfo(indexPath);
+    const QFileInfo dataInfo(dataPath);
+    return indexInfo.dir().absolutePath() == dataInfo.dir().absolutePath()
+        ? dataInfo.fileName()
+        : dataInfo.absoluteFilePath();
+}
+
+} // namespace
+
+bool writeIndexedTrackArtifact(const QString& indexPath,
+                               const QString& dataPath,
+                               const QString& videoPath,
+                               const QString& backend,
+                               const QJsonArray& tracks,
+                               const QJsonArray& frameSummaries,
+                               QString* errorOut)
+{
+    const QString tempDataPath = dataPath + QStringLiteral(".tmp");
+    const QString tempIndexPath = indexPath + QStringLiteral(".tmp");
+    QFile::remove(tempDataPath);
+    QFile::remove(tempIndexPath);
+
+    QFile dataFile(tempDataPath);
+    if (!dataFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1 for writing.").arg(tempDataPath);
+        }
+        return false;
+    }
+
+    QVector<TrackArtifactIndexEntry> trackEntries;
+    QVector<IndexedObjectEntry> summaryEntries;
+    for (const QJsonValue& value : tracks) {
+        QJsonObject track = value.toObject();
+        track[QStringLiteral("type")] = QStringLiteral("track");
+        TrackArtifactIndexEntry entry;
+        entry.trackId = track.value(QStringLiteral("track_id")).toInt(-1);
+        entry.streamId = track.value(QStringLiteral("stream_id")).toString().trimmed();
+        entry.source = track.value(QStringLiteral("source")).toString().trimmed();
+        entry.minFrame = minFrameForTrackRecord(track);
+        entry.maxFrame = maxFrameForTrackRecord(track);
+        entry.detectionCount = track.value(QStringLiteral("detections")).toArray().size();
+        entry.typicalFrameStep = typicalFrameStepForTrackRecord(track);
+        if (!writeCompressedIndexedObject(&dataFile, track, &entry.dataOffset, &entry.compressedSize, errorOut)) {
+            dataFile.close();
+            QFile::remove(tempDataPath);
+            return false;
+        }
+        trackEntries.push_back(entry);
+    }
+    for (const QJsonValue& value : frameSummaries) {
+        QJsonObject summary = value.toObject();
+        summary[QStringLiteral("type")] = QStringLiteral("frame_summary");
+        IndexedObjectEntry entry;
+        entry.type = QStringLiteral("frame_summary");
+        entry.frame = summary.value(QStringLiteral("frame")).toVariant().toLongLong();
+        if (!writeCompressedIndexedObject(&dataFile, summary, &entry.dataOffset, &entry.compressedSize, errorOut)) {
+            dataFile.close();
+            QFile::remove(tempDataPath);
+            return false;
+        }
+        summaryEntries.push_back(entry);
+    }
+    if (!dataFile.flush()) {
+        dataFile.close();
+        QFile::remove(tempDataPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to flush %1.").arg(tempDataPath);
+        }
+        return false;
+    }
+    dataFile.close();
+
+    QFile indexFile(tempIndexPath);
+    if (!indexFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QFile::remove(tempDataPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1 for writing.").arg(tempIndexPath);
+        }
+        return false;
+    }
+    QDataStream stream(&indexFile);
+    stream.setVersion(QDataStream::Qt_6_0);
+    stream << kIndexedTrackArtifactMagic
+           << kIndexedArtifactVersion
+           << QStringLiteral("jcut_facedetections_offscreen_tracks_v1")
+           << videoPath
+           << backend
+           << QStringLiteral("source_absolute")
+           << indexStoredDataPath(indexPath, dataPath)
+           << static_cast<qint64>(trackEntries.size() + summaryEntries.size());
+    for (const TrackArtifactIndexEntry& entry : std::as_const(trackEntries)) {
+        stream << QStringLiteral("track")
+               << entry.trackId
+               << entry.streamId
+               << entry.source
+               << entry.minFrame
+               << entry.maxFrame
+               << entry.detectionCount
+               << entry.typicalFrameStep
+               << entry.dataOffset
+               << entry.compressedSize;
+    }
+    for (const IndexedObjectEntry& entry : std::as_const(summaryEntries)) {
+        stream << entry.type << entry.frame << entry.dataOffset << entry.compressedSize;
+    }
+    if (stream.status() != QDataStream::Ok || !indexFile.flush()) {
+        indexFile.close();
+        QFile::remove(tempDataPath);
+        QFile::remove(tempIndexPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to write indexed track artifact %1.").arg(tempIndexPath);
+        }
+        return false;
+    }
+    indexFile.close();
+
+    if (!replaceWithTempFile(dataPath, tempDataPath, errorOut)) {
+        QFile::remove(tempIndexPath);
+        return false;
+    }
+    return replaceWithTempFile(indexPath, tempIndexPath, errorOut);
+}
+
+bool writeIndexedFrameArtifact(const QString& indexPath,
+                               const QString& dataPath,
+                               const QString& videoPath,
+                               const QString& backend,
+                               const QJsonArray& frames,
+                               QString* errorOut)
+{
+    const QString tempDataPath = dataPath + QStringLiteral(".tmp");
+    const QString tempIndexPath = indexPath + QStringLiteral(".tmp");
+    QFile::remove(tempDataPath);
+    QFile::remove(tempIndexPath);
+
+    QFile dataFile(tempDataPath);
+    if (!dataFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1 for writing.").arg(tempDataPath);
+        }
+        return false;
+    }
+
+    QVector<IndexedObjectEntry> entries;
+    for (const QJsonValue& value : frames) {
+        QJsonObject frame = value.toObject();
+        frame[QStringLiteral("type")] = QStringLiteral("frame");
+        IndexedObjectEntry entry;
+        entry.type = QStringLiteral("frame");
+        entry.frame = frame.value(QStringLiteral("frame")).toVariant().toLongLong();
+        if (!writeCompressedIndexedObject(&dataFile, frame, &entry.dataOffset, &entry.compressedSize, errorOut)) {
+            dataFile.close();
+            QFile::remove(tempDataPath);
+            return false;
+        }
+        entries.push_back(entry);
+    }
+    if (!dataFile.flush()) {
+        dataFile.close();
+        QFile::remove(tempDataPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to flush %1.").arg(tempDataPath);
+        }
+        return false;
+    }
+    dataFile.close();
+
+    QFile indexFile(tempIndexPath);
+    if (!indexFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QFile::remove(tempDataPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to open %1 for writing.").arg(tempIndexPath);
+        }
+        return false;
+    }
+    QDataStream stream(&indexFile);
+    stream.setVersion(QDataStream::Qt_6_0);
+    stream << kIndexedFrameArtifactMagic
+           << kIndexedArtifactVersion
+           << QStringLiteral("jcut_facedetections_offscreen_detections_v1")
+           << videoPath
+           << backend
+           << QStringLiteral("source_absolute")
+           << indexStoredDataPath(indexPath, dataPath)
+           << static_cast<qint64>(entries.size());
+    for (const IndexedObjectEntry& entry : std::as_const(entries)) {
+        stream << entry.type << entry.frame << entry.dataOffset << entry.compressedSize;
+    }
+    if (stream.status() != QDataStream::Ok || !indexFile.flush()) {
+        indexFile.close();
+        QFile::remove(tempDataPath);
+        QFile::remove(tempIndexPath);
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to write indexed frame artifact %1.").arg(tempIndexPath);
+        }
+        return false;
+    }
+    indexFile.close();
+
+    if (!replaceWithTempFile(dataPath, tempDataPath, errorOut)) {
+        QFile::remove(tempIndexPath);
+        return false;
+    }
+    return replaceWithTempFile(indexPath, tempIndexPath, errorOut);
+}
+
 bool readBinaryJsonObject(const QString& path,
                           QJsonObject* objectOut,
                           QString* errorOut)
 {
-    if (recordArtifactToRoot(path, objectOut)) {
+    if (indexedArtifactToRoot(path, objectOut)) {
         return true;
     }
     if (errorOut) {
-        const quint32 magic = binaryArtifactMagicAtPath(path);
-        if (magic == kLegacyBinaryJsonMagic) {
-            *errorOut = QStringLiteral(
-                "Legacy monolithic FaceDetections artifact is no longer accepted at runtime. "
-                "Convert it with jcut_migrate_facedetections_artifacts.");
-        } else {
-            *errorOut = QStringLiteral("Unsupported FaceDetections record artifact: %1").arg(path);
-        }
+        *errorOut = QStringLiteral("Unsupported FaceDetections indexed artifact: %1").arg(path);
     }
     return false;
 }

@@ -81,7 +81,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("speakerFramingCenterSmoothingFrames")] = clip.speakerFramingCenterSmoothingFrames;
         obj[QStringLiteral("speakerFramingZoomSmoothingFrames")] = clip.speakerFramingZoomSmoothingFrames;
         obj[QStringLiteral("speakerFramingSmoothingMode")] = clip.speakerFramingSmoothingMode;
-        obj[QStringLiteral("speakerFramingSmoothingStrength")] = clip.speakerFramingSmoothingStrength;
+        obj[QStringLiteral("speakerFramingCenterSmoothingStrength")] = clip.speakerFramingCenterSmoothingStrength;
+        obj[QStringLiteral("speakerFramingZoomSmoothingStrength")] = clip.speakerFramingZoomSmoothingStrength;
         obj[QStringLiteral("speakerFramingGapHoldFrames")] = clip.speakerFramingGapHoldFrames;
         obj[QStringLiteral("transformSkipAwareTiming")] = clip.transformSkipAwareTiming;
         QJsonArray keyframes;
@@ -410,10 +411,19 @@ TimelineClip clipFromJson(const QJsonObject &obj)
                    TimelineClip::kSpeakerFramingSmoothingMaxFrames);
         clip.speakerFramingSmoothingMode =
             obj.value(QStringLiteral("speakerFramingSmoothingMode")).toInt(0);
-        clip.speakerFramingSmoothingStrength =
+        const qreal legacySmoothingStrength =
+            obj.value(QStringLiteral("speakerFramingSmoothingStrength")).toDouble(1.0);
+        clip.speakerFramingCenterSmoothingStrength =
             qBound<qreal>(
                 0.0,
-                obj.value(QStringLiteral("speakerFramingSmoothingStrength")).toDouble(1.0),
+                obj.value(QStringLiteral("speakerFramingCenterSmoothingStrength"))
+                    .toDouble(legacySmoothingStrength),
+                TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+        clip.speakerFramingZoomSmoothingStrength =
+            qBound<qreal>(
+                0.0,
+                obj.value(QStringLiteral("speakerFramingZoomSmoothingStrength"))
+                    .toDouble(legacySmoothingStrength),
                 TimelineClip::kSpeakerFramingSmoothingStrengthMax);
         clip.speakerFramingGapHoldFrames =
             obj.value(QStringLiteral("speakerFramingGapHoldFrames")).toInt(0);

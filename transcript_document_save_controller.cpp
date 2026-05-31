@@ -39,6 +39,9 @@ void TranscriptDocumentSaveController::queueSave(const QString& path,
     m_pendingSaveDoc = doc;
 
     if (synchronous) {
+        if (m_saveWatcher.isRunning()) {
+            m_saveWatcher.waitForFinished();
+        }
         if (syncSave) {
             syncSave(m_pendingSavePath, m_pendingSaveDoc);
         }

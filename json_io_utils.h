@@ -4,8 +4,11 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QCborValue>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QJsonValue>
 #include <QMutex>
 #include <QMutexLocker>
@@ -106,6 +109,39 @@ inline QByteArray serializeCompact(const QJsonObject& object)
     return QByteArray(dumped.data(), static_cast<int>(dumped.size()));
 }
 
+inline QByteArray serializeCbor(const QJsonObject& object)
+{
+    return QCborValue::fromJsonValue(object).toCbor();
+}
+
+inline bool parseCborObjectBytes(const QByteArray& payload,
+                                 QJsonObject* objectOut,
+                                 QString* errorOut = nullptr)
+{
+    if (objectOut) {
+        *objectOut = QJsonObject{};
+    }
+    QCborParserError parseError;
+    const QCborValue value = QCborValue::fromCbor(payload, &parseError);
+    if (parseError.error != QCborError::NoError) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("Failed to parse CBOR: %1").arg(parseError.errorString());
+        }
+        return false;
+    }
+    const QJsonValue jsonValue = value.toJsonValue();
+    if (!jsonValue.isObject()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("CBOR payload root is not an object.");
+        }
+        return false;
+    }
+    if (objectOut) {
+        *objectOut = jsonValue.toObject();
+    }
+    return true;
+}
+
 inline QByteArray serializeIndented(const QJsonObject& object)
 {
     const Json json = toJson(object);
@@ -118,25 +154,26 @@ inline bool parseObjectBytes(const QByteArray& payload, QJsonObject* objectOut, 
     if (objectOut) {
         *objectOut = QJsonObject{};
     }
-    try {
-        const Json json = Json::parse(payload.constData(), payload.constData() + payload.size());
-        if (!json.is_object()) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("JSON payload root is not an object.");
-            }
-            return false;
-        }
-        if (objectOut) {
-            *objectOut = fromJson(json).toObject();
-        }
-        return true;
-    } catch (const std::exception& ex) {
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(payload, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
         if (errorOut) {
             *errorOut = QStringLiteral("Failed to parse JSON: %1")
-                            .arg(QString::fromLocal8Bit(ex.what()));
+                            .arg(parseError.errorString());
         }
         return false;
     }
+    if (!document.isObject()) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("JSON payload root is not an object.");
+        }
+        return false;
+    }
+    if (objectOut) {
+        *objectOut = document.object();
+    }
+    return true;
 }
 
 inline bool writeJsonFile(const QString& path,
@@ -285,9 +322,9 @@ inline bool readBinaryJsonObject(const QString& path,
     return true;
 }
 
-inline bool appendBinaryJsonRecord(QFile* file,
+inline bool appendBinaryCborRecord(QFile* file,
                                    const QJsonObject& object,
-                                   quint32 magic = 0x4A465352,
+                                   quint32 magic = 0x4A465342,
                                    quint32 version = 1,
                                    QString* errorOut = nullptr)
 {
@@ -297,7 +334,7 @@ inline bool appendBinaryJsonRecord(QFile* file,
         }
         return false;
     }
-    const QByteArray compressed = qCompress(serializeCompact(object), 6);
+    const QByteArray compressed = qCompress(serializeCbor(object), 6);
     QDataStream stream(file);
     stream.setVersion(QDataStream::Qt_6_0);
     stream << magic;
@@ -307,28 +344,28 @@ inline bool appendBinaryJsonRecord(QFile* file,
         const qint64 written = file->write(compressed);
         if (written != compressed.size()) {
             if (errorOut) {
-                *errorOut = QStringLiteral("Failed to append binary JSON record.");
+                *errorOut = QStringLiteral("Failed to append binary CBOR record.");
             }
             return false;
         }
     }
     if (stream.status() != QDataStream::Ok || !file->flush()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to finalize binary JSON record append.");
+            *errorOut = QStringLiteral("Failed to finalize binary CBOR record append.");
         }
         return false;
     }
     return true;
 }
 
-inline bool parseRecordPayload(const QByteArray& payload, QJsonObject* objectOut, QString* errorOut = nullptr)
+inline bool parseCborRecordPayload(const QByteArray& payload, QJsonObject* objectOut, QString* errorOut = nullptr)
 {
-    return parseObjectBytes(payload, objectOut, errorOut);
+    return parseCborObjectBytes(payload, objectOut, errorOut);
 }
 
-inline bool readBinaryJsonRecords(const QString& path,
+inline bool readBinaryCborRecords(const QString& path,
                                   QVector<QJsonObject>* recordsOut,
-                                  quint32 expectedMagic = 0x4A465352,
+                                  quint32 expectedMagic = 0x4A465342,
                                   quint32 expectedVersion = 1,
                                   QString* errorOut = nullptr)
 {
@@ -357,13 +394,13 @@ inline bool readBinaryJsonRecords(const QString& path,
             magic != expectedMagic ||
             version != expectedVersion) {
             if (errorOut) {
-                *errorOut = QStringLiteral("Invalid binary JSON record header in %1").arg(path);
+                *errorOut = QStringLiteral("Invalid binary CBOR record header in %1").arg(path);
             }
             return false;
         }
         if (compressedSize > static_cast<quint32>(std::numeric_limits<int>::max())) {
             if (errorOut) {
-                *errorOut = QStringLiteral("Binary JSON record is too large in %1").arg(path);
+                *errorOut = QStringLiteral("Binary CBOR record is too large in %1").arg(path);
             }
             return false;
         }
@@ -373,13 +410,13 @@ inline bool readBinaryJsonRecords(const QString& path,
             const int bytesRead = stream.readRawData(compressed.data(), static_cast<int>(compressedSize));
             if (bytesRead != static_cast<int>(compressedSize)) {
                 if (errorOut) {
-                    *errorOut = QStringLiteral("Truncated binary JSON record in %1").arg(path);
+                    *errorOut = QStringLiteral("Truncated binary CBOR record in %1").arg(path);
                 }
                 return false;
             }
         }
         QJsonObject object;
-        if (!parseRecordPayload(qUncompress(compressed), &object, errorOut)) {
+        if (!parseCborRecordPayload(qUncompress(compressed), &object, errorOut)) {
             return false;
         }
         records.push_back(object);

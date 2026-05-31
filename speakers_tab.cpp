@@ -249,6 +249,20 @@ bool SpeakersTab::saveLoadedTranscriptDocument()
     return true;
 }
 
+bool SpeakersTab::saveLoadedTranscriptDocumentNow()
+{
+    if (m_transcriptSession.transcriptPath().trimmed().isEmpty() || !m_transcriptSession.hasObjectDocument()) {
+        return false;
+    }
+    m_transcriptSession.queueSave(
+        true,
+        [](const QString& path, const QJsonDocument& doc) {
+            editor::TranscriptEngine engine;
+            engine.saveTranscriptJson(path, doc);
+        });
+    return true;
+}
+
 void SpeakersTab::queueLoadedTranscriptDocumentSave()
 {
     if (m_transcriptSession.transcriptPath().trimmed().isEmpty() || !m_transcriptSession.hasObjectDocument()) {
@@ -944,7 +958,7 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
             confirmationMessage += QLatin1Char('\n');
         }
         confirmationMessage += QStringLiteral(
-            "By default, debug-run artifacts such as facedetections.part, tracks.bin, continuity_facedetections.bin, and summary.json are not deleted by this action.\n\nThis cannot be undone.");
+            "By default, debug-run artifacts such as facedetections.part, tracks.idx/tracks.dat, detections.idx/detections.dat, continuity_facedetections.bin, and summary.json are not deleted by this action.\n\nThis cannot be undone.");
 
         auto* label = new QLabel(confirmationMessage, &confirmationDialog);
         label->setWordWrap(true);
@@ -1147,7 +1161,10 @@ void SpeakersTab::onSpeakerViewFaceDetectionsClicked()
         text += QStringLiteral("Latest artifact dir: %1\n").arg(artifactDir);
         const QStringList artifactFiles{
             QStringLiteral("facedetections.part"),
-            QStringLiteral("tracks.bin"),
+            QStringLiteral("tracks.idx"),
+            QStringLiteral("tracks.dat"),
+            QStringLiteral("detections.idx"),
+            QStringLiteral("detections.dat"),
             QStringLiteral("continuity_facedetections.bin"),
             QStringLiteral("summary.json")
         };
@@ -1895,6 +1912,11 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     status += QStringLiteral("\nTracks At Playhead: %1 | Visible matches: %2")
                   .arg(showPlayheadTracks ? QStringLiteral("VISIBLE") : QStringLiteral("HIDDEN"))
                   .arg(m_lastPlayheadTrackCandidateCount);
+    if (!m_lastPlayheadTrackCandidatesBlockReason.isEmpty()) {
+        status += QStringLiteral("\nTracks At Playhead: BLOCKED | Reason: %1 | Count: %2")
+                      .arg(m_lastPlayheadTrackCandidatesBlockReason)
+                      .arg(m_playheadTrackCandidatesBlockedCount);
+    }
     QString tooltip =
         QStringLiteral("UI timings ms | Speakers: %1 (max %2) | Playhead: %3 (max %4) | Tracks: %5 (max %6) | Detections: %7 (max %8)")
             .arg(m_lastSpeakersTableRefreshDurationMs)
@@ -1905,6 +1927,11 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
             .arg(m_maxFaceDetectionsPanelRefreshDurationMs)
             .arg(m_lastRawDetectionsPanelRefreshDurationMs)
             .arg(m_maxRawDetectionsPanelRefreshDurationMs);
+    if (!m_lastPlayheadTrackCandidatesBlockReason.isEmpty()) {
+        tooltip += QStringLiteral(" | Playhead blocked: %1 (%2)")
+                       .arg(m_lastPlayheadTrackCandidatesBlockReason)
+                       .arg(m_playheadTrackCandidatesBlockedCount);
+    }
     if (selectedClip && coverage.hasRawTrackCoverage) {
         if (selectedClip->sourceInFrame < coverage.minRawTrackFrame ||
             selectedClip->sourceInFrame > coverage.maxRawTrackFrame) {

@@ -12,6 +12,9 @@ set(CMAKE_AUTOUIC ON)
 
 option(EDITOR_ASAN "Enable AddressSanitizer" OFF)
 option(EDITOR_BUILD_TESTS "Build editor tests" ON)
+option(JCUT_ENABLE_RUBBERBAND_TIME_STRETCH
+    "Use Rubber Band as the default pitch-preserving audio time-stretch backend when available."
+    ON)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -75,6 +78,9 @@ option(JCUT_USE_SYSTEM_FFMPEG
 set(EDITOR_FFMPEG_PREFIX
     "${CMAKE_CURRENT_SOURCE_DIR}/ffmpeg-install"
     CACHE PATH "Pinned FFmpeg install prefix. Bundled FFmpeg is mandatory.")
+set(EDITOR_RUBBERBAND_PREFIX
+    "${CMAKE_CURRENT_SOURCE_DIR}/.deps/rubberband-install"
+    CACHE PATH "Vendored Rubber Band install prefix used by build.sh.")
 
 if(JCUT_USE_SYSTEM_FFMPEG)
     message(FATAL_ERROR
@@ -91,10 +97,15 @@ if(NOT JCUT_USE_SYSTEM_FFMPEG)
     endif()
 
     set(_saved_pkg_config_path "$ENV{PKG_CONFIG_PATH}")
+    set(_jcut_pkg_config_path "${EDITOR_FFMPEG_PKGCONFIG_DIR}")
+    set(_jcut_rubberband_pkgconfig_dir "${EDITOR_RUBBERBAND_PREFIX}/lib/pkgconfig")
+    if(EXISTS "${_jcut_rubberband_pkgconfig_dir}/rubberband.pc")
+        set(_jcut_pkg_config_path "${_jcut_pkg_config_path}:${_jcut_rubberband_pkgconfig_dir}")
+    endif()
     if(_saved_pkg_config_path)
-        set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}:${_saved_pkg_config_path}")
+        set(ENV{PKG_CONFIG_PATH} "${_jcut_pkg_config_path}:${_saved_pkg_config_path}")
     else()
-        set(ENV{PKG_CONFIG_PATH} "${EDITOR_FFMPEG_PKGCONFIG_DIR}")
+        set(ENV{PKG_CONFIG_PATH} "${_jcut_pkg_config_path}")
     endif()
 endif()
 
@@ -112,6 +123,18 @@ pkg_check_modules(FONT_RENDER REQUIRED IMPORTED_TARGET
     fontconfig
     freetype2
 )
+set(JCUT_HAVE_RUBBERBAND 0)
+if(JCUT_ENABLE_RUBBERBAND_TIME_STRETCH)
+    pkg_check_modules(RUBBERBAND QUIET IMPORTED_TARGET rubberband>=3.0.0)
+    if(TARGET PkgConfig::RUBBERBAND)
+        set(JCUT_HAVE_RUBBERBAND 1)
+    else()
+        message(WARNING
+            "Rubber Band was not found via pkg-config; audio time-stretch will use the SOLA fallback. "
+            "Run ./build.sh with meson installed, or install librubberband development files, to enable "
+            "the higher-quality default backend.")
+    endif()
+endif()
 
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
     set(_expected_ffmpeg_libdir "${EDITOR_FFMPEG_PREFIX}/lib")
@@ -355,6 +378,9 @@ target_link_libraries(editor_core
         PkgConfig::FONT_RENDER
         rtaudio
 )
+if(TARGET PkgConfig::RUBBERBAND)
+    target_link_libraries(editor_core PUBLIC PkgConfig::RUBBERBAND)
+endif()
 if(CUDA_DRIVER_LIBRARY)
     target_link_libraries(editor_core PUBLIC ${CUDA_DRIVER_LIBRARY})
     target_compile_definitions(editor_core PUBLIC JCUT_HAS_CUDA_DRIVER=1)
@@ -381,6 +407,7 @@ target_compile_definitions(editor_core
         QT_DEPRECATED_WARNINGS
         JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
         JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
+        JCUT_HAVE_RUBBERBAND=${JCUT_HAVE_RUBBERBAND}
 )
 if(TARGET jcut_vulkan_shaders)
     add_dependencies(editor_core jcut_vulkan_shaders)
@@ -417,6 +444,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_frame_selection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/speaker_track_assignment_service.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/startup_project_state.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/track_avatar_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_cache.cpp
@@ -467,6 +495,9 @@ target_link_libraries(editor_test_support
         PkgConfig::FONT_RENDER
         rtaudio
 )
+if(TARGET PkgConfig::RUBBERBAND)
+    target_link_libraries(editor_test_support PUBLIC PkgConfig::RUBBERBAND)
+endif()
 if(TARGET Qt6::GuiPrivate)
     target_link_libraries(editor_test_support PUBLIC Qt6::GuiPrivate)
 endif()
@@ -480,6 +511,7 @@ target_compile_definitions(editor_test_support
         QT_DEPRECATED_WARNINGS
         JCUT_HAVE_OPENCV=0
         JCUT_HAVE_OPENCV_CONTRIB=0
+        JCUT_HAVE_RUBBERBAND=${JCUT_HAVE_RUBBERBAND}
 )
 
 jcut_force_bundled_ffmpeg_runtime(editor_test_support)

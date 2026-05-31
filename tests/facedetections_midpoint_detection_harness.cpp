@@ -233,7 +233,7 @@ bool loadFrameRecord(const QString& path, qint64 frameNumber, QJsonObject* recor
         stream >> magic;
         stream >> version;
         stream >> compressedSize;
-        if (stream.status() != QDataStream::Ok || magic != 0x4A465352 || version != 1) {
+        if (stream.status() != QDataStream::Ok || magic != 0x4A465342 || version != 1) {
             return false;
         }
         QByteArray compressed;
@@ -244,7 +244,7 @@ bool loadFrameRecord(const QString& path, qint64 frameNumber, QJsonObject* recor
             return false;
         }
         QJsonObject object;
-        if (!jcut::jsonio::parseRecordPayload(qUncompress(compressed), &object, nullptr)) {
+        if (!jcut::jsonio::parseCborRecordPayload(qUncompress(compressed), &object, nullptr)) {
             continue;
         }
         if (object.value(QStringLiteral("type")).toString() != QStringLiteral("frame")) {

@@ -8,7 +8,8 @@ class TestAudioTimeStretch : public QObject {
     Q_OBJECT
 
 private slots:
-    void testTwoAndThreeXKeepPitchAndDuration();
+    void testSolaTwoAndThreeXKeepPitchAndDuration();
+    void testDefaultTwoAndThreeXKeepPitchAndDuration();
 };
 
 namespace {
@@ -42,7 +43,7 @@ double estimateFrequencyZeroCrossings(const QVector<float>& stereoSamples, int s
 }
 }
 
-void TestAudioTimeStretch::testTwoAndThreeXKeepPitchAndDuration()
+void TestAudioTimeStretch::testSolaTwoAndThreeXKeepPitchAndDuration()
 {
     constexpr int sampleRate = 48000;
     constexpr double sourceFrequency = 440.0;
@@ -60,6 +61,24 @@ void TestAudioTimeStretch::testTwoAndThreeXKeepPitchAndDuration()
     }
 }
 
+void TestAudioTimeStretch::testDefaultTwoAndThreeXKeepPitchAndDuration()
+{
+    constexpr int sampleRate = 48000;
+    constexpr double sourceFrequency = 440.0;
+    const QVector<float> input = sineStereo(sourceFrequency, 2.0, sampleRate);
+
+    for (const int speed : {2, 3}) {
+        const QVector<float> stretched =
+            timeStretchPreservePitch(input, 2, sampleRate, speed);
+        const int expectedFrames = (input.size() / 2) / speed;
+        const int actualFrames = stretched.size() / 2;
+        QVERIFY(std::abs(actualFrames - expectedFrames) <= 64);
+
+        const double measuredFrequency = estimateFrequencyZeroCrossings(stretched, sampleRate);
+        QVERIFY2(std::abs(measuredFrequency - sourceFrequency) < 25.0,
+                 qPrintable(QStringLiteral("speed=%1 frequency=%2").arg(speed).arg(measuredFrequency)));
+    }
+}
+
 QTEST_MAIN(TestAudioTimeStretch)
 #include "test_audio_time_stretch.moc"
-

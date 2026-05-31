@@ -49,8 +49,16 @@ void TestPlaybackPolicy::testNormalizedAudioWarpMode() {
     QCOMPARE(normalizedPlaybackAudioWarpMode(1.0, PlaybackAudioWarpMode::Disabled),
              PlaybackAudioWarpMode::Disabled);
     QCOMPARE(normalizedPlaybackAudioWarpMode(2.0, PlaybackAudioWarpMode::Disabled),
-             PlaybackAudioWarpMode::Varispeed);
+             PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(normalizedPlaybackAudioWarpMode(3.0, PlaybackAudioWarpMode::Disabled),
+             PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(normalizedPlaybackAudioWarpMode(1.5, PlaybackAudioWarpMode::Disabled),
+             PlaybackAudioWarpMode::TimeStretch);
     QCOMPARE(normalizedPlaybackAudioWarpMode(2.0, PlaybackAudioWarpMode::TimeStretch),
+             PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(normalizedPlaybackAudioWarpMode(1.5, PlaybackAudioWarpMode::TimeStretch),
+             PlaybackAudioWarpMode::TimeStretch);
+    QCOMPARE(normalizedPlaybackAudioWarpMode(1.5, PlaybackAudioWarpMode::Varispeed),
              PlaybackAudioWarpMode::TimeStretch);
 }
 

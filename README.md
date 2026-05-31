@@ -29,6 +29,7 @@ JCut is a Qt6/C++20 non-linear editor for turning long-form panel video into ver
 - OpenGL development headers
 - `pkg-config`
 - `git` (submodules are required)
+- `meson` and `ninja` for the vendored Rubber Band audio time-stretch backend
 
 ## Clone
 
@@ -40,7 +41,7 @@ git submodule update --init --recursive
 
 ## Build
 
-The canonical build entrypoint is `build.sh`. It bootstraps pinned FFmpeg libs into `ffmpeg-install/` and builds the editor.
+The canonical build entrypoint is `build.sh`. It bootstraps pinned FFmpeg libs into `ffmpeg-install/`, builds the vendored Rubber Band audio time-stretch library into `.deps/rubberband-install/` when Meson is available, and builds the editor.
 
 ```bash
 ./build.sh
@@ -123,4 +124,5 @@ Preview output is useful for inspection but slower because it requires GPU readb
 - `control_server*`: local HTTP control server
 - `rtaudio/`: audio backend submodule
 - `ffmpeg/`: FFmpeg source submodule
+- `external/rubberband/`: high-quality audio time-stretch submodule
 - `tests/`, `Testing/`: test sources and test artifacts

@@ -125,6 +125,48 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
     return tracks;
 }
 
+QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::convertContinuityTrackModelsForClip(
+    const QVector<jcut::facedetections::FacestreamTrack>& models,
+    const QString& frameDomain,
+    const QString& detectorMode) const
+{
+    QVector<FacestreamTrack> tracks;
+    FacestreamFrameDomain parsedFrameDomain = FacestreamFrameDomain::SourceRelative;
+    const bool hasFrameDomain =
+        parseFacestreamFrameDomainString(frameDomain.trimmed(), &parsedFrameDomain);
+    tracks.reserve(models.size());
+    for (const jcut::facedetections::FacestreamTrack& model : models) {
+        FacestreamTrack track;
+        track.streamId = model.summary.streamId.trimmed();
+        if (track.streamId.isEmpty() && model.summary.trackId >= 0) {
+            track.streamId = QStringLiteral("T%1").arg(model.summary.trackId);
+        }
+        track.trackId = model.summary.trackId;
+        track.source = model.summary.source.trimmed().toLower();
+        if (track.source.isEmpty()) {
+            track.source = detectorMode.trimmed().toLower();
+        }
+        track.frameDomain = hasFrameDomain ? parsedFrameDomain : FacestreamFrameDomain::SourceAbsolute;
+        track.typicalFrameStep = qMax<int64_t>(1, model.summary.typicalFrameStep);
+        track.keyframes.reserve(model.keyframes.size());
+        for (const jcut::facedetections::FacestreamKeyframe& modelKeyframe : model.keyframes) {
+            FacestreamKeyframe keyframe;
+            keyframe.frame = modelKeyframe.frame;
+            keyframe.xNorm = qBound<qreal>(0.0, modelKeyframe.x, 1.0);
+            keyframe.yNorm = qBound<qreal>(0.0, modelKeyframe.y, 1.0);
+            keyframe.boxSizeNorm = qBound<qreal>(0.001, modelKeyframe.box, 1.0);
+            keyframe.hasCenterBox = true;
+            keyframe.confidence = qBound<qreal>(0.0, modelKeyframe.confidence, 1.0);
+            keyframe.source = track.source;
+            track.keyframes.push_back(keyframe);
+        }
+        if (!track.keyframes.isEmpty()) {
+            tracks.push_back(track);
+        }
+    }
+    return tracks;
+}
+
 QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestreamTracksForClip(
     const TimelineClip& clip,
     int64_t sourceFrame)
@@ -188,14 +230,24 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
         queryDebug[QStringLiteral("processed_raw_frames_artifact_path")] =
             continuityRoot.value(QStringLiteral("raw_frames_artifact_path")).toString().trimmed();
         if (streams.isEmpty()) {
-            streams = jcut::facedetections::continuityStreamsNearFrame(
+            const QJsonObject transcriptRoot = continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false)
+                ? transcriptRootForDemand()
+                : QJsonObject{};
+            const QVector<jcut::facedetections::FacestreamTrack> trackModels =
+                jcut::facedetections::continuityTrackModelsNearFrameForRoot(
                 continuityRoot,
                 sourceFrame,
                 0,
-                transcriptRootForDemand());
-            queryDebug[QStringLiteral("processed_near_frame_stream_count")] = streams.size();
+                    transcriptRoot);
+            entry.tracks += convertContinuityTrackModelsForClip(
+                trackModels,
+                continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString(
+                    continuityRoot.value(QStringLiteral("streams_frame_domain")).toString()),
+                continuityRoot.value(QStringLiteral("detector_mode")).toString());
+            queryDebug[QStringLiteral("processed_near_frame_track_model_count")] = trackModels.size();
+        } else {
+            entry.tracks += parseContinuityTracksForClip(clip, streams, continuityRoot);
         }
-        entry.tracks += parseContinuityTracksForClip(clip, streams, continuityRoot);
         queryDebug[QStringLiteral("processed_parsed_track_count")] = entry.tracks.size();
     }
     QJsonObject artifactRoot;
@@ -214,17 +266,40 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
             queryDebug[QStringLiteral("raw_frames_inline_count")] =
                 continuityRoot.value(QStringLiteral("raw_frames")).toArray().size();
             if (streams.isEmpty()) {
-                streams = jcut::facedetections::continuityStreamsNearFrame(
+                const QJsonObject transcriptRoot = continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false)
+                    ? transcriptRootForDemand()
+                    : QJsonObject{};
+                const QVector<jcut::facedetections::FacestreamTrack> trackModels =
+                    jcut::facedetections::continuityTrackModelsNearFrameForRoot(
                     continuityRoot,
                     sourceFrame,
                     0,
-                    transcriptRootForDemand());
-                queryDebug[QStringLiteral("raw_near_frame_stream_count")] = streams.size();
+                        transcriptRoot);
+                entry.tracks += convertContinuityTrackModelsForClip(
+                    trackModels,
+                    continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString(
+                        continuityRoot.value(QStringLiteral("streams_frame_domain")).toString()),
+                    continuityRoot.value(QStringLiteral("detector_mode")).toString());
+                queryDebug[QStringLiteral("raw_near_frame_track_model_count")] = trackModels.size();
+            } else {
+                entry.tracks += parseContinuityTracksForClip(clip, streams, continuityRoot);
             }
-            entry.tracks += parseContinuityTracksForClip(clip, streams, continuityRoot);
             queryDebug[QStringLiteral("raw_parsed_track_count")] = entry.tracks.size();
         }
-        entry.rawDetections += parseRawDetectionsForClip(clip, artifactRoot, sourceFrame);
+        const QJsonObject rawDetectionContinuityRoot = continuityRootForClip(artifactRoot, clip.id);
+        FacestreamFrameDomain rawFrameDomain = FacestreamFrameDomain::SourceRelative;
+        if (continuityPayloadFrameDomain(
+                rawDetectionContinuityRoot,
+                QStringLiteral("raw_frames_frame_domain"),
+                &rawFrameDomain)) {
+            constexpr int64_t kRawDetectionInteractiveWindowFrames = 45;
+            const QVector<jcut::facedetections::FacestreamFrameDetections> rawFrameModels =
+                jcut::facedetections::frameDetectionModelsNearFrameForRoot(
+                    rawDetectionContinuityRoot,
+                    sourceFrame,
+                    kRawDetectionInteractiveWindowFrames);
+            entry.rawDetections += convertRawDetectionModelsForClip(clip, rawFrameModels, rawFrameDomain);
+        }
         for (const VulkanPreviewFacestreamOverlay& detection : entry.rawDetections) {
             entry.rawDetectionsBySourceFrame[detection.sourceFrame].push_back(detection);
         }
@@ -250,76 +325,31 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     return entry.tracks;
 }
 
-QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::parseRawDetectionsForClip(
+QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::convertRawDetectionModelsForClip(
     const TimelineClip& clip,
-    const QJsonObject& artifactRoot,
-    int64_t sourceFrame) const
+    const QVector<jcut::facedetections::FacestreamFrameDetections>& frames,
+    FacestreamFrameDomain frameDomain) const
 {
     QVector<VulkanPreviewFacestreamOverlay> detections;
-    const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
-    constexpr int64_t kRawDetectionInteractiveWindowFrames = 45;
-    const QJsonArray rawFrames = jcut::facedetections::rawFramesNearFrameForContinuityRoot(
-        continuityRoot,
-        sourceFrame,
-        kRawDetectionInteractiveWindowFrames);
-    FacestreamFrameDomain frameDomain = FacestreamFrameDomain::SourceRelative;
-    if (!continuityPayloadFrameDomain(
-            continuityRoot,
-            QStringLiteral("raw_frames_frame_domain"),
-            &frameDomain)) {
-        return detections;
-    }
-    for (const QJsonValue& frameValue : rawFrames) {
-        const QJsonObject frameObj = frameValue.toObject();
-        const int64_t frame = frameObj.value(QStringLiteral("frame")).toVariant().toLongLong();
-        if (frame < 0) {
+    for (const jcut::facedetections::FacestreamFrameDetections& frame : frames) {
+        if (frame.frame < 0) {
             continue;
         }
-        const QJsonArray rows = frameObj.value(QStringLiteral("detections")).toArray();
-        for (const QJsonValue& detValue : rows) {
-            const QJsonObject detObj = detValue.toObject();
-            const qreal frameWidth = qMax<qreal>(1.0, frameObj.value(QStringLiteral("frame_width")).toDouble(
-                detObj.value(QStringLiteral("frame_width")).toDouble(0.0)));
-            const qreal frameHeight = qMax<qreal>(1.0, frameObj.value(QStringLiteral("frame_height")).toDouble(
-                detObj.value(QStringLiteral("frame_height")).toDouble(0.0)));
-            const qreal x = qBound<qreal>(
-                0.0,
-                detObj.value(QStringLiteral("x_norm")).toDouble(
-                    detObj.value(QStringLiteral("x")).toDouble(0.0) / frameWidth),
-                1.0);
-            const qreal y = qBound<qreal>(
-                0.0,
-                detObj.value(QStringLiteral("y_norm")).toDouble(
-                    detObj.value(QStringLiteral("y")).toDouble(0.0) / frameHeight),
-                1.0);
-            const qreal w = qBound<qreal>(
-                0.0,
-                detObj.value(QStringLiteral("w_norm")).toDouble(
-                    detObj.value(QStringLiteral("w")).toDouble(0.0) / frameWidth),
-                1.0);
-            const qreal h = qBound<qreal>(
-                0.0,
-                detObj.value(QStringLiteral("h_norm")).toDouble(
-                    detObj.value(QStringLiteral("h")).toDouble(0.0) / frameHeight),
-                1.0);
-            if (w <= 0.0 || h <= 0.0) {
+        const int64_t sourceFrame = mapFacestreamFrameToSourceFrame(
+            clip, frame.frame, frameDomain, m_interaction.renderSyncMarkers);
+        for (const jcut::facedetections::FacestreamDetection& detection : frame.detections) {
+            if (!detection.box.isValid() || detection.box.isEmpty()) {
                 continue;
             }
             VulkanPreviewFacestreamOverlay overlay;
             overlay.clipId = clip.id;
             overlay.streamId = QStringLiteral("raw_detection");
             overlay.source = QStringLiteral("raw_detection");
-            overlay.trackId = -1;
-            overlay.sourceFrame = mapFacestreamFrameToSourceFrame(
-                clip, frame, frameDomain, m_interaction.renderSyncMarkers);
-            overlay.boxNorm = QRectF(x, y, w, h).intersected(QRectF(0.0, 0.0, 1.0, 1.0));
-            overlay.confidence = qBound<qreal>(
-                0.0,
-                detObj.value(QStringLiteral("confidence")).toDouble(detObj.value(QStringLiteral("score")).toDouble(0.0)),
-                1.0);
-            if (overlay.boxNorm.isValid() && !overlay.boxNorm.isEmpty()) {
-                detections.push_back(overlay);
-            }
+            overlay.trackId = detection.trackId;
+            overlay.sourceFrame = sourceFrame;
+            overlay.boxNorm = detection.box;
+            overlay.confidence = qBound<qreal>(0.0, detection.confidence, 1.0);
+            detections.push_back(overlay);
         }
     }
     return detections;

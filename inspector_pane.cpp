@@ -1362,6 +1362,16 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerShowContiguousSectionsCheckBox->setChecked(false);
     m_speakerShowContiguousSectionsCheckBox->setToolTip(
         QStringLiteral("Replace the speaker roster with transcript-ordered contiguous speaker sections."));
+    m_speakerShowCurrentSpeakerNameCheckBox =
+        new QCheckBox(QStringLiteral("Show Current Speaker Name at Bottom"), page);
+    m_speakerShowCurrentSpeakerNameCheckBox->setChecked(false);
+    m_speakerShowCurrentSpeakerNameCheckBox->setToolTip(
+        QStringLiteral("Draw the active transcript speaker name at the bottom of the preview."));
+    m_speakerShowCurrentSpeakerOrganizationCheckBox =
+        new QCheckBox(QStringLiteral("Show Current Speaker Organization at Bottom"), page);
+    m_speakerShowCurrentSpeakerOrganizationCheckBox->setChecked(false);
+    m_speakerShowCurrentSpeakerOrganizationCheckBox->setToolTip(
+        QStringLiteral("Draw the active speaker organization at the bottom of the preview when it is stored in the speaker profile."));
     m_speakerSectionsTable = new QTableWidget(page);
     m_speakerSectionsTable->setColumnCount(5);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
@@ -1609,7 +1619,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingCenterSmoothingFramesSpin = new QSpinBox(page);
     m_speakerFramingZoomSmoothingFramesSpin = new QSpinBox(page);
     m_speakerFramingSmoothingModeCombo = new QComboBox(page);
-    m_speakerFramingSmoothingStrengthSpin = new QDoubleSpinBox(page);
+    m_speakerFramingCenterSmoothingStrengthSpin = new QDoubleSpinBox(page);
+    m_speakerFramingZoomSmoothingStrengthSpin = new QDoubleSpinBox(page);
     m_speakerFramingGapHoldFramesSpin = new QSpinBox(page);
     m_speakerApplyFramingToClipCheckBox = new QCheckBox(QStringLiteral("Apply Face Stabilize To Selected Clip"), page);
     m_speakerFramingEnabledKeyframeTable = new QTableWidget(page);
@@ -1641,29 +1652,42 @@ QWidget *InspectorPane::buildSpeakersTab()
         QStringLiteral("Average the active face center over this many frames centered on the current frame."));
     m_speakerFramingZoomSmoothingFramesSpin->setToolTip(
         QStringLiteral("Average the active face box size over this many frames centered on the current frame."));
-    m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Moving Average"), 0);
-    m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Low-pass"), 1);
-    m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Moving Average + Low-pass"), 2);
+    m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Robust"), 0);
+    m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Responsive"), 1);
+    m_speakerFramingSmoothingModeCombo->addItem(QStringLiteral("Locked Down"), 2);
     m_speakerFramingSmoothingModeCombo->setToolTip(
-        QStringLiteral("Choose how the centered smoothing windows filter Face Stabilize motion."));
-    m_speakerFramingSmoothingStrengthSpin->setDecimals(2);
-    m_speakerFramingSmoothingStrengthSpin->setRange(0.0, TimelineClip::kSpeakerFramingSmoothingStrengthMax);
-    m_speakerFramingSmoothingStrengthSpin->setSingleStep(0.05);
-    m_speakerFramingSmoothingStrengthSpin->setValue(1.0);
-    m_speakerFramingSmoothingStrengthSpin->setToolTip(
-        QStringLiteral("Scale the selected smoothing result. 0.0 is raw, 1.0 is normal smoothing, values above 1.0 push harder toward the smoothed path."));
+        QStringLiteral("Choose the robust smoothing profile. Robust rejects outliers, Responsive follows more motion, Locked Down damps more jitter."));
+    for (QDoubleSpinBox* spinBox : {
+             m_speakerFramingCenterSmoothingStrengthSpin,
+             m_speakerFramingZoomSmoothingStrengthSpin}) {
+        spinBox->setDecimals(2);
+        spinBox->setRange(0.0, TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+        spinBox->setSingleStep(0.05);
+        spinBox->setValue(1.0);
+    }
+    m_speakerFramingCenterSmoothingStrengthSpin->setToolTip(
+        QStringLiteral("Pan/center smoothing amount only. 0.0 is raw, 1.0 is normal robust smoothing, higher values approach the stable path without overshooting."));
+    m_speakerFramingZoomSmoothingStrengthSpin->setToolTip(
+        QStringLiteral("Zoom/box smoothing amount only. 0.0 is raw, 1.0 is normal robust smoothing, higher values approach the stable box size without overshooting."));
     m_speakerFramingGapHoldFramesSpin->setToolTip(
         QStringLiteral("Keep using a nearby assigned-track sample across missing detections up to this many frames."));
     m_speakerFramingEnabledKeyframeTable->setObjectName(QStringLiteral("speakers.face_stabilize_keyframes"));
-    m_speakerFramingEnabledKeyframeTable->setColumnCount(2);
+    m_speakerFramingEnabledKeyframeTable->setColumnCount(5);
     m_speakerFramingEnabledKeyframeTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Frame"), QStringLiteral("Face Stabilize")});
+        {QStringLiteral("Frame"),
+         QStringLiteral("Face Stabilize"),
+         QStringLiteral("Target X"),
+         QStringLiteral("Target Y"),
+         QStringLiteral("Target Box")});
     m_speakerFramingEnabledKeyframeTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakerFramingEnabledKeyframeTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_speakerFramingEnabledKeyframeTable->verticalHeader()->setVisible(false);
-    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setStretchLastSection(true);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setStretchLastSection(false);
     m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Stretch);
+    m_speakerFramingEnabledKeyframeTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
     m_speakerFramingEnabledKeyframeTable->setMinimumHeight(120);
     m_speakerClipFramingStatusLabel->setWordWrap(true);
     m_speakerRefsChipLabel->setStyleSheet(QStringLiteral(
@@ -1717,6 +1741,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerListLayout->setSpacing(6);
     speakerListLayout->addWidget(m_speakerHideUnidentifiedCheckBox);
     speakerListLayout->addWidget(m_speakerShowContiguousSectionsCheckBox);
+    speakerListLayout->addWidget(m_speakerShowCurrentSpeakerNameCheckBox);
+    speakerListLayout->addWidget(m_speakerShowCurrentSpeakerOrganizationCheckBox);
     speakerListLayout->addWidget(m_speakersTable, 1);
     speakerListLayout->addWidget(m_speakerSectionsTable, 1);
     mappingContentRow->addWidget(speakerListPanel, 1);
@@ -1828,8 +1854,6 @@ QWidget *InspectorPane::buildSpeakersTab()
     chipRow->addWidget(m_speakerStabilizeChipButton);
     chipRow->addStretch(1);
 
-    auto *framingTargetTitle = new QLabel(QStringLiteral("Target"), page);
-    styleSectionTitle(framingTargetTitle);
     auto *framingTargetHelp = new QLabel(
         QStringLiteral("Set the preview target position that generated face-stabilize transforms should resolve toward."),
         page);
@@ -1876,17 +1900,19 @@ QWidget *InspectorPane::buildSpeakersTab()
     framingForm->addRow(QStringLiteral("Center Smoothing"), m_speakerFramingCenterSmoothingFramesSpin);
     framingForm->addRow(QStringLiteral("Zoom Smoothing"), m_speakerFramingZoomSmoothingFramesSpin);
     framingForm->addRow(QStringLiteral("Smoothing Mode"), m_speakerFramingSmoothingModeCombo);
-    framingForm->addRow(QStringLiteral("Smoothing Strength"), m_speakerFramingSmoothingStrengthSpin);
+    framingForm->addRow(QStringLiteral("Pan Strength"), m_speakerFramingCenterSmoothingStrengthSpin);
+    framingForm->addRow(QStringLiteral("Zoom Strength"), m_speakerFramingZoomSmoothingStrengthSpin);
     framingForm->addRow(QStringLiteral("Gap Hold"), m_speakerFramingGapHoldFramesSpin);
 
     auto framingSection = createSectionFrame(content, QStringLiteral("speakers_framing_section"));
     framingSection.second->addWidget(framingTitle);
     framingSection.second->addWidget(framingHelp);
     framingSection.second->addLayout(chipRow);
-    framingSection.second->addWidget(framingTargetTitle);
-    framingSection.second->addWidget(framingTargetHelp);
-    framingSection.second->addWidget(m_speakerFramingZoomEnabledCheckBox);
-    framingSection.second->addLayout(framingForm);
+    auto framingTargetDisclosure = createDisclosureSection(page, QStringLiteral("Target"), true);
+    framingTargetDisclosure.body->addWidget(framingTargetHelp);
+    framingTargetDisclosure.body->addWidget(m_speakerFramingZoomEnabledCheckBox);
+    framingTargetDisclosure.body->addLayout(framingForm);
+    framingSection.second->addWidget(framingTargetDisclosure.container);
     framingSection.second->addWidget(m_speakerApplyFramingToClipCheckBox);
     framingSection.second->addWidget(m_speakerFramingEnabledKeyframeTable);
     framingSection.second->addWidget(m_speakerClipFramingStatusLabel);

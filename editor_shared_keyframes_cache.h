@@ -1,6 +1,7 @@
 #pragma once
 
-#include <QJsonObject>
+#include "facedetections_types.h"
+
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -11,13 +12,11 @@ QString assignedContinuityCacheKey(const QString& transcriptPath,
 
 bool cachedAssignedContinuityStreams(const QString& cacheKey,
                                      const QString& transcriptPath,
-                                     const QString& identityPath,
                                      const QString& processedPath,
-                                     QVector<QJsonObject>* streamsOut);
+                                     QVector<jcut::facedetections::FacestreamTrack>* streamsOut);
 
 void storeAssignedContinuityStreams(const QString& cacheKey,
                                     const QString& transcriptPath,
-                                    const QString& identityPath,
                                     const QString& processedPath,
                                     const QStringList& referencedPaths,
-                                    const QVector<QJsonObject>& streams);
+                                    const QVector<jcut::facedetections::FacestreamTrack>& streams);

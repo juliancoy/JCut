@@ -18,6 +18,18 @@ void EditorWindow::advanceFrame()
     if (!m_timeline) return;
     bool forceTimelineTimerFallback = false;
     const qint64 tickNowMs = nowMs();
+    const PlaybackAudioWarpMode runtimeWarpMode =
+        normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
+    const bool needsPitchPreservingAudio =
+        runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
+        qAbs(m_playbackSpeed - 1.0) >= 0.0001 &&
+        m_audioEngine &&
+        m_audioEngine->hasPlayableAudio();
+    if (needsPitchPreservingAudio &&
+        !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
+        requestPlaybackAudioWarmup(true);
+        return;
+    }
 
     if (shouldUseAudioMasterClock() && m_audioEngine && m_audioEngine->audioClockAvailable() &&
         m_audioEngine->hasPlayableAudio()) {
@@ -741,9 +753,21 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
 
 void EditorWindow::setPlaybackSpeed(qreal speed)
 {
+    const bool wasPlaying = playbackActive();
     PlaybackRuntimeConfig config = playbackRuntimeConfig();
     config.speed = speed;
     applyPlaybackRuntimeConfig(config);
+    if (qAbs(normalizedPlaybackSpeed(speed) - 1.0) >= 0.0001 &&
+        normalizedPlaybackAudioWarpMode(normalizedPlaybackSpeed(speed), config.audioWarpMode) ==
+            PlaybackAudioWarpMode::TimeStretch) {
+        requestPlaybackAudioWarmup(wasPlaying);
+    } else if (m_playbackAudioWarmupPending) {
+        ++m_playbackAudioWarmupRequestId;
+        m_playbackAudioWarmupPending = false;
+        m_retimingAudioForPlayback = false;
+        m_startPlaybackAfterAudioWarmup = false;
+        updateTransportLabels();
+    }
 }
 
 void EditorWindow::setPlaybackClockSource(PlaybackClockSource source)
@@ -755,9 +779,20 @@ void EditorWindow::setPlaybackClockSource(PlaybackClockSource source)
 
 void EditorWindow::setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode)
 {
+    const bool wasPlaying = playbackActive();
     PlaybackRuntimeConfig config = playbackRuntimeConfig();
     config.audioWarpMode = mode;
     applyPlaybackRuntimeConfig(config);
+    if (qAbs(m_playbackSpeed - 1.0) >= 0.0001 &&
+        normalizedPlaybackAudioWarpMode(m_playbackSpeed, mode) == PlaybackAudioWarpMode::TimeStretch) {
+        requestPlaybackAudioWarmup(wasPlaying);
+    } else if (m_playbackAudioWarmupPending) {
+        ++m_playbackAudioWarmupRequestId;
+        m_playbackAudioWarmupPending = false;
+        m_retimingAudioForPlayback = false;
+        m_startPlaybackAfterAudioWarmup = false;
+        updateTransportLabels();
+    }
 }
 
 bool EditorWindow::shouldUseAudioMasterClock() const
@@ -793,11 +828,105 @@ void EditorWindow::reconcileActivePlaybackAudioState()
             m_previewAudioDynamics.transcriptNormalizeEnabled);
         m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         if (!audioRunning) {
+            const bool needsPitchPreservingAudio =
+                runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
+                qAbs(m_playbackSpeed - 1.0) >= 0.0001;
+            if (needsPitchPreservingAudio &&
+                !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
+                requestPlaybackAudioWarmup(true);
+                return;
+            }
+            if (!needsPitchPreservingAudio &&
+                !m_audioEngine->warmPlaybackAudio(
+                    m_timeline->currentFrame(),
+                    qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
+                stopPlaybackWithReason(QStringLiteral("audio_not_ready"));
+                return;
+            }
             m_audioEngine->start(m_timeline->currentFrame());
         }
     } else if (audioRunning) {
         m_audioEngine->stop();
     }
+}
+
+void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
+{
+    if (!m_audioEngine || !m_timeline) {
+        if (startWhenReady) {
+            setPlaybackActive(true);
+        }
+        return;
+    }
+
+    const PlaybackAudioWarpMode runtimeWarpMode =
+        normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
+    const bool needsPitchPreservingAudio =
+        runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
+        qAbs(m_playbackSpeed - 1.0) >= 0.0001 &&
+        m_audioEngine->hasPlayableAudio();
+    if (!needsPitchPreservingAudio) {
+        if (startWhenReady) {
+            setPlaybackActive(true);
+        }
+        return;
+    }
+
+    if (playbackActive()) {
+        setPlaybackActive(false);
+    }
+
+    const int64_t frame = m_timeline->currentFrame();
+    if (m_audioEngine->playbackAudioReadyForFrame(frame)) {
+        m_playbackAudioWarmupPending = false;
+        m_retimingAudioForPlayback = false;
+        updateTransportLabels();
+        if (startWhenReady) {
+            setPlaybackActive(true);
+        }
+        return;
+    }
+
+    const bool sidecarMissing = m_audioEngine->playbackAudioNeedsRetimingForFrame(frame);
+    m_playbackAudioWarmupPending = true;
+    m_retimingAudioForPlayback = sidecarMissing;
+    m_startPlaybackAfterAudioWarmup = startWhenReady;
+    const int requestId = ++m_playbackAudioWarmupRequestId;
+    updateTransportLabels();
+
+    AudioEngine* audioEngine = m_audioEngine.get();
+    const int timeoutMs = qMax(5000, m_playbackStartLookaheadTimeoutMs);
+    auto* watcher = new QFutureWatcher<bool>(this);
+    connect(watcher, &QFutureWatcher<bool>::finished, this,
+            [this, watcher, requestId, frame]() {
+                const bool ready = watcher->result();
+                watcher->deleteLater();
+                if (requestId != m_playbackAudioWarmupRequestId) {
+                    return;
+                }
+
+                const bool shouldStart = m_startPlaybackAfterAudioWarmup;
+                m_playbackAudioWarmupPending = false;
+                m_retimingAudioForPlayback = false;
+                m_startPlaybackAfterAudioWarmup = false;
+                updateTransportLabels();
+
+                if (!ready) {
+                    m_lastPlaybackStopReason = QStringLiteral("audio_not_ready");
+                    qWarning().noquote()
+                        << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for re-timed audio at frame %1 timed out")
+                               .arg(frame);
+                    updateTransportLabels();
+                    return;
+                }
+
+                if (shouldStart) {
+                    setPlaybackActive(true);
+                }
+            });
+    watcher->setFuture(QtConcurrent::run([audioEngine, frame, timeoutMs]() {
+        return audioEngine->warmPlaybackAudio(frame, timeoutMs);
+    }));
 }
 
 void EditorWindow::updatePlaybackTimerInterval()
@@ -838,6 +967,26 @@ void EditorWindow::setPlaybackActive(bool playing)
         return;
     }
 
+    QElapsedTimer transitionTimer;
+    transitionTimer.start();
+    qint64 lastPhaseMs = 0;
+    const auto logPlaybackTransitionPhase = [&](const QString& phase) {
+        if (!debugPlaybackWarnEnabled()) {
+            return;
+        }
+        const qint64 elapsedMs = transitionTimer.elapsed();
+        const qint64 deltaMs = elapsedMs - lastPhaseMs;
+        lastPhaseMs = elapsedMs;
+        if (deltaMs >= 25 || elapsedMs >= m_slowSeekWarnThresholdMs) {
+            qWarning().noquote()
+                << QStringLiteral("[PLAYBACK WARN] %1 transition phase=%2 delta_ms=%3 elapsed_ms=%4")
+                       .arg(playing ? QStringLiteral("start") : QStringLiteral("pause"))
+                       .arg(phase)
+                       .arg(deltaMs)
+                       .arg(elapsedMs);
+        }
+    };
+
     if (playing) {
         m_lastPlaybackStopReason = QStringLiteral("none");
         m_timelineAdvanceCarrySamples = 0.0;
@@ -874,6 +1023,24 @@ void EditorWindow::setPlaybackActive(bool playing)
             qAbs(m_playbackSpeed - 1.0) < 0.0001 ||
             runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
         if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
+            const bool needsPitchPreservingAudio =
+                runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
+                qAbs(m_playbackSpeed - 1.0) >= 0.0001;
+            if (needsPitchPreservingAudio &&
+                !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
+                requestPlaybackAudioWarmup(true);
+                return;
+            }
+            if (!needsPitchPreservingAudio &&
+                !m_audioEngine->warmPlaybackAudio(
+                    m_timeline->currentFrame(),
+                    qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for audio at frame %1 timed out")
+                           .arg(m_timeline->currentFrame());
+                updateTransportLabels();
+                return;
+            }
             m_audioEngine->start(m_timeline->currentFrame());
             if (!m_startupReadinessAudioStarted.exchange(true)) {
                 startupReadinessMark(QStringLiteral("audio.start.invoked"),
@@ -897,19 +1064,31 @@ void EditorWindow::setPlaybackActive(bool playing)
     } else {
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = 0;
+        logPlaybackTransitionPhase(QStringLiteral("state_reset"));
         if (m_audioEngine) {
             m_audioEngine->stop();
         }
+        logPlaybackTransitionPhase(QStringLiteral("audio_stop"));
         m_playbackTimer.stop();
         m_fastPlaybackActive.store(false);
         m_preview->setPlaybackState(false);
+        logPlaybackTransitionPhase(QStringLiteral("preview_stop"));
         if (m_speakersTab) {
             m_speakersTab->flushDeferredPlaybackRefreshes();
         }
+        logPlaybackTransitionPhase(QStringLiteral("speaker_deferred_refresh_queued"));
     }
     updateTransportLabels();
-    refreshCurrentInspectorTab();
+    logPlaybackTransitionPhase(QStringLiteral("transport_labels"));
+    if (playing) {
+        refreshCurrentInspectorTab();
+    } else {
+        scheduleDeferredInspectorRefresh(75);
+    }
+    logPlaybackTransitionPhase(playing ? QStringLiteral("inspector_refresh")
+                                       : QStringLiteral("inspector_refresh_queued"));
     scheduleSaveState();
+    logPlaybackTransitionPhase(QStringLiteral("save_queued"));
 }
 
 void EditorWindow::stopPlaybackWithReason(const QString& reason)

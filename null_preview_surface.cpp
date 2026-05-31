@@ -72,6 +72,8 @@ void NullPreviewSurface::setPreviewZoom(qreal zoom) { m_previewZoom = qMax<qreal
 void NullPreviewSurface::setShowSpeakerTrackPoints(bool show) { m_showSpeakerTrackPoints = show; requestRepaint(); }
 void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrackBoxes = show; requestRepaint(); }
 void NullPreviewSurface::setShowRawDetections(bool show) { m_showRawDetections = show; requestRepaint(); }
+void NullPreviewSurface::setShowCurrentSpeakerName(bool show) { m_showCurrentSpeakerName = show; requestRepaint(); }
+void NullPreviewSurface::setShowCurrentSpeakerOrganization(bool show) { m_showCurrentSpeakerOrganization = show; requestRepaint(); }
 void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facedetectionsOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }
 void NullPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>&) {}
 void NullPreviewSurface::setAudioSpeakerHoverModalEnabled(bool enabled) { m_audioSpeakerHoverModalEnabled = enabled; }
@@ -168,11 +170,14 @@ void NullPreviewSurface::paintEvent(QPaintEvent* event)
         QStringLiteral("View: %1").arg(m_viewMode == ViewMode::Audio ? QStringLiteral("audio") : QStringLiteral("video")),
         QStringLiteral("FaceDetections Overlay: %1").arg(m_facedetectionsOverlaySource),
     };
-    if (m_showSpeakerTrackBoxes || m_showSpeakerTrackPoints || m_showRawDetections) {
+    if (m_showSpeakerTrackBoxes || m_showSpeakerTrackPoints || m_showRawDetections ||
+        m_showCurrentSpeakerName || m_showCurrentSpeakerOrganization) {
         QStringList overlays;
         if (m_showSpeakerTrackPoints) overlays.push_back(QStringLiteral("points"));
         if (m_showSpeakerTrackBoxes) overlays.push_back(QStringLiteral("boxes"));
         if (m_showRawDetections) overlays.push_back(QStringLiteral("raw-detections"));
+        if (m_showCurrentSpeakerName) overlays.push_back(QStringLiteral("speaker-name"));
+        if (m_showCurrentSpeakerOrganization) overlays.push_back(QStringLiteral("speaker-organization"));
         lines.push_back(QStringLiteral("Preview Overlays: %1").arg(overlays.join(QStringLiteral(", "))));
     }
 

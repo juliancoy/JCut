@@ -18,6 +18,13 @@ RTAUDIO_SUBMODULE_PATH="rtaudio"
 RTAUDIO_SRC_DIR="${SCRIPT_DIR}/rtaudio"
 CPPMONETIZE_SUBMODULE_PATH="external/CPPMonetize"
 CPPMONETIZE_SRC_DIR="${SCRIPT_DIR}/external/CPPMonetize"
+RUBBERBAND_SUBMODULE_PATH="external/rubberband"
+RUBBERBAND_SRC_DIR="${SCRIPT_DIR}/external/rubberband"
+RUBBERBAND_BUILD_DIR="${SCRIPT_DIR}/.deps/rubberband-build"
+RUBBERBAND_INSTALL_DIR="${SCRIPT_DIR}/.deps/rubberband-install"
+RUBBERBAND_PKGCONFIG_DIR="${RUBBERBAND_INSTALL_DIR}/lib/pkgconfig"
+RUBBERBAND_PKGCONFIG_FILE="${RUBBERBAND_PKGCONFIG_DIR}/rubberband.pc"
+RUBBERBAND_VERSION_FILE="${RUBBERBAND_INSTALL_DIR}/.build-version"
 QT_PRIVATE_DEV_DIR="${SCRIPT_DIR}/.deps/qt6-base-private-dev"
 ASAN="OFF"
 FFMPEG_PROFILE="auto"
@@ -292,6 +299,56 @@ EOF
     fi
 }
 
+ensure_rubberband_installed() {
+    local current_version=""
+    local installed_version=""
+    current_version="$(git -C "${RUBBERBAND_SRC_DIR}" rev-parse HEAD)"
+    if [[ -f "${RUBBERBAND_VERSION_FILE}" ]]; then
+        installed_version="$(<"${RUBBERBAND_VERSION_FILE}")"
+    fi
+
+    if [[ -f "${RUBBERBAND_PKGCONFIG_FILE}" && "${installed_version}" == "${current_version}" ]]; then
+        return 0
+    fi
+
+    if ! command -v meson >/dev/null 2>&1; then
+        cat >&2 <<EOF
+Rubber Band source is available at ${RUBBERBAND_SRC_DIR}, but Meson is not installed.
+Install meson to build the vendored high-quality audio time-stretch backend, then rerun ./build.sh.
+The editor can still configure with the SOLA fallback if you run CMake directly.
+EOF
+        return 0
+    fi
+    if ! command -v ninja >/dev/null 2>&1; then
+        echo "Rubber Band requires ninja for the Meson build; install ninja-build and rerun ./build.sh." >&2
+        return 0
+    fi
+
+    echo "Bootstrapping Rubber Band into ${RUBBERBAND_INSTALL_DIR}..."
+    rm -rf "${RUBBERBAND_BUILD_DIR}"
+    meson setup "${RUBBERBAND_BUILD_DIR}" "${RUBBERBAND_SRC_DIR}" \
+        --prefix="${RUBBERBAND_INSTALL_DIR}" \
+        --libdir=lib \
+        --buildtype=release \
+        -Ddefault_library=static \
+        -Dfft=builtin \
+        -Dresampler=builtin \
+        -Dcmdline=disabled \
+        -Dtests=disabled \
+        -Djni=disabled \
+        -Dladspa=disabled \
+        -Dlv2=disabled \
+        -Dvamp=disabled
+    meson compile -C "${RUBBERBAND_BUILD_DIR}"
+    meson install -C "${RUBBERBAND_BUILD_DIR}"
+    printf '%s\n' "${current_version}" > "${RUBBERBAND_VERSION_FILE}"
+
+    if [[ ! -f "${RUBBERBAND_PKGCONFIG_FILE}" ]]; then
+        echo "Rubber Band install finished but ${RUBBERBAND_PKGCONFIG_FILE} was not produced." >&2
+        exit 1
+    fi
+}
+
 ensure_qt_private_headers() {
     local required_header="/usr/include/x86_64-linux-gnu/qt6/QtGui/6.4.2/QtGui/private/qrhi_p.h"
     local local_required_header="${QT_PRIVATE_DEV_DIR}${required_header}"
@@ -371,14 +428,16 @@ resolve_ffmpeg_profile
 ensure_submodule_checkout "${FFMPEG_SUBMODULE_PATH}" "${FFMPEG_SRC_DIR}" "configure"
 ensure_submodule_checkout "${RTAUDIO_SUBMODULE_PATH}" "${RTAUDIO_SRC_DIR}" "CMakeLists.txt"
 ensure_submodule_checkout "${CPPMONETIZE_SUBMODULE_PATH}" "${CPPMONETIZE_SRC_DIR}" "CMakeLists.txt"
+ensure_submodule_checkout "${RUBBERBAND_SUBMODULE_PATH}" "${RUBBERBAND_SRC_DIR}" "meson.build"
 if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
     ensure_submodule_checkout "${NVCODEC_SUBMODULE_PATH}" "${NVCODEC_SRC_DIR}" "Makefile"
 fi
 
 ensure_ffmpeg_installed
+ensure_rubberband_installed
 ensure_qt_private_headers
 
-export PKG_CONFIG_PATH="${FFMPEG_PKGCONFIG_DIR}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+export PKG_CONFIG_PATH="${FFMPEG_PKGCONFIG_DIR}:${RUBBERBAND_PKGCONFIG_DIR}${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
 
 if [[ "${CMAKE_GENERATOR}" == "Ninja" ]]; then
     BUILD_DIR_BASE="${SCRIPT_DIR}/build"

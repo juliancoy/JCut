@@ -353,6 +353,18 @@ void EditorWindow::connectPreviewSignals()
                 clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
         }
     };
+    m_preview->faceStreamBoxFocusClearRequested = [this](const QString& clipId,
+                                                         int trackId,
+                                                         const QString& streamId,
+                                                         int64_t sourceFrame,
+                                                         qreal xNorm,
+                                                         qreal yNorm,
+                                                         qreal boxSizeNorm) {
+        if (m_speakersTab) {
+            m_speakersTab->handlePreviewFaceDetectionsBoxFocusClear(
+                clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
+        }
+    };
     m_preview->faceStreamBoxClickStatus = [this](const QString& message) {
         qInfo().noquote() << message;
         if (m_speakersTab) {
@@ -510,7 +522,15 @@ void EditorWindow::updateTransportLabels()
     m_audioMuteButton->setText(QString());
     m_audioMuteButton->setToolTip(muted ? QStringLiteral("Unmute") : QStringLiteral("Mute"));
     m_audioMuteButton->setIcon(editor::volumeTransportIcon(muted));
-    m_audioNowPlayingLabel->setText(activeAudio.isEmpty() ? QStringLiteral("Audio idle") : QStringLiteral("Audio  %1").arg(activeAudio));
+    if (m_retimingAudioForPlayback) {
+        m_audioNowPlayingLabel->setText(QStringLiteral("Re-timing audio"));
+    } else if (m_playbackAudioWarmupPending) {
+        m_audioNowPlayingLabel->setText(QStringLiteral("Loading re-timed audio"));
+    } else {
+        m_audioNowPlayingLabel->setText(activeAudio.isEmpty()
+                                            ? QStringLiteral("Audio idle")
+                                            : QStringLiteral("Audio  %1").arg(activeAudio));
+    }
 }
 
 QString EditorWindow::frameToTimecode(int64_t frame) const

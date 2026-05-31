@@ -2,6 +2,7 @@
 
 #include "preview_interaction_state.h"
 #include "preview_surface.h"
+#include "facedetections_types.h"
 #include "facedetections_time_mapping.h"
 #include "debug_controls.h"
 
@@ -60,6 +61,8 @@ public:
     void setShowSpeakerTrackPoints(bool show) override;
     void setShowSpeakerTrackBoxes(bool show) override;
     void setShowRawDetections(bool show) override;
+    void setShowCurrentSpeakerName(bool show) override;
+    void setShowCurrentSpeakerOrganization(bool show) override;
     void setFacestreamOverlaySource(const QString& source) override;
     void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
@@ -148,9 +151,14 @@ private:
     QVector<FacestreamTrack> parseContinuityTracksForClip(const TimelineClip& clip,
                                                           const QJsonArray& streams,
                                                           const QJsonObject& continuityRoot) const;
-    QVector<VulkanPreviewFacestreamOverlay> parseRawDetectionsForClip(const TimelineClip& clip,
-                                                                      const QJsonObject& artifactRoot,
-                                                                      int64_t sourceFrame) const;
+    QVector<FacestreamTrack> convertContinuityTrackModelsForClip(
+        const QVector<jcut::facedetections::FacestreamTrack>& tracks,
+        const QString& frameDomain,
+        const QString& detectorMode) const;
+    QVector<VulkanPreviewFacestreamOverlay> convertRawDetectionModelsForClip(
+        const TimelineClip& clip,
+        const QVector<jcut::facedetections::FacestreamFrameDetections>& frames,
+        FacestreamFrameDomain frameDomain) const;
     bool isSampleWithinClip(const TimelineClip& clip, int64_t samplePosition) const;
     int64_t sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const;
     void recordPlaybackSmoothnessSample(int exactCount,

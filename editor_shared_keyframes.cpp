@@ -4,6 +4,7 @@
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
+#include "speaker_track_assignment_service.h"
 #include "transcript_engine.h"
 #include "transform_skip_aware_timing.h"
 
@@ -29,6 +30,12 @@ constexpr int kSpeakerFramingSmoothingMovingAverage = 0;
 constexpr int kSpeakerFramingSmoothingLowPass = 1;
 constexpr int kSpeakerFramingSmoothingBoth = 2;
 constexpr qint64 kMaxSynchronousContinuityArtifactBytes = 128ll * 1024ll * 1024ll;
+
+struct RobustScalarSample {
+    qreal value = 0.0;
+    int64_t frame = 0;
+    qreal confidence = 1.0;
+};
 
 void appendReferencedArtifactPath(QStringList* paths, const QJsonObject& root, const QString& key)
 {
@@ -76,35 +83,114 @@ QSize sourceSizeForClipCached(const TimelineClip& clip, const QSize& outputSize)
     return resolved;
 }
 
+qreal smoothingAmountForStrength(qreal strength)
+{
+    const qreal boundedStrength =
+        qBound<qreal>(0.0, strength, TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+    if (boundedStrength <= 0.0) {
+        return 0.0;
+    }
+    return 1.0 - std::exp(-boundedStrength);
+}
+
+qreal medianValue(QVector<qreal> values)
+{
+    if (values.isEmpty()) {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    const int middle = values.size() / 2;
+    if ((values.size() % 2) == 1) {
+        return values.at(middle);
+    }
+    return (values.at(middle - 1) + values.at(middle)) * 0.5;
+}
+
+qreal robustSmoothedScalar(qreal original,
+                           const QVector<RobustScalarSample>& samples,
+                           int64_t lookupFrame,
+                           int windowFrames,
+                           int smoothingMode,
+                           qreal strength,
+                           qreal minRobustScale)
+{
+    if (samples.size() <= 1 || windowFrames <= 1) {
+        return original;
+    }
+    const qreal amount = smoothingAmountForStrength(strength);
+    if (amount <= 0.0) {
+        return original;
+    }
+
+    QVector<qreal> values;
+    values.reserve(samples.size());
+    for (const RobustScalarSample& sample : samples) {
+        values.push_back(sample.value);
+    }
+    const qreal median = medianValue(values);
+
+    QVector<qreal> deviations;
+    deviations.reserve(samples.size());
+    for (const RobustScalarSample& sample : samples) {
+        deviations.push_back(std::abs(sample.value - median));
+    }
+    const qreal mad = medianValue(deviations);
+    const qreal modeScale = smoothingMode == kSpeakerFramingSmoothingLowPass
+        ? 3.25
+        : (smoothingMode == kSpeakerFramingSmoothingBoth ? 2.75 : 2.25);
+    const qreal robustScale = qMax(minRobustScale, qMax<qreal>(mad * modeScale, 0.000001));
+    const qreal sigmaFrames = qMax<qreal>(1.0, static_cast<qreal>(windowFrames) / 3.0);
+
+    qreal weightedSum = 0.0;
+    qreal weightSum = 0.0;
+    for (const RobustScalarSample& sample : samples) {
+        const qreal normalizedResidual = std::abs(sample.value - median) / robustScale;
+        if (normalizedResidual >= 1.0) {
+            continue;
+        }
+        const qreal residualWeight =
+            std::pow(1.0 - (normalizedResidual * normalizedResidual), 2.0);
+        const qreal frameDistance = std::abs(static_cast<qreal>(sample.frame - lookupFrame));
+        const qreal temporalWeight =
+            std::exp(-0.5 * std::pow(frameDistance / sigmaFrames, 2.0));
+        const qreal confidenceWeight =
+            0.25 + (0.75 * qBound<qreal>(0.0, sample.confidence, 1.0));
+        const qreal weight = residualWeight * temporalWeight * confidenceWeight;
+        weightedSum += sample.value * weight;
+        weightSum += weight;
+    }
+
+    const qreal robustTarget = weightSum > 0.0 ? weightedSum / weightSum : median;
+    return original + ((robustTarget - original) * amount);
+}
+
 bool streamSampleAtFrame(const TimelineClip& clip,
-                         const QJsonObject& streamObj,
+                         const jcut::facedetections::FacestreamTrack& stream,
                          int64_t timelineFrame,
                          int64_t mediaSourceFrame,
                          int centerSmoothingFrames,
                          int zoomSmoothingFrames,
                          int smoothingMode,
-                         qreal smoothingStrength,
+                         qreal centerSmoothingStrength,
+                         qreal zoomSmoothingStrength,
                          int gapHoldFrames,
                          QPointF* locationOut,
                          qreal* boxSizeOut)
 {
-    const QJsonArray keyframes = streamObj.value(QStringLiteral("keyframes")).toArray();
-    if (keyframes.isEmpty()) {
+    if (stream.keyframes.isEmpty()) {
         return false;
     }
 
     FacestreamFrameDomain domain = FacestreamFrameDomain::SourceRelative;
-    if (!parseFacestreamFrameDomainString(streamObj.value(QStringLiteral("frame_domain")).toString(), &domain)) {
+    if (!parseFacestreamFrameDomainString(stream.summary.frameDomain, &domain)) {
         int64_t minFrame = std::numeric_limits<int64_t>::max();
         int64_t maxFrame = std::numeric_limits<int64_t>::min();
-        for (const QJsonValue& value : keyframes) {
-            const QJsonObject keyframe = value.toObject();
-            if (!keyframe.contains(QStringLiteral("frame"))) {
+        for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
+            if (keyframe.frame < 0) {
                 continue;
             }
-            const int64_t frame = keyframe.value(QStringLiteral("frame")).toVariant().toLongLong();
-            minFrame = qMin(minFrame, frame);
-            maxFrame = qMax(maxFrame, frame);
+            minFrame = qMin(minFrame, static_cast<int64_t>(keyframe.frame));
+            maxFrame = qMax(maxFrame, static_cast<int64_t>(keyframe.frame));
         }
         domain = inferFacestreamFrameDomain(clip, minFrame, maxFrame);
     }
@@ -115,27 +201,17 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         domain, localTimelineFrame, localMediaSourceFrame, mediaSourceFrame);
 
     QVector<FacestreamResolvedKeyframe> points;
-    points.reserve(keyframes.size());
-    for (const QJsonValue& value : keyframes) {
-        const QJsonObject keyframeObj = value.toObject();
-        if (!keyframeObj.contains(QStringLiteral("frame"))) {
+    points.reserve(stream.keyframes.size());
+    for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
+        if (keyframe.frame < 0) {
             continue;
         }
         FacestreamResolvedKeyframe point;
-        point.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
-        point.xNorm = qBound<qreal>(
-            0.0, keyframeObj.value(QStringLiteral("x")).toDouble(0.5), 1.0);
-        point.yNorm = qBound<qreal>(
-            0.0, keyframeObj.value(QStringLiteral("y")).toDouble(0.5), 1.0);
-        point.boxSizeNorm = qBound<qreal>(
-            0.01,
-            keyframeObj.value(QStringLiteral("box_size"))
-                .toDouble(keyframeObj.value(QStringLiteral("box")).toDouble(0.2)),
-            1.0);
-        point.confidence = qBound<qreal>(
-            0.0, keyframeObj.value(QStringLiteral("confidence")).toDouble(
-                     keyframeObj.value(QStringLiteral("confidence")).toDouble(1.0)),
-            1.0);
+        point.frame = keyframe.frame;
+        point.xNorm = qBound<qreal>(0.0, keyframe.x, 1.0);
+        point.yNorm = qBound<qreal>(0.0, keyframe.y, 1.0);
+        point.boxSizeNorm = qBound<qreal>(0.01, keyframe.box, 1.0);
+        point.confidence = qBound<qreal>(0.0, keyframe.confidence, 1.0);
         point.hasCenterBox = true;
         points.push_back(point);
     }
@@ -193,77 +269,26 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         qBound(0, centerSmoothingFrames, TimelineClip::kSpeakerFramingSmoothingMaxFrames);
     const int zoomWindowFrames =
         qBound(0, zoomSmoothingFrames, TimelineClip::kSpeakerFramingSmoothingMaxFrames);
-    const qreal smoothBlend =
-        qBound<qreal>(0.0, smoothingStrength, TimelineClip::kSpeakerFramingSmoothingStrengthMax);
-    if (smoothBlend > 0.0 && (centerWindowFrames > 1 || zoomWindowFrames > 1)) {
-        struct SmoothSums {
-            qreal movingSum = 0.0;
-            int movingCount = 0;
-            qreal lowPassSum = 0.0;
-            qreal lowPassWeight = 0.0;
-        };
-        auto addSmoothSample = [lookupFrame](SmoothSums& sums,
-                                             qreal value,
-                                             int64_t frame,
-                                             int windowFrames) {
-            if (windowFrames <= 1) {
-                return;
-            }
-            sums.movingSum += value;
-            ++sums.movingCount;
-            const qreal halfWindow = qMax<qreal>(1.0, static_cast<qreal>(windowFrames - 1) / 2.0);
-            const qreal distance = qAbs(static_cast<qreal>(frame - lookupFrame));
-            const qreal weight = std::exp(-distance / halfWindow);
-            sums.lowPassSum += value * weight;
-            sums.lowPassWeight += weight;
-        };
-        auto resolvedSmoothValue = [](qreal original,
-                                      const SmoothSums& sums,
-                                      int mode,
-                                      qreal strength) {
-            if (sums.movingCount <= 0 || sums.lowPassWeight <= 0.0) {
-                return original;
-            }
-            const qreal movingAverage =
-                sums.movingSum / static_cast<qreal>(sums.movingCount);
-            const qreal lowPass = sums.lowPassSum / sums.lowPassWeight;
-            qreal smoothed = movingAverage;
-            switch (qBound(0, mode, 2)) {
-            case kSpeakerFramingSmoothingLowPass:
-                smoothed = lowPass;
-                break;
-            case kSpeakerFramingSmoothingBoth:
-                smoothed = (movingAverage + lowPass) * 0.5;
-                break;
-            case kSpeakerFramingSmoothingMovingAverage:
-            default:
-                smoothed = movingAverage;
-                break;
-            }
-            return original + ((smoothed - original) *
-                               qBound<qreal>(0.0,
-                                             strength,
-                                             TimelineClip::kSpeakerFramingSmoothingStrengthMax));
-        };
-
+    if ((smoothingAmountForStrength(centerSmoothingStrength) > 0.0 && centerWindowFrames > 1) ||
+        (smoothingAmountForStrength(zoomSmoothingStrength) > 0.0 && zoomWindowFrames > 1)) {
         const int centerBefore = centerWindowFrames / 2;
         const int centerAfter = centerWindowFrames - centerBefore - 1;
         const int64_t centerStartFrame = lookupFrame - centerBefore;
         const int64_t centerEndFrame = lookupFrame + centerAfter;
-        SmoothSums centerXSums;
-        SmoothSums centerYSums;
+        QVector<RobustScalarSample> centerXSamples;
+        QVector<RobustScalarSample> centerYSamples;
         if (centerWindowFrames > 1) {
-            addSmoothSample(centerXSums, sample.xNorm, lookupFrame, centerWindowFrames);
-            addSmoothSample(centerYSums, sample.yNorm, lookupFrame, centerWindowFrames);
+            centerXSamples.push_back({sample.xNorm, lookupFrame, sample.confidence});
+            centerYSamples.push_back({sample.yNorm, lookupFrame, sample.confidence});
         }
 
         const int zoomBefore = zoomWindowFrames / 2;
         const int zoomAfter = zoomWindowFrames - zoomBefore - 1;
         const int64_t zoomStartFrame = lookupFrame - zoomBefore;
         const int64_t zoomEndFrame = lookupFrame + zoomAfter;
-        SmoothSums zoomSums;
+        QVector<RobustScalarSample> zoomSamples;
         if (zoomWindowFrames > 1) {
-            addSmoothSample(zoomSums, sample.boxSizeNorm, lookupFrame, zoomWindowFrames);
+            zoomSamples.push_back({std::log(sample.boxSizeNorm), lookupFrame, sample.confidence});
         }
         for (const FacestreamResolvedKeyframe& point : points) {
             if (point.frame == lookupFrame || point.boxSizeNorm <= 0.0) {
@@ -272,24 +297,46 @@ bool streamSampleAtFrame(const TimelineClip& clip,
             if (centerWindowFrames > 1 &&
                 point.frame >= centerStartFrame &&
                 point.frame <= centerEndFrame) {
-                addSmoothSample(centerXSums, point.xNorm, point.frame, centerWindowFrames);
-                addSmoothSample(centerYSums, point.yNorm, point.frame, centerWindowFrames);
+                centerXSamples.push_back({point.xNorm, point.frame, point.confidence});
+                centerYSamples.push_back({point.yNorm, point.frame, point.confidence});
             }
             if (zoomWindowFrames > 1 &&
                 point.frame >= zoomStartFrame &&
                 point.frame <= zoomEndFrame) {
-                addSmoothSample(zoomSums, point.boxSizeNorm, point.frame, zoomWindowFrames);
+                zoomSamples.push_back({std::log(point.boxSizeNorm), point.frame, point.confidence});
             }
         }
         if (centerWindowFrames > 1) {
             sample.xNorm = qBound<qreal>(
-                0.0, resolvedSmoothValue(sample.xNorm, centerXSums, smoothingMode, smoothBlend), 1.0);
+                0.0,
+                robustSmoothedScalar(sample.xNorm,
+                                     centerXSamples,
+                                     lookupFrame,
+                                     centerWindowFrames,
+                                     smoothingMode,
+                                     centerSmoothingStrength,
+                                     0.015),
+                1.0);
             sample.yNorm = qBound<qreal>(
-                0.0, resolvedSmoothValue(sample.yNorm, centerYSums, smoothingMode, smoothBlend), 1.0);
+                0.0,
+                robustSmoothedScalar(sample.yNorm,
+                                     centerYSamples,
+                                     lookupFrame,
+                                     centerWindowFrames,
+                                     smoothingMode,
+                                     centerSmoothingStrength,
+                                     0.015),
+                1.0);
         }
         if (zoomWindowFrames > 1) {
-            sample.boxSizeNorm = qBound<qreal>(
-                0.01, resolvedSmoothValue(sample.boxSizeNorm, zoomSums, smoothingMode, smoothBlend), 1.0);
+            const qreal smoothedLogBox = robustSmoothedScalar(std::log(sample.boxSizeNorm),
+                                                              zoomSamples,
+                                                              lookupFrame,
+                                                              zoomWindowFrames,
+                                                              smoothingMode,
+                                                              zoomSmoothingStrength,
+                                                              0.08);
+            sample.boxSizeNorm = qBound<qreal>(0.01, std::exp(smoothedLogBox), 1.0);
         }
     }
 
@@ -318,23 +365,23 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     }
     const QString trimmedSpeakerId = speakerId.trimmed();
     editor::TranscriptEngine engine;
-    const QString identityPath = engine.identityArtifactPath(transcriptPath);
     const QString rawArtifactPath = engine.facedetectionsArtifactPath(transcriptPath);
     const QString processedPath = engine.facedetectionsProcessedArtifactPath(transcriptPath);
     const QString cacheKey = assignedContinuityCacheKey(transcriptPath, clip.id, trimmedSpeakerId);
 
-    QVector<QJsonObject> cachedStreams;
+    QVector<jcut::facedetections::FacestreamTrack> cachedStreams;
     if (cachedAssignedContinuityStreams(
-            cacheKey, transcriptPath, identityPath, processedPath, &cachedStreams)) {
-        for (const QJsonObject& streamObj : cachedStreams) {
+            cacheKey, transcriptPath, processedPath, &cachedStreams)) {
+        for (const jcut::facedetections::FacestreamTrack& stream : cachedStreams) {
             if (streamSampleAtFrame(clip,
-                                    streamObj,
+                                    stream,
                                     timelineFrame,
                                     mediaSourceFrame,
                                     clip.speakerFramingCenterSmoothingFrames,
                                     clip.speakerFramingZoomSmoothingFrames,
                                     clip.speakerFramingSmoothingMode,
-                                    clip.speakerFramingSmoothingStrength,
+                                    clip.speakerFramingCenterSmoothingStrength,
+                                    clip.speakerFramingZoomSmoothingStrength,
                                     clip.speakerFramingGapHoldFrames,
                                     locationOut,
                                     boxSizeOut)) {
@@ -344,16 +391,13 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
         return false;
     }
 
-    QJsonObject identityRoot;
-    if (!engine.loadIdentityArtifact(transcriptPath, &identityRoot)) {
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
         return false;
     }
-    const QJsonObject assignmentRoot =
-        identityRoot.value(QStringLiteral("identity_assignments_by_clip"))
-            .toObject()
-            .value(clip.id)
-            .toObject();
-    const QJsonArray identityMap = assignmentRoot.value(QStringLiteral("track_identity_map")).toArray();
+    const QJsonObject transcriptRoot = transcriptDoc.object();
+    const QJsonArray identityMap =
+        jcut::speakertrack::assignmentMapForClip(transcriptRoot, clip.id);
     QSet<int> assignedTrackIds;
     QSet<QString> assignedStreamIds;
     for (const QJsonValue& value : identityMap) {
@@ -388,7 +432,7 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     if (continuityRoot.isEmpty()) {
         if (QFileInfo(processedPath).size() > kMaxSynchronousContinuityArtifactBytes) {
             storeAssignedContinuityStreams(
-                cacheKey, transcriptPath, identityPath, processedPath, referencedPaths, QVector<QJsonObject>{});
+                cacheKey, transcriptPath, processedPath, referencedPaths, {});
             return false;
         }
         QJsonObject processedRoot;
@@ -403,32 +447,24 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("raw_frames_artifact_path"));
     appendReferencedArtifactPath(&referencedPaths, continuityRoot, QStringLiteral("continuity_artifact_path"));
 
-    QJsonDocument transcriptDoc;
-    if (continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false)) {
-        engine.loadTranscriptJson(transcriptPath, &transcriptDoc);
-    }
-    const QJsonArray streams = jcut::facedetections::continuityStreamsForAssignments(
+    const QVector<jcut::facedetections::FacestreamTrack> matchingStreams =
+        jcut::facedetections::continuityTrackModelsForAssignments(
         continuityRoot,
         assignedTrackIds,
         assignedStreamIds,
-        transcriptDoc.object());
-    QVector<QJsonObject> matchingStreams;
-    matchingStreams.reserve(streams.size());
-    for (const QJsonValue& value : streams) {
-        const QJsonObject streamObj = value.toObject();
-        matchingStreams.push_back(streamObj);
-    }
+        continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false) ? transcriptRoot : QJsonObject{});
     storeAssignedContinuityStreams(
-        cacheKey, transcriptPath, identityPath, processedPath, referencedPaths, matchingStreams);
-    for (const QJsonObject& streamObj : matchingStreams) {
+        cacheKey, transcriptPath, processedPath, referencedPaths, matchingStreams);
+    for (const jcut::facedetections::FacestreamTrack& stream : matchingStreams) {
         if (streamSampleAtFrame(clip,
-                                streamObj,
+                                stream,
                                 timelineFrame,
                                 mediaSourceFrame,
                                 clip.speakerFramingCenterSmoothingFrames,
                                 clip.speakerFramingZoomSmoothingFrames,
                                 clip.speakerFramingSmoothingMode,
-                                clip.speakerFramingSmoothingStrength,
+                                clip.speakerFramingCenterSmoothingStrength,
+                                clip.speakerFramingZoomSmoothingStrength,
                                 clip.speakerFramingGapHoldFrames,
                                 locationOut,
                                 boxSizeOut)) {
@@ -588,6 +624,67 @@ TimelineClip::TransformKeyframe retargetSpeakerFramingTransform(
     retargeted.scaleY = sanitizeScaleValue(framingState.scaleY * scaleFactor);
     return retargeted;
 }
+
+template <typename Keyframe, typename Frame>
+int firstKeyframeAfterFrame(const QVector<Keyframe>& keyframes, Frame frame)
+{
+    const auto it = std::upper_bound(
+        keyframes.constBegin(),
+        keyframes.constEnd(),
+        frame,
+        [](Frame needle, const Keyframe& keyframe) {
+            return needle < static_cast<Frame>(keyframe.frame);
+        });
+    return static_cast<int>(std::distance(keyframes.constBegin(), it));
+}
+
+TimelineClip::TransformKeyframe interpolatedSpeakerFramingTarget(
+    const TimelineClip::TransformKeyframe& previous,
+    const TimelineClip::TransformKeyframe& current,
+    qreal localFrame)
+{
+    if (!current.linearInterpolation || current.frame <= previous.frame) {
+        return previous;
+    }
+    const qreal t = qBound<qreal>(
+        0.0,
+        (localFrame - static_cast<qreal>(previous.frame)) /
+            static_cast<qreal>(current.frame - previous.frame),
+        1.0);
+    TimelineClip::TransformKeyframe state;
+    state.frame = qRound64(localFrame);
+    state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
+    state.translationY = previous.translationY + ((current.translationY - previous.translationY) * t);
+    state.rotation = 0.0;
+    state.scaleX = qBound<qreal>(-1.0, previous.scaleX + ((current.scaleX - previous.scaleX) * t), 1.0);
+    state.scaleY = state.scaleX;
+    state.linearInterpolation = current.linearInterpolation;
+    return state;
+}
+
+TimelineClip::TransformKeyframe interpolatedSpeakerFramingKeyframe(
+    const TimelineClip::TransformKeyframe& previous,
+    const TimelineClip::TransformKeyframe& current,
+    qreal localFrame)
+{
+    if (!current.linearInterpolation || current.frame <= previous.frame) {
+        return previous;
+    }
+    const qreal t = qBound<qreal>(
+        0.0,
+        (localFrame - static_cast<qreal>(previous.frame)) /
+            static_cast<qreal>(current.frame - previous.frame),
+        1.0);
+    TimelineClip::TransformKeyframe state;
+    state.frame = qRound64(localFrame);
+    state.translationX = previous.translationX + ((current.translationX - previous.translationX) * t);
+    state.translationY = previous.translationY + ((current.translationY - previous.translationY) * t);
+    state.rotation = 0.0;
+    state.scaleX = sanitizeScaleValue(previous.scaleX + ((current.scaleX - previous.scaleX) * t));
+    state.scaleY = sanitizeScaleValue(previous.scaleY + ((current.scaleY - previous.scaleY) * t));
+    state.linearInterpolation = current.linearInterpolation;
+    return state;
+}
 } // namespace
 
 
@@ -721,10 +818,15 @@ void normalizeClipTransformKeyframes(TimelineClip& clip) {
                clip.speakerFramingZoomSmoothingFrames,
                TimelineClip::kSpeakerFramingSmoothingMaxFrames);
     clip.speakerFramingSmoothingMode = qBound(0, clip.speakerFramingSmoothingMode, 2);
-    clip.speakerFramingSmoothingStrength =
+    clip.speakerFramingCenterSmoothingStrength =
         qBound<qreal>(
             0.0,
-            clip.speakerFramingSmoothingStrength,
+            clip.speakerFramingCenterSmoothingStrength,
+            TimelineClip::kSpeakerFramingSmoothingStrengthMax);
+    clip.speakerFramingZoomSmoothingStrength =
+        qBound<qreal>(
+            0.0,
+            clip.speakerFramingZoomSmoothingStrength,
             TimelineClip::kSpeakerFramingSmoothingStrengthMax);
     clip.speakerFramingGapHoldFrames =
         qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
@@ -1006,36 +1108,16 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtFrame(const Ti
         return clip.speakerFramingTargetKeyframes.constFirst();
     }
 
-    for (int i = 1; i < clip.speakerFramingTargetKeyframes.size(); ++i) {
-        const TimelineClip::TransformKeyframe& previous = clip.speakerFramingTargetKeyframes[i - 1];
-        const TimelineClip::TransformKeyframe& current = clip.speakerFramingTargetKeyframes[i];
-        if (localFrame < current.frame) {
-            if (!current.linearInterpolation || current.frame <= previous.frame) {
-                return previous;
-            }
-            const qreal t = qBound<qreal>(
-                0.0,
-                static_cast<qreal>(localFrame - previous.frame) /
-                    static_cast<qreal>(current.frame - previous.frame),
-                1.0);
-            TimelineClip::TransformKeyframe state;
-            state.frame = localFrame;
-            state.translationX =
-                previous.translationX + ((current.translationX - previous.translationX) * t);
-            state.translationY =
-                previous.translationY + ((current.translationY - previous.translationY) * t);
-            state.rotation = 0.0;
-            state.scaleX = qBound<qreal>(
-                -1.0, previous.scaleX + ((current.scaleX - previous.scaleX) * t), 1.0);
-            state.scaleY = state.scaleX;
-            state.linearInterpolation = current.linearInterpolation;
-            return state;
-        }
-        if (localFrame == current.frame) {
-            return current;
-        }
+    const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingTargetKeyframes, localFrame);
+    if (upperIndex <= 0) {
+        return clip.speakerFramingTargetKeyframes.constFirst();
     }
-    return clip.speakerFramingTargetKeyframes.constLast();
+    if (upperIndex >= clip.speakerFramingTargetKeyframes.size()) {
+        return clip.speakerFramingTargetKeyframes.constLast();
+    }
+    const TimelineClip::TransformKeyframe& previous = clip.speakerFramingTargetKeyframes.at(upperIndex - 1);
+    const TimelineClip::TransformKeyframe& current = clip.speakerFramingTargetKeyframes.at(upperIndex);
+    return previous.frame == localFrame ? previous : interpolatedSpeakerFramingTarget(previous, current, localFrame);
 }
 
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtPosition(const TimelineClip& clip,
@@ -1051,38 +1133,18 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtPosition(const
         return clip.speakerFramingTargetKeyframes.constFirst();
     }
 
-    TimelineClip::TransformKeyframe state = clip.speakerFramingTargetKeyframes.constLast();
-    for (int i = 1; i < clip.speakerFramingTargetKeyframes.size(); ++i) {
-        const TimelineClip::TransformKeyframe& previous = clip.speakerFramingTargetKeyframes[i - 1];
-        const TimelineClip::TransformKeyframe& current = clip.speakerFramingTargetKeyframes[i];
-        if (localFrame < static_cast<qreal>(current.frame)) {
-            if (!current.linearInterpolation || current.frame <= previous.frame) {
-                state = previous;
-            } else {
-                const qreal t = qBound<qreal>(
-                    0.0,
-                    (localFrame - static_cast<qreal>(previous.frame)) /
-                        static_cast<qreal>(current.frame - previous.frame),
-                    1.0);
-                state.frame = qRound64(localFrame);
-                state.translationX =
-                    previous.translationX + ((current.translationX - previous.translationX) * t);
-                state.translationY =
-                    previous.translationY + ((current.translationY - previous.translationY) * t);
-                state.rotation = 0.0;
-                state.scaleX = qBound<qreal>(
-                    -1.0, previous.scaleX + ((current.scaleX - previous.scaleX) * t), 1.0);
-                state.scaleY = state.scaleX;
-                state.linearInterpolation = current.linearInterpolation;
-            }
-            break;
-        }
-        if (qFuzzyCompare(localFrame + 1.0, static_cast<qreal>(current.frame) + 1.0)) {
-            state = current;
-            break;
-        }
+    const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingTargetKeyframes, localFrame);
+    if (upperIndex <= 0) {
+        return clip.speakerFramingTargetKeyframes.constFirst();
     }
-    return state;
+    if (upperIndex >= clip.speakerFramingTargetKeyframes.size()) {
+        return clip.speakerFramingTargetKeyframes.constLast();
+    }
+    const TimelineClip::TransformKeyframe& previous = clip.speakerFramingTargetKeyframes.at(upperIndex - 1);
+    const TimelineClip::TransformKeyframe& current = clip.speakerFramingTargetKeyframes.at(upperIndex);
+    return qFuzzyCompare(localFrame + 1.0, static_cast<qreal>(previous.frame) + 1.0)
+        ? previous
+        : interpolatedSpeakerFramingTarget(previous, current, localFrame);
 }
 
 bool evaluateClipSpeakerFramingEnabledAtFrame(const TimelineClip& clip, int64_t timelineFrame)
@@ -1093,14 +1155,11 @@ bool evaluateClipSpeakerFramingEnabledAtFrame(const TimelineClip& clip, int64_t 
 
     const int64_t localFrame = qBound<int64_t>(
         0, timelineFrame - clip.startFrame, qMax<int64_t>(0, clip.durationFrames - 1));
-    bool enabled = clip.speakerFramingEnabledKeyframes.constFirst().enabled;
-    for (const TimelineClip::BoolKeyframe& keyframe : clip.speakerFramingEnabledKeyframes) {
-        if (keyframe.frame > localFrame) {
-            break;
-        }
-        enabled = keyframe.enabled;
+    const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingEnabledKeyframes, localFrame);
+    if (upperIndex <= 0) {
+        return clip.speakerFramingEnabledKeyframes.constFirst().enabled;
     }
-    return enabled;
+    return clip.speakerFramingEnabledKeyframes.at(upperIndex - 1).enabled;
 }
 
 bool evaluateClipSpeakerFramingEnabledAtPosition(const TimelineClip& clip, qreal timelineFramePosition)
@@ -1211,35 +1270,15 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
     if (localFrame <= clip.speakerFramingKeyframes.constFirst().frame) {
         framingState = clip.speakerFramingKeyframes.constFirst();
     } else {
-        framingState = clip.speakerFramingKeyframes.constLast();
-        for (int i = 1; i < clip.speakerFramingKeyframes.size(); ++i) {
-            const TimelineClip::TransformKeyframe& previous = clip.speakerFramingKeyframes[i - 1];
-            const TimelineClip::TransformKeyframe& current = clip.speakerFramingKeyframes[i];
-            if (localFrame < current.frame) {
-                if (!current.linearInterpolation || current.frame <= previous.frame) {
-                    framingState = previous;
-                } else {
-                    const qreal t = qBound<qreal>(
-                        0.0, static_cast<qreal>(localFrame - previous.frame) /
-                                 static_cast<qreal>(current.frame - previous.frame), 1.0);
-                    framingState.frame = localFrame;
-                    framingState.translationX =
-                        previous.translationX + ((current.translationX - previous.translationX) * t);
-                    framingState.translationY =
-                        previous.translationY + ((current.translationY - previous.translationY) * t);
-                    framingState.rotation = 0.0;
-                    framingState.scaleX = sanitizeScaleValue(
-                        previous.scaleX + ((current.scaleX - previous.scaleX) * t));
-                    framingState.scaleY = sanitizeScaleValue(
-                        previous.scaleY + ((current.scaleY - previous.scaleY) * t));
-                    framingState.linearInterpolation = current.linearInterpolation;
-                }
-                break;
-            }
-            if (localFrame == current.frame) {
-                framingState = current;
-                break;
-            }
+        const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingKeyframes, localFrame);
+        if (upperIndex >= clip.speakerFramingKeyframes.size()) {
+            framingState = clip.speakerFramingKeyframes.constLast();
+        } else {
+            const TimelineClip::TransformKeyframe& previous = clip.speakerFramingKeyframes.at(upperIndex - 1);
+            const TimelineClip::TransformKeyframe& current = clip.speakerFramingKeyframes.at(upperIndex);
+            framingState = previous.frame == localFrame
+                ? previous
+                : interpolatedSpeakerFramingKeyframe(previous, current, static_cast<qreal>(localFrame));
         }
     }
 
@@ -1269,35 +1308,15 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
     if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
         state = clip.speakerFramingKeyframes.constFirst();
     } else {
-        state = clip.speakerFramingKeyframes.constLast();
-        for (int i = 1; i < clip.speakerFramingKeyframes.size(); ++i) {
-            const TimelineClip::TransformKeyframe& previous = clip.speakerFramingKeyframes[i - 1];
-            const TimelineClip::TransformKeyframe& current = clip.speakerFramingKeyframes[i];
-            if (localFrame < static_cast<qreal>(current.frame)) {
-                if (!current.linearInterpolation || current.frame <= previous.frame) {
-                    state = previous;
-                } else {
-                    const qreal t = qBound<qreal>(
-                        0.0, (localFrame - static_cast<qreal>(previous.frame)) /
-                                 static_cast<qreal>(current.frame - previous.frame), 1.0);
-                    state.frame = qRound64(localFrame);
-                    state.translationX =
-                        previous.translationX + ((current.translationX - previous.translationX) * t);
-                    state.translationY =
-                        previous.translationY + ((current.translationY - previous.translationY) * t);
-                    state.rotation = 0.0;
-                    state.scaleX = sanitizeScaleValue(
-                        previous.scaleX + ((current.scaleX - previous.scaleX) * t));
-                    state.scaleY = sanitizeScaleValue(
-                        previous.scaleY + ((current.scaleY - previous.scaleY) * t));
-                    state.linearInterpolation = current.linearInterpolation;
-                }
-                break;
-            }
-            if (qFuzzyCompare(localFrame + 1.0, static_cast<qreal>(current.frame) + 1.0)) {
-                state = current;
-                break;
-            }
+        const int upperIndex = firstKeyframeAfterFrame(clip.speakerFramingKeyframes, localFrame);
+        if (upperIndex >= clip.speakerFramingKeyframes.size()) {
+            state = clip.speakerFramingKeyframes.constLast();
+        } else {
+            const TimelineClip::TransformKeyframe& previous = clip.speakerFramingKeyframes.at(upperIndex - 1);
+            const TimelineClip::TransformKeyframe& current = clip.speakerFramingKeyframes.at(upperIndex);
+            state = qFuzzyCompare(localFrame + 1.0, static_cast<qreal>(previous.frame) + 1.0)
+                ? previous
+                : interpolatedSpeakerFramingKeyframe(previous, current, localFrame);
         }
     }
 

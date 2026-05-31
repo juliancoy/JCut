@@ -78,6 +78,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
                                          std::function<QJsonObject(const QJsonObject&)> setThrottlesCallback,
                                          std::function<QJsonObject()> getPlaybackConfigCallback,
                                          std::function<QJsonObject(const QJsonObject&)> setPlaybackConfigCallback,
+                                         std::function<QJsonObject()> audioSnapshotCallback,
                                          std::function<QJsonObject()> renderResultCallback)
     : m_window(window)
     , m_fastSnapshotCallback(std::move(fastSnapshotCallback))
@@ -92,6 +93,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
     , m_setThrottlesCallback(std::move(setThrottlesCallback))
     , m_getPlaybackConfigCallback(std::move(getPlaybackConfigCallback))
     , m_setPlaybackConfigCallback(std::move(setPlaybackConfigCallback))
+    , m_audioSnapshotCallback(std::move(audioSnapshotCallback))
     , m_renderResultCallback(std::move(renderResultCallback)) {}
 
 ControlServerWorker::~ControlServerWorker() = default;

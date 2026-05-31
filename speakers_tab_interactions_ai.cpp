@@ -2371,22 +2371,6 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
         resolvedPayload[QStringLiteral("run_id")] = debugRun.runId;
         resolvedPayload[QStringLiteral("updated_at_utc")] = timestampUtc;
         resolvedPayload[QStringLiteral("track_identity_map")] = resolvedMap;
-        QJsonObject identityRoot;
-        transcriptEngine.loadIdentityArtifact(m_transcriptSession.transcriptPath(), &identityRoot);
-        QJsonObject assignmentsByClip = identityRoot.value(QStringLiteral("identity_assignments_by_clip")).toObject();
-        QJsonObject assignmentRoot;
-        assignmentRoot[QStringLiteral("run_id")] = debugRun.runId;
-        assignmentRoot[QStringLiteral("updated_at_utc")] = timestampUtc;
-        assignmentRoot[QStringLiteral("assignment_table_rows")] = assignmentTableRows;
-        assignmentRoot[QStringLiteral("track_identity_overrides")] = overrides;
-        assignmentRoot[QStringLiteral("track_identity_map")] = resolvedMap;
-        assignmentsByClip[clipFlowId] = assignmentRoot;
-        identityRoot[QStringLiteral("schema")] = QStringLiteral("jcut_identity_v1");
-        identityRoot[QStringLiteral("updated_at_utc")] = timestampUtc;
-        identityRoot[QStringLiteral("identity_assignments_by_clip")] = assignmentsByClip;
-        if (transcriptEngine.saveIdentityArtifact(m_transcriptSession.transcriptPath(), identityRoot)) {
-            addArtefact(debugRun, transcriptEngine.identityArtifactPath(m_transcriptSession.transcriptPath()));
-        }
         persistSpeakerFlowSnapshot(QJsonObject(), humanPayload, resolvedPayload);
     }
 

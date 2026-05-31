@@ -81,6 +81,7 @@ public:
         std::function<void(const QString&, qreal, qreal)> speakerPointRequested = {},
         std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested = {},
         std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested = {},
+        std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxFocusClearRequested = {},
         std::function<void(const QString&)> faceStreamBoxClickStatus = {},
         std::function<void(const QString&)> createKeyframeRequested = {});
 

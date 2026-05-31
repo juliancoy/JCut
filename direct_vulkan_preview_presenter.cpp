@@ -1,6 +1,7 @@
 #include "direct_vulkan_preview_presenter.h"
 #include "direct_vulkan_preview_backend.h"
 #include "direct_vulkan_preview_audio.h"
+#include "preview_speaker_profiles.h"
 #include "preview_view_transform.h"
 
 #include <QByteArray>
@@ -13,6 +14,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QStackedLayout>
+#include <QStringList>
 #include <QTransform>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -154,6 +156,7 @@ protected:
         drawContinuityOverlays(&painter, geometries);
         drawRawDetections(&painter, geometries);
         drawTargetBoxOverlay(&painter);
+        drawCurrentSpeakerLabelOverlay(&painter);
     }
 
 private:
@@ -289,6 +292,81 @@ private:
         painter->setPen(QPen(accentColor, 1.8));
         painter->drawLine(QPointF(centerX - 9.0, centerY), QPointF(centerX + 9.0, centerY));
         painter->drawLine(QPointF(centerX, centerY - 9.0), QPointF(centerX, centerY + 9.0));
+    }
+
+    void drawCurrentSpeakerLabelOverlay(QPainter* painter) const
+    {
+        if (!painter || !m_state ||
+            (!m_state->showCurrentSpeakerName && !m_state->showCurrentSpeakerOrganization)) {
+            return;
+        }
+        const CurrentSpeakerLabel label = currentSpeakerLabelForState(m_state);
+        QStringList lines;
+        if (m_state->showCurrentSpeakerName && !label.name.trimmed().isEmpty()) {
+            lines.push_back(label.name.trimmed());
+        }
+        if (m_state->showCurrentSpeakerOrganization && !label.organization.trimmed().isEmpty()) {
+            lines.push_back(label.organization.trimmed());
+        }
+        if (lines.isEmpty()) {
+            return;
+        }
+
+        const QRect surfaceRect = rect();
+        if (surfaceRect.isEmpty()) {
+            return;
+        }
+
+        painter->save();
+        QFont nameFont = painter->font();
+        nameFont.setBold(true);
+        nameFont.setPointSizeF(qMax<qreal>(11.0, nameFont.pointSizeF() + 3.0));
+        QFont orgFont = painter->font();
+        orgFont.setPointSizeF(qMax<qreal>(9.0, orgFont.pointSizeF() + 1.0));
+
+        const int maxTextWidth = qMax(180, static_cast<int>(surfaceRect.width() * 0.72));
+        const int paddingX = 18;
+        const int paddingY = 10;
+        int contentHeight = 0;
+        int contentWidth = 0;
+        QVector<QRect> lineRects;
+        lineRects.reserve(lines.size());
+        for (int i = 0; i < lines.size(); ++i) {
+            const QFontMetrics fm(i == 0 && m_state->showCurrentSpeakerName ? nameFont : orgFont);
+            const QRect bounds = fm.boundingRect(QRect(0, 0, maxTextWidth, 120),
+                                                 Qt::AlignCenter | Qt::TextWordWrap,
+                                                 lines.at(i));
+            lineRects.push_back(bounds);
+            contentHeight += bounds.height();
+            if (i > 0) {
+                contentHeight += 4;
+            }
+            contentWidth = qMax(contentWidth, bounds.width());
+        }
+
+        const int cardWidth = qMin(maxTextWidth + (paddingX * 2), qMax(contentWidth + (paddingX * 2), 220));
+        const int cardHeight = contentHeight + (paddingY * 2);
+        const QRect cardRect(surfaceRect.center().x() - cardWidth / 2,
+                             surfaceRect.bottom() - cardHeight - 22,
+                             cardWidth,
+                             cardHeight);
+        painter->setPen(QPen(QColor(225, 236, 247, 120), 1.0));
+        painter->setBrush(QColor(8, 13, 20, 190));
+        painter->drawRoundedRect(cardRect, 8, 8);
+
+        int y = cardRect.top() + paddingY;
+        for (int i = 0; i < lines.size(); ++i) {
+            const bool nameLine = i == 0 && m_state->showCurrentSpeakerName;
+            painter->setFont(nameLine ? nameFont : orgFont);
+            painter->setPen(nameLine ? QColor(QStringLiteral("#f4f8fc")) : QColor(QStringLiteral("#b9d0e5")));
+            const QRect textRect(cardRect.left() + paddingX,
+                                 y,
+                                 cardRect.width() - (paddingX * 2),
+                                 lineRects.at(i).height());
+            painter->drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, lines.at(i));
+            y += lineRects.at(i).height() + 4;
+        }
+        painter->restore();
     }
 
     PreviewInteractionState* m_state = nullptr;
@@ -483,6 +561,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested,
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested,
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested,
+    std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxFocusClearRequested,
     std::function<void(const QString&)> faceStreamBoxClickStatus,
     std::function<void(const QString&)> createKeyframeRequested)
 {
@@ -499,6 +578,7 @@ void DirectVulkanPreviewPresenter::setInteractionCallbacks(
         std::move(speakerPointRequested),
         std::move(speakerBoxRequested),
         std::move(faceStreamBoxRequested),
+        std::move(faceStreamBoxFocusClearRequested),
         std::move(faceStreamBoxClickStatus),
         std::move(createKeyframeRequested));
 }

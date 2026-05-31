@@ -42,6 +42,9 @@ void EditorWindow::bindInspectorWidgets()
     m_previewVulkanPresenterCombo = m_inspectorPane->previewVulkanPresenterCombo();
     m_speakerShowFaceDetectionsBoxesCheckBox = m_inspectorPane->speakerShowFaceDetectionsBoxesCheckBox();
     m_speakerShowRawDetectionsCheckBox = m_inspectorPane->speakerShowRawDetectionsCheckBox();
+    m_speakerShowCurrentSpeakerNameCheckBox = m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox();
+    m_speakerShowCurrentSpeakerOrganizationCheckBox =
+        m_inspectorPane->speakerShowCurrentSpeakerOrganizationCheckBox();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -565,6 +568,24 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
     }
+    if (m_speakerShowCurrentSpeakerNameCheckBox) {
+        connect(m_speakerShowCurrentSpeakerNameCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setShowCurrentSpeakerName(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
+    if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
+        connect(m_speakerShowCurrentSpeakerOrganizationCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+            if (m_preview) {
+                m_preview->setShowCurrentSpeakerOrganization(checked);
+            }
+            scheduleSaveState();
+            pushHistorySnapshot();
+        });
+    }
     if (m_renderBackendCombo) {
         connect(m_renderBackendCombo,
                 &QComboBox::currentIndexChanged,
@@ -804,6 +825,13 @@ void EditorWindow::setupPreviewControls()
         m_preview->setAudioWaveformVisible(m_audioWaveformVisible);
         m_preview->setAudioVisualizationMode(m_audioVisualizationMode);
         m_preview->setLoiaconoSpectrumSettings(m_loiaconoSpectrumSettings);
+        if (m_speakerShowCurrentSpeakerNameCheckBox) {
+            m_preview->setShowCurrentSpeakerName(m_speakerShowCurrentSpeakerNameCheckBox->isChecked());
+        }
+        if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
+            m_preview->setShowCurrentSpeakerOrganization(
+                m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked());
+        }
     }
     if (m_loiaconoSpectrumSettingsButton) {
         m_loiaconoSpectrumSettingsButton->setEnabled(

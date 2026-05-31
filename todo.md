@@ -3,8 +3,8 @@
 ## Current State
 
 - FaceDetections sidecars have been migrated away from large inline JSON payloads.
-- `_facedetections.bin` and `_facedetections_processed.bin` are compact binary sidecars that reference external record artifacts.
-- External `tracks.bin` and `detections.bin` remain the authoritative large FaceDetections payloads.
+- `_facedetections.bin` and `_facedetections_processed.bin` are compact binary sidecars that reference external indexed artifacts.
+- External `tracks.idx`/`tracks.dat` and `detections.idx`/`detections.dat` are the authoritative large FaceDetections payloads.
 - UI paths now intentionally avoid materializing full external raw track artifacts.
 - The running preview can be responsive, but continuity boxes are not visible when the sidecar contains only compact external raw artifact references and no stored `streams`.
 
@@ -12,7 +12,7 @@
 
 - Preview overlays call `storedContinuityStreamsForRoot(...)`.
 - `storedContinuityStreamsForRoot(...)` only returns already-materialized `streams` or small stored stream artifacts.
-- The current migrated sidecars point at external raw record artifacts and do not include stored UI-ready streams.
+- The current migrated sidecars point at external raw indexed artifacts and do not include stored UI-ready streams.
 - Full derivation through `continuityStreamsForRoot(...)` is intentionally not used by preview/Speakers UI paths because it expands all raw tracks, freezes the UI, and can allocate tens of GB.
 
 ## Professional Boundary
@@ -24,7 +24,7 @@
 
 ## Required Next Work
 
-1. Add a bounded current-playhead continuity reader for external `tracks.bin`.
+1. Keep the bounded current-playhead continuity reader on external `tracks.idx`.
 2. Use that reader in preview overlays so only tracks relevant to the current frame/window are decoded.
 3. Use the same bounded reader for the Speakers playhead candidate list.
 4. Preserve selective assignment reads through `continuityStreamsForAssignments(...)`.
@@ -32,7 +32,7 @@
 
 ## Recommended Implementation
 
-- Build a lightweight record index for `tracks.bin`.
+- Keep the lightweight record index in `tracks.idx`.
 - Store per-track metadata without expanding all keyframes:
   - `track_id`
   - `stream_id`
@@ -55,7 +55,7 @@
 - Opening the FaceDetections paths panel does not load all records.
 - RSS does not jump by multiple GB when toggling track visibility or clicking faces.
 - Tests cover:
-  - compact sidecar with external `tracks.bin`
+  - compact sidecar with external `tracks.idx`/`tracks.dat`
   - bounded preview/playhead lookup
   - selective assignment lookup
   - no UI-path call to full `continuityStreamsForRoot(...)` for external raw artifacts

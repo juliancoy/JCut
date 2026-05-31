@@ -435,6 +435,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
         [this](const QJsonObject& patch) { return applyThrottleConfigPatch(patch); },
         [this]() { return playbackConfigSnapshot(); },
         [this](const QJsonObject& patch) { return applyPlaybackConfigPatch(patch); },
+        [this]() { return audioDebugSnapshot(); },
         nullptr, // renderResultCallback (empty/default)
         this);
     m_controlServer->start(controlPort);

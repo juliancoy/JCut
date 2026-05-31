@@ -13,7 +13,7 @@ constexpr int kAssignedContinuityCacheMaxEntries = 16;
 struct AssignedContinuityStreamsCacheEntry {
     QString revision;
     QStringList referencedPaths;
-    QVector<QJsonObject> streams;
+    QVector<jcut::facedetections::FacestreamTrack> streams;
 };
 
 QString fileRevisionToken(const QString& path)
@@ -34,13 +34,11 @@ QString fileRevisionToken(const QString& path)
 }
 
 QString assignedContinuityRevision(const QString& transcriptPath,
-                                   const QString& identityPath,
                                    const QString& processedPath,
                                    const QStringList& referencedPaths)
 {
     QStringList tokens{
         fileRevisionToken(transcriptPath),
-        fileRevisionToken(identityPath),
         fileRevisionToken(processedPath),
         QString::number(facedetectionsArtifactRevisionMsForTranscript(transcriptPath)),
     };
@@ -82,9 +80,8 @@ QString assignedContinuityCacheKey(const QString& transcriptPath,
 
 bool cachedAssignedContinuityStreams(const QString& cacheKey,
                                      const QString& transcriptPath,
-                                     const QString& identityPath,
                                      const QString& processedPath,
-                                     QVector<QJsonObject>* streamsOut)
+                                     QVector<jcut::facedetections::FacestreamTrack>* streamsOut)
 {
     QMutexLocker locker(&assignedContinuityCacheMutex());
     auto& cache = assignedContinuityCache();
@@ -93,7 +90,7 @@ bool cachedAssignedContinuityStreams(const QString& cacheKey,
         return false;
     }
     const QString revision = assignedContinuityRevision(
-        transcriptPath, identityPath, processedPath, it.value().referencedPaths);
+        transcriptPath, processedPath, it.value().referencedPaths);
     if (revision != it.value().revision) {
         cache.remove(cacheKey);
         assignedContinuityCacheInsertionOrder().removeAll(cacheKey);
@@ -107,15 +104,14 @@ bool cachedAssignedContinuityStreams(const QString& cacheKey,
 
 void storeAssignedContinuityStreams(const QString& cacheKey,
                                     const QString& transcriptPath,
-                                    const QString& identityPath,
                                     const QString& processedPath,
                                     const QStringList& referencedPaths,
-                                    const QVector<QJsonObject>& streams)
+                                    const QVector<jcut::facedetections::FacestreamTrack>& streams)
 {
     AssignedContinuityStreamsCacheEntry entry;
     entry.referencedPaths = referencedPaths;
     entry.revision = assignedContinuityRevision(
-        transcriptPath, identityPath, processedPath, referencedPaths);
+        transcriptPath, processedPath, referencedPaths);
     entry.streams = streams;
 
     QMutexLocker locker(&assignedContinuityCacheMutex());

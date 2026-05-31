@@ -1,5 +1,6 @@
 #include "../facedetections_tracking.h"
 #include "../facedetections_artifact_utils.h"
+#include "../facedetections_runtime.h"
 #include "../json_io_utils.h"
 
 #include <QCoreApplication>
@@ -112,7 +113,7 @@ void printUsage()
         << "Options:\n"
         << "  --project-state PATH         Project state JSON. Default: projects/default/state.json\n"
         << "  --clip-id ID                 Clip id to evaluate. Default: selectedClipId from the project state.\n"
-        << "  --output-dir DIR             Directory for detections.bin/tracks.bin. Default: temp dir.\n"
+        << "  --output-dir DIR             Directory for detections.idx/tracks.idx. Default: temp dir.\n"
         << "  --runner PATH                Offscreen FaceDetections runner. Default: build/jcut_vulkan_facedetections_offscreen\n"
         << "  --detector NAME              Detector for the runner. Default: jcut-dnn\n"
         << "  --start-frame N              Source frame to start scanning from. Default: 0\n"
@@ -123,7 +124,7 @@ void printUsage()
         << "  --max-low-recall-frame-ratio X  Max fraction of eligible frames allowed below min worst-frame recall. Default: 0.05\n"
         << "  --min-track-worthy-chain N   Minimum continuity chain that makes zero tracks a failure. Default: 10\n"
         << "  --rerun                      Recompute detections/tracks when persisted artifacts are unavailable.\n"
-        << "  --retrack                    Rebuild tracks.bin from an existing detections.bin in --output-dir.\n"
+        << "  --retrack                    Rebuild tracks.idx/tracks.dat from an existing detections.idx in --output-dir.\n"
         << "  --keep-output                Do not delete the temp output directory.\n";
 }
 
@@ -656,53 +657,8 @@ QString transcriptPathForClip(const ClipSelection& selection)
 bool loadBinaryObject(const QString& path, QJsonObject* rootOut)
 {
     QString error;
-    if (jcut::jsonio::readBinaryJsonObject(path, rootOut, 0x4A435554, 1, &error)) {
-        return true;
-    }
-
-    QVector<QJsonObject> records;
-    if (!jcut::jsonio::readBinaryJsonRecords(path, &records, 0x4A465352, 1, &error) ||
-        records.isEmpty()) {
-        return false;
-    }
-    QJsonObject root;
-    QJsonArray frames;
-    QJsonArray tracks;
-    QJsonArray frameSummaries;
-    for (const QJsonObject& record : records) {
-        const QString type = record.value(QStringLiteral("type")).toString();
-        if (type == QStringLiteral("meta")) {
-            root[QStringLiteral("schema")] = record.value(QStringLiteral("schema"));
-            root[QStringLiteral("video")] = record.value(QStringLiteral("video"));
-            root[QStringLiteral("backend")] = record.value(QStringLiteral("backend"));
-            root[QStringLiteral("frame_domain")] = record.value(QStringLiteral("frame_domain"));
-        } else if (type == QStringLiteral("frame")) {
-            QJsonObject frame = record;
-            frame.remove(QStringLiteral("type"));
-            frames.push_back(frame);
-        } else if (type == QStringLiteral("track")) {
-            QJsonObject track = record;
-            track.remove(QStringLiteral("type"));
-            tracks.push_back(track);
-        } else if (type == QStringLiteral("frame_summary")) {
-            QJsonObject frameSummary = record;
-            frameSummary.remove(QStringLiteral("type"));
-            frameSummaries.push_back(frameSummary);
-        }
-    }
-    if (!frames.isEmpty()) {
-        root[QStringLiteral("frames")] = frames;
-    }
-    if (!tracks.isEmpty()) {
-        root[QStringLiteral("tracks")] = tracks;
-    }
-    if (!frameSummaries.isEmpty()) {
-        root[QStringLiteral("frame_summaries")] = frameSummaries;
-    }
-    if (rootOut) {
-        *rootOut = root;
-    }
-    return !root.isEmpty();
+    return jcut::facedetections::readBinaryJsonObject(path, rootOut, &error) ||
+           jcut::jsonio::readBinaryJsonObject(path, rootOut, 0x4A435554, 1, &error);
 }
 
 bool writeBinaryObject(const QString& path, const QJsonObject& root)
@@ -730,8 +686,8 @@ jcut::facedetections::ContinuityTrackingTuning trackingTuningFromSummary(const Q
 
 bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
 {
-    const QString detectionsPath = QDir(outputDir).filePath(QStringLiteral("detections.bin"));
-    const QString tracksPath = QDir(outputDir).filePath(QStringLiteral("tracks.bin"));
+    const QString detectionsPath = QDir(outputDir).filePath(QStringLiteral("detections.idx"));
+    const QString tracksPath = QDir(outputDir).filePath(QStringLiteral("tracks.idx"));
     const QString continuityPath = QDir(outputDir).filePath(QStringLiteral("continuity_facedetections.bin"));
     const QString summaryPath = QDir(outputDir).filePath(QStringLiteral("summary.json"));
 
@@ -833,17 +789,20 @@ bool rebuildTracksFromDetections(const QString& outputDir, QString* errorOut)
             summaryRoot.value(QStringLiteral("backend")).toString());
     const QString frameDomain =
         detectionsRoot.value(QStringLiteral("frame_domain")).toString(QStringLiteral("source_absolute"));
-
-    if (!writeBinaryObject(tracksPath, QJsonObject{
-            {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_offscreen_tracks_v1")},
-            {QStringLiteral("video"), detectionsRoot.value(QStringLiteral("video")).toString()},
-            {QStringLiteral("backend"), backend},
-            {QStringLiteral("frame_domain"), frameDomain},
-            {QStringLiteral("tracks"), trackRows},
-            {QStringLiteral("frame_summaries"), QJsonArray{}}
-        })) {
+    const QString tracksDataPath = QDir(outputDir).filePath(QStringLiteral("tracks.dat"));
+    QString writeError;
+    if (!jcut::facedetections::writeIndexedTrackArtifact(
+            tracksPath,
+            tracksDataPath,
+            detectionsRoot.value(QStringLiteral("video")).toString(),
+            backend,
+            trackRows,
+            QJsonArray{},
+            &writeError)) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to write rebuilt tracks artifact: %1").arg(tracksPath);
+            *errorOut = writeError.isEmpty()
+                ? QStringLiteral("Failed to write rebuilt tracks artifact: %1").arg(tracksPath)
+                : writeError;
         }
         return false;
     }
@@ -1010,8 +969,8 @@ bool loadInputsFromExplicitOutputDir(const QString& outputDir, ArtifactInputs* i
     }
     QJsonObject detectionsRoot;
     QJsonObject tracksRoot;
-    if (!loadBinaryObject(QDir(outputDir).filePath(QStringLiteral("detections.bin")), &detectionsRoot) ||
-        !loadBinaryObject(QDir(outputDir).filePath(QStringLiteral("tracks.bin")), &tracksRoot)) {
+    if (!loadBinaryObject(QDir(outputDir).filePath(QStringLiteral("detections.idx")), &detectionsRoot) ||
+        !loadBinaryObject(QDir(outputDir).filePath(QStringLiteral("tracks.idx")), &tracksRoot)) {
         return false;
     }
     inputsOut->sourceDescription =
@@ -1063,8 +1022,8 @@ bool loadInputsFromLatestDebugRun(const Options& options,
         const QDir artifactDir(clipDebugRoot.filePath(runId + QStringLiteral("/facedetections_artifact")));
         QJsonObject detectionsRoot;
         QJsonObject tracksRoot;
-        if (loadBinaryObject(artifactDir.filePath(QStringLiteral("detections.bin")), &detectionsRoot) &&
-            loadBinaryObject(artifactDir.filePath(QStringLiteral("tracks.bin")), &tracksRoot)) {
+        if (loadBinaryObject(artifactDir.filePath(QStringLiteral("detections.idx")), &detectionsRoot) &&
+            loadBinaryObject(artifactDir.filePath(QStringLiteral("tracks.idx")), &tracksRoot)) {
             inputsOut->sourceDescription =
                 QStringLiteral("debug run %1").arg(artifactDir.absolutePath());
             inputsOut->detectionsRoot = detectionsRoot;
@@ -1177,7 +1136,7 @@ int main(int argc, char** argv)
             if (tempDir) {
                 tempDir->setAutoRemove(false);
             }
-            std::cerr << "Runner completed but detections.bin/tracks.bin could not be reloaded.\n";
+            std::cerr << "Runner completed but detections.idx/tracks.idx could not be reloaded.\n";
             std::cerr << "retained_output_dir=" << outputDir.toStdString() << "\n";
             return 1;
         }

@@ -464,6 +464,22 @@ void PreviewWindow::setShowRawDetections(bool show) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setShowCurrentSpeakerName(bool show) {
+    if (m_interaction.showCurrentSpeakerName == show) {
+        return;
+    }
+    m_interaction.showCurrentSpeakerName = show;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setShowCurrentSpeakerOrganization(bool show) {
+    if (m_interaction.showCurrentSpeakerOrganization == show) {
+        return;
+    }
+    m_interaction.showCurrentSpeakerOrganization = show;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setFacestreamOverlaySource(const QString& source) {
     const QString normalized = source.trimmed().isEmpty()
         ? QStringLiteral("all")

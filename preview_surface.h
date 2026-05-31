@@ -100,6 +100,8 @@ public:
     virtual void setShowSpeakerTrackPoints(bool show) = 0;
     virtual void setShowSpeakerTrackBoxes(bool show) = 0;
     virtual void setShowRawDetections(bool show) = 0;
+    virtual void setShowCurrentSpeakerName(bool show) = 0;
+    virtual void setShowCurrentSpeakerOrganization(bool show) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;
     virtual void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) = 0;
     virtual void setAudioSpeakerHoverModalEnabled(bool enabled) = 0;
@@ -149,5 +151,6 @@ public:
     std::function<void(const QString&, qreal, qreal)> speakerPointRequested;
     std::function<void(const QString&, qreal, qreal, qreal)> speakerBoxRequested;
     std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxRequested;
+    std::function<void(const QString&, int, const QString&, int64_t, qreal, qreal, qreal)> faceStreamBoxFocusClearRequested;
     std::function<void(const QString&)> faceStreamBoxClickStatus;
 };

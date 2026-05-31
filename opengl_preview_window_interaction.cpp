@@ -103,6 +103,19 @@ void PreviewWindow::showEvent(QShowEvent* event) {
 }
 
 void PreviewWindow::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::RightButton) {
+        if (dispatchFaceDetectionsBoxAtPosition(
+                event->position(),
+                faceStreamBoxFocusClearRequested,
+                QStringLiteral("Face box right-click ignored: FaceDetections assignment is not active."))) {
+            m_interaction.transient.faceDetectionsRightClickHandled = true;
+            update();
+            event->accept();
+            return;
+        }
+        QWidget::mousePressEvent(event);
+        return;
+    }
     if (event->button() != Qt::LeftButton) {
         QWidget::mousePressEvent(event);
         return;
@@ -184,7 +197,10 @@ void PreviewWindow::mousePressEvent(QMouseEvent* event) {
         }
     }
 
-    if (dispatchFaceDetectionsBoxAtPosition(event->position())) {
+    if (dispatchFaceDetectionsBoxAtPosition(
+            event->position(),
+            faceStreamBoxRequested,
+            QStringLiteral("Face box click ignored: FaceDetections assignment is not active."))) {
         update();
         event->accept();
         return;
@@ -638,6 +654,20 @@ void PreviewWindow::wheelEvent(QWheelEvent* event) {
 }
 
 void PreviewWindow::contextMenuEvent(QContextMenuEvent* event) {
+    if (m_interaction.transient.faceDetectionsRightClickHandled) {
+        m_interaction.transient.faceDetectionsRightClickHandled = false;
+        event->accept();
+        return;
+    }
+    if (dispatchFaceDetectionsBoxAtPosition(
+            event->pos(),
+            faceStreamBoxFocusClearRequested,
+            QStringLiteral("Face box right-click ignored: FaceDetections assignment is not active."))) {
+        update();
+        event->accept();
+        return;
+    }
+
     QString hitClipId = clipIdAtPosition(event->pos());
     if (m_interaction.titleOverlayInteractionOnly && !clipIdIsTitle(hitClipId)) {
         hitClipId.clear();
