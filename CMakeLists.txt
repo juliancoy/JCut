@@ -604,9 +604,9 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/render_cpu_fallback.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_render_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_cpu_overlay_render_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp

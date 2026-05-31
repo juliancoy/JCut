@@ -70,7 +70,7 @@ Scope and conventions:
 - `render_codecs.cpp` — Encoder selection/options/pixel-format decisions. Position: `L3`.
 - `render_stats.cpp` — Render stage accounting tables and worst-frame stats. Position: `L3/L5`.
 - `render_gpu.cpp` — OpenGL offscreen GPU render implementation. Position: `L3`.
-- `render_cpu_fallback.h/.cpp` — CPU color conversion fallback utilities (e.g., NV12 fill). Position: `L3`.
+- `cpu_render_fallback.h/.cpp` — CPU color conversion fallback utilities (e.g., NV12 fill). Position: `L3`.
 - `speaker_export_harness.h/.cpp` — Headless export harness CLI flow over project state. Position: `L0/L3/L5`.
 
 ## 6) Backend Selection and Preview Surface Abstraction

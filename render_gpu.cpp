@@ -1,5 +1,5 @@
 #include "render_internal.h"
-#include "cpu_cpu_overlay_render_backend.h"
+#include "cpu_overlay_render_backend.h"
 #include "visual_effects_shader.h"
 #include "polygon_triangulation.h"
 #include "titles.h"

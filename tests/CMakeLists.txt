@@ -62,7 +62,7 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_decode.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_cpu_overlay_render_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
@@ -97,7 +97,7 @@ add_executable(test_opengl_vulkan_render_exactness
     ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../gl_frame_texture_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_decode.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_cpu_overlay_render_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp

@@ -71,7 +71,7 @@ State and project persistence are managed in `EditorWindow` via JSON snapshots/h
 ### 7) Render/Export
 - Render orchestration and request/result models: `render.h`, `render_internal.h`
 - Decode/composite/export stages:
-  - `render_decode.cpp`, `render_gpu.cpp`, `render_cpu_fallback.cpp`
+  - `render_decode.cpp`, `render_gpu.cpp`, `cpu_render_fallback.cpp`
   - `render_codecs.cpp`, `render_export.cpp`, `render_stats.cpp`
 
 ### 8) Control Server

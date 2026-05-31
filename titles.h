@@ -1,7 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
-#include "cpu_cpu_overlay_render_backend.h"
+#include "cpu_overlay_render_backend.h"
 
 #include <QColor>
 #include <QRect>

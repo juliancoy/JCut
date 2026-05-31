@@ -202,7 +202,7 @@ Handles sub-frame sample offset timing and `playbackRate` scaling.
 |-------|------|-------|
 | Decode | `render_decode.cpp` | Parallel decode per clip |
 | GPU composite | `render_gpu.cpp` | OpenGL offscreen FBO |
-| CPU fallback | `render_cpu_fallback.cpp` | `QPainter`-based |
+| CPU fallback | `cpu_render_fallback.cpp` | `QPainter`-based |
 | Audio mix | `render_audio.cpp` | FFmpeg AAC/Opus output |
 | Codec selection | `render_codecs.cpp` | H.264/HEVC/ProRes/etc. |
 | Export | `render_export.cpp` | Muxing, progress callback |
