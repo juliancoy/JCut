@@ -5,10 +5,12 @@
 #include "facedetections_artifact_utils.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
+#include "preview_face_track_click_policy.h"
 #include "speaker_track_assignment_service.h"
 #include "track_avatar_utils.h"
 #include "transcript_engine.h"
 
+#include <QAbstractItemView>
 #include <QBuffer>
 #include <QDateTime>
 #include <QCoreApplication>
@@ -163,6 +165,27 @@ bool resolvePlayheadTrackSelection(const TimelineClip& clip,
         playheadTimelineFrame,
         playheadSourceFrame,
         selectionOut);
+}
+
+bool selectTrackInList(QListWidget* list, int trackId)
+{
+    if (!list || trackId < 0) {
+        return false;
+    }
+    for (int i = 0; i < list->count(); ++i) {
+        QListWidgetItem* item = list->item(i);
+        bool ok = false;
+        const int itemTrackId = item ? item->data(Qt::UserRole).toInt(&ok) : -1;
+        if (!item || !ok || itemTrackId != trackId) {
+            continue;
+        }
+        list->clearSelection();
+        list->setCurrentItem(item);
+        item->setSelected(true);
+        list->scrollToItem(item, QAbstractItemView::PositionAtCenter);
+        return true;
+    }
+    return false;
 }
 }
 
@@ -2035,11 +2058,6 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                    .arg(clickTimer.elapsed());
     };
 
-    if (!activeCutMutable()) {
-        report(QStringLiteral("Face box click ignored: the active cut is not editable."));
-        logTiming(QStringLiteral("rejected_mutability"));
-        return false;
-    }
     if (trackId < 0) {
         report(QStringLiteral("Face box click ignored: invalid track id %1.").arg(trackId));
         logTiming(QStringLiteral("rejected_track"));
@@ -2047,10 +2065,22 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || clip->id != clipId) {
-        report(QStringLiteral("Face box click ignored: clicked clip %1 is not the selected clip %2.")
+        report(QStringLiteral("Face box click selecting visible clip %1 before selecting track; previous selected clip was %2.")
                    .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
-        logTiming(QStringLiteral("rejected_clip"));
-        return false;
+        if (!m_speakerDeps.selectClipById || !m_speakerDeps.selectClipById(clipId)) {
+            report(QStringLiteral("Face box selection blocked: the clicked continuity track is on clip %1, "
+                                  "but that visible clip could not be selected. Current selected clip is %2.")
+                       .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+            logTiming(QStringLiteral("rejected_clip"));
+            return false;
+        }
+        clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        if (!clip || clip->id != clipId) {
+            report(QStringLiteral("Face box selection blocked: selected clip did not update to clicked clip %1; current selected clip is %2.")
+                       .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+            logTiming(QStringLiteral("rejected_clip_after_select"));
+            return false;
+        }
     }
     logTiming(QStringLiteral("validated"));
     const int64_t mediaSourceFrame = sourceFrame >= 0
@@ -2070,6 +2100,15 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                   static_cast<qreal>(kTimelineFps))))
         : currentSourceFrameForClip(*clip);
     logTiming(QStringLiteral("mapped_source_frame"));
+    const bool selectedPlayheadTrack =
+        selectTrackInList(m_widgets.speakerPlayheadFaceDetectionsList, trackId);
+    if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
+        m_speakerDeps.setPreviewAssignedFaceTrackIds(QSet<int>{trackId});
+    }
+    logTiming(selectedPlayheadTrack
+                  ? QStringLiteral("selected_playhead_track")
+                  : QStringLiteral("highlighted_preview_track"));
+
     QString speakerResolutionDetail =
         QStringLiteral("transcript exact frame %1 from media source frame %2 at %3 fps")
             .arg(transcriptFrame)
@@ -2092,15 +2131,23 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         }
     }
     logTiming(QStringLiteral("resolved_speaker"));
-    if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
+    const jcut::preview::FaceTrackClickAssignmentAction assignmentAction =
+        jcut::preview::faceTrackClickAssignmentAction(
+            m_transcriptSession.hasObjectDocument(),
+            !speakerId.isEmpty(),
+            activeCutMutable());
+    if (assignmentAction == jcut::preview::FaceTrackClickAssignmentAction::SelectOnlyNoSpeaker) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
-        report(QStringLiteral("Face box click ignored: no transcript-active speaker at media source frame %1 (transcript frame %2 at %3 fps); gap hold=%4 transcript frame(s).")
+        report(QStringLiteral("Face box click selected: track %1 focused at media source frame %2. "
+                              "No assignment was saved because there is no transcript-active speaker "
+                              "(transcript frame %3 at %4 fps; gap hold=%5 transcript frame(s)).")
+                   .arg(trackId)
                    .arg(mediaSourceFrame)
                    .arg(transcriptFrame)
                    .arg(sourceFps, 0, 'f', 3)
                    .arg(gapHoldFrames));
-        logTiming(QStringLiteral("rejected_speaker"));
-        return false;
+        logTiming(QStringLiteral("complete_selected_no_speaker"));
+        return true;
     }
 
     selectSpeakerRowById(speakerId);
@@ -2108,6 +2155,17 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     selectSpeakerSectionRowAtFrame(speakerId, speakerSourceFrame);
     logTiming(QStringLiteral("selected_section_row"));
     m_lastSelectedSpeakerIdHint = speakerId;
+
+    if (assignmentAction == jcut::preview::FaceTrackClickAssignmentAction::SelectOnlyReadOnly) {
+        report(QStringLiteral("Face box click selected: track %1 focused for %2 at media source frame %3 (%4). "
+                              "Assignment was not saved because the active cut is read-only.")
+                   .arg(trackId)
+                   .arg(speakerDisplayLabel(speakerId))
+                   .arg(mediaSourceFrame)
+                   .arg(speakerResolutionDetail));
+        logTiming(QStringLiteral("complete_selected_readonly"));
+        return true;
+    }
 
     const bool assigned = assignTrackToSpeaker(
         speakerId,
@@ -2167,9 +2225,20 @@ bool SpeakersTab::handlePreviewFaceDetectionsBoxFocusClear(const QString& clipId
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || clip->id != clipId) {
-        report(QStringLiteral("Face box right-click ignored: clicked clip %1 is not the selected clip %2.")
+        report(QStringLiteral("Face box clear selecting visible clip %1 before clearing track focus; previous selected clip was %2.")
                    .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
-        return false;
+        if (!m_speakerDeps.selectClipById || !m_speakerDeps.selectClipById(clipId)) {
+            report(QStringLiteral("Face box clear blocked: the clicked continuity track is on clip %1, "
+                                  "but that visible clip could not be selected. Current selected clip is %2.")
+                       .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+            return false;
+        }
+        clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        if (!clip || clip->id != clipId) {
+            report(QStringLiteral("Face box clear blocked: selected clip did not update to clicked clip %1; current selected clip is %2.")
+                       .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+            return false;
+        }
     }
 
     const int64_t mediaSourceFrame = sourceFrame >= 0

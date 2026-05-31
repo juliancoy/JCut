@@ -59,6 +59,11 @@ std::atomic<bool> g_debugPlayheadNoRepaint{false};
 std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
 std::atomic<bool> g_debugDeterministicPipelineEnabled{false};
 std::atomic<int> g_debugTimelineAudioEnvelopeGranularity{kDefaultTimelineAudioEnvelopeGranularity};
+std::atomic<int> g_rubberBandEnginePreference{static_cast<int>(RubberBandEnginePreference::Faster)};
+std::atomic<int> g_rubberBandThreadingPreference{static_cast<int>(RubberBandThreadingPreference::Always)};
+std::atomic<int> g_rubberBandWindowPreference{static_cast<int>(RubberBandWindowPreference::Standard)};
+std::atomic<int> g_rubberBandPitchPreference{static_cast<int>(RubberBandPitchPreference::HighSpeed)};
+std::atomic<bool> g_rubberBandChannelsTogether{true};
 std::mutex g_decoderLaneCountCallbackMutex;
 DecoderLaneCountChangedCallback g_decoderLaneCountChangedCallback;
 
@@ -190,6 +195,119 @@ bool parseH26xSoftwareThreadingMode(const QString& text, H26xSoftwareThreadingMo
     return false;
 }
 
+QString rubberBandEnginePreferenceToString(RubberBandEnginePreference preference) {
+    switch (preference) {
+    case RubberBandEnginePreference::Faster: return QStringLiteral("faster");
+    case RubberBandEnginePreference::Finer: return QStringLiteral("finer");
+    }
+    return QStringLiteral("finer");
+}
+
+bool parseRubberBandEnginePreference(const QString& text, RubberBandEnginePreference* preferenceOut) {
+    if (!preferenceOut) {
+        return false;
+    }
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("faster") || normalized == QStringLiteral("r2") ||
+        normalized == QStringLiteral("interactive")) {
+        *preferenceOut = RubberBandEnginePreference::Faster;
+        return true;
+    }
+    if (normalized == QStringLiteral("finer") || normalized == QStringLiteral("r3") ||
+        normalized == QStringLiteral("quality")) {
+        *preferenceOut = RubberBandEnginePreference::Finer;
+        return true;
+    }
+    return false;
+}
+
+QString rubberBandThreadingPreferenceToString(RubberBandThreadingPreference preference) {
+    switch (preference) {
+    case RubberBandThreadingPreference::Auto: return QStringLiteral("auto");
+    case RubberBandThreadingPreference::Never: return QStringLiteral("never");
+    case RubberBandThreadingPreference::Always: return QStringLiteral("always");
+    }
+    return QStringLiteral("auto");
+}
+
+bool parseRubberBandThreadingPreference(const QString& text, RubberBandThreadingPreference* preferenceOut) {
+    if (!preferenceOut) {
+        return false;
+    }
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("auto")) {
+        *preferenceOut = RubberBandThreadingPreference::Auto;
+        return true;
+    }
+    if (normalized == QStringLiteral("never") || normalized == QStringLiteral("single_thread")) {
+        *preferenceOut = RubberBandThreadingPreference::Never;
+        return true;
+    }
+    if (normalized == QStringLiteral("always") || normalized == QStringLiteral("threaded")) {
+        *preferenceOut = RubberBandThreadingPreference::Always;
+        return true;
+    }
+    return false;
+}
+
+QString rubberBandWindowPreferenceToString(RubberBandWindowPreference preference) {
+    switch (preference) {
+    case RubberBandWindowPreference::Standard: return QStringLiteral("standard");
+    case RubberBandWindowPreference::Short: return QStringLiteral("short");
+    case RubberBandWindowPreference::Long: return QStringLiteral("long");
+    }
+    return QStringLiteral("standard");
+}
+
+bool parseRubberBandWindowPreference(const QString& text, RubberBandWindowPreference* preferenceOut) {
+    if (!preferenceOut) {
+        return false;
+    }
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("standard") || normalized == QStringLiteral("default")) {
+        *preferenceOut = RubberBandWindowPreference::Standard;
+        return true;
+    }
+    if (normalized == QStringLiteral("short")) {
+        *preferenceOut = RubberBandWindowPreference::Short;
+        return true;
+    }
+    if (normalized == QStringLiteral("long")) {
+        *preferenceOut = RubberBandWindowPreference::Long;
+        return true;
+    }
+    return false;
+}
+
+QString rubberBandPitchPreferenceToString(RubberBandPitchPreference preference) {
+    switch (preference) {
+    case RubberBandPitchPreference::HighSpeed: return QStringLiteral("high_speed");
+    case RubberBandPitchPreference::HighQuality: return QStringLiteral("high_quality");
+    case RubberBandPitchPreference::HighConsistency: return QStringLiteral("high_consistency");
+    }
+    return QStringLiteral("high_quality");
+}
+
+bool parseRubberBandPitchPreference(const QString& text, RubberBandPitchPreference* preferenceOut) {
+    if (!preferenceOut) {
+        return false;
+    }
+    const QString normalized = text.trimmed().toLower();
+    if (normalized == QStringLiteral("high_speed") || normalized == QStringLiteral("speed")) {
+        *preferenceOut = RubberBandPitchPreference::HighSpeed;
+        return true;
+    }
+    if (normalized == QStringLiteral("high_quality") || normalized == QStringLiteral("quality")) {
+        *preferenceOut = RubberBandPitchPreference::HighQuality;
+        return true;
+    }
+    if (normalized == QStringLiteral("high_consistency") || normalized == QStringLiteral("consistency")) {
+        *preferenceOut = RubberBandPitchPreference::HighConsistency;
+        return true;
+    }
+    return false;
+}
+
 DebugLogLevel debugPlaybackLevel() {
     return static_cast<DebugLogLevel>(g_debugPlayback.load());
 }
@@ -310,6 +428,26 @@ int debugTimelineAudioEnvelopeGranularity() {
     return g_debugTimelineAudioEnvelopeGranularity.load();
 }
 
+RubberBandEnginePreference rubberBandEnginePreference() {
+    return static_cast<RubberBandEnginePreference>(g_rubberBandEnginePreference.load());
+}
+
+RubberBandThreadingPreference rubberBandThreadingPreference() {
+    return static_cast<RubberBandThreadingPreference>(g_rubberBandThreadingPreference.load());
+}
+
+RubberBandWindowPreference rubberBandWindowPreference() {
+    return static_cast<RubberBandWindowPreference>(g_rubberBandWindowPreference.load());
+}
+
+RubberBandPitchPreference rubberBandPitchPreference() {
+    return static_cast<RubberBandPitchPreference>(g_rubberBandPitchPreference.load());
+}
+
+bool rubberBandChannelsTogether() {
+    return g_rubberBandChannelsTogether.load();
+}
+
 void setDebugPlaybackEnabled(bool enabled) {
     g_debugPlayback.store(static_cast<int>(enabled ? DebugLogLevel::Debug : DebugLogLevel::Off));
 }
@@ -407,6 +545,26 @@ void setDebugTimelineAudioEnvelopeGranularity(int granularity) {
     g_debugTimelineAudioEnvelopeGranularity.store(qBound(64, granularity, 8192));
 }
 
+void setRubberBandEnginePreference(RubberBandEnginePreference preference) {
+    g_rubberBandEnginePreference.store(static_cast<int>(preference));
+}
+
+void setRubberBandThreadingPreference(RubberBandThreadingPreference preference) {
+    g_rubberBandThreadingPreference.store(static_cast<int>(preference));
+}
+
+void setRubberBandWindowPreference(RubberBandWindowPreference preference) {
+    g_rubberBandWindowPreference.store(static_cast<int>(preference));
+}
+
+void setRubberBandPitchPreference(RubberBandPitchPreference preference) {
+    g_rubberBandPitchPreference.store(static_cast<int>(preference));
+}
+
+void setRubberBandChannelsTogether(bool enabled) {
+    g_rubberBandChannelsTogether.store(enabled);
+}
+
 RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
     RenderPipelineDefaults defaults;
 
@@ -471,7 +629,16 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()},
         {QStringLiteral("deterministic_pipeline"), debugDeterministicPipelineEnabled()},
         {QStringLiteral("timeline_audio_envelope_granularity"),
-         debugTimelineAudioEnvelopeGranularity()}
+         debugTimelineAudioEnvelopeGranularity()},
+        {QStringLiteral("rubberband_engine"),
+         rubberBandEnginePreferenceToString(rubberBandEnginePreference())},
+        {QStringLiteral("rubberband_threading"),
+         rubberBandThreadingPreferenceToString(rubberBandThreadingPreference())},
+        {QStringLiteral("rubberband_window"),
+         rubberBandWindowPreferenceToString(rubberBandWindowPreference())},
+        {QStringLiteral("rubberband_pitch"),
+         rubberBandPitchPreferenceToString(rubberBandPitchPreference())},
+        {QStringLiteral("rubberband_channels_together"), rubberBandChannelsTogether()}
     };
 }
 
@@ -586,6 +753,42 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
     }
     if (name == QStringLiteral("deterministic_pipeline") && value.isBool()) {
         setDebugDeterministicPipelineEnabled(value.toBool());
+        return true;
+    }
+    if (name == QStringLiteral("rubberband_engine") && value.isString()) {
+        RubberBandEnginePreference preference = RubberBandEnginePreference::Finer;
+        if (!parseRubberBandEnginePreference(value.toString(), &preference)) {
+            return false;
+        }
+        setRubberBandEnginePreference(preference);
+        return true;
+    }
+    if (name == QStringLiteral("rubberband_threading") && value.isString()) {
+        RubberBandThreadingPreference preference = RubberBandThreadingPreference::Always;
+        if (!parseRubberBandThreadingPreference(value.toString(), &preference)) {
+            return false;
+        }
+        setRubberBandThreadingPreference(preference);
+        return true;
+    }
+    if (name == QStringLiteral("rubberband_window") && value.isString()) {
+        RubberBandWindowPreference preference = RubberBandWindowPreference::Standard;
+        if (!parseRubberBandWindowPreference(value.toString(), &preference)) {
+            return false;
+        }
+        setRubberBandWindowPreference(preference);
+        return true;
+    }
+    if (name == QStringLiteral("rubberband_pitch") && value.isString()) {
+        RubberBandPitchPreference preference = RubberBandPitchPreference::HighQuality;
+        if (!parseRubberBandPitchPreference(value.toString(), &preference)) {
+            return false;
+        }
+        setRubberBandPitchPreference(preference);
+        return true;
+    }
+    if (name == QStringLiteral("rubberband_channels_together") && value.isBool()) {
+        setRubberBandChannelsTogether(value.toBool());
         return true;
     }
     return false;

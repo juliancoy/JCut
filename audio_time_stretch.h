@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <QVector>
 
 enum class AudioTimeStretchBackend {
@@ -8,16 +10,51 @@ enum class AudioTimeStretchBackend {
     Sola,
 };
 
+enum class RubberBandEngineMode {
+    Faster,
+    Finer,
+};
+
+enum class RubberBandThreadingMode {
+    Auto,
+    Never,
+    Always,
+};
+
+enum class RubberBandWindowMode {
+    Standard,
+    Short,
+    Long,
+};
+
+enum class RubberBandPitchMode {
+    HighSpeed,
+    HighQuality,
+    HighConsistency,
+};
+
+struct AudioTimeStretchRubberBandSettings {
+    RubberBandEngineMode engine = RubberBandEngineMode::Faster;
+    RubberBandThreadingMode threading = RubberBandThreadingMode::Always;
+    RubberBandWindowMode window = RubberBandWindowMode::Standard;
+    RubberBandPitchMode pitch = RubberBandPitchMode::HighSpeed;
+    bool channelsTogether = true;
+};
+
 QVector<float> timeStretchPreservePitch(const QVector<float>& interleavedSamples,
                                         int channelCount,
                                         int sampleRate,
                                         double speed,
-                                        AudioTimeStretchBackend backend = AudioTimeStretchBackend::Default);
+                                        AudioTimeStretchBackend backend = AudioTimeStretchBackend::Default,
+                                        const std::function<void(double)>& progressCallback = {},
+                                        const AudioTimeStretchRubberBandSettings& rubberBandSettings = {});
 
 QVector<float> timeStretchPreservePitchRubberBand(const QVector<float>& interleavedSamples,
                                                   int channelCount,
                                                   int sampleRate,
-                                                  double speed);
+                                                  double speed,
+                                                  const std::function<void(double)>& progressCallback = {},
+                                                  const AudioTimeStretchRubberBandSettings& settings = {});
 
 QVector<float> timeStretchPreservePitchSola(const QVector<float>& interleavedSamples,
                                             int channelCount,

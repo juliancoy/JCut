@@ -695,7 +695,7 @@ bool PreviewWindow::dispatchFaceDetectionsBoxAtPosition(
 
 bool PreviewWindow::updateHoveredFaceDetectionsBox(const QPointF& position)
 {
-    if (!m_interaction.faceStreamAssignmentInteractionEnabled) {
+    if (!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled) {
         return false;
     }
 

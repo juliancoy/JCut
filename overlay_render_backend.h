@@ -33,6 +33,8 @@ struct SpeakerLabelOverlaySpec {
     bool showOrganization = false;
     qreal nameTextScale = 1.0;
     qreal organizationTextScale = 1.0;
+    qreal nameVerticalPosition = 0.86;
+    qreal organizationVerticalPosition = 0.93;
     QString fontFamily = kDefaultFontFamily;
     QColor nameColor = QColor(QStringLiteral("#f4f8fc"));
     QColor organizationColor = QColor(QStringLiteral("#b9d0e5"));

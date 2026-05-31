@@ -23,6 +23,7 @@
 #include <vulkan/vulkan.h>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -300,12 +301,16 @@ private:
             return;
         }
         const CurrentSpeakerLabel label = currentSpeakerLabelForState(m_state);
-        QStringList lines;
+        struct SpeakerOverlayLine {
+            QString text;
+            bool name = false;
+        };
+        QVector<SpeakerOverlayLine> lines;
         if (m_state->showCurrentSpeakerName && !label.name.trimmed().isEmpty()) {
-            lines.push_back(label.name.trimmed());
+            lines.push_back(SpeakerOverlayLine{label.name.trimmed(), true});
         }
         if (m_state->showCurrentSpeakerOrganization && !label.organization.trimmed().isEmpty()) {
-            lines.push_back(label.organization.trimmed());
+            lines.push_back(SpeakerOverlayLine{label.organization.trimmed(), false});
         }
         if (lines.isEmpty()) {
             return;
@@ -328,45 +333,62 @@ private:
         const int maxTextWidth = qMax(180, static_cast<int>(surfaceRect.width() * 0.72));
         const int paddingX = 18;
         const int paddingY = 10;
-        int contentHeight = 0;
-        int contentWidth = 0;
-        QVector<QRect> lineRects;
-        lineRects.reserve(lines.size());
-        for (int i = 0; i < lines.size(); ++i) {
-            const QFontMetrics fm(i == 0 && m_state->showCurrentSpeakerName ? nameFont : orgFont);
-            const QRect bounds = fm.boundingRect(QRect(0, 0, maxTextWidth, 120),
-                                                 Qt::AlignCenter | Qt::TextWordWrap,
-                                                 lines.at(i));
-            lineRects.push_back(bounds);
-            contentHeight += bounds.height();
-            if (i > 0) {
-                contentHeight += 4;
+        const auto drawBlock = [&](const QVector<SpeakerOverlayLine>& blockLines, qreal verticalPosition) {
+            if (blockLines.isEmpty()) {
+                return;
             }
-            contentWidth = qMax(contentWidth, bounds.width());
-        }
+            int contentHeight = 0;
+            int contentWidth = 0;
+            QVector<QRect> lineRects;
+            lineRects.reserve(blockLines.size());
+            for (int i = 0; i < blockLines.size(); ++i) {
+                const SpeakerOverlayLine& line = blockLines.at(i);
+                const QFontMetrics fm(line.name ? nameFont : orgFont);
+                const QRect bounds = fm.boundingRect(QRect(0, 0, maxTextWidth, 120),
+                                                     Qt::AlignCenter | Qt::TextWordWrap,
+                                                     line.text);
+                lineRects.push_back(bounds);
+                contentHeight += bounds.height();
+                if (i > 0) {
+                    contentHeight += 4;
+                }
+                contentWidth = qMax(contentWidth, bounds.width());
+            }
 
-        const int cardWidth = qMin(maxTextWidth + (paddingX * 2), qMax(contentWidth + (paddingX * 2), 220));
-        const int cardHeight = contentHeight + (paddingY * 2);
-        const QRect cardRect(surfaceRect.center().x() - cardWidth / 2,
-                             surfaceRect.bottom() - cardHeight - 22,
-                             cardWidth,
-                             cardHeight);
-        painter->setPen(QPen(QColor(225, 236, 247, 120), 1.0));
-        painter->setBrush(QColor(8, 13, 20, 190));
-        painter->drawRoundedRect(cardRect, 8, 8);
+            const int cardWidth = qMin(maxTextWidth + (paddingX * 2), qMax(contentWidth + (paddingX * 2), 220));
+            const int cardHeight = contentHeight + (paddingY * 2);
+            const int centerY = static_cast<int>(std::round(qBound<qreal>(
+                surfaceRect.top() + (cardHeight * 0.5),
+                surfaceRect.top() + (surfaceRect.height() * qBound<qreal>(0.0, verticalPosition, 1.0)),
+                surfaceRect.bottom() - (cardHeight * 0.5))));
+            const QRect cardRect(surfaceRect.center().x() - cardWidth / 2,
+                                 centerY - cardHeight / 2,
+                                 cardWidth,
+                                 cardHeight);
+            painter->setPen(QPen(QColor(225, 236, 247, 120), 1.0));
+            painter->setBrush(QColor(8, 13, 20, 190));
+            painter->drawRoundedRect(cardRect, 8, 8);
 
-        int y = cardRect.top() + paddingY;
-        for (int i = 0; i < lines.size(); ++i) {
-            const bool nameLine = i == 0 && m_state->showCurrentSpeakerName;
-            painter->setFont(nameLine ? nameFont : orgFont);
-            painter->setPen(nameLine ? QColor(QStringLiteral("#f4f8fc")) : QColor(QStringLiteral("#b9d0e5")));
-            const QRect textRect(cardRect.left() + paddingX,
-                                 y,
-                                 cardRect.width() - (paddingX * 2),
-                                 lineRects.at(i).height());
-            painter->drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, lines.at(i));
-            y += lineRects.at(i).height() + 4;
+            int y = cardRect.top() + paddingY;
+            for (int i = 0; i < blockLines.size(); ++i) {
+                const SpeakerOverlayLine& line = blockLines.at(i);
+                painter->setFont(line.name ? nameFont : orgFont);
+                painter->setPen(line.name ? QColor(QStringLiteral("#f4f8fc")) : QColor(QStringLiteral("#b9d0e5")));
+                const QRect textRect(cardRect.left() + paddingX,
+                                     y,
+                                     cardRect.width() - (paddingX * 2),
+                                     lineRects.at(i).height());
+                painter->drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, line.text);
+                y += lineRects.at(i).height() + 4;
+            }
+        };
+        QVector<SpeakerOverlayLine> nameLines;
+        QVector<SpeakerOverlayLine> organizationLines;
+        for (const SpeakerOverlayLine& line : lines) {
+            (line.name ? nameLines : organizationLines).push_back(line);
         }
+        drawBlock(nameLines, m_state->currentSpeakerNameVerticalPosition);
+        drawBlock(organizationLines, m_state->currentSpeakerOrganizationVerticalPosition);
         painter->restore();
     }
 

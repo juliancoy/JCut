@@ -320,7 +320,11 @@ void PreviewWindow::drawCurrentSpeakerLabelOverlayGL(const QRect& targetRect)
         (spec.showName ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
         (spec.showOrganization ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
         spec.name + QLatin1Char('|') +
-        spec.organization;
+        spec.organization + QLatin1Char('|') +
+        QString::number(spec.nameTextScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(spec.organizationTextScale, 'f', 3) + QLatin1Char('|') +
+        QString::number(spec.nameVerticalPosition, 'f', 3) + QLatin1Char('|') +
+        QString::number(spec.organizationVerticalPosition, 'f', 3);
     const QByteArray digest = QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1);
     const GLuint textureId = textureForTranscriptOverlay(QString::fromLatin1(digest.toHex()), image);
     if (textureId == 0) {

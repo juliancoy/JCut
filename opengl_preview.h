@@ -77,6 +77,10 @@ public:
     void setShowCurrentSpeakerOrganization(bool show) override;
     void setCurrentSpeakerNameTextScale(qreal scale) override;
     void setCurrentSpeakerOrganizationTextScale(qreal scale) override;
+    void setCurrentSpeakerNameVerticalPosition(qreal position) override;
+    void setCurrentSpeakerOrganizationVerticalPosition(qreal position) override;
+    void setPlaybackStatusOverlayText(const QString& text) override;
+    void setPlaybackStatusOverlayProgress(qreal progress) override;
     void setFacestreamOverlaySource(const QString& source);
     void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override {
         if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {
@@ -268,6 +272,7 @@ private:
     void drawAudioBadge(QPainter* painter, const QRect& targetRect,
                         const QList<TimelineClip>& activeAudioClips);
     bool audioWaveformDisplayPeakForClip(const TimelineClip& clip, qreal* peakOut) const;
+    void drawPlaybackStatusOverlay(QPainter* painter, const QRect& bounds) const;
     void drawSpeakerPickOverlay(QPainter* painter) const;
     QRect fitRect(const QSize& source, const QRect& bounds) const;
     QPointF mapNormalizedClipPointToScreen(const PreviewOverlayInfo& info, const QPointF& normalizedPoint) const;

@@ -50,6 +50,10 @@ public:
     void setShowCurrentSpeakerOrganization(bool show) override;
     void setCurrentSpeakerNameTextScale(qreal scale) override;
     void setCurrentSpeakerOrganizationTextScale(qreal scale) override;
+    void setCurrentSpeakerNameVerticalPosition(qreal position) override;
+    void setCurrentSpeakerOrganizationVerticalPosition(qreal position) override;
+    void setPlaybackStatusOverlayText(const QString& text) override;
+    void setPlaybackStatusOverlayProgress(qreal progress) override;
     void setFacestreamOverlaySource(const QString& source) override;
     void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
@@ -122,6 +126,10 @@ private:
     bool m_showCurrentSpeakerOrganization = false;
     qreal m_currentSpeakerNameTextScale = 1.0;
     qreal m_currentSpeakerOrganizationTextScale = 1.0;
+    qreal m_currentSpeakerNameVerticalPosition = 0.86;
+    qreal m_currentSpeakerOrganizationVerticalPosition = 0.93;
+    QString m_playbackStatusOverlayText;
+    qreal m_playbackStatusOverlayProgress = -1.0;
     bool m_audioSpeakerHoverModalEnabled = false;
     bool m_audioWaveformVisible = true;
     bool m_audioMuted = false;

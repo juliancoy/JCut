@@ -1386,6 +1386,20 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerCurrentSpeakerOrganizationTextSizeSpin->setValue(100);
     m_speakerCurrentSpeakerOrganizationTextSizeSpin->setToolTip(
         QStringLiteral("Scale the active speaker organization drawn at the bottom of the preview."));
+    m_speakerCurrentSpeakerNameYPositionSpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerNameYPositionSpin->setRange(0, 100);
+    m_speakerCurrentSpeakerNameYPositionSpin->setSingleStep(1);
+    m_speakerCurrentSpeakerNameYPositionSpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerNameYPositionSpin->setValue(86);
+    m_speakerCurrentSpeakerNameYPositionSpin->setToolTip(
+        QStringLiteral("Set the active speaker name vertical position in the preview. 0% is top; 100% is bottom."));
+    m_speakerCurrentSpeakerOrganizationYPositionSpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerOrganizationYPositionSpin->setRange(0, 100);
+    m_speakerCurrentSpeakerOrganizationYPositionSpin->setSingleStep(1);
+    m_speakerCurrentSpeakerOrganizationYPositionSpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerOrganizationYPositionSpin->setValue(93);
+    m_speakerCurrentSpeakerOrganizationYPositionSpin->setToolTip(
+        QStringLiteral("Set the active speaker organization vertical position in the preview. 0% is top; 100% is bottom."));
     m_speakerSectionsTable = new QTableWidget(page);
     m_speakerSectionsTable->setColumnCount(5);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
@@ -1763,6 +1777,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     currentSpeakerTextSizeLayout->setVerticalSpacing(4);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Size"), m_speakerCurrentSpeakerNameTextSizeSpin);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Size"), m_speakerCurrentSpeakerOrganizationTextSizeSpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Y Position"), m_speakerCurrentSpeakerNameYPositionSpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Y Position"), m_speakerCurrentSpeakerOrganizationYPositionSpin);
     speakerListLayout->addLayout(currentSpeakerTextSizeLayout);
     speakerListLayout->addWidget(m_speakersTable, 1);
     speakerListLayout->addWidget(m_speakerSectionsTable, 1);

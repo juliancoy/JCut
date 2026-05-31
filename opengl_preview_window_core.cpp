@@ -499,6 +499,42 @@ void PreviewWindow::setCurrentSpeakerOrganizationTextScale(qreal scale) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setCurrentSpeakerNameVerticalPosition(qreal position) {
+    const qreal normalized = qBound<qreal>(0.0, position, 1.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerNameVerticalPosition, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerNameVerticalPosition = normalized;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setCurrentSpeakerOrganizationVerticalPosition(qreal position) {
+    const qreal normalized = qBound<qreal>(0.0, position, 1.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerOrganizationVerticalPosition, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerOrganizationVerticalPosition = normalized;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setPlaybackStatusOverlayText(const QString& text) {
+    const QString normalized = text.trimmed();
+    if (m_interaction.playbackStatusOverlayText == normalized) {
+        return;
+    }
+    m_interaction.playbackStatusOverlayText = normalized;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setPlaybackStatusOverlayProgress(qreal progress) {
+    const qreal normalized = progress < 0.0 ? -1.0 : qBound<qreal>(0.0, progress, 1.0);
+    if (qFuzzyCompare(m_interaction.playbackStatusOverlayProgress + 1.0, normalized + 1.0)) {
+        return;
+    }
+    m_interaction.playbackStatusOverlayProgress = normalized;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setFacestreamOverlaySource(const QString& source) {
     const QString normalized = source.trimmed().isEmpty()
         ? QStringLiteral("all")
@@ -881,6 +917,12 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("current_speaker_name_text_scale"), m_interaction.currentSpeakerNameTextScale},
                          {QStringLiteral("current_speaker_organization_text_scale"),
                           m_interaction.currentSpeakerOrganizationTextScale},
+                         {QStringLiteral("current_speaker_name_y_position"),
+                          m_interaction.currentSpeakerNameVerticalPosition},
+                         {QStringLiteral("current_speaker_organization_y_position"),
+                          m_interaction.currentSpeakerOrganizationVerticalPosition},
+                         {QStringLiteral("playback_status_overlay_text"),
+                          m_interaction.playbackStatusOverlayText},
                          {QStringLiteral("current_speaker_label"), QJsonObject{
                              {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},
                              {QStringLiteral("name"), currentSpeakerLabel.name},
@@ -965,19 +1007,22 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                                   {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
                                   {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
                                   {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
-                                  {QStringLiteral("pending_visible_debug"), m_cache->pendingVisibleDebugSnapshot(now)}};
+                                  {QStringLiteral("pending_visible_debug"), m_cache->pendingVisibleDebugSnapshot(now)},
+                                  {QStringLiteral("visible_decode"), m_cache->visibleDecodeDiagnostics(now)}};
         const QJsonObject residency = m_cache->cacheResidencySnapshot();
         for (auto it = residency.begin(); it != residency.end(); ++it) {
             cacheSnapshot.insert(it.key(), it.value());
         }
         snapshot[QStringLiteral("cache")] = cacheSnapshot;
+        snapshot[QStringLiteral("visible_decode_diagnostics")] = m_cache->visibleDecodeDiagnostics(now);
     }
 
     if (m_playbackPipeline) {
         snapshot[QStringLiteral("playback_pipeline")] = QJsonObject{{QStringLiteral("active"), m_interaction.playing},
                                                                      {QStringLiteral("buffered_frames"), m_playbackPipeline->bufferedFrameCount()},
                                                                      {QStringLiteral("pending_visible_requests"), m_playbackPipeline->pendingVisibleRequestCount()},
-                                                                     {QStringLiteral("dropped_presentation_frames"), m_playbackPipeline->droppedPresentationFrameCount()}};
+                                                                     {QStringLiteral("dropped_presentation_frames"), m_playbackPipeline->droppedPresentationFrameCount()},
+                                                                     {QStringLiteral("decode"), m_playbackPipeline->decodeDiagnostics()}};
     }
 
     if (!m_lastFrameSelectionStats.isEmpty()) {

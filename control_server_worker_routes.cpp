@@ -874,9 +874,10 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
         const bool cacheFresh = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
         QString liveError;
         QString refreshSkippedReason;
+        bool refreshedThisRequest = false;
 
         if (liveRequested) {
-            if (playbackActive && cacheFresh) {
+            if (playbackActive && cacheFresh && !forceLive) {
                 refreshSkippedReason = QStringLiteral("playback_active_cache_fresh");
             } else if (playbackActive && !forceLive) {
                 refreshSkippedReason = QStringLiteral("playback_active_live_deferred_use_force_to_block");
@@ -886,12 +887,14 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             } else {
                 m_lastProfileDemandMs = now;
                 m_lastProfileRefreshError.clear();
+                refreshedThisRequest = true;
             }
         } else if (m_lastProfileSnapshot.isEmpty() && !playbackActive) {
             if (!refreshProfileCacheFromUi(m_uiBackgroundInvokeTimeoutMs, &liveError)) {
                 m_lastProfileRefreshError = liveError;
             } else {
                 m_lastProfileRefreshError.clear();
+                refreshedThisRequest = true;
             }
         } else if (m_lastProfileSnapshot.isEmpty() && playbackActive) {
             refreshSkippedReason = QStringLiteral("playback_active_cache_warming");
@@ -917,8 +920,15 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             });
             return true;
         }
-        ++m_profileServedCachedCount;
-        const bool live = ageMs >= 0 && ageMs <= m_profileCacheFreshMs;
+        const qint64 responseAgeMs =
+            m_lastProfileSnapshotMs > 0
+                ? QDateTime::currentMSecsSinceEpoch() - m_lastProfileSnapshotMs
+                : -1;
+        if (!refreshedThisRequest) {
+            ++m_profileServedCachedCount;
+        }
+        const bool live = refreshedThisRequest ||
+                          (responseAgeMs >= 0 && responseAgeMs <= m_profileCacheFreshMs);
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), live},
@@ -928,8 +938,8 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             {QStringLiteral("ui_error"), m_lastProfileRefreshError},
             {QStringLiteral("refresh_skipped_reason"), refreshSkippedReason},
             {QStringLiteral("profile"), m_lastProfileSnapshot},
-            {QStringLiteral("served_cached"), true},
-            {QStringLiteral("snapshot_age_ms"), ageMs},
+            {QStringLiteral("served_cached"), !refreshedThisRequest},
+            {QStringLiteral("snapshot_age_ms"), responseAgeMs},
             {QStringLiteral("cache"), profileCacheMeta()},
             {QStringLiteral("fast_snapshot"), snapshot}
         });
@@ -1384,7 +1394,8 @@ bool ControlServerWorker::handleDebugRoutes(QTcpSocket* socket, const Request& r
                 continue;
             }
             if (it.value().isBool()) {
-                if (!editor::setDebugControl(it.key(), it.value().toBool())) {
+                if (!editor::setDebugOption(it.key(), it.value()) &&
+                    !editor::setDebugControl(it.key(), it.value().toBool())) {
                     writeError(socket, 400, QStringLiteral("invalid debug field: %1").arg(it.key()));
                     return true;
                 }

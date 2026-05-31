@@ -143,5 +143,9 @@ struct PreviewInteractionState {
     bool showCurrentSpeakerOrganization = false;
     qreal currentSpeakerNameTextScale = 1.0;
     qreal currentSpeakerOrganizationTextScale = 1.0;
+    qreal currentSpeakerNameVerticalPosition = 0.86;
+    qreal currentSpeakerOrganizationVerticalPosition = 0.93;
+    QString playbackStatusOverlayText;
+    qreal playbackStatusOverlayProgress = -1.0;
     PreviewInteractionTransientState transient;
 };

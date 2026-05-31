@@ -48,6 +48,10 @@ void EditorWindow::bindInspectorWidgets()
     m_speakerCurrentSpeakerNameTextSizeSpin = m_inspectorPane->speakerCurrentSpeakerNameTextSizeSpin();
     m_speakerCurrentSpeakerOrganizationTextSizeSpin =
         m_inspectorPane->speakerCurrentSpeakerOrganizationTextSizeSpin();
+    m_speakerCurrentSpeakerNameYPositionSpin =
+        m_inspectorPane->speakerCurrentSpeakerNameYPositionSpin();
+    m_speakerCurrentSpeakerOrganizationYPositionSpin =
+        m_inspectorPane->speakerCurrentSpeakerOrganizationYPositionSpin();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -613,6 +617,30 @@ void EditorWindow::setupPreviewControls()
                     pushHistorySnapshot();
                 });
     }
+    if (m_speakerCurrentSpeakerNameYPositionSpin) {
+        connect(m_speakerCurrentSpeakerNameYPositionSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                [this](int value) {
+                    if (m_preview) {
+                        m_preview->setCurrentSpeakerNameVerticalPosition(value / 100.0);
+                    }
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
+    }
+    if (m_speakerCurrentSpeakerOrganizationYPositionSpin) {
+        connect(m_speakerCurrentSpeakerOrganizationYPositionSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                [this](int value) {
+                    if (m_preview) {
+                        m_preview->setCurrentSpeakerOrganizationVerticalPosition(value / 100.0);
+                    }
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
+    }
     if (m_renderBackendCombo) {
         connect(m_renderBackendCombo,
                 &QComboBox::currentIndexChanged,
@@ -866,6 +894,14 @@ void EditorWindow::setupPreviewControls()
         if (m_speakerCurrentSpeakerOrganizationTextSizeSpin) {
             m_preview->setCurrentSpeakerOrganizationTextScale(
                 m_speakerCurrentSpeakerOrganizationTextSizeSpin->value() / 100.0);
+        }
+        if (m_speakerCurrentSpeakerNameYPositionSpin) {
+            m_preview->setCurrentSpeakerNameVerticalPosition(
+                m_speakerCurrentSpeakerNameYPositionSpin->value() / 100.0);
+        }
+        if (m_speakerCurrentSpeakerOrganizationYPositionSpin) {
+            m_preview->setCurrentSpeakerOrganizationVerticalPosition(
+                m_speakerCurrentSpeakerOrganizationYPositionSpin->value() / 100.0);
         }
     }
     if (m_loiaconoSpectrumSettingsButton) {

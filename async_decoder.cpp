@@ -10,6 +10,7 @@
 #include <QDeadlineTimer>
 #include <QDebug>
 #include <QFile>
+#include <QJsonObject>
 #include <QMetaObject>
 #include <QMutexLocker>
 #include <QThread>
@@ -34,6 +35,16 @@ namespace {
 constexpr int64_t kImageSequenceLaneShardSize = 8;
 constexpr int64_t kVideoLaneShardSize = 24;
 constexpr int kMaxDecoderLaneCount = 16;
+
+void storeAtomicMax(std::atomic<int64_t>* target, int64_t value) {
+    if (!target) {
+        return;
+    }
+    int64_t current = target->load(std::memory_order_relaxed);
+    while (value > current &&
+           !target->compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+    }
+}
 } // namespace
 
 struct AsyncDecoder::LaneState {
@@ -166,6 +177,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                                     std::function<void(FrameHandle)> callback) {
     LaneState* lane = laneForRequest(path, frameNumber, kind);
     if (!lane || m_shuttingDown) {
+        recordNullCallback(kind, "lane_unavailable");
         invokeRequestCallback(std::move(callback), FrameHandle());
         return 0;
     }
@@ -181,7 +193,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
     req.callback = callback;
     req.submittedAt = QDateTime::currentMSecsSinceEpoch();
 
-    QVector<std::function<void(FrameHandle)>> droppedCallbacks;
+    QVector<DroppedCallback> droppedCallbacks;
     int pendingBefore = 0;
     bool accepted = false;
 
@@ -219,7 +231,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                         it->kind != DecodeRequestKind::Visible;
                     if (kindFavored || it->priority < req.priority) {
                         if (it->callback) {
-                            droppedCallbacks.push_back(std::move(it->callback));
+                            droppedCallbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
                         }
                         lane->queue.erase(it);
                         dropped = true;
@@ -256,7 +268,8 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                     .arg(lane->index));
 
     for (auto& droppedCallback : droppedCallbacks) {
-        invokeRequestCallback(std::move(droppedCallback), FrameHandle());
+        recordNullCallback(droppedCallback.kind, "superseded");
+        invokeRequestCallback(std::move(droppedCallback.callback), FrameHandle());
     }
 
     if (!accepted) {
@@ -266,6 +279,7 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
                         .arg(shortPath(path))
                         .arg(frameNumber)
                         .arg(static_cast<int>(kind)));
+        recordNullCallback(kind, "queue_full");
         invokeRequestCallback(std::move(callback), FrameHandle());
         return 0;
     }
@@ -280,7 +294,7 @@ void AsyncDecoder::cancelForFile(const QString& path) {
         return;
     }
 
-    QVector<std::function<void(FrameHandle)>> callbacks;
+    QVector<DroppedCallback> callbacks;
 
     for (LaneState* lane : lanes) {
         if (!lane) {
@@ -300,7 +314,7 @@ void AsyncDecoder::cancelForFile(const QString& path) {
         for (auto it = lane->queue.begin(); it != lane->queue.end();) {
             if (it->filePath == path) {
                 if (it->callback) {
-                    callbacks.push_back(std::move(it->callback));
+                    callbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
             } else {
@@ -310,7 +324,8 @@ void AsyncDecoder::cancelForFile(const QString& path) {
     }
 
     for (auto& callback : callbacks) {
-        invokeRequestCallback(std::move(callback), FrameHandle());
+        recordNullCallback(callback.kind, "cancel_file");
+        invokeRequestCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -322,7 +337,7 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
         return;
     }
 
-    QVector<std::function<void(FrameHandle)>> callbacks;
+    QVector<DroppedCallback> callbacks;
 
     for (LaneState* lane : lanes) {
         if (!lane) {
@@ -342,7 +357,7 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
         for (auto it = lane->queue.begin(); it != lane->queue.end();) {
             if (it->filePath == path && it->frameNumber < frameNumber) {
                 if (it->callback) {
-                    callbacks.push_back(std::move(it->callback));
+                    callbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
                 }
                 it = lane->queue.erase(it);
             } else {
@@ -352,14 +367,15 @@ void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber)
     }
 
     for (auto& callback : callbacks) {
-        invokeRequestCallback(std::move(callback), FrameHandle());
+        recordNullCallback(callback.kind, "cancel_before");
+        invokeRequestCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
 }
 
 void AsyncDecoder::cancelAll() {
-    QVector<std::function<void(FrameHandle)>> callbacks;
+    QVector<DroppedCallback> callbacks;
 
     for (const auto& lane : m_lanes) {
         std::unique_lock<std::mutex> lock(lane->mutex);
@@ -371,14 +387,15 @@ void AsyncDecoder::cancelAll() {
 
         for (DecodeRequest& request : lane->queue) {
             if (request.callback) {
-                callbacks.push_back(std::move(request.callback));
+                callbacks.push_back(DroppedCallback{request.kind, std::move(request.callback)});
             }
         }
         lane->queue.clear();
     }
 
     for (auto& callback : callbacks) {
-        invokeRequestCallback(std::move(callback), FrameHandle());
+        recordNullCallback(callback.kind, "cancel_all");
+        invokeRequestCallback(std::move(callback.callback), FrameHandle());
     }
 
     emit queuePressureChanged(totalPendingRequests());
@@ -585,6 +602,9 @@ void AsyncDecoder::runLane(LaneState* lane) {
         }
 
         const qint64 startedAt = decodeTraceMs();
+        const qint64 startedAtWallMs = QDateTime::currentMSecsSinceEpoch();
+        const qint64 queueWaitMs =
+            request.submittedAt > 0 ? startedAtWallMs - request.submittedAt : -1;
         decodeTrace(QStringLiteral("AsyncDecoder::runLane.begin"),
                     QStringLiteral("lane=%1 seq=%2 file=%3 frame=%4 priority=%5 thread=%6")
                         .arg(lane->index)
@@ -638,14 +658,29 @@ void AsyncDecoder::runLane(LaneState* lane) {
         }
 
         const bool staleAfterDecode = request.frameNumber < state->cancelBeforeFrame.load();
+        const bool expiredAfterDecode = request.isExpired();
         const bool discardAfterDecode =
-            request.isExpired() ||
+            (expiredAfterDecode && frame.isNull()) ||
             request.generation != state->generation.load() ||
             (staleAfterDecode && frame.isNull());
         if (discardAfterDecode) {
+            if (request.isExpired()) {
+                recordNullCallback(request.kind, "expired");
+            } else if (request.generation != state->generation.load()) {
+                recordNullCallback(request.kind, "generation_cancelled");
+            } else if (staleAfterDecode) {
+                recordNullCallback(request.kind, "stale_after_decode");
+            }
             frame = FrameHandle();
             decodedFrames.clear();
+        } else if (frame.isNull()) {
+            recordNullCallback(request.kind,
+                               errorMessage.isEmpty() ? "decode_returned_null"
+                                                      : "decoder_context_error");
         }
+
+        const qint64 decodeMs = decodeTraceMs() - startedAt;
+        recordDecodeTiming(request, frame, queueWaitMs, decodeMs);
 
         invokeRequestCallback(std::move(request.callback), frame);
 
@@ -729,7 +764,7 @@ void AsyncDecoder::insertByPriority(std::deque<DecodeRequest>& queue, const Deco
 
 void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
                                              std::deque<DecodeRequest>& queue,
-                                             QVector<std::function<void(FrameHandle)>>* droppedCallbacks) {
+                                             QVector<DroppedCallback>* droppedCallbacks) {
     if (!droppedCallbacks) {
         return;
     }
@@ -751,10 +786,134 @@ void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         }
 
         if (queue[static_cast<size_t>(i)].callback) {
-            droppedCallbacks->push_back(std::move(queue[static_cast<size_t>(i)].callback));
+            droppedCallbacks->push_back(
+                DroppedCallback{queue[static_cast<size_t>(i)].kind,
+                                std::move(queue[static_cast<size_t>(i)].callback)});
         }
         queue.erase(queue.begin() + i);
     }
+}
+
+void AsyncDecoder::recordNullCallback(DecodeRequestKind kind, const char* reason) {
+    m_nullCallbackCounters.total.fetch_add(1, std::memory_order_relaxed);
+    if (kind == DecodeRequestKind::Visible) {
+        m_nullCallbackCounters.visible.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const QString reasonText = QString::fromLatin1(reason ? reason : "unknown");
+    if (reasonText == QLatin1String("superseded")) {
+        m_nullCallbackCounters.superseded.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("queue_full")) {
+        m_nullCallbackCounters.queueFull.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("cancel_file")) {
+        m_nullCallbackCounters.cancelFile.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("cancel_before")) {
+        m_nullCallbackCounters.cancelBefore.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("cancel_all")) {
+        m_nullCallbackCounters.cancelAll.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("lane_unavailable")) {
+        m_nullCallbackCounters.laneUnavailable.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("expired")) {
+        m_nullCallbackCounters.expired.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("generation_cancelled")) {
+        m_nullCallbackCounters.generationCancelled.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("stale_after_decode")) {
+        m_nullCallbackCounters.staleAfterDecode.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("decode_returned_null")) {
+        m_nullCallbackCounters.decodeReturnedNull.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("decoder_context_error")) {
+        m_nullCallbackCounters.decoderContextError.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void AsyncDecoder::recordDecodeTiming(const DecodeRequest& request,
+                                      const FrameHandle& frame,
+                                      qint64 queueWaitMs,
+                                      qint64 decodeMs) {
+    m_decodeTimingCounters.totalCompleted.fetch_add(1, std::memory_order_relaxed);
+    if (request.kind == DecodeRequestKind::Visible) {
+        m_decodeTimingCounters.visibleCompleted.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (frame.isNull()) {
+        m_decodeTimingCounters.nullCompleted.fetch_add(1, std::memory_order_relaxed);
+    } else if (frame.hasHardwareFrame()) {
+        m_decodeTimingCounters.hardwareCompleted.fetch_add(1, std::memory_order_relaxed);
+    } else if (frame.hasGpuTexture()) {
+        m_decodeTimingCounters.gpuTextureCompleted.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        m_decodeTimingCounters.cpuImageCompleted.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    const qint64 completedAtMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 totalLatencyMs =
+        request.submittedAt > 0 ? completedAtMs - request.submittedAt : -1;
+    m_decodeTimingCounters.lastFrame.store(request.frameNumber, std::memory_order_relaxed);
+    m_decodeTimingCounters.lastQueueWaitMs.store(queueWaitMs, std::memory_order_relaxed);
+    m_decodeTimingCounters.lastDecodeMs.store(decodeMs, std::memory_order_relaxed);
+    m_decodeTimingCounters.lastTotalLatencyMs.store(totalLatencyMs, std::memory_order_relaxed);
+    m_decodeTimingCounters.lastCompletedAtMs.store(completedAtMs, std::memory_order_relaxed);
+    storeAtomicMax(&m_decodeTimingCounters.maxQueueWaitMs, queueWaitMs);
+    storeAtomicMax(&m_decodeTimingCounters.maxDecodeMs, decodeMs);
+    storeAtomicMax(&m_decodeTimingCounters.maxTotalLatencyMs, totalLatencyMs);
+}
+
+QJsonObject AsyncDecoder::diagnosticsSnapshot() const {
+    QJsonObject nullCallbacks{
+        {QStringLiteral("total"), static_cast<qint64>(m_nullCallbackCounters.total.load(std::memory_order_relaxed))},
+        {QStringLiteral("visible"), static_cast<qint64>(m_nullCallbackCounters.visible.load(std::memory_order_relaxed))},
+        {QStringLiteral("superseded"), static_cast<qint64>(m_nullCallbackCounters.superseded.load(std::memory_order_relaxed))},
+        {QStringLiteral("queue_full"), static_cast<qint64>(m_nullCallbackCounters.queueFull.load(std::memory_order_relaxed))},
+        {QStringLiteral("cancel_file"), static_cast<qint64>(m_nullCallbackCounters.cancelFile.load(std::memory_order_relaxed))},
+        {QStringLiteral("cancel_before"), static_cast<qint64>(m_nullCallbackCounters.cancelBefore.load(std::memory_order_relaxed))},
+        {QStringLiteral("cancel_all"), static_cast<qint64>(m_nullCallbackCounters.cancelAll.load(std::memory_order_relaxed))},
+        {QStringLiteral("lane_unavailable"), static_cast<qint64>(m_nullCallbackCounters.laneUnavailable.load(std::memory_order_relaxed))},
+        {QStringLiteral("expired"), static_cast<qint64>(m_nullCallbackCounters.expired.load(std::memory_order_relaxed))},
+        {QStringLiteral("generation_cancelled"), static_cast<qint64>(m_nullCallbackCounters.generationCancelled.load(std::memory_order_relaxed))},
+        {QStringLiteral("stale_after_decode"), static_cast<qint64>(m_nullCallbackCounters.staleAfterDecode.load(std::memory_order_relaxed))},
+        {QStringLiteral("decode_returned_null"), static_cast<qint64>(m_nullCallbackCounters.decodeReturnedNull.load(std::memory_order_relaxed))},
+        {QStringLiteral("decoder_context_error"), static_cast<qint64>(m_nullCallbackCounters.decoderContextError.load(std::memory_order_relaxed))}
+    };
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const qint64 lastCompletedAtMs =
+        m_decodeTimingCounters.lastCompletedAtMs.load(std::memory_order_relaxed);
+    QJsonObject decodeTiming{
+        {QStringLiteral("total_completed"),
+         static_cast<qint64>(m_decodeTimingCounters.totalCompleted.load(std::memory_order_relaxed))},
+        {QStringLiteral("visible_completed"),
+         static_cast<qint64>(m_decodeTimingCounters.visibleCompleted.load(std::memory_order_relaxed))},
+        {QStringLiteral("hardware_completed"),
+         static_cast<qint64>(m_decodeTimingCounters.hardwareCompleted.load(std::memory_order_relaxed))},
+        {QStringLiteral("gpu_texture_completed"),
+         static_cast<qint64>(m_decodeTimingCounters.gpuTextureCompleted.load(std::memory_order_relaxed))},
+        {QStringLiteral("cpu_image_completed"),
+         static_cast<qint64>(m_decodeTimingCounters.cpuImageCompleted.load(std::memory_order_relaxed))},
+        {QStringLiteral("null_completed"),
+         static_cast<qint64>(m_decodeTimingCounters.nullCompleted.load(std::memory_order_relaxed))},
+        {QStringLiteral("last_frame"),
+         static_cast<qint64>(m_decodeTimingCounters.lastFrame.load(std::memory_order_relaxed))},
+        {QStringLiteral("last_queue_wait_ms"),
+         static_cast<qint64>(m_decodeTimingCounters.lastQueueWaitMs.load(std::memory_order_relaxed))},
+        {QStringLiteral("max_queue_wait_ms"),
+         static_cast<qint64>(m_decodeTimingCounters.maxQueueWaitMs.load(std::memory_order_relaxed))},
+        {QStringLiteral("last_decode_ms"),
+         static_cast<qint64>(m_decodeTimingCounters.lastDecodeMs.load(std::memory_order_relaxed))},
+        {QStringLiteral("max_decode_ms"),
+         static_cast<qint64>(m_decodeTimingCounters.maxDecodeMs.load(std::memory_order_relaxed))},
+        {QStringLiteral("last_total_latency_ms"),
+         static_cast<qint64>(m_decodeTimingCounters.lastTotalLatencyMs.load(std::memory_order_relaxed))},
+        {QStringLiteral("max_total_latency_ms"),
+         static_cast<qint64>(m_decodeTimingCounters.maxTotalLatencyMs.load(std::memory_order_relaxed))},
+        {QStringLiteral("last_completed_age_ms"),
+         lastCompletedAtMs > 0 ? nowMs - lastCompletedAtMs : static_cast<qint64>(-1)}
+    };
+
+    return QJsonObject{
+        {QStringLiteral("pending_requests"), totalPendingRequests()},
+        {QStringLiteral("worker_count"), m_workerCount},
+        {QStringLiteral("null_callbacks"), nullCallbacks},
+        {QStringLiteral("decode_timing"), decodeTiming}
+    };
 }
 
 void AsyncDecoder::initSharedHwDevices() {

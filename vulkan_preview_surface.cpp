@@ -594,6 +594,46 @@ void VulkanPreviewSurface::setCurrentSpeakerOrganizationTextScale(qreal scale)
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setCurrentSpeakerNameVerticalPosition(qreal position)
+{
+    const qreal normalized = qBound<qreal>(0.0, position, 1.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerNameVerticalPosition, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerNameVerticalPosition = normalized;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerOrganizationVerticalPosition(qreal position)
+{
+    const qreal normalized = qBound<qreal>(0.0, position, 1.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerOrganizationVerticalPosition, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerOrganizationVerticalPosition = normalized;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setPlaybackStatusOverlayText(const QString& text)
+{
+    const QString normalized = text.trimmed();
+    if (m_interaction.playbackStatusOverlayText == normalized) {
+        return;
+    }
+    m_interaction.playbackStatusOverlayText = normalized;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setPlaybackStatusOverlayProgress(qreal progress)
+{
+    const qreal normalized = progress < 0.0 ? -1.0 : qBound<qreal>(0.0, progress, 1.0);
+    if (qFuzzyCompare(m_interaction.playbackStatusOverlayProgress + 1.0, normalized + 1.0)) {
+        return;
+    }
+    m_interaction.playbackStatusOverlayProgress = normalized;
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds)
 {
     if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {
@@ -811,9 +851,9 @@ bool VulkanPreviewSurface::isSampleWithinClip(const TimelineClip& clip, int64_t 
 
 int64_t VulkanPreviewSurface::sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const
 {
-    return sourceFrameForClipAtTimelinePosition(
+    return sourceFrameForClipAtTimelineSample(
         clip,
-        samplesToFramePosition(samplePosition),
+        samplePosition,
         m_interaction.renderSyncMarkers);
 }
 

@@ -1,5 +1,6 @@
 #include "editor.h"
 #include "debug_controls.h"
+#include "playback_clock_coordinator.h"
 #include "playback_debug.h"
 
 #include <QDebug>
@@ -18,14 +19,47 @@ void EditorWindow::advanceFrame()
     if (!m_timeline) return;
     bool forceTimelineTimerFallback = false;
     const qint64 tickNowMs = nowMs();
-    if (needsPitchPreservingPlaybackAudio() &&
-        !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
+    const bool pitchPreservingAudioRequired = needsPitchPreservingPlaybackAudio();
+    const auto holdForPitchPreservingAudio = [&](const QString& reason) {
+        if (m_audioEngine && m_audioEngine->hasPlayableAudio()) {
+            const int64_t audioSample = qBound<int64_t>(
+                0,
+                m_audioEngine->currentSample(),
+                frameToSamples(m_timeline->totalFrames()));
+            if (qAbs(audioSample - m_absolutePlaybackSample) > kSamplesPerFrame) {
+                setCurrentPlaybackSample(audioSample, false, true);
+            }
+        }
+        m_audioClockStallTicks = 0;
+        m_lastTimelineAdvanceTickMs = tickNowMs;
+        m_timelineAdvanceCarrySamples = 0.0;
+        if (debugPlaybackWarnEnabled()) {
+            qWarning().noquote()
+                << QStringLiteral("[PLAYBACK WARN] pitch-preserving playback held: %1")
+                       .arg(reason);
+        }
         requestPlaybackAudioWarmup(true);
+    };
+    const bool audioBlocked =
+        pitchPreservingAudioRequired && m_audioEngine && m_audioEngine->playbackAudioBlocked();
+    const bool audioReady =
+        !pitchPreservingAudioRequired ||
+        (m_audioEngine && m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame()));
+    if (shouldHoldForPitchPreservingAudio(m_playbackAudioWarpMode,
+                                          m_playbackSpeed,
+                                          m_audioEngine && m_audioEngine->hasPlayableAudio(),
+                                          audioBlocked,
+                                          audioReady)) {
+        holdForPitchPreservingAudio(audioBlocked
+                                        ? QStringLiteral("audio_blocked")
+                                        : QStringLiteral("retimed_audio_not_ready"));
         return;
     }
 
-    if (shouldUseAudioMasterClock() && m_audioEngine && m_audioEngine->audioClockAvailable() &&
-        m_audioEngine->hasPlayableAudio()) {
+    const bool audioMasterEnabled = shouldUseAudioMasterClock();
+    const bool audioClockAvailable = m_audioEngine && m_audioEngine->audioClockAvailable();
+    const bool hasPlayableAudio = m_audioEngine && m_audioEngine->hasPlayableAudio();
+    if (audioMasterEnabled && audioClockAvailable && hasPlayableAudio) {
         int64_t audioSample = qMax<int64_t>(0, m_audioEngine->currentSample());
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (!ranges.isEmpty()) {
@@ -52,39 +86,61 @@ void EditorWindow::advanceFrame()
             }
             audioSample = rangedSample;
         }
-        const qreal audioFramePosition = samplesToFramePosition(audioSample);
-        const int64_t audioFrame = qBound<int64_t>(0, static_cast<int64_t>(std::floor(audioFramePosition)), m_timeline->totalFrames());
-        const int64_t currentFrame = m_timeline->currentFrame();
-        if (audioFrame + 2 < currentFrame) {
-            forceTimelineTimerFallback = true;
-            if (debugPlaybackWarnEnabled()) {
+
+        const PlaybackClockDecision clockDecision = evaluatePlaybackClock(PlaybackClockInput{
+            pitchPreservingAudioRequired,
+            audioMasterEnabled,
+            audioClockAvailable,
+            hasPlayableAudio,
+            audioBlocked,
+            audioReady,
+            audioSample,
+            m_timeline->currentFrame(),
+            m_timeline->totalFrames(),
+            m_audioClockStallTicks + 1,
+            m_audioClockStallThresholdTicks,
+        });
+
+        switch (clockDecision.action) {
+        case PlaybackClockAction::HoldForPitchPreservingAudio:
+            holdForPitchPreservingAudio(clockDecision.reason);
+            return;
+        case PlaybackClockAction::WaitForAudioClock:
+            ++m_audioClockStallTicks;
+            if (m_preview) {
+                m_preview->setCurrentPlaybackSample(clockDecision.sample);
+            }
+            return;
+        case PlaybackClockAction::UseAudioSample:
+            m_audioClockStallTicks = 0;
+            if (m_preview) {
+                m_preview->setCurrentPlaybackSample(clockDecision.sample);
+                m_preview->preparePlaybackAdvanceSample(clockDecision.sample);
+            }
+            setCurrentPlaybackSample(clockDecision.sample, false, true);
+            return;
+        case PlaybackClockAction::UseTimelineTimer:
+            if (clockDecision.resetTimerContinuity) {
+                forceTimelineTimerFallback = true;
+            }
+            if (debugPlaybackWarnEnabled() &&
+                clockDecision.reason == QLatin1String("audio_clock_regressed")) {
                 qWarning().noquote()
                     << QStringLiteral("[PLAYBACK WARN] audio clock regressed from frame %1 to %2; "
                                       "continuing with timeline timer fallback")
-                           .arg(currentFrame)
-                           .arg(audioFrame);
-            }
-        }
-
-        if (!forceTimelineTimerFallback && audioFrame == currentFrame) {
-            ++m_audioClockStallTicks;
-            if (m_audioClockStallTicks <= m_audioClockStallThresholdTicks) {
-                if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
-                return;
-            }
-            if (debugPlaybackWarnEnabled()) {
+                           .arg(m_timeline->currentFrame())
+                           .arg(clockDecision.frame);
+            } else if (debugPlaybackWarnEnabled() &&
+                       clockDecision.reason == QLatin1String("audio_clock_stalled")) {
                 qWarning().noquote()
                     << QStringLiteral("[PLAYBACK WARN] audio clock stalled for %1 ticks at frame %2; falling back to timeline timer")
-                           .arg(m_audioClockStallTicks)
-                           .arg(audioFrame);
+                           .arg(m_audioClockStallTicks + 1)
+                           .arg(clockDecision.frame);
             }
-            forceTimelineTimerFallback = true;
-        } else if (!forceTimelineTimerFallback) {
-            m_audioClockStallTicks = 0;
-            if (m_preview) m_preview->setCurrentPlaybackSample(audioSample);
-            if (m_preview) m_preview->preparePlaybackAdvanceSample(audioSample);
-            setCurrentPlaybackSample(audioSample, false, true);
-            return;
+            break;
+        }
+        if (clockDecision.reason == QLatin1String("audio_clock_stalled")) {
+            ++m_audioClockStallTicks;
         }
     }
 
@@ -804,10 +860,9 @@ qreal EditorWindow::effectiveAudioWarpRate() const
 bool EditorWindow::needsPitchPreservingPlaybackAudio() const
 {
     return m_audioEngine &&
-           m_audioEngine->hasPlayableAudio() &&
-           normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode) ==
-               PlaybackAudioWarpMode::TimeStretch &&
-           qAbs(effectiveAudioWarpRate() - 1.0) >= 0.0001;
+           pitchPreservingPlaybackRequiresAudioGate(m_playbackAudioWarpMode,
+                                                   m_playbackSpeed,
+                                                   m_audioEngine->hasPlayableAudio());
 }
 
 void EditorWindow::reconcileActivePlaybackAudioState()
@@ -822,14 +877,14 @@ void EditorWindow::reconcileActivePlaybackAudioState()
         runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
     const bool shouldRunAudio =
         m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed;
-    const bool audioRunning = m_audioEngine->audioClockAvailable();
+    const bool audioStarted = m_audioEngine->playbackStarted();
     if (shouldRunAudio) {
         m_audioEngine->setPlaybackWarpMode(runtimeWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
         m_audioEngine->setTranscriptNormalizeEnabled(
             m_previewAudioDynamics.transcriptNormalizeEnabled);
         m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
-        if (!audioRunning) {
+        if (!audioStarted) {
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
@@ -845,7 +900,7 @@ void EditorWindow::reconcileActivePlaybackAudioState()
             }
             m_audioEngine->start(m_timeline->currentFrame());
         }
-    } else if (audioRunning) {
+    } else if (audioStarted) {
         m_audioEngine->stop();
     }
 }
@@ -890,7 +945,9 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
     updateTransportLabels();
 
     AudioEngine* audioEngine = m_audioEngine.get();
-    const int timeoutMs = qMax(5000, m_playbackStartLookaheadTimeoutMs);
+    const int timeoutMs = sidecarMissing
+        ? 30 * 60 * 1000
+        : qMax(5000, m_playbackStartLookaheadTimeoutMs);
     auto* watcher = new QFutureWatcher<bool>(this);
     connect(watcher, &QFutureWatcher<bool>::finished, this,
             [this, watcher, requestId, frame]() {
@@ -922,6 +979,37 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
     watcher->setFuture(QtConcurrent::run([audioEngine, frame, timeoutMs]() {
         return audioEngine->warmPlaybackAudio(frame, timeoutMs);
     }));
+}
+
+void EditorWindow::updatePlaybackStatusOverlay()
+{
+    if (!m_preview) {
+        return;
+    }
+
+    QString text;
+    qreal progress = -1.0;
+    if (needsPitchPreservingPlaybackAudio()) {
+        const int percent = qRound(m_playbackSpeed * 100.0);
+        const bool audioReady =
+            m_audioEngine && m_timeline &&
+            m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame());
+        if (m_retimingAudioForPlayback) {
+            progress = m_audioEngine ? m_audioEngine->timeStretchGenerationProgress() : -1.0;
+            const int generationPercent = progress >= 0.0 ? qRound(progress * 100.0) : 0;
+            text = progress >= 0.0
+                ? QStringLiteral("Audio being generated (%1%) %2%")
+                      .arg(percent)
+                      .arg(generationPercent)
+                : QStringLiteral("Audio being generated (%1%)").arg(percent);
+        } else if (m_playbackAudioWarmupPending) {
+            text = QStringLiteral("Loading re-timed audio (%1%)").arg(percent);
+        } else if (!audioReady && m_lastPlaybackStopReason == QStringLiteral("audio_not_ready")) {
+            text = QStringLiteral("Waiting for precomputed %1% audio").arg(percent);
+        }
+    }
+    m_preview->setPlaybackStatusOverlayText(text);
+    m_preview->setPlaybackStatusOverlayProgress(progress);
 }
 
 void EditorWindow::updatePlaybackTimerInterval()

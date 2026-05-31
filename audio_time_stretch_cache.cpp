@@ -8,6 +8,8 @@
 #include <QSaveFile>
 #include <QStandardPaths>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -22,7 +24,7 @@ QString cacheFileNameForSource(const QFileInfo& info, int speedKey)
     const QString baseName = info.completeBaseName().isEmpty()
         ? QStringLiteral("audio")
         : info.completeBaseName();
-    return QStringLiteral("%1_%2_ts%3x.jcutsnd")
+    return QStringLiteral("%1_%2_ts%3.jcutsnd")
         .arg(baseName, QString::fromLatin1(hash), QString::number(speedKey));
 }
 
@@ -38,7 +40,7 @@ QString writableUserCacheDir()
 QStringList candidateSidecarPaths(const QString& sourcePath, int speedKey)
 {
     const QFileInfo info(sourcePath);
-    if (!info.exists() || !info.isFile() || speedKey <= 1) {
+    if (!info.exists() || !info.isFile() || speedKey <= 1000) {
         return {};
     }
     const QString fileName = cacheFileNameForSource(info, speedKey);
@@ -123,10 +125,17 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                   int speedKey,
                                   const AudioTimeStretchCacheEntry& entry)
 {
-    if (!entry.valid || entry.samples.isEmpty() || speedKey <= 1) {
+    if (!entry.valid || !entry.fullyDecoded || entry.samples.isEmpty() || speedKey <= 1000) {
         return false;
     }
     const QFileInfo sourceInfo(sourcePath);
+    const QByteArray sampleBytes(
+        reinterpret_cast<const char*>(entry.samples.constData()),
+        entry.samples.size() * static_cast<int>(sizeof(float)));
+    const QByteArray compressedSamples = qCompress(sampleBytes, 6);
+    if (compressedSamples.isEmpty()) {
+        return false;
+    }
     for (const QString& sidecarPath : candidateSidecarPaths(sourcePath, speedKey)) {
         QDir().mkpath(QFileInfo(sidecarPath).absolutePath());
         QSaveFile file(sidecarPath);
@@ -134,9 +143,6 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
             continue;
         }
 
-        const QByteArray sampleBytes(
-            reinterpret_cast<const char*>(entry.samples.constData()),
-            entry.samples.size() * static_cast<int>(sizeof(float)));
         QDataStream stream(&file);
         stream.setVersion(QDataStream::Qt_6_0);
         stream << kTimeStretchSidecarMagic;
@@ -147,10 +153,63 @@ bool writeAudioTimeStretchSidecar(const QString& sourcePath,
         stream << qint32(entry.sampleRate);
         stream << qint32(entry.channelCount);
         stream << entry.fullyDecoded;
-        stream << qCompress(sampleBytes, 6);
+        stream << compressedSamples;
         if (stream.status() == QDataStream::Ok && file.commit()) {
             return true;
         }
     }
     return false;
+}
+
+int64_t audioTimeStretchCacheSampleForSourceSample(int64_t sourceSample, double playbackRate)
+{
+    const double speed = std::clamp(playbackRate, 0.1, 3.0);
+    if (std::abs(speed - 1.0) < 0.0001) {
+        return std::max<int64_t>(0, sourceSample);
+    }
+    return std::max<int64_t>(
+        0,
+        static_cast<int64_t>(std::floor(
+            static_cast<long double>(sourceSample) / static_cast<long double>(speed))));
+}
+
+int64_t audioTimeStretchCacheEndSampleForSourceEndSample(int64_t sourceEndSample, double playbackRate)
+{
+    const double speed = std::clamp(playbackRate, 0.1, 3.0);
+    if (std::abs(speed - 1.0) < 0.0001) {
+        return std::max<int64_t>(0, sourceEndSample);
+    }
+    return std::max<int64_t>(
+        0,
+        static_cast<int64_t>(std::ceil(
+            static_cast<long double>(sourceEndSample) / static_cast<long double>(speed))));
+}
+
+int64_t audioTimeStretchSourceSamplesCoveredByCacheSamples(int64_t cacheSamples, double playbackRate)
+{
+    const double speed = std::clamp(playbackRate, 0.1, 3.0);
+    if (std::abs(speed - 1.0) < 0.0001) {
+        return std::max<int64_t>(0, cacheSamples);
+    }
+    return std::max<int64_t>(
+        0,
+        static_cast<int64_t>(std::floor(
+            static_cast<long double>(cacheSamples) * static_cast<long double>(speed))));
+}
+
+bool audioTimeStretchSegmentCoversSourceRange(int64_t segmentCacheStartSample,
+                                              int64_t segmentCacheFrameCount,
+                                              int64_t sourceStartSample,
+                                              int64_t sourceEndSampleExclusive,
+                                              double playbackRate)
+{
+    if (segmentCacheFrameCount <= 0 || sourceEndSampleExclusive <= sourceStartSample) {
+        return false;
+    }
+    const int64_t cacheStart =
+        audioTimeStretchCacheSampleForSourceSample(sourceStartSample, playbackRate);
+    const int64_t cacheEnd =
+        audioTimeStretchCacheEndSampleForSourceEndSample(sourceEndSampleExclusive, playbackRate);
+    const int64_t segmentEnd = segmentCacheStartSample + segmentCacheFrameCount;
+    return cacheStart >= segmentCacheStartSample && cacheEnd <= segmentEnd;
 }

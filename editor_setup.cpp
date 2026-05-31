@@ -350,6 +350,9 @@ void EditorWindow::setupHeartbeat()
     m_mainThreadHeartbeatTimer.setInterval(m_mainThreadHeartbeatIntervalMs);
     connect(&m_mainThreadHeartbeatTimer, &QTimer::timeout, this, [this]() {
         m_lastMainThreadHeartbeatMs.store(nowMs());
+        if (m_playbackAudioWarmupPending || m_retimingAudioForPlayback) {
+            updatePlaybackStatusOverlay();
+        }
     });
     m_lastMainThreadHeartbeatMs.store(nowMs());
     m_mainThreadHeartbeatTimer.start();

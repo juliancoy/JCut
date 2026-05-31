@@ -91,6 +91,11 @@ jobs:
         ./test_integration
       env:
         QT_QPA_PLATFORM: offscreen
+
+    - name: Run temporal regression tests
+      run: ctest --test-dir ${{github.workspace}}/build --output-on-failure -L temporal
+      env:
+        QT_QPA_PLATFORM: offscreen
         
   build-macos:
     runs-on: macos-14

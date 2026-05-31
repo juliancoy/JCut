@@ -770,6 +770,7 @@ QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
         }
         const QFileInfo info(transcriptPath);
         const QStringList candidates{
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin")),
             info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin")),
             info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin")),
             info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin")),
@@ -799,6 +800,11 @@ QString transcriptPathForRuntimeSidecarForClipFile(const QString& filePath,
         }
     }
     for (const QString& candidatePath : candidates) {
+        if (sidecarExistsForTranscriptPath(candidatePath)) {
+            return candidatePath;
+        }
+    }
+    for (const QString& candidatePath : candidates) {
         if (!candidatePath.trimmed().isEmpty() && QFileInfo::exists(candidatePath)) {
             return candidatePath;
         }
@@ -813,6 +819,7 @@ bool facedetectionsSidecarExistsForClipFile(const QString& filePath) {
         }
         const QFileInfo info(transcriptPath);
         const QStringList candidates{
+            info.dir().filePath(info.completeBaseName() + QStringLiteral("_facestream.bin")),
             info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections.bin")),
             info.dir().filePath(info.completeBaseName() + QStringLiteral("_facedetections_processed.bin")),
             info.dir().filePath(info.completeBaseName() + QStringLiteral("_identity.bin")),

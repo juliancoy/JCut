@@ -1,5 +1,6 @@
 #include "null_preview_surface.h"
 
+#include <QFontMetrics>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QStringList>
@@ -76,6 +77,10 @@ void NullPreviewSurface::setShowCurrentSpeakerName(bool show) { m_showCurrentSpe
 void NullPreviewSurface::setShowCurrentSpeakerOrganization(bool show) { m_showCurrentSpeakerOrganization = show; requestRepaint(); }
 void NullPreviewSurface::setCurrentSpeakerNameTextScale(qreal scale) { m_currentSpeakerNameTextScale = qBound<qreal>(0.25, scale, 3.0); requestRepaint(); }
 void NullPreviewSurface::setCurrentSpeakerOrganizationTextScale(qreal scale) { m_currentSpeakerOrganizationTextScale = qBound<qreal>(0.25, scale, 3.0); requestRepaint(); }
+void NullPreviewSurface::setCurrentSpeakerNameVerticalPosition(qreal position) { m_currentSpeakerNameVerticalPosition = qBound<qreal>(0.0, position, 1.0); requestRepaint(); }
+void NullPreviewSurface::setCurrentSpeakerOrganizationVerticalPosition(qreal position) { m_currentSpeakerOrganizationVerticalPosition = qBound<qreal>(0.0, position, 1.0); requestRepaint(); }
+void NullPreviewSurface::setPlaybackStatusOverlayText(const QString& text) { m_playbackStatusOverlayText = text.trimmed(); requestRepaint(); }
+void NullPreviewSurface::setPlaybackStatusOverlayProgress(qreal progress) { m_playbackStatusOverlayProgress = progress < 0.0 ? -1.0 : qBound<qreal>(0.0, progress, 1.0); requestRepaint(); }
 void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facedetectionsOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }
 void NullPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>&) {}
 void NullPreviewSurface::setAudioSpeakerHoverModalEnabled(bool enabled) { m_audioSpeakerHoverModalEnabled = enabled; }
@@ -127,6 +132,8 @@ QJsonObject NullPreviewSurface::profilingSnapshot() const
         {QStringLiteral("backend"), QStringLiteral("offscreen_placeholder")},
         {QStringLiteral("clip_count"), m_clips.size()},
         {QStringLiteral("selected_clip_id"), m_selectedClipId},
+        {QStringLiteral("playback_status_overlay_text"), m_playbackStatusOverlayText},
+        {QStringLiteral("playback_status_overlay_progress"), m_playbackStatusOverlayProgress},
         {QStringLiteral("current_frame"), static_cast<qint64>(m_currentFrame)},
         {QStringLiteral("playing"), m_playing}
     };
@@ -182,10 +189,43 @@ void NullPreviewSurface::paintEvent(QPaintEvent* event)
         if (m_showCurrentSpeakerOrganization) overlays.push_back(QStringLiteral("speaker-organization"));
         lines.push_back(QStringLiteral("Preview Overlays: %1").arg(overlays.join(QStringLiteral(", "))));
     }
+    if (!m_playbackStatusOverlayText.isEmpty()) {
+        lines.push_back(QStringLiteral("Playback Status: %1").arg(m_playbackStatusOverlayText));
+    }
 
     painter.drawText(panel.adjusted(18, 52, -18, -18),
                      Qt::AlignTop | Qt::AlignLeft,
                      lines.join(QLatin1Char('\n')));
+
+    if (!m_playbackStatusOverlayText.isEmpty()) {
+        QFont badgeFont = painter.font();
+        badgeFont.setBold(true);
+        badgeFont.setPointSize(qMax(11, badgeFont.pointSize() + 1));
+        painter.setFont(badgeFont);
+        const QFontMetrics metrics(badgeFont);
+        const QRectF badgeRect(
+            panel.center().x() - qMin<qreal>(panel.width() - 40.0, metrics.horizontalAdvance(m_playbackStatusOverlayText) + 44.0) * 0.5,
+            panel.top() + 18.0,
+            qMin<qreal>(panel.width() - 40.0, metrics.horizontalAdvance(m_playbackStatusOverlayText) + 44.0),
+            38.0);
+        painter.setPen(QPen(QColor(255, 209, 102, 235), 2.0));
+        painter.setBrush(QColor(18, 20, 24, 224));
+        painter.drawRoundedRect(badgeRect, 8.0, 8.0);
+        painter.setPen(QColor(255, 241, 190, 255));
+        painter.drawText(badgeRect.adjusted(14.0, 0.0, -14.0, 0.0),
+                         Qt::AlignCenter,
+                         metrics.elidedText(m_playbackStatusOverlayText, Qt::ElideRight, qMax(1, qRound(badgeRect.width() - 28.0))));
+        if (m_playbackStatusOverlayProgress >= 0.0) {
+            const QRectF trackRect = badgeRect.adjusted(14.0, badgeRect.height() - 9.0, -14.0, -4.0);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(255, 244, 204, 56));
+            painter.drawRoundedRect(trackRect, 2.0, 2.0);
+            QRectF fillRect = trackRect;
+            fillRect.setWidth(qMax<qreal>(1.0, trackRect.width() * qBound<qreal>(0.0, m_playbackStatusOverlayProgress, 1.0)));
+            painter.setBrush(QColor(255, 209, 102, 235));
+            painter.drawRoundedRect(fillRect, 2.0, 2.0);
+        }
+    }
 }
 
 void NullPreviewSurface::requestRepaint()

@@ -101,6 +101,8 @@ public:
     QCheckBox *speakerShowCurrentSpeakerOrganizationCheckBox() const { return m_speakerShowCurrentSpeakerOrganizationCheckBox; }
     QSpinBox *speakerCurrentSpeakerNameTextSizeSpin() const { return m_speakerCurrentSpeakerNameTextSizeSpin; }
     QSpinBox *speakerCurrentSpeakerOrganizationTextSizeSpin() const { return m_speakerCurrentSpeakerOrganizationTextSizeSpin; }
+    QSpinBox *speakerCurrentSpeakerNameYPositionSpin() const { return m_speakerCurrentSpeakerNameYPositionSpin; }
+    QSpinBox *speakerCurrentSpeakerOrganizationYPositionSpin() const { return m_speakerCurrentSpeakerOrganizationYPositionSpin; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
     QListWidget *selectedSpeakerFaceDetectionsList() const { return m_selectedSpeakerFaceDetectionsList; }
@@ -629,6 +631,8 @@ private:
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
     QSpinBox *m_speakerCurrentSpeakerNameTextSizeSpin = nullptr;
     QSpinBox *m_speakerCurrentSpeakerOrganizationTextSizeSpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerNameYPositionSpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerOrganizationYPositionSpin = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
     QListWidget *m_selectedSpeakerFaceDetectionsList = nullptr;

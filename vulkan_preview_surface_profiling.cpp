@@ -30,6 +30,12 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("current_speaker_name_text_scale"), m_interaction.currentSpeakerNameTextScale);
     snapshot.insert(QStringLiteral("current_speaker_organization_text_scale"),
                     m_interaction.currentSpeakerOrganizationTextScale);
+    snapshot.insert(QStringLiteral("current_speaker_name_y_position"),
+                    m_interaction.currentSpeakerNameVerticalPosition);
+    snapshot.insert(QStringLiteral("current_speaker_organization_y_position"),
+                    m_interaction.currentSpeakerOrganizationVerticalPosition);
+    snapshot.insert(QStringLiteral("playback_status_overlay_text"),
+                    m_interaction.playbackStatusOverlayText);
     const CurrentSpeakerLabel currentSpeakerLabel = currentSpeakerLabelForState(&m_interaction);
     snapshot.insert(QStringLiteral("current_speaker_label"), QJsonObject{
         {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},
@@ -53,16 +59,21 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     if (m_decoder) {
         snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
         snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
+        snapshot.insert(QStringLiteral("decoder_diagnostics"), m_decoder->diagnosticsSnapshot());
     }
     if (m_cache) {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         snapshot.insert(QStringLiteral("cache_pending_visible_requests"), m_cache->pendingVisibleRequestCount());
         snapshot.insert(QStringLiteral("pending_visible_requests"),
-                        m_cache->pendingVisibleDebugSnapshot(QDateTime::currentMSecsSinceEpoch()));
+                        m_cache->pendingVisibleDebugSnapshot(nowMs));
+        snapshot.insert(QStringLiteral("visible_decode_diagnostics"),
+                        m_cache->visibleDecodeDiagnostics(nowMs));
         QJsonObject cacheSnapshot{
             {QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
             {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
             {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
-            {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()}
+            {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
+            {QStringLiteral("visible_decode"), m_cache->visibleDecodeDiagnostics(nowMs)}
         };
         const QJsonObject residency = m_cache->cacheResidencySnapshot();
         for (auto it = residency.begin(); it != residency.end(); ++it) {

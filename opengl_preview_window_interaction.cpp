@@ -756,14 +756,13 @@ void PreviewWindow::updatePreviewCursor(const QPointF& position) {
         return;
     }
 
-    if (m_interaction.faceStreamAssignmentInteractionEnabled) {
+    if (m_showSpeakerTrackBoxes || m_interaction.faceStreamAssignmentInteractionEnabled) {
         if (updateHoveredFaceDetectionsBox(position)) {
             setCursor(Qt::PointingHandCursor);
+            return;
         } else {
             clearHoveredFaceDetectionsBox();
-            setCursor(Qt::ArrowCursor);
         }
-        return;
     }
 
     if (m_interaction.viewMode == ViewMode::Audio) {

@@ -7,6 +7,7 @@ set(EDITOR_TEST_TARGETS
     test_transcript_logic
     test_transcript_tab_follow
     test_playback_policy
+    test_temporal_sync_contract
     test_audio_time_stretch
     test_audio_time_stretch_cache
     test_transform_skip_aware_timing
@@ -23,6 +24,7 @@ set(EDITOR_TEST_TARGETS
     test_facefind_window
     test_vulkan_direct_render_parity
     test_facedetections_preview_smoke
+    test_preview_face_track_click_policy
     test_direct_vulkan_handoff_pipeline_contract
 )
 
@@ -45,6 +47,15 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+set_tests_properties(
+    test_playback_policy
+    test_temporal_sync_contract
+    test_audio_time_stretch_cache
+    test_transcript_logic
+    test_transform_skip_aware_timing
+    PROPERTIES LABELS "temporal"
+)
 
 add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/test_vulkan_subtitle_render.cpp

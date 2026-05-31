@@ -76,6 +76,11 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Example: on a 60 fps source, media source frame `258214` is about `4303.57s` and maps to transcript frame `129107` at 30 fps; treating `258214` as a transcript frame incorrectly means about `8607.13s`.
 
 ## Runtime Clock Paths
+- Single-clock contract:
+  - At any runtime instant, the application has one authoritative playhead sample in 48 kHz timeline-sample space.
+  - `absolutePlaybackSample` is the canonical state stored by `EditorWindow`.
+  - Every playback consumer must derive its local domain from that sample instead of advancing its own independent notion of now.
+  - Derived domains include timeline frame, media source frame, transcript frame, retimed audio cache sample, speaker label timing, overlay timing, and follow/highlight timing.
 - Audio-master path:
   - `EditorWindow::advanceFrame()` uses `AudioEngine::currentSample()` when `shouldUseAudioMasterClock(...)` is true.
   - `AudioEngine::currentSample()` is the effective audible output position in 48 kHz timeline-sample space, not the tail of already queued audio.
@@ -83,17 +88,21 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Implication: visual playhead follows the sample reaching the output device as closely as backend timing permits; this is the best available A/V lock when audio is healthy.
 - Timeline-timer path:
   - `advanceFrame()` increments by elapsed wall-clock * playback speed.
-  - Implication: fallback when audio unavailable/stalled; can diverge from audio if audio later resumes.
+  - Implication: fallback only when audio is intentionally not the master or no playable audio exists.
+  - It is invalid to use timer fallback to ride through a blocked pitch-preserving audio segment, because that creates a second runtime clock.
 - Clock policy controls:
   - `PlaybackClockSource`: `auto|audio|timeline`.
   - `PlaybackAudioWarpMode`: `disabled|varispeed|time_stretch`.
   - Normalization can force `disabled -> varispeed` at non-1.0 speed.
-- Precomputed time-stretch audio:
-  - In `time_stretch` mode at 200% or 300%, `AudioEngine` may read from precomputed pitch-preserved audio buffers.
+- Pitch-preserving time-stretch audio:
+  - In `time_stretch` mode at any non-1.0 playback speed, `AudioEngine` reads from pitch-preserved retimed cache entries when available.
+  - Sidecar files are used for exact integer 200% and 300% speeds. Other speeds, including 125% and 150%, use generated in-memory segmented cache entries keyed by rounded speed-per-mille.
   - This does not create a new clock domain. `AudioEngine::currentSample()` still reports the effective audible position in 48 kHz timeline-sample space.
   - Timeline sample -> source sample still uses `sourceSampleForClipAtTimelineSample(...)` with render-sync markers and clip playback rate.
-  - The precomputed buffer index is derived from that mapped source sample by dividing by the global time-stretch speed (`2` or `3`).
-  - If the precomputed buffer is not ready, the fallback is explicit: audio holds silence and increments `time_stretch_cache_miss_count`; it must not silently fall back to pitch-shifted varispeed audio.
+  - The retimed buffer index is derived from that mapped source sample by dividing by the global time-stretch speed.
+  - Retimed cache entries may be segmented. Segment lookup must choose an entry that covers the entire mix chunk in normalized retimed sample space; using a stale earlier segment creates `input_out_of_range` stalls.
+  - If the retimed buffer is not ready, the fallback is explicit: playback enters audio warmup/blocked state and increments `time_stretch_cache_miss_count`; it must not silently fall back to pitch-shifted varispeed audio.
+  - While blocked, the audio clock is not a valid master clock for video. `EditorWindow::advanceFrame()` must call `requestPlaybackAudioWarmup(true)` and hold or snap back to the last effective audible timeline sample instead of letting video follow a stuck or rewound audio cursor.
 
 ## Transcript / Speech Filter Paths
 - Source of transcript truth per clip:
@@ -163,13 +172,18 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Audio clock stability governs perceived sync quality in playback.
   - Stalls trigger fallback to timer path; repeated transitions can present jitter if decode/audio is under pressure.
   - A clock derived from future queued/submitted position instead of effective audible position will make visual playheads lead the heard audio.
+  - A blocked pitch-preserving audio segment is not an audio-clock stall to ride through; playback must gate until the needed retimed segment is available.
 
 ## Practical Source-of-Truth Rules
 - Primary runtime playhead truth: `absolutePlaybackSample`.
+- Derived domain rule: timeline frame, source frame/sample, transcript frame, retimed cache sample, speaker labels, captions, and overlays must all be derived from the active playhead sample through the canonical conversion helpers.
 - Audio-master clock truth: effective audible output position, not future queued/submitted position.
+- Pitch-preserving audio readiness truth: `AudioEngine::playbackAudioReadyForFrame(...)` and `AudioEngine::playbackAudioBlocked()` gate playback start/continuation at non-1.0 `time_stretch` speeds.
+- Timer fallback truth: allowed only when audio is not the selected/effective master or there is no playable audio; invalid when pitch-preserving audio is required but blocked or not ready.
 - Transcript truth at a playhead instant: marker-aware `sourceSample/sourceFrame` derived from that sample.
 - Speech keep/remove truth: `TranscriptEngine::transcriptWordExportRanges(...)` from active transcript path.
 - Overlay/speaker timing truth: transcript/source frame mapping, not render-order table position.
+- Debug truth: logs and REST fields that cross domains must name the domain explicitly (`timeline_sample`, `timeline_frame`, `media_source_frame`, `transcript_frame`, `retimed_cache_sample`) instead of using ambiguous `source_frame` labels.
 
 ## Temporal Invariants
 - Invariant 1: Follow/highlight selection decisions must be made in source-frame space, never render-row order or render-time columns.
@@ -179,11 +193,17 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Enforced via shared helper: `transcriptOverlayLayoutAtSourceFrame(...)`.
 - Invariant 5: Active transcript cut path (`activeTranscriptPathForClipFile(...)`) is the transcript source of truth for runtime consumers.
 - Invariant 6: Skip-aware transform interpolation must use either active global kept ranges (`setTransformSkipAwareTimelineRanges(...)`) or active transcript speech ranges; stale range state is invalid.
+- Invariant 7: In pitch-preserving `time_stretch` playback, video must not follow an audio clock that is blocked on a missing or out-of-range retimed segment.
+- Invariant 8: Any code path that stores or advances "current frame" during playback must derive it from `absolutePlaybackSample` or the valid audio-master sample used to update `absolutePlaybackSample`; independent advancement is a timing bug.
+- Invariant 9: Retimed audio cache selection must prove coverage for the requested mix range before returning a segment.
 
 ## Verification Matrix
 - Playhead clock policy and warp normalization:
-  - Code: `editor_shared_media.cpp`, `editor.cpp`
+  - Code: `editor_shared_media.cpp`, `playback_clock_coordinator.cpp`, `editor_playback.cpp`
   - Tests: `tests/test_playback_policy.cpp`
+- Pitch-preserving time-stretch cache and playback gating:
+  - Code: `audio_engine.h`, `editor_playback.cpp`
+  - Tests: `tests/test_audio_time_stretch.cpp`, `tests/test_audio_time_stretch_cache.cpp`, `tests/test_playback_policy.cpp`
 - Timeline sample -> source/transcript mapping:
   - Code: `editor_shared_render_sync.cpp`
   - Tests: `tests/test_transcript_logic.cpp::testTranscriptFrameMappingUsesSourceSeconds`
@@ -194,31 +214,43 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Code: `transcript_tab.cpp`, `editor.cpp`
   - Tests: `tests/test_transcript_tab_follow.cpp`
 - Speaker framing temporal interpolation and fallback behavior:
-  - Code: `editor_shared_transcript.cpp`, `preview_window_transcript.cpp`, `render_decode.cpp`
+  - Code: `editor_shared_transcript.cpp`, `opengl_preview_window_transcript.cpp`, `direct_vulkan_preview_backend.cpp`, `render_decode.cpp`
   - Tests: `tests/test_transcript_logic.cpp` speaker-tracking cases
 - Shared preview/render transcript overlay layout path:
-  - Code: `editor_shared_transcript.cpp`, `preview_window_transcript.cpp`, `render_decode.cpp`
+  - Code: `editor_shared_transcript.cpp`, `opengl_preview_window_transcript.cpp`, `direct_vulkan_preview_backend.cpp`, `render_decode.cpp`
   - Tests: `tests/test_transcript_logic.cpp::testTranscriptOverlayLayoutHelperMatchesSectionLayout`
 - Transform skip-aware timing progression:
   - Code: `transform_skip_aware_timing.cpp`
   - Tests: `tests/test_transform_skip_aware_timing.cpp`
 
 ## Failure Playbook
+- Chief playbook issue:
+  - Do not treat symptoms as independent clocks. A/V/caption drift is usually a violation of the single-clock contract, not a caption offset problem.
+  - First establish the authoritative `absolutePlaybackSample`, the audio-master sample if enabled, and whether pitch-preserving audio is blocked.
+  - Only then inspect derived domains such as media source frame, transcript frame, or retimed cache sample.
 - Symptom: clicking a transcript word seeks correctly, but follow highlight drifts during playback.
   - Check: ensure follow path is consuming source frame from `transcriptFrameForClipAtTimelineSample(...)`.
-  - Probe: `/profiling` (`absolute_playback_sample`, playhead ages), then verify selected clip transcript path and marker set.
+  - Probe: `/profile?live=1&force=1` (`absolute_playback_sample`, playhead ages), then verify selected clip transcript path and marker set.
+- Symptom: captions match video but not audible audio.
+  - Check: this is a clock-source split. Compare `absolute_playback_sample`, `preview.current_sample`, and `audio.current_sample`.
+  - Check: if non-1.0 `time_stretch` is active and `audio_playback_blocked` or `pitch_preserving_audio_blocked` is true, video/captions must be held until the retimed segment is ready.
+  - Check: timer fallback during this condition is invalid.
 - Symptom: preview transcript overlay timing differs from export render.
   - Check: both preview and render must use transcript-frame mapping from timeline sample/frame plus render-sync markers.
   - Probe: compare preview clip/time against a rendered frame at same timeline frame.
 - Symptom: speech filter “skip all words” still passes clip audio.
   - Check: `transcriptWordExportRanges(...)` output should be empty for that clip coverage.
-  - Probe: inspect effective ranges via state/profiling and verify active transcript file content.
+  - Probe: inspect effective ranges via `/state?live=1` and `/profile?live=1&force=1`, then verify active transcript file content.
 - Symptom: transforms animate during silent/skipped sections under skip-aware mode.
   - Check: whether `setTransformSkipAwareTimelineRanges(...)` was refreshed after transcript edits.
   - Probe: verify speech filter/timing ranges snapshot and transform interpolation inputs.
 - Symptom: transcript follow or overlay breaks only when render-sync markers exist.
   - Check: any bypass of marker-aware conversion helpers.
   - Probe: validate marker list and compare mapped source frame with/without markers for same timeline point.
+- Symptom: video playback looks glitched or bounces between a few frames at non-1.0 `time_stretch` speed.
+  - Check: audio profile for `audio_playback_blocked`, `pitch_preserving_audio_blocked`, `last_mix_silence_reason=input_out_of_range`, and out-of-range retimed segment bounds.
+  - Probe: `/profile?live=1&force=1` audio fields `last_mix_out_of_range_timeline_sample`, `last_mix_out_of_range_source_sample`, `last_mix_out_of_range_normalized_sample`, `last_mix_out_of_range_audio_start_sample`, and `last_mix_out_of_range_audio_end_sample`.
+  - Check: video pipeline may be healthy even if playback is visually stuck; confirm with `/pipeline?live=1` frame lag and handoff status.
 
 ## Operational Checklist
 - Before merging timing changes:
@@ -226,5 +258,5 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Run transcript follow tests and playback policy tests specifically.
   - Validate one manual scenario with render-sync markers and speech filter enabled.
 - Before release:
-  - Capture `/profiling` snapshots at idle and during playback.
+  - Capture `/profile?live=1&force=1` snapshots at idle and during playback.
   - Confirm preview/export transcript alignment at at least one known timestamp.

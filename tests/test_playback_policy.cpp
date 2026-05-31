@@ -1,6 +1,7 @@
 #include <QtTest/QtTest>
 
 #include "../editor_shared.h"
+#include "../playback_clock_coordinator.h"
 
 class TestPlaybackPolicy : public QObject {
     Q_OBJECT
@@ -11,6 +12,8 @@ private slots:
     void testNormalizedAudioWarpMode();
     void testEffectiveWarpRate();
     void testAudioMasterClockPolicy();
+    void testPitchPreservingAudioGatePolicy();
+    void testPlaybackClockCoordinator();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
 };
 
@@ -83,6 +86,93 @@ void TestPlaybackPolicy::testAudioMasterClockPolicy() {
                                        PlaybackAudioWarpMode::Varispeed,
                                        1.0,
                                        true));
+}
+
+void TestPlaybackPolicy::testPitchPreservingAudioGatePolicy() {
+    QVERIFY(!pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::TimeStretch,
+                                                     1.0,
+                                                     true));
+    QVERIFY(!pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::TimeStretch,
+                                                     1.5,
+                                                     false));
+    QVERIFY(pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::Disabled,
+                                                    1.5,
+                                                    true));
+    QVERIFY(pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode::TimeStretch,
+                                                    1.5,
+                                                    true));
+
+    QVERIFY(!shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
+                                               1.5,
+                                               true,
+                                               false,
+                                               true));
+    QVERIFY(shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
+                                              1.5,
+                                              true,
+                                              true,
+                                              true));
+    QVERIFY(shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
+                                              1.5,
+                                              true,
+                                              false,
+                                              false));
+    QVERIFY(!shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
+                                               1.0,
+                                               true,
+                                               true,
+                                               false));
+}
+
+void TestPlaybackPolicy::testPlaybackClockCoordinator() {
+    editor::PlaybackClockInput input;
+    input.pitchPreservingAudioRequired = true;
+    input.audioMasterEnabled = true;
+    input.audioClockAvailable = true;
+    input.hasPlayableAudio = true;
+    input.audioBlocked = true;
+    input.audioReady = true;
+    input.audioSample = frameToSamples(100);
+    input.currentFrame = 120;
+    input.totalFrames = 1000;
+    input.audioClockStallTicks = 0;
+    input.audioClockStallThresholdTicks = 2;
+    editor::PlaybackClockDecision decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
+    QCOMPARE(decision.reason, QStringLiteral("audio_blocked"));
+    QVERIFY(decision.resetTimerContinuity);
+
+    input.audioBlocked = false;
+    input.audioReady = false;
+    decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
+    QCOMPARE(decision.reason, QStringLiteral("retimed_audio_not_ready"));
+
+    input.audioReady = true;
+    input.audioSample = frameToSamples(80);
+    decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
+    QCOMPARE(decision.reason, QStringLiteral("audio_clock_regressed"));
+
+    input.pitchPreservingAudioRequired = false;
+    decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTimelineTimer);
+    QCOMPARE(decision.reason, QStringLiteral("audio_clock_regressed"));
+
+    input.pitchPreservingAudioRequired = true;
+    input.audioSample = frameToSamples(120);
+    input.audioClockStallTicks = 1;
+    decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::WaitForAudioClock);
+
+    input.audioClockStallTicks = 3;
+    decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTimelineTimer);
+    QCOMPARE(decision.reason, QStringLiteral("audio_clock_stalled"));
+
+    input.audioSample = frameToSamples(121);
+    decision = editor::evaluatePlaybackClock(input);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
 }
 
 void TestPlaybackPolicy::testPlayableSampleAtOrAfterAcrossSpeechRanges() {

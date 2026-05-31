@@ -672,6 +672,25 @@ bool shouldUseAudioMasterClock(PlaybackClockSource source,
     }
 }
 
+bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
+                                              qreal playbackSpeed,
+                                              bool hasPlayableAudio) {
+    if (!hasPlayableAudio) {
+        return false;
+    }
+    return normalizedPlaybackAudioWarpMode(playbackSpeed, mode) == PlaybackAudioWarpMode::TimeStretch &&
+           qAbs(effectivePlaybackAudioWarpRate(playbackSpeed, mode) - 1.0) >= 0.0001;
+}
+
+bool shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode mode,
+                                       qreal playbackSpeed,
+                                       bool hasPlayableAudio,
+                                       bool audioBlocked,
+                                       bool audioReady) {
+    return pitchPreservingPlaybackRequiresAudioGate(mode, playbackSpeed, hasPlayableAudio) &&
+           (audioBlocked || !audioReady);
+}
+
 bool clipHasVisuals(const TimelineClip& clip) {
     return clip.mediaType == ClipMediaType::Image ||
            clip.mediaType == ClipMediaType::Video ||

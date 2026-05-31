@@ -315,13 +315,13 @@ ensure_rubberband_installed() {
         cat >&2 <<EOF
 Rubber Band source is available at ${RUBBERBAND_SRC_DIR}, but Meson is not installed.
 Install meson to build the vendored high-quality audio time-stretch backend, then rerun ./build.sh.
-The editor can still configure with the SOLA fallback if you run CMake directly.
+The editor requires Rubber Band because the SOLA fallback is intentionally disabled.
 EOF
-        return 0
+        exit 1
     fi
     if ! command -v ninja >/dev/null 2>&1; then
         echo "Rubber Band requires ninja for the Meson build; install ninja-build and rerun ./build.sh." >&2
-        return 0
+        exit 1
     fi
 
     echo "Bootstrapping Rubber Band into ${RUBBERBAND_INSTALL_DIR}..."

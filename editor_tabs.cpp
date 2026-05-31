@@ -590,6 +590,13 @@ void EditorWindow::createSpeakersTab()
             [this](const QString& clipId, const std::function<void(TimelineClip&)>& updater) -> bool {
                 return m_timeline && m_timeline->updateClipById(clipId, updater);
             },
+            [this](const QString& clipId) -> bool {
+                if (!m_timeline || clipId.trimmed().isEmpty()) {
+                    return false;
+                }
+                m_timeline->setSelectedClipId(clipId);
+                return m_timeline->selectedClipId() == clipId;
+            },
             [this]() -> QSize {
                 return m_preview ? m_preview->outputSize() : QSize(1080, 1920);
             },
@@ -648,14 +655,10 @@ void EditorWindow::createSpeakersTab()
     }
 
     auto syncFaceDetectionsAssignmentMode = [this]() {
-        if (!m_preview || !m_inspectorPane || !m_inspectorPane->tabs()) {
+        if (!m_preview) {
             return;
         }
-        QTabWidget* inspectorTabs = m_inspectorPane->tabs();
-        const bool speakersTabSelected =
-            inspectorTabs->tabText(inspectorTabs->currentIndex())
-                .compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
-        m_preview->setFaceDetectionsAssignmentInteractionEnabled(speakersTabSelected);
+        m_preview->setFaceDetectionsAssignmentInteractionEnabled(false);
     };
     if (m_inspectorPane && m_inspectorPane->tabs()) {
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,
@@ -1096,7 +1099,6 @@ void EditorWindow::setupTabs()
             if (m_preview) {
                 const bool isCorrectionsTab = tabName.compare(QStringLiteral("Corrections"), Qt::CaseInsensitive) == 0;
                 const bool isTitlesTab = tabName.compare(QStringLiteral("Titles"), Qt::CaseInsensitive) == 0;
-                const bool isAudioTab = tabName.compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0;
                 if (!isCorrectionsTab && m_preview->correctionDrawMode()) {
                     m_preview->setCorrectionDrawMode(false);
                     if (m_correctionsTab) {
@@ -1104,22 +1106,6 @@ void EditorWindow::setupTabs()
                     }
                 }
                 m_preview->setTitleOverlayInteractionOnly(isTitlesTab);
-
-                if (isAudioTab) {
-                    if (m_previewViewMode.compare(QStringLiteral("audio"), Qt::CaseInsensitive) != 0) {
-                        applyPreviewViewMode(QStringLiteral("audio"));
-                    }
-                } else if (m_previewViewMode.compare(QStringLiteral("audio"), Qt::CaseInsensitive) == 0) {
-                    applyPreviewViewMode(QStringLiteral("video"));
-                }
-                if (m_previewModeCombo) {
-                    const QSignalBlocker block(m_previewModeCombo);
-                    const int modeIndex =
-                        m_previewModeCombo->findData(m_previewViewMode, Qt::MatchFixedString);
-                    if (modeIndex >= 0) {
-                        m_previewModeCombo->setCurrentIndex(modeIndex);
-                    }
-                }
 
             }
 

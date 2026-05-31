@@ -508,6 +508,11 @@ def main() -> int:
     parser.add_argument("--max-profile-latency-ms", type=float, default=0.0)
     parser.add_argument("--max-heartbeat-age-ms", type=int, default=0)
     parser.add_argument("--pause-timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--preserve-playback-config",
+        action="store_true",
+        help="Use the saved project playback speed/clock instead of forcing deterministic timeline playback.",
+    )
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-restart", action="store_true")
     parser.add_argument("--artifact-dir", default=str(REPO_ROOT / "tests" / "artifacts"))
@@ -591,6 +596,33 @@ def main() -> int:
             raise TestFailure("transport.play not found in UI tree")
         if not play_button.get("clickable") or not play_button.get("enabled") or not play_button.get("visible"):
             raise TestFailure("transport.play is not clickable/enabled/visible")
+
+        if not args.preserve_playback_config:
+            diagnostics.phase = "playback_config"
+            playback_config = wait_for_request_json(
+                "/playback",
+                timeout=5.0,
+                method="POST",
+                payload={
+                    "playback_speed": 1.0,
+                    "clock_source": "timeline",
+                    "audio_warp_mode": "disabled",
+                },
+                description="deterministic playback config",
+                request_timeout=5.0,
+            )
+            if not playback_config.get("ok"):
+                raise TestFailure(f"failed to force deterministic playback config: {playback_config}")
+            seek_result = wait_for_request_json(
+                "/playhead",
+                timeout=5.0,
+                method="POST",
+                payload={"frame": 0},
+                description="deterministic playhead seek",
+                request_timeout=5.0,
+            )
+            if not seek_result.get("ok"):
+                raise TestFailure(f"failed to seek deterministic playback start: {seek_result}")
 
         diagnostics.phase = "click_play"
         click_result = wait_for_request_json(

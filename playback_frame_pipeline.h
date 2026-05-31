@@ -6,6 +6,7 @@
 
 #include <QObject>
 #include <QHash>
+#include <QJsonObject>
 #include <QMutex>
 #include <QSet>
 #include <QVector>
@@ -35,6 +36,7 @@ public:
     int pendingVisibleRequestCount() const;
     int bufferedFrameCount() const;
     int droppedPresentationFrameCount() const { return m_droppedPresentationFrames.load(); }
+    QJsonObject decodeDiagnostics() const;
 
 signals:
     void frameAvailable();
@@ -84,6 +86,25 @@ private:
                                       int64_t keepFromFrame,
                                       qint64 nowMs = -1);
 
+    struct DecodeDiagnostics {
+        uint64_t visibleDispatched = 0;
+        uint64_t visibleCompleted = 0;
+        uint64_t visibleNullCompleted = 0;
+        uint64_t visibleObsoleteCompleted = 0;
+        uint64_t visibleBufferedCompleted = 0;
+        uint64_t prefetchDispatched = 0;
+        uint64_t prefetchCompleted = 0;
+        qint64 lastVisibleFrame = -1;
+        qint64 lastVisibleWaitMs = -1;
+        qint64 maxVisibleWaitMs = 0;
+        qint64 lastVisibleQtDeliveryDelayMs = -1;
+        qint64 maxVisibleQtDeliveryDelayMs = 0;
+        qint64 lastCompletedAtMs = 0;
+        QString lastVisibleClipId;
+        QString lastVisiblePayload;
+        QString lastVisibleOutcome;
+    };
+
     AsyncDecoder* m_decoder = nullptr;
 
     mutable QMutex m_clipsMutex;
@@ -96,6 +117,8 @@ private:
     QHash<QString, int64_t> m_latestVisibleTargets;
     QHash<QString, int64_t> m_lastCancelKeepFromByPath;
     QHash<QString, qint64> m_lastCancelAtMsByPath;
+    mutable QMutex m_decodeDiagnosticsMutex;
+    DecodeDiagnostics m_decodeDiagnostics;
 
     mutable QMutex m_markersMutex;
     QVector<RenderSyncMarker> m_renderSyncMarkers;

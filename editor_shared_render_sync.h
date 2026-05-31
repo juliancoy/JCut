@@ -18,6 +18,14 @@ bool shouldUseAudioMasterClock(PlaybackClockSource source,
                                PlaybackAudioWarpMode mode,
                                qreal playbackSpeed,
                                bool hasPlayableAudio);
+bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
+                                              qreal playbackSpeed,
+                                              bool hasPlayableAudio);
+bool shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode mode,
+                                       qreal playbackSpeed,
+                                       bool hasPlayableAudio,
+                                       bool audioBlocked,
+                                       bool audioReady);
 
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,
@@ -25,6 +33,9 @@ int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
 int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
                                              qreal timelineFramePosition,
                                              const QVector<RenderSyncMarker>& markers);
+int64_t sourceFrameForClipAtTimelineSample(const TimelineClip& clip,
+                                           int64_t timelineSample,
+                                           const QVector<RenderSyncMarker>& markers);
 int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
                                             int64_t timelineSample,
                                             const QVector<RenderSyncMarker>& markers);

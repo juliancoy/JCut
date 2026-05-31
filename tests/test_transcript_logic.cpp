@@ -92,6 +92,7 @@ private slots:
     void testSpeakerTrackingExplicitDisabledOverridesKeyframes();
     void testSpeakerTrackingReferencePointsModeStaysDisabled();
     void testTranscriptFrameMappingUsesSourceSeconds();
+    void testAudioVideoCaptionMappingStaysSampleAccurateAtOnePointFiveX();
     void testTranscriptOverlaySizingHelpersClampToBox();
     void testTranscriptOverlayLayoutHelperMatchesSectionLayout();
     void testTranscriptOverlayRespectsWordPadding();
@@ -478,6 +479,44 @@ void TestTranscriptLogic::testTranscriptFrameMappingUsesSourceSeconds() {
 
     // 2.0s source-in + 0.5s timeline offset => 2.5s transcript time => frame 75 at 30fps.
     QCOMPARE(transcriptFrame, int64_t(75));
+}
+
+void TestTranscriptLogic::testAudioVideoCaptionMappingStaysSampleAccurateAtOnePointFiveX() {
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip-sync-150");
+    clip.mediaType = ClipMediaType::Video;
+    clip.hasAudio = true;
+    clip.startFrame = 100;
+    clip.durationFrames = 300;
+    clip.sourceInFrame = 120;      // 2.0s at 60fps
+    clip.sourceDurationFrames = 900;
+    clip.sourceFps = 60.0;
+    clip.playbackRate = 1.5;
+
+    const int64_t timelineSample =
+        frameToSamples(clip.startFrame + 10) + (kSamplesPerFrame / 2);
+
+    const int64_t audioSourceSample =
+        sourceSampleForClipAtTimelineSample(clip, timelineSample, {});
+    const int64_t videoSourceFrame =
+        sourceFrameForClipAtTimelineSample(clip, timelineSample, {});
+    const int64_t captionTranscriptFrame =
+        transcriptFrameForClipAtTimelineSample(clip, timelineSample, {});
+
+    const qreal sourceSeconds =
+        static_cast<qreal>(audioSourceSample) / static_cast<qreal>(kAudioSampleRate);
+    const int64_t sourceFrameFromAudio =
+        static_cast<int64_t>(std::floor(sourceSeconds * resolvedSourceFps(clip)));
+    const int64_t transcriptFrameFromAudio =
+        static_cast<int64_t>(std::floor(sourceSeconds * static_cast<qreal>(kTimelineFps)));
+
+    QCOMPARE(videoSourceFrame, sourceFrameFromAudio);
+    QCOMPARE(captionTranscriptFrame, transcriptFrameFromAudio);
+
+    // At 150%, this sub-frame sample lands half-way between source frames 151 and 152.
+    // A frame-floored video lookup would incorrectly request frame 150 here.
+    QCOMPARE(videoSourceFrame, int64_t(151));
+    QCOMPARE(captionTranscriptFrame, int64_t(75));
 }
 
 void TestTranscriptLogic::testTranscriptOverlaySizingHelpersClampToBox() {

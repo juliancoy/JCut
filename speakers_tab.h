@@ -100,6 +100,7 @@ public:
     struct Dependencies : public TableTabBase::Dependencies {
         std::function<QVector<RenderSyncMarker>()> getRenderSyncMarkers;
         std::function<bool(const QString&, const std::function<void(TimelineClip&)>&)> updateClipById;
+        std::function<bool(const QString&)> selectClipById;
         std::function<QSize()> getOutputSize;
         std::function<void()> refreshPreview;
         std::function<void(const QSet<int>&)> setPreviewAssignedFaceTrackIds;

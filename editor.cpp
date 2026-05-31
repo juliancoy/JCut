@@ -552,24 +552,12 @@ void EditorWindow::applyDeferredStartupPanelState(const QJsonObject& root,
             const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
             const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
             const bool titleOverlayOnly = isTabNamed(QStringLiteral("Titles"));
-            const bool faceStreamAssignmentInteractive = isTabNamed(QStringLiteral("Speakers"));
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
-            m_preview->setFaceDetectionsAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
+            m_preview->setFaceDetectionsAssignmentInteractionEnabled(false);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
-            }
-            if (m_inspectorTabs->tabText(targetInspectorTab).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
-                applyPreviewViewMode(QStringLiteral("audio"));
-                if (m_previewModeCombo) {
-                    QSignalBlocker comboBlock(m_previewModeCombo);
-                    const int audioIndex =
-                        m_previewModeCombo->findData(QStringLiteral("audio"), Qt::MatchFixedString);
-                    if (audioIndex >= 0) {
-                        m_previewModeCombo->setCurrentIndex(audioIndex);
-                    }
-                }
             }
         }
     }
@@ -974,6 +962,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         25,
         root.value(QStringLiteral("previewCurrentSpeakerOrganizationTextScalePercent")).toInt(100),
         300);
+    const int previewCurrentSpeakerNameYPositionPercent = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerNameYPositionPercent")).toInt(86),
+        100);
+    const int previewCurrentSpeakerOrganizationYPositionPercent = qBound(
+        0,
+        root.value(QStringLiteral("previewCurrentSpeakerOrganizationYPositionPercent")).toInt(93),
+        100);
     const QString previewFacestreamOverlaySource = QStringLiteral("all");
     const int autosaveIntervalMinutes = qBound(
         1,
@@ -1028,6 +1024,37 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             .toString(editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode()));
     editor::parseH26xSoftwareThreadingMode(debugH26xSoftwareThreadingModeText,
                                            &debugH26xSoftwareThreadingMode);
+    editor::RubberBandEnginePreference rubberBandEnginePreference =
+        editor::rubberBandEnginePreference();
+    editor::parseRubberBandEnginePreference(
+        root.value(QStringLiteral("rubberBandEngine"))
+            .toString(editor::rubberBandEnginePreferenceToString(
+                editor::rubberBandEnginePreference())),
+        &rubberBandEnginePreference);
+    editor::RubberBandThreadingPreference rubberBandThreadingPreference =
+        editor::rubberBandThreadingPreference();
+    editor::parseRubberBandThreadingPreference(
+        root.value(QStringLiteral("rubberBandThreading"))
+            .toString(editor::rubberBandThreadingPreferenceToString(
+                editor::rubberBandThreadingPreference())),
+        &rubberBandThreadingPreference);
+    editor::RubberBandWindowPreference rubberBandWindowPreference =
+        editor::rubberBandWindowPreference();
+    editor::parseRubberBandWindowPreference(
+        root.value(QStringLiteral("rubberBandWindow"))
+            .toString(editor::rubberBandWindowPreferenceToString(
+                editor::rubberBandWindowPreference())),
+        &rubberBandWindowPreference);
+    editor::RubberBandPitchPreference rubberBandPitchPreference =
+        editor::rubberBandPitchPreference();
+    editor::parseRubberBandPitchPreference(
+        root.value(QStringLiteral("rubberBandPitch"))
+            .toString(editor::rubberBandPitchPreferenceToString(
+                editor::rubberBandPitchPreference())),
+        &rubberBandPitchPreference);
+    const bool rubberBandChannelsTogether =
+        root.value(QStringLiteral("rubberBandChannelsTogether"))
+            .toBool(editor::rubberBandChannelsTogether());
     const bool debugDeterministicPipeline =
         root.value(QStringLiteral("debugDeterministicPipeline"))
             .toBool(editor::debugDeterministicPipelineEnabled());
@@ -1376,6 +1403,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_speakerCurrentSpeakerOrganizationTextSizeSpin->setValue(
             previewCurrentSpeakerOrganizationTextScalePercent);
     }
+    if (m_speakerCurrentSpeakerNameYPositionSpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerNameYPositionSpin);
+        m_speakerCurrentSpeakerNameYPositionSpin->setValue(previewCurrentSpeakerNameYPositionPercent);
+    }
+    if (m_speakerCurrentSpeakerOrganizationYPositionSpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerOrganizationYPositionSpin);
+        m_speakerCurrentSpeakerOrganizationYPositionSpin->setValue(
+            previewCurrentSpeakerOrganizationYPositionPercent);
+    }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
         m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
@@ -1560,11 +1596,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
             const bool showCorrectionOverlays = isTabNamed(QStringLiteral("Corrections"));
             const bool transcriptOverlayInteractive = isTabNamed(QStringLiteral("Transcript"));
             const bool titleOverlayOnly = isTabNamed(QStringLiteral("Titles"));
-            const bool faceStreamAssignmentInteractive = isTabNamed(QStringLiteral("Speakers"));
             m_preview->setShowCorrectionOverlays(showCorrectionOverlays);
             m_preview->setTranscriptOverlayInteractionEnabled(transcriptOverlayInteractive);
             m_preview->setTitleOverlayInteractionOnly(titleOverlayOnly);
-            m_preview->setFaceDetectionsAssignmentInteractionEnabled(faceStreamAssignmentInteractive);
+            m_preview->setFaceDetectionsAssignmentInteractionEnabled(false);
             if (!showCorrectionOverlays && m_correctionsTab) {
                 m_correctionsTab->stopDrawing();
             }
@@ -1584,6 +1619,10 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setCurrentSpeakerNameTextScale(previewCurrentSpeakerNameTextScalePercent / 100.0);
         m_preview->setCurrentSpeakerOrganizationTextScale(
             previewCurrentSpeakerOrganizationTextScalePercent / 100.0);
+        m_preview->setCurrentSpeakerNameVerticalPosition(
+            previewCurrentSpeakerNameYPositionPercent / 100.0);
+        m_preview->setCurrentSpeakerOrganizationVerticalPosition(
+            previewCurrentSpeakerOrganizationYPositionPercent / 100.0);
         m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;
@@ -1601,21 +1640,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_previewModeCombo->setToolTip(m_featureAudioPreviewMode
                                            ? QStringLiteral("Switch preview between video composition and audio waveform view.")
                                            : QStringLiteral("Audio preview mode disabled by feature flag."));
-    }
-    if (!startupMarking && m_inspectorTabs) {
-        const int index = m_inspectorTabs->currentIndex();
-        if (index >= 0 &&
-            m_inspectorTabs->tabText(index).compare(QStringLiteral("Audio"), Qt::CaseInsensitive) == 0) {
-            applyPreviewViewMode(QStringLiteral("audio"));
-            if (m_previewModeCombo) {
-                QSignalBlocker block(m_previewModeCombo);
-                const int audioIndex =
-                    m_previewModeCombo->findData(QStringLiteral("audio"), Qt::MatchFixedString);
-                if (audioIndex >= 0) {
-                    m_previewModeCombo->setCurrentIndex(audioIndex);
-                }
-            }
-        }
     }
     if (m_audioToolsButton) {
         m_audioToolsButton->setEnabled(m_featureAudioDynamicsTools);
@@ -1765,6 +1789,11 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     editor::setDebugDecoderLaneCount(debugDecoderLaneCount);
     editor::setDebugDecodePreference(debugDecodePreference);
     editor::setDebugH26xSoftwareThreadingMode(debugH26xSoftwareThreadingMode);
+    editor::setRubberBandEnginePreference(rubberBandEnginePreference);
+    editor::setRubberBandThreadingPreference(rubberBandThreadingPreference);
+    editor::setRubberBandWindowPreference(rubberBandWindowPreference);
+    editor::setRubberBandPitchPreference(rubberBandPitchPreference);
+    editor::setRubberBandChannelsTogether(rubberBandChannelsTogether);
     editor::setDebugDeterministicPipelineEnabled(debugDeterministicPipeline);
     editor::setDebugTimelineAudioEnvelopeGranularity(timelineAudioEnvelopeGranularity);
     if (m_timeline) {

@@ -75,6 +75,22 @@ void cacheWarnTrace(const QString& stage, const QString& detail = QString()) {
                               .arg(stage)
                               .arg(detail.isEmpty() ? QString() : QStringLiteral(" | ") + detail);
 }
+
+QString framePayloadForDiagnostics(const FrameHandle& frame) {
+    if (frame.isNull()) {
+        return QStringLiteral("null");
+    }
+    if (frame.hasHardwareFrame()) {
+        return QStringLiteral("hardware");
+    }
+    if (frame.hasGpuTexture()) {
+        return QStringLiteral("gpu_texture");
+    }
+    if (frame.hasCpuImage()) {
+        return QStringLiteral("cpu_image");
+    }
+    return QStringLiteral("unknown");
+}
 }  // namespace
 
 void TimelineCache::requestFrame(const QString& clipId,
@@ -171,6 +187,7 @@ void TimelineCache::requestFrame(const QString& clipId,
             pending.callbacks = std::move(mergedCallbacks);
             pending.generation = requestGeneration;
             pending.requestedAtMs = requestedAtWallMs;
+            pending.dispatchedAtMs = requestedAtWallMs;
             m_pendingVisibleRequests.insert(key, std::move(pending));
             m_pendingPrefetchRequests.remove(key);
 
@@ -186,6 +203,7 @@ void TimelineCache::requestFrame(const QString& clipId,
             pending.callbacks.push_back(std::move(callback));
             pending.generation = requestGeneration;
             pending.requestedAtMs = requestedAtWallMs;
+            pending.dispatchedAtMs = requestedAtWallMs;
             m_pendingVisibleRequests.insert(key, std::move(pending));
             m_pendingPrefetchRequests.remove(key);
         }
@@ -210,24 +228,33 @@ void TimelineCache::requestFrame(const QString& clipId,
                    .arg(frameNumber)
                    .arg(canonicalFrame)
                    .arg(priority));
+    {
+        QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
+        ++m_visibleDecodeDiagnostics.dispatched;
+        m_visibleDecodeDiagnostics.lastClipId = clipId;
+        m_visibleDecodeDiagnostics.lastRequestFrame = canonicalFrame;
+        m_visibleDecodeDiagnostics.lastOutcome = QStringLiteral("dispatched");
+    }
 
     const uint64_t seqId = m_decoder->requestFrame(
         info.decodePath,
         canonicalFrame,
         priority,
-        10000,
+        30000,
         DecodeRequestKind::Visible,
         [self,
          aliveToken,
          clipId,
          canonicalFrame,
          requestedAtTraceMs,
+         requestedAtWallMs,
          key,
          requestGeneration,
          requireHardwareOrGpuPayload](FrameHandle frame) {
             if (!aliveToken->load() || !self) {
                 return;
             }
+            const qint64 decoderCallbackAtMs = QDateTime::currentMSecsSinceEpoch();
 
             QMetaObject::invokeMethod(
                 self,
@@ -236,6 +263,8 @@ void TimelineCache::requestFrame(const QString& clipId,
                  clipId,
                  canonicalFrame,
                  requestedAtTraceMs,
+                 requestedAtWallMs,
+                 decoderCallbackAtMs,
                  key,
                  frame,
                  requestGeneration,
@@ -245,6 +274,7 @@ void TimelineCache::requestFrame(const QString& clipId,
                     }
 
                     FrameHandle deliveredFrame = frame;
+                    const QString rawPayload = framePayloadForDiagnostics(deliveredFrame);
                     if (requireHardwareOrGpuPayload &&
                         !deliveredFrame.isNull() &&
                         !deliveredFrame.hasHardwareFrame() &&
@@ -255,6 +285,8 @@ void TimelineCache::requestFrame(const QString& clipId,
                                 .arg(clipId)
                                 .arg(canonicalFrame));
                         deliveredFrame = FrameHandle();
+                        QMutexLocker diagnosticsLock(&self->m_visibleDecodeDiagnosticsMutex);
+                        ++self->m_visibleDecodeDiagnostics.strictPayloadRejected;
                     }
 
                     int64_t latestVisibleTarget = canonicalFrame;
@@ -310,6 +342,47 @@ void TimelineCache::requestFrame(const QString& clipId,
                         deliveredFrame = FrameHandle();
                     }
 
+                    const qint64 completedAtMs = QDateTime::currentMSecsSinceEpoch();
+                    const qint64 wallWaitMs =
+                        requestedAtWallMs > 0 ? completedAtMs - requestedAtWallMs : -1;
+                    const qint64 qtDeliveryDelayMs =
+                        decoderCallbackAtMs > 0 ? completedAtMs - decoderCallbackAtMs : -1;
+                    {
+                        QMutexLocker diagnosticsLock(&self->m_visibleDecodeDiagnosticsMutex);
+                        auto& diagnostics = self->m_visibleDecodeDiagnostics;
+                        ++diagnostics.completed;
+                        diagnostics.lastClipId = clipId;
+                        diagnostics.lastRequestFrame = canonicalFrame;
+                        diagnostics.lastCompletedFrame = deliveredFrame.isNull()
+                                                             ? static_cast<qint64>(-1)
+                                                             : static_cast<qint64>(deliveredFrame.frameNumber());
+                        diagnostics.lastCallbackWaitMs = wallWaitMs;
+                        diagnostics.maxCallbackWaitMs = qMax(diagnostics.maxCallbackWaitMs, wallWaitMs);
+                        diagnostics.lastQtDeliveryDelayMs = qtDeliveryDelayMs;
+                        diagnostics.maxQtDeliveryDelayMs =
+                            qMax(diagnostics.maxQtDeliveryDelayMs, qtDeliveryDelayMs);
+                        diagnostics.lastCompletedAtMs = completedAtMs;
+                        diagnostics.lastPayload = completionStaleByGeneration
+                                                      ? QStringLiteral("stale_generation")
+                                                      : rawPayload;
+                        if (completionStaleByGeneration) {
+                            ++diagnostics.staleGenerationCompleted;
+                            diagnostics.lastOutcome = QStringLiteral("stale_generation");
+                        } else if (deliveredFrame.isNull()) {
+                            ++diagnostics.nullCompleted;
+                            diagnostics.lastOutcome = QStringLiteral("null");
+                        } else if (deliveredFrame.hasHardwareFrame()) {
+                            ++diagnostics.hardwareCompleted;
+                            diagnostics.lastOutcome = QStringLiteral("stored");
+                        } else if (deliveredFrame.hasGpuTexture()) {
+                            ++diagnostics.gpuTextureCompleted;
+                            diagnostics.lastOutcome = QStringLiteral("stored");
+                        } else {
+                            ++diagnostics.cpuCompleted;
+                            diagnostics.lastOutcome = QStringLiteral("stored");
+                        }
+                    }
+
                     cacheTrace(QStringLiteral("TimelineCache::requestFrame.complete"),
                                QStringLiteral("clip=%1 frame=%2 null=%3 waitMs=%4")
                                    .arg(clipId)
@@ -358,6 +431,14 @@ void TimelineCache::requestFrame(const QString& clipId,
     }
     if (seqId == 0) {
         QVector<std::function<void(FrameHandle)>> callbacks;
+        {
+            QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
+            ++m_visibleDecodeDiagnostics.decoderRejected;
+            m_visibleDecodeDiagnostics.lastClipId = clipId;
+            m_visibleDecodeDiagnostics.lastRequestFrame = canonicalFrame;
+            m_visibleDecodeDiagnostics.lastPayload = QStringLiteral("null");
+            m_visibleDecodeDiagnostics.lastOutcome = QStringLiteral("decoder_rejected");
+        }
         {
             QMutexLocker pendingLock(&m_pendingMutex);
             auto it = m_pendingVisibleRequests.find(key);
@@ -525,6 +606,54 @@ QJsonArray TimelineCache::pendingVisibleDebugSnapshot(qint64 nowMs, int limit) c
         });
     }
     return snapshot;
+}
+
+QJsonObject TimelineCache::visibleDecodeDiagnostics(qint64 nowMs) const {
+    int pendingCount = 0;
+    qint64 oldestPendingAgeMs = -1;
+    {
+        QMutexLocker pendingLock(&m_pendingMutex);
+        pendingCount = m_pendingVisibleRequests.size();
+        for (auto it = m_pendingVisibleRequests.cbegin(); it != m_pendingVisibleRequests.cend(); ++it) {
+            if (it->requestedAtMs <= 0) {
+                continue;
+            }
+            const qint64 ageMs = nowMs - it->requestedAtMs;
+            if (oldestPendingAgeMs < 0 || ageMs > oldestPendingAgeMs) {
+                oldestPendingAgeMs = ageMs;
+            }
+        }
+    }
+
+    QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
+    return QJsonObject{
+        {QStringLiteral("pending_count"), pendingCount},
+        {QStringLiteral("oldest_pending_age_ms"), oldestPendingAgeMs},
+        {QStringLiteral("dispatched"), static_cast<qint64>(m_visibleDecodeDiagnostics.dispatched)},
+        {QStringLiteral("completed"), static_cast<qint64>(m_visibleDecodeDiagnostics.completed)},
+        {QStringLiteral("null_completed"), static_cast<qint64>(m_visibleDecodeDiagnostics.nullCompleted)},
+        {QStringLiteral("hardware_completed"), static_cast<qint64>(m_visibleDecodeDiagnostics.hardwareCompleted)},
+        {QStringLiteral("gpu_texture_completed"), static_cast<qint64>(m_visibleDecodeDiagnostics.gpuTextureCompleted)},
+        {QStringLiteral("cpu_completed"), static_cast<qint64>(m_visibleDecodeDiagnostics.cpuCompleted)},
+        {QStringLiteral("strict_payload_rejected"),
+         static_cast<qint64>(m_visibleDecodeDiagnostics.strictPayloadRejected)},
+        {QStringLiteral("stale_generation_completed"),
+         static_cast<qint64>(m_visibleDecodeDiagnostics.staleGenerationCompleted)},
+        {QStringLiteral("decoder_rejected"), static_cast<qint64>(m_visibleDecodeDiagnostics.decoderRejected)},
+        {QStringLiteral("last_clip_id"), m_visibleDecodeDiagnostics.lastClipId},
+        {QStringLiteral("last_request_frame"), m_visibleDecodeDiagnostics.lastRequestFrame},
+        {QStringLiteral("last_completed_frame"), m_visibleDecodeDiagnostics.lastCompletedFrame},
+        {QStringLiteral("last_payload"), m_visibleDecodeDiagnostics.lastPayload},
+        {QStringLiteral("last_outcome"), m_visibleDecodeDiagnostics.lastOutcome},
+        {QStringLiteral("last_callback_wait_ms"), m_visibleDecodeDiagnostics.lastCallbackWaitMs},
+        {QStringLiteral("max_callback_wait_ms"), m_visibleDecodeDiagnostics.maxCallbackWaitMs},
+        {QStringLiteral("last_qt_delivery_delay_ms"), m_visibleDecodeDiagnostics.lastQtDeliveryDelayMs},
+        {QStringLiteral("max_qt_delivery_delay_ms"), m_visibleDecodeDiagnostics.maxQtDeliveryDelayMs},
+        {QStringLiteral("last_completed_age_ms"),
+         m_visibleDecodeDiagnostics.lastCompletedAtMs > 0
+             ? nowMs - m_visibleDecodeDiagnostics.lastCompletedAtMs
+             : static_cast<qint64>(-1)}
+    };
 }
 
 }  // namespace editor

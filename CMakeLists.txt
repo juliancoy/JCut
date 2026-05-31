@@ -129,10 +129,10 @@ if(JCUT_ENABLE_RUBBERBAND_TIME_STRETCH)
     if(TARGET PkgConfig::RUBBERBAND)
         set(JCUT_HAVE_RUBBERBAND 1)
     else()
-        message(WARNING
-            "Rubber Band was not found via pkg-config; audio time-stretch will use the SOLA fallback. "
-            "Run ./build.sh with meson installed, or install librubberband development files, to enable "
-            "the higher-quality default backend.")
+        message(FATAL_ERROR
+            "Rubber Band was not found via pkg-config, but JCUT_ENABLE_RUBBERBAND_TIME_STRETCH is ON. "
+            "Run ./build.sh with Meson installed, or install librubberband development files. "
+            "SOLA fallback is intentionally disabled.")
     endif()
 endif()
 
@@ -441,6 +441,8 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/identity_resolution.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/media_pipeline_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_budget.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/playback_clock_coordinator.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/preview_face_track_click_policy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_frame_selection.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp

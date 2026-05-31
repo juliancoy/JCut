@@ -280,6 +280,7 @@ private:
     bool needsPitchPreservingPlaybackAudio() const;
     void reconcileActivePlaybackAudioState();
     void requestPlaybackAudioWarmup(bool startWhenReady);
+    void updatePlaybackStatusOverlay();
     void updatePlaybackTimerInterval();
     void setPlaybackActive(bool playing);
     void stopPlaybackWithReason(const QString& reason);
@@ -445,6 +446,8 @@ private:
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
     QSpinBox *m_speakerCurrentSpeakerNameTextSizeSpin = nullptr;
     QSpinBox *m_speakerCurrentSpeakerOrganizationTextSizeSpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerNameYPositionSpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerOrganizationYPositionSpin = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;

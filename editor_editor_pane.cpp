@@ -542,6 +542,7 @@ void EditorWindow::updateTransportLabels()
                                             ? QStringLiteral("Audio idle")
                                             : QStringLiteral("Audio  %1").arg(activeAudio));
     }
+    updatePlaybackStatusOverlay();
 }
 
 QString EditorWindow::frameToTimecode(int64_t frame) const

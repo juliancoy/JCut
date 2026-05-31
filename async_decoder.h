@@ -9,6 +9,7 @@
 #include <QDeadlineTimer>
 #include <QHash>
 #include <QImage>
+#include <QJsonObject>
 #include <QMutex>
 #include <QObject>
 #include <QVector>
@@ -134,6 +135,7 @@ public:
     int pendingRequestCount() const { return totalPendingRequests(); }
     int workerCount() const { return m_workerCount; }
     void setWorkerCount(int workerCount);
+    QJsonObject diagnosticsSnapshot() const;
     
     // Memory budget access
     MemoryBudget* memoryBudget() const { return m_budget; }
@@ -151,6 +153,10 @@ signals:
 
 private:
     struct LaneState;
+    struct DroppedCallback {
+        DecodeRequestKind kind = DecodeRequestKind::Visible;
+        std::function<void(FrameHandle)> callback;
+    };
 
     void setupTrimCallback();
     void trimCaches();
@@ -171,7 +177,45 @@ private:
     void insertByPriority(std::deque<DecodeRequest>& queue, const DecodeRequest& req);
     void collectSupersededRequests(const DecodeRequest& req,
                                    std::deque<DecodeRequest>& queue,
-                                   QVector<std::function<void(FrameHandle)>>* droppedCallbacks);
+                                   QVector<DroppedCallback>* droppedCallbacks);
+    void recordNullCallback(DecodeRequestKind kind, const char* reason);
+    void recordDecodeTiming(const DecodeRequest& request,
+                            const FrameHandle& frame,
+                            qint64 queueWaitMs,
+                            qint64 decodeMs);
+
+    struct NullCallbackCounters {
+        std::atomic<uint64_t> total{0};
+        std::atomic<uint64_t> visible{0};
+        std::atomic<uint64_t> superseded{0};
+        std::atomic<uint64_t> queueFull{0};
+        std::atomic<uint64_t> cancelFile{0};
+        std::atomic<uint64_t> cancelBefore{0};
+        std::atomic<uint64_t> cancelAll{0};
+        std::atomic<uint64_t> laneUnavailable{0};
+        std::atomic<uint64_t> expired{0};
+        std::atomic<uint64_t> generationCancelled{0};
+        std::atomic<uint64_t> staleAfterDecode{0};
+        std::atomic<uint64_t> decodeReturnedNull{0};
+        std::atomic<uint64_t> decoderContextError{0};
+    };
+
+    struct DecodeTimingCounters {
+        std::atomic<uint64_t> totalCompleted{0};
+        std::atomic<uint64_t> visibleCompleted{0};
+        std::atomic<uint64_t> hardwareCompleted{0};
+        std::atomic<uint64_t> gpuTextureCompleted{0};
+        std::atomic<uint64_t> cpuImageCompleted{0};
+        std::atomic<uint64_t> nullCompleted{0};
+        std::atomic<int64_t> lastFrame{-1};
+        std::atomic<int64_t> lastQueueWaitMs{-1};
+        std::atomic<int64_t> maxQueueWaitMs{0};
+        std::atomic<int64_t> lastDecodeMs{-1};
+        std::atomic<int64_t> maxDecodeMs{0};
+        std::atomic<int64_t> lastTotalLatencyMs{-1};
+        std::atomic<int64_t> maxTotalLatencyMs{0};
+        std::atomic<int64_t> lastCompletedAtMs{0};
+    };
     
     MemoryBudget* m_budget = nullptr;
     int m_workerCount = 0;
@@ -187,6 +231,8 @@ private:
 
     QMutex m_infoCacheMutex;
     QHash<QString, VideoStreamInfo> m_infoCache;
+    NullCallbackCounters m_nullCallbackCounters;
+    DecodeTimingCounters m_decodeTimingCounters;
 };
 
 } // namespace editor

@@ -214,7 +214,7 @@ int64_t PreviewWindow::sourceSampleForPlaybackSample(const TimelineClip& clip, i
 }
 
 int64_t PreviewWindow::sourceFrameForSample(const TimelineClip& clip, int64_t samplePosition) const {
-    return sourceFrameForClipAtTimelinePosition(clip, samplesToFramePosition(samplePosition), m_interaction.renderSyncMarkers);
+    return sourceFrameForClipAtTimelineSample(clip, samplePosition, m_interaction.renderSyncMarkers);
 }
 
 bool PreviewWindow::isFrameTooStaleForPlayback(const TimelineClip& clip,

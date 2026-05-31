@@ -29,6 +29,29 @@ enum class H26xSoftwareThreadingMode : int {
     FrameAndSliceThreads = 3,
 };
 
+enum class RubberBandEnginePreference : int {
+    Faster = 0,
+    Finer = 1,
+};
+
+enum class RubberBandThreadingPreference : int {
+    Auto = 0,
+    Never = 1,
+    Always = 2,
+};
+
+enum class RubberBandWindowPreference : int {
+    Standard = 0,
+    Short = 1,
+    Long = 2,
+};
+
+enum class RubberBandPitchPreference : int {
+    HighSpeed = 0,
+    HighQuality = 1,
+    HighConsistency = 2,
+};
+
 DebugLogLevel debugPlaybackLevel();
 DebugLogLevel debugCacheLevel();
 DebugLogLevel debugDecodeLevel();
@@ -61,6 +84,11 @@ bool debugPlayheadNoRepaint();
 bool debugPlaybackCacheFallbackEnabled();
 bool debugDeterministicPipelineEnabled();
 int debugTimelineAudioEnvelopeGranularity();
+RubberBandEnginePreference rubberBandEnginePreference();
+RubberBandThreadingPreference rubberBandThreadingPreference();
+RubberBandWindowPreference rubberBandWindowPreference();
+RubberBandPitchPreference rubberBandPitchPreference();
+bool rubberBandChannelsTogether();
 
 void setDebugPlaybackEnabled(bool enabled);
 void setDebugCacheEnabled(bool enabled);
@@ -83,6 +111,11 @@ void setDebugPlayheadNoRepaint(bool enabled);
 void setDebugPlaybackCacheFallbackEnabled(bool enabled);
 void setDebugDeterministicPipelineEnabled(bool enabled);
 void setDebugTimelineAudioEnvelopeGranularity(int granularity);
+void setRubberBandEnginePreference(RubberBandEnginePreference preference);
+void setRubberBandThreadingPreference(RubberBandThreadingPreference preference);
+void setRubberBandWindowPreference(RubberBandWindowPreference preference);
+void setRubberBandPitchPreference(RubberBandPitchPreference preference);
+void setRubberBandChannelsTogether(bool enabled);
 
 struct RenderPipelineDefaults {
     DecodePreference decodePreference = DecodePreference::Software;
@@ -112,6 +145,14 @@ QString decodePreferenceToString(DecodePreference preference);
 bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut);
 QString h26xSoftwareThreadingModeToString(H26xSoftwareThreadingMode mode);
 bool parseH26xSoftwareThreadingMode(const QString& text, H26xSoftwareThreadingMode* modeOut);
+QString rubberBandEnginePreferenceToString(RubberBandEnginePreference preference);
+bool parseRubberBandEnginePreference(const QString& text, RubberBandEnginePreference* preferenceOut);
+QString rubberBandThreadingPreferenceToString(RubberBandThreadingPreference preference);
+bool parseRubberBandThreadingPreference(const QString& text, RubberBandThreadingPreference* preferenceOut);
+QString rubberBandWindowPreferenceToString(RubberBandWindowPreference preference);
+bool parseRubberBandWindowPreference(const QString& text, RubberBandWindowPreference* preferenceOut);
+QString rubberBandPitchPreferenceToString(RubberBandPitchPreference preference);
+bool parseRubberBandPitchPreference(const QString& text, RubberBandPitchPreference* preferenceOut);
 
 using DecoderLaneCountChangedCallback = std::function<void(int)>;
 void setDecoderLaneCountChangedCallback(DecoderLaneCountChangedCallback callback);

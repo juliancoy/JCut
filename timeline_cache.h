@@ -181,6 +181,7 @@ public:
                                         int64_t frameNumber,
                                         qint64 staleAfterMs) const;
     QJsonArray pendingVisibleDebugSnapshot(qint64 nowMs, int limit = 8) const;
+    QJsonObject visibleDecodeDiagnostics(qint64 nowMs) const;
     bool shouldAllowApproximatePreviewFrame(const QString& clipId,
                                             int64_t frameNumber,
                                             qint64 nowMs) const;
@@ -212,6 +213,29 @@ private:
         QVector<std::function<void(FrameHandle)>> callbacks;
         uint64_t generation = 0;
         qint64 requestedAtMs = 0;
+        qint64 dispatchedAtMs = 0;
+    };
+
+    struct VisibleDecodeDiagnostics {
+        uint64_t dispatched = 0;
+        uint64_t completed = 0;
+        uint64_t nullCompleted = 0;
+        uint64_t hardwareCompleted = 0;
+        uint64_t gpuTextureCompleted = 0;
+        uint64_t cpuCompleted = 0;
+        uint64_t strictPayloadRejected = 0;
+        uint64_t staleGenerationCompleted = 0;
+        uint64_t decoderRejected = 0;
+        qint64 lastRequestFrame = -1;
+        qint64 lastCompletedFrame = -1;
+        qint64 lastCallbackWaitMs = -1;
+        qint64 maxCallbackWaitMs = 0;
+        qint64 lastQtDeliveryDelayMs = -1;
+        qint64 maxQtDeliveryDelayMs = 0;
+        qint64 lastCompletedAtMs = 0;
+        QString lastClipId;
+        QString lastPayload;
+        QString lastOutcome;
     };
 
     class PlaybackBuffer {
@@ -270,6 +294,8 @@ private:
     QHash<QString, int64_t> m_lastCancelKeepFromByPath;
     QHash<QString, qint64> m_lastCancelAtMsByPath;
     TimelineCacheSeekResyncTracker m_seekResync;
+    mutable QMutex m_visibleDecodeDiagnosticsMutex;
+    VisibleDecodeDiagnostics m_visibleDecodeDiagnostics;
     
     // Export ranges for speech filter awareness
     mutable QMutex m_exportRangesMutex;

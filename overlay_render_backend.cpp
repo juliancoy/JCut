@@ -465,50 +465,66 @@ OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
     const qreal paddingX = qMax<qreal>(18.0, base * 0.028);
     const qreal paddingY = qMax<qreal>(10.0, base * 0.018);
     const qreal lineGap = qMax<qreal>(4.0, base * 0.008);
-    qreal contentWidth = 0.0;
-    qreal contentHeight = 0.0;
-    for (int i = 0; i < lines.size(); ++i) {
-        const SpeakerLabelLine& line = lines.at(i);
-        contentWidth = qMax(contentWidth, measureTextWidth(line.name ? nameFace : orgFace, line.text));
-        contentHeight += line.name ? nameMetrics.lineHeight : orgMetrics.lineHeight;
-        if (i + 1 < lines.size()) {
-            contentHeight += lineGap;
+    const auto drawBlock = [&](const QVector<SpeakerLabelLine>& blockLines, qreal verticalPosition) {
+        if (blockLines.isEmpty()) {
+            return;
         }
-    }
+        qreal contentWidth = 0.0;
+        qreal contentHeight = 0.0;
+        for (int i = 0; i < blockLines.size(); ++i) {
+            const SpeakerLabelLine& line = blockLines.at(i);
+            contentWidth = qMax(contentWidth, measureTextWidth(line.name ? nameFace : orgFace, line.text));
+            contentHeight += line.name ? nameMetrics.lineHeight : orgMetrics.lineHeight;
+            if (i + 1 < blockLines.size()) {
+                contentHeight += lineGap;
+            }
+        }
 
-    const qreal cardWidth = qMin<qreal>(
-        imageSize.width() - 32.0,
-        qMax<qreal>(220.0, contentWidth + (paddingX * 2.0)));
-    const qreal cardHeight = contentHeight + (paddingY * 2.0);
-    const qreal bottomMargin = qMax<qreal>(22.0, imageSize.height() * 0.035);
-    const QRectF cardRect((imageSize.width() - cardWidth) * 0.5,
-                          imageSize.height() - cardHeight - bottomMargin,
-                          cardWidth,
-                          cardHeight);
-    if (!cardRect.isValid()) {
-        return overlay;
-    }
+        const qreal cardWidth = qMin<qreal>(
+            imageSize.width() - 32.0,
+            qMax<qreal>(220.0, contentWidth + (paddingX * 2.0)));
+        const qreal cardHeight = contentHeight + (paddingY * 2.0);
+        const qreal clampedCenterY = qBound<qreal>(
+            cardHeight * 0.5,
+            imageSize.height() * qBound<qreal>(0.0, verticalPosition, 1.0),
+            imageSize.height() - (cardHeight * 0.5));
+        const QRectF cardRect((imageSize.width() - cardWidth) * 0.5,
+                              clampedCenterY - (cardHeight * 0.5),
+                              cardWidth,
+                              cardHeight);
+        if (!cardRect.isValid()) {
+            return;
+        }
 
-    fillRoundedRectSoftware(&overlay, cardRect, qMax<qreal>(8.0, base * 0.012), spec.backgroundColor);
-    strokeRectSoftware(&overlay, cardRect.adjusted(0.5, 0.5, -0.5, -0.5), 1.0, spec.borderColor);
+        fillRoundedRectSoftware(&overlay, cardRect, qMax<qreal>(8.0, base * 0.012), spec.backgroundColor);
+        strokeRectSoftware(&overlay, cardRect.adjusted(0.5, 0.5, -0.5, -0.5), 1.0, spec.borderColor);
 
-    qreal y = cardRect.top() + paddingY;
-    for (int i = 0; i < lines.size(); ++i) {
-        const SpeakerLabelLine& line = lines.at(i);
-        FT_Face face = line.name ? nameFace : orgFace;
-        const FontMetricsData& metrics = line.name ? nameMetrics : orgMetrics;
-        const qreal width = measureTextWidth(face, line.text);
-        const qreal x = cardRect.left() + qMax<qreal>(paddingX, (cardRect.width() - width) * 0.5);
-        const qreal baseline = y + metrics.ascender;
-        drawGlyphRun(&overlay, face, x + 2.0, baseline + 2.0, line.text, QColor(0, 0, 0, 180));
-        drawGlyphRun(&overlay,
-                     face,
-                     x,
-                     baseline,
-                     line.text,
-                     line.name ? spec.nameColor : spec.organizationColor);
-        y += metrics.lineHeight + lineGap;
+        qreal y = cardRect.top() + paddingY;
+        for (int i = 0; i < blockLines.size(); ++i) {
+            const SpeakerLabelLine& line = blockLines.at(i);
+            FT_Face face = line.name ? nameFace : orgFace;
+            const FontMetricsData& metrics = line.name ? nameMetrics : orgMetrics;
+            const qreal width = measureTextWidth(face, line.text);
+            const qreal x = cardRect.left() + qMax<qreal>(paddingX, (cardRect.width() - width) * 0.5);
+            const qreal baseline = y + metrics.ascender;
+            drawGlyphRun(&overlay, face, x + 2.0, baseline + 2.0, line.text, QColor(0, 0, 0, 180));
+            drawGlyphRun(&overlay,
+                         face,
+                         x,
+                         baseline,
+                         line.text,
+                         line.name ? spec.nameColor : spec.organizationColor);
+            y += metrics.lineHeight + lineGap;
+        }
+    };
+
+    QVector<SpeakerLabelLine> nameLines;
+    QVector<SpeakerLabelLine> organizationLines;
+    for (const SpeakerLabelLine& line : lines) {
+        (line.name ? nameLines : organizationLines).push_back(line);
     }
+    drawBlock(nameLines, spec.nameVerticalPosition);
+    drawBlock(organizationLines, spec.organizationVerticalPosition);
 
     return overlay;
 }

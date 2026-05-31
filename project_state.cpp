@@ -407,6 +407,14 @@ QJsonObject EditorWindow::buildStateJson() const
         m_speakerCurrentSpeakerOrganizationTextSizeSpin
             ? m_speakerCurrentSpeakerOrganizationTextSizeSpin->value()
             : 100;
+    root[QStringLiteral("previewCurrentSpeakerNameYPositionPercent")] =
+        m_speakerCurrentSpeakerNameYPositionSpin
+            ? m_speakerCurrentSpeakerNameYPositionSpin->value()
+            : 86;
+    root[QStringLiteral("previewCurrentSpeakerOrganizationYPositionPercent")] =
+        m_speakerCurrentSpeakerOrganizationYPositionSpin
+            ? m_speakerCurrentSpeakerOrganizationYPositionSpin->value()
+            : 93;
     root[QStringLiteral("previewFacestreamOverlaySource")] = QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();
@@ -425,6 +433,16 @@ QJsonObject EditorWindow::buildStateJson() const
         editor::decodePreferenceToString(editor::debugDecodePreference());
     root[QStringLiteral("debugH26xSoftwareThreadingMode")] =
         editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode());
+    root[QStringLiteral("rubberBandEngine")] =
+        editor::rubberBandEnginePreferenceToString(editor::rubberBandEnginePreference());
+    root[QStringLiteral("rubberBandThreading")] =
+        editor::rubberBandThreadingPreferenceToString(editor::rubberBandThreadingPreference());
+    root[QStringLiteral("rubberBandWindow")] =
+        editor::rubberBandWindowPreferenceToString(editor::rubberBandWindowPreference());
+    root[QStringLiteral("rubberBandPitch")] =
+        editor::rubberBandPitchPreferenceToString(editor::rubberBandPitchPreference());
+    root[QStringLiteral("rubberBandChannelsTogether")] =
+        editor::rubberBandChannelsTogether();
     root[QStringLiteral("debugDeterministicPipeline")] =
         editor::debugDeterministicPipelineEnabled();
     root[QStringLiteral("autosaveIntervalMinutes")] = m_autosaveIntervalMinutes;

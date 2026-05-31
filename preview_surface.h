@@ -104,6 +104,10 @@ public:
     virtual void setShowCurrentSpeakerOrganization(bool show) = 0;
     virtual void setCurrentSpeakerNameTextScale(qreal scale) = 0;
     virtual void setCurrentSpeakerOrganizationTextScale(qreal scale) = 0;
+    virtual void setCurrentSpeakerNameVerticalPosition(qreal position) = 0;
+    virtual void setCurrentSpeakerOrganizationVerticalPosition(qreal position) = 0;
+    virtual void setPlaybackStatusOverlayText(const QString& text) = 0;
+    virtual void setPlaybackStatusOverlayProgress(qreal progress) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;
     virtual void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) = 0;
     virtual void setAudioSpeakerHoverModalEnabled(bool enabled) = 0;
