@@ -1,9 +1,11 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "overlay_render_backend.h"
 #include "preview_interaction_state.h"
 
 #include <QColor>
+#include <QJsonObject>
 #include <QList>
 #include <QPixmap>
 #include <QString>
@@ -29,6 +31,8 @@ QPixmap fallbackSpeakerAvatar(const QString& speakerId, const QString& displayNa
 
 QList<TimelineClip> activeAudioClipsForState(const PreviewInteractionState* state);
 CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* state);
+QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* state);
+render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(const PreviewInteractionState* state);
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame);
 QColor speakerColor(const QString& speakerId, int alpha);
 void fillShortUnknownSpeakerGaps(QVector<int>* speakerIndexByBin, int maxGapBins);

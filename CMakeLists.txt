@@ -455,6 +455,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_io.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_save_controller.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_session.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/transcript_runtime_cache.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_tab_document.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/clip_serialization.cpp

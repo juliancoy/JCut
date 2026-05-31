@@ -651,6 +651,7 @@ void PreviewWindow::renderCompositedPreviewGL(const QRect& compositeRect,
             drawTranscriptOverlayGL(clip, compositeRect);
         }
     }
+    drawCurrentSpeakerLabelOverlayGL(compositeRect);
     m_lastFrameSelectionStats = QJsonObject{
         {QStringLiteral("path"), QStringLiteral("gl")},
         {QStringLiteral("active_visual_clips"), activeClips.size()},

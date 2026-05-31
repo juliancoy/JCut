@@ -64,10 +64,17 @@ public:
                      bool allowCpuUploadFallback,
                      double* uploadMs = nullptr,
                      QString* errorMessage = nullptr);
+    bool recordHardwareFrameUpload(VkCommandBuffer commandBuffer,
+                                   const editor::FrameHandle& frame,
+                                   double* uploadMs = nullptr,
+                                   QString* errorMessage = nullptr);
     bool finishPendingUpload(double* uploadMs = nullptr,
                              QString* errorMessage = nullptr);
     bool importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
                               QString* errorMessage = nullptr);
+    bool recordImportedFrameCopy(VkCommandBuffer commandBuffer,
+                                 const render_detail::OffscreenVulkanFrame& frame,
+                                 QString* errorMessage = nullptr);
     QString lastHardwareDirectAttemptReason() const { return m_lastHardwareDirectAttemptReason; }
     FrameHandoffResourceStats resourceStats() const { return m_resourceStats; }
     void resetResourceStats();
@@ -78,6 +85,22 @@ private:
     bool tryHardwareDirect(const editor::FrameHandle& frame,
                            double* uploadMs,
                            QString* errorMessage);
+    bool prepareCudaHardwareFrame(const editor::FrameHandle& frame,
+                                  bool* isNv12,
+                                  QSize* size,
+                                  int* yPitch,
+                                  int* uvPitch,
+                                  double* uploadMs,
+                                  QString* errorMessage);
+    bool recordCudaHardwareFrameCopy(VkCommandBuffer commandBuffer,
+                                     const QSize& size,
+                                     QString* errorMessage);
+    bool recordNv12Conversion(VkCommandBuffer commandBuffer,
+                              int width,
+                              int height,
+                              int yPitch,
+                              int uvPitch,
+                              QString* errorMessage);
     bool createNv12ConversionPipeline(QString* errorMessage);
     bool ensureCudaExportBuffer(VkDeviceSize bytes,
                                 VkBuffer& buffer,
@@ -98,7 +121,13 @@ private:
                                       QString* errorMessage);
     bool copyImportedFrameToLocal(VkImageLayout sourceLayout,
                                   QString* errorMessage);
+    bool recordImportedFrameCopyToLocal(VkCommandBuffer commandBuffer,
+                                        VkImageLayout sourceLayout,
+                                        QString* errorMessage);
     bool ensureStagingBuffer(VkDeviceSize bytes, QString* errorMessage);
+    void transitionImage(VkCommandBuffer commandBuffer,
+                         VkImageLayout oldLayout,
+                         VkImageLayout newLayout);
     void transitionImage(VkImageLayout oldLayout, VkImageLayout newLayout);
     void destroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory, quint64* freeCounter = nullptr);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;

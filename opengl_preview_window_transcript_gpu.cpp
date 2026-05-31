@@ -4,6 +4,7 @@
 
 #include "gl_frame_texture_shared.h"
 #include "opengl_preview_debug.h"
+#include "preview_speaker_profiles.h"
 #include "preview_view_transform.h"
 
 #include <QCryptographicHash>
@@ -290,4 +291,71 @@ void PreviewWindow::drawTranscriptOverlayGL(const TimelineClip& clip, const QRec
         m_overlayModel.overlays.insert(clip.id, info);
         m_overlayModel.paintOrder.push_back(clip.id);
     }
+}
+
+void PreviewWindow::drawCurrentSpeakerLabelOverlayGL(const QRect& targetRect)
+{
+    if (!m_overlayShaderProgram ||
+        (!m_interaction.showCurrentSpeakerName && !m_interaction.showCurrentSpeakerOrganization)) {
+        return;
+    }
+    const render_detail::SpeakerLabelOverlaySpec spec =
+        currentSpeakerLabelOverlaySpecForState(&m_interaction);
+    const bool hasVisibleLabel =
+        (spec.showName && !spec.name.trimmed().isEmpty()) ||
+        (spec.showOrganization && !spec.organization.trimmed().isEmpty());
+    if (!hasVisibleLabel) {
+        return;
+    }
+    const render_detail::OverlayImage image =
+        render_detail::overlayRenderBackend().renderSpeakerLabelOverlay(m_interaction.outputSize, spec);
+    if (image.isNull()) {
+        return;
+    }
+
+    const QString keyMaterial =
+        QStringLiteral("speaker-label|") +
+        QString::number(image.width) + QLatin1Char('|') +
+        QString::number(image.height) + QLatin1Char('|') +
+        (spec.showName ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
+        (spec.showOrganization ? QStringLiteral("1") : QStringLiteral("0")) + QLatin1Char('|') +
+        spec.name + QLatin1Char('|') +
+        spec.organization;
+    const QByteArray digest = QCryptographicHash::hash(keyMaterial.toUtf8(), QCryptographicHash::Sha1);
+    const GLuint textureId = textureForTranscriptOverlay(QString::fromLatin1(digest.toHex()), image);
+    if (textureId == 0) {
+        return;
+    }
+
+    QMatrix4x4 projection;
+    projection.ortho(0.0f, static_cast<float>(width()),
+                     static_cast<float>(height()), 0.0f,
+                     -1.0f, 1.0f);
+    QMatrix4x4 model;
+    model.translate(targetRect.center().x(), targetRect.center().y());
+    model.scale(targetRect.width(), targetRect.height(), 1.0f);
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+
+    m_overlayShaderProgram->bind();
+    m_overlayShaderProgram->setUniformValue("u_mvp", projection * model);
+    m_overlayShaderProgram->setUniformValue("u_texture", 0);
+
+    m_quadBuffer.bind();
+    const int positionLoc = m_overlayShaderProgram->attributeLocation("a_position");
+    const int texCoordLoc = m_overlayShaderProgram->attributeLocation("a_texCoord");
+    m_overlayShaderProgram->enableAttributeArray(positionLoc);
+    m_overlayShaderProgram->setAttributeBuffer(positionLoc, GL_FLOAT, 0, 2, 4 * sizeof(GLfloat));
+    m_overlayShaderProgram->enableAttributeArray(texCoordLoc);
+    m_overlayShaderProgram->setAttributeBuffer(texCoordLoc, GL_FLOAT, 2 * sizeof(GLfloat), 2, 4 * sizeof(GLfloat));
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    m_quadBuffer.release();
+    m_overlayShaderProgram->disableAttributeArray(texCoordLoc);
+    m_overlayShaderProgram->disableAttributeArray(positionLoc);
+    m_overlayShaderProgram->release();
 }

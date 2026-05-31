@@ -208,6 +208,7 @@ private:
     QSizeF transcriptOverlaySizeForSelectedClip() const;
     void drawTranscriptOverlay(QPainter* painter, const TimelineClip& clip, const QRect& targetRect);
     void drawTranscriptOverlayGL(const TimelineClip& clip, const QRect& targetRect);
+    void drawCurrentSpeakerLabelOverlayGL(const QRect& targetRect);
     QString transcriptOverlayTextureKey(const TimelineClip& clip,
                                         const QRectF& bounds,
                                         const QRectF& textBounds,

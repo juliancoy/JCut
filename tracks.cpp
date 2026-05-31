@@ -683,18 +683,28 @@ const SpeakersTab::TrackIdentityResolutionCache& SpeakersTab::trackIdentityResol
         return cached.value();
     }
 
-    const QVector<RenderSyncMarker> renderSyncMarkers =
-        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
-    const jcut::speakertrack::ResolvedAssignments resolved =
-        jcut::speakertrack::resolveAssignments(
-            m_transcriptSession.rootObject(),
-            clip,
-            streams,
-            renderSyncMarkers);
     TrackIdentityResolutionCache nextCache;
     nextCache.signature = signature;
-    nextCache.identityByTrackId = resolved.identityByTrackId;
-    nextCache.trackIdsByIdentity = resolved.trackIdsByIdentity;
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+    const QVector<CachedFacestreamTrack> cachedTracks =
+        buildCachedFacestreamTracks(clip, streams, renderSyncMarkers);
+    for (const QJsonValue& value : resolvedMap) {
+        const QJsonObject row = value.toObject();
+        const QString identityId = row.value(QStringLiteral("identity_id")).toString().trimmed();
+        if (identityId.isEmpty()) {
+            continue;
+        }
+        const int trackId = resolveTrackIdFromCachedTracks(cachedTracks, row);
+        if (trackId < 0) {
+            continue;
+        }
+        nextCache.identityByTrackId.insert(trackId, identityId);
+        QVector<int>& trackIds = nextCache.trackIdsByIdentity[identityId];
+        if (!trackIds.contains(trackId)) {
+            trackIds.push_back(trackId);
+        }
+    }
     auto inserted = m_trackIdentityResolutionCache.insert(cacheKey, nextCache);
     return inserted.value();
 }

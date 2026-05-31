@@ -73,6 +73,7 @@ public:
         std::function<void()> setPreviewTimelineClips;
         std::function<QVector<ExportRangeSegment>()> effectivePlaybackRanges;
         std::function<void(int64_t)> seekToTimelineFrame;
+        std::function<bool()> playbackActive;
     };
 
     explicit TranscriptTab(const Widgets& widgets, const Dependencies& deps, QObject* parent = nullptr);
@@ -198,6 +199,11 @@ private:
         int segmentIndex = -1;
         int wordIndex = -1;
     };
+    struct TranscriptRowsBuildResult
+    {
+        qint64 requestId = 0;
+        QVector<TranscriptRow> rows;
+    };
     void rebuildWordEditIndex(const QVector<TranscriptRow>& rows);
     bool rebuildInMemoryTranscriptDocument(const QJsonDocument& document);
     QJsonDocument serializeInMemoryTranscriptDocument() const;
@@ -243,6 +249,8 @@ private:
     QString speakerDisplayLabel(const QString& speakerId) const;
     void persistRenderOrderFromTable();
     void computeRenderFrames(QVector<TranscriptRow>* rows) const;
+    void startTranscriptRowsBuildRequest(const QString& originalPath);
+    void applyTranscriptRowsBuildResult(const TranscriptRowsBuildResult& result);
     void rebuildFollowRanges(const QVector<TranscriptRow>& rows);
     void scheduleSeekToTranscriptRow(int row);
     bool hasActiveManualSelection() const;
@@ -282,4 +290,7 @@ private:
     bool m_refreshQueued = false;
     QFutureWatcher<TranscriptDocumentLoadResult> m_transcriptLoadWatcher;
     qint64 m_transcriptLoadRequestId = 0;
+    QFutureWatcher<TranscriptRowsBuildResult> m_transcriptRowsBuildWatcher;
+    qint64 m_transcriptRowsBuildRequestId = 0;
+    bool m_transcriptTableRefreshPending = false;
 };

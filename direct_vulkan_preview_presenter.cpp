@@ -156,7 +156,6 @@ protected:
         drawContinuityOverlays(&painter, geometries);
         drawRawDetections(&painter, geometries);
         drawTargetBoxOverlay(&painter);
-        drawCurrentSpeakerLabelOverlay(&painter);
     }
 
 private:

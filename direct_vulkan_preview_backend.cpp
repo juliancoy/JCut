@@ -2806,10 +2806,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
             bool sampledFrameReady = false;
             bool handoffAttempted = false;
-            if (!forceChecker && canDrawTexture && status && status->hasFrame && m_frameHandoff && m_frameHandoff->isInitialized()) {
+            if (!forceChecker && canDrawTexture && status && status->hasFrame &&
+                (status->externalVulkanFrame || status->frame.hasHardwareFrame()) &&
+                m_frameHandoff && m_frameHandoff->isInitialized()) {
                 QString handoffError;
                 double uploadMs = 0.0;
-                const bool allowCpuUploadFallback = status->cpuImage;
                 handoffAttempted = true;
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->handoffAttempts;
@@ -2829,12 +2830,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         offscreenFrame.readySemaphoreFd = status->externalReadySemaphoreFd;
                         offscreenFrame.size = status->frameSize;
                         offscreenFrame.valid = status->hasFrame;
-                        return m_frameHandoff->importOffscreenFrame(offscreenFrame, &handoffError);
+                        return m_frameHandoff->recordImportedFrameCopy(cb, offscreenFrame, &handoffError);
                     }
-                    return m_frameHandoff->uploadFrame(status->frame,
-                                                       allowCpuUploadFallback,
-                                                       &uploadMs,
-                                                       &handoffError);
+                    return m_frameHandoff->recordHardwareFrameUpload(cb,
+                                                                     status->frame,
+                                                                     &uploadMs,
+                                                                     &handoffError);
                 }();
                 if (handoffOk) {
                     const jcut::vulkan_detector::VulkanExternalImage external = m_frameHandoff->externalImage();
@@ -2947,9 +2948,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 m_pipeline->bindAndDraw(cb, viewport, scissor, m_resources->descriptorSet(), push);
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
-                    ++stats->clearFallbackDraws;
                     ++stats->explicitFailureDraws;
-                    ++stats->activeClipDraws;
                     if (handoffAttempted && !sampledFrameReady) {
                         stats->lastHandoffMode = QStringLiteral("attempted_not_sampled");
                     } else if (!status) {
@@ -2960,12 +2959,17 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                         stats->lastHandoffError = status->missingReason.isEmpty()
                             ? QStringLiteral("Active Vulkan clip has no usable decoded frame.")
                             : status->missingReason;
+                    } else if (status->frame.hasCpuImage() &&
+                               !status->externalVulkanFrame &&
+                               !status->frame.hasHardwareFrame()) {
+                        stats->lastHandoffMode = QStringLiteral("vulkan_handoff_required");
+                        stats->lastHandoffError = QStringLiteral(
+                            "Direct Vulkan preview requires a hardware/external frame. CPU upload fallback is disabled.");
                     } else if (!canDrawTexture) {
                         stats->lastHandoffMode = QStringLiteral("texture_pipeline_unavailable");
                         stats->lastHandoffError = QStringLiteral("Vulkan texture pipeline or descriptor set is unavailable.");
                     }
                 }
-                m_devFuncs->vkCmdClearAttachments(cb, 1, &attachment, 1, &rect);
             }
             const TimelineClip effectiveClip = clipWithTransientTranscriptOverride(state, clip);
             if (m_overlayResources && m_pipeline && m_overlayResources->isReady() &&
@@ -3091,6 +3095,42 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             activeClipGeometry.insert(clip.id, effectiveClipGeometry);
             if (status && status->hasFrame && canDrawTexture && sampledFrameReady) {
                 presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
+            }
+        }
+        if (m_overlayResources && m_pipeline && m_overlayResources->isReady() &&
+            m_pipeline->isReady() && m_overlayResources->descriptorSet() != VK_NULL_HANDLE &&
+            (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
+            const render_detail::SpeakerLabelOverlaySpec spec =
+                currentSpeakerLabelOverlaySpecForState(state);
+            const bool hasVisibleLabel =
+                (spec.showName && !spec.name.trimmed().isEmpty()) ||
+                (spec.showOrganization && !spec.organization.trimmed().isEmpty());
+            if (hasVisibleLabel) {
+                const render_detail::OverlayImage overlayImage =
+                    render_detail::overlayRenderBackend().renderSpeakerLabelOverlay(state->outputSize, spec);
+                if (!overlayImage.isNull() && m_overlayResources->uploadImageTexture(cb, overlayImage)) {
+                    PreviewClipGeometry overlayGeometry;
+                    overlayGeometry.localRect = QRectF(-compositeRect.width() / 2.0,
+                                                       -compositeRect.height() / 2.0,
+                                                       compositeRect.width(),
+                                                       compositeRect.height());
+                    overlayGeometry.clipToScreen.translate(compositeRect.center().x(), compositeRect.center().y());
+                    overlayGeometry.bounds = compositeRect;
+                    VulkanPipeline::Push overlayPush{};
+                    mvpForVulkanClipTransform(overlayGeometry.clipToScreen,
+                                              overlayGeometry.localRect,
+                                              swapSize,
+                                              overlayPush.mvp);
+                    VkRect2D overlayScissor{};
+                    overlayScissor.offset = {0, 0};
+                    overlayScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                                             static_cast<uint32_t>(std::max(1, swapSize.height()))};
+                    m_pipeline->bindAndDraw(cb,
+                                            viewport,
+                                            overlayScissor,
+                                            m_overlayResources->descriptorSet(),
+                                            overlayPush);
+                }
             }
         }
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);

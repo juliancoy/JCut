@@ -1,4 +1,5 @@
 #include "editor_shared_transcript.h"
+#include "transcript_runtime_cache.h"
 #include "transcript_engine.h"
 
 #include <QDir>
@@ -905,16 +906,19 @@ std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(c
         }
     }
 
-    QJsonDocument transcriptDoc;
-    if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
-        return {};
-    }
-
     auto runtimeDocument = std::make_shared<TranscriptRuntimeDocument>();
-    runtimeDocument->mtimeMs = mtimeMs;
-    runtimeDocument->fileSize = fileSize;
-    runtimeDocument->sections = buildTranscriptSectionsFromDocument(transcriptDoc);
-    runtimeDocument->sentenceRunsBySpeaker = buildSpeakerSentenceRunsFromDocument(transcriptDoc);
+    if (!editor::loadTranscriptRuntimeSidecar(transcriptPath, mtimeMs, fileSize, runtimeDocument.get())) {
+        QJsonDocument transcriptDoc;
+        if (!loadTranscriptJsonWithCache(transcriptPath, &transcriptDoc) || !transcriptDoc.isObject()) {
+            return {};
+        }
+
+        runtimeDocument->mtimeMs = mtimeMs;
+        runtimeDocument->fileSize = fileSize;
+        runtimeDocument->sections = buildTranscriptSectionsFromDocument(transcriptDoc);
+        runtimeDocument->sentenceRunsBySpeaker = buildSpeakerSentenceRunsFromDocument(transcriptDoc);
+        editor::writeTranscriptRuntimeSidecar(transcriptPath, *runtimeDocument);
+    }
 
     {
         QMutexLocker locker(&transcriptRuntimeCacheMutex());

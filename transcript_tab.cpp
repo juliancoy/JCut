@@ -155,6 +155,9 @@ TranscriptTab::TranscriptTab(const Widgets& widgets, const Dependencies& deps, Q
         }
         applyLoadedTranscriptDocumentData(*clip, originalTranscriptPathForClip(result.clipFilePath));
     });
+    connect(&m_transcriptRowsBuildWatcher, &QFutureWatcher<TranscriptRowsBuildResult>::finished, this, [this]() {
+        applyTranscriptRowsBuildResult(m_transcriptRowsBuildWatcher.result());
+    });
 }
 
 bool TranscriptTab::updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator)

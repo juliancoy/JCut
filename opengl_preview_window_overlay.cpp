@@ -339,7 +339,9 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
         drawAudioBadge(painter, compositeRect, activeAudioClips);
     }
     drawSpeakerPickOverlay(painter);
-    drawCurrentSpeakerLabelOverlay(painter, compositeRect);
+    if (usingCpuFallback() || !m_overlayShaderProgram) {
+        drawCurrentSpeakerLabelOverlay(painter, compositeRect);
+    }
     painter->restore();
 }
 

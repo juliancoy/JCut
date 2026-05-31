@@ -303,6 +303,141 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
     return {};
 }
 
+QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* state)
+{
+    QJsonObject debug;
+    if (!state) {
+        debug.insert(QStringLiteral("status"), QStringLiteral("missing_state"));
+        return debug;
+    }
+
+    debug.insert(QStringLiteral("show_name"), state->showCurrentSpeakerName);
+    debug.insert(QStringLiteral("show_organization"), state->showCurrentSpeakerOrganization);
+    debug.insert(QStringLiteral("current_frame"), static_cast<qint64>(state->currentFrame));
+    debug.insert(QStringLiteral("current_sample"), static_cast<qint64>(state->currentSample));
+    debug.insert(QStringLiteral("clip_count"), state->clips.size());
+    debug.insert(QStringLiteral("selected_clip_id"), state->selectedClipId);
+
+    if (!state->showCurrentSpeakerName && !state->showCurrentSpeakerOrganization) {
+        debug.insert(QStringLiteral("status"), QStringLiteral("overlay_disabled"));
+        return debug;
+    }
+
+    QJsonArray skippedClips;
+    QList<TimelineClip> candidates;
+    for (const TimelineClip& clip : state->clips) {
+        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        if (transcriptPath.isEmpty()) {
+            continue;
+        }
+        const int64_t clipStartSample = clipTimelineStartSamples(clip);
+        const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+        if (state->currentSample >= clipStartSample && state->currentSample < clipEndSample) {
+            candidates.push_back(clip);
+        } else if (skippedClips.size() < 8) {
+            skippedClips.push_back(QJsonObject{
+                {QStringLiteral("clip_id"), clip.id},
+                {QStringLiteral("file_path"), clip.filePath},
+                {QStringLiteral("transcript_path"), transcriptPath},
+                {QStringLiteral("clip_start_sample"), static_cast<qint64>(clipStartSample)},
+                {QStringLiteral("clip_end_sample"), static_cast<qint64>(clipEndSample)}
+            });
+        }
+    }
+    debug.insert(QStringLiteral("candidate_clip_count"), candidates.size());
+    if (!skippedClips.isEmpty()) {
+        debug.insert(QStringLiteral("inactive_transcript_clips"), skippedClips);
+    }
+
+    std::sort(candidates.begin(), candidates.end(), [state](const TimelineClip& a, const TimelineClip& b) {
+        const bool aSelected = !state->selectedClipId.isEmpty() && a.id == state->selectedClipId;
+        const bool bSelected = !state->selectedClipId.isEmpty() && b.id == state->selectedClipId;
+        if (aSelected != bSelected) {
+            return aSelected;
+        }
+        if (a.trackIndex != b.trackIndex) {
+            return a.trackIndex < b.trackIndex;
+        }
+        return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
+    });
+
+    if (candidates.isEmpty()) {
+        debug.insert(QStringLiteral("status"), QStringLiteral("no_active_transcript_clip"));
+        return debug;
+    }
+
+    QJsonArray candidateDebug;
+    for (const TimelineClip& clip : candidates) {
+        const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        QJsonObject clipDebug{
+            {QStringLiteral("clip_id"), clip.id},
+            {QStringLiteral("file_path"), clip.filePath},
+            {QStringLiteral("transcript_path"), transcriptPath},
+            {QStringLiteral("selected"), !state->selectedClipId.isEmpty() && clip.id == state->selectedClipId}
+        };
+
+        const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+            loadTranscriptRuntimeDocument(transcriptPath);
+        const QVector<TranscriptSection>& sections =
+            runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
+        clipDebug.insert(QStringLiteral("section_count"), sections.size());
+        if (sections.isEmpty()) {
+            clipDebug.insert(QStringLiteral("status"), QStringLiteral("transcript_has_no_sections"));
+            candidateDebug.push_back(clipDebug);
+            continue;
+        }
+
+        const int64_t sourceFrame =
+            transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
+        const QString speakerId = speakerAtSourceFrame(sections, sourceFrame);
+        clipDebug.insert(QStringLiteral("source_frame"), static_cast<qint64>(sourceFrame));
+        clipDebug.insert(QStringLiteral("speaker_id"), speakerId);
+        if (speakerId.isEmpty()) {
+            clipDebug.insert(QStringLiteral("status"), QStringLiteral("no_speaker_at_source_frame"));
+            candidateDebug.push_back(clipDebug);
+            continue;
+        }
+
+        const HoverSpeakerProfile* profile = hoverSpeakerProfileFor(transcriptPath, speakerId);
+        const QString name = profile && !profile->name.trimmed().isEmpty()
+            ? profile->name.trimmed()
+            : speakerId;
+        const QString organization = profile ? profile->organization.trimmed() : QString();
+        clipDebug.insert(QStringLiteral("status"), QStringLiteral("resolved"));
+        clipDebug.insert(QStringLiteral("profile_found"), profile != nullptr);
+        clipDebug.insert(QStringLiteral("name"), name);
+        clipDebug.insert(QStringLiteral("organization"), organization);
+        clipDebug.insert(QStringLiteral("organization_present"), !organization.isEmpty());
+        candidateDebug.push_back(clipDebug);
+
+        debug.insert(QStringLiteral("status"), QStringLiteral("resolved"));
+        debug.insert(QStringLiteral("resolved_clip"), clipDebug);
+        debug.insert(QStringLiteral("candidate_clips"), candidateDebug);
+        return debug;
+    }
+
+    debug.insert(QStringLiteral("status"), QStringLiteral("no_resolved_speaker"));
+    debug.insert(QStringLiteral("candidate_clips"), candidateDebug);
+    return debug;
+}
+
+render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(const PreviewInteractionState* state)
+{
+    render_detail::SpeakerLabelOverlaySpec spec;
+    if (!state) {
+        return spec;
+    }
+    spec.showName = state->showCurrentSpeakerName;
+    spec.showOrganization = state->showCurrentSpeakerOrganization;
+    if (!spec.showName && !spec.showOrganization) {
+        return spec;
+    }
+    const CurrentSpeakerLabel label = currentSpeakerLabelForState(state);
+    spec.name = label.name.trimmed();
+    spec.organization = label.organization.trimmed();
+    return spec;
+}
+
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame)
 {
     for (const TranscriptSection& section : sections) {

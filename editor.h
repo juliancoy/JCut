@@ -277,6 +277,7 @@ private:
     void applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& requestedConfig);
     bool shouldUseAudioMasterClock() const;
     qreal effectiveAudioWarpRate() const;
+    bool needsPitchPreservingPlaybackAudio() const;
     void reconcileActivePlaybackAudioState();
     void requestPlaybackAudioWarmup(bool startWhenReady);
     void updatePlaybackTimerInterval();

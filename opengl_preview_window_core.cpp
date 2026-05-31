@@ -9,6 +9,7 @@
 #include "playback_frame_pipeline.h"
 #include "memory_budget.h"
 #include "media_pipeline_shared.h"
+#include "preview_speaker_profiles.h"
 #include "waveform_service.h"
 #include "render_backend.h"
 #include "render_internal.h"
@@ -851,10 +852,22 @@ QList<TimelineClip> PreviewWindow::getActiveClips() const {
 }
 
 QJsonObject PreviewWindow::profilingSnapshot() const {
+    const CurrentSpeakerLabel currentSpeakerLabel = currentSpeakerLabelForState(&m_interaction);
     const qint64 now = nowMs();
     QJsonObject snapshot{{QStringLiteral("backend"), backendName()},
                          {QStringLiteral("playing"), m_interaction.playing},
                          {QStringLiteral("current_frame"), static_cast<qint64>(m_interaction.currentFrame)},
+                         {QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample)},
+                         {QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName},
+                         {QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization},
+                         {QStringLiteral("current_speaker_label"), QJsonObject{
+                             {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},
+                             {QStringLiteral("name"), currentSpeakerLabel.name},
+                             {QStringLiteral("organization"), currentSpeakerLabel.organization},
+                             {QStringLiteral("has_name"), !currentSpeakerLabel.name.trimmed().isEmpty()},
+                             {QStringLiteral("has_organization"), !currentSpeakerLabel.organization.trimmed().isEmpty()}
+                         }},
+                         {QStringLiteral("current_speaker_label_debug"), currentSpeakerLabelDebugForState(&m_interaction)},
                          {QStringLiteral("clip_count"), m_interaction.clips.size()},
                          {QStringLiteral("pipeline_initialized"), m_cache != nullptr},
                          {QStringLiteral("repaint_strategy"), QStringLiteral("direct_update")},

@@ -3,6 +3,7 @@
 #include "async_decoder.h"
 #include "debug_controls.h"
 #include "direct_vulkan_preview_presenter.h"
+#include "preview_speaker_profiles.h"
 #include "timeline_cache.h"
 
 #include <QDateTime>
@@ -22,6 +23,20 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
 {
     QJsonObject snapshot = m_presenter ? m_presenter->profilingSnapshot() : QJsonObject{};
     snapshot.insert(QStringLiteral("render_use_proxy_media"), m_useProxyMedia);
+    snapshot.insert(QStringLiteral("playing"), m_interaction.playing);
+    snapshot.insert(QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample));
+    snapshot.insert(QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName);
+    snapshot.insert(QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization);
+    const CurrentSpeakerLabel currentSpeakerLabel = currentSpeakerLabelForState(&m_interaction);
+    snapshot.insert(QStringLiteral("current_speaker_label"), QJsonObject{
+        {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},
+        {QStringLiteral("name"), currentSpeakerLabel.name},
+        {QStringLiteral("organization"), currentSpeakerLabel.organization},
+        {QStringLiteral("has_name"), !currentSpeakerLabel.name.trimmed().isEmpty()},
+        {QStringLiteral("has_organization"), !currentSpeakerLabel.organization.trimmed().isEmpty()}
+    });
+    snapshot.insert(QStringLiteral("current_speaker_label_debug"),
+                    currentSpeakerLabelDebugForState(&m_interaction));
     snapshot.insert(QStringLiteral("vulkan_decode_preference"), editor::decodePreferenceToString(editor::debugDecodePreference()));
     snapshot.insert(QStringLiteral("vulkan_cpu_upload_permitted"), true);
     snapshot.insert(QStringLiteral("vulkan_visible_backlog_limit"), m_playbackTuning.visibleBacklogLimit);

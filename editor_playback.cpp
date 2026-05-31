@@ -18,14 +18,7 @@ void EditorWindow::advanceFrame()
     if (!m_timeline) return;
     bool forceTimelineTimerFallback = false;
     const qint64 tickNowMs = nowMs();
-    const PlaybackAudioWarpMode runtimeWarpMode =
-        normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
-    const bool needsPitchPreservingAudio =
-        runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
-        qAbs(m_playbackSpeed - 1.0) >= 0.0001 &&
-        m_audioEngine &&
-        m_audioEngine->hasPlayableAudio();
-    if (needsPitchPreservingAudio &&
+    if (needsPitchPreservingPlaybackAudio() &&
         !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
         requestPlaybackAudioWarmup(true);
         return;
@@ -808,6 +801,15 @@ qreal EditorWindow::effectiveAudioWarpRate() const
     return effectivePlaybackAudioWarpRate(m_playbackSpeed, m_playbackAudioWarpMode);
 }
 
+bool EditorWindow::needsPitchPreservingPlaybackAudio() const
+{
+    return m_audioEngine &&
+           m_audioEngine->hasPlayableAudio() &&
+           normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode) ==
+               PlaybackAudioWarpMode::TimeStretch &&
+           qAbs(effectiveAudioWarpRate() - 1.0) >= 0.0001;
+}
+
 void EditorWindow::reconcileActivePlaybackAudioState()
 {
     if (!playbackActive() || !m_audioEngine || !m_timeline) {
@@ -828,9 +830,7 @@ void EditorWindow::reconcileActivePlaybackAudioState()
             m_previewAudioDynamics.transcriptNormalizeEnabled);
         m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
         if (!audioRunning) {
-            const bool needsPitchPreservingAudio =
-                runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
-                qAbs(m_playbackSpeed - 1.0) >= 0.0001;
+            const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
                 requestPlaybackAudioWarmup(true);
@@ -859,13 +859,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
         return;
     }
 
-    const PlaybackAudioWarpMode runtimeWarpMode =
-        normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode);
-    const bool needsPitchPreservingAudio =
-        runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
-        qAbs(m_playbackSpeed - 1.0) >= 0.0001 &&
-        m_audioEngine->hasPlayableAudio();
-    if (!needsPitchPreservingAudio) {
+    if (!needsPitchPreservingPlaybackAudio()) {
         if (startWhenReady) {
             setPlaybackActive(true);
         }
@@ -873,6 +867,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
     }
 
     if (playbackActive()) {
+        m_lastPlaybackStopReason = QStringLiteral("audio_warmup");
         setPlaybackActive(false);
     }
 
@@ -1023,9 +1018,7 @@ void EditorWindow::setPlaybackActive(bool playing)
             qAbs(m_playbackSpeed - 1.0) < 0.0001 ||
             runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
         if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
-            const bool needsPitchPreservingAudio =
-                runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
-                qAbs(m_playbackSpeed - 1.0) >= 0.0001;
+            const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
                 requestPlaybackAudioWarmup(true);

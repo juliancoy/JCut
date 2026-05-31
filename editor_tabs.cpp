@@ -11,9 +11,23 @@
 
 using namespace editor;
 
+namespace {
+
+bool inspectorTabRefreshIsHeavyDuringPlayback(const QString& tabName)
+{
+    const QString normalized = tabName.trimmed();
+    return normalized.compare(QStringLiteral("Transcript"), Qt::CaseInsensitive) == 0 ||
+           normalized.compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
+}
+
+} // namespace
+
 void EditorWindow::refreshInspectorTabByName(const QString& tabName)
 {
     const QString normalized = tabName.trimmed();
+    if (playbackActive() && inspectorTabRefreshIsHeavyDuringPlayback(normalized)) {
+        return;
+    }
     if (normalized.compare(QStringLiteral("Grade"), Qt::CaseInsensitive) == 0) {
         if (m_gradingTab) m_gradingTab->refresh();
     } else if (normalized.compare(QStringLiteral("Opacity"), Qt::CaseInsensitive) == 0) {
@@ -389,7 +403,8 @@ void EditorWindow::createTranscriptTab()
             [this]() { if (m_inspectorPane) m_inspectorPane->refreshTab(QStringLiteral("Transcript")); },
             [this]() { m_preview->setTimelineTracks(m_timeline->tracks()); m_preview->setTimelineClips(m_timeline->clips()); },
             [this]() { return effectivePlaybackRanges(); },
-            [this](int64_t frame) { setCurrentFrame(frame); }});
+            [this](int64_t frame) { setCurrentFrame(frame); },
+            [this]() { return playbackActive(); }});
     m_transcriptTab->wire();
     m_transcriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
 
@@ -474,7 +489,8 @@ void EditorWindow::createSpeakersTab()
                 }
             },
             [this]() { return effectivePlaybackRanges(); },
-            [this](int64_t frame) { setCurrentFrame(frame); }});
+            [this](int64_t frame) { setCurrentFrame(frame); },
+            [this]() { return playbackActive(); }});
     m_speakerTranscriptTab->wire();
     m_speakerTranscriptTab->setManualSelectionHoldMs(m_transcriptManualSelectionHoldMs);
     connect(m_speakerTranscriptTab.get(), &TranscriptTab::transcriptDocumentChanged, this, [this]() {

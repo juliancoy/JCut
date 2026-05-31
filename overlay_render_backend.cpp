@@ -79,6 +79,11 @@ struct TranscriptRenderLineMetrics {
     qreal totalWidth = 0.0;
 };
 
+struct SpeakerLabelLine {
+    QString text;
+    bool name = false;
+};
+
 FtLibraryHolder& ftLibraryHolder()
 {
     static FtLibraryHolder holder;
@@ -359,6 +364,153 @@ TranscriptRenderLineMetrics measureTranscriptLine(const TranscriptOverlayLine& l
     return result;
 }
 
+QStringList wrapTextToWidth(FT_Face face, const QString& text, qreal maxWidth)
+{
+    QStringList result;
+    const QString trimmed = text.simplified();
+    if (!face || trimmed.isEmpty() || maxWidth <= 0.0) {
+        return result;
+    }
+    const QStringList words = trimmed.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    auto fitToken = [face, maxWidth](const QString& token) {
+        if (measureTextWidth(face, token) <= maxWidth) {
+            return token;
+        }
+        QString clipped = token;
+        const QString ellipsis = QStringLiteral("...");
+        while (!clipped.isEmpty() &&
+               measureTextWidth(face, clipped + ellipsis) > maxWidth) {
+            clipped.chop(1);
+        }
+        return clipped.isEmpty() ? ellipsis : clipped + ellipsis;
+    };
+    QString current;
+    for (const QString& word : words) {
+        const QString fittedWord = fitToken(word);
+        const QString candidate = current.isEmpty() ? fittedWord : current + QLatin1Char(' ') + fittedWord;
+        if (measureTextWidth(face, candidate) <= maxWidth || current.isEmpty()) {
+            current = candidate;
+            continue;
+        }
+        result.push_back(current);
+        current = fittedWord;
+    }
+    if (!current.isEmpty()) {
+        result.push_back(current);
+    }
+    return result;
+}
+
+OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
+                                                    const SpeakerLabelOverlaySpec& spec)
+{
+    if (!imageSize.isValid() ||
+        (!spec.showName && !spec.showOrganization)) {
+        return {};
+    }
+
+    OverlayImage overlay = makeOverlayImage(imageSize);
+    const QString name = spec.name.trimmed();
+    const QString organization = spec.organization.trimmed();
+    if ((spec.showName && name.isEmpty()) &&
+        (spec.showOrganization && organization.isEmpty())) {
+        return overlay;
+    }
+
+    const qreal base = qMax<qreal>(1.0, qMin(imageSize.width(), imageSize.height()));
+    const int namePixelSize = qBound(18, static_cast<int>(std::round(base * 0.042)), 64);
+    const int orgPixelSize = qBound(14, static_cast<int>(std::round(base * 0.030)), 46);
+    FT_Face nameFace = nullptr;
+    FontMetricsData nameMetrics;
+    if (!loadFontFace(spec.fontFamily, true, false, namePixelSize, &nameFace, &nameMetrics)) {
+        return overlay;
+    }
+    auto nameFaceGuard = std::unique_ptr<std::remove_pointer_t<FT_Face>, void(*)(FT_Face)>(nameFace, [](FT_Face value) {
+        if (value) {
+            FT_Done_Face(value);
+        }
+    });
+
+    FT_Face orgFace = nullptr;
+    FontMetricsData orgMetrics;
+    if (!loadFontFace(spec.fontFamily, false, false, orgPixelSize, &orgFace, &orgMetrics)) {
+        return overlay;
+    }
+    auto orgFaceGuard = std::unique_ptr<std::remove_pointer_t<FT_Face>, void(*)(FT_Face)>(orgFace, [](FT_Face value) {
+        if (value) {
+            FT_Done_Face(value);
+        }
+    });
+
+    const qreal maxTextWidth = qMax<qreal>(180.0, imageSize.width() * 0.72);
+    QVector<SpeakerLabelLine> lines;
+    if (spec.showName && !name.isEmpty()) {
+        const QStringList wrapped = wrapTextToWidth(nameFace, name, maxTextWidth);
+        for (const QString& line : wrapped) {
+            lines.push_back(SpeakerLabelLine{line, true});
+        }
+    }
+    if (spec.showOrganization && !organization.isEmpty()) {
+        const QStringList wrapped = wrapTextToWidth(orgFace, organization, maxTextWidth);
+        for (const QString& line : wrapped) {
+            lines.push_back(SpeakerLabelLine{line, false});
+        }
+    }
+    if (lines.isEmpty()) {
+        return overlay;
+    }
+
+    const qreal paddingX = qMax<qreal>(18.0, base * 0.028);
+    const qreal paddingY = qMax<qreal>(10.0, base * 0.018);
+    const qreal lineGap = qMax<qreal>(4.0, base * 0.008);
+    qreal contentWidth = 0.0;
+    qreal contentHeight = 0.0;
+    for (int i = 0; i < lines.size(); ++i) {
+        const SpeakerLabelLine& line = lines.at(i);
+        contentWidth = qMax(contentWidth, measureTextWidth(line.name ? nameFace : orgFace, line.text));
+        contentHeight += line.name ? nameMetrics.lineHeight : orgMetrics.lineHeight;
+        if (i + 1 < lines.size()) {
+            contentHeight += lineGap;
+        }
+    }
+
+    const qreal cardWidth = qMin<qreal>(
+        imageSize.width() - 32.0,
+        qMax<qreal>(220.0, contentWidth + (paddingX * 2.0)));
+    const qreal cardHeight = contentHeight + (paddingY * 2.0);
+    const qreal bottomMargin = qMax<qreal>(22.0, imageSize.height() * 0.035);
+    const QRectF cardRect((imageSize.width() - cardWidth) * 0.5,
+                          imageSize.height() - cardHeight - bottomMargin,
+                          cardWidth,
+                          cardHeight);
+    if (!cardRect.isValid()) {
+        return overlay;
+    }
+
+    fillRoundedRectSoftware(&overlay, cardRect, qMax<qreal>(8.0, base * 0.012), spec.backgroundColor);
+    strokeRectSoftware(&overlay, cardRect.adjusted(0.5, 0.5, -0.5, -0.5), 1.0, spec.borderColor);
+
+    qreal y = cardRect.top() + paddingY;
+    for (int i = 0; i < lines.size(); ++i) {
+        const SpeakerLabelLine& line = lines.at(i);
+        FT_Face face = line.name ? nameFace : orgFace;
+        const FontMetricsData& metrics = line.name ? nameMetrics : orgMetrics;
+        const qreal width = measureTextWidth(face, line.text);
+        const qreal x = cardRect.left() + qMax<qreal>(paddingX, (cardRect.width() - width) * 0.5);
+        const qreal baseline = y + metrics.ascender;
+        drawGlyphRun(&overlay, face, x + 2.0, baseline + 2.0, line.text, QColor(0, 0, 0, 180));
+        drawGlyphRun(&overlay,
+                     face,
+                     x,
+                     baseline,
+                     line.text,
+                     line.name ? spec.nameColor : spec.organizationColor);
+        y += metrics.lineHeight + lineGap;
+    }
+
+    return overlay;
+}
+
 OverlayImage renderTitleOverlayImageSoftware(const QSize& imageSize,
                                              const EvaluatedTitle& title,
                                              const QSize& outputSize)
@@ -611,6 +763,12 @@ public:
     {
         return renderTranscriptOverlayImageSoftware(
             imageSize, request, timelineFrame, orderedClips, transcriptCache);
+    }
+
+    OverlayImage renderSpeakerLabelOverlay(const QSize& imageSize,
+                                           const SpeakerLabelOverlaySpec& spec) override
+    {
+        return renderSpeakerLabelOverlayImageSoftware(imageSize, spec);
     }
 };
 
