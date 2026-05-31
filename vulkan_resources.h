@@ -8,6 +8,8 @@
 
 #include <vulkan/vulkan.h>
 
+#include <array>
+
 class QVulkanDeviceFunctions;
 
 class VulkanResources final {
@@ -30,7 +32,9 @@ public:
     bool uploadCurveLut(VkCommandBuffer commandBuffer, const QByteArray& rgbaLut);
 
     VkDescriptorSetLayout descriptorSetLayout() const { return m_descriptorSetLayout; }
-    VkDescriptorSet descriptorSet() const { return m_descriptorSet; }
+    VkDescriptorSet descriptorSet() const { return m_descriptorSets[m_descriptorSetIndex]; }
+    size_t descriptorSetIndex() const { return m_descriptorSetIndex; }
+    size_t descriptorSetCount() const { return m_descriptorSets.size(); }
     bool isReady() const { return m_initialized; }
 
 private:
@@ -56,7 +60,9 @@ private:
     VkSampler m_sampler = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet m_descriptorSet = VK_NULL_HANDLE;
+    static constexpr size_t kDescriptorSetCount = 3;
+    std::array<VkDescriptorSet, kDescriptorSetCount> m_descriptorSets{};
+    size_t m_descriptorSetIndex = 0;
 
     VkImage m_textureImage = VK_NULL_HANDLE;
     VkDeviceMemory m_textureMemory = VK_NULL_HANDLE;

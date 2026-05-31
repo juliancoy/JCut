@@ -146,8 +146,10 @@ public:
     void clearClips();
     
     // Frame access (async)
-    void requestFrame(const QString& clipId, int64_t frameNumber, 
-                      std::function<void(FrameHandle)> callback);
+    void requestFrame(const QString& clipId,
+                      int64_t frameNumber,
+                      std::function<void(FrameHandle)> callback,
+                      bool requireHardwareOrGpuPayload = false);
     
     // Try to get frame from cache (synchronous)
     FrameHandle getCachedFrame(const QString& clipId, int64_t frameNumber);
@@ -161,7 +163,8 @@ public:
     bool hasDisplayableFrameForPreview(const QString& clipId,
                                        int64_t frameNumber,
                                        bool preferPlaybackBuffer,
-                                       bool allowCacheFallback);
+                                       bool allowCacheFallback,
+                                       bool requireHardwareOrGpuPayload = false);
     
     // Preload control
     void startPrefetching();

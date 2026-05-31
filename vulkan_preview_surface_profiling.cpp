@@ -27,6 +27,9 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample));
     snapshot.insert(QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName);
     snapshot.insert(QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization);
+    snapshot.insert(QStringLiteral("current_speaker_name_text_scale"), m_interaction.currentSpeakerNameTextScale);
+    snapshot.insert(QStringLiteral("current_speaker_organization_text_scale"),
+                    m_interaction.currentSpeakerOrganizationTextScale);
     const CurrentSpeakerLabel currentSpeakerLabel = currentSpeakerLabelForState(&m_interaction);
     snapshot.insert(QStringLiteral("current_speaker_label"), QJsonObject{
         {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},

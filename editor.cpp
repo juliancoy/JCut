@@ -966,6 +966,14 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("previewShowCurrentSpeakerName")).toBool(false);
     const bool previewShowCurrentSpeakerOrganization =
         root.value(QStringLiteral("previewShowCurrentSpeakerOrganization")).toBool(false);
+    const int previewCurrentSpeakerNameTextScalePercent = qBound(
+        25,
+        root.value(QStringLiteral("previewCurrentSpeakerNameTextScalePercent")).toInt(100),
+        300);
+    const int previewCurrentSpeakerOrganizationTextScalePercent = qBound(
+        25,
+        root.value(QStringLiteral("previewCurrentSpeakerOrganizationTextScalePercent")).toInt(100),
+        300);
     const QString previewFacestreamOverlaySource = QStringLiteral("all");
     const int autosaveIntervalMinutes = qBound(
         1,
@@ -1359,6 +1367,15 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         QSignalBlocker block(m_speakerShowCurrentSpeakerOrganizationCheckBox);
         m_speakerShowCurrentSpeakerOrganizationCheckBox->setChecked(previewShowCurrentSpeakerOrganization);
     }
+    if (m_speakerCurrentSpeakerNameTextSizeSpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerNameTextSizeSpin);
+        m_speakerCurrentSpeakerNameTextSizeSpin->setValue(previewCurrentSpeakerNameTextScalePercent);
+    }
+    if (m_speakerCurrentSpeakerOrganizationTextSizeSpin) {
+        QSignalBlocker block(m_speakerCurrentSpeakerOrganizationTextSizeSpin);
+        m_speakerCurrentSpeakerOrganizationTextSizeSpin->setValue(
+            previewCurrentSpeakerOrganizationTextScalePercent);
+    }
     if (m_previewPlaybackCacheFallbackCheckBox) {
         QSignalBlocker block(m_previewPlaybackCacheFallbackCheckBox);
         m_previewPlaybackCacheFallbackCheckBox->setChecked(previewPlaybackCacheFallback);
@@ -1564,6 +1581,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         m_preview->setShowRawDetections(previewShowRawDetections);
         m_preview->setShowCurrentSpeakerName(previewShowCurrentSpeakerName);
         m_preview->setShowCurrentSpeakerOrganization(previewShowCurrentSpeakerOrganization);
+        m_preview->setCurrentSpeakerNameTextScale(previewCurrentSpeakerNameTextScalePercent / 100.0);
+        m_preview->setCurrentSpeakerOrganizationTextScale(
+            previewCurrentSpeakerOrganizationTextScalePercent / 100.0);
         m_preview->setFacestreamOverlaySource(previewFacestreamOverlaySource);
         m_preview->setBypassGrading(!gradingPreview);
         m_previewAudioDynamics = loadedAudioDynamics;

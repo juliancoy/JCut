@@ -75,6 +75,8 @@ public:
     void setShowRawDetections(bool show);
     void setShowCurrentSpeakerName(bool show) override;
     void setShowCurrentSpeakerOrganization(bool show) override;
+    void setCurrentSpeakerNameTextScale(qreal scale) override;
+    void setCurrentSpeakerOrganizationTextScale(qreal scale) override;
     void setFacestreamOverlaySource(const QString& source);
     void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override {
         if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {

@@ -57,6 +57,14 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip)
         .arg(QString::number(clip.sourceFps, 'f', 6));
 }
 
+TimelineClip directVulkanDecodeClip(const TimelineClip& clip)
+{
+    TimelineClip directClip = clip;
+    directClip.useProxy = false;
+    directClip.proxyPath.clear();
+    return directClip;
+}
+
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
                               int64_t samplePosition,
@@ -140,8 +148,8 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
     m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
     m_configuredPlaybackTuning = m_playbackTuning;
     m_previousDecodePreference = editor::debugDecodePreference();
-    if (m_previousDecodePreference != editor::DecodePreference::Auto) {
-        editor::setDebugDecodePreference(editor::DecodePreference::Auto);
+    if (m_previousDecodePreference != editor::DecodePreference::HardwareZeroCopy) {
+        editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
         m_forcedPreviewDecodePreference = true;
     }
     m_presenter = std::make_unique<DirectVulkanPreviewPresenter>(&m_interaction, parent);
@@ -566,6 +574,26 @@ void VulkanPreviewSurface::setShowCurrentSpeakerOrganization(bool show)
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setCurrentSpeakerNameTextScale(qreal scale)
+{
+    const qreal normalized = qBound<qreal>(0.25, scale, 3.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerNameTextScale, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerNameTextScale = normalized;
+    requestNativeUpdate();
+}
+
+void VulkanPreviewSurface::setCurrentSpeakerOrganizationTextScale(qreal scale)
+{
+    const qreal normalized = qBound<qreal>(0.25, scale, 3.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerOrganizationTextScale, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerOrganizationTextScale = normalized;
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds)
 {
     if (m_interaction.selectedSpeakerAssignedFaceTrackIds == trackIds) {
@@ -795,8 +823,8 @@ void VulkanPreviewSurface::ensureFramePipeline()
         return;
     }
 
-    if (editor::debugDecodePreference() != editor::DecodePreference::Auto) {
-        editor::setDebugDecodePreference(editor::DecodePreference::Auto);
+    if (editor::debugDecodePreference() != editor::DecodePreference::HardwareZeroCopy) {
+        editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
         m_forcedPreviewDecodePreference = true;
     }
 
@@ -849,8 +877,9 @@ void VulkanPreviewSurface::registerVisibleClips()
             clip.filePath.isEmpty()) {
             continue;
         }
+        const TimelineClip decodeClip = directVulkanDecodeClip(clip);
         visible.insert(clip.id);
-        const QString registrationKey = cacheRegistrationKeyForClip(clip);
+        const QString registrationKey = cacheRegistrationKeyForClip(decodeClip);
         nextRegisteredClipRegistrationKeys.insert(clip.id, registrationKey);
         const bool alreadyRegistered = m_registeredClips.contains(clip.id);
         const bool registrationChanged =
@@ -859,7 +888,7 @@ void VulkanPreviewSurface::registerVisibleClips()
             if (alreadyRegistered) {
                 m_cache->unregisterClip(clip.id);
             }
-            m_cache->registerClip(clip);
+            m_cache->registerClip(decodeClip);
             m_registeredClips.insert(clip.id);
         }
     }
@@ -920,9 +949,13 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-        const bool cached = m_interaction.playing
-            ? m_cache->hasDisplayableFrameForPreview(clip.id, localFrame, true, true)
-            : m_cache->isFrameCached(clip.id, localFrame);
+        constexpr bool requireDirectVulkanPayload = true;
+        const bool cached = m_cache->hasDisplayableFrameForPreview(
+            clip.id,
+            localFrame,
+            m_interaction.playing,
+            true,
+            requireDirectVulkanPayload);
         const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
         const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 250);
         const int backlog = m_cache->pendingVisibleRequestCount();
@@ -984,7 +1017,8 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                         queueFrameStatusRefresh(nullFrame && affectsCurrent);
                     },
                     Qt::QueuedConnection);
-            });
+            },
+            requireDirectVulkanPayload);
     }
     refreshVulkanFrameStatuses();
 }
@@ -1093,7 +1127,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 -1,
             },
             m_cache.get(),
-            nullptr);
+            nullptr,
+            FrameHandle(),
+            [](const FrameHandle& frame) {
+                return !frame.isNull() && !frame.hasHardwareFrame() && !frame.hasGpuTexture();
+            });
         const FrameHandle exactFrame = frameSelection.exactFrame;
         FrameHandle selectedFrame = frameSelection.frame;
 
@@ -1220,7 +1258,13 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             continue;
         }
         const int64_t localFrame = sourceFrameForSample(clip, targetSample);
-        if (m_cache->hasDisplayableFrameForPreview(clip.id, localFrame, m_interaction.playing, true)) {
+        constexpr bool requireDirectVulkanPayload = true;
+        if (m_cache->hasDisplayableFrameForPreview(
+                clip.id,
+                localFrame,
+                m_interaction.playing,
+                true,
+                requireDirectVulkanPayload)) {
             continue;
         }
         ready = false;
@@ -1228,7 +1272,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             m_cache->pendingVisibleRequestCount() < m_playbackTuning.visibleBacklogLimit) {
             m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
                 queueFrameStatusRefresh(false);
-            });
+            }, requireDirectVulkanPayload);
         }
     }
     refreshVulkanFrameStatuses();
@@ -1258,7 +1302,13 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
                 continue;
             }
             const int64_t localFrame = sourceFrameForSample(clip, samplePosition);
-            if (!m_cache->hasDisplayableFrameForPreview(clip.id, localFrame, true, true)) {
+            constexpr bool requireDirectVulkanPayload = true;
+            if (!m_cache->hasDisplayableFrameForPreview(
+                    clip.id,
+                    localFrame,
+                    true,
+                    true,
+                    requireDirectVulkanPayload)) {
                 return false;
             }
         }

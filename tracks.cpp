@@ -2012,6 +2012,8 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                                                  qreal yNorm,
                                                  qreal boxSizeNorm)
 {
+    QElapsedTimer clickTimer;
+    clickTimer.start();
     auto report = [this](const QString& message) {
         qInfo().noquote() << message;
         showPreviewFaceDetectionsClickStatus(message);
@@ -2023,23 +2025,34 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                .arg(streamId.isEmpty() ? QStringLiteral("<empty>") : streamId)
                .arg(sourceFrame)
                .arg(xNorm, 0, 'f', 4)
-               .arg(yNorm, 0, 'f', 4)
-               .arg(boxSizeNorm, 0, 'f', 4));
+                   .arg(yNorm, 0, 'f', 4)
+                   .arg(boxSizeNorm, 0, 'f', 4));
+
+    auto logTiming = [&clickTimer](const QString& phase) {
+        qInfo().noquote()
+            << QStringLiteral("Face box click timing: phase=%1 elapsed_ms=%2")
+                   .arg(phase)
+                   .arg(clickTimer.elapsed());
+    };
 
     if (!activeCutMutable()) {
         report(QStringLiteral("Face box click ignored: the active cut is not editable."));
+        logTiming(QStringLiteral("rejected_mutability"));
         return false;
     }
     if (trackId < 0) {
         report(QStringLiteral("Face box click ignored: invalid track id %1.").arg(trackId));
+        logTiming(QStringLiteral("rejected_track"));
         return false;
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip || clip->id != clipId) {
         report(QStringLiteral("Face box click ignored: clicked clip %1 is not the selected clip %2.")
                    .arg(clipId, clip ? clip->id : QStringLiteral("<none>")));
+        logTiming(QStringLiteral("rejected_clip"));
         return false;
     }
+    logTiming(QStringLiteral("validated"));
     const int64_t mediaSourceFrame = sourceFrame >= 0
         ? sourceFrame
         : sourceFrameForClipAtTimelinePosition(
@@ -2056,6 +2069,7 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                   (static_cast<qreal>(mediaSourceFrame) / qMax<qreal>(1.0, sourceFps)) *
                   static_cast<qreal>(kTimelineFps))))
         : currentSourceFrameForClip(*clip);
+    logTiming(QStringLiteral("mapped_source_frame"));
     QString speakerResolutionDetail =
         QStringLiteral("transcript exact frame %1 from media source frame %2 at %3 fps")
             .arg(transcriptFrame)
@@ -2077,6 +2091,7 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                     .arg(gapHoldFrames);
         }
     }
+    logTiming(QStringLiteral("resolved_speaker"));
     if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
         report(QStringLiteral("Face box click ignored: no transcript-active speaker at media source frame %1 (transcript frame %2 at %3 fps); gap hold=%4 transcript frame(s).")
@@ -2084,11 +2099,14 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                    .arg(transcriptFrame)
                    .arg(sourceFps, 0, 'f', 3)
                    .arg(gapHoldFrames));
+        logTiming(QStringLiteral("rejected_speaker"));
         return false;
     }
 
     selectSpeakerRowById(speakerId);
+    logTiming(QStringLiteral("selected_speaker_row"));
     selectSpeakerSectionRowAtFrame(speakerId, speakerSourceFrame);
+    logTiming(QStringLiteral("selected_section_row"));
     m_lastSelectedSpeakerIdHint = speakerId;
 
     const bool assigned = assignTrackToSpeaker(
@@ -2101,8 +2119,10 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         boxSizeNorm,
         QStringLiteral("preview_click"),
         true);
+    logTiming(QStringLiteral("assigned_track"));
     if (assigned && m_speakerDeps.refreshPreview) {
         m_speakerDeps.refreshPreview();
+        logTiming(QStringLiteral("refreshed_preview"));
     }
     if (assigned) {
         report(QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4).")
@@ -2115,6 +2135,7 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                    .arg(trackId)
                    .arg(speakerDisplayLabel(speakerId)));
     }
+    logTiming(assigned ? QStringLiteral("complete_success") : QStringLiteral("complete_failed"));
     return assigned;
 }
 

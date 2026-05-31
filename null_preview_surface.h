@@ -48,6 +48,8 @@ public:
     void setShowRawDetections(bool show) override;
     void setShowCurrentSpeakerName(bool show) override;
     void setShowCurrentSpeakerOrganization(bool show) override;
+    void setCurrentSpeakerNameTextScale(qreal scale) override;
+    void setCurrentSpeakerOrganizationTextScale(qreal scale) override;
     void setFacestreamOverlaySource(const QString& source) override;
     void setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>& trackIds) override;
     void setAudioSpeakerHoverModalEnabled(bool enabled) override;
@@ -118,6 +120,8 @@ private:
     bool m_showRawDetections = false;
     bool m_showCurrentSpeakerName = false;
     bool m_showCurrentSpeakerOrganization = false;
+    qreal m_currentSpeakerNameTextScale = 1.0;
+    qreal m_currentSpeakerOrganizationTextScale = 1.0;
     bool m_audioSpeakerHoverModalEnabled = false;
     bool m_audioWaveformVisible = true;
     bool m_audioMuted = false;

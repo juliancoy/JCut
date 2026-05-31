@@ -70,6 +70,8 @@ int transcriptOverlayEffectiveCharsForBox(const TimelineClip& clip);
 TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(const TimelineClip& clip,
                                                              const QVector<TranscriptSection>& sections,
                                                              int64_t sourceFrame);
+QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& sections,
+                                              int64_t sourceFrame);
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines);
 TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section,
                                                 int64_t sourceFrame,

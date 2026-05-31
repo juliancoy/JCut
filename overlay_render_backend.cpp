@@ -418,8 +418,10 @@ OverlayImage renderSpeakerLabelOverlayImageSoftware(const QSize& imageSize,
     }
 
     const qreal base = qMax<qreal>(1.0, qMin(imageSize.width(), imageSize.height()));
-    const int namePixelSize = qBound(18, static_cast<int>(std::round(base * 0.042)), 64);
-    const int orgPixelSize = qBound(14, static_cast<int>(std::round(base * 0.030)), 46);
+    const qreal nameScale = qBound<qreal>(0.25, spec.nameTextScale, 3.0);
+    const qreal orgScale = qBound<qreal>(0.25, spec.organizationTextScale, 3.0);
+    const int namePixelSize = qBound(8, static_cast<int>(std::round(base * 0.042 * nameScale)), 160);
+    const int orgPixelSize = qBound(8, static_cast<int>(std::round(base * 0.030 * orgScale)), 140);
     FT_Face nameFace = nullptr;
     FontMetricsData nameMetrics;
     if (!loadFontFace(spec.fontFamily, true, false, namePixelSize, &nameFace, &nameMetrics)) {

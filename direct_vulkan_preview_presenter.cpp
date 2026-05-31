@@ -319,9 +319,11 @@ private:
         painter->save();
         QFont nameFont = painter->font();
         nameFont.setBold(true);
-        nameFont.setPointSizeF(qMax<qreal>(11.0, nameFont.pointSizeF() + 3.0));
+        const qreal nameScale = qBound<qreal>(0.25, m_state->currentSpeakerNameTextScale, 3.0);
+        const qreal organizationScale = qBound<qreal>(0.25, m_state->currentSpeakerOrganizationTextScale, 3.0);
+        nameFont.setPointSizeF(qBound<qreal>(6.0, (nameFont.pointSizeF() + 3.0) * nameScale, 72.0));
         QFont orgFont = painter->font();
-        orgFont.setPointSizeF(qMax<qreal>(9.0, orgFont.pointSizeF() + 1.0));
+        orgFont.setPointSizeF(qBound<qreal>(6.0, (orgFont.pointSizeF() + 1.0) * organizationScale, 64.0));
 
         const int maxTextWidth = qMax(180, static_cast<int>(surfaceRect.width() * 0.72));
         const int paddingX = 18;
@@ -1091,10 +1093,18 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
                    .arg(m_stats.lastFittedRect.height())
              : QString()},
         {QStringLiteral("presented_frames"), static_cast<double>(m_presentedFrames)},
+        {QStringLiteral("preview_update_requests"), static_cast<double>(m_stats.previewUpdateRequests)},
+        {QStringLiteral("preview_updates_delivered"), static_cast<double>(m_stats.previewUpdatesDelivered)},
+        {QStringLiteral("last_preview_update_latency_ms"), m_stats.lastPreviewUpdateLatencyMs},
+        {QStringLiteral("max_preview_update_latency_ms"), m_stats.maxPreviewUpdateLatencyMs},
+        {QStringLiteral("last_present_interval_ms"), m_stats.lastPresentIntervalMs},
+        {QStringLiteral("max_present_interval_ms"), m_stats.maxPresentIntervalMs},
         {QStringLiteral("handoff_attempts"), static_cast<double>(m_stats.handoffAttempts)},
         {QStringLiteral("handoff_successes"), static_cast<double>(m_stats.handoffSuccesses)},
         {QStringLiteral("handoff_failures"), static_cast<double>(m_stats.handoffFailures)},
         {QStringLiteral("sampled_image_ready_count"), static_cast<double>(m_stats.sampledImageReady)},
+        {QStringLiteral("sampled_image_descriptor_index"), m_stats.descriptorSetIndex},
+        {QStringLiteral("sampled_image_descriptor_count"), m_stats.descriptorSetCount},
         {QStringLiteral("texture_draw_count"), static_cast<double>(m_stats.textureDraws)},
         {QStringLiteral("checker_draw_count"), static_cast<double>(m_stats.checkerDraws)},
         {QStringLiteral("clear_fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},

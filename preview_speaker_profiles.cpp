@@ -286,7 +286,7 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
         }
         const int64_t sourceFrame =
             transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
-        const QString speakerId = speakerAtSourceFrame(sections, sourceFrame);
+        const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame);
         if (speakerId.isEmpty()) {
             continue;
         }
@@ -389,8 +389,10 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
 
         const int64_t sourceFrame =
             transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
-        const QString speakerId = speakerAtSourceFrame(sections, sourceFrame);
+        const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame);
         clipDebug.insert(QStringLiteral("source_frame"), static_cast<qint64>(sourceFrame));
+        clipDebug.insert(QStringLiteral("speaker_timing_source"),
+                         QStringLiteral("transcript_overlay_padded_word_timing"));
         clipDebug.insert(QStringLiteral("speaker_id"), speakerId);
         if (speakerId.isEmpty()) {
             clipDebug.insert(QStringLiteral("status"), QStringLiteral("no_speaker_at_source_frame"));
@@ -429,6 +431,8 @@ render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(co
     }
     spec.showName = state->showCurrentSpeakerName;
     spec.showOrganization = state->showCurrentSpeakerOrganization;
+    spec.nameTextScale = qBound<qreal>(0.25, state->currentSpeakerNameTextScale, 3.0);
+    spec.organizationTextScale = qBound<qreal>(0.25, state->currentSpeakerOrganizationTextScale, 3.0);
     if (!spec.showName && !spec.showOrganization) {
         return spec;
     }

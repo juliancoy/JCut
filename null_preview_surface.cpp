@@ -74,6 +74,8 @@ void NullPreviewSurface::setShowSpeakerTrackBoxes(bool show) { m_showSpeakerTrac
 void NullPreviewSurface::setShowRawDetections(bool show) { m_showRawDetections = show; requestRepaint(); }
 void NullPreviewSurface::setShowCurrentSpeakerName(bool show) { m_showCurrentSpeakerName = show; requestRepaint(); }
 void NullPreviewSurface::setShowCurrentSpeakerOrganization(bool show) { m_showCurrentSpeakerOrganization = show; requestRepaint(); }
+void NullPreviewSurface::setCurrentSpeakerNameTextScale(qreal scale) { m_currentSpeakerNameTextScale = qBound<qreal>(0.25, scale, 3.0); requestRepaint(); }
+void NullPreviewSurface::setCurrentSpeakerOrganizationTextScale(qreal scale) { m_currentSpeakerOrganizationTextScale = qBound<qreal>(0.25, scale, 3.0); requestRepaint(); }
 void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facedetectionsOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }
 void NullPreviewSurface::setSelectedSpeakerAssignedFaceTrackIds(const QSet<int>&) {}
 void NullPreviewSurface::setAudioSpeakerHoverModalEnabled(bool enabled) { m_audioSpeakerHoverModalEnabled = enabled; }

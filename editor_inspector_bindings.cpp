@@ -45,6 +45,9 @@ void EditorWindow::bindInspectorWidgets()
     m_speakerShowCurrentSpeakerNameCheckBox = m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox();
     m_speakerShowCurrentSpeakerOrganizationCheckBox =
         m_inspectorPane->speakerShowCurrentSpeakerOrganizationCheckBox();
+    m_speakerCurrentSpeakerNameTextSizeSpin = m_inspectorPane->speakerCurrentSpeakerNameTextSizeSpin();
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin =
+        m_inspectorPane->speakerCurrentSpeakerOrganizationTextSizeSpin();
     m_previewZoomSpin = m_inspectorPane->previewZoomSpin();
     m_previewZoomResetButton = m_inspectorPane->previewZoomResetButton();
     m_previewPlaybackCacheFallbackCheckBox = m_inspectorPane->previewPlaybackCacheFallbackCheckBox();
@@ -586,6 +589,30 @@ void EditorWindow::setupPreviewControls()
             pushHistorySnapshot();
         });
     }
+    if (m_speakerCurrentSpeakerNameTextSizeSpin) {
+        connect(m_speakerCurrentSpeakerNameTextSizeSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                [this](int value) {
+                    if (m_preview) {
+                        m_preview->setCurrentSpeakerNameTextScale(value / 100.0);
+                    }
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
+    }
+    if (m_speakerCurrentSpeakerOrganizationTextSizeSpin) {
+        connect(m_speakerCurrentSpeakerOrganizationTextSizeSpin,
+                qOverload<int>(&QSpinBox::valueChanged),
+                this,
+                [this](int value) {
+                    if (m_preview) {
+                        m_preview->setCurrentSpeakerOrganizationTextScale(value / 100.0);
+                    }
+                    scheduleSaveState();
+                    pushHistorySnapshot();
+                });
+    }
     if (m_renderBackendCombo) {
         connect(m_renderBackendCombo,
                 &QComboBox::currentIndexChanged,
@@ -831,6 +858,14 @@ void EditorWindow::setupPreviewControls()
         if (m_speakerShowCurrentSpeakerOrganizationCheckBox) {
             m_preview->setShowCurrentSpeakerOrganization(
                 m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked());
+        }
+        if (m_speakerCurrentSpeakerNameTextSizeSpin) {
+            m_preview->setCurrentSpeakerNameTextScale(
+                m_speakerCurrentSpeakerNameTextSizeSpin->value() / 100.0);
+        }
+        if (m_speakerCurrentSpeakerOrganizationTextSizeSpin) {
+            m_preview->setCurrentSpeakerOrganizationTextScale(
+                m_speakerCurrentSpeakerOrganizationTextSizeSpin->value() / 100.0);
         }
     }
     if (m_loiaconoSpectrumSettingsButton) {

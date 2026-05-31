@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QDebug>
+#include <QElapsedTimer>
 #include <QMessageBox>
 #include <QSignalBlocker>
 #include <QToolButton>
@@ -348,10 +349,15 @@ void EditorWindow::connectPreviewSignals()
                                                qreal xNorm,
                                                qreal yNorm,
                                                qreal boxSizeNorm) {
+        QElapsedTimer timer;
+        timer.start();
         if (m_speakersTab) {
             m_speakersTab->handlePreviewFaceDetectionsBox(
                 clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
         }
+        qInfo().noquote()
+            << QStringLiteral("Face box click timing: phase=editor_callback elapsed_ms=%1")
+                   .arg(timer.elapsed());
     };
     m_preview->faceStreamBoxFocusClearRequested = [this](const QString& clipId,
                                                          int trackId,
@@ -360,10 +366,15 @@ void EditorWindow::connectPreviewSignals()
                                                          qreal xNorm,
                                                          qreal yNorm,
                                                          qreal boxSizeNorm) {
+        QElapsedTimer timer;
+        timer.start();
         if (m_speakersTab) {
             m_speakersTab->handlePreviewFaceDetectionsBoxFocusClear(
                 clipId, trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
         }
+        qInfo().noquote()
+            << QStringLiteral("Face box right-click timing: phase=editor_callback elapsed_ms=%1")
+                   .arg(timer.elapsed());
     };
     m_preview->faceStreamBoxClickStatus = [this](const QString& message) {
         qInfo().noquote() << message;

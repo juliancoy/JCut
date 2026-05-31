@@ -401,6 +401,12 @@ QJsonObject EditorWindow::buildStateJson() const
         m_speakerShowCurrentSpeakerOrganizationCheckBox
             ? m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked()
             : false;
+    root[QStringLiteral("previewCurrentSpeakerNameTextScalePercent")] =
+        m_speakerCurrentSpeakerNameTextSizeSpin ? m_speakerCurrentSpeakerNameTextSizeSpin->value() : 100;
+    root[QStringLiteral("previewCurrentSpeakerOrganizationTextScalePercent")] =
+        m_speakerCurrentSpeakerOrganizationTextSizeSpin
+            ? m_speakerCurrentSpeakerOrganizationTextSizeSpin->value()
+            : 100;
     root[QStringLiteral("previewFacestreamOverlaySource")] = QStringLiteral("all");
     root[QStringLiteral("previewPlaybackCacheFallback")] = editor::debugPlaybackCacheFallbackEnabled();
     root[QStringLiteral("previewLeadPrefetchEnabled")] = editor::debugLeadPrefetchEnabled();

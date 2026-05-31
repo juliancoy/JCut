@@ -141,5 +141,7 @@ struct PreviewInteractionState {
     bool faceStreamAssignmentInteractionEnabled = false;
     bool showCurrentSpeakerName = false;
     bool showCurrentSpeakerOrganization = false;
+    qreal currentSpeakerNameTextScale = 1.0;
+    qreal currentSpeakerOrganizationTextScale = 1.0;
     PreviewInteractionTransientState transient;
 };

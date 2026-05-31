@@ -54,6 +54,14 @@ struct DirectVulkanPreviewStats {
     int64_t diagnosticReadbackRequests = 0;
     int64_t diagnosticReadbackCopies = 0;
     int64_t decoderDiagnosticReadbackCopies = 0;
+    int64_t previewUpdateRequests = 0;
+    int64_t previewUpdatesDelivered = 0;
+    double lastPreviewUpdateLatencyMs = 0.0;
+    double maxPreviewUpdateLatencyMs = 0.0;
+    double lastPresentIntervalMs = 0.0;
+    double maxPresentIntervalMs = 0.0;
+    int descriptorSetIndex = -1;
+    int descriptorSetCount = 0;
 };
 
 class DirectVulkanPreviewPresenter final {

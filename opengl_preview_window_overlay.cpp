@@ -366,9 +366,11 @@ void PreviewWindow::drawCurrentSpeakerLabelOverlay(QPainter* painter, const QRec
     painter->save();
     QFont nameFont = painter->font();
     nameFont.setBold(true);
-    nameFont.setPointSizeF(qMax<qreal>(11.0, nameFont.pointSizeF() + 3.0));
+    const qreal nameScale = qBound<qreal>(0.25, m_interaction.currentSpeakerNameTextScale, 3.0);
+    const qreal organizationScale = qBound<qreal>(0.25, m_interaction.currentSpeakerOrganizationTextScale, 3.0);
+    nameFont.setPointSizeF(qBound<qreal>(6.0, (nameFont.pointSizeF() + 3.0) * nameScale, 72.0));
     QFont orgFont = painter->font();
-    orgFont.setPointSizeF(qMax<qreal>(9.0, orgFont.pointSizeF() + 1.0));
+    orgFont.setPointSizeF(qBound<qreal>(6.0, (orgFont.pointSizeF() + 1.0) * organizationScale, 64.0));
 
     const int maxTextWidth = qMax(180, static_cast<int>(compositeRect.width() * 0.72));
     const int paddingX = 18;

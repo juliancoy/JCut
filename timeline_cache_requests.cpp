@@ -79,7 +79,8 @@ void cacheWarnTrace(const QString& stage, const QString& detail = QString()) {
 
 void TimelineCache::requestFrame(const QString& clipId,
                                  int64_t frameNumber,
-                                 std::function<void(FrameHandle)> callback) {
+                                 std::function<void(FrameHandle)> callback,
+                                 bool requireHardwareOrGpuPayload) {
     m_requests++;
     const qint64 requestedAtTraceMs = cacheTraceMs();
     const qint64 requestedAtWallMs = QDateTime::currentMSecsSinceEpoch();
@@ -94,7 +95,8 @@ void TimelineCache::requestFrame(const QString& clipId,
     } else {
         cached = getCachedFrame(clipId, normalizedFrame);
     }
-    if (!cached.isNull()) {
+    if (!cached.isNull() &&
+        (!requireHardwareOrGpuPayload || cached.hasHardwareFrame() || cached.hasGpuTexture())) {
         m_hits++;
         cacheTrace(QStringLiteral("TimelineCache::requestFrame.hit"),
                    QStringLiteral("clip=%1 frame=%2 normalized=%3")
@@ -215,19 +217,45 @@ void TimelineCache::requestFrame(const QString& clipId,
         priority,
         10000,
         DecodeRequestKind::Visible,
-        [self, aliveToken, clipId, canonicalFrame, requestedAtTraceMs, key, requestGeneration](FrameHandle frame) {
+        [self,
+         aliveToken,
+         clipId,
+         canonicalFrame,
+         requestedAtTraceMs,
+         key,
+         requestGeneration,
+         requireHardwareOrGpuPayload](FrameHandle frame) {
             if (!aliveToken->load() || !self) {
                 return;
             }
 
             QMetaObject::invokeMethod(
                 self,
-                [self, aliveToken, clipId, canonicalFrame, requestedAtTraceMs, key, frame, requestGeneration]() {
+                [self,
+                 aliveToken,
+                 clipId,
+                 canonicalFrame,
+                 requestedAtTraceMs,
+                 key,
+                 frame,
+                 requestGeneration,
+                 requireHardwareOrGpuPayload]() {
                     if (!aliveToken->load() || !self) {
                         return;
                     }
 
                     FrameHandle deliveredFrame = frame;
+                    if (requireHardwareOrGpuPayload &&
+                        !deliveredFrame.isNull() &&
+                        !deliveredFrame.hasHardwareFrame() &&
+                        !deliveredFrame.hasGpuTexture()) {
+                        cacheWarnTrace(
+                            QStringLiteral("TimelineCache::visible-strict-payload-rejected"),
+                            QStringLiteral("clip=%1 frame=%2 payload=cpu_image")
+                                .arg(clipId)
+                                .arg(canonicalFrame));
+                        deliveredFrame = FrameHandle();
+                    }
 
                     int64_t latestVisibleTarget = canonicalFrame;
                     bool obsoleteVisibleRequest = false;
@@ -351,7 +379,8 @@ void TimelineCache::requestFrame(const QString& clipId,
 bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
                                                   int64_t frameNumber,
                                                   bool preferPlaybackBuffer,
-                                                  bool allowCacheFallback) {
+                                                  bool allowCacheFallback,
+                                                  bool requireHardwareOrGpuPayload) {
     frameNumber = normalizeFrameNumber(clipId, frameNumber);
     const bool allowApproximateFrame =
         shouldAllowApproximatePreviewFrame(clipId, frameNumber, QDateTime::currentMSecsSinceEpoch());
@@ -369,8 +398,11 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
         cache = cacheIt.value();
     }
 
-    const auto isDisplayableCandidate = [this, frameNumber](const FrameHandle& frame) {
+    const auto isDisplayableCandidate = [this, frameNumber, requireHardwareOrGpuPayload](const FrameHandle& frame) {
         if (frame.isNull()) {
+            return false;
+        }
+        if (requireHardwareOrGpuPayload && !frame.hasHardwareFrame() && !frame.hasGpuTexture()) {
             return false;
         }
         if (m_state.load() != PlaybackState::Playing) {

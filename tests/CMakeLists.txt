@@ -23,6 +23,7 @@ set(EDITOR_TEST_TARGETS
     test_facefind_window
     test_vulkan_direct_render_parity
     test_facedetections_preview_smoke
+    test_direct_vulkan_handoff_pipeline_contract
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)

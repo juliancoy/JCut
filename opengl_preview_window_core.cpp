@@ -481,6 +481,24 @@ void PreviewWindow::setShowCurrentSpeakerOrganization(bool show) {
     scheduleRepaint();
 }
 
+void PreviewWindow::setCurrentSpeakerNameTextScale(qreal scale) {
+    const qreal normalized = qBound<qreal>(0.25, scale, 3.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerNameTextScale, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerNameTextScale = normalized;
+    scheduleRepaint();
+}
+
+void PreviewWindow::setCurrentSpeakerOrganizationTextScale(qreal scale) {
+    const qreal normalized = qBound<qreal>(0.25, scale, 3.0);
+    if (qFuzzyCompare(m_interaction.currentSpeakerOrganizationTextScale, normalized)) {
+        return;
+    }
+    m_interaction.currentSpeakerOrganizationTextScale = normalized;
+    scheduleRepaint();
+}
+
 void PreviewWindow::setFacestreamOverlaySource(const QString& source) {
     const QString normalized = source.trimmed().isEmpty()
         ? QStringLiteral("all")
@@ -860,6 +878,9 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
                          {QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample)},
                          {QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName},
                          {QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization},
+                         {QStringLiteral("current_speaker_name_text_scale"), m_interaction.currentSpeakerNameTextScale},
+                         {QStringLiteral("current_speaker_organization_text_scale"),
+                          m_interaction.currentSpeakerOrganizationTextScale},
                          {QStringLiteral("current_speaker_label"), QJsonObject{
                              {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},
                              {QStringLiteral("name"), currentSpeakerLabel.name},

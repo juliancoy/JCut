@@ -443,6 +443,8 @@ private:
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerNameTextSizeSpin = nullptr;
+    QSpinBox *m_speakerCurrentSpeakerOrganizationTextSizeSpin = nullptr;
     QDoubleSpinBox *m_previewZoomSpin = nullptr;
     QPushButton *m_previewZoomResetButton = nullptr;
     QCheckBox *m_previewPlaybackCacheFallbackCheckBox = nullptr;

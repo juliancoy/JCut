@@ -65,23 +65,25 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
 
     VkDescriptorPoolSize poolSize{};
     poolSize.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    poolSize.descriptorCount = 2;
+    poolSize.descriptorCount = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount * 2);
     VkDescriptorPoolCreateInfo descriptorPoolInfo{};
     descriptorPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     descriptorPoolInfo.poolSizeCount = 1;
     descriptorPoolInfo.pPoolSizes = &poolSize;
-    descriptorPoolInfo.maxSets = 1;
+    descriptorPoolInfo.maxSets = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount);
     if (m_funcs->vkCreateDescriptorPool(m_device, &descriptorPoolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS) {
         destroy();
         return false;
     }
 
+    std::array<VkDescriptorSetLayout, VulkanResources::kDescriptorSetCount> layouts{};
+    layouts.fill(m_descriptorSetLayout);
     VkDescriptorSetAllocateInfo descriptorSetAllocInfo{};
     descriptorSetAllocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     descriptorSetAllocInfo.descriptorPool = m_descriptorPool;
-    descriptorSetAllocInfo.descriptorSetCount = 1;
-    descriptorSetAllocInfo.pSetLayouts = &m_descriptorSetLayout;
-    if (m_funcs->vkAllocateDescriptorSets(m_device, &descriptorSetAllocInfo, &m_descriptorSet) != VK_SUCCESS) {
+    descriptorSetAllocInfo.descriptorSetCount = static_cast<uint32_t>(m_descriptorSets.size());
+    descriptorSetAllocInfo.pSetLayouts = layouts.data();
+    if (m_funcs->vkAllocateDescriptorSets(m_device, &descriptorSetAllocInfo, m_descriptorSets.data()) != VK_SUCCESS) {
         destroy();
         return false;
     }
@@ -128,6 +130,8 @@ void VulkanResources::destroy()
         m_funcs->vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
         m_descriptorPool = VK_NULL_HANDLE;
     }
+    m_descriptorSets.fill(VK_NULL_HANDLE);
+    m_descriptorSetIndex = 0;
     if (m_descriptorSetLayout != VK_NULL_HANDLE) {
         m_funcs->vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
         m_descriptorSetLayout = VK_NULL_HANDLE;
@@ -220,16 +224,23 @@ bool VulkanResources::createTextureResources()
     imageInfoDesc[1].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     imageInfoDesc[1].imageView = m_curveLutView;
     imageInfoDesc[1].sampler = m_sampler;
-    VkWriteDescriptorSet writes[2]{};
-    for (uint32_t i = 0; i < 2; ++i) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = m_descriptorSet;
-        writes[i].dstBinding = i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &imageInfoDesc[i];
+    std::array<VkWriteDescriptorSet, VulkanResources::kDescriptorSetCount * 2> writes{};
+    size_t writeIndex = 0;
+    for (VkDescriptorSet descriptorSet : m_descriptorSets) {
+        if (descriptorSet == VK_NULL_HANDLE) {
+            return false;
+        }
+        for (uint32_t binding = 0; binding < 2; ++binding) {
+            writes[writeIndex].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[writeIndex].dstSet = descriptorSet;
+            writes[writeIndex].dstBinding = binding;
+            writes[writeIndex].descriptorCount = 1;
+            writes[writeIndex].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[writeIndex].pImageInfo = &imageInfoDesc[binding];
+            ++writeIndex;
+        }
     }
-    m_funcs->vkUpdateDescriptorSets(m_device, 2, writes, 0, nullptr);
+    m_funcs->vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writeIndex), writes.data(), 0, nullptr);
     return true;
 }
 
@@ -615,16 +626,17 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer,
 
 bool VulkanResources::setSampledImage(VkImageView imageView, VkImageLayout imageLayout)
 {
-    if (!m_initialized || imageView == VK_NULL_HANDLE || m_descriptorSet == VK_NULL_HANDLE) {
+    if (!m_initialized || imageView == VK_NULL_HANDLE || m_descriptorSets[m_descriptorSetIndex] == VK_NULL_HANDLE) {
         return false;
     }
+    m_descriptorSetIndex = (m_descriptorSetIndex + 1) % m_descriptorSets.size();
     VkDescriptorImageInfo imageInfoDesc{};
     imageInfoDesc.imageLayout = imageLayout;
     imageInfoDesc.imageView = imageView;
     imageInfoDesc.sampler = m_sampler;
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = m_descriptorSet;
+    write.dstSet = m_descriptorSets[m_descriptorSetIndex];
     write.dstBinding = 0;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -684,17 +696,5 @@ bool VulkanResources::uploadCurveLut(VkCommandBuffer commandBuffer, const QByteA
     m_curveLutLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     m_curveLutBytes = rgbaLut;
 
-    VkDescriptorImageInfo imageInfoDesc{};
-    imageInfoDesc.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    imageInfoDesc.imageView = m_curveLutView;
-    imageInfoDesc.sampler = m_sampler;
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = m_descriptorSet;
-    write.dstBinding = 1;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &imageInfoDesc;
-    m_funcs->vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
     return true;
 }

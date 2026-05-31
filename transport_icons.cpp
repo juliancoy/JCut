@@ -1,6 +1,7 @@
 #include "transport_icons.h"
 
 #include <QFile>
+#include <QHash>
 #include <QPainter>
 #include <QPainterPath>
 #include <QSet>
@@ -116,21 +117,38 @@ QIcon themedStateIcon(TransportIconGlyph glyph, const QSize& size)
     return icon;
 }
 
+QIcon cachedThemedStateIcon(TransportIconGlyph glyph, const QSize& size)
+{
+    static QHash<QString, QIcon> cache;
+    const QSize normalizedSize(qMax(1, size.width()), qMax(1, size.height()));
+    const QString key = QStringLiteral("%1:%2x%3")
+                            .arg(static_cast<int>(glyph))
+                            .arg(normalizedSize.width())
+                            .arg(normalizedSize.height());
+    const auto it = cache.constFind(key);
+    if (it != cache.constEnd()) {
+        return it.value();
+    }
+    const QIcon icon = themedStateIcon(glyph, normalizedSize);
+    cache.insert(key, icon);
+    return icon;
+}
+
 } // namespace
 
 QIcon transportIcon(TransportIconGlyph glyph, const QSize& size)
 {
-    return themedStateIcon(glyph, size);
+    return cachedThemedStateIcon(glyph, size);
 }
 
 QIcon playPauseTransportIcon(bool playing, const QSize& size)
 {
-    return themedStateIcon(playing ? TransportIconGlyph::Pause : TransportIconGlyph::Play, size);
+    return cachedThemedStateIcon(playing ? TransportIconGlyph::Pause : TransportIconGlyph::Play, size);
 }
 
 QIcon volumeTransportIcon(bool muted, const QSize& size)
 {
-    return themedStateIcon(muted ? TransportIconGlyph::VolumeMuted : TransportIconGlyph::Volume, size);
+    return cachedThemedStateIcon(muted ? TransportIconGlyph::VolumeMuted : TransportIconGlyph::Volume, size);
 }
 
 void validateTransportIconResources()

@@ -1372,6 +1372,20 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerShowCurrentSpeakerOrganizationCheckBox->setChecked(false);
     m_speakerShowCurrentSpeakerOrganizationCheckBox->setToolTip(
         QStringLiteral("Draw the active speaker organization at the bottom of the preview when it is stored in the speaker profile."));
+    m_speakerCurrentSpeakerNameTextSizeSpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerNameTextSizeSpin->setRange(25, 300);
+    m_speakerCurrentSpeakerNameTextSizeSpin->setSingleStep(5);
+    m_speakerCurrentSpeakerNameTextSizeSpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerNameTextSizeSpin->setValue(100);
+    m_speakerCurrentSpeakerNameTextSizeSpin->setToolTip(
+        QStringLiteral("Scale the active speaker name drawn at the bottom of the preview."));
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin = new QSpinBox(page);
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin->setRange(25, 300);
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin->setSingleStep(5);
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin->setSuffix(QStringLiteral("%"));
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin->setValue(100);
+    m_speakerCurrentSpeakerOrganizationTextSizeSpin->setToolTip(
+        QStringLiteral("Scale the active speaker organization drawn at the bottom of the preview."));
     m_speakerSectionsTable = new QTableWidget(page);
     m_speakerSectionsTable->setColumnCount(5);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
@@ -1743,6 +1757,13 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerListLayout->addWidget(m_speakerShowContiguousSectionsCheckBox);
     speakerListLayout->addWidget(m_speakerShowCurrentSpeakerNameCheckBox);
     speakerListLayout->addWidget(m_speakerShowCurrentSpeakerOrganizationCheckBox);
+    auto *currentSpeakerTextSizeLayout = new QFormLayout;
+    currentSpeakerTextSizeLayout->setContentsMargins(0, 0, 0, 0);
+    currentSpeakerTextSizeLayout->setHorizontalSpacing(8);
+    currentSpeakerTextSizeLayout->setVerticalSpacing(4);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Name Size"), m_speakerCurrentSpeakerNameTextSizeSpin);
+    currentSpeakerTextSizeLayout->addRow(QStringLiteral("Organization Size"), m_speakerCurrentSpeakerOrganizationTextSizeSpin);
+    speakerListLayout->addLayout(currentSpeakerTextSizeLayout);
     speakerListLayout->addWidget(m_speakersTable, 1);
     speakerListLayout->addWidget(m_speakerSectionsTable, 1);
     mappingContentRow->addWidget(speakerListPanel, 1);
