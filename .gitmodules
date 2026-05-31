@@ -25,3 +25,6 @@
 [submodule "external/imgui"]
 	path = external/imgui
 	url = https://github.com/ocornut/imgui
+[submodule "external/rubberband"]
+	path = external/rubberband
+	url = https://github.com/breakfastquay/rubberband.git
