@@ -219,8 +219,14 @@ QRectF transcriptOverlayRectInOutputSpace(const TimelineClip& clip,
 
 int transcriptOverlayEffectiveLinesForBox(const TimelineClip& clip) {
     const qreal estimatedLineHeight = qMax<qreal>(12.0, clip.transcriptOverlay.fontPointSize * 1.35);
+    const qreal reservedTitleHeight = clip.transcriptOverlay.showSpeakerTitle
+        ? qMax<qreal>(0.0,
+                      (clip.transcriptOverlay.fontPointSize * 0.62 * 1.35) +
+                      (clip.transcriptOverlay.fontPointSize * 0.30))
+        : 0.0;
     const qreal usableHeight =
-        qMax<qreal>(estimatedLineHeight, clip.transcriptOverlay.boxHeight - 28.0);
+        qMax<qreal>(estimatedLineHeight,
+                    clip.transcriptOverlay.boxHeight - 28.0 - reservedTitleHeight);
     const int fittedLines =
         qMax(1, static_cast<int>(std::floor(usableHeight / estimatedLineHeight)));
     return qMax(1, qMin(clip.transcriptOverlay.maxLines, fittedLines));

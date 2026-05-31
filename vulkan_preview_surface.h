@@ -4,6 +4,7 @@
 #include "preview_surface.h"
 #include "facedetections_types.h"
 #include "facedetections_time_mapping.h"
+#include "facestream_overlay_snapshot.h"
 #include "debug_controls.h"
 
 #include <QJsonObject>
@@ -112,37 +113,9 @@ public:
 private:
     using FacestreamKeyframe = FacestreamResolvedKeyframe;
     using FacestreamTrack = FacestreamResolvedTrack;
-    struct FacestreamOverlayCacheEntry {
-        QString signature;
-        QVector<FacestreamTrack> tracks;
-        QVector<VulkanPreviewFacestreamOverlay> rawDetections;
-        QHash<int64_t, QVector<VulkanPreviewFacestreamOverlay>> rawDetectionsBySourceFrame;
-        QVector<int64_t> rawDetectionSourceFrames;
-        int64_t rawDetectionTypicalFrameStep = 1;
-    };
-    struct FacestreamOverlayRequestClip {
-        TimelineClip clip;
-        int64_t localFrame = 0;
-        int64_t localSourceFrame = 0;
-        int64_t localTimelineFrame = 0;
-        QSize clipFrameSize;
-        QVector<RenderSyncMarker> renderSyncMarkers;
-        FacestreamOverlayCacheEntry cacheEntry;
-    };
-    struct FacestreamOverlaySnapshot {
-        uint64_t requestId = 0;
-        QString requestKey;
-        int64_t currentSample = 0;
-        int64_t currentFrame = 0;
-        QVector<VulkanPreviewFacestreamOverlay> overlays;
-        QVector<VulkanPreviewFacestreamOverlay> rawDetections;
-        QJsonObject debug;
-        qint64 prepMs = 0;
-        int requestClipCount = 0;
-        int trackCandidateCount = 0;
-        int overlayMatchCount = 0;
-        int rawDetectionMatchCount = 0;
-    };
+    using FacestreamOverlayCacheEntry = jcut::preview_overlay::FacestreamOverlayCacheEntry;
+    using FacestreamOverlayRequestClip = jcut::preview_overlay::FacestreamOverlayRequestClip;
+    using FacestreamOverlaySnapshot = jcut::preview_overlay::FacestreamOverlaySnapshot;
     struct PlaybackSmoothnessSample {
         qint64 timestampMs = 0;
         int exactCount = 0;
@@ -180,6 +153,14 @@ private:
     void updateAdaptivePlaybackTuning(qint64 nowMs);
     void refreshFacestreamOverlays();
     void requestFacestreamOverlaySnapshotAsync(
+        const QString& requestKey,
+        const QVector<FacestreamOverlayRequestClip>& requestClips,
+        const QString& selectedClipId,
+        const QString& sourceFilter,
+        bool showSpeakerTrackBoxes,
+        bool showRawDetections,
+        bool assignmentInteractionEnabled);
+    void startFacestreamOverlaySnapshotWorker(
         const QString& requestKey,
         const QVector<FacestreamOverlayRequestClip>& requestClips,
         const QString& selectedClipId,
@@ -267,6 +248,13 @@ private:
     QJsonObject m_lastFacedetectionsQueryDebug;
     QString m_appliedFacestreamOverlaySnapshotKey;
     QString m_pendingFacestreamOverlaySnapshotKey;
+    QString m_queuedFacestreamOverlaySnapshotKey;
+    QVector<FacestreamOverlayRequestClip> m_queuedFacestreamOverlayRequestClips;
+    QString m_queuedFacestreamOverlaySelectedClipId;
+    QString m_queuedFacestreamOverlaySourceFilter;
+    bool m_queuedFacestreamOverlayShowSpeakerTrackBoxes = false;
+    bool m_queuedFacestreamOverlayShowRawDetections = false;
+    bool m_queuedFacestreamOverlayAssignmentInteractionEnabled = false;
     uint64_t m_nextFacestreamOverlayRequestId = 0;
     uint64_t m_latestAppliedFacestreamOverlayRequestId = 0;
     bool m_facedetectionsOverlayWorkerPending = false;

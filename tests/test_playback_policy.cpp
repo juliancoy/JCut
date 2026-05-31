@@ -86,6 +86,10 @@ void TestPlaybackPolicy::testAudioMasterClockPolicy() {
                                        PlaybackAudioWarpMode::Varispeed,
                                        1.0,
                                        true));
+    QVERIFY(shouldUseAudioMasterClock(PlaybackClockSource::Timeline,
+                                      PlaybackAudioWarpMode::TimeStretch,
+                                      1.5,
+                                      true));
 }
 
 void TestPlaybackPolicy::testPitchPreservingAudioGatePolicy() {

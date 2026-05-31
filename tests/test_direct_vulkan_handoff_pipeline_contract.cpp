@@ -14,6 +14,8 @@ private slots:
     void handoffPipelineRejectsCpuOnlyFrames();
     void strictDisplayabilityDoesNotAcceptCpuFallback();
     void directPreviewDisablesCpuAndQtTextOverlayFallbacks();
+    void overlayWorkerKeepsNewestCoalescedRequest();
+    void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
 
 namespace {
@@ -153,6 +155,51 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewDisablesCpuAndQtTextO
              "direct Vulkan preview must route transcript subtitles through the Vulkan text renderer");
     QVERIFY2(!backend.contains(QStringLiteral("renderTranscriptOverlay(")),
              "direct Vulkan preview must not retain a CPU-rendered transcript overlay path");
+}
+
+void TestDirectVulkanHandoffPipelineContract::overlayWorkerKeepsNewestCoalescedRequest()
+{
+    const QString header = readSourceFile(QStringLiteral("vulkan_preview_surface.h"));
+    QVERIFY2(!header.isEmpty(), "vulkan_preview_surface.h must be readable");
+    QVERIFY2(header.contains(QStringLiteral("m_queuedFacestreamOverlaySnapshotKey")),
+             "overlay worker must retain the newest coalesced request key instead of dropping it");
+    QVERIFY2(header.contains(QStringLiteral("m_queuedFacestreamOverlayRequestClips")),
+             "overlay worker must retain the newest coalesced request payload");
+
+    const QString source = readSourceFile(QStringLiteral("vulkan_preview_surface_facedetections.cpp"));
+    QVERIFY2(!source.isEmpty(), "vulkan_preview_surface_facedetections.cpp must be readable");
+    QVERIFY2(source.contains(QStringLiteral("startFacestreamOverlaySnapshotWorker(")),
+             "overlay worker launch must be factored so queued follow-up requests can reuse it");
+    QVERIFY2(source.contains(QStringLiteral("m_queuedFacestreamOverlaySnapshotKey = requestKey")),
+             "newer overlay requests must replace the bounded queued request slot");
+    QVERIFY2(source.contains(QStringLiteral("launchQueuedRequest();")),
+             "overlay worker completion must launch the queued follow-up request");
+
+    const QString profiling = readSourceFile(QStringLiteral("vulkan_preview_surface_profiling.cpp"));
+    QVERIFY2(!profiling.isEmpty(), "vulkan_preview_surface_profiling.cpp must be readable");
+    QVERIFY2(profiling.contains(QStringLiteral("vulkan_overlay_worker_queued_key")),
+             "perf diagnostics must expose the queued overlay worker request key");
+    QVERIFY2(profiling.contains(QStringLiteral("vulkan_overlay_worker_queued_clip_count")),
+             "perf diagnostics must expose the queued overlay worker request size");
+}
+
+void TestDirectVulkanHandoffPipelineContract::vulkanTextShaderUsesVulkanFramebufferYConvention()
+{
+    const QString shader = readSourceFile(QStringLiteral("shaders/vulkan/text.vert"));
+    QVERIFY2(!shader.isEmpty(), "text.vert must be readable");
+
+    const qsizetype topLeftPos = shader.indexOf(QStringLiteral("pos = vec2(-1.0, -1.0);"));
+    const qsizetype topLeftUv = shader.indexOf(QStringLiteral("unitUv = vec2(0.0, 0.0);"), topLeftPos);
+    QVERIFY2(topLeftPos >= 0 && topLeftUv > topLeftPos,
+             "top-left Vulkan framebuffer vertex must sample the top-left glyph atlas UV");
+
+    const qsizetype bottomRightPos = shader.indexOf(QStringLiteral("pos = vec2(1.0, 1.0);"));
+    const qsizetype bottomRightUv = shader.indexOf(QStringLiteral("unitUv = vec2(1.0, 1.0);"), bottomRightPos);
+    QVERIFY2(bottomRightPos >= 0 && bottomRightUv > bottomRightPos,
+             "bottom-right Vulkan framebuffer vertex must sample the bottom-right glyph atlas UV");
+
+    QVERIFY2(!shader.contains(QStringLiteral("pos = vec2(-1.0, -1.0);\n        unitUv = vec2(0.0, 1.0);")),
+             "text shader must not use OpenGL-style Y-flipped glyph UVs in the Vulkan presenter");
 }
 
 QTEST_MAIN(TestDirectVulkanHandoffPipelineContract)

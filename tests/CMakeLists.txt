@@ -25,7 +25,9 @@ set(EDITOR_TEST_TARGETS
     test_vulkan_direct_render_parity
     test_facedetections_preview_smoke
     test_preview_face_track_click_policy
+    test_facestream_overlay_snapshot
     test_direct_vulkan_handoff_pipeline_contract
+    test_vulkan_text_generation
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
@@ -47,6 +49,23 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+target_sources(test_vulkan_text_generation
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
+)
+target_link_libraries(test_vulkan_text_generation
+    PRIVATE
+        Vulkan::Vulkan
+)
+target_compile_definitions(test_vulkan_text_generation
+    PRIVATE
+        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+)
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(test_vulkan_text_generation jcut_vulkan_shaders)
+endif()
 
 set_tests_properties(
     test_playback_policy

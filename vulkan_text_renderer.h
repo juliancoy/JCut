@@ -7,12 +7,28 @@
 #include <QRectF>
 #include <QSize>
 #include <QString>
+#include <QVector>
 
 #include <memory>
 
 #include <vulkan/vulkan.h>
 
 class QVulkanDeviceFunctions;
+
+struct VulkanTextLayoutDebug {
+    bool valid = false;
+    QString atlasKey;
+    QSize atlasSize;
+    int glyphAtlasEntryCount = 0;
+    int glyphDrawCount = 0;
+    int cardCount = 0;
+    int backgroundCount = 0;
+    int highlightCount = 0;
+    QVector<QRectF> glyphRects;
+    QVector<QRectF> cards;
+    QVector<QRectF> backgrounds;
+    QVector<QRectF> highlights;
+};
 
 class VulkanTextPipeline final {
 public:
@@ -79,6 +95,15 @@ public:
                                const TranscriptOverlayLayout& layout,
                                const QRectF& outputRect,
                                const QString& speakerTitle);
+    VulkanTextLayoutDebug buildSpeakerLabelLayoutForTesting(
+        const QSize& outputSize,
+        const render_detail::SpeakerLabelOverlaySpec& spec) const;
+    VulkanTextLayoutDebug buildTranscriptOverlayLayoutForTesting(
+        const QSize& outputSize,
+        const TimelineClip& clip,
+        const TranscriptOverlayLayout& layout,
+        const QRectF& outputRect,
+        const QString& speakerTitle) const;
 
 private:
     struct Glyph {

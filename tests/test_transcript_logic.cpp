@@ -538,6 +538,17 @@ void TestTranscriptLogic::testTranscriptOverlaySizingHelpersClampToBox() {
     // With a tiny box at large font size, helper must clamp far below requested max.
     QVERIFY(lines < clip.transcriptOverlay.maxLines);
     QVERIFY(chars < clip.transcriptOverlay.maxCharsPerLine);
+
+    TimelineClip titledClip;
+    titledClip.transcriptOverlay.maxLines = 6;
+    titledClip.transcriptOverlay.fontPointSize = 42;
+    titledClip.transcriptOverlay.boxHeight = 260.0;
+    titledClip.transcriptOverlay.showSpeakerTitle = false;
+    const int bodyOnlyLines = transcriptOverlayEffectiveLinesForBox(titledClip);
+    titledClip.transcriptOverlay.showSpeakerTitle = true;
+    const int titledLines = transcriptOverlayEffectiveLinesForBox(titledClip);
+    QVERIFY(titledLines >= 1);
+    QVERIFY(titledLines < bodyOnlyLines);
 }
 
 void TestTranscriptLogic::testTranscriptOverlayLayoutHelperMatchesSectionLayout() {

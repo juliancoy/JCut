@@ -32,8 +32,6 @@ extern "C" {
 namespace editor {
 
 namespace {
-constexpr int64_t kImageSequenceLaneShardSize = 8;
-constexpr int64_t kVideoLaneShardSize = 24;
 constexpr int kMaxDecoderLaneCount = 16;
 
 void storeAtomicMax(std::atomic<int64_t>* target, int64_t value) {
@@ -499,17 +497,12 @@ int AsyncDecoder::laneIndexForRequest(const QString& path,
         return static_cast<int>((baseHash + frameHash) % laneCount);
     }
 
-    // For regular video, keep nearby frames on the same lane while allowing
-    // seeks/prefetch windows to fan out across workers.
-    const bool shouldShardVideo =
-        laneCount > 2 && kind != DecodeRequestKind::Visible;
-    if (!shouldShardVideo) {
-        return static_cast<int>(baseHash % laneCount);
-    }
-
-    const uint frameShard =
-        static_cast<uint>(qMax<int64_t>(0, frameNumber) / kVideoLaneShardSize);
-    return static_cast<int>((baseHash + frameShard) % laneCount);
+    Q_UNUSED(frameNumber);
+    Q_UNUSED(kind);
+    // Regular video decode is stateful and currently serialized inside
+    // DecoderContext. Keep one lane/context per file so playback advances
+    // sequentially instead of making multiple workers seek the same stream.
+    return static_cast<int>(baseHash % laneCount);
 }
 
 AsyncDecoder::LaneState* AsyncDecoder::laneForRequest(const QString& path,

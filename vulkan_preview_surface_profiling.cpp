@@ -65,6 +65,9 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
                     QStringLiteral("speaker/face overlay lookup prepares CPU metadata; the presenter draws the resulting overlay primitives on the GPU"));
     snapshot.insert(QStringLiteral("vulkan_overlay_worker_pending"), m_facedetectionsOverlayWorkerPending);
     snapshot.insert(QStringLiteral("vulkan_overlay_worker_pending_key"), m_pendingFacestreamOverlaySnapshotKey);
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_queued_key"), m_queuedFacestreamOverlaySnapshotKey);
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_queued_clip_count"),
+                    m_queuedFacestreamOverlayRequestClips.size());
     snapshot.insert(QStringLiteral("vulkan_overlay_worker_applied_key"), m_appliedFacestreamOverlaySnapshotKey);
     snapshot.insert(QStringLiteral("vulkan_overlay_worker_started"),
                     static_cast<double>(m_facedetectionsOverlayWorkerStarted));

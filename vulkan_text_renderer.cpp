@@ -510,6 +510,57 @@ bool VulkanTextRenderer::isReady() const
     return m_funcs && m_atlasResources && m_atlasResources->isReady() && m_pipeline && m_pipeline->isReady();
 }
 
+VulkanTextLayoutDebug VulkanTextRenderer::buildSpeakerLabelLayoutForTesting(
+    const QSize& outputSize,
+    const render_detail::SpeakerLabelOverlaySpec& spec) const
+{
+    Atlas atlas;
+    QVector<LaidOutGlyph> glyphs;
+    QVector<QRectF> cards;
+    VulkanTextLayoutDebug debug;
+    debug.valid = buildAtlasAndLayout(outputSize, spec, &atlas, &glyphs, &cards);
+    debug.atlasKey = atlas.key;
+    debug.atlasSize = QSize(atlas.image.width, atlas.image.height);
+    debug.glyphAtlasEntryCount = atlas.glyphs.size();
+    debug.glyphDrawCount = glyphs.size();
+    debug.cardCount = cards.size();
+    debug.cards = cards;
+    debug.glyphRects.reserve(glyphs.size());
+    for (const LaidOutGlyph& glyph : glyphs) {
+        debug.glyphRects.push_back(glyph.rect);
+    }
+    return debug;
+}
+
+VulkanTextLayoutDebug VulkanTextRenderer::buildTranscriptOverlayLayoutForTesting(
+    const QSize& outputSize,
+    const TimelineClip& clip,
+    const TranscriptOverlayLayout& layout,
+    const QRectF& outputRect,
+    const QString& speakerTitle) const
+{
+    Atlas atlas;
+    QVector<LaidOutGlyph> glyphs;
+    QVector<QRectF> backgrounds;
+    QVector<QRectF> highlights;
+    VulkanTextLayoutDebug debug;
+    debug.valid = buildTranscriptAtlasAndLayout(
+        outputSize, clip, layout, outputRect, speakerTitle, &atlas, &glyphs, &backgrounds, &highlights);
+    debug.atlasKey = atlas.key;
+    debug.atlasSize = QSize(atlas.image.width, atlas.image.height);
+    debug.glyphAtlasEntryCount = atlas.glyphs.size();
+    debug.glyphDrawCount = glyphs.size();
+    debug.backgroundCount = backgrounds.size();
+    debug.highlightCount = highlights.size();
+    debug.backgrounds = backgrounds;
+    debug.highlights = highlights;
+    debug.glyphRects.reserve(glyphs.size());
+    for (const LaidOutGlyph& glyph : glyphs) {
+        debug.glyphRects.push_back(glyph.rect);
+    }
+    return debug;
+}
+
 bool VulkanTextRenderer::buildAtlasAndLayout(const QSize& outputSize,
                                              const render_detail::SpeakerLabelOverlaySpec& spec,
                                              Atlas* atlas,

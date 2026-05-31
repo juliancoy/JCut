@@ -14,19 +14,21 @@ The remaining non-final part was overlay preparation. Face/speaker overlay metad
 Current implementation status:
 
 - During playback, cached FaceDetections overlay preparation now runs through a worker-backed typed snapshot request.
+- The worker payload builder is extracted into `facestream_overlay_snapshot.{h,cpp}` with a pure request/result boundary and focused unit coverage.
 - The UI thread applies the latest completed snapshot and continues to own presentation state and hit testing.
 - Paused/seeked overlay refresh may still hydrate FaceDetections artifacts synchronously. This is intentional for the current KISS boundary because file/artifact ownership has not been moved into the worker.
 - The direct Vulkan video path remains unchanged and still rejects CPU image upload as a normal preview path.
+- Transcript subtitles and current-speaker labels use the direct Vulkan text renderer. CPU font/layout preparation is explicit and test-covered; draw submission is the Vulkan glyph-atlas pass, not ImGui, Qt painter, or whole-label CPU image upload.
 
 ## Problem
 
 `VulkanPreviewSurface::refreshVulkanFrameStatuses()` calls `refreshFacestreamOverlays()` during preview refresh. In playback, that function now queues cached overlay work to a worker and returns without doing track interpolation on the UI thread. Outside playback, it can still hydrate the FaceDetections cache synchronously.
 
-The remaining risks are:
+The remaining accepted boundaries are:
 
 - First use after a cache miss still needs a non-playback hydration point.
-- Overlay snapshots may lag the playhead by one worker completion under high churn; the UI keeps the prior snapshot rather than blocking playback.
-- Full GPU-buffer batching for overlay geometry is still a separate renderer optimization.
+- Overlay snapshots may lag the playhead by one worker completion under high churn; the UI keeps the prior snapshot and immediately requeues for the active sample rather than blocking playback.
+- Full GPU-buffer batching for overlay geometry remains a renderer optimization, not a correctness dependency for the direct Vulkan playback contract.
 
 ## Target Architecture
 
@@ -75,18 +77,19 @@ The direct Vulkan presenter should:
 - Use GPU buffers/descriptors for overlay geometry where the data is stable enough to batch.
 - Avoid readback or `QImage` materialization for normal preview presentation.
 
-Overlay text may continue through the existing text/render resources initially, but the boundary must be explicit: CPU text/layout preparation is separate from Vulkan draw submission.
+Overlay text uses a dedicated Vulkan glyph-atlas renderer. CPU work is limited to font resolution, glyph atlas construction, and layout generation; draw submission is through Vulkan resources and shaders. ImGui remains scoped to the standalone FaceDetections preview tool and is not a subtitle/speaker-label backend for editor playback.
 
 ## Implementation Steps
 
 1. Define an immutable overlay snapshot model.
    - Status: implemented for Vulkan FaceDetections playback overlay snapshots.
-   - Add a small typed model for frame-local face boxes, raw detections, speaker labels, transcript/caption overlay timing references, and hit-test metadata.
-   - Keep it independent from `VulkanPreviewSurface` member mutation.
+   - Frame-local face boxes and raw detections use a typed request/result model in `facestream_overlay_snapshot`.
+   - Speaker labels and transcript captions use typed semantic state from `PreviewInteractionState`/`TranscriptOverlayLayout` and are rendered by `VulkanTextRenderer`.
+   - Hit testing continues to use the current applied typed overlay snapshot on the UI thread.
 
 2. Extract overlay preparation into a worker-owned service.
-   - Status: partially implemented as a worker-backed cached playback path in `VulkanPreviewSurface`.
-   - Move the heavy parts of `refreshFacestreamOverlays()` into a service with a pure request/result boundary.
+   - Status: implemented for cached playback overlay preparation.
+   - Heavy snapshot construction is isolated behind a pure request/result boundary in `facestream_overlay_snapshot`.
    - Inputs are copied or shared as immutable cached runtime data.
    - Results are delivered back to the UI thread through a queued callback.
 
@@ -97,10 +100,10 @@ Overlay text may continue through the existing text/render resources initially, 
    - No JSON parsing or artifact discovery should appear under active playback call stacks.
 
 4. Add near-future overlay prefetch.
-   - Status: not implemented yet. Current worker path resolves the current requested snapshot and coalesces pending requests.
-   - Request overlays for the current frame and a bounded lookahead window.
-   - Keep queue depth bounded.
-   - Drop stale requests by generation id when the playhead jumps.
+   - Status: implemented as bounded newest-request prefetch/coalescing.
+   - Current worker path resolves the active requested snapshot and keeps one newest queued follow-up request while work is in flight.
+   - Queue depth remains bounded at one in-flight worker request plus one newest queued request.
+   - Stale requests are dropped by request key/request id when the playhead jumps, and the queued follow-up is launched immediately after the in-flight worker completes.
 
 5. Apply snapshots on the UI thread.
    - Status: implemented.
@@ -109,22 +112,21 @@ Overlay text may continue through the existing text/render resources initially, 
    - Hit testing always uses the currently applied snapshot.
 
 6. Move Vulkan overlay draw inputs to GPU-friendly buffers.
-   - Status: existing presenter still draws overlay primitives from prepared state; explicit GPU-buffer batching remains future work.
+   - Status: current renderer draws overlay primitives from prepared typed state; explicit GPU-buffer batching remains an optimization.
    - Batch face boxes and raw detection boxes into dynamic vertex/uniform data.
    - Upload only changed frame-local overlay data.
    - Keep normal video presentation independent from overlay preparation latency.
 
 7. Make REST/perf diagnostics explicit.
    - Status: implemented for current worker state.
-   - Report overlay preparation thread, queue depth, last request key, last prep ms, last apply latency ms, snapshot age ms, stale/drop counts, and cache hit/miss counts.
+   - Report overlay preparation thread, pending key, queued key, queued clip count, last prep ms, last apply latency ms, snapshot age ms, stale/drop counts, and cache hit/miss counts.
    - Keep separate fields for video zero-copy status and overlay preparation status.
 
 8. Add regression tests.
-   - Status: focused existing playback/audio tests pass. Dedicated overlay worker tests are still pending.
-   - Unit test request key invalidation.
-   - Unit test deterministic overlay ordering and hit-test identity.
-   - Unit test stale worker results are dropped.
-   - Add a focused playback/perf smoke test that asserts the direct Vulkan path has no CPU image payloads and overlay prep does not run synchronously in the playback hot path.
+   - Status: implemented for the extracted overlay snapshot builder, direct Vulkan text generation, and direct Vulkan path contract.
+   - `test_facestream_overlay_snapshot` covers deterministic overlay ordering, assignment-interaction overlay generation, source filtering, and raw-detection bridge/edge-hold behavior.
+   - `test_vulkan_text_generation` covers speaker-label and transcript glyph atlas/layout generation plus atlas-key invalidation.
+   - `test_direct_vulkan_handoff_pipeline_contract` asserts the direct Vulkan path exposes the no-CPU-upload/no-Qt-text fallback contract and that the overlay worker retains newest coalesced requests.
 
 ## Acceptance Criteria
 
@@ -159,6 +161,11 @@ Overlay text may continue through the existing text/render resources initially, 
   - raw detection lookup
   - hit-test overlay state population
 
+- `facestream_overlay_snapshot.{h,cpp}`
+  - typed playback overlay snapshot request/result model
+  - deterministic face/raw overlay snapshot construction
+  - raw-detection bridge/edge-hold lookup used by worker and tests
+
 - `vulkan_preview_surface_profiling.cpp`
   - REST/perf fields separating video zero-copy status from overlay preparation status
 
@@ -167,23 +174,31 @@ Overlay text may continue through the existing text/render resources initially, 
   - overlay primitive draw
   - direct-path fallback/error reporting
 
+- `vulkan_text_renderer.{h,cpp}`
+  - Vulkan glyph-atlas text generation and draw submission
+  - speaker-label and transcript text layout test hooks
+
 - `direct_vulkan_frame_handoff_pipeline.cpp`
   - direct hardware/external frame handoff
   - explicit CPU fallback rejection
 
 ## Status
 
-Video frame delivery is close to final. Playback overlay preparation now has a bounded, typed, worker-backed snapshot path for cached FaceDetections data. Remaining work is limited to dedicated overlay worker tests, optional near-future overlay prefetch, and renderer-level GPU-buffer batching for overlay geometry.
+Video frame delivery and cached playback overlay preparation are in the final maintainable shape for the current direct Vulkan preview contract. The overlay worker now has a bounded, typed, test-covered snapshot builder. Transcript subtitles and current-speaker labels render through the Vulkan glyph-atlas text pass, with test coverage for generation semantics.
+
+Remaining item is explicitly optimization work rather than a correctness blocker:
+
+- renderer-level GPU-buffer batching for face/raw overlay geometry
 
 ## Verification
 
 Current local verification:
 
 - `cmake --build build --target jcut -j2` passes.
-- Focused temporal/audio regression tests pass:
-  - `test_playback_policy`
-  - `test_audio_time_stretch`
-  - `test_audio_time_stretch_cache`
+- Focused Vulkan overlay/text regression tests pass:
+  - `test_facestream_overlay_snapshot`
+  - `test_direct_vulkan_handoff_pipeline_contract`
+  - `test_vulkan_text_generation`
 - Full `ctest --test-dir build --output-on-failure` currently has unrelated environment/data failures:
   - `test_transcript_tab_follow` did not load expected transcript table rows.
   - `test_track_avatar_geometry` could not find expected continuity tracks for the selected Baltimore County clip.
