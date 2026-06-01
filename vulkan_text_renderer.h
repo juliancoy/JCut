@@ -4,6 +4,7 @@
 #include "vulkan_resources.h"
 
 #include <QHash>
+#include <QColor>
 #include <QRectF>
 #include <QSize>
 #include <QString>
@@ -25,6 +26,7 @@ struct VulkanTextLayoutDebug {
     int backgroundCount = 0;
     int highlightCount = 0;
     QVector<QRectF> glyphRects;
+    QVector<QColor> glyphColors;
     QVector<QRectF> cards;
     QVector<QRectF> backgrounds;
     QVector<QRectF> highlights;
@@ -87,6 +89,9 @@ public:
                           const QSize& outputSize,
                           const QRectF& outputTargetRect,
                           const render_detail::SpeakerLabelOverlaySpec& spec);
+    bool prepareSpeakerLabelAtlas(VkCommandBuffer commandBuffer,
+                                  const QSize& outputSize,
+                                  const render_detail::SpeakerLabelOverlaySpec& spec);
     bool drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                                const QSize& swapSize,
                                const QSize& outputSize,
@@ -95,6 +100,12 @@ public:
                                const TranscriptOverlayLayout& layout,
                                const QRectF& outputRect,
                                const QString& speakerTitle);
+    bool prepareTranscriptOverlayAtlas(VkCommandBuffer commandBuffer,
+                                       const QSize& outputSize,
+                                       const TimelineClip& clip,
+                                       const TranscriptOverlayLayout& layout,
+                                       const QRectF& outputRect,
+                                       const QString& speakerTitle);
     VulkanTextLayoutDebug buildSpeakerLabelLayoutForTesting(
         const QSize& outputSize,
         const render_detail::SpeakerLabelOverlaySpec& spec) const;
@@ -122,6 +133,21 @@ private:
         render_detail::OverlayImage image;
         QHash<QString, Glyph> glyphs;
     };
+    struct SpeakerLayoutCache {
+        bool valid = false;
+        QString layoutKey;
+        Atlas atlas;
+        QVector<LaidOutGlyph> glyphs;
+        QVector<QRectF> cards;
+    };
+    struct TranscriptLayoutCache {
+        bool valid = false;
+        QString layoutKey;
+        Atlas atlas;
+        QVector<LaidOutGlyph> glyphs;
+        QVector<QRectF> backgrounds;
+        QVector<QRectF> highlights;
+    };
 
     bool buildAtlasAndLayout(const QSize& outputSize,
                              const render_detail::SpeakerLabelOverlaySpec& spec,
@@ -137,6 +163,13 @@ private:
                                        QVector<LaidOutGlyph>* glyphs,
                                        QVector<QRectF>* backgrounds,
                                        QVector<QRectF>* highlights) const;
+    const SpeakerLayoutCache* speakerLabelLayout(const QSize& outputSize,
+                                                 const render_detail::SpeakerLabelOverlaySpec& spec) const;
+    const TranscriptLayoutCache* transcriptOverlayLayout(const QSize& outputSize,
+                                                        const TimelineClip& clip,
+                                                        const TranscriptOverlayLayout& layout,
+                                                        const QRectF& outputRect,
+                                                        const QString& speakerTitle) const;
     bool ensureAtlasUploaded(VkCommandBuffer commandBuffer, const Atlas& atlas);
     void drawGlyph(VkCommandBuffer commandBuffer,
                    const QSize& swapSize,
@@ -150,4 +183,6 @@ private:
     std::unique_ptr<VulkanResources> m_atlasResources;
     std::unique_ptr<VulkanTextPipeline> m_pipeline;
     QString m_uploadedAtlasKey;
+    mutable SpeakerLayoutCache m_speakerLayoutCache;
+    mutable TranscriptLayoutCache m_transcriptLayoutCache;
 };

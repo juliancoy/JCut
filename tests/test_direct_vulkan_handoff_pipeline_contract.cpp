@@ -14,6 +14,10 @@ private slots:
     void handoffPipelineRejectsCpuOnlyFrames();
     void strictDisplayabilityDoesNotAcceptCpuFallback();
     void directPreviewDisablesCpuAndQtTextOverlayFallbacks();
+    void visibleDecodePriorityUsesTimelineDomain();
+    void schedulingDiagnosticsExposeRequiredFields();
+    void pipelineDiagnosticsDefaultToCompactSnapshot();
+    void pitchPreservingAudioUsesExplicitSidecarGate();
     void overlayWorkerKeepsNewestCoalescedRequest();
     void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
@@ -148,13 +152,191 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewDisablesCpuAndQtTextO
              "speaker labels must be drawn by the Vulkan text renderer");
     QVERIFY2(textRenderer.contains(QStringLiteral("drawTranscriptOverlay")),
              "transcript subtitles must be drawn by the Vulkan text renderer");
+    QVERIFY2(textRenderer.contains(QStringLiteral("prepareTranscriptOverlayAtlas")),
+             "transcript glyph atlas upload must be available before the render pass");
+    QVERIFY2(textRenderer.contains(QStringLiteral("prepareSpeakerLabelAtlas")),
+             "speaker glyph atlas upload must be available before the render pass");
+    QVERIFY2(textRenderer.contains(QStringLiteral("cachedResolvedFontFace")),
+             "Vulkan text rendering must cache fontconfig face resolution outside the steady-state frame path");
+    QVERIFY2(textRenderer.contains(QStringLiteral("if (m_speakerLayoutCache.valid && m_speakerLayoutCache.layoutKey == layoutKey)")),
+             "speaker label text layout must be reused when its inputs are unchanged");
+    QVERIFY2(textRenderer.contains(QStringLiteral("if (m_transcriptLayoutCache.valid && m_transcriptLayoutCache.layoutKey == layoutKey)")),
+             "transcript text layout must be reused when its inputs are unchanged");
+    QVERIFY2(textRenderer.contains(QStringLiteral("const SpeakerLayoutCache* layout = speakerLabelLayout(outputSize, spec)")),
+             "speaker label draw must consume the cached prepared layout instead of rebuilding glyphs every frame");
+    QVERIFY2(textRenderer.contains(QStringLiteral("const TranscriptLayoutCache* cachedLayout")),
+             "transcript draw must consume the cached prepared layout instead of rebuilding glyphs every frame");
+    QVERIFY2(textRenderer.contains(QStringLiteral("clip.transcriptOverlay.showShadow && !active")),
+             "highlighted active subtitle words must not receive black shadow glyphs in the live Vulkan text path");
     QVERIFY2(!textRenderer.contains(QStringLiteral("QPainter")),
              "Vulkan text renderer must not use Qt painter text rendering");
 
     QVERIFY2(backend.contains(QStringLiteral("drawTranscriptOverlay(cb")),
              "direct Vulkan preview must route transcript subtitles through the Vulkan text renderer");
+    QVERIFY2(backend.contains(QStringLiteral("m_speakerTextRenderer")),
+             "speaker labels and transcript subtitles must not share one mutable glyph atlas image");
+    QVERIFY2(backend.contains(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) &&
+                 backend.indexOf(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) <
+                     backend.indexOf(QStringLiteral("vkCmdBeginRenderPass")),
+             "transcript glyph atlas upload must be recorded before vkCmdBeginRenderPass");
+    QVERIFY2(backend.contains(QStringLiteral("transcriptFrameForClipSourceFrame(effectiveClip, status->presentedSourceFrame)")),
+             "live Vulkan transcript subtitles must time against the presented video frame when one is available");
     QVERIFY2(!backend.contains(QStringLiteral("renderTranscriptOverlay(")),
              "direct Vulkan preview must not retain a CPU-rendered transcript overlay path");
+}
+
+void TestDirectVulkanHandoffPipelineContract::visibleDecodePriorityUsesTimelineDomain()
+{
+    const QString requests = readSourceFile(QStringLiteral("timeline_cache_requests.cpp"));
+    QVERIFY2(!requests.isEmpty(), "timeline_cache_requests.cpp must be readable");
+    QVERIFY2(requests.contains(QStringLiteral("calculatePriority(info, canonicalFrame)")),
+             "visible decode priority must convert media source frames back to timeline-frame distance");
+    QVERIFY2(!requests.contains(QStringLiteral("calculatePriority(canonicalFrame)")),
+             "visible decode priority must not compare source-frame numbers directly to the timeline playhead");
+
+    const QString cache = readSourceFile(QStringLiteral("timeline_cache.cpp"));
+    QVERIFY2(!cache.isEmpty(), "timeline_cache.cpp must be readable");
+    QVERIFY2(cache.contains(QStringLiteral("approximateTimelineFrameForClipSourceFrame(info.clip, sourceFrame)")),
+             "timeline cache source-frame priority overload must use the shared timing-domain conversion helper");
+    QVERIFY2(cache.contains(QStringLiteral("calculatePriority(info, targetFrame)")),
+             "lead prefetch priority must use the same source-frame to timeline-frame conversion as visible decode");
+
+    const QString timingHeader = readSourceFile(QStringLiteral("editor_shared_render_sync.h"));
+    QVERIFY2(!timingHeader.isEmpty(), "editor_shared_render_sync.h must be readable");
+    QVERIFY2(timingHeader.contains(QStringLiteral("approximateTimelineFrameForClipSourceFrame")),
+             "source-frame to timeline-frame priority conversion must live in the shared timing helpers");
+
+    const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+    QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+    QVERIFY2(surface.contains(QStringLiteral("effectivePlaybackLookaheadFrames()")) &&
+                 surface.contains(QStringLiteral("targetSample + frameToSamples(offset)")),
+             "playback advance must schedule visible future frames, not just chase the current audio-clock frame");
+    QVERIFY2(surface.contains(QStringLiteral("dispatch_current_over_backlog")),
+             "exact/current visible frame requests must be allowed through a saturated lookahead backlog");
+    QVERIFY2(surface.contains(QStringLiteral("if (!targetReady)")) &&
+                 surface.contains(QStringLiteral("continue;")) &&
+                 surface.contains(QStringLiteral("for (int offset = 1; offset <= lookaheadFrames; ++offset)")),
+             "lookahead scheduling must wait until the target frame is displayable or actively requested");
+
+    const QString decoder = readSourceFile(QStringLiteral("async_decoder.cpp"));
+    QVERIFY2(!decoder.isEmpty(), "async_decoder.cpp must be readable");
+    QVERIFY2(decoder.contains(QStringLiteral("queued.kind == DecodeRequestKind::Visible")) &&
+                 decoder.contains(QStringLiteral("req.kind == DecodeRequestKind::Visible")) &&
+                 decoder.contains(QStringLiteral("continue;")),
+             "visible lookahead frames must coexist; newer visible frames must not supersede older visible frames");
+
+    const QString cacheSource = readSourceFile(QStringLiteral("timeline_cache.cpp"));
+    QVERIFY2(cacheSource.contains(QStringLiteral("kVisibleDecodeKeepWindow = 96")),
+             "visible decode cancel-before window must cover the active lookahead span");
+}
+
+void TestDirectVulkanHandoffPipelineContract::schedulingDiagnosticsExposeRequiredFields()
+{
+    const QString profiling = readSourceFile(QStringLiteral("vulkan_preview_surface_profiling.cpp"));
+    QVERIFY2(!profiling.isEmpty(), "vulkan_preview_surface_profiling.cpp must be readable");
+    const QStringList previewFields{
+        QStringLiteral("playback_smoothness"),
+        QStringLiteral("visible_decode_diagnostics"),
+        QStringLiteral("cache_pending_visible_requests"),
+        QStringLiteral("pending_visible_requests"),
+        QStringLiteral("decoder_diagnostics"),
+        QStringLiteral("visible_request_attempts"),
+        QStringLiteral("visible_request_dispatched"),
+        QStringLiteral("visible_request_blocked"),
+        QStringLiteral("visible_request_null_callbacks"),
+        QStringLiteral("last_visible_request_block_reason"),
+        QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"),
+        QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled")
+    };
+    for (const QString& field : previewFields) {
+        QVERIFY2(profiling.contains(field),
+                 qPrintable(QStringLiteral("preview perf diagnostics must expose %1").arg(field)));
+    }
+
+    const QString audio = readSourceFile(QStringLiteral("audio_engine.h"));
+    QVERIFY2(!audio.isEmpty(), "audio_engine.h must be readable");
+    const QStringList audioFields{
+        QStringLiteral("audio_clock_available"),
+        QStringLiteral("ring_buffer_frames_available"),
+        QStringLiteral("ring_buffer_ms_available"),
+        QStringLiteral("buffered_timeline_frames"),
+        QStringLiteral("underrun_count"),
+        QStringLiteral("last_callback_underrun_samples"),
+        QStringLiteral("time_stretch_readiness_state"),
+        QStringLiteral("time_stretch_generation_progress"),
+        QStringLiteral("time_stretch_sidecar_only"),
+        QStringLiteral("pitch_preserving_audio_blocked"),
+        QStringLiteral("audio_playback_blocked"),
+        QStringLiteral("stream_open"),
+        QStringLiteral("stream_running")
+    };
+    for (const QString& field : audioFields) {
+        QVERIFY2(audio.contains(field),
+                 qPrintable(QStringLiteral("audio diagnostics must expose %1").arg(field)));
+    }
+
+    const QString routes = readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
+    QVERIFY2(!routes.isEmpty(), "control_server_worker_routes.cpp must be readable");
+    QVERIFY2(routes.contains(QStringLiteral("/audio")),
+             "REST API must expose audio loading/buffering state through /audio");
+    QVERIFY2(routes.contains(QStringLiteral("/pipeline")),
+             "REST API must expose preview decode/presentation scheduling state through /pipeline");
+}
+
+void TestDirectVulkanHandoffPipelineContract::pipelineDiagnosticsDefaultToCompactSnapshot()
+{
+    const QString routes = readSourceFile(QStringLiteral("control_server_worker_routes.cpp"));
+    QVERIFY2(!routes.isEmpty(), "control_server_worker_routes.cpp must be readable");
+    QVERIFY2(routes.contains(QStringLiteral("queryBool(query, QStringLiteral(\"verbose\"))")),
+             "/pipeline must require an explicit verbose query for rich debug data");
+    QVERIFY2(routes.contains(QStringLiteral("refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, verbose")),
+             "/pipeline must pass the requested diagnostic detail level through the control boundary");
+
+    const QString editorProfiling = readSourceFile(QStringLiteral("editor_profiling.cpp"));
+    QVERIFY2(!editorProfiling.isEmpty(), "editor_profiling.cpp must be readable");
+    QVERIFY2(editorProfiling.contains(QStringLiteral("m_preview->pipelineHealthSnapshot()")),
+             "default /pipeline must use the compact health snapshot");
+    QVERIFY2(editorProfiling.contains(QStringLiteral("m_preview->profilingSnapshot()")) &&
+                 editorProfiling.contains(QStringLiteral("if (verbose)")),
+             "full profiling snapshot must remain explicit and verbose-only");
+
+    const QString previewSurface = readSourceFile(QStringLiteral("preview_surface.h"));
+    QVERIFY2(previewSurface.contains(QStringLiteral("pipelineHealthSnapshot")),
+             "compact pipeline health must be a preview-surface contract");
+
+    const QString vulkanProfiling = readSourceFile(QStringLiteral("vulkan_preview_surface_profiling.cpp"));
+    QVERIFY2(vulkanProfiling.contains(QStringLiteral("QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const")),
+             "Vulkan preview must implement the compact pipeline health snapshot");
+    QVERIFY2(!vulkanProfiling.mid(vulkanProfiling.indexOf(QStringLiteral("QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const")),
+                                  vulkanProfiling.indexOf(QStringLiteral("void VulkanPreviewSurface::resetProfilingStats()")) -
+                                      vulkanProfiling.indexOf(QStringLiteral("QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const")))
+                  .contains(QStringLiteral("currentSpeakerLabelDebugForState")),
+             "compact pipeline polling must not perform speaker/transcript debug lookup");
+}
+
+void TestDirectVulkanHandoffPipelineContract::pitchPreservingAudioUsesExplicitSidecarGate()
+{
+    const QString playback = readSourceFile(QStringLiteral("editor_playback.cpp"));
+    QVERIFY2(!playback.isEmpty(), "editor_playback.cpp must be readable");
+    QVERIFY2(playback.contains(QStringLiteral("needsPitchPreservingPlaybackAudio()")),
+             "playback must centralize the decision to require pitch-preserving audio");
+    QVERIFY2(playback.contains(QStringLiteral("playbackAudioReadyForFrame(m_timeline->currentFrame())")),
+             "playback startup must gate on the exact retimed audio needed at the current frame");
+    QVERIFY2(playback.contains(QStringLiteral("requestPlaybackAudioWarmup(true)")),
+             "missing retimed audio must enter an explicit warmup/generation path");
+    QVERIFY2(playback.contains(QStringLiteral("Audio being generated")),
+             "preview overlay must make retimed audio generation visible to the user");
+    QVERIFY2(playback.contains(QStringLiteral("Loading re-timed audio")),
+             "preview overlay must make retimed audio loading visible to the user");
+
+    const QString audio = readSourceFile(QStringLiteral("audio_engine.h"));
+    QVERIFY2(!audio.isEmpty(), "audio_engine.h must be readable");
+    QVERIFY2(audio.contains(QStringLiteral("snapshot[QStringLiteral(\"time_stretch_sidecar_only\")] = true")),
+             "audio diagnostics must expose that pitch-preserving playback is sidecar-only");
+    QVERIFY2(audio.contains(QStringLiteral("playbackAudioNeedsRetimingForFrame")),
+             "audio engine must expose whether required retimed audio needs generation");
+    QVERIFY2(!audio.contains(QStringLiteral("SOLA")),
+             "sidecar-only pitch-preserving playback must not retain an implicit SOLA fallback path");
 }
 
 void TestDirectVulkanHandoffPipelineContract::overlayWorkerKeepsNewestCoalescedRequest()

@@ -95,6 +95,7 @@ public:
 
     void requestUpdate();
     void updateTitle();
+    QJsonObject pipelineHealthSnapshot() const;
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
 

@@ -750,7 +750,9 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
                                             highlightFillColor);
                 }
                 const QColor glyphColor = active ? highlightTextColor : textColor;
-                drawGlyphRun(&canvas, bodyFace, cursorX + shadowOffset, baseline + shadowOffset, word, shadowColor);
+                if (!active) {
+                    drawGlyphRun(&canvas, bodyFace, cursorX + shadowOffset, baseline + shadowOffset, word, shadowColor);
+                }
                 drawGlyphRun(&canvas, bodyFace, cursorX, baseline, word, glyphColor);
                 cursorX += wordWidth;
                 if (wordIndex + 1 < line.words.size()) {

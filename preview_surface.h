@@ -144,6 +144,7 @@ public:
     virtual PlaybackTuning playbackTuning() const = 0;
     virtual QImage latestPresentedFrameImageForClip(const QString& clipId) const = 0;
     virtual QVector<PipelineStageSnapshot> livePipelineSnapshots() const = 0;
+    virtual QJsonObject pipelineHealthSnapshot() const = 0;
     virtual QJsonObject profilingSnapshot() const = 0;
     virtual void resetProfilingStats() = 0;
     virtual bool selectedOverlayIsTranscript() const = 0;

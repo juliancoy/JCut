@@ -255,6 +255,8 @@ def launch_editor(offscreen: bool, asan: bool, valgrind: bool, software_renderin
     if valgrind:
         env["EDITOR_FORCE_NULL_RHI"] = "1"
     env["EDITOR_CONTROL_PORT"] = "40131" if offscreen else "40130"
+    env["JCUT_UI_AUTOMATION"] = "1"
+    env["JCUT_PROJECT_ROOT"] = str(REPO_ROOT)
     return subprocess.Popen(
         cmd,
         cwd=str(REPO_ROOT),

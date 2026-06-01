@@ -19,7 +19,7 @@ public:
                            std::function<QJsonObject()> projectSnapshotCallback,
                            std::function<QJsonObject()> historySnapshotCallback,
                            std::function<QJsonObject()> profilingCallback,
-                           std::function<QJsonObject()> pipelineSnapshotCallback,
+                           std::function<QJsonObject(bool)> pipelineSnapshotCallback,
                            std::function<void()> resetProfilingCallback,
                            std::function<void(int64_t)> setPlayheadCallback,
                            std::function<QJsonObject()> getThrottlesCallback,
@@ -43,7 +43,7 @@ private:
     std::function<QJsonObject()> m_projectSnapshotCallback;
     std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
-    std::function<QJsonObject()> m_pipelineSnapshotCallback;
+    std::function<QJsonObject(bool)> m_pipelineSnapshotCallback;
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
     std::function<QJsonObject()> m_getThrottlesCallback;

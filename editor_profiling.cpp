@@ -233,14 +233,21 @@ QJsonObject EditorWindow::runtimePatchesSnapshot() const
     };
 }
 
-QJsonObject EditorWindow::pipelineSnapshot() const
+QJsonObject EditorWindow::pipelineSnapshot(bool verbose) const
 {
     if (!m_preview) {
         return QJsonObject{};
     }
-    QJsonObject preview = m_preview->profilingSnapshot();
-    preview.insert(QStringLiteral("pipeline_stages"),
-                   pipelineStagesToJson(m_preview->livePipelineSnapshots()));
+    QJsonObject preview = verbose
+        ? m_preview->profilingSnapshot()
+        : m_preview->pipelineHealthSnapshot();
+    if (verbose) {
+        preview.insert(QStringLiteral("pipeline_stages"),
+                       pipelineStagesToJson(m_preview->livePipelineSnapshots()));
+    } else {
+        preview.insert(QStringLiteral("diagnostic_detail"),
+                       QStringLiteral("compact; use /pipeline?verbose=1 for full stage arrays and overlay dumps"));
+    }
     return preview;
 }
 

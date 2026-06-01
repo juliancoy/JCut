@@ -218,7 +218,7 @@ void TimelineCache::requestFrame(const QString& clipId,
         cancelDecoderBeforeThrottled(info.decodePath, keepFromFrame, requestedAtWallMs);
     }
 
-    const int priority = calculatePriority(canonicalFrame);
+    const int priority = calculatePriority(info, canonicalFrame);
     QPointer<TimelineCache> self(this);
     const std::shared_ptr<std::atomic<bool>> aliveToken = m_aliveToken;
 

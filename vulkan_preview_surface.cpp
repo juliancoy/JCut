@@ -300,7 +300,6 @@ void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
     }
     requestFramesForCurrentPosition();
-    refreshFacestreamOverlays();
     updateNativeTitle();
     requestNativeUpdate();
 }
@@ -316,8 +315,6 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
     }
     requestFramesForCurrentPosition();
-    refreshVulkanFrameStatuses();
-    refreshFacestreamOverlays();
     requestNativeUpdate();
 }
 
@@ -339,8 +336,6 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
     m_interaction.clips = clips;
     m_interaction.clipCount = clips.size();
     registerVisibleClips();
-    refreshVulkanFrameStatuses();
-    refreshFacestreamOverlays();
     updateNativeTitle();
     requestFramesForCurrentPosition();
     requestNativeUpdate();
@@ -350,8 +345,6 @@ void VulkanPreviewSurface::setTimelineTracks(const QVector<TimelineTrack>& track
 {
     m_interaction.tracks = tracks;
     registerVisibleClips();
-    refreshVulkanFrameStatuses();
-    refreshFacestreamOverlays();
     requestFramesForCurrentPosition();
     requestNativeUpdate();
 }
@@ -362,7 +355,6 @@ void VulkanPreviewSurface::setRenderSyncMarkers(const QVector<RenderSyncMarker>&
     if (m_cache) {
         m_cache->setRenderSyncMarkers(markers);
     }
-    refreshVulkanFrameStatuses();
     requestFramesForCurrentPosition();
     requestNativeUpdate();
 }
@@ -1018,13 +1010,10 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             ++m_visibleRequestBlocked;
             continue;
         }
-        if (backlog >= m_playbackTuning.visibleBacklogLimit) {
-            m_lastVisibleRequestDecision = QStringLiteral("skipped");
-            m_lastVisibleRequestBlockReason = QStringLiteral("visible_request_backlog_full");
-            ++m_visibleRequestBlocked;
-            continue;
-        }
-        m_lastVisibleRequestDecision = QStringLiteral("dispatch");
+        m_lastVisibleRequestDecision =
+            backlog >= m_playbackTuning.visibleBacklogLimit
+                ? QStringLiteral("dispatch_current_over_backlog")
+                : QStringLiteral("dispatch");
         m_lastVisibleRequestBlockReason.clear();
         ++m_visibleRequestDispatched;
         const QString requestedClipId = clip.id;
@@ -1133,6 +1122,8 @@ void VulkanPreviewSurface::queueFrameStatusRefresh(bool requestVisibleFrames)
 
 void VulkanPreviewSurface::refreshVulkanFrameStatuses()
 {
+    QElapsedTimer refreshTimer;
+    refreshTimer.start();
     QVector<VulkanPreviewClipFrameStatus> statuses;
     int exactCount = 0;
     int approxCount = 0;
@@ -1179,6 +1170,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.clipId = clip.id;
         status.label = clip.label;
         status.decodePath = QStringLiteral("missing");
+        status.frameSelection = frameSelection.selection;
         status.requestedSourceFrame = localFrame;
         status.active = true;
         status.effectsPath = QStringLiteral("evaluateEffectiveVisualEffectsAtPosition");
@@ -1186,6 +1178,22 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         status.correctionsEnabled = m_correctionsEnabled;
         status.transform = evaluateClipRenderTransformAtPosition(
             clip, m_interaction.currentFramePosition, m_interaction.outputSize);
+        status.speakerFramingEnabled =
+            evaluateClipSpeakerFramingEnabledAtPosition(clip, m_interaction.currentFramePosition);
+        status.speakerFramingDynamic = status.speakerFramingEnabled && clip.speakerFramingKeyframes.isEmpty();
+        status.speakerFramingKeyframeCount = clip.speakerFramingKeyframes.size();
+        status.speakerFramingTargetKeyframeCount = clip.speakerFramingTargetKeyframes.size();
+        status.speakerFramingEnabledKeyframeCount = clip.speakerFramingEnabledKeyframes.size();
+        status.speakerFramingCenterSmoothingFrames = clip.speakerFramingCenterSmoothingFrames;
+        status.speakerFramingZoomSmoothingFrames = clip.speakerFramingZoomSmoothingFrames;
+        status.speakerFramingSmoothingMode = clip.speakerFramingSmoothingMode;
+        status.speakerFramingCenterSmoothingStrength = clip.speakerFramingCenterSmoothingStrength;
+        status.speakerFramingZoomSmoothingStrength = clip.speakerFramingZoomSmoothingStrength;
+        const TimelineClip::TransformKeyframe framingTarget =
+            evaluateClipSpeakerFramingTargetAtPosition(clip, m_interaction.currentFramePosition);
+        status.speakerFramingTargetX = framingTarget.translationX;
+        status.speakerFramingTargetY = framingTarget.translationY;
+        status.speakerFramingTargetBox = framingTarget.scaleX;
         EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
             clip, m_interaction.tracks, m_interaction.currentFramePosition, m_interaction.renderSyncMarkers);
         if (m_bypassGrading) {
@@ -1273,6 +1281,23 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     m_frameStatusCpuCount = cpuCount;
     recordPlaybackSmoothnessSample(exactCount, approxCount, missingCount, maxFrameLag);
     refreshFacestreamOverlays();
+    m_lastFrameStatusRefreshMs = refreshTimer.elapsed();
+    m_maxFrameStatusRefreshMs = qMax(m_maxFrameStatusRefreshMs, m_lastFrameStatusRefreshMs);
+    ++m_frameStatusRefreshCount;
+    if (m_interaction.playing && m_lastFrameStatusRefreshMs >= 16) {
+        const qint64 now = QDateTime::currentMSecsSinceEpoch();
+        if (now - m_lastFrameStatusRefreshWarnAtMs >= 1000) {
+            m_lastFrameStatusRefreshWarnAtMs = now;
+            qWarning().noquote()
+                << QStringLiteral("[PREVIEW WARN] frame status refresh slow: elapsed_ms=%1 statuses=%2 exact=%3 approx=%4 missing=%5 max_frame_lag=%6")
+                       .arg(m_lastFrameStatusRefreshMs)
+                       .arg(statuses.size())
+                       .arg(exactCount)
+                       .arg(approxCount)
+                       .arg(missingCount)
+                       .arg(static_cast<qint64>(maxFrameLag));
+        }
+    }
 }
 
 
@@ -1297,25 +1322,50 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             !isSampleWithinClip(clip, targetSample)) {
             continue;
         }
-        const int64_t localFrame = sourceFrameForSample(clip, targetSample);
         constexpr bool requireDirectVulkanPayload = true;
-        if (m_cache->hasDisplayableFrameForPreview(
-                clip.id,
-                localFrame,
-                m_interaction.playing,
-                true,
-                requireDirectVulkanPayload)) {
+        const int64_t localFrame = sourceFrameForSample(clip, targetSample);
+        const bool targetReady = m_cache->hasDisplayableFrameForPreview(
+            clip.id,
+            localFrame,
+            m_interaction.playing,
+            true,
+            requireDirectVulkanPayload);
+        if (!targetReady) {
+            ready = false;
+            const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
+            const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 250);
+            if (!pending || forceRetry) {
+                m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
+                    queueFrameStatusRefresh(false);
+                }, requireDirectVulkanPayload);
+            }
             continue;
         }
-        ready = false;
-        if (!m_cache->isVisibleRequestPending(clip.id, localFrame) &&
-            m_cache->pendingVisibleRequestCount() < m_playbackTuning.visibleBacklogLimit) {
-            m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
+
+        const int lookaheadFrames = qMax(0, effectivePlaybackLookaheadFrames());
+        for (int offset = 1; offset <= lookaheadFrames; ++offset) {
+            if (m_cache->pendingVisibleRequestCount() >= m_playbackTuning.visibleBacklogLimit) {
+                break;
+            }
+            const int64_t sample = targetSample + frameToSamples(offset);
+            if (!isSampleWithinClip(clip, sample)) {
+                continue;
+            }
+            const int64_t lookaheadFrame = sourceFrameForSample(clip, sample);
+            if (m_cache->hasDisplayableFrameForPreview(
+                    clip.id,
+                    lookaheadFrame,
+                    m_interaction.playing,
+                    true,
+                    requireDirectVulkanPayload) ||
+                m_cache->isVisibleRequestPending(clip.id, lookaheadFrame)) {
+                continue;
+            }
+            m_cache->requestFrame(clip.id, lookaheadFrame, [this](FrameHandle) {
                 queueFrameStatusRefresh(false);
             }, requireDirectVulkanPayload);
         }
     }
-    refreshVulkanFrameStatuses();
     return ready;
 }
 
@@ -1498,6 +1548,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                  QJsonObject{
                      {QStringLiteral("exact_frame_available"), status.exactFrameAvailable},
                      {QStringLiteral("selected_frame_available"), status.selectedFrameAvailable},
+                     {QStringLiteral("frame_selection"), status.frameSelection},
                      {QStringLiteral("pending_visible_requests"), cachePendingVisible},
                      {QStringLiteral("frame_lag"), frameLag}
                  });
@@ -1515,6 +1566,7 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                  exactState,
                  QJsonObject{
                      {QStringLiteral("decode_path"), status.decodePath},
+                     {QStringLiteral("frame_selection"), status.frameSelection},
                      {QStringLiteral("requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame)},
                      {QStringLiteral("presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame)},
                      {QStringLiteral("frame_lag"), frameLag},
@@ -1663,6 +1715,19 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      {QStringLiteral("scale_x"), status.transform.scaleX},
                      {QStringLiteral("scale_y"), status.transform.scaleY},
                      {QStringLiteral("rotation"), status.transform.rotation},
+                     {QStringLiteral("speaker_framing_enabled"), status.speakerFramingEnabled},
+                     {QStringLiteral("speaker_framing_dynamic"), status.speakerFramingDynamic},
+                     {QStringLiteral("speaker_framing_keyframe_count"), status.speakerFramingKeyframeCount},
+                     {QStringLiteral("speaker_framing_target_keyframe_count"), status.speakerFramingTargetKeyframeCount},
+                     {QStringLiteral("speaker_framing_enabled_keyframe_count"), status.speakerFramingEnabledKeyframeCount},
+                     {QStringLiteral("speaker_framing_center_smoothing_frames"), status.speakerFramingCenterSmoothingFrames},
+                     {QStringLiteral("speaker_framing_zoom_smoothing_frames"), status.speakerFramingZoomSmoothingFrames},
+                     {QStringLiteral("speaker_framing_smoothing_mode"), status.speakerFramingSmoothingMode},
+                     {QStringLiteral("speaker_framing_center_smoothing_strength"), status.speakerFramingCenterSmoothingStrength},
+                     {QStringLiteral("speaker_framing_zoom_smoothing_strength"), status.speakerFramingZoomSmoothingStrength},
+                     {QStringLiteral("speaker_framing_target_x"), status.speakerFramingTargetX},
+                     {QStringLiteral("speaker_framing_target_y"), status.speakerFramingTargetY},
+                     {QStringLiteral("speaker_framing_target_box"), status.speakerFramingTargetBox},
                      {QStringLiteral("thumbnail_source"), previewImage.isNull()
                           ? QStringLiteral("pending_gpu_diagnostic_readback")
                           : QStringLiteral("gpu_diagnostic_readback")}

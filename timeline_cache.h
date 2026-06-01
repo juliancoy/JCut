@@ -266,7 +266,8 @@ private:
     void beginSeekResyncForPlayhead(int64_t playheadFrame);
     void scheduleImmediateLeadPrefetch(const ClipInfo& info, int64_t canonicalFrame);
     void schedulePredictiveLoads();
-    int calculatePriority(int64_t frameNumber) const;
+    int calculatePriority(int64_t timelineFrame) const;
+    int calculatePriority(const ClipInfo& info, int64_t sourceFrame) const;
     ClipCache* getOrCreateClipCache(const QString& clipId);
     void evictOldestFrames(size_t targetMemory);
     

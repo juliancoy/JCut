@@ -428,7 +428,7 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             };
         },
         [this]() { return profilingSnapshot(); },
-        [this]() { return pipelineSnapshot(); },
+        [this](bool verbose) { return pipelineSnapshot(verbose); },
         [this]() {
             if (m_preview) m_preview->resetProfilingStats();
             resetTranscriptSpeakerTrackingProfiling();

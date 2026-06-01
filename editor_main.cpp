@@ -48,9 +48,10 @@ int main(int argc, char **argv)
     qRegisterMetaType<editor::FrameHandle>();
 
     std::unique_ptr<QLockFile> lockFile;
-    if (!runHeadlessSpeakerHarness) {
+    const bool runUiAutomationHarness = qEnvironmentVariableIsSet("JCUT_UI_AUTOMATION");
+    if (!runHeadlessSpeakerHarness && !runUiAutomationHarness) {
         // Single instance enforcement is for the interactive editor only.
-        // Headless export harnesses must run alongside the UI and each other.
+        // Headless and UI automation harnesses must run alongside the UI and each other.
         const QString lockPath = QDir::tempPath() + QStringLiteral("/PanelTalkEditor.lock");
         lockFile = std::make_unique<QLockFile>(lockPath);
         lockFile->setStaleLockTime(0);

@@ -106,6 +106,7 @@ public:
     PlaybackTuning playbackTuning() const override;
     QImage latestPresentedFrameImageForClip(const QString& clipId) const override;
     QVector<PipelineStageSnapshot> livePipelineSnapshots() const override;
+    QJsonObject pipelineHealthSnapshot() const override;
     QJsonObject profilingSnapshot() const override;
     void resetProfilingStats() override;
     bool selectedOverlayIsTranscript() const override;
@@ -273,4 +274,8 @@ private:
     bool m_frameStatusRefreshQueued = false;
     bool m_frameStatusRefreshNeedsVisibleRequest = false;
     qint64 m_lastFrameStatusTrimMs = 0;
+    qint64 m_frameStatusRefreshCount = 0;
+    qint64 m_lastFrameStatusRefreshMs = 0;
+    qint64 m_maxFrameStatusRefreshMs = 0;
+    qint64 m_lastFrameStatusRefreshWarnAtMs = 0;
 };

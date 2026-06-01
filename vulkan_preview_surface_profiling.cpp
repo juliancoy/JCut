@@ -7,6 +7,7 @@
 #include "timeline_cache.h"
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
 
 #include <algorithm>
@@ -139,6 +140,17 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("last_visible_request_force_retry"), m_lastVisibleRequestForceRetry);
     snapshot.insert(QStringLiteral("last_visible_request_backlog"), m_lastVisibleRequestBacklog);
     snapshot.insert(QStringLiteral("last_visible_request_callback_payload"), m_lastVisibleRequestCallbackPayload);
+    snapshot.insert(QStringLiteral("frame_status_refresh_count"),
+                    static_cast<double>(m_frameStatusRefreshCount));
+    snapshot.insert(QStringLiteral("frame_status_last_refresh_ms"), m_lastFrameStatusRefreshMs);
+    snapshot.insert(QStringLiteral("frame_status_max_refresh_ms"), m_maxFrameStatusRefreshMs);
+    if (!m_interaction.vulkanFrameStatuses.isEmpty()) {
+        const VulkanPreviewClipFrameStatus& status = m_interaction.vulkanFrameStatuses.constFirst();
+        snapshot.insert(QStringLiteral("active_frame_selection"), status.frameSelection);
+        snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
+        snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
+        snapshot.insert(QStringLiteral("active_frame_exact"), status.exact);
+    }
     snapshot.insert(QStringLiteral("face_detections_query_debug"), m_lastFacedetectionsQueryDebug);
     snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
     if (m_decoder && m_decoder->memoryBudget()) {
@@ -162,6 +174,105 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         snapshot.insert(QStringLiteral("memory_budget_cpu_pressure"), budget->cpuPressure());
         snapshot.insert(QStringLiteral("memory_budget_gpu_pressure"), budget->gpuPressure());
     }
+    return snapshot;
+}
+
+QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
+{
+    QJsonObject snapshot =
+        m_presenter ? m_presenter->pipelineHealthSnapshot() : QJsonObject{{QStringLiteral("backend"), QStringLiteral("vulkan")}};
+    snapshot.insert(QStringLiteral("ok"), true);
+    snapshot.insert(QStringLiteral("render_use_proxy_media"), m_useProxyMedia);
+    snapshot.insert(QStringLiteral("playing"), m_interaction.playing);
+    snapshot.insert(QStringLiteral("current_frame"), static_cast<qint64>(m_interaction.currentFrame));
+    snapshot.insert(QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample));
+    snapshot.insert(QStringLiteral("clip_count"), m_interaction.clips.size());
+    snapshot.insert(QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName);
+    snapshot.insert(QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization);
+    snapshot.insert(QStringLiteral("vulkan_decode_preference"),
+                    editor::decodePreferenceToString(editor::debugDecodePreference()));
+    snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"), true);
+    snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_cpu_rasterization_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_qt_painter_enabled"), false);
+    snapshot.insert(QStringLiteral("vulkan_speaker_label_gpu_text_enabled"), true);
+    snapshot.insert(QStringLiteral("vulkan_transcript_overlay_gpu_text_enabled"), true);
+    snapshot.insert(QStringLiteral("vulkan_text_overlay_gpu_native"), true);
+    snapshot.insert(QStringLiteral("vulkan_overlay_preparation_thread"),
+                    m_interaction.playing ? QStringLiteral("worker") : QStringLiteral("ui"));
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_pending"), m_facedetectionsOverlayWorkerPending);
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_started"),
+                    static_cast<double>(m_facedetectionsOverlayWorkerStarted));
+    snapshot.insert(QStringLiteral("vulkan_overlay_worker_applied"),
+                    static_cast<double>(m_facedetectionsOverlayWorkerApplied));
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_prep_ms"), m_lastFacedetectionsOverlayPrepMs);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_apply_latency_ms"),
+                    m_lastFacedetectionsOverlayApplyLatencyMs);
+    snapshot.insert(QStringLiteral("vulkan_overlay_snapshot_age_ms"),
+                    m_lastFacedetectionsOverlayAppliedAtMs > 0
+                        ? qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - m_lastFacedetectionsOverlayAppliedAtMs)
+                        : -1);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_match_count"),
+                    m_lastFacedetectionsOverlayMatchCount);
+    snapshot.insert(QStringLiteral("vulkan_overlay_last_raw_detection_match_count"),
+                    m_lastFacedetectionsRawDetectionMatchCount);
+    snapshot.insert(QStringLiteral("vulkan_visible_backlog_limit"), m_playbackTuning.visibleBacklogLimit);
+    snapshot.insert(QStringLiteral("vulkan_effective_lookahead_frames"), effectivePlaybackLookaheadFrames());
+    snapshot.insert(QStringLiteral("vulkan_source_lookahead_frames"), m_playbackTuning.sourceLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_proxy_lookahead_frames"), m_playbackTuning.proxyLookaheadFrames);
+    snapshot.insert(QStringLiteral("vulkan_adaptive_playback_boost_level"), m_adaptivePlaybackBoostLevel);
+    if (m_decoder) {
+        snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
+        snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
+    }
+    if (m_cache) {
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        snapshot.insert(QStringLiteral("cache_pending_visible_requests"), m_cache->pendingVisibleRequestCount());
+        snapshot.insert(QStringLiteral("visible_decode_diagnostics"),
+                        m_cache->visibleDecodeDiagnostics(nowMs));
+        snapshot.insert(QStringLiteral("cache"), QJsonObject{
+            {QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
+            {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
+            {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
+            {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()}
+        });
+    }
+    snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
+    snapshot.insert(QStringLiteral("visible_request_dispatched"), static_cast<double>(m_visibleRequestDispatched));
+    snapshot.insert(QStringLiteral("visible_request_blocked"), static_cast<double>(m_visibleRequestBlocked));
+    snapshot.insert(QStringLiteral("visible_request_callbacks"), static_cast<double>(m_visibleRequestCallbacks));
+    snapshot.insert(QStringLiteral("visible_request_null_callbacks"), static_cast<double>(m_visibleRequestNullCallbacks));
+    snapshot.insert(QStringLiteral("last_visible_request_frame"), static_cast<double>(m_lastVisibleRequestFrame));
+    snapshot.insert(QStringLiteral("last_visible_request_decision"), m_lastVisibleRequestDecision);
+    snapshot.insert(QStringLiteral("last_visible_request_block_reason"), m_lastVisibleRequestBlockReason);
+    snapshot.insert(QStringLiteral("last_visible_request_cached"), m_lastVisibleRequestCached);
+    snapshot.insert(QStringLiteral("last_visible_request_pending"), m_lastVisibleRequestPending);
+    snapshot.insert(QStringLiteral("last_visible_request_backlog"), m_lastVisibleRequestBacklog);
+    snapshot.insert(QStringLiteral("last_visible_request_callback_payload"), m_lastVisibleRequestCallbackPayload);
+    snapshot.insert(QStringLiteral("frame_status_refresh_count"),
+                    static_cast<double>(m_frameStatusRefreshCount));
+    snapshot.insert(QStringLiteral("frame_status_last_refresh_ms"), m_lastFrameStatusRefreshMs);
+    snapshot.insert(QStringLiteral("frame_status_max_refresh_ms"), m_maxFrameStatusRefreshMs);
+    if (!m_interaction.vulkanFrameStatuses.isEmpty()) {
+        const VulkanPreviewClipFrameStatus& status = m_interaction.vulkanFrameStatuses.constFirst();
+        snapshot.insert(QStringLiteral("active_frame_selection"), status.frameSelection);
+        snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
+        snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
+        snapshot.insert(QStringLiteral("active_frame_exact"), status.exact);
+    }
+    snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
+    if (m_decoder && m_decoder->memoryBudget()) {
+        const editor::MemoryBudget* budget = m_decoder->memoryBudget();
+        snapshot.insert(QStringLiteral("memory_budget"), QJsonObject{
+            {QStringLiteral("cpu_usage"), static_cast<qint64>(budget->currentCpuUsage())},
+            {QStringLiteral("gpu_usage"), static_cast<qint64>(budget->currentGpuUsage())},
+            {QStringLiteral("cpu_pressure"), budget->cpuPressure()},
+            {QStringLiteral("gpu_pressure"), budget->gpuPressure()},
+            {QStringLiteral("cpu_max"), static_cast<qint64>(budget->maxCpuMemory())},
+            {QStringLiteral("gpu_max"), static_cast<qint64>(budget->maxGpuMemory())}
+        });
+    }
+    snapshot.insert(QStringLiteral("pipeline_stages"), QJsonArray{});
     return snapshot;
 }
 

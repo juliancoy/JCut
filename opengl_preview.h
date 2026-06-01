@@ -133,6 +133,7 @@ public:
     PlaybackTuning playbackTuning() const override;
     QImage latestPresentedFrameImageForClip(const QString& clipId) const;
     QVector<PipelineStageSnapshot> livePipelineSnapshots() const override;
+    QJsonObject pipelineHealthSnapshot() const override;
     QJsonObject profilingSnapshot() const;
     void resetProfilingStats();
     bool selectedOverlayIsTranscript() const {

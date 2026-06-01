@@ -53,6 +53,7 @@ struct VulkanPreviewClipFrameStatus {
     QString clipId;
     QString label;
     QString decodePath;
+    QString frameSelection;
     int64_t requestedSourceFrame = -1;
     int64_t presentedSourceFrame = -1;
     QSize frameSize;
@@ -72,6 +73,19 @@ struct VulkanPreviewClipFrameStatus {
     bool curveLutApplied = false;
     bool curveLutSupported = false;
     bool gradingShaderActive = false;
+    bool speakerFramingEnabled = false;
+    bool speakerFramingDynamic = false;
+    int speakerFramingKeyframeCount = 0;
+    int speakerFramingTargetKeyframeCount = 0;
+    int speakerFramingEnabledKeyframeCount = 0;
+    int speakerFramingCenterSmoothingFrames = 0;
+    int speakerFramingZoomSmoothingFrames = 0;
+    int speakerFramingSmoothingMode = 0;
+    qreal speakerFramingCenterSmoothingStrength = 0.0;
+    qreal speakerFramingZoomSmoothingStrength = 0.0;
+    qreal speakerFramingTargetX = 0.0;
+    qreal speakerFramingTargetY = 0.0;
+    qreal speakerFramingTargetBox = -1.0;
     int correctionPolygonCount = 0;
     qreal maskFeather = 0.0;
     qreal maskFeatherGamma = 1.0;

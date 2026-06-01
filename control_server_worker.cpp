@@ -71,7 +71,7 @@ ControlServerWorker::ControlServerWorker(QWidget* window,
                                          std::function<QJsonObject()> projectSnapshotCallback,
                                          std::function<QJsonObject()> historySnapshotCallback,
                                          std::function<QJsonObject()> profilingCallback,
-                                         std::function<QJsonObject()> pipelineSnapshotCallback,
+                                         std::function<QJsonObject(bool)> pipelineSnapshotCallback,
                                          std::function<void()> resetProfilingCallback,
                                          std::function<void(int64_t)> setPlayheadCallback,
                                          std::function<QJsonObject()> getThrottlesCallback,
@@ -554,6 +554,7 @@ bool ControlServerWorker::refreshProfileCacheFromUi(int timeoutMs, QString* erro
 }
 
 bool ControlServerWorker::refreshPipelineSnapshotFromUi(int timeoutMs,
+                                                        bool verbose,
                                                         QJsonObject* previewOut,
                                                         QString* errorOut) {
     if (!previewOut) {
@@ -569,8 +570,8 @@ bool ControlServerWorker::refreshPipelineSnapshotFromUi(int timeoutMs,
         return false;
     }
     QJsonObject preview;
-    if (!invokeOnUiThread(m_window, timeoutMs, &preview, [this]() {
-            return m_pipelineSnapshotCallback ? m_pipelineSnapshotCallback() : QJsonObject{};
+    if (!invokeOnUiThread(m_window, timeoutMs, &preview, [this, verbose]() {
+            return m_pipelineSnapshotCallback ? m_pipelineSnapshotCallback(verbose) : QJsonObject{};
         })) {
         if (errorOut) {
             *errorOut = QStringLiteral("timed out waiting for pipeline snapshot");

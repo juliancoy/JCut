@@ -9,6 +9,8 @@ private slots:
     void speakerLabelGeneratesGlyphAtlasAndSeparateCards();
     void transcriptOverlayGeneratesBackgroundHighlightAndGlyphs();
     void transcriptOverlayKeepsExpectedScaleWhenTitleIsEnabled();
+    void transcriptOverlayCrowdedBoxUsesSingleReadableLine();
+    void transcriptOverlayLayoutsRemainReadableAcrossPreviewSizes();
     void transcriptOverlayKeyTracksActiveWordAndText();
     void emptyInputsDoNotGenerateText();
 };
@@ -147,6 +149,103 @@ void TestVulkanTextGeneration::transcriptOverlayKeepsExpectedScaleWhenTitleIsEna
     }
     QVERIFY2(tallestGlyph > clip.transcriptOverlay.fontPointSize * 0.45,
              "title reservation should prevent whole-caption shrink below expected subtitle scale");
+}
+
+void TestVulkanTextGeneration::transcriptOverlayCrowdedBoxUsesSingleReadableLine()
+{
+    VulkanTextRenderer renderer;
+    const QSize outputSize(1080, 1920);
+    const QRectF outputRect(260.0, 1220.0, 560.0, 120.0);
+    TimelineClip clip = transcriptClip();
+    clip.transcriptOverlay.fontPointSize = 42;
+    clip.transcriptOverlay.maxLines = 3;
+    clip.transcriptOverlay.boxWidth = outputRect.width();
+    clip.transcriptOverlay.boxHeight = outputRect.height();
+    clip.transcriptOverlay.showSpeakerTitle = false;
+    clip.transcriptOverlay.showShadow = true;
+
+    QCOMPARE(transcriptOverlayEffectiveLinesForBox(clip), 1);
+
+    TranscriptOverlayLine line;
+    line.words = QStringList{QStringLiteral("this"), QStringLiteral("must"), QStringLiteral("stay"), QStringLiteral("readable")};
+    line.activeWord = 2;
+    TranscriptOverlayLayout layout;
+    layout.lines = QVector<TranscriptOverlayLine>{line};
+
+    const VulkanTextLayoutDebug debug = renderer.buildTranscriptOverlayLayoutForTesting(
+        outputSize,
+        clip,
+        layout,
+        outputRect,
+        QString());
+
+    QVERIFY(debug.valid);
+    QVERIFY(rectsContainedIn(debug.glyphRects, outputRect));
+    QVERIFY(rectsContainedIn(debug.highlights, outputRect));
+    QCOMPARE(debug.glyphRects.size(), debug.glyphColors.size());
+    QVERIFY(!debug.highlights.isEmpty());
+    for (int i = 0; i < debug.glyphRects.size(); ++i) {
+        const QColor color = debug.glyphColors.at(i);
+        const bool isShadow = color.red() == 0 && color.green() == 0 && color.blue() == 0 && color.alpha() >= 180;
+        QVERIFY2(!isShadow || !debug.highlights.constFirst().contains(debug.glyphRects.at(i).center()),
+                 "highlighted active words must not receive black shadow glyphs");
+    }
+}
+
+void TestVulkanTextGeneration::transcriptOverlayLayoutsRemainReadableAcrossPreviewSizes()
+{
+    struct Case {
+        QSize outputSize;
+        QRectF outputRect;
+        qreal fontPointSize;
+    };
+    const QVector<Case> cases{
+        {QSize(512, 512), QRectF(50.0, 320.0, 412.0, 132.0), 36.0},
+        {QSize(608, 1080), QRectF(64.0, 760.0, 480.0, 170.0), 42.0},
+        {QSize(1080, 1920), QRectF(80.0, 1320.0, 920.0, 260.0), 58.0},
+        {QSize(1920, 1080), QRectF(430.0, 720.0, 1060.0, 220.0), 52.0}
+    };
+
+    VulkanTextRenderer renderer;
+    for (const Case& item : cases) {
+        TimelineClip clip = transcriptClip();
+        clip.transcriptOverlay.fontPointSize = item.fontPointSize;
+        clip.transcriptOverlay.boxWidth = item.outputRect.width();
+        clip.transcriptOverlay.boxHeight = item.outputRect.height();
+
+        const VulkanTextLayoutDebug debug = renderer.buildTranscriptOverlayLayoutForTesting(
+            item.outputSize,
+            clip,
+            transcriptLayout(2),
+            item.outputRect,
+            QStringLiteral("Council District 2"));
+
+        QVERIFY2(debug.valid,
+                 qPrintable(QStringLiteral("GPU text layout should be valid for %1x%2")
+                                .arg(item.outputSize.width())
+                                .arg(item.outputSize.height())));
+        QVERIFY2(rectsContainedIn(debug.backgrounds, QRectF(QPointF(0, 0), QSizeF(item.outputSize))),
+                 "subtitle background must stay inside the preview surface");
+        QVERIFY2(rectsContainedIn(debug.highlights, item.outputRect),
+                 "active-word highlight must stay inside the subtitle box");
+        QVERIFY2(rectsContainedIn(debug.glyphRects, item.outputRect.adjusted(-8.0, -8.0, 8.0, 8.0)),
+                 "subtitle glyphs must stay inside the subtitle box");
+
+        qreal tallestGlyph = 0.0;
+        qreal widestGlyph = 0.0;
+        for (const QRectF& rect : debug.glyphRects) {
+            tallestGlyph = qMax(tallestGlyph, rect.height());
+            widestGlyph = qMax(widestGlyph, rect.width());
+        }
+        QVERIFY2(tallestGlyph >= item.fontPointSize * 0.42,
+                 qPrintable(QStringLiteral("GPU text glyphs too small for %1x%2: tallest=%3 font=%4")
+                                .arg(item.outputSize.width())
+                                .arg(item.outputSize.height())
+                                .arg(tallestGlyph)
+                                .arg(item.fontPointSize)));
+        QVERIFY2(widestGlyph > tallestGlyph * 0.15,
+                 "glyph dimensions must look like real glyph rectangles, not collapsed quads");
+    }
 }
 
 void TestVulkanTextGeneration::transcriptOverlayKeyTracksActiveWordAndText()

@@ -1306,8 +1306,35 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
     const qreal localFrame = qBound<qreal>(
         0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
     if (clip.speakerFramingKeyframes.isEmpty()) {
-        return evaluateClipSpeakerFramingAtFrame(
-            clip, clip.startFrame + qRound64(localFrame), outputSize);
+        const int64_t lowerLocalFrame = qBound<int64_t>(
+            0,
+            static_cast<int64_t>(std::floor(localFrame)),
+            qMax<int64_t>(0, clip.durationFrames - 1));
+        const int64_t upperLocalFrame = qBound<int64_t>(
+            0,
+            lowerLocalFrame + 1,
+            qMax<int64_t>(0, clip.durationFrames - 1));
+        const qreal t = qBound<qreal>(
+            0.0,
+            localFrame - static_cast<qreal>(lowerLocalFrame),
+            1.0);
+        TimelineClip::TransformKeyframe lower =
+            evaluateClipSpeakerFramingAtFrame(clip, clip.startFrame + lowerLocalFrame, outputSize);
+        if (upperLocalFrame == lowerLocalFrame || t <= 0.0) {
+            lower.frame = lowerLocalFrame;
+            return lower;
+        }
+        TimelineClip::TransformKeyframe upper =
+            evaluateClipSpeakerFramingAtFrame(clip, clip.startFrame + upperLocalFrame, outputSize);
+        TimelineClip::TransformKeyframe interpolated;
+        interpolated.frame = lowerLocalFrame;
+        interpolated.translationX = lower.translationX + ((upper.translationX - lower.translationX) * t);
+        interpolated.translationY = lower.translationY + ((upper.translationY - lower.translationY) * t);
+        interpolated.rotation = lower.rotation + ((upper.rotation - lower.rotation) * t);
+        interpolated.scaleX = sanitizeScaleValue(lower.scaleX + ((upper.scaleX - lower.scaleX) * t));
+        interpolated.scaleY = sanitizeScaleValue(lower.scaleY + ((upper.scaleY - lower.scaleY) * t));
+        interpolated.linearInterpolation = true;
+        return interpolated;
     }
     if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
         state = clip.speakerFramingKeyframes.constFirst();

@@ -70,9 +70,11 @@ endif()
 set_tests_properties(
     test_playback_policy
     test_temporal_sync_contract
+    test_timeline_cache
     test_audio_time_stretch_cache
     test_transcript_logic
     test_transform_skip_aware_timing
+    test_direct_vulkan_handoff_pipeline_contract
     PROPERTIES LABELS "temporal"
 )
 
@@ -181,6 +183,7 @@ add_test(
 set_tests_properties(test_ui_smoke_harness_offscreen PROPERTIES
     TIMEOUT 60
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK jcut_offscreen_control_server
 )
 
 add_test(
@@ -194,6 +197,7 @@ add_test(
 set_tests_properties(test_speaker_flow_e2e_offscreen PROPERTIES
     TIMEOUT 300
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK jcut_offscreen_control_server
 )
 
 add_test(
@@ -212,6 +216,7 @@ add_test(
 set_tests_properties(test_rest_smoke_offscreen PROPERTIES
     TIMEOUT 90
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK jcut_offscreen_control_server
 )
 
 add_test(
@@ -236,6 +241,7 @@ add_test(
 set_tests_properties(test_ui_responsiveness_budget_offscreen PROPERTIES
     TIMEOUT 120
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+    RESOURCE_LOCK jcut_offscreen_control_server
 )
 
 add_executable(facedetections_midpoint_detection_harness

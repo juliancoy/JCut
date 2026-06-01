@@ -1,6 +1,7 @@
 #include "null_preview_surface.h"
 
 #include <QFontMetrics>
+#include <QJsonArray>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QStringList>
@@ -125,6 +126,19 @@ void NullPreviewSurface::setPlaybackTuning(const PlaybackTuning& tuning) { m_pla
 PreviewSurface::PlaybackTuning NullPreviewSurface::playbackTuning() const { return m_playbackTuning; }
 QImage NullPreviewSurface::latestPresentedFrameImageForClip(const QString&) const { return {}; }
 QVector<PreviewSurface::PipelineStageSnapshot> NullPreviewSurface::livePipelineSnapshots() const { return {}; }
+QJsonObject NullPreviewSurface::pipelineHealthSnapshot() const
+{
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("backend"), QStringLiteral("offscreen_placeholder")},
+        {QStringLiteral("clip_count"), m_clips.size()},
+        {QStringLiteral("selected_clip_id"), m_selectedClipId},
+        {QStringLiteral("current_frame"), static_cast<qint64>(m_currentFrame)},
+        {QStringLiteral("current_sample"), static_cast<qint64>(m_currentSample)},
+        {QStringLiteral("playing"), m_playing},
+        {QStringLiteral("pipeline_stages"), QJsonArray{}}
+    };
+}
 QJsonObject NullPreviewSurface::profilingSnapshot() const
 {
     return QJsonObject{

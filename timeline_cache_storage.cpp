@@ -54,14 +54,7 @@ FrameHandle TimelineCache::PlaybackBuffer::getLatestAtOrBefore(int64_t frameNumb
         return best.value().frame;
     }
 
-    auto earliestAhead = m_frames.end();
-    for (auto it = m_frames.begin(); it != m_frames.end(); ++it) {
-        if (it.key() > frameNumber &&
-            (earliestAhead == m_frames.end() || it.key() < earliestAhead.key())) {
-            earliestAhead = it;
-        }
-    }
-    return earliestAhead == m_frames.end() ? FrameHandle() : earliestAhead.value().frame;
+    return FrameHandle();
 }
 
 bool TimelineCache::PlaybackBuffer::contains(int64_t frameNumber) const {
@@ -231,20 +224,7 @@ FrameHandle ClipCache::getLatestAtOrBefore(int64_t frameNumber) {
         return best.value().frame;
     }
 
-    auto earliestAhead = m_frames.end();
-    for (auto it = m_frames.begin(); it != m_frames.end(); ++it) {
-        if (it.key() > frameNumber &&
-            (earliestAhead == m_frames.end() || it.key() < earliestAhead.key())) {
-            earliestAhead = it;
-        }
-    }
-    if (earliestAhead == m_frames.end()) {
-        return FrameHandle();
-    }
-
-    earliestAhead.value().lastAccessTime = QDateTime::currentMSecsSinceEpoch();
-    earliestAhead.value().accessCount++;
-    return earliestAhead.value().frame;
+    return FrameHandle();
 }
 
 bool ClipCache::contains(int64_t frameNumber) const {

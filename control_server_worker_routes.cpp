@@ -838,10 +838,15 @@ bool ControlServerWorker::handleHistoryRoutes(QTcpSocket* socket, const Request&
 
 bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request& request) {
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/pipeline")) {
+        const QUrlQuery query(request.url);
+        const bool verbose =
+            queryBool(query, QStringLiteral("verbose")) ||
+            queryBool(query, QStringLiteral("debug")) ||
+            queryBool(query, QStringLiteral("full"));
         m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
         QJsonObject preview;
         QString liveError;
-        if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, &preview, &liveError)) {
+        if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, verbose, &preview, &liveError)) {
             const QString error = liveError.isEmpty()
                 ? QStringLiteral("pipeline snapshot unavailable")
                 : liveError;
@@ -852,6 +857,7 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
         writeJson(socket, 200, QJsonObject{
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), true},
+            {QStringLiteral("verbose"), verbose},
             {QStringLiteral("snapshot_age_ms"), 0},
             {QStringLiteral("backend"), preview.value(QStringLiteral("backend")).toString()},
             {QStringLiteral("pipeline"), preview.value(QStringLiteral("pipeline_stages")).toArray()},

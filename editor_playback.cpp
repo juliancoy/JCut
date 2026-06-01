@@ -895,8 +895,13 @@ void EditorWindow::reconcileActivePlaybackAudioState()
                 !m_audioEngine->warmPlaybackAudio(
                     m_timeline->currentFrame(),
                     qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
-                stopPlaybackWithReason(QStringLiteral("audio_not_ready"));
-                return;
+                if (shouldUseAudioMasterClock()) {
+                    stopPlaybackWithReason(QStringLiteral("audio_not_ready"));
+                    return;
+                }
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] continuing timeline-clock playback without warmed audio at frame %1")
+                           .arg(m_timeline->currentFrame());
             }
             m_audioEngine->start(m_timeline->currentFrame());
         }
@@ -1119,8 +1124,13 @@ void EditorWindow::setPlaybackActive(bool playing)
                 qWarning().noquote()
                     << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for audio at frame %1 timed out")
                            .arg(m_timeline->currentFrame());
-                updateTransportLabels();
-                return;
+                if (shouldUseAudioMasterClock()) {
+                    updateTransportLabels();
+                    return;
+                }
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] continuing timeline-clock playback without warmed audio at frame %1")
+                           .arg(m_timeline->currentFrame());
             }
             m_audioEngine->start(m_timeline->currentFrame());
             if (!m_startupReadinessAudioStarted.exchange(true)) {

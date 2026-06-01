@@ -1,5 +1,6 @@
 #include "timeline_cache.h"
 #include "debug_controls.h"
+#include "editor_shared_render_sync.h"
 #include "media_pipeline_shared.h"
 
 #include <QDateTime>
@@ -23,7 +24,7 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kVisibleDecodeKeepWindow = 10;
+constexpr int64_t kVisibleDecodeKeepWindow = 96;
 constexpr int64_t kObsoleteVisibleFrameSlack = 0;
 constexpr int64_t kSeekGenerationDeltaFrames = 6;
 constexpr qint64 kVisiblePendingRetryMs = 250;
@@ -884,7 +885,7 @@ void TimelineCache::scheduleImmediateLeadPrefetch(const ClipInfo& info, int64_t 
             m_inflightPrefetches.fetch_add(1);
         }
 
-        const int priority = qMax(65, calculatePriority(canonicalFrame) - (offset * 5));
+        const int priority = qMax(65, calculatePriority(info, targetFrame) - (offset * 5));
         cacheTrace(QStringLiteral("TimelineCache::lead-prefetch.dispatch"),
                    QStringLiteral("clip=%1 frame=%2 priority=%3")
                        .arg(info.clip.id)
@@ -1272,6 +1273,10 @@ int TimelineCache::calculatePriority(int64_t frameNumber) const {
         return 40;
     }
     return 20;
+}
+
+int TimelineCache::calculatePriority(const ClipInfo& info, int64_t sourceFrame) const {
+    return calculatePriority(approximateTimelineFrameForClipSourceFrame(info.clip, sourceFrame));
 }
 
 QString TimelineCache::requestKey(const QString& clipId, int64_t frameNumber) const {

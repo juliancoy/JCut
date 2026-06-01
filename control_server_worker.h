@@ -71,7 +71,7 @@ public:
                         std::function<QJsonObject()> projectSnapshotCallback,
                         std::function<QJsonObject()> historySnapshotCallback,
                         std::function<QJsonObject()> profilingCallback,
-                        std::function<QJsonObject()> pipelineSnapshotCallback,
+                        std::function<QJsonObject(bool)> pipelineSnapshotCallback,
                         std::function<void()> resetProfilingCallback,
                         std::function<void(int64_t)> setPlayheadCallback,
                         std::function<QJsonObject()> getThrottlesCallback,
@@ -119,7 +119,7 @@ private:
     QJsonObject frameTraceSnapshot(const QUrlQuery& query) const;
 
     bool refreshProfileCacheFromUi(int timeoutMs, QString* errorOut);
-    bool refreshPipelineSnapshotFromUi(int timeoutMs, QJsonObject* previewOut, QString* errorOut);
+    bool refreshPipelineSnapshotFromUi(int timeoutMs, bool verbose, QJsonObject* previewOut, QString* errorOut);
     bool refreshStateCacheFromUi(int timeoutMs, QString* errorOut);
     bool refreshProjectCacheFromUi(int timeoutMs, QString* errorOut);
     bool refreshHistoryCacheFromUi(int timeoutMs, QString* errorOut);
@@ -167,7 +167,7 @@ private:
     std::function<QJsonObject()> m_projectSnapshotCallback;
     std::function<QJsonObject()> m_historySnapshotCallback;
     std::function<QJsonObject()> m_profilingCallback;
-    std::function<QJsonObject()> m_pipelineSnapshotCallback;
+    std::function<QJsonObject(bool)> m_pipelineSnapshotCallback;
     std::function<void()> m_resetProfilingCallback;
     std::function<void(int64_t)> m_setPlayheadCallback;
     std::function<QJsonObject()> m_getThrottlesCallback;

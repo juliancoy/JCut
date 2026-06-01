@@ -1,9 +1,11 @@
 #include <QtTest/QtTest>
 #include <QDateTime>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
 #include "../timeline_cache.h"
 #include "../async_decoder.h"
+#include "../editor_shared_render_sync.h"
 #include "../memory_budget.h"
 
 using namespace editor;
@@ -19,6 +21,8 @@ private slots:
     void testPlaybackState();
     void testStaticImageCaching();
     void testVisibleRequestRetryUsesWallClockAge();
+    void testSourceFrameTimelineDomainMapping();
+    void testLatestAtOrBeforeNeverReturnsFutureFrame();
 };
 
 void TestTimelineCache::testInitialization() {
@@ -162,6 +166,45 @@ void TestTimelineCache::testVisibleRequestRetryUsesWallClockAge() {
     const QJsonArray pending = cache.pendingVisibleDebugSnapshot(QDateTime::currentMSecsSinceEpoch(), 1);
     QCOMPARE(pending.size(), 1);
     QVERIFY(pending.at(0).toObject().value(QStringLiteral("age_ms")).toInteger() >= 100);
+}
+
+void TestTimelineCache::testSourceFrameTimelineDomainMapping() {
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip1");
+    clip.mediaType = ClipMediaType::Video;
+    clip.sourceKind = MediaSourceKind::File;
+    clip.startFrame = 1000;
+    clip.durationFrames = 300;
+    clip.sourceInFrame = 200;
+    clip.sourceDurationFrames = 900;
+    clip.sourceFps = 60.0;
+    clip.playbackRate = 1.0;
+
+    const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(clip, 1060.0, {});
+    QCOMPARE(sourceFrame, static_cast<int64_t>(320));
+    QCOMPARE(approximateTimelineFrameForClipSourceFrame(clip, sourceFrame),
+             static_cast<int64_t>(1060));
+
+    clip.playbackRate = 1.5;
+    const int64_t fasterSourceFrame = sourceFrameForClipAtTimelinePosition(clip, 1060.0, {});
+    QCOMPARE(fasterSourceFrame, static_cast<int64_t>(380));
+    QCOMPARE(approximateTimelineFrameForClipSourceFrame(clip, fasterSourceFrame),
+             static_cast<int64_t>(1060));
+}
+
+void TestTimelineCache::testLatestAtOrBeforeNeverReturnsFutureFrame() {
+    MemoryBudget budget;
+    ClipCache cache(QStringLiteral("/tmp/test.mp4"), 1000, &budget);
+    QImage image(2, 2, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::black);
+
+    cache.insert(100, FrameHandle::createCpuFrame(image, 100, QStringLiteral("/tmp/test.mp4")));
+    QVERIFY2(cache.getLatestAtOrBefore(90).isNull(),
+             "latest-at-or-before must not present a future frame after a backward seek");
+    QCOMPARE(cache.getLatestAtOrBefore(100).frameNumber(), static_cast<int64_t>(100));
+
+    cache.insert(80, FrameHandle::createCpuFrame(image, 80, QStringLiteral("/tmp/test.mp4")));
+    QCOMPARE(cache.getLatestAtOrBefore(90).frameNumber(), static_cast<int64_t>(80));
 }
 
 QTEST_MAIN(TestTimelineCache)

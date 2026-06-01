@@ -4,6 +4,8 @@
 
 #include <QCryptographicHash>
 #include <QFile>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QVulkanFunctions>
 
 #include <algorithm>
@@ -38,15 +40,24 @@ FreeTypeLibrary& ftLibraryHolder()
     return holder;
 }
 
-QString resolveFontPath(const QString& family, bool bold)
+struct ResolvedFontFace {
+    QString path;
+    int faceIndex = 0;
+};
+
+QString normalizedFontFamily(const QString& family)
+{
+    const QString trimmed = family.trimmed();
+    return trimmed.isEmpty() ? QStringLiteral("DejaVu Sans") : trimmed;
+}
+
+ResolvedFontFace resolveFontFaceUncached(const QString& family, bool bold)
 {
     FcPattern* pattern = FcPatternCreate();
     if (!pattern) {
         return {};
     }
-    const QByteArray familyUtf8 = family.trimmed().isEmpty()
-        ? QByteArray("DejaVu Sans")
-        : family.trimmed().toUtf8();
+    const QByteArray familyUtf8 = normalizedFontFamily(family).toUtf8();
     FcPatternAddString(pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>(familyUtf8.constData()));
     FcPatternAddInteger(pattern, FC_WEIGHT, bold ? FC_WEIGHT_BOLD : FC_WEIGHT_REGULAR);
     FcPatternAddInteger(pattern, FC_SLANT, FC_SLANT_ROMAN);
@@ -59,12 +70,38 @@ QString resolveFontPath(const QString& family, bool bold)
         return {};
     }
     FcChar8* file = nullptr;
-    QString path;
+    ResolvedFontFace resolved;
     if (FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch && file) {
-        path = QString::fromUtf8(reinterpret_cast<const char*>(file));
+        resolved.path = QString::fromUtf8(reinterpret_cast<const char*>(file));
+    }
+    int faceIndex = 0;
+    if (FcPatternGetInteger(match, FC_INDEX, 0, &faceIndex) == FcResultMatch) {
+        resolved.faceIndex = qMax(0, faceIndex);
     }
     FcPatternDestroy(match);
-    return path;
+    return resolved;
+}
+
+ResolvedFontFace cachedResolvedFontFace(const QString& family, bool bold)
+{
+    static QMutex mutex;
+    static QHash<QString, ResolvedFontFace> cache;
+    const QString key = normalizedFontFamily(family) + QLatin1Char('|') +
+        (bold ? QLatin1String("bold") : QLatin1String("regular"));
+    {
+        QMutexLocker locker(&mutex);
+        const auto it = cache.constFind(key);
+        if (it != cache.constEnd()) {
+            return it.value();
+        }
+    }
+
+    const ResolvedFontFace resolved = resolveFontFaceUncached(family, bold);
+    {
+        QMutexLocker locker(&mutex);
+        cache.insert(key, resolved);
+    }
+    return resolved;
 }
 
 struct FaceGuard {
@@ -82,12 +119,13 @@ bool loadFace(const QString& family, bool bold, int pixelSize, FaceGuard* guard)
     if (!guard || !ftLibraryHolder().library || pixelSize <= 0) {
         return false;
     }
-    const QString path = resolveFontPath(family, bold);
-    if (path.isEmpty()) {
+    const ResolvedFontFace resolved = cachedResolvedFontFace(family, bold);
+    if (resolved.path.isEmpty()) {
         return false;
     }
-    const QByteArray pathUtf8 = path.toUtf8();
-    if (FT_New_Face(ftLibraryHolder().library, pathUtf8.constData(), 0, &guard->face) != 0 || !guard->face) {
+    const QByteArray pathUtf8 = resolved.path.toUtf8();
+    if (FT_New_Face(ftLibraryHolder().library, pathUtf8.constData(), resolved.faceIndex, &guard->face) != 0 ||
+        !guard->face) {
         return false;
     }
     if (FT_Select_Charmap(guard->face, FT_ENCODING_UNICODE) != 0 ||
@@ -95,6 +133,65 @@ bool loadFace(const QString& family, bool bold, int pixelSize, FaceGuard* guard)
         return false;
     }
     return true;
+}
+
+QString rectKey(const QRectF& rect)
+{
+    return QString::number(rect.x(), 'f', 3) + QLatin1Char(',') +
+        QString::number(rect.y(), 'f', 3) + QLatin1Char(',') +
+        QString::number(rect.width(), 'f', 3) + QLatin1Char(',') +
+        QString::number(rect.height(), 'f', 3);
+}
+
+QString speakerLabelLayoutKey(const QSize& outputSize, const render_detail::SpeakerLabelOverlaySpec& spec)
+{
+    const QString material =
+        QStringLiteral("speaker-label-layout-v1|") +
+        QString::number(outputSize.width()) + QLatin1Char('x') + QString::number(outputSize.height()) + QLatin1Char('|') +
+        spec.name + QLatin1Char('|') +
+        spec.organization + QLatin1Char('|') +
+        QString::number(spec.showName ? 1 : 0) + QLatin1Char('|') +
+        QString::number(spec.showOrganization ? 1 : 0) + QLatin1Char('|') +
+        QString::number(spec.nameTextScale, 'f', 4) + QLatin1Char('|') +
+        QString::number(spec.organizationTextScale, 'f', 4) + QLatin1Char('|') +
+        QString::number(spec.nameVerticalPosition, 'f', 4) + QLatin1Char('|') +
+        QString::number(spec.organizationVerticalPosition, 'f', 4) + QLatin1Char('|') +
+        spec.fontFamily + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(spec.nameColor.rgba())) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(spec.organizationColor.rgba())) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(spec.backgroundColor.rgba())) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(spec.borderColor.rgba()));
+    return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
+QString transcriptOverlayLayoutKey(const QSize& outputSize,
+                                   const TimelineClip& clip,
+                                   const TranscriptOverlayLayout& layout,
+                                   const QRectF& outputRect,
+                                   const QString& speakerTitle)
+{
+    QString layoutMaterial;
+    for (const TranscriptOverlayLine& line : layout.lines) {
+        layoutMaterial += line.words.join(QLatin1Char(' '));
+        layoutMaterial += QLatin1Char('#');
+        layoutMaterial += QString::number(line.activeWord);
+        layoutMaterial += QLatin1Char('|');
+    }
+    const auto& overlay = clip.transcriptOverlay;
+    const QString material =
+        QStringLiteral("transcript-layout-v1|") +
+        clip.id + QLatin1Char('|') +
+        QString::number(outputSize.width()) + QLatin1Char('x') + QString::number(outputSize.height()) + QLatin1Char('|') +
+        rectKey(outputRect) + QLatin1Char('|') +
+        speakerTitle + QLatin1Char('|') +
+        overlay.fontFamily + QLatin1Char('|') +
+        QString::number(overlay.fontPointSize) + QLatin1Char('|') +
+        QString::number(overlay.bold ? 1 : 0) + QLatin1Char('|') +
+        QString::number(overlay.showBackground ? 1 : 0) + QLatin1Char('|') +
+        QString::number(overlay.showShadow ? 1 : 0) + QLatin1Char('|') +
+        QString::number(static_cast<quint32>(overlay.textColor.rgba())) + QLatin1Char('|') +
+        layoutMaterial;
+    return QString::fromLatin1(QCryptographicHash::hash(material.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
 QString glyphKey(uint codepoint, bool bold, int pixelSize)
@@ -500,6 +597,8 @@ void VulkanTextRenderer::destroy()
     m_pipeline.reset();
     m_atlasResources.reset();
     m_uploadedAtlasKey.clear();
+    m_speakerLayoutCache = SpeakerLayoutCache{};
+    m_transcriptLayoutCache = TranscriptLayoutCache{};
     m_physicalDevice = VK_NULL_HANDLE;
     m_device = VK_NULL_HANDLE;
     m_funcs = nullptr;
@@ -526,8 +625,10 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildSpeakerLabelLayoutForTesting(
     debug.cardCount = cards.size();
     debug.cards = cards;
     debug.glyphRects.reserve(glyphs.size());
+    debug.glyphColors.reserve(glyphs.size());
     for (const LaidOutGlyph& glyph : glyphs) {
         debug.glyphRects.push_back(glyph.rect);
+        debug.glyphColors.push_back(glyph.color);
     }
     return debug;
 }
@@ -555,8 +656,10 @@ VulkanTextLayoutDebug VulkanTextRenderer::buildTranscriptOverlayLayoutForTesting
     debug.backgrounds = backgrounds;
     debug.highlights = highlights;
     debug.glyphRects.reserve(glyphs.size());
+    debug.glyphColors.reserve(glyphs.size());
     for (const LaidOutGlyph& glyph : glyphs) {
         debug.glyphRects.push_back(glyph.rect);
+        debug.glyphColors.push_back(glyph.color);
     }
     return debug;
 }
@@ -953,7 +1056,7 @@ bool VulkanTextRenderer::buildTranscriptAtlasAndLayout(const QSize& outputSize,
                                              bodyTextHeight + padY * 2.0));
             }
             const QColor glyphColor = active ? highlightTextColor : textColor;
-            if (clip.transcriptOverlay.showShadow) {
+            if (clip.transcriptOverlay.showShadow && !active) {
                 emitRun(bodyFace.face,
                         word,
                         cursorX + shadowOffset,
@@ -1011,6 +1114,61 @@ bool VulkanTextRenderer::ensureAtlasUploaded(VkCommandBuffer commandBuffer, cons
     return true;
 }
 
+const VulkanTextRenderer::SpeakerLayoutCache* VulkanTextRenderer::speakerLabelLayout(
+    const QSize& outputSize,
+    const render_detail::SpeakerLabelOverlaySpec& spec) const
+{
+    const QString layoutKey = speakerLabelLayoutKey(outputSize, spec);
+    if (m_speakerLayoutCache.valid && m_speakerLayoutCache.layoutKey == layoutKey) {
+        return &m_speakerLayoutCache;
+    }
+
+    SpeakerLayoutCache rebuilt;
+    rebuilt.layoutKey = layoutKey;
+    rebuilt.valid = buildAtlasAndLayout(outputSize,
+                                        spec,
+                                        &rebuilt.atlas,
+                                        &rebuilt.glyphs,
+                                        &rebuilt.cards);
+    if (!rebuilt.valid) {
+        m_speakerLayoutCache = SpeakerLayoutCache{};
+        return nullptr;
+    }
+    m_speakerLayoutCache = rebuilt;
+    return &m_speakerLayoutCache;
+}
+
+const VulkanTextRenderer::TranscriptLayoutCache* VulkanTextRenderer::transcriptOverlayLayout(
+    const QSize& outputSize,
+    const TimelineClip& clip,
+    const TranscriptOverlayLayout& layout,
+    const QRectF& outputRect,
+    const QString& speakerTitle) const
+{
+    const QString layoutKey = transcriptOverlayLayoutKey(outputSize, clip, layout, outputRect, speakerTitle);
+    if (m_transcriptLayoutCache.valid && m_transcriptLayoutCache.layoutKey == layoutKey) {
+        return &m_transcriptLayoutCache;
+    }
+
+    TranscriptLayoutCache rebuilt;
+    rebuilt.layoutKey = layoutKey;
+    rebuilt.valid = buildTranscriptAtlasAndLayout(outputSize,
+                                                  clip,
+                                                  layout,
+                                                  outputRect,
+                                                  speakerTitle,
+                                                  &rebuilt.atlas,
+                                                  &rebuilt.glyphs,
+                                                  &rebuilt.backgrounds,
+                                                  &rebuilt.highlights);
+    if (!rebuilt.valid) {
+        m_transcriptLayoutCache = TranscriptLayoutCache{};
+        return nullptr;
+    }
+    m_transcriptLayoutCache = rebuilt;
+    return &m_transcriptLayoutCache;
+}
+
 void VulkanTextRenderer::drawGlyph(VkCommandBuffer commandBuffer,
                                    const QSize& swapSize,
                                    const QRectF& rect,
@@ -1054,11 +1212,8 @@ bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
     if (!isReady() || commandBuffer == VK_NULL_HANDLE || !swapSize.isValid() || !outputSize.isValid()) {
         return false;
     }
-    Atlas atlas;
-    QVector<LaidOutGlyph> glyphs;
-    QVector<QRectF> cards;
-    if (!buildAtlasAndLayout(outputSize, spec, &atlas, &glyphs, &cards) ||
-        !ensureAtlasUploaded(commandBuffer, atlas)) {
+    const SpeakerLayoutCache* layout = speakerLabelLayout(outputSize, spec);
+    if (!layout || !ensureAtlasUploaded(commandBuffer, layout->atlas)) {
         return false;
     }
 
@@ -1071,7 +1226,7 @@ bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
                       rect.height() * scaleY);
     };
 
-    for (const QRectF& card : cards) {
+    for (const QRectF& card : layout->cards) {
         const QRectF mapped = mapRect(card);
         clearRect(m_funcs, commandBuffer, clearValueForColor(spec.backgroundColor), clearRectFromQRect(mapped, swapSize));
         clearBoxOutline(m_funcs,
@@ -1080,10 +1235,21 @@ bool VulkanTextRenderer::drawSpeakerLabel(VkCommandBuffer commandBuffer,
                         clearRectFromQRect(mapped.adjusted(0.5, 0.5, -0.5, -0.5), swapSize),
                         qMax(1, static_cast<int>(std::round(qMin(scaleX, scaleY)))));
     }
-    for (const LaidOutGlyph& glyph : glyphs) {
+    for (const LaidOutGlyph& glyph : layout->glyphs) {
         drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);
     }
     return true;
+}
+
+bool VulkanTextRenderer::prepareSpeakerLabelAtlas(VkCommandBuffer commandBuffer,
+                                                  const QSize& outputSize,
+                                                  const render_detail::SpeakerLabelOverlaySpec& spec)
+{
+    if (!isReady() || commandBuffer == VK_NULL_HANDLE || !outputSize.isValid()) {
+        return false;
+    }
+    const SpeakerLayoutCache* layout = speakerLabelLayout(outputSize, spec);
+    return layout && ensureAtlasUploaded(commandBuffer, layout->atlas);
 }
 
 bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
@@ -1099,20 +1265,9 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
         !outputSize.isValid() || layout.lines.isEmpty() || outputRect.isEmpty()) {
         return false;
     }
-    Atlas atlas;
-    QVector<LaidOutGlyph> glyphs;
-    QVector<QRectF> backgrounds;
-    QVector<QRectF> highlights;
-    if (!buildTranscriptAtlasAndLayout(outputSize,
-                                       clip,
-                                       layout,
-                                       outputRect,
-                                       speakerTitle,
-                                       &atlas,
-                                       &glyphs,
-                                       &backgrounds,
-                                       &highlights) ||
-        !ensureAtlasUploaded(commandBuffer, atlas)) {
+    const TranscriptLayoutCache* cachedLayout =
+        transcriptOverlayLayout(outputSize, clip, layout, outputRect, speakerTitle);
+    if (!cachedLayout || !ensureAtlasUploaded(commandBuffer, cachedLayout->atlas)) {
         return false;
     }
 
@@ -1125,20 +1280,36 @@ bool VulkanTextRenderer::drawTranscriptOverlay(VkCommandBuffer commandBuffer,
                       rect.height() * scaleY);
     };
 
-    for (const QRectF& background : backgrounds) {
+    for (const QRectF& background : cachedLayout->backgrounds) {
         clearRect(m_funcs,
                   commandBuffer,
                   clearValueForColor(QColor(0, 0, 0, 120)),
                   clearRectFromQRect(mapRect(background), swapSize));
     }
-    for (const QRectF& highlight : highlights) {
+    for (const QRectF& highlight : cachedLayout->highlights) {
         clearRect(m_funcs,
                   commandBuffer,
                   clearValueForColor(QColor(QStringLiteral("#fff2a8"))),
                   clearRectFromQRect(mapRect(highlight), swapSize));
     }
-    for (const LaidOutGlyph& glyph : glyphs) {
+    for (const LaidOutGlyph& glyph : cachedLayout->glyphs) {
         drawGlyph(commandBuffer, swapSize, mapRect(glyph.rect), glyph.uv, glyph.color);
     }
     return true;
+}
+
+bool VulkanTextRenderer::prepareTranscriptOverlayAtlas(VkCommandBuffer commandBuffer,
+                                                       const QSize& outputSize,
+                                                       const TimelineClip& clip,
+                                                       const TranscriptOverlayLayout& layout,
+                                                       const QRectF& outputRect,
+                                                       const QString& speakerTitle)
+{
+    if (!isReady() || commandBuffer == VK_NULL_HANDLE || !outputSize.isValid() ||
+        layout.lines.isEmpty() || outputRect.isEmpty()) {
+        return false;
+    }
+    const TranscriptLayoutCache* cachedLayout =
+        transcriptOverlayLayout(outputSize, clip, layout, outputRect, speakerTitle);
+    return cachedLayout && ensureAtlasUploaded(commandBuffer, cachedLayout->atlas);
 }

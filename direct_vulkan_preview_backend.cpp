@@ -36,6 +36,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QSet>
 #include <QApplication>
 #include <QExposeEvent>
 #include <QContextMenuEvent>
@@ -69,6 +70,7 @@ extern "C" {
 #include <functional>
 #include <memory>
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -266,6 +268,7 @@ private:
     std::unique_ptr<VulkanResources> m_playbackStatusOverlayResources;
     std::unique_ptr<VulkanPipeline> m_pipeline;
     std::unique_ptr<VulkanTextRenderer> m_textRenderer;
+    std::unique_ptr<VulkanTextRenderer> m_speakerTextRenderer;
     std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
     std::unique_ptr<DirectVulkanFrameHandoffPipeline> m_frameHandoffPipeline;
     QString m_playbackStatusOverlayTextureKey;
@@ -2285,6 +2288,19 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
+    m_speakerTextRenderer = std::make_unique<VulkanTextRenderer>();
+    if (!m_speakerTextRenderer->initialize(m_window->physicalDevice(),
+                                           m_window->device(),
+                                           m_devFuncs,
+                                           m_window->defaultRenderPass(),
+                                           &error)) {
+        if (m_owner) {
+            m_owner->markFailure(error.isEmpty()
+                                     ? QStringLiteral("Failed to initialize Vulkan speaker text renderer.")
+                                     : error);
+        }
+        return;
+    }
     m_audioTab = std::make_unique<jcut::VulkanAudioTab>();
     if (!m_audioTab->initialize(m_window->physicalDevice(),
                                 m_window->device(),
@@ -2313,6 +2329,7 @@ void DirectVulkanPreviewRenderer::releaseResources()
         m_frameHandoffPipeline.reset();
     }
     m_audioTab.reset();
+    m_speakerTextRenderer.reset();
     m_textRenderer.reset();
     m_pipeline.reset();
     m_playbackStatusOverlayResources.reset();
@@ -2687,7 +2704,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         return;
     }
 
-    const PreviewInteractionState* state = m_owner->state();
+    const PreviewInteractionState* liveState = m_owner->state();
+    PreviewInteractionState renderSnapshot;
+    if (liveState) {
+        // Latch a per-frame render snapshot so UI/overlay/status updates cannot mutate command recording inputs.
+        renderSnapshot = *liveState;
+    }
+    const PreviewInteractionState* state = liveState ? &renderSnapshot : nullptr;
     QColor base = state ? state->backgroundColor : QColor(Qt::black);
     if (!base.isValid()) {
         base = QColor(Qt::black);
@@ -2797,7 +2820,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         auto buildTranscriptOverlayCandidate =
             [&](const TimelineClip& clip,
                 const TimelineClip& effectiveClip,
-                int64_t samplePosition) -> TranscriptOverlayCandidate {
+                int64_t samplePosition,
+                const VulkanPreviewClipFrameStatus* status) -> TranscriptOverlayCandidate {
             TranscriptOverlayCandidate candidate;
             const QString transcriptPath = activeTranscriptPathForClipFile(effectiveClip.filePath);
             if (transcriptPath.isEmpty()) {
@@ -2808,9 +2832,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const QVector<TranscriptSection>& sections =
                 runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
             const int64_t sourceFrame =
-                transcriptFrameForClipAtTimelineSample(effectiveClip,
-                                                       samplePosition,
-                                                       state->renderSyncMarkers);
+                status && status->hasFrame && status->presentedSourceFrame >= 0
+                    ? transcriptFrameForClipSourceFrame(effectiveClip, status->presentedSourceFrame)
+                    : transcriptFrameForClipAtTimelineSample(effectiveClip,
+                                                             samplePosition,
+                                                             state->renderSyncMarkers);
             const TranscriptOverlayLayout overlayLayout =
                 transcriptOverlayLayoutAtSourceFrame(effectiveClip, sections, sourceFrame);
             if (overlayLayout.lines.isEmpty()) {
@@ -2865,7 +2891,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 buildTranscriptOverlayCandidate(
                     clip,
                     effectiveClip,
-                    state->currentSample);
+                    state->currentSample,
+                    status);
             if (!candidate.valid) {
                 continue;
             }
@@ -2916,6 +2943,37 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 m_playbackStatusOverlayTextureKey.clear();
                 m_playbackStatusOverlayTextureReady = false;
             }
+        }
+    }
+    render_detail::SpeakerLabelOverlaySpec preparedSpeakerSpec;
+    bool preparedSpeakerLabel = false;
+    QSet<QString> preparedTranscriptAtlasClipIds;
+    if (m_textRenderer && m_textRenderer->isReady()) {
+        for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
+            const PreparedTranscriptText& transcript = it.value();
+            if (!transcript.ready) {
+                continue;
+            }
+            if (m_textRenderer->prepareTranscriptOverlayAtlas(cb,
+                                                              state->outputSize,
+                                                              transcript.clip,
+                                                              transcript.layout,
+                                                              transcript.outputRect,
+                                                              transcript.speakerTitle)) {
+                preparedTranscriptAtlasClipIds.insert(it.key());
+            }
+        }
+    }
+    if (m_speakerTextRenderer &&
+        m_speakerTextRenderer->isReady() &&
+        (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
+        preparedSpeakerSpec = currentSpeakerLabelOverlaySpecForState(state);
+        const bool hasVisibleLabel =
+            (preparedSpeakerSpec.showName && !preparedSpeakerSpec.name.trimmed().isEmpty()) ||
+            (preparedSpeakerSpec.showOrganization && !preparedSpeakerSpec.organization.trimmed().isEmpty());
+        if (hasVisibleLabel) {
+            preparedSpeakerLabel =
+                m_speakerTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedSpeakerSpec);
         }
     }
     m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
@@ -3137,6 +3195,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const auto transcriptOverlayIt = preparedTranscriptOverlays.constFind(clip.id);
             if (transcriptOverlayIt != preparedTranscriptOverlays.constEnd() &&
                 transcriptOverlayIt.value().ready &&
+                preparedTranscriptAtlasClipIds.contains(clip.id) &&
                 m_textRenderer &&
                 m_textRenderer->isReady()) {
                 const PreparedTranscriptText& transcript = transcriptOverlayIt.value();
@@ -3169,21 +3228,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 presentedSourceFrame = std::max<int64_t>(presentedSourceFrame, status->presentedSourceFrame);
             }
         }
-        if (m_textRenderer &&
-            m_textRenderer->isReady() &&
-            (state->showCurrentSpeakerName || state->showCurrentSpeakerOrganization)) {
-            const render_detail::SpeakerLabelOverlaySpec spec =
-                currentSpeakerLabelOverlaySpecForState(state);
-            const bool hasVisibleLabel =
-                (spec.showName && !spec.name.trimmed().isEmpty()) ||
-                (spec.showOrganization && !spec.organization.trimmed().isEmpty());
-            if (hasVisibleLabel) {
-                m_textRenderer->drawSpeakerLabel(cb,
-                                                 swapSize,
-                                                 state->outputSize,
-                                                 compositeRect,
-                                                 spec);
-            }
+        if (preparedSpeakerLabel && m_speakerTextRenderer && m_speakerTextRenderer->isReady()) {
+            m_speakerTextRenderer->drawSpeakerLabel(cb,
+                                                    swapSize,
+                                                    state->outputSize,
+                                                    compositeRect,
+                                                    preparedSpeakerSpec);
         }
         drawPreparedOverlay(preparedPlaybackStatusOverlay);
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);

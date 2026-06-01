@@ -36,6 +36,17 @@ bool writeTranscript(const QString& path, const QJsonArray& words) {
     return file.write(json) == json.size();
 }
 
+bool writeActiveEditableTranscript(const QString& clipPath, const QJsonArray& words) {
+    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
+    if (!writeTranscript(editablePath, words)) {
+        return false;
+    }
+    setActiveTranscriptPathForClipFile(clipPath, editablePath);
+    invalidateTranscriptJsonCache(editablePath);
+    invalidateTranscriptSpeakerProfileCache(editablePath);
+    return true;
+}
+
 QJsonObject word(const QString& text, double startSeconds, double endSeconds, bool skipped = false) {
     QJsonObject obj;
     obj[QStringLiteral("word")] = text;
@@ -99,6 +110,17 @@ int firstMatchRow(const QTableWidget& table, double sourceSeconds) {
     return -1;
 }
 
+bool tableHasOutsideCutRow(const QTableWidget& table)
+{
+    for (int row = 0; row < table.rowCount(); ++row) {
+        const QTableWidgetItem* item = table.item(row, 0);
+        if (item && item->data(Qt::UserRole + 12).toBool()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 TranscriptTab::Widgets makeTranscriptWidgets(QLineEdit* clipLabel,
                                              QLabel* detailsLabel,
                                              QTableWidget* table,
@@ -152,12 +174,11 @@ void TestTranscriptTabFollow::testContinuousAlignmentAcrossFrames() {
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     words.push_back(word(QStringLiteral("a"), 0.0, 0.10));
     words.push_back(word(QStringLiteral("b"), 0.10, 0.20));
     words.push_back(word(QStringLiteral("c"), 0.20, 0.30));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-1"), clipPath);
 
@@ -187,6 +208,7 @@ void TestTranscriptTabFollow::testContinuousAlignmentAcrossFrames() {
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
 
     QVERIFY2(table.rowCount() >= 3, "Transcript table did not load expected rows");
 
@@ -215,11 +237,10 @@ void TestTranscriptTabFollow::testFollowWorksWhileTableHasFocus() {
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     words.push_back(word(QStringLiteral("a"), 0.0, 0.10));
     words.push_back(word(QStringLiteral("b"), 0.10, 0.20));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-2"), clipPath);
 
@@ -250,6 +271,7 @@ void TestTranscriptTabFollow::testFollowWorksWhileTableHasFocus() {
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 2, 2000);
     QVERIFY(table.rowCount() >= 2);
 
     table.setFocus(Qt::OtherFocusReason);
@@ -270,11 +292,10 @@ void TestTranscriptTabFollow::testManualSelectionHoldWhilePausedThenResumeOnPlay
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     words.push_back(word(QStringLiteral("a"), 0.0, 0.10));
     words.push_back(word(QStringLiteral("b"), 0.10, 0.20));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-3"), clipPath);
 
@@ -305,6 +326,7 @@ void TestTranscriptTabFollow::testManualSelectionHoldWhilePausedThenResumeOnPlay
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 2, 2000);
     QVERIFY(table.rowCount() >= 2);
 
     table.selectRow(0);
@@ -328,12 +350,11 @@ void TestTranscriptTabFollow::testFollowSkipsSkippedRowsAndClearsSelection() {
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     words.push_back(word(QStringLiteral("a"), 0.0, 0.10, false));
     words.push_back(word(QStringLiteral("b"), 0.10, 0.20, true));
     words.push_back(word(QStringLiteral("c"), 0.20, 0.30, false));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-skip"), clipPath);
 
@@ -363,6 +384,7 @@ void TestTranscriptTabFollow::testFollowSkipsSkippedRowsAndClearsSelection() {
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
     QVERIFY(table.rowCount() >= 3);
 
     int skippedRow = -1;
@@ -404,12 +426,11 @@ void TestTranscriptTabFollow::testFollowUsesSourceTimesNotRenderTimes() {
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     // Reorder render timeline so render start/end diverge from source start/end.
     words.push_back(wordWithRenderOrder(QStringLiteral("a"), 0.0, 0.10, 1));
     words.push_back(wordWithRenderOrder(QStringLiteral("b"), 1.0, 1.10, 0));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-source-vs-render"), clipPath);
 
@@ -439,6 +460,7 @@ void TestTranscriptTabFollow::testFollowUsesSourceTimesNotRenderTimes() {
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_COMPARE_WITH_TIMEOUT(table.rowCount(), 2, 2000);
     QCOMPARE(table.rowCount(), 2);
 
     int rowA = -1;
@@ -469,13 +491,12 @@ void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastPlayback() {
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     // Intentional micro-gaps emulate step-over at higher playback rates.
     words.push_back(word(QStringLiteral("a"), 0.000, 0.040));
     words.push_back(word(QStringLiteral("b"), 0.050, 0.090));
     words.push_back(word(QStringLiteral("c"), 0.100, 0.140));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-fast-follow"), clipPath);
 
@@ -505,6 +526,7 @@ void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastPlayback() {
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
     QVERIFY(table.rowCount() >= 3);
 
     int rowA = -1;
@@ -541,12 +563,11 @@ void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastReversePlaybac
     const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
     QJsonArray words;
     words.push_back(word(QStringLiteral("a"), 0.000, 0.040));
     words.push_back(word(QStringLiteral("b"), 0.050, 0.090));
     words.push_back(word(QStringLiteral("c"), 0.100, 0.140));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-fast-reverse-follow"), clipPath);
 
@@ -576,6 +597,7 @@ void TestTranscriptTabFollow::testFollowBridgesSmallGapsDuringFastReversePlaybac
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
     QVERIFY(table.rowCount() >= 3);
 
     int rowB = -1;
@@ -606,7 +628,6 @@ void TestTranscriptTabFollow::testOutsideCutRowsAreNotAutoSelected() {
     QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
 
     const QString originalPath = transcriptPathForClipFile(clipPath);
-    const QString editablePath = transcriptEditablePathForClipFile(clipPath);
 
     QJsonArray originalWords;
     originalWords.push_back(word(QStringLiteral("keep"), 0.0, 0.10));
@@ -615,7 +636,7 @@ void TestTranscriptTabFollow::testOutsideCutRowsAreNotAutoSelected() {
 
     QJsonArray editableWords;
     editableWords.push_back(word(QStringLiteral("keep"), 0.0, 0.10));
-    QVERIFY(writeTranscript(editablePath, editableWords));
+    QVERIFY(writeActiveEditableTranscript(clipPath, editableWords));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-4"), clipPath);
 
@@ -651,6 +672,7 @@ void TestTranscriptTabFollow::testOutsideCutRowsAreNotAutoSelected() {
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(tableHasOutsideCutRow(table), 2000);
 
     int outsideRow = -1;
     double outsideSeconds = -1.0;
@@ -683,7 +705,7 @@ void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersi
     words.push_back(word(QStringLiteral("a"), 0.0, 0.10));
     words.push_back(word(QStringLiteral("b"), 0.10, 0.20));
     QVERIFY(writeTranscript(originalPath, words));
-    QVERIFY(writeTranscript(editablePath, words));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
 
     TimelineClip clip = makeAudioClip(QStringLiteral("clip-5"), clipPath);
 
@@ -723,6 +745,7 @@ void TestTranscriptTabFollow::testDeleteCurrentTranscriptionRemovesSelectedVersi
             {}});
     tab.wire();
     tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(scriptVersions.currentData().toString() == editablePath, 2000);
 
     QCOMPARE(scriptVersions.currentData().toString(), editablePath);
 

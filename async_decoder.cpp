@@ -632,8 +632,12 @@ void AsyncDecoder::runLane(LaneState* lane) {
             }
 
             if (state->context) {
-                if (state->context->supportsSequenceBatchDecode() &&
-                    request.kind != DecodeRequestKind::Preload) {
+                const bool publishDecodedBatch =
+                    request.kind != DecodeRequestKind::Preload &&
+                    (state->context->supportsSequenceBatchDecode() ||
+                     request.kind == DecodeRequestKind::Visible ||
+                     request.kind == DecodeRequestKind::Prefetch);
+                if (publishDecodedBatch) {
                     decodedFrames = state->context->decodeThroughFrame(request.frameNumber);
                     for (const FrameHandle& decodedFrame : decodedFrames) {
                         if (!decodedFrame.isNull() && decodedFrame.frameNumber() == request.frameNumber) {
@@ -771,6 +775,10 @@ void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
             continue;
         }
         if (queued.priority > req.priority) {
+            continue;
+        }
+        if (queued.kind == DecodeRequestKind::Visible &&
+            req.kind == DecodeRequestKind::Visible) {
             continue;
         }
         if (queued.kind == DecodeRequestKind::Visible &&

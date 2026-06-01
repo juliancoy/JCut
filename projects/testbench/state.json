@@ -31,7 +31,7 @@
     "autosaveIntervalMinutes": 5,
     "autosaveMaxBackups": 20,
     "correctionsEnabled": true,
-    "currentFrame": 320,
+    "currentFrame": 0,
     "debugDecodeMode": "hardware_zero_copy",
     "debugDecoderLaneCount": 2,
     "debugDeterministicPipeline": false,
@@ -82,7 +82,7 @@
     "outputWidth": 1080,
     "playbackAudioWarpMode": "disabled",
     "playbackAudioWarpModeExplicit": true,
-    "playbackClockSource": "auto",
+    "playbackClockSource": "timeline",
     "playbackLoopEnabled": false,
     "playbackSpeed": 1,
     "playing": false,
@@ -107,9 +107,14 @@
     "renderSyncMarkers": [],
     "renderUseProxies": true,
     "render_backend": "vulkan",
+    "rubberBandChannelsTogether": true,
+    "rubberBandEngine": "faster",
+    "rubberBandPitch": "high_speed",
+    "rubberBandThreading": "always",
+    "rubberBandWindow": "standard",
     "selectedClip": {
         "audioEnabled": true,
-        "audioSourceLastVerifiedMs": 1780245975757,
+        "audioSourceLastVerifiedMs": 1780278948436,
         "audioSourceMode": "embedded",
         "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
         "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
@@ -575,7 +580,7 @@
     "timeline": [
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780245975740,
+            "audioSourceLastVerifiedMs": 1780278948416,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/life_c.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/life_c.png",
@@ -1011,7 +1016,7 @@
         },
         {
             "audioEnabled": false,
-            "audioSourceLastVerifiedMs": 1780245975757,
+            "audioSourceLastVerifiedMs": 1780278948646,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "",
             "audioSourcePath": "",
@@ -1502,7 +1507,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780245975740,
+            "audioSourceLastVerifiedMs": 1780278948416,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/gradient_a.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/gradient_a.png",
@@ -1938,7 +1943,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780245975740,
+            "audioSourceLastVerifiedMs": 1780278948416,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/fractal_b.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/fractal_b.png",
@@ -2374,7 +2379,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780245975757,
+            "audioSourceLastVerifiedMs": 1780278948436,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
@@ -2843,7 +2848,7 @@
             "visualMode": "enabled"
         }
     ],
-    "transcriptActiveCutPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source_editable.json",
+    "transcriptActiveCutPath": "",
     "transcriptColumnHidden": [
         false,
         false,

@@ -1043,6 +1043,40 @@ QJsonObject PreviewWindow::profilingSnapshot() const {
     return snapshot;
 }
 
+QJsonObject PreviewWindow::pipelineHealthSnapshot() const {
+    QJsonObject snapshot{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("backend"), backendName()},
+        {QStringLiteral("playing"), m_interaction.playing},
+        {QStringLiteral("current_frame"), static_cast<qint64>(m_interaction.currentFrame)},
+        {QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample)},
+        {QStringLiteral("clip_count"), m_interaction.clips.size()},
+        {QStringLiteral("pipeline_initialized"), m_cache != nullptr},
+        {QStringLiteral("widget_visible"), isVisible()},
+        {QStringLiteral("updates_enabled"), updatesEnabled()},
+        {QStringLiteral("pipeline_stages"), QJsonArray{}}
+    };
+    if (m_decoder) {
+        snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
+        snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
+    }
+    if (m_cache) {
+        const qint64 now = nowMs();
+        snapshot.insert(QStringLiteral("cache_pending_visible_requests"), m_cache->pendingVisibleRequestCount());
+        snapshot.insert(QStringLiteral("visible_decode_diagnostics"), m_cache->visibleDecodeDiagnostics(now));
+    }
+    if (m_playbackPipeline) {
+        snapshot.insert(QStringLiteral("playback_pipeline"), QJsonObject{
+            {QStringLiteral("active"), m_interaction.playing},
+            {QStringLiteral("buffered_frames"), m_playbackPipeline->bufferedFrameCount()},
+            {QStringLiteral("pending_visible_requests"), m_playbackPipeline->pendingVisibleRequestCount()},
+            {QStringLiteral("dropped_presentation_frames"), m_playbackPipeline->droppedPresentationFrameCount()}
+        });
+    }
+    snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot());
+    return snapshot;
+}
+
 void PreviewWindow::resetProfilingStats() {
     m_maxRenderDurationMs = 0;
     m_renderCount = 0;

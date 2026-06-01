@@ -33,12 +33,16 @@ int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
 int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
                                              qreal timelineFramePosition,
                                              const QVector<RenderSyncMarker>& markers);
+int64_t approximateTimelineFrameForClipSourceFrame(const TimelineClip& clip,
+                                                   int64_t sourceFrame);
 int64_t sourceFrameForClipAtTimelineSample(const TimelineClip& clip,
                                            int64_t timelineSample,
                                            const QVector<RenderSyncMarker>& markers);
 int64_t sourceSampleForClipAtTimelineSample(const TimelineClip& clip,
                                             int64_t timelineSample,
                                             const QVector<RenderSyncMarker>& markers);
+int64_t transcriptFrameForClipSourceFrame(const TimelineClip& clip,
+                                          int64_t mediaSourceFrame);
 int64_t transcriptFrameForClipAtTimelineSample(const TimelineClip& clip,
                                                int64_t timelineSample,
                                                const QVector<RenderSyncMarker>& markers);

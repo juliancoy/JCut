@@ -136,7 +136,7 @@ private:
     void updateTransportLabels();
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
-    QJsonObject pipelineSnapshot() const;
+    QJsonObject pipelineSnapshot(bool verbose = false) const;
     QJsonObject startupProfileSnapshot() const;
     QJsonObject startupReadinessSnapshot() const;
     QJsonObject startupOptimizationSnapshot() const;

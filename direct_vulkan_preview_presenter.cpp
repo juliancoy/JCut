@@ -1155,6 +1155,94 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     };
 }
 
+QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
+{
+    int activeStatuses = 0;
+    int readyStatuses = 0;
+    int exactStatuses = 0;
+    int hardwareStatuses = 0;
+    int cpuStatuses = 0;
+    int64_t requestedSourceFrame = -1;
+    int64_t presentedSourceFrame = -1;
+    int64_t maxFrameLag = 0;
+    QString decodePath;
+    QString missingReason;
+    if (m_state) {
+        for (const VulkanPreviewClipFrameStatus& status : m_state->vulkanFrameStatuses) {
+            if (!status.active) {
+                continue;
+            }
+            ++activeStatuses;
+            readyStatuses += status.hasFrame ? 1 : 0;
+            exactStatuses += status.exact ? 1 : 0;
+            hardwareStatuses += (status.hardwareFrame || status.gpuTexture) ? 1 : 0;
+            cpuStatuses += status.cpuImage ? 1 : 0;
+            requestedSourceFrame = status.requestedSourceFrame;
+            presentedSourceFrame = status.presentedSourceFrame;
+            decodePath = status.decodePath;
+            missingReason = status.missingReason;
+            if (status.hasFrame && status.requestedSourceFrame >= 0 && status.presentedSourceFrame >= 0) {
+                maxFrameLag = qMax<int64_t>(
+                    maxFrameLag,
+                    qAbs(status.requestedSourceFrame - status.presentedSourceFrame));
+            }
+        }
+    }
+    const bool cpuUploadPath = false;
+    return QJsonObject{
+        {QStringLiteral("backend"), QStringLiteral("vulkan")},
+        {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
+        {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
+        {QStringLiteral("visible_path"), directVulkanPreviewVisiblePathLabel()},
+        {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
+        {QStringLiteral("qvulkanwindow_valid"), directVulkanPreviewWindowIsValid(m_window)},
+        {QStringLiteral("native_window_visible"), directVulkanPreviewWindowIsVisible(m_window)},
+        {QStringLiteral("native_active"), m_active},
+        {QStringLiteral("qimage_bridge"), false},
+        {QStringLiteral("qimage_materialized"), cpuUploadPath},
+        {QStringLiteral("vulkan_path_uses_qimage"), cpuUploadPath},
+        {QStringLiteral("vulkan_cpu_upload_path"), cpuUploadPath},
+        {QStringLiteral("current_frame"), m_state ? static_cast<qint64>(m_state->currentFrame) : 0},
+        {QStringLiteral("clip_count"), m_state ? m_state->clipCount : 0},
+        {QStringLiteral("active_decode_status_clips"), activeStatuses},
+        {QStringLiteral("ready_decode_status_clips"), readyStatuses},
+        {QStringLiteral("exact_decode_status_clips"), exactStatuses},
+        {QStringLiteral("hardware_decode_status_clips"), hardwareStatuses},
+        {QStringLiteral("cpu_decode_status_clips"), cpuStatuses},
+        {QStringLiteral("requested_source_frame"), static_cast<qint64>(requestedSourceFrame)},
+        {QStringLiteral("presented_source_frame"), static_cast<qint64>(presentedSourceFrame)},
+        {QStringLiteral("frame_lag"), static_cast<qint64>(maxFrameLag)},
+        {QStringLiteral("decode_path"), decodePath},
+        {QStringLiteral("missing_reason"), missingReason},
+        {QStringLiteral("timeline_texture_draw_pipeline"), m_active && m_window != nullptr},
+        {QStringLiteral("vulkan_curve_lut_applied"), m_stats.lastCurveLutApplied},
+        {QStringLiteral("presented_frames"), static_cast<double>(m_presentedFrames)},
+        {QStringLiteral("preview_update_requests"), static_cast<double>(m_stats.previewUpdateRequests)},
+        {QStringLiteral("preview_updates_delivered"), static_cast<double>(m_stats.previewUpdatesDelivered)},
+        {QStringLiteral("last_preview_update_latency_ms"), m_stats.lastPreviewUpdateLatencyMs},
+        {QStringLiteral("max_preview_update_latency_ms"), m_stats.maxPreviewUpdateLatencyMs},
+        {QStringLiteral("last_present_interval_ms"), m_stats.lastPresentIntervalMs},
+        {QStringLiteral("max_present_interval_ms"), m_stats.maxPresentIntervalMs},
+        {QStringLiteral("handoff_attempts"), static_cast<double>(m_stats.handoffAttempts)},
+        {QStringLiteral("handoff_successes"), static_cast<double>(m_stats.handoffSuccesses)},
+        {QStringLiteral("handoff_failures"), static_cast<double>(m_stats.handoffFailures)},
+        {QStringLiteral("handoff_success_rate"),
+         m_stats.handoffAttempts > 0
+             ? static_cast<double>(m_stats.handoffSuccesses) / static_cast<double>(m_stats.handoffAttempts)
+             : 1.0},
+        {QStringLiteral("texture_draw_count"), static_cast<double>(m_stats.textureDraws)},
+        {QStringLiteral("fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
+        {QStringLiteral("implicit_fallback_permitted"), false},
+        {QStringLiteral("last_handoff_upload_ms"), m_stats.lastUploadMs},
+        {QStringLiteral("last_handoff_mode"), m_stats.lastHandoffMode},
+        {QStringLiteral("last_handoff_error"), m_stats.lastHandoffError},
+        {QStringLiteral("last_handoff_probe_path"), m_stats.lastProbePath},
+        {QStringLiteral("last_hardware_sw_format"), m_stats.lastHardwareSwFormat},
+        {QStringLiteral("last_vulkan_image_format"), m_stats.lastVulkanImageFormat},
+        {QStringLiteral("failure_reason"), m_failureReason}
+    };
+}
+
 void DirectVulkanPreviewPresenter::resetProfilingStats()
 {
     m_presentedFrames = 0;

@@ -2312,11 +2312,23 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
     QElapsedTimer refreshTimer;
     refreshTimer.start();
     const bool playbackActive = m_speakerDeps.isPlaybackActive && m_speakerDeps.isPlaybackActive();
-    auto finalizeRefreshTiming = [this, &refreshTimer]() {
+    auto finalizeRefreshTiming = [this, &refreshTimer, &clip, &speakerId, playbackActive]() {
         m_lastPlayheadTrackCandidatesRefreshDurationMs = refreshTimer.elapsed();
         m_maxPlayheadTrackCandidatesRefreshDurationMs =
             qMax(m_maxPlayheadTrackCandidatesRefreshDurationMs,
                  m_lastPlayheadTrackCandidatesRefreshDurationMs);
+        if (m_lastPlayheadTrackCandidatesRefreshDurationMs >= 75) {
+            qWarning().noquote()
+                << QStringLiteral("[SPEAKERS WARN] playhead track candidates refresh slow: elapsed_ms=%1 playback=%2 clip_id=%3 speaker_id=%4 candidates=%5 block_reason=%6")
+                       .arg(m_lastPlayheadTrackCandidatesRefreshDurationMs)
+                       .arg(playbackActive ? QStringLiteral("true") : QStringLiteral("false"),
+                            clip.id,
+                            speakerId)
+                       .arg(m_lastPlayheadTrackCandidateCount)
+                       .arg(m_lastPlayheadTrackCandidatesBlockReason.isEmpty()
+                                ? QStringLiteral("none")
+                                : m_lastPlayheadTrackCandidatesBlockReason);
+        }
     };
     if (!m_widgets.speakerPlayheadFaceDetectionsList) {
         finalizeRefreshTiming();

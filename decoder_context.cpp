@@ -22,6 +22,7 @@ namespace editor {
 namespace {
 
 constexpr int64_t kMaxSequentialDecodeGap = 90;
+constexpr int kMaxReturnedVideoBatchFrames = 12;
 constexpr size_t kMaxSequenceFrameCacheBytes = 384 * 1024 * 1024;  // 384MB for 4K WebP
 constexpr int kMaxSequenceFrameCacheEntries = 48;  // 48 frames = 1.6s at the default timeline FPS
 constexpr int kWebpSequenceBatchAhead = 12;  // 12 frames = 400ms lookahead
@@ -727,11 +728,8 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
 
             m_lastDecodedFrame = currentFrame;
             FrameHandle decodedFrame = convertToFrame(frame, currentFrame);
-            if (decodedFrame.hasHardwareFrame()) {
-                // Hardware frames own decoder GPU surfaces. During a long seek,
-                // retaining every intermediate surface can exhaust CUDA memory
-                // before the requested frame is reached.
-                decodedFrames.clear();
+            if (decodedFrames.size() >= kMaxReturnedVideoBatchFrames) {
+                decodedFrames.removeFirst();
             }
             decodedFrames.push_back(decodedFrame);
             av_frame_unref(frame);

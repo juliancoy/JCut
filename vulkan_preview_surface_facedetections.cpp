@@ -20,6 +20,52 @@
 
 namespace {
 constexpr qint64 kFacestreamOverlaySlowQueryWarnMs = 100;
+constexpr int64_t kMaxPreservedPlaybackOverlayDriftFrames = 60;
+
+QJsonObject overlayDriftDebug(const QVector<VulkanPreviewFacestreamOverlay>& overlays,
+                              const QVector<VulkanPreviewFacestreamOverlay>& rawDetections,
+                              int64_t requestedSourceFrame)
+{
+    int64_t minFrame = std::numeric_limits<int64_t>::max();
+    int64_t maxFrame = std::numeric_limits<int64_t>::min();
+    auto scan = [&](const QVector<VulkanPreviewFacestreamOverlay>& values) {
+        for (const VulkanPreviewFacestreamOverlay& overlay : values) {
+            if (overlay.sourceFrame < 0) {
+                continue;
+            }
+            minFrame = qMin(minFrame, overlay.sourceFrame);
+            maxFrame = qMax(maxFrame, overlay.sourceFrame);
+        }
+    };
+    scan(overlays);
+    scan(rawDetections);
+    if (minFrame == std::numeric_limits<int64_t>::max()) {
+        return QJsonObject{
+            {QStringLiteral("previous_overlay_has_source_frames"), false},
+            {QStringLiteral("previous_overlay_max_abs_drift_frames"), static_cast<qint64>(-1)}
+        };
+    }
+    const int64_t drift = qMax(qAbs(requestedSourceFrame - minFrame),
+                               qAbs(requestedSourceFrame - maxFrame));
+    return QJsonObject{
+        {QStringLiteral("previous_overlay_has_source_frames"), true},
+        {QStringLiteral("previous_overlay_min_source_frame"), static_cast<qint64>(minFrame)},
+        {QStringLiteral("previous_overlay_max_source_frame"), static_cast<qint64>(maxFrame)},
+        {QStringLiteral("previous_overlay_max_abs_drift_frames"), static_cast<qint64>(drift)}
+    };
+}
+
+bool previousPlaybackOverlayIsCloseEnough(const QVector<VulkanPreviewFacestreamOverlay>& overlays,
+                                          const QVector<VulkanPreviewFacestreamOverlay>& rawDetections,
+                                          int64_t requestedSourceFrame)
+{
+    const QJsonObject drift = overlayDriftDebug(overlays, rawDetections, requestedSourceFrame);
+    if (!drift.value(QStringLiteral("previous_overlay_has_source_frames")).toBool(false)) {
+        return false;
+    }
+    return drift.value(QStringLiteral("previous_overlay_max_abs_drift_frames")).toInteger(
+               std::numeric_limits<qint64>::max()) <= kMaxPreservedPlaybackOverlayDriftFrames;
+}
 
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
@@ -474,6 +520,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             if (cachedEntryIt == m_facedetectionsOverlayCache.constEnd()) {
                 playbackSuppressedColdLookup = true;
                 if (clip.id == m_interaction.selectedClipId) {
+                    QJsonObject drift = overlayDriftDebug(previousOverlays, previousRawDetections, localFrame);
                     m_lastFacedetectionsQueryDebug = QJsonObject{
                         {QStringLiteral("status"), QStringLiteral("playback_cold_overlay_lookup_suppressed_preserving_previous")},
                         {QStringLiteral("clip_id"), clip.id},
@@ -481,11 +528,16 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                         {QStringLiteral("previous_overlay_count"), previousOverlays.size()},
                         {QStringLiteral("previous_raw_detection_count"), previousRawDetections.size()},
                         {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
+                        {QStringLiteral("preserve_previous_overlay_drift_limit_frames"),
+                         static_cast<qint64>(kMaxPreservedPlaybackOverlayDriftFrames)},
                         {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
                         {QStringLiteral("show_raw_detections"), m_showRawDetections},
                         {QStringLiteral("assignment_interaction_enabled"),
                          m_interaction.faceStreamAssignmentInteractionEnabled}
                     };
+                    for (auto it = drift.constBegin(); it != drift.constEnd(); ++it) {
+                        m_lastFacedetectionsQueryDebug.insert(it.key(), it.value());
+                    }
                 }
                 continue;
             }
@@ -518,8 +570,23 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         }
         if (requestClips.isEmpty()) {
             if (playbackSuppressedColdLookup) {
-                m_interaction.facedetectionsOverlays = previousOverlays;
-                m_interaction.rawDetectionOverlays = previousRawDetections;
+                const bool preservePrevious = previousPlaybackOverlayIsCloseEnough(
+                    previousOverlays,
+                    previousRawDetections,
+                    m_interaction.vulkanFrameStatuses.isEmpty()
+                        ? -1
+                        : m_interaction.vulkanFrameStatuses.constFirst().requestedSourceFrame);
+                if (preservePrevious) {
+                    m_interaction.facedetectionsOverlays = previousOverlays;
+                    m_interaction.rawDetectionOverlays = previousRawDetections;
+                } else {
+                    m_interaction.facedetectionsOverlays = overlays;
+                    m_interaction.rawDetectionOverlays = rawDetections;
+                    m_appliedFacestreamOverlaySnapshotKey.clear();
+                    m_lastFacedetectionsQueryDebug.insert(
+                        QStringLiteral("status"),
+                        QStringLiteral("playback_cold_overlay_cache_missing_previous_too_stale_cleared"));
+                }
             } else {
                 m_interaction.facedetectionsOverlays = overlays;
                 m_interaction.rawDetectionOverlays = rawDetections;

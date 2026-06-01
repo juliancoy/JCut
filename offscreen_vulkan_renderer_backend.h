@@ -2025,7 +2025,7 @@ public:
                                m_outputSize.height(),
                                m_outputSize.width() * 4,
                                QImage::Format_ARGB32);
-            out = readbackRgba.copy().convertToFormat(QImage::Format_ARGB32_Premultiplied).mirrored();
+            out = readbackRgba.copy().convertToFormat(QImage::Format_ARGB32_Premultiplied);
         }
         m_colorImagePrimed = true;
         return out;

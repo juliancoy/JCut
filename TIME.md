@@ -50,6 +50,10 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Timeline sample -> transcript frame:
   - `transcriptFrameForClipAtTimelineSample(...)`
   - Converts source sample to source seconds, then to transcript frame.
+- Presented media source frame -> transcript frame:
+  - `transcriptFrameForClipSourceFrame(...)`
+  - Converts the actually presented decoded media frame to source seconds, then to transcript frame.
+  - Live visual overlays that must stick to the displayed picture use this path when a presented frame is available.
 - Transcript word times (seconds) -> transcript frames:
   - `TranscriptTab::parseTranscriptRows(...)`
   - `TranscriptEngine::transcriptWordExportRanges(...)`
@@ -181,6 +185,7 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Pitch-preserving audio readiness truth: `AudioEngine::playbackAudioReadyForFrame(...)` and `AudioEngine::playbackAudioBlocked()` gate playback start/continuation at non-1.0 `time_stretch` speeds.
 - Timer fallback truth: allowed only when audio is not the selected/effective master or there is no playable audio; invalid when pitch-preserving audio is required but blocked or not ready.
 - Transcript truth at a playhead instant: marker-aware `sourceSample/sourceFrame` derived from that sample.
+- Live subtitle overlay truth: the presented media source frame when a frame has already been selected for display; this prevents subtitles from visually leading late video.
 - Speech keep/remove truth: `TranscriptEngine::transcriptWordExportRanges(...)` from active transcript path.
 - Overlay/speaker timing truth: transcript/source frame mapping, not render-order table position.
 - Debug truth: logs and REST fields that cross domains must name the domain explicitly (`timeline_sample`, `timeline_frame`, `media_source_frame`, `transcript_frame`, `retimed_cache_sample`) instead of using ambiguous `source_frame` labels.
@@ -191,6 +196,7 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Invariant 3: When speech filter is enabled, active playback traversal must use `effectivePlaybackRanges()` output; unfiltered stepping is invalid in that mode.
 - Invariant 4: Preview transcript overlay and render transcript overlay must use the same transcript-frame mapping path to avoid WYSIWYG drift.
   - Enforced via shared helper: `transcriptOverlayLayoutAtSourceFrame(...)`.
+  - During live Vulkan presentation, the preview overlay must prefer the presented media-source-frame mapping (`transcriptFrameForClipSourceFrame(...)`) over the audio-clock playhead when a presented frame is available.
 - Invariant 5: Active transcript cut path (`activeTranscriptPathForClipFile(...)`) is the transcript source of truth for runtime consumers.
 - Invariant 6: Skip-aware transform interpolation must use either active global kept ranges (`setTransformSkipAwareTimelineRanges(...)`) or active transcript speech ranges; stale range state is invalid.
 - Invariant 7: In pitch-preserving `time_stretch` playback, video must not follow an audio clock that is blocked on a missing or out-of-range retimed segment.
