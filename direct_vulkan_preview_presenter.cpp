@@ -1132,6 +1132,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("sampled_image_ready_count"), static_cast<double>(m_stats.sampledImageReady)},
         {QStringLiteral("sampled_image_descriptor_index"), m_stats.descriptorSetIndex},
         {QStringLiteral("sampled_image_descriptor_count"), m_stats.descriptorSetCount},
+        {QStringLiteral("active_clip_handoff_resource_count"), m_stats.activeClipHandoffResourceCount},
+        {QStringLiteral("retired_clip_handoff_resource_count"), m_stats.retiredClipHandoffResourceCount},
         {QStringLiteral("texture_draw_count"), static_cast<double>(m_stats.textureDraws)},
         {QStringLiteral("checker_draw_count"), static_cast<double>(m_stats.checkerDraws)},
         {QStringLiteral("clear_fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
@@ -1230,8 +1232,11 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
          m_stats.handoffAttempts > 0
              ? static_cast<double>(m_stats.handoffSuccesses) / static_cast<double>(m_stats.handoffAttempts)
              : 1.0},
+        {QStringLiteral("active_clip_handoff_resource_count"), m_stats.activeClipHandoffResourceCount},
+        {QStringLiteral("retired_clip_handoff_resource_count"), m_stats.retiredClipHandoffResourceCount},
         {QStringLiteral("texture_draw_count"), static_cast<double>(m_stats.textureDraws)},
         {QStringLiteral("fallback_draw_count"), static_cast<double>(m_stats.clearFallbackDraws)},
+        {QStringLiteral("explicit_failure_draw_count"), static_cast<double>(m_stats.explicitFailureDraws)},
         {QStringLiteral("implicit_fallback_permitted"), false},
         {QStringLiteral("last_handoff_upload_ms"), m_stats.lastUploadMs},
         {QStringLiteral("last_handoff_mode"), m_stats.lastHandoffMode},

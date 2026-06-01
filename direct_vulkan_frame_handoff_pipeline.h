@@ -19,6 +19,9 @@ public:
         VkImage image = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
         VkFormat format = VK_FORMAT_UNDEFINED;
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+        int descriptorSetIndex = -1;
+        int descriptorSetCount = 0;
         QSize size;
     };
 

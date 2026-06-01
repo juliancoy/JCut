@@ -62,6 +62,8 @@ struct DirectVulkanPreviewStats {
     double maxPresentIntervalMs = 0.0;
     int descriptorSetIndex = -1;
     int descriptorSetCount = 0;
+    int activeClipHandoffResourceCount = 0;
+    int retiredClipHandoffResourceCount = 0;
 };
 
 class DirectVulkanPreviewPresenter final {

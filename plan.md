@@ -194,13 +194,10 @@ Remaining item is explicitly optimization work rather than a correctness blocker
 
 Current local verification:
 
-- `cmake --build build --target jcut -j2` passes.
-- Focused Vulkan overlay/text regression tests pass:
+- `cmake --build build --target jcut -j$(nproc)` passes.
+- Focused Vulkan overlay/text/synchronization regression tests pass:
   - `test_facestream_overlay_snapshot`
   - `test_direct_vulkan_handoff_pipeline_contract`
   - `test_vulkan_text_generation`
-- Full `ctest --test-dir build --output-on-failure` currently has unrelated environment/data failures:
-  - `test_transcript_tab_follow` did not load expected transcript table rows.
-  - `test_track_avatar_geometry` could not find expected continuity tracks for the selected Baltimore County clip.
-  - `test_ui_smoke_harness_offscreen`, `test_speaker_flow_e2e_offscreen`, and `test_rest_smoke_offscreen` could not start cleanly because another editor instance was already running.
-  - `test_ui_responsiveness_budget_offscreen` timed out waiting for playback to start in the offscreen placeholder harness.
+  - `test_vulkan_subtitle_render`
+- Full `ctest --test-dir build --output-on-failure` passes: 39/39 tests.

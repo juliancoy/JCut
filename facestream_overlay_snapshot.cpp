@@ -166,4 +166,23 @@ FacestreamOverlaySnapshot buildFacestreamOverlaySnapshot(
     return snapshot;
 }
 
+FacestreamOverlaySnapshotApplyDecision facestreamOverlaySnapshotApplyDecision(
+    bool playbackActive,
+    const QString& snapshotKey,
+    const QString& expectedKey,
+    uint64_t snapshotRequestId,
+    uint64_t latestAppliedRequestId)
+{
+    if (!playbackActive) {
+        return FacestreamOverlaySnapshotApplyDecision::DropPaused;
+    }
+    if (snapshotKey != expectedKey) {
+        return FacestreamOverlaySnapshotApplyDecision::DropStaleKey;
+    }
+    if (snapshotRequestId < latestAppliedRequestId) {
+        return FacestreamOverlaySnapshotApplyDecision::DropStaleRequestId;
+    }
+    return FacestreamOverlaySnapshotApplyDecision::Apply;
+}
+
 } // namespace jcut::preview_overlay

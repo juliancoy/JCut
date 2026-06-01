@@ -14,6 +14,8 @@ class QVulkanDeviceFunctions;
 
 class VulkanResources final {
 public:
+    static constexpr size_t kDescriptorSetCount = 3;
+
     VulkanResources() = default;
     ~VulkanResources();
 
@@ -60,7 +62,6 @@ private:
     VkSampler m_sampler = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_descriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_descriptorPool = VK_NULL_HANDLE;
-    static constexpr size_t kDescriptorSetCount = 3;
     std::array<VkDescriptorSet, kDescriptorSetCount> m_descriptorSets{};
     size_t m_descriptorSetIndex = 0;
 

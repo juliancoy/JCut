@@ -18,6 +18,30 @@ namespace {
 
 constexpr qint64 kAdaptivePlaybackTuningMinAdjustIntervalMs = 1200;
 
+QJsonArray pipelineStageHealthJson(const QVector<PreviewSurface::PipelineStageSnapshot>& stages)
+{
+    QJsonArray array;
+    for (int i = 0; i < stages.size(); ++i) {
+        const PreviewSurface::PipelineStageSnapshot& stage = stages.at(i);
+        array.push_back(QJsonObject{
+            {QStringLiteral("index"), i},
+            {QStringLiteral("label"), stage.label},
+            {QStringLiteral("detail"), stage.detail},
+            {QStringLiteral("kind"), stage.kind},
+            {QStringLiteral("exact"), stage.exact},
+            {QStringLiteral("active"), stage.active},
+            {QStringLiteral("state"), stage.state.isEmpty()
+                 ? (stage.active
+                        ? (stage.exact ? QStringLiteral("ready") : QStringLiteral("approximate"))
+                        : QStringLiteral("waiting"))
+                 : stage.state},
+            {QStringLiteral("has_image"), !stage.image.isNull()},
+            {QStringLiteral("facts"), stage.facts}
+        });
+    }
+    return array;
+}
+
 } // namespace
 
 QJsonObject VulkanPreviewSurface::profilingSnapshot() const
@@ -224,6 +248,7 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
     if (m_decoder) {
         snapshot.insert(QStringLiteral("decoder_worker_count"), m_decoder->workerCount());
         snapshot.insert(QStringLiteral("decoder_pending_requests"), m_decoder->pendingRequestCount());
+        snapshot.insert(QStringLiteral("decoder_diagnostics"), m_decoder->diagnosticsSnapshot());
     }
     if (m_cache) {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
@@ -272,7 +297,7 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
             {QStringLiteral("gpu_max"), static_cast<qint64>(budget->maxGpuMemory())}
         });
     }
-    snapshot.insert(QStringLiteral("pipeline_stages"), QJsonArray{});
+    snapshot.insert(QStringLiteral("pipeline_stages"), pipelineStageHealthJson(livePipelineSnapshots()));
     return snapshot;
 }
 

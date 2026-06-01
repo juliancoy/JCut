@@ -909,13 +909,14 @@ void VulkanPreviewSurface::applyFacestreamOverlaySnapshot(const FacestreamOverla
                                             queuedAssignmentInteractionEnabled);
     };
 
-    if (!m_interaction.playing || snapshot.requestKey != expectedKey) {
-        ++m_facedetectionsOverlayWorkerDropped;
-        launchQueuedRequest();
-        return;
-    }
-
-    if (snapshot.requestId < m_latestAppliedFacestreamOverlayRequestId) {
+    const jcut::preview_overlay::FacestreamOverlaySnapshotApplyDecision applyDecision =
+        jcut::preview_overlay::facestreamOverlaySnapshotApplyDecision(
+            m_interaction.playing,
+            snapshot.requestKey,
+            expectedKey,
+            snapshot.requestId,
+            m_latestAppliedFacestreamOverlayRequestId);
+    if (applyDecision != jcut::preview_overlay::FacestreamOverlaySnapshotApplyDecision::Apply) {
         ++m_facedetectionsOverlayWorkerDropped;
         launchQueuedRequest();
         return;

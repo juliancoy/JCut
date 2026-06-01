@@ -36,6 +36,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QVector>
 #include <QSet>
 #include <QApplication>
 #include <QExposeEvent>
@@ -260,6 +261,20 @@ private:
                              VkFormat format);
     uint32_t findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const;
     QImage imageFromReadback(const uchar* bytes, const QSize& size, VkFormat format) const;
+    struct ClipHandoffResources {
+        std::unique_ptr<VulkanResources> resources;
+        std::unique_ptr<DirectVulkanFrameHandoffPipeline> pipeline;
+    };
+    struct RetiredClipHandoffResources {
+        QString clipId;
+        std::shared_ptr<ClipHandoffResources> resources;
+        int framesRemaining = 0;
+    };
+    ClipHandoffResources* ensureClipHandoffResources(const QString& clipId);
+    void pruneClipHandoffResources(const QSet<QString>& activeClipIds);
+    void advanceRetiredClipHandoffResources();
+    void releaseClipHandoffResources(const std::shared_ptr<ClipHandoffResources>& resources);
+    void updateClipHandoffResourceStats();
 
     DirectVulkanPreviewWindow* m_owner = nullptr;
     QVulkanWindow* m_window = nullptr;
@@ -270,7 +285,8 @@ private:
     std::unique_ptr<VulkanTextRenderer> m_textRenderer;
     std::unique_ptr<VulkanTextRenderer> m_speakerTextRenderer;
     std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
-    std::unique_ptr<DirectVulkanFrameHandoffPipeline> m_frameHandoffPipeline;
+    QHash<QString, std::shared_ptr<ClipHandoffResources>> m_clipHandoffResources;
+    QVector<RetiredClipHandoffResources> m_retiredClipHandoffResources;
     QString m_playbackStatusOverlayTextureKey;
     bool m_playbackStatusOverlayTextureReady = false;
     std::vector<ReadbackSlot> m_readbackSlots;
@@ -2249,18 +2265,6 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
-    m_frameHandoffPipeline = std::make_unique<DirectVulkanFrameHandoffPipeline>();
-    const jcut::vulkan_detector::VulkanDeviceContext handoffContext{
-        m_window->physicalDevice(),
-        m_window->device(),
-        m_window->graphicsQueue(),
-        m_window->graphicsQueueFamilyIndex()
-    };
-    QString handoffError;
-    if (!m_frameHandoffPipeline->initialize(handoffContext, &handoffError)) {
-        qWarning().noquote()
-            << QStringLiteral("[vulkan-preview] hardware frame handoff unavailable: %1").arg(handoffError);
-    }
     m_pipeline = std::make_unique<VulkanPipeline>();
     QString error;
     if (!m_pipeline->initialize(m_window->device(),
@@ -2324,10 +2328,14 @@ DirectVulkanPreviewRenderer::~DirectVulkanPreviewRenderer()
 void DirectVulkanPreviewRenderer::releaseResources()
 {
     destroyReadbackSlots();
-    if (m_frameHandoffPipeline) {
-        m_frameHandoffPipeline->release();
-        m_frameHandoffPipeline.reset();
+    for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end(); ++it) {
+        releaseClipHandoffResources(it.value());
     }
+    for (const RetiredClipHandoffResources& retired : m_retiredClipHandoffResources) {
+        releaseClipHandoffResources(retired.resources);
+    }
+    m_clipHandoffResources.clear();
+    m_retiredClipHandoffResources.clear();
     m_audioTab.reset();
     m_speakerTextRenderer.reset();
     m_textRenderer.reset();
@@ -2337,6 +2345,105 @@ void DirectVulkanPreviewRenderer::releaseResources()
     m_playbackStatusOverlayTextureReady = false;
     m_resources.reset();
     m_devFuncs = nullptr;
+}
+
+DirectVulkanPreviewRenderer::ClipHandoffResources*
+DirectVulkanPreviewRenderer::ensureClipHandoffResources(const QString& clipId)
+{
+    if (clipId.trimmed().isEmpty() || !m_window || !m_devFuncs) {
+        return nullptr;
+    }
+    auto existing = m_clipHandoffResources.find(clipId);
+    if (existing != m_clipHandoffResources.end()) {
+        return existing.value().get();
+    }
+
+    for (auto it = m_retiredClipHandoffResources.begin(); it != m_retiredClipHandoffResources.end(); ++it) {
+        if (it->clipId != clipId || !it->resources) {
+            continue;
+        }
+        std::shared_ptr<ClipHandoffResources> resources = it->resources;
+        m_retiredClipHandoffResources.erase(it);
+        m_clipHandoffResources.insert(clipId, resources);
+        updateClipHandoffResourceStats();
+        return resources.get();
+    }
+
+    auto resources = std::make_shared<ClipHandoffResources>();
+    resources->resources = std::make_unique<VulkanResources>();
+    if (!resources->resources->initialize(m_window->physicalDevice(), m_window->device(), m_devFuncs)) {
+        if (m_owner) {
+            m_owner->markFailure(QStringLiteral("Failed to initialize per-clip Vulkan handoff resources for %1.")
+                                     .arg(clipId));
+        }
+        return nullptr;
+    }
+    resources->pipeline = std::make_unique<DirectVulkanFrameHandoffPipeline>();
+    const jcut::vulkan_detector::VulkanDeviceContext handoffContext{
+        m_window->physicalDevice(),
+        m_window->device(),
+        m_window->graphicsQueue(),
+        m_window->graphicsQueueFamilyIndex()
+    };
+    QString handoffError;
+    if (!resources->pipeline->initialize(handoffContext, &handoffError)) {
+        qWarning().noquote()
+            << QStringLiteral("[vulkan-preview] hardware frame handoff unavailable for clip %1: %2")
+                   .arg(clipId, handoffError);
+    }
+
+    ClipHandoffResources* raw = resources.get();
+    m_clipHandoffResources.insert(clipId, resources);
+    updateClipHandoffResourceStats();
+    return raw;
+}
+
+void DirectVulkanPreviewRenderer::pruneClipHandoffResources(const QSet<QString>& activeClipIds)
+{
+    for (auto it = m_clipHandoffResources.begin(); it != m_clipHandoffResources.end();) {
+        if (activeClipIds.contains(it.key())) {
+            ++it;
+            continue;
+        }
+        if (it.value()) {
+            m_retiredClipHandoffResources.push_back(RetiredClipHandoffResources{
+                it.key(),
+                it.value(),
+                static_cast<int>(VulkanResources::kDescriptorSetCount) + 1});
+        }
+        it = m_clipHandoffResources.erase(it);
+    }
+    updateClipHandoffResourceStats();
+}
+
+void DirectVulkanPreviewRenderer::advanceRetiredClipHandoffResources()
+{
+    for (auto it = m_retiredClipHandoffResources.begin(); it != m_retiredClipHandoffResources.end();) {
+        --it->framesRemaining;
+        if (it->framesRemaining > 0) {
+            ++it;
+            continue;
+        }
+        releaseClipHandoffResources(it->resources);
+        it = m_retiredClipHandoffResources.erase(it);
+    }
+    updateClipHandoffResourceStats();
+}
+
+void DirectVulkanPreviewRenderer::releaseClipHandoffResources(
+    const std::shared_ptr<ClipHandoffResources>& resources)
+{
+    if (resources && resources->pipeline) {
+        resources->pipeline->release();
+    }
+}
+
+void DirectVulkanPreviewRenderer::updateClipHandoffResourceStats()
+{
+    if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
+        stats->activeClipHandoffResourceCount = static_cast<int>(m_clipHandoffResources.size());
+        stats->retiredClipHandoffResourceCount = static_cast<int>(m_retiredClipHandoffResources.size());
+    }
 }
 
 uint32_t DirectVulkanPreviewRenderer::findMemoryType(uint32_t typeBits, VkMemoryPropertyFlags properties) const
@@ -2744,6 +2851,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     rp.pClearValues = clearValues;
 
     VkCommandBuffer cb = m_window->currentCommandBuffer();
+    advanceRetiredClipHandoffResources();
     struct DecoderReadbackCandidate {
         VkImage image = VK_NULL_HANDLE;
         VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2769,37 +2877,40 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     PreparedOverlayTexture preparedPlaybackStatusOverlay;
     const bool forceChecker = qEnvironmentVariableIntValue("JCUT_VULKAN_PREVIEW_FORCE_CHECKER") == 1;
     const bool canDrawTexture = m_resources && m_pipeline && m_resources->isReady() &&
-                                m_pipeline->isReady() && m_resources->descriptorSet() != VK_NULL_HANDLE;
-    if (state && !forceChecker && canDrawTexture && m_frameHandoffPipeline) {
-        int activeHandoffClipCount = 0;
+                                m_pipeline->isReady();
+    if (state && !forceChecker && canDrawTexture) {
+        QSet<QString> activeHandoffClipIds;
         for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
             if (!status.active || status.drawSuppressed) {
                 continue;
             }
-            ++activeHandoffClipCount;
+            activeHandoffClipIds.insert(status.clipId);
         }
-        if (activeHandoffClipCount <= 1) {
-            for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
-                if (!status.active || status.drawSuppressed) {
-                    continue;
-                }
-                frameHandoffResults.insert(
-                    status.clipId,
-                    m_frameHandoffPipeline->record(
-                        cb,
-                        status,
-                        m_resources.get(),
-                        m_owner ? m_owner->stats() : nullptr));
-                const QByteArray curveLut = curveLutRgbaBytes(status.grading);
-                if (!curveLut.isEmpty()) {
-                    curveLutUploadResults.insert(status.clipId, m_resources->uploadCurveLut(cb, curveLut));
-                }
+        pruneClipHandoffResources(activeHandoffClipIds);
+        updateClipHandoffResourceStats();
+        for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
+            if (!status.active || status.drawSuppressed) {
+                continue;
             }
-        } else if (DirectVulkanPreviewStats* stats = m_owner ? m_owner->stats() : nullptr) {
-            stats->lastHandoffMode = QStringLiteral("multi_clip_handoff_requires_descriptor_pool");
-            stats->lastHandoffError = QStringLiteral(
-                "Direct Vulkan handoff currently has one sampled-image descriptor; multiple active clips require per-clip descriptor resources.");
+            ClipHandoffResources* handoffResources = ensureClipHandoffResources(status.clipId);
+            if (!handoffResources || !handoffResources->resources || !handoffResources->pipeline) {
+                continue;
+            }
+            frameHandoffResults.insert(
+                status.clipId,
+                handoffResources->pipeline->record(
+                    cb,
+                    status,
+                    handoffResources->resources.get(),
+                    m_owner ? m_owner->stats() : nullptr));
+            const QByteArray curveLut = curveLutRgbaBytes(status.grading);
+            if (!curveLut.isEmpty()) {
+                curveLutUploadResults.insert(
+                    status.clipId,
+                    handoffResources->resources->uploadCurveLut(cb, curveLut));
+            }
         }
+        updateClipHandoffResourceStats();
     }
     const bool canDrawOverlays = m_pipeline && m_pipeline->isReady();
     if (state && canDrawOverlays) {
@@ -3094,7 +3205,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const VkClearRect rect = clearRectFromQRect(transformedBounds, swapSize);
             const DirectVulkanFrameHandoffPipeline::Result handoffResult =
                 status ? frameHandoffResults.value(status->clipId) : DirectVulkanFrameHandoffPipeline::Result{};
-            const bool sampledFrameReady = handoffResult.sampledFrameReady;
+            const bool sampledFrameReady =
+                handoffResult.sampledFrameReady && handoffResult.descriptorSet != VK_NULL_HANDLE;
             const bool handoffAttempted = handoffResult.attempted;
             if (sampledFrameReady) {
                 decoderReadbackCandidate.image = handoffResult.image;
@@ -3166,7 +3278,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     scissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
                                       static_cast<uint32_t>(std::max(1, swapSize.height()))};
                 }
-                m_pipeline->bindAndDraw(cb, viewport, scissor, m_resources->descriptorSet(), push);
+                m_pipeline->bindAndDraw(cb, viewport, scissor, handoffResult.descriptorSet, push);
             } else {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->explicitFailureDraws;

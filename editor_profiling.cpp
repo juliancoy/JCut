@@ -246,7 +246,7 @@ QJsonObject EditorWindow::pipelineSnapshot(bool verbose) const
                        pipelineStagesToJson(m_preview->livePipelineSnapshots()));
     } else {
         preview.insert(QStringLiteral("diagnostic_detail"),
-                       QStringLiteral("compact; use /pipeline?verbose=1 for full stage arrays and overlay dumps"));
+                       QStringLiteral("compact stage state; use /pipeline?verbose=1 for full overlay dumps"));
     }
     return preview;
 }

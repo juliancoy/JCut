@@ -119,6 +119,9 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
 
     const jcut::vulkan_detector::VulkanExternalImage external = m_handoff->externalImage();
     result.sampledFrameReady = resources->setSampledImage(external.imageView, external.imageLayout);
+    result.descriptorSet = result.sampledFrameReady ? resources->descriptorSet() : VK_NULL_HANDLE;
+    result.descriptorSetIndex = static_cast<int>(resources->descriptorSetIndex());
+    result.descriptorSetCount = static_cast<int>(resources->descriptorSetCount());
     result.image = m_handoff->image();
     result.layout = m_handoff->imageLayout();
     result.size = external.size;

@@ -1750,6 +1750,10 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      {QStringLiteral("active_clip_draw_count"), static_cast<qint64>(presenterSnapshot.value(QStringLiteral("active_clip_draw_count")).toDouble())},
                      {QStringLiteral("fallback_draw_count"), fallbackDraws},
                      {QStringLiteral("explicit_failure_draw_count"), explicitFailureDraws},
+                     {QStringLiteral("active_clip_handoff_resource_count"),
+                      presenterSnapshot.value(QStringLiteral("active_clip_handoff_resource_count")).toInt()},
+                     {QStringLiteral("retired_clip_handoff_resource_count"),
+                      presenterSnapshot.value(QStringLiteral("retired_clip_handoff_resource_count")).toInt()},
                      {QStringLiteral("timeline_texture_draw_pipeline"), presenterSnapshot.value(QStringLiteral("timeline_texture_draw_pipeline")).toBool()},
                      {QStringLiteral("frame_lag"), frameLag},
                      {QStringLiteral("thumbnail_source"), previewImage.isNull()
@@ -1777,16 +1781,19 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
             false});
     }
 
-    addStage(QStringLiteral("13 Swapchain Readback"),
-             QStringLiteral("direct VkImage copy | image %1x%2 | sampled images %3 | failures %4")
-                 .arg(previewImage.width())
-                 .arg(previewImage.height())
+    addStage(QStringLiteral("13 Diagnostic Readback"),
+             QStringLiteral("disabled by default | sampled images %1 | failures %2")
                  .arg(static_cast<qint64>(presenterSnapshot.value(QStringLiteral("sampled_image_ready_count")).toDouble()))
                  .arg(static_cast<qint64>(presenterSnapshot.value(QStringLiteral("handoff_failures")).toDouble())),
              previewImage,
              QStringLiteral("surface"),
              true,
-             !previewImage.isNull());
+             false,
+             QStringLiteral("diagnostic_disabled"),
+             QJsonObject{
+                 {QStringLiteral("readback_opt_in"), true},
+                 {QStringLiteral("has_image"), !previewImage.isNull()}
+             });
 
     addStage(QStringLiteral("14 Presented Surface"),
              QStringLiteral("swapchain presenter | final visible frame"),

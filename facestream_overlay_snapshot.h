@@ -58,6 +58,13 @@ struct FacestreamOverlaySnapshot {
     int rawDetectionMatchCount = 0;
 };
 
+enum class FacestreamOverlaySnapshotApplyDecision {
+    Apply,
+    DropPaused,
+    DropStaleKey,
+    DropStaleRequestId,
+};
+
 QRectF facestreamKeyframeBoxNorm(const FacestreamResolvedKeyframe& keyframe,
                                  const QSize& clipFrameSize);
 
@@ -67,5 +74,12 @@ QVector<VulkanPreviewFacestreamOverlay> rawDetectionsFromCacheEntry(
 
 FacestreamOverlaySnapshot buildFacestreamOverlaySnapshot(
     const FacestreamOverlaySnapshotRequest& request);
+
+FacestreamOverlaySnapshotApplyDecision facestreamOverlaySnapshotApplyDecision(
+    bool playbackActive,
+    const QString& snapshotKey,
+    const QString& expectedKey,
+    uint64_t snapshotRequestId,
+    uint64_t latestAppliedRequestId);
 
 } // namespace jcut::preview_overlay

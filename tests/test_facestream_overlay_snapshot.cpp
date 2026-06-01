@@ -5,7 +5,9 @@
 using jcut::preview_overlay::FacestreamOverlayCacheEntry;
 using jcut::preview_overlay::FacestreamOverlayRequestClip;
 using jcut::preview_overlay::FacestreamOverlaySnapshotRequest;
+using jcut::preview_overlay::FacestreamOverlaySnapshotApplyDecision;
 using jcut::preview_overlay::buildFacestreamOverlaySnapshot;
+using jcut::preview_overlay::facestreamOverlaySnapshotApplyDecision;
 using jcut::preview_overlay::rawDetectionsFromCacheEntry;
 
 class TestFacestreamOverlaySnapshot : public QObject {
@@ -16,6 +18,7 @@ private slots:
     void assignmentInteractionBuildsOverlaysWithoutVisibleTrackBoxes();
     void sourceFilterExcludesNonMatchingTracks();
     void rawDetectionsUseSameBridgeAndEdgeHoldRules();
+    void applyDecisionDropsPausedStaleAndOutOfOrderSnapshots();
 };
 
 namespace {
@@ -172,6 +175,40 @@ void TestFacestreamOverlaySnapshot::rawDetectionsUseSameBridgeAndEdgeHoldRules()
     QCOMPARE(edgeHeld.first().sourceFrame, 8LL);
 
     QVERIFY(rawDetectionsFromCacheEntry(cache, 14).isEmpty());
+}
+
+void TestFacestreamOverlaySnapshot::applyDecisionDropsPausedStaleAndOutOfOrderSnapshots()
+{
+    QCOMPARE(facestreamOverlaySnapshotApplyDecision(false,
+                                                   QStringLiteral("sample-8"),
+                                                   QStringLiteral("sample-8"),
+                                                   10,
+                                                   10),
+             FacestreamOverlaySnapshotApplyDecision::DropPaused);
+    QCOMPARE(facestreamOverlaySnapshotApplyDecision(true,
+                                                   QStringLiteral("sample-4"),
+                                                   QStringLiteral("sample-8"),
+                                                   10,
+                                                   10),
+             FacestreamOverlaySnapshotApplyDecision::DropStaleKey);
+    QCOMPARE(facestreamOverlaySnapshotApplyDecision(true,
+                                                   QStringLiteral("sample-8"),
+                                                   QStringLiteral("sample-8"),
+                                                   9,
+                                                   10),
+             FacestreamOverlaySnapshotApplyDecision::DropStaleRequestId);
+    QCOMPARE(facestreamOverlaySnapshotApplyDecision(true,
+                                                   QStringLiteral("sample-8"),
+                                                   QStringLiteral("sample-8"),
+                                                   10,
+                                                   10),
+             FacestreamOverlaySnapshotApplyDecision::Apply);
+    QCOMPARE(facestreamOverlaySnapshotApplyDecision(true,
+                                                   QStringLiteral("sample-8"),
+                                                   QStringLiteral("sample-8"),
+                                                   11,
+                                                   10),
+             FacestreamOverlaySnapshotApplyDecision::Apply);
 }
 
 QTEST_MAIN(TestFacestreamOverlaySnapshot)

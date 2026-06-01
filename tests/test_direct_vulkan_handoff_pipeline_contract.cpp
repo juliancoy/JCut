@@ -10,6 +10,7 @@ private slots:
     void directPreviewUsesExtractedPipelineBeforeRenderPass();
     void directPreviewRecordsTextureUploadsBeforeRenderPass();
     void directPreviewDoesNotUseSubmitBasedHandoffApis();
+    void directPreviewUsesPerClipHandoffDescriptors();
     void directPreviewRequiresHardwarePayloadsFromCache();
     void handoffPipelineRejectsCpuOnlyFrames();
     void strictDisplayabilityDoesNotAcceptCpuFallback();
@@ -19,6 +20,7 @@ private slots:
     void pipelineDiagnosticsDefaultToCompactSnapshot();
     void pitchPreservingAudioUsesExplicitSidecarGate();
     void overlayWorkerKeepsNewestCoalescedRequest();
+    void rendererConsumesLatchedPreviewSnapshot();
     void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
 
@@ -40,7 +42,7 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewUsesExtractedPipeline
     const QString source = readSourceFile(QStringLiteral("direct_vulkan_preview_backend.cpp"));
     QVERIFY2(!source.isEmpty(), "direct_vulkan_preview_backend.cpp must be readable");
 
-    const qsizetype recordIndex = source.indexOf(QStringLiteral("m_frameHandoffPipeline->record("));
+    const qsizetype recordIndex = source.indexOf(QStringLiteral("handoffResources->pipeline->record("));
     const qsizetype beginRenderPassIndex = source.indexOf(QStringLiteral("vkCmdBeginRenderPass"));
     QVERIFY2(recordIndex >= 0, "direct preview must call the extracted frame handoff pipeline");
     QVERIFY2(beginRenderPassIndex >= 0, "direct preview must explicitly begin its render pass");
@@ -82,6 +84,55 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewDoesNotUseSubmitBased
              "direct preview must not call the submit-based importOffscreenFrame API");
     QVERIFY2(!source.contains(QStringLiteral("uploadImageTexture(cb, status->frame.cpuImage()")),
              "direct preview must not implicitly fall back to CPU frame upload");
+}
+
+void TestDirectVulkanHandoffPipelineContract::directPreviewUsesPerClipHandoffDescriptors()
+{
+    const QString backend = readSourceFile(QStringLiteral("direct_vulkan_preview_backend.cpp"));
+    QVERIFY2(!backend.isEmpty(), "direct_vulkan_preview_backend.cpp must be readable");
+
+    QVERIFY2(backend.contains(QStringLiteral("QHash<QString, std::shared_ptr<ClipHandoffResources>> m_clipHandoffResources")),
+             "direct preview must own separate handoff resources per active clip");
+    QVERIFY2(backend.contains(QStringLiteral("QVector<RetiredClipHandoffResources> m_retiredClipHandoffResources")),
+             "inactive handoff resources must be retired briefly instead of destroyed while swapchain frames may still be in flight");
+    QVERIFY2(backend.contains(QStringLiteral("ensureClipHandoffResources(status.clipId)")),
+             "direct preview must resolve handoff resources by clip id");
+    QVERIFY2(backend.contains(QStringLiteral("pruneClipHandoffResources(activeHandoffClipIds)")),
+             "direct preview must release per-clip handoff resources when clips leave the active render set");
+    QVERIFY2(backend.contains(QStringLiteral("static_cast<int>(VulkanResources::kDescriptorSetCount) + 1")),
+             "retired handoff resources must stay alive for at least the descriptor ring depth");
+    QVERIFY2(backend.contains(QStringLiteral("handoffResult.descriptorSet")),
+             "clip draws must bind the descriptor set captured by that clip's handoff result");
+    QVERIFY2(backend.contains(QStringLiteral("activeClipHandoffResourceCount")),
+             "direct preview diagnostics must expose active per-clip handoff resource ownership");
+    QVERIFY2(backend.contains(QStringLiteral("retiredClipHandoffResourceCount")),
+             "direct preview diagnostics must expose retired in-flight handoff resource ownership");
+    QVERIFY2(!backend.contains(QStringLiteral("multi_clip_handoff_requires_descriptor_pool")),
+             "multiple active clips must not be rejected due to a shared sampled-image descriptor");
+
+    const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+    QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+    QVERIFY2(surface.contains(QStringLiteral("active_clip_handoff_resource_count")) &&
+                 surface.contains(QStringLiteral("retired_clip_handoff_resource_count")),
+             "stage 11 diagnostics must include active and retired handoff resource ownership");
+
+    const QString presenter = readSourceFile(QStringLiteral("direct_vulkan_preview_presenter.cpp"));
+    QVERIFY2(!presenter.isEmpty(), "direct_vulkan_preview_presenter.cpp must be readable");
+    QVERIFY2(presenter.contains(QStringLiteral("active_clip_handoff_resource_count")),
+             "presenter diagnostics must expose active per-clip handoff resource count");
+    QVERIFY2(presenter.contains(QStringLiteral("retired_clip_handoff_resource_count")),
+             "presenter diagnostics must expose retired per-clip handoff resource count");
+    QVERIFY2(presenter.contains(QStringLiteral("explicit_failure_draw_count")),
+             "compact presenter diagnostics must expose explicit failure draws");
+
+    const QString pipeline = readSourceFile(QStringLiteral("direct_vulkan_frame_handoff_pipeline.h"));
+    QVERIFY2(!pipeline.isEmpty(), "direct_vulkan_frame_handoff_pipeline.h must be readable");
+    QVERIFY2(pipeline.contains(QStringLiteral("VkDescriptorSet descriptorSet")),
+             "handoff result must carry the descriptor set whose sampled image it updated");
+
+    const QString resources = readSourceFile(QStringLiteral("vulkan_resources.h"));
+    QVERIFY2(resources.contains(QStringLiteral("static constexpr size_t kDescriptorSetCount")),
+             "descriptor ring depth must be visible to the presenter lifetime policy");
 }
 
 void TestDirectVulkanHandoffPipelineContract::directPreviewRequiresHardwarePayloadsFromCache()
@@ -307,11 +358,20 @@ void TestDirectVulkanHandoffPipelineContract::pipelineDiagnosticsDefaultToCompac
     const QString vulkanProfiling = readSourceFile(QStringLiteral("vulkan_preview_surface_profiling.cpp"));
     QVERIFY2(vulkanProfiling.contains(QStringLiteral("QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const")),
              "Vulkan preview must implement the compact pipeline health snapshot");
+    QVERIFY2(vulkanProfiling.contains(QStringLiteral("pipelineStageHealthJson(livePipelineSnapshots())")),
+             "compact /pipeline must expose named decode-to-preview stage state");
+    QVERIFY2(vulkanProfiling.contains(QStringLiteral("decoder_diagnostics")),
+             "compact /pipeline must expose decoder diagnostics needed to distinguish decode starvation");
     QVERIFY2(!vulkanProfiling.mid(vulkanProfiling.indexOf(QStringLiteral("QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const")),
                                   vulkanProfiling.indexOf(QStringLiteral("void VulkanPreviewSurface::resetProfilingStats()")) -
                                       vulkanProfiling.indexOf(QStringLiteral("QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const")))
                   .contains(QStringLiteral("currentSpeakerLabelDebugForState")),
              "compact pipeline polling must not perform speaker/transcript debug lookup");
+
+    const QString vulkanSurface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("13 Diagnostic Readback")) &&
+                 vulkanSurface.contains(QStringLiteral("diagnostic_disabled")),
+             "pipeline stages must report diagnostic readback as opt-in, not as a hot-path render dependency");
 }
 
 void TestDirectVulkanHandoffPipelineContract::pitchPreservingAudioUsesExplicitSidecarGate()
@@ -356,6 +416,9 @@ void TestDirectVulkanHandoffPipelineContract::overlayWorkerKeepsNewestCoalescedR
              "newer overlay requests must replace the bounded queued request slot");
     QVERIFY2(source.contains(QStringLiteral("launchQueuedRequest();")),
              "overlay worker completion must launch the queued follow-up request");
+    QVERIFY2(source.contains(QStringLiteral("facestreamOverlaySnapshotApplyDecision(")) &&
+                 source.contains(QStringLiteral("++m_facedetectionsOverlayWorkerDropped")),
+             "stale overlay worker result policy must be centralized and dropped results counted");
 
     const QString profiling = readSourceFile(QStringLiteral("vulkan_preview_surface_profiling.cpp"));
     QVERIFY2(!profiling.isEmpty(), "vulkan_preview_surface_profiling.cpp must be readable");
@@ -363,6 +426,19 @@ void TestDirectVulkanHandoffPipelineContract::overlayWorkerKeepsNewestCoalescedR
              "perf diagnostics must expose the queued overlay worker request key");
     QVERIFY2(profiling.contains(QStringLiteral("vulkan_overlay_worker_queued_clip_count")),
              "perf diagnostics must expose the queued overlay worker request size");
+}
+
+void TestDirectVulkanHandoffPipelineContract::rendererConsumesLatchedPreviewSnapshot()
+{
+    const QString backend = readSourceFile(QStringLiteral("direct_vulkan_preview_backend.cpp"));
+    QVERIFY2(!backend.isEmpty(), "direct_vulkan_preview_backend.cpp must be readable");
+
+    const qsizetype liveStateIndex = backend.indexOf(QStringLiteral("const PreviewInteractionState* liveState = m_owner->state();"));
+    const qsizetype snapshotIndex = backend.indexOf(QStringLiteral("PreviewInteractionState renderSnapshot;"), liveStateIndex);
+    const qsizetype copyIndex = backend.indexOf(QStringLiteral("renderSnapshot = *liveState;"), snapshotIndex);
+    const qsizetype stateAliasIndex = backend.indexOf(QStringLiteral("const PreviewInteractionState* state = liveState ? &renderSnapshot : nullptr;"), copyIndex);
+    QVERIFY2(liveStateIndex >= 0 && snapshotIndex > liveStateIndex && copyIndex > snapshotIndex && stateAliasIndex > copyIndex,
+             "direct Vulkan command recording must consume a stack-latched PreviewInteractionState snapshot");
 }
 
 void TestDirectVulkanHandoffPipelineContract::vulkanTextShaderUsesVulkanFramebufferYConvention()

@@ -461,8 +461,8 @@ If CUDA/Vulkan external interop is used, ownership must be explicit:
 | Per-frame render snapshot | `DirectVulkanPreviewRenderer::startNextFrame()` stack frame | Latched at frame start; all command recording reads this copy |
 | Facestream overlay snapshot | `PreviewInteractionState` | Applied by key; stale results dropped |
 | Glyph atlas resources | `VulkanTextRenderer` | Reused/cached; valid until replaced after no in-flight draw needs it |
-| Sampled Vulkan image | Handoff pipeline resources | Valid through descriptor bind and command execution |
-| Descriptor sets | Handoff/text/pipeline resource owners | Must not be overwritten while in use by an in-flight frame |
+| Sampled Vulkan image | Per-active-clip handoff pipeline resources | Valid through descriptor bind and command execution; inactive clip resources enter a short retired queue before release |
+| Descriptor sets | Handoff/text/pipeline resource owners | Must not be overwritten while in use by an in-flight frame; retired handoff resources stay alive beyond descriptor-ring depth |
 | Command buffer | `QVulkanWindow`/renderer frame lifecycle | Valid for one frame recording/submission |
 | Swapchain image | `QVulkanWindow` | Valid only for acquired frame; re-created on swapchain changes |
 
@@ -604,7 +604,8 @@ Current direct Vulkan assumptions:
 - Graphics work is recorded against the `QVulkanWindow` current command buffer and current framebuffer.
 - The handoff result must expose an image in a shader-readable layout before `VulkanPipeline::bindAndDraw(...)`.
 - Descriptor sets are treated as frame-in-use resources; a descriptor cannot be overwritten for another sampled image until the frame using it is no longer in flight.
-- The currently implemented direct preview path has one primary sampled-image descriptor for video; multiple simultaneously active video clips require explicit per-clip descriptor resources rather than descriptor reuse.
+- The direct preview path owns per-active-clip handoff resources. Each active clip records into its own `DirectVulkanFrameHandoffPipeline` and descriptor ring, and the draw binds the descriptor set returned by that clip's handoff result.
+- Inactive clip handoff resources are retired for at least the descriptor-ring depth before release, so a clip leaving the active render set cannot invalidate resources still referenced by a submitted frame.
 - Swapchain invalidation or device loss invalidates command-buffer, framebuffer, image, and descriptor assumptions and must route through explicit Vulkan reinitialization.
 
 ## Failure Policy
@@ -651,9 +652,9 @@ Diagnostics must make these measurable from a running instance through REST or l
 | Vulkan text path can generate/render subtitles and labels | `test_vulkan_text_generation`, `test_vulkan_subtitle_render` |
 | REST pipeline exposes frame selection and handoff state | direct Vulkan pipeline contract tests |
 | Audio time-stretch gates playback explicitly | `test_audio_time_stretch`, `test_audio_time_stretch_cache`, `test_playback_policy` |
-| Renderer consumes a latched per-frame snapshot | direct Vulkan renderer contract or unit-level snapshot test |
-| Descriptor lifetime/in-flight frame ownership is explicit | direct Vulkan handoff/presenter contract tests |
-| Overlay snapshots are keyed and stale worker results are dropped | overlay snapshot worker tests |
+| Renderer consumes a latched per-frame snapshot | `test_direct_vulkan_handoff_pipeline_contract::rendererConsumesLatchedPreviewSnapshot` |
+| Descriptor lifetime/in-flight frame ownership is explicit | `test_direct_vulkan_handoff_pipeline_contract::directPreviewUsesPerClipHandoffDescriptors` |
+| Overlay snapshots are keyed and stale worker results are dropped | `test_direct_vulkan_handoff_pipeline_contract::overlayWorkerKeepsNewestCoalescedRequest` |
 
 New synchronization changes should either map to an existing test row or add a new row. Untested synchronization behavior is temporary and must be called out explicitly.
 
@@ -664,6 +665,8 @@ Primary REST surfaces:
 - `/pipeline`
 - `/pipeline?verbose=1`
 - `/audio`
+
+`/pipeline` must expose compact named stage state without requiring diagnostic image readback. `/pipeline?verbose=1` may add heavier debug detail, but the stage array itself is not optional.
 
 Required fields for decode-to-preview analysis:
 
@@ -678,6 +681,8 @@ Required fields for decode-to-preview analysis:
 - `preview.last_handoff_mode`
 - `preview.last_handoff_error`
 - `preview.last_handoff_upload_ms`
+- `preview.active_clip_handoff_resource_count`
+- `preview.retired_clip_handoff_resource_count`
 - `preview.texture_draw_count`
 - `preview.explicit_failure_draw_count`
 - `preview.last_preview_update_latency_ms`
