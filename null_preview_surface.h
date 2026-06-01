@@ -19,6 +19,7 @@ public:
     const QWidget* asWidget() const override { return this; }
 
     void setPlaybackState(bool playing) override;
+    void setPlaybackSpeed(qreal speed) override;
     void setCurrentFrame(int64_t frame) override;
     void setCurrentPlaybackSample(int64_t samplePosition) override;
     void setClipCount(int count) override;
@@ -102,6 +103,7 @@ private:
     void requestRepaint();
 
     bool m_playing = false;
+    qreal m_playbackSpeed = 1.0;
     int64_t m_currentFrame = 0;
     int64_t m_currentSample = 0;
     int m_clipCount = 0;

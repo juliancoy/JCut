@@ -24,16 +24,74 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kVisibleDecodeKeepWindow = 96;
 constexpr int64_t kObsoleteVisibleFrameSlack = 0;
 constexpr int64_t kSeekGenerationDeltaFrames = 6;
 constexpr qint64 kVisiblePendingRetryMs = 250;
 constexpr qint64 kSeekResyncWindowMs = 400;
 constexpr qint64 kCancelBeforeMinIntervalMs = 45;
 constexpr int64_t kCancelBeforeMinFrameAdvance = 6;
+constexpr int64_t kVisibleDecodeBaseKeepFrames = 96;
+constexpr int64_t kVisibleDecodeMinKeepFrames = 24;
+constexpr int64_t kVisibleDecodeMaxKeepFrames = 240;
 constexpr double kHardwareFrameTargetGpuFraction = 0.60;
 constexpr size_t kHardwareFrameMinCap = 12;
 constexpr size_t kHardwareFrameMaxCap = 240;
+
+struct VisibleDecodeRetentionInputs {
+    double speed = 1.0;
+    int lookaheadFrames = 1;
+    qint64 callbackWaitMs = 0;
+    qint64 maxCallbackWaitMs = 0;
+    qint64 requestFrame = -1;
+    qint64 completedFrame = -1;
+};
+
+struct VisibleDecodeRetentionPolicy {
+    int64_t effectiveFrames = kVisibleDecodeBaseKeepFrames;
+    int64_t lookaheadCandidate = 0;
+    int64_t latencyCandidate = 0;
+    int64_t lagCandidate = 0;
+    int64_t observedLagFrames = 0;
+    QString reason = QStringLiteral("base");
+};
+
+VisibleDecodeRetentionPolicy calculateVisibleDecodeRetentionPolicy(
+    const VisibleDecodeRetentionInputs& inputs)
+{
+    VisibleDecodeRetentionPolicy policy;
+    const int64_t latencyFrames = static_cast<int64_t>(
+        std::ceil((static_cast<double>(qMax<qint64>(0, inputs.callbackWaitMs)) / 1000.0) *
+                  static_cast<double>(kTimelineFps) *
+                  inputs.speed));
+    policy.observedLagFrames =
+        (inputs.requestFrame >= 0 && inputs.completedFrame >= 0)
+            ? qMax<int64_t>(0, inputs.requestFrame - inputs.completedFrame)
+            : 0;
+    policy.lookaheadCandidate = static_cast<int64_t>(inputs.lookaheadFrames * 4);
+    policy.latencyCandidate = (latencyFrames * 2) + inputs.lookaheadFrames;
+    policy.lagCandidate = (policy.observedLagFrames * 2) + inputs.lookaheadFrames;
+    const int64_t keepFrames = std::max({
+        kVisibleDecodeBaseKeepFrames,
+        policy.lookaheadCandidate,
+        policy.latencyCandidate,
+        policy.lagCandidate
+    });
+    policy.effectiveFrames =
+        qBound<int64_t>(kVisibleDecodeMinKeepFrames, keepFrames, kVisibleDecodeMaxKeepFrames);
+    if (policy.effectiveFrames == kVisibleDecodeMaxKeepFrames) {
+        policy.reason = QStringLiteral("max_cap");
+    } else if (policy.lagCandidate >= policy.latencyCandidate &&
+               policy.lagCandidate >= policy.lookaheadCandidate &&
+               policy.lagCandidate >= kVisibleDecodeBaseKeepFrames) {
+        policy.reason = QStringLiteral("observed_frame_lag");
+    } else if (policy.latencyCandidate >= policy.lookaheadCandidate &&
+               policy.latencyCandidate >= kVisibleDecodeBaseKeepFrames) {
+        policy.reason = QStringLiteral("decode_latency");
+    } else if (policy.lookaheadCandidate >= kVisibleDecodeBaseKeepFrames) {
+        policy.reason = QStringLiteral("lookahead");
+    }
+    return policy;
+}
 
 QElapsedTimer& cacheTraceTimer() {
     static QElapsedTimer timer = []() {
@@ -731,10 +789,55 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
             if (clipIt == m_clips.end() || clipIt->decodePath.isEmpty()) {
                 continue;
             }
-            const int64_t keepFromFrame = qMax<int64_t>(0, it.value() - kVisibleDecodeKeepWindow);
+            const int64_t keepFromFrame = qMax<int64_t>(0, it.value() - effectiveVisibleDecodeKeepWindow());
             cancelDecoderBeforeThrottled(clipIt->decodePath, keepFromFrame);
         }
     }
+}
+
+int64_t TimelineCache::effectiveVisibleDecodeKeepWindow() const
+{
+    VisibleDecodeRetentionInputs inputs;
+    inputs.speed = qBound(0.1, std::abs(m_speed.load()), 4.0);
+    inputs.lookaheadFrames = qMax(1, m_lookaheadFrames);
+    {
+        QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
+        inputs.callbackWaitMs = qMax<qint64>(0, m_visibleDecodeDiagnostics.lastCallbackWaitMs);
+        inputs.requestFrame = m_visibleDecodeDiagnostics.lastRequestFrame;
+        inputs.completedFrame = m_visibleDecodeDiagnostics.lastCompletedFrame;
+    }
+    return calculateVisibleDecodeRetentionPolicy(inputs).effectiveFrames;
+}
+
+QJsonObject TimelineCache::visibleDecodeRetentionPolicySnapshot(qint64 nowMs) const
+{
+    Q_UNUSED(nowMs)
+    VisibleDecodeRetentionInputs inputs;
+    inputs.speed = qBound(0.1, std::abs(m_speed.load()), 4.0);
+    inputs.lookaheadFrames = qMax(1, m_lookaheadFrames);
+    {
+        QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
+        inputs.callbackWaitMs = qMax<qint64>(0, m_visibleDecodeDiagnostics.lastCallbackWaitMs);
+        inputs.maxCallbackWaitMs = m_visibleDecodeDiagnostics.maxCallbackWaitMs;
+        inputs.requestFrame = m_visibleDecodeDiagnostics.lastRequestFrame;
+        inputs.completedFrame = m_visibleDecodeDiagnostics.lastCompletedFrame;
+    }
+    const VisibleDecodeRetentionPolicy policy = calculateVisibleDecodeRetentionPolicy(inputs);
+    return QJsonObject{
+        {QStringLiteral("effective_keep_frames"), static_cast<qint64>(policy.effectiveFrames)},
+        {QStringLiteral("base_keep_frames"), static_cast<qint64>(kVisibleDecodeBaseKeepFrames)},
+        {QStringLiteral("min_keep_frames"), static_cast<qint64>(kVisibleDecodeMinKeepFrames)},
+        {QStringLiteral("max_keep_frames"), static_cast<qint64>(kVisibleDecodeMaxKeepFrames)},
+        {QStringLiteral("reason"), policy.reason},
+        {QStringLiteral("playback_speed"), inputs.speed},
+        {QStringLiteral("lookahead_frames"), inputs.lookaheadFrames},
+        {QStringLiteral("lookahead_candidate_frames"), static_cast<qint64>(policy.lookaheadCandidate)},
+        {QStringLiteral("last_callback_wait_ms"), inputs.callbackWaitMs},
+        {QStringLiteral("max_callback_wait_ms"), inputs.maxCallbackWaitMs},
+        {QStringLiteral("latency_candidate_frames"), static_cast<qint64>(policy.latencyCandidate)},
+        {QStringLiteral("observed_frame_lag"), static_cast<qint64>(policy.observedLagFrames)},
+        {QStringLiteral("lag_candidate_frames"), static_cast<qint64>(policy.lagCandidate)}
+    };
 }
 
 void TimelineCache::cancelDecoderBeforeThrottled(const QString& decodePath,

@@ -46,6 +46,7 @@ public:
     const QWidget* asWidget() const override { return this; }
 
     void setPlaybackState(bool playing);
+    void setPlaybackSpeed(qreal speed) override;
     void setCurrentFrame(int64_t frame);
     void setCurrentPlaybackSample(int64_t samplePosition);
     void setClipCount(int count);
@@ -304,6 +305,7 @@ private:
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
     PlaybackTuning m_playbackTuning;
+    qreal m_playbackSpeed = 1.0;
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
     QTimer m_repaintTimer;

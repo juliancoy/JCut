@@ -27,6 +27,7 @@ NullPreviewSurface::NullPreviewSurface(QWidget* parent)
 }
 
 void NullPreviewSurface::setPlaybackState(bool playing) { m_playing = playing; requestRepaint(); }
+void NullPreviewSurface::setPlaybackSpeed(qreal speed) { m_playbackSpeed = qBound<qreal>(0.1, speed, 4.0); }
 void NullPreviewSurface::setCurrentFrame(int64_t frame)
 {
     m_currentFrame = qMax<int64_t>(0, frame);
@@ -135,6 +136,7 @@ QJsonObject NullPreviewSurface::pipelineHealthSnapshot() const
         {QStringLiteral("selected_clip_id"), m_selectedClipId},
         {QStringLiteral("current_frame"), static_cast<qint64>(m_currentFrame)},
         {QStringLiteral("current_sample"), static_cast<qint64>(m_currentSample)},
+        {QStringLiteral("playback_speed"), m_playbackSpeed},
         {QStringLiteral("playing"), m_playing},
         {QStringLiteral("pipeline_stages"), QJsonArray{}}
     };
@@ -149,6 +151,7 @@ QJsonObject NullPreviewSurface::profilingSnapshot() const
         {QStringLiteral("playback_status_overlay_text"), m_playbackStatusOverlayText},
         {QStringLiteral("playback_status_overlay_progress"), m_playbackStatusOverlayProgress},
         {QStringLiteral("current_frame"), static_cast<qint64>(m_currentFrame)},
+        {QStringLiteral("playback_speed"), m_playbackSpeed},
         {QStringLiteral("playing"), m_playing}
     };
 }

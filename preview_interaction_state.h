@@ -65,6 +65,9 @@ struct VulkanPreviewClipFrameStatus {
     bool cpuImage = false;
     bool exactFrameAvailable = false;
     bool selectedFrameAvailable = false;
+    bool staleFrameRejected = false;
+    bool upToDate = false;
+    bool currentFrameFailure = false;
     bool drawSuppressed = false;
     bool gradingBypassed = false;
     bool correctionsEnabled = true;
@@ -161,5 +164,6 @@ struct PreviewInteractionState {
     qreal currentSpeakerOrganizationVerticalPosition = 0.93;
     QString playbackStatusOverlayText;
     qreal playbackStatusOverlayProgress = -1.0;
+    QString temporalDebugOverlayText;
     PreviewInteractionTransientState transient;
 };

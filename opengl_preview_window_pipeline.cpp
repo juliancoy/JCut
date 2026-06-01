@@ -6,6 +6,7 @@
 #include "media_pipeline_shared.h"
 #include "memory_budget.h"
 #include "playback_frame_pipeline.h"
+#include "preview_frame_selection.h"
 #include "timeline_cache.h"
 #include "debug_controls.h"
 
@@ -183,7 +184,7 @@ void PreviewWindow::ensurePipeline() {
             Qt::QueuedConnection);
     m_cache->setMaxMemory(768 * 1024 * 1024);
     m_cache->setLookaheadFrames(36);
-    m_cache->setPlaybackSpeed(1.0);
+    m_cache->setPlaybackSpeed(m_playbackSpeed);
     m_cache->setPlaybackState(m_interaction.playing ? TimelineCache::PlaybackState::Playing
                                         : TimelineCache::PlaybackState::Stopped);
     m_cache->setPlayheadFrame(m_interaction.currentFrame);
@@ -230,8 +231,10 @@ bool PreviewWindow::isFrameTooStaleForPlayback(const TimelineClip& clip,
     if (frameNumber < 0) {
         return false;
     }
-    constexpr int64_t kMaxPlaybackStaleFrameDelta = 4;
-    return frameNumber + kMaxPlaybackStaleFrameDelta < localFrame;
+    return editor::previewFrameIsTooStaleForPlayback(
+        frame,
+        localFrame,
+        editor::previewMaxPlaybackStaleFrameDelta(effectiveFpsForClip(clip)));
 }
 
 void PreviewWindow::requestFramesForCurrentPosition() {

@@ -155,6 +155,14 @@ void PreviewWindow::setPlaybackState(bool playing) {
     }
 }
 
+void PreviewWindow::setPlaybackSpeed(qreal speed)
+{
+    m_playbackSpeed = qBound<qreal>(0.1, speed, 4.0);
+    if (m_cache) {
+        m_cache->setPlaybackSpeed(m_playbackSpeed);
+    }
+}
+
 void PreviewWindow::setCurrentFrame(int64_t frame) {
     playbackTrace(QStringLiteral("PreviewWindow::setCurrentFrame"),
                   QStringLiteral("frame=%1 visible=%2 cache=%3")

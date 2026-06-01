@@ -126,10 +126,10 @@ public:
     
     // Configuration
     void setMaxMemory(size_t bytes);
-    void setLookaheadFrames(int frames) { m_lookaheadFrames = frames; }
+    void setLookaheadFrames(int frames) { m_lookaheadFrames = qMax(1, frames); }
     void setPlaybackState(PlaybackState state);
     void setDirection(Direction dir) { m_direction = dir; }
-    void setPlaybackSpeed(double speed) { m_speed = speed; }
+    void setPlaybackSpeed(double speed) { m_speed = qBound(0.1, speed, 4.0); }
     
     // Export ranges for speech filter awareness (empty = all frames valid)
     void setExportRanges(const QVector<ExportRangeSegment>& ranges);
@@ -165,6 +165,11 @@ public:
                                        bool preferPlaybackBuffer,
                                        bool allowCacheFallback,
                                        bool requireHardwareOrGpuPayload = false);
+    bool hasExactFrameForPreview(const QString& clipId,
+                                 int64_t frameNumber,
+                                 bool preferPlaybackBuffer,
+                                 bool allowCacheFallback,
+                                 bool requireHardwareOrGpuPayload = false);
     
     // Preload control
     void startPrefetching();
@@ -182,6 +187,7 @@ public:
                                         qint64 staleAfterMs) const;
     QJsonArray pendingVisibleDebugSnapshot(qint64 nowMs, int limit = 8) const;
     QJsonObject visibleDecodeDiagnostics(qint64 nowMs) const;
+    QJsonObject visibleDecodeRetentionPolicySnapshot(qint64 nowMs) const;
     bool shouldAllowApproximatePreviewFrame(const QString& clipId,
                                             int64_t frameNumber,
                                             qint64 nowMs) const;
@@ -258,6 +264,7 @@ private:
     QString requestKey(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const QString& clipId, int64_t frameNumber) const;
     int64_t normalizeFrameNumber(const ClipInfo& info, int64_t frameNumber) const;
+    int64_t effectiveVisibleDecodeKeepWindow() const;
     void cancelDecoderBeforeThrottled(const QString& decodePath,
                                       int64_t keepFromFrame,
                                       qint64 nowMs = -1);

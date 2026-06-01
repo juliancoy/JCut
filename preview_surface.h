@@ -73,6 +73,7 @@ public:
     virtual const QWidget* asWidget() const = 0;
 
     virtual void setPlaybackState(bool playing) = 0;
+    virtual void setPlaybackSpeed(qreal speed) = 0;
     virtual void setCurrentFrame(int64_t frame) = 0;
     virtual void setCurrentPlaybackSample(int64_t samplePosition) = 0;
     virtual void setClipCount(int count) = 0;

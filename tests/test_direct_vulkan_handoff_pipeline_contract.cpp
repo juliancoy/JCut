@@ -194,6 +194,9 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewDisablesCpuAndQtTextO
              "profiling must expose that speaker labels use the Vulkan text pass");
     QVERIFY2(profiling.contains(QStringLiteral("vulkan_transcript_overlay_gpu_text_enabled")),
              "profiling must expose that transcript subtitles use the Vulkan text pass");
+    QVERIFY2(profiling.contains(QStringLiteral("temporal_debug_overlay_enabled")) &&
+                 profiling.contains(QStringLiteral("temporal_debug_overlay_text")),
+             "profiling must expose temporal debug overlay state");
 
     const QString textRenderer = readSourceFile(QStringLiteral("vulkan_text_renderer.cpp"));
     QVERIFY2(!textRenderer.isEmpty(), "vulkan_text_renderer.cpp must be readable");
@@ -226,6 +229,11 @@ void TestDirectVulkanHandoffPipelineContract::directPreviewDisablesCpuAndQtTextO
              "direct Vulkan preview must route transcript subtitles through the Vulkan text renderer");
     QVERIFY2(backend.contains(QStringLiteral("m_speakerTextRenderer")),
              "speaker labels and transcript subtitles must not share one mutable glyph atlas image");
+    QVERIFY2(backend.contains(QStringLiteral("m_temporalDebugTextRenderer")),
+             "temporal debug overlay must have a dedicated Vulkan text renderer so it does not evict speaker/subtitle text atlases");
+    QVERIFY2(backend.contains(QStringLiteral("temporalDebugOverlayText")) &&
+                 backend.contains(QStringLiteral("TEMPORAL DEBUG")),
+             "direct Vulkan preview must draw the temporal debug overlay through the Vulkan text path");
     QVERIFY2(backend.contains(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) &&
                  backend.indexOf(QStringLiteral("prepareTranscriptOverlayAtlas(cb")) <
                      backend.indexOf(QStringLiteral("vkCmdBeginRenderPass")),
@@ -264,10 +272,11 @@ void TestDirectVulkanHandoffPipelineContract::visibleDecodePriorityUsesTimelineD
              "playback advance must schedule visible future frames, not just chase the current audio-clock frame");
     QVERIFY2(surface.contains(QStringLiteral("dispatch_current_over_backlog")),
              "exact/current visible frame requests must be allowed through a saturated lookahead backlog");
-    QVERIFY2(surface.contains(QStringLiteral("if (!targetReady)")) &&
+    QVERIFY2(surface.contains(QStringLiteral("if (!targetExact)")) &&
+                 surface.contains(QStringLiteral("if (!targetDisplayable)")) &&
                  surface.contains(QStringLiteral("continue;")) &&
                  surface.contains(QStringLiteral("for (int offset = 1; offset <= lookaheadFrames; ++offset)")),
-             "lookahead scheduling must wait until the target frame is displayable or actively requested");
+             "lookahead scheduling must request exact target frames while only gating readiness on displayable frames");
 
     const QString decoder = readSourceFile(QStringLiteral("async_decoder.cpp"));
     QVERIFY2(!decoder.isEmpty(), "async_decoder.cpp must be readable");
@@ -277,8 +286,57 @@ void TestDirectVulkanHandoffPipelineContract::visibleDecodePriorityUsesTimelineD
              "visible lookahead frames must coexist; newer visible frames must not supersede older visible frames");
 
     const QString cacheSource = readSourceFile(QStringLiteral("timeline_cache.cpp"));
-    QVERIFY2(cacheSource.contains(QStringLiteral("kVisibleDecodeKeepWindow = 96")),
-             "visible decode cancel-before window must cover the active lookahead span");
+    QVERIFY2(cacheSource.contains(QStringLiteral("effectiveVisibleDecodeKeepWindow()")),
+             "visible decode cancel-before retention must be centralized in one adaptive policy");
+    QVERIFY2(cacheSource.contains(QStringLiteral("visibleDecodeRetentionPolicySnapshot")),
+             "visible decode retention policy must be exposed for REST/perf diagnosis");
+    QVERIFY2(cacheSource.contains(QStringLiteral("kVisibleDecodeBaseKeepFrames = 96")) &&
+                 cacheSource.contains(QStringLiteral("kVisibleDecodeMaxKeepFrames = 240")),
+             "visible decode retention must retain the proven baseline while allowing bounded adaptation");
+
+    const QString cacheRequests = readSourceFile(QStringLiteral("timeline_cache_requests.cpp"));
+    QVERIFY2(cacheRequests.contains(QStringLiteral("effectiveVisibleDecodeKeepWindow()")),
+             "active visible request cancellation must use the same adaptive policy as cache playback resync");
+    QVERIFY2(!cacheRequests.contains(QStringLiteral("kVisibleDecodeKeepWindow")),
+             "timeline_cache_requests.cpp must not carry a second visible decode keep-window constant");
+    QVERIFY2(cacheRequests.contains(QStringLiteral("previewMaxPlaybackStaleFrameDelta(sourceFps")) &&
+                 cacheRequests.contains(QStringLiteral("previewFrameIsTooStaleForPlayback(frame, frameNumber, maxStaleFrameDelta)")),
+             "cache displayability must reject stale approximate playback frames with the shared source-rate-aware preview stale-frame policy");
+    QVERIFY2(cacheRequests.contains(QStringLiteral("hasExactFrameForPreview")),
+             "visible decode scheduling must be able to distinguish exact residency from approximate displayability");
+    QVERIFY2(cacheRequests.contains(QStringLiteral("\"retention_policy\"")) ||
+                 cacheRequests.contains(QStringLiteral("retention_policy")),
+             "visible decode diagnostics must include the retention policy that made cancellation decisions");
+
+    const QString selectionHeader = readSourceFile(QStringLiteral("preview_frame_selection.h"));
+    QVERIFY2(selectionHeader.contains(QStringLiteral("kPreviewMaxPlaybackStaleSeconds = 0.20")) &&
+                 selectionHeader.contains(QStringLiteral("previewMaxPlaybackStaleFrameDelta")) &&
+                 selectionHeader.contains(QStringLiteral("previewFrameIsTooStaleForPlayback")),
+             "preview stale-frame tolerance must have one shared source-rate-aware source of truth");
+
+    const QString editorPlayback = readSourceFile(QStringLiteral("editor_playback.cpp"));
+    QVERIFY2(!editorPlayback.isEmpty(), "editor_playback.cpp must be readable");
+    QVERIFY2(editorPlayback.contains(QStringLiteral("m_preview->setPlaybackSpeed(m_playbackSpeed)")),
+             "preview decode retention must be driven by the editor playback speed source of truth");
+
+    const QString vulkanSurface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("m_cache->setPlaybackSpeed(m_playbackSpeed)")),
+             "Vulkan preview cache must receive the current playback speed");
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip))")) &&
+                 vulkanSurface.contains(QStringLiteral("previewFrameIsTooStaleForPlayback(")) &&
+                 vulkanSurface.contains(QStringLiteral("stale_hardware_frame_rejected")),
+             "Vulkan direct preview must reject stale approximate hardware frames instead of handing them off");
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("displayableCached")) &&
+                 vulkanSurface.contains(QStringLiteral("exactCached")) &&
+                 vulkanSurface.contains(QStringLiteral("exact_frame_already_cached")),
+             "visible decode scheduling must keep requesting exact frames even when an approximate frame is displayable");
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("debugTemporalDebugOverlayEnabled()")) &&
+                 vulkanSurface.contains(QStringLiteral("temporalDebugOverlayText")),
+             "Vulkan preview must populate the temporal debug overlay from the same frame-status state used by REST diagnostics");
+
+    const QString debugControls = readSourceFile(QStringLiteral("debug_controls.cpp"));
+    QVERIFY2(debugControls.contains(QStringLiteral("temporal_debug_overlay")),
+             "temporal debug overlay must be controllable through the existing /debug options");
 }
 
 void TestDirectVulkanHandoffPipelineContract::schedulingDiagnosticsExposeRequiredFields()
@@ -296,6 +354,13 @@ void TestDirectVulkanHandoffPipelineContract::schedulingDiagnosticsExposeRequire
         QStringLiteral("visible_request_blocked"),
         QStringLiteral("visible_request_null_callbacks"),
         QStringLiteral("last_visible_request_block_reason"),
+        QStringLiteral("last_visible_request_exact_cached"),
+        QStringLiteral("last_visible_request_displayable_cached"),
+        QStringLiteral("active_frame_up_to_date"),
+        QStringLiteral("active_frame_not_up_to_date_failure"),
+        QStringLiteral("current_frame_failure_rate"),
+        QStringLiteral("active_frame_stale_rejected"),
+        QStringLiteral("retention_policy"),
         QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"),
         QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled")
     };

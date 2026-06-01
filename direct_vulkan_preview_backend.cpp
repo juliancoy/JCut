@@ -284,6 +284,7 @@ private:
     std::unique_ptr<VulkanPipeline> m_pipeline;
     std::unique_ptr<VulkanTextRenderer> m_textRenderer;
     std::unique_ptr<VulkanTextRenderer> m_speakerTextRenderer;
+    std::unique_ptr<VulkanTextRenderer> m_temporalDebugTextRenderer;
     std::unique_ptr<jcut::VulkanAudioTab> m_audioTab;
     QHash<QString, std::shared_ptr<ClipHandoffResources>> m_clipHandoffResources;
     QVector<RetiredClipHandoffResources> m_retiredClipHandoffResources;
@@ -2305,6 +2306,19 @@ void DirectVulkanPreviewRenderer::initResources()
         }
         return;
     }
+    m_temporalDebugTextRenderer = std::make_unique<VulkanTextRenderer>();
+    if (!m_temporalDebugTextRenderer->initialize(m_window->physicalDevice(),
+                                                m_window->device(),
+                                                m_devFuncs,
+                                                m_window->defaultRenderPass(),
+                                                &error)) {
+        if (m_owner) {
+            m_owner->markFailure(error.isEmpty()
+                                     ? QStringLiteral("Failed to initialize Vulkan temporal debug text renderer.")
+                                     : error);
+        }
+        return;
+    }
     m_audioTab = std::make_unique<jcut::VulkanAudioTab>();
     if (!m_audioTab->initialize(m_window->physicalDevice(),
                                 m_window->device(),
@@ -2337,6 +2351,7 @@ void DirectVulkanPreviewRenderer::releaseResources()
     m_clipHandoffResources.clear();
     m_retiredClipHandoffResources.clear();
     m_audioTab.reset();
+    m_temporalDebugTextRenderer.reset();
     m_speakerTextRenderer.reset();
     m_textRenderer.reset();
     m_pipeline.reset();
@@ -3058,6 +3073,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
     }
     render_detail::SpeakerLabelOverlaySpec preparedSpeakerSpec;
     bool preparedSpeakerLabel = false;
+    render_detail::SpeakerLabelOverlaySpec preparedTemporalDebugSpec;
+    bool preparedTemporalDebugLabel = false;
     QSet<QString> preparedTranscriptAtlasClipIds;
     if (m_textRenderer && m_textRenderer->isReady()) {
         for (auto it = preparedTranscriptOverlays.cbegin(); it != preparedTranscriptOverlays.cend(); ++it) {
@@ -3086,6 +3103,24 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             preparedSpeakerLabel =
                 m_speakerTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedSpeakerSpec);
         }
+    }
+    if (m_temporalDebugTextRenderer &&
+        m_temporalDebugTextRenderer->isReady() &&
+        !state->temporalDebugOverlayText.trimmed().isEmpty()) {
+        preparedTemporalDebugSpec.name = QStringLiteral("TEMPORAL DEBUG");
+        preparedTemporalDebugSpec.organization = state->temporalDebugOverlayText.trimmed();
+        preparedTemporalDebugSpec.showName = true;
+        preparedTemporalDebugSpec.showOrganization = true;
+        preparedTemporalDebugSpec.nameTextScale = 0.42;
+        preparedTemporalDebugSpec.organizationTextScale = 0.36;
+        preparedTemporalDebugSpec.nameVerticalPosition = 0.07;
+        preparedTemporalDebugSpec.organizationVerticalPosition = 0.18;
+        preparedTemporalDebugSpec.nameColor = QColor(QStringLiteral("#fff4cc"));
+        preparedTemporalDebugSpec.organizationColor = QColor(QStringLiteral("#d6e7f7"));
+        preparedTemporalDebugSpec.backgroundColor = QColor(4, 8, 14, 218);
+        preparedTemporalDebugSpec.borderColor = QColor(255, 209, 102, 170);
+        preparedTemporalDebugLabel =
+            m_temporalDebugTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedTemporalDebugSpec);
     }
     m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
     auto drawPreparedOverlay = [&](const PreparedOverlayTexture& overlay) {
@@ -3346,6 +3381,15 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                     state->outputSize,
                                                     compositeRect,
                                                     preparedSpeakerSpec);
+        }
+        if (preparedTemporalDebugLabel &&
+            m_temporalDebugTextRenderer &&
+            m_temporalDebugTextRenderer->isReady()) {
+            m_temporalDebugTextRenderer->drawSpeakerLabel(cb,
+                                                         swapSize,
+                                                         state->outputSize,
+                                                         compositeRect,
+                                                         preparedTemporalDebugSpec);
         }
         drawPreparedOverlay(preparedPlaybackStatusOverlay);
         const int thickness = std::max(2, std::min(swapSize.width(), swapSize.height()) / 180);

@@ -58,6 +58,7 @@ std::atomic<int> g_h26xSoftwareThreadingMode{static_cast<int>(H26xSoftwareThread
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
 std::atomic<bool> g_debugPlaybackCacheFallbackEnabled{true};
 std::atomic<bool> g_debugDeterministicPipelineEnabled{false};
+std::atomic<bool> g_debugTemporalDebugOverlayEnabled{envFlagEnabled("JCUT_TEMPORAL_DEBUG_OVERLAY")};
 std::atomic<int> g_debugTimelineAudioEnvelopeGranularity{kDefaultTimelineAudioEnvelopeGranularity};
 std::atomic<int> g_rubberBandEnginePreference{static_cast<int>(RubberBandEnginePreference::Faster)};
 std::atomic<int> g_rubberBandThreadingPreference{static_cast<int>(RubberBandThreadingPreference::Always)};
@@ -424,6 +425,10 @@ bool debugDeterministicPipelineEnabled() {
     return g_debugDeterministicPipelineEnabled.load();
 }
 
+bool debugTemporalDebugOverlayEnabled() {
+    return g_debugTemporalDebugOverlayEnabled.load();
+}
+
 int debugTimelineAudioEnvelopeGranularity() {
     return g_debugTimelineAudioEnvelopeGranularity.load();
 }
@@ -541,6 +546,10 @@ void setDebugDeterministicPipelineEnabled(bool enabled) {
     g_debugDeterministicPipelineEnabled.store(enabled);
 }
 
+void setDebugTemporalDebugOverlayEnabled(bool enabled) {
+    g_debugTemporalDebugOverlayEnabled.store(enabled);
+}
+
 void setDebugTimelineAudioEnvelopeGranularity(int granularity) {
     g_debugTimelineAudioEnvelopeGranularity.store(qBound(64, granularity, 8192));
 }
@@ -628,6 +637,7 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("playhead_no_repaint"), debugPlayheadNoRepaint()},
         {QStringLiteral("playback_cache_fallback"), debugPlaybackCacheFallbackEnabled()},
         {QStringLiteral("deterministic_pipeline"), debugDeterministicPipelineEnabled()},
+        {QStringLiteral("temporal_debug_overlay"), debugTemporalDebugOverlayEnabled()},
         {QStringLiteral("timeline_audio_envelope_granularity"),
          debugTimelineAudioEnvelopeGranularity()},
         {QStringLiteral("rubberband_engine"),
@@ -753,6 +763,10 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
     }
     if (name == QStringLiteral("deterministic_pipeline") && value.isBool()) {
         setDebugDeterministicPipelineEnabled(value.toBool());
+        return true;
+    }
+    if (name == QStringLiteral("temporal_debug_overlay") && value.isBool()) {
+        setDebugTemporalDebugOverlayEnabled(value.toBool());
         return true;
     }
     if (name == QStringLiteral("rubberband_engine") && value.isString()) {

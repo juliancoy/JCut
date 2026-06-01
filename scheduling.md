@@ -112,6 +112,37 @@ Rules:
 - Queue-full behavior must return explicit diagnostics.
 - Request callbacks returning null must carry a reason in aggregate counters.
 - Queue priority must be calculated after mapping source-frame requests back into the timeline domain.
+- Visible cancel-before retention must be centralized, adaptive, and bounded. It starts from
+  the proven 96-frame baseline and may expand based on configured lookahead, playback speed,
+  visible callback latency, and observed request/completion frame lag.
+- Approximate playback frames must use the shared source-rate-aware stale-frame tolerance before
+  display or handoff. A frame that is too old may remain cached, but it is not a displayable
+  hardware payload for the current playback position.
+
+Visible playback stale-frame tolerance:
+
+- Source of truth: `previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h`.
+- Time budget: 0.20 seconds of source media.
+- Clamp: minimum 4 source frames, maximum 12 source frames.
+- Examples: 30 fps source allows 6 source frames; 60 fps source allows 12 source frames.
+- This is a presentation correctness limit, not a decode retention limit. It prevents unbounded
+  stale hardware frames from being presented as current video while still allowing normal short
+  decode jitter.
+- If `active_frame_stale_rejected=true` frequently fires inside this tolerance, the next fix is
+  decode scheduling/throughput or playback gating. Do not increase this limit to hide decode
+  starvation without also documenting the measured user-visible drift.
+
+Visible decode retention policy:
+
+- Source of truth: `effectiveVisibleDecodeKeepWindow()` in `timeline_cache.cpp`.
+- Minimum retention: 24 source frames.
+- Baseline retention: 96 source frames.
+- Maximum retention: 240 source frames.
+- Candidate expansion inputs: configured lookahead, playback speed, visible callback latency,
+  and observed request/completion frame lag.
+- This is a decode cancellation window, not permission to present stale frames. It keeps useful
+  decode work alive long enough to survive jitter while the stale-frame tolerance still decides
+  whether an approximate frame may be displayed.
 
 Expected diagnostic signals:
 
@@ -121,10 +152,24 @@ Expected diagnostic signals:
 - `pending_visible_requests`
 - `visible_decode.hardware_completed`
 - `visible_decode.null_completed`
+- `visible_decode.retention_policy.effective_keep_frames`
+- `visible_decode_retention_policy.reason`
 - `decoder_diagnostics.null_callbacks.superseded`
 - `decode_timing.last_total_latency_ms`
 - `playback_smoothness.exact_hit_rate`
 - `playback_smoothness.avg_frame_lag`
+- `playback_smoothness.current_frame_failure_rate`
+- `active_frame_up_to_date`
+- `active_frame_not_up_to_date_failure`
+- `active_frame_stale_rejected`
+- `temporal_debug_overlay_enabled`
+- `temporal_debug_overlay_text`
+
+The temporal debug overlay is an explicit opt-in diagnostic. It is off by default and can be
+enabled through `POST /debug {"temporal_debug_overlay": true}` or at startup with
+`JCUT_TEMPORAL_DEBUG_OVERLAY=1`. When enabled, the direct Vulkan preview renders a compact
+timeline/video/subtitle/retention summary through the Vulkan text path; it must not use a CPU or
+Qt text overlay fallback.
 
 ## Backpressure
 
@@ -168,6 +213,11 @@ Rules:
 
 - Exact current frame is preferred.
 - Near-current cached hardware frame is acceptable when exact decode is late.
+- Approximate displayability is only a presentation fallback. It must not suppress exact visible
+  decode requests for the current frame or lookahead frames.
+- During playback, any non-exact visible video frame is a current-frame failure for diagnostics.
+  A bounded approximate frame may still be drawn to avoid a black flash, but it is not a healthy
+  playback state.
 - Presentation diagnostics must report exact/approx/missing state and frame lag.
 - The presenter must not request OpenGL fallback.
 - The presenter must not create CPU upload fallback for normal direct Vulkan preview.
@@ -177,8 +227,14 @@ Rules:
 
 - High `exact_hit_rate` with low FPS: presentation or GPU path problem.
 - Low `exact_hit_rate`, high `avg_frame_lag`, many visible null callbacks: decode scheduling problem.
+- `active_frame_not_up_to_date_failure=true`: playback is visible only through an approximate or
+  missing frame; the current frame is not healthy even if a fallback image was drawn.
 - High `superseded` count: requests are being chased faster than they can complete or priority/lookahead is wrong.
 - `visible_request_already_pending` with frame lag increasing: visible backlog/lookahead is too small or current request is stuck.
+- `last_visible_request_displayable_cached=true` with `last_visible_request_exact_cached=false` means
+  the preview can draw an approximate frame, but the scheduler must still request the exact frame.
+- `visible_decode_retention_policy.reason=max_cap`: decode is still lagging after retention expanded; inspect decoder latency, worker saturation, and hardware payload availability.
+- `active_frame_stale_rejected=true`: decode has not delivered a sufficiently current hardware frame; Vulkan correctly refused to hand off the stale approximate frame.
 - Audio underruns with video smooth: audio buffering or sidecar coverage problem.
 - Captions drift with audio/video stable: temporal-domain conversion problem.
 - Overlay click/hover unavailable while boxes visible: applied overlay snapshot/hit-test state problem, not decode.
@@ -189,10 +245,15 @@ Rules:
 - Invariant 2: Decode request targets are media source frames.
 - Invariant 3: Decode priority distance is timeline-frame distance.
 - Invariant 4: Visible decode outranks prefetch.
-- Invariant 5: Pitch-preserving sidecar-only audio has no implicit runtime fallback.
-- Invariant 6: Direct Vulkan preview has no implicit OpenGL or CPU-image upload fallback.
-- Invariant 7: Overlay workers do not own clocks and do not block playback.
-- Invariant 8: REST/perf diagnostics must expose enough state to distinguish audio gate, decode starvation, overlay lag, and presentation failure.
+- Invariant 5: Visible decode retention is one adaptive policy shared by request-time and playback-resync cancellation.
+- Invariant 6: Preview decode retention uses editor playback speed as the speed source of truth.
+- Invariant 7: Direct Vulkan preview must reject stale approximate hardware frames using the shared source-rate-aware preview stale-frame policy.
+- Invariant 8: Visible decode scheduling distinguishes exact residency from approximate displayability.
+- Invariant 9: A non-exact active frame during playback is a current-frame failure, even when an approximate fallback is displayed.
+- Invariant 10: Pitch-preserving sidecar-only audio has no implicit runtime fallback.
+- Invariant 11: Direct Vulkan preview has no implicit OpenGL or CPU-image upload fallback.
+- Invariant 12: Overlay workers do not own clocks and do not block playback.
+- Invariant 13: REST/perf diagnostics must expose enough state to distinguish audio gate, decode starvation, overlay lag, and presentation failure.
 
 ## Test Requirements
 
@@ -213,10 +274,11 @@ When playback is choppy:
 1. Check `/audio`; confirm stream running, no current underrun, and sidecar readiness.
 2. Check `/pipeline.preview.playback_smoothness`; compare exact hit rate, frame lag, and presented FPS.
 3. Check `/pipeline.preview.visible_decode_diagnostics`; confirm hardware completions versus null completions.
-4. Check decoder null callback reasons; high `superseded` means scheduling is chasing.
-5. Check pending visible requests and block reason.
-6. Check handoff/presentation metrics only after decode is delivering usable hardware frames.
-7. Check overlay worker metrics separately; overlay lag should not explain black or stale video unless it blocks UI/presentation.
+4. Check `/pipeline.preview.visible_decode_retention_policy`; confirm the effective keep window and whether it is base, lookahead, latency, lag, or max-cap driven.
+5. Check decoder null callback reasons; high `superseded` means scheduling is chasing.
+6. Check pending visible requests and block reason.
+7. Check handoff/presentation metrics only after decode is delivering usable hardware frames.
+8. Check overlay worker metrics separately; overlay lag should not explain black or stale video unless it blocks UI/presentation.
 
 ## Current Long-Term Shape
 
@@ -225,6 +287,7 @@ The intended long-term shape is simple:
 - One clock.
 - Canonical conversions.
 - Visible decode prioritized by timeline distance.
+- Visible decode retention as one bounded adaptive policy.
 - Prefetch as disposable speculative work.
 - Sidecar-only audio readiness as an explicit gate.
 - Direct Vulkan presentation with no implicit fallback.

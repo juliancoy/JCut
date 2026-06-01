@@ -760,6 +760,9 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
     m_playbackClockSource = normalizedClockSource;
     m_playbackAudioWarpMode = normalizedWarpMode;
     m_playbackLoopEnabled = normalizedLoopEnabled;
+    if (m_preview) {
+        m_preview->setPlaybackSpeed(m_playbackSpeed);
+    }
 
     if (m_playbackSpeedCombo) {
         const int speedIndex = m_playbackSpeedCombo->findData(normalizedSpeed);

@@ -1,6 +1,8 @@
 #include "timeline_cache.h"
 
 #include "debug_controls.h"
+#include "editor_shared_timing.h"
+#include "preview_frame_selection.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -18,7 +20,6 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kVisibleDecodeKeepWindow = 10;
 constexpr int64_t kObsoleteVisibleFrameSlack = 0;
 constexpr qint64 kVisiblePendingRetryMs = 250;
 
@@ -214,7 +215,7 @@ void TimelineCache::requestFrame(const QString& clipId,
     }
 
     if (m_state.load() == PlaybackState::Playing && !info.isSingleFrame) {
-        const int64_t keepFromFrame = qMax<int64_t>(0, canonicalFrame - kVisibleDecodeKeepWindow);
+        const int64_t keepFromFrame = qMax<int64_t>(0, canonicalFrame - effectiveVisibleDecodeKeepWindow());
         cancelDecoderBeforeThrottled(info.decodePath, keepFromFrame, requestedAtWallMs);
     }
 
@@ -479,7 +480,17 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
         cache = cacheIt.value();
     }
 
-    const auto isDisplayableCandidate = [this, frameNumber, requireHardwareOrGpuPayload](const FrameHandle& frame) {
+    qreal sourceFps = static_cast<qreal>(kTimelineFps);
+    const auto clipInfoIt = m_clips.find(clipId);
+    if (clipInfoIt != m_clips.end()) {
+        sourceFps = resolvedSourceFps(clipInfoIt->clip);
+    }
+    const int64_t maxStaleFrameDelta = previewMaxPlaybackStaleFrameDelta(sourceFps);
+
+    const auto isDisplayableCandidate = [this,
+                                         frameNumber,
+                                         requireHardwareOrGpuPayload,
+                                         maxStaleFrameDelta](const FrameHandle& frame) {
         if (frame.isNull()) {
             return false;
         }
@@ -489,12 +500,7 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
         if (m_state.load() != PlaybackState::Playing) {
             return true;
         }
-        const int64_t candidateFrame = frame.frameNumber();
-        if (candidateFrame < 0) {
-            return true;
-        }
-        constexpr int64_t kMaxPlaybackStaleFrameDelta = 4;
-        return candidateFrame + kMaxPlaybackStaleFrameDelta >= frameNumber;
+        return !previewFrameIsTooStaleForPlayback(frame, frameNumber, maxStaleFrameDelta);
     };
 
     if (preferPlaybackBuffer && playbackBuffer) {
@@ -522,6 +528,29 @@ bool TimelineCache::hasDisplayableFrameForPreview(const QString& clipId,
     }
 
     return false;
+}
+
+bool TimelineCache::hasExactFrameForPreview(const QString& clipId,
+                                            int64_t frameNumber,
+                                            bool preferPlaybackBuffer,
+                                            bool allowCacheFallback,
+                                            bool requireHardwareOrGpuPayload) {
+    frameNumber = normalizeFrameNumber(clipId, frameNumber);
+
+    const auto isUsableExactFrame = [frameNumber, requireHardwareOrGpuPayload](const FrameHandle& frame) {
+        if (frame.isNull()) {
+            return false;
+        }
+        if (frame.frameNumber() >= 0 && frame.frameNumber() != frameNumber) {
+            return false;
+        }
+        return !requireHardwareOrGpuPayload || frame.hasHardwareFrame() || frame.hasGpuTexture();
+    };
+
+    if (preferPlaybackBuffer && isUsableExactFrame(getPlaybackFrame(clipId, frameNumber))) {
+        return true;
+    }
+    return allowCacheFallback && isUsableExactFrame(getCachedFrame(clipId, frameNumber));
 }
 
 int TimelineCache::pendingVisibleRequestCount() const {
@@ -627,6 +656,7 @@ QJsonObject TimelineCache::visibleDecodeDiagnostics(qint64 nowMs) const {
         }
     }
 
+    const QJsonObject retentionPolicy = visibleDecodeRetentionPolicySnapshot(nowMs);
     QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
     return QJsonObject{
         {QStringLiteral("pending_count"), pendingCount},
@@ -651,6 +681,7 @@ QJsonObject TimelineCache::visibleDecodeDiagnostics(qint64 nowMs) const {
         {QStringLiteral("max_callback_wait_ms"), m_visibleDecodeDiagnostics.maxCallbackWaitMs},
         {QStringLiteral("last_qt_delivery_delay_ms"), m_visibleDecodeDiagnostics.lastQtDeliveryDelayMs},
         {QStringLiteral("max_qt_delivery_delay_ms"), m_visibleDecodeDiagnostics.maxQtDeliveryDelayMs},
+        {QStringLiteral("retention_policy"), retentionPolicy},
         {QStringLiteral("last_completed_age_ms"),
          m_visibleDecodeDiagnostics.lastCompletedAtMs > 0
              ? nowMs - m_visibleDecodeDiagnostics.lastCompletedAtMs

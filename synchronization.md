@@ -633,7 +633,9 @@ These are operational targets for interactive playback. They are not correctness
 | Handoff upload/import | < 3 ms typical for 1080p | GPU interop/copy bottleneck |
 | Present interval during playback | Around display cadence; no repeated > 50 ms spikes | Render or UI thread stall |
 | Exact hit rate | > 0.90 after warmup at 1.0x; high but workload-dependent at 1.5x | Decode/cache scheduling cannot keep up |
-| Average frame lag | <= 1 source frame after warmup | Presenter is relying on stale approximate frames |
+| Average frame lag | <= 1 source frame after warmup when exact frames are available; occasional approximate frames may lag within the stale tolerance | Decode/cache scheduling cannot keep up |
+| Approximate playback stale tolerance | 0.20 seconds of source media, clamped to 4-12 source frames | User-visible video/caption drift or black frames from over-rejection |
+| Visible decode retention | 24 frame minimum, 96 frame baseline, 240 frame maximum | Decode cancellation is too aggressive or too permissive |
 | Visible pending age | < 2 frame intervals for current request | Decode worker or queue pressure |
 | Audio underrun samples | 0 during steady playback | Audio path problem, not video render |
 | Overlay worker prep | < 16 ms typical or worker-coalesced | Overlay artifact path too expensive |
@@ -674,9 +676,16 @@ Required fields for decode-to-preview analysis:
 - `preview.active_requested_source_frame`
 - `preview.active_presented_source_frame`
 - `preview.frame_lag`
+- `preview.active_frame_up_to_date`
+- `preview.active_frame_not_up_to_date_failure`
+- `preview.active_frame_stale_rejected`
 - `preview.visible_decode_diagnostics`
+- `preview.visible_decode_retention_policy`
 - `preview.decoder_diagnostics`
+- `preview.last_visible_request_exact_cached`
+- `preview.last_visible_request_displayable_cached`
 - `preview.playback_smoothness.exact_hit_rate`
+- `preview.playback_smoothness.current_frame_failure_rate`
 - `preview.playback_smoothness.avg_frame_lag`
 - `preview.last_handoff_mode`
 - `preview.last_handoff_error`
@@ -687,15 +696,34 @@ Required fields for decode-to-preview analysis:
 - `preview.explicit_failure_draw_count`
 - `preview.last_preview_update_latency_ms`
 - `preview.last_present_interval_ms`
+- `preview.temporal_debug_overlay_enabled`
+- `preview.temporal_debug_overlay_text`
 - `audio.playing`
 - `audio.audio_clock_available`
 - `audio.last_callback_underrun_samples`
 - `audio.time_stretch_readiness_state`
 
+The temporal debug overlay is off by default. Enable it with `POST /debug {"temporal_debug_overlay": true}`
+or `JCUT_TEMPORAL_DEBUG_OVERLAY=1` when the operator needs live on-screen evidence of sample time,
+requested video frame, presented video frame, subtitle source basis, and visible decode retention.
+It is a Vulkan text pass diagnostic, not a screenshot path and not a CPU/Qt overlay.
+
 Interpretation:
 
 - Good audio plus low exact-hit rate means decode/cache scheduling or frame residency, not audio.
 - High exact-hit rate plus high present interval means presentation/render path.
+- `preview.active_frame_not_up_to_date_failure=true` means playback is not presenting the requested
+  source frame. A bounded approximate frame may be visible, but this is still a video correctness
+  failure and should be debugged as decode/cache starvation or scheduling drift.
+- Low exact-hit rate with `preview.visible_decode_retention_policy.reason` showing `max_cap`
+  means decode latency or observed frame lag has exceeded the bounded retention window.
+- `preview.active_frame_stale_rejected=true` means the renderer refused to present an approximate
+  hardware frame outside the source-rate-aware stale tolerance and is waiting for a current enough
+  decoded payload. The stale tolerance is 0.20 seconds of source media, clamped to 4-12 source
+  frames; for a 60 fps source this is 12 frames.
+- `preview.last_visible_request_displayable_cached=true` with
+  `preview.last_visible_request_exact_cached=false` means the current frame can be approximated for
+  presentation, but exact visible decode must still be scheduled.
 - Handoff success with no texture draws means render-pass or descriptor/pipeline binding.
 - Texture draws with black output means shader/conversion/geometry/scissor/clear ordering.
 - Caption drift with late video means subtitles are probably following playhead instead of presented source frame.
@@ -708,6 +736,8 @@ Interpretation:
 - Invariant 4: Direct Vulkan preview uses hardware/external GPU payloads for visible video.
 - Invariant 5: `VulkanPreviewClipFrameStatus` is the render boundary; do not bypass it with direct cache reads inside the presenter.
 - Invariant 6: Overlay and text preparation must not block visible video presentation.
+- Invariant 7: During playback, the active frame is up to date only when the presented source frame
+  equals the requested source frame. Approximate presentation is a fallback, not a healthy state.
 - Invariant 7: Presented source frame is the visual timing truth after a frame is drawn.
 - Invariant 8: No implicit OpenGL fallback, no implicit CPU upload fallback, no silent readback path.
 - Invariant 9: The presenter consumes `VulkanPreviewClipFrameStatus`; it does not perform decode/cache selection itself.

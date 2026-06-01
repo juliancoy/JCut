@@ -61,6 +61,10 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
                     m_interaction.currentSpeakerOrganizationVerticalPosition);
     snapshot.insert(QStringLiteral("playback_status_overlay_text"),
                     m_interaction.playbackStatusOverlayText);
+    snapshot.insert(QStringLiteral("temporal_debug_overlay_enabled"),
+                    editor::debugTemporalDebugOverlayEnabled());
+    snapshot.insert(QStringLiteral("temporal_debug_overlay_text"),
+                    m_interaction.temporalDebugOverlayText);
     const CurrentSpeakerLabel currentSpeakerLabel = currentSpeakerLabelForState(&m_interaction);
     snapshot.insert(QStringLiteral("current_speaker_label"), QJsonObject{
         {QStringLiteral("speaker_id"), currentSpeakerLabel.speakerId},
@@ -132,17 +136,23 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     }
     if (m_cache) {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const QJsonObject visibleDecodeRetentionPolicy =
+            m_cache->visibleDecodeRetentionPolicySnapshot(nowMs);
+        const QJsonObject visibleDecodeDiagnostics = m_cache->visibleDecodeDiagnostics(nowMs);
         snapshot.insert(QStringLiteral("cache_pending_visible_requests"), m_cache->pendingVisibleRequestCount());
         snapshot.insert(QStringLiteral("pending_visible_requests"),
                         m_cache->pendingVisibleDebugSnapshot(nowMs));
         snapshot.insert(QStringLiteral("visible_decode_diagnostics"),
-                        m_cache->visibleDecodeDiagnostics(nowMs));
+                        visibleDecodeDiagnostics);
+        snapshot.insert(QStringLiteral("visible_decode_retention_policy"),
+                        visibleDecodeRetentionPolicy);
         QJsonObject cacheSnapshot{
             {QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
             {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
             {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
             {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
-            {QStringLiteral("visible_decode"), m_cache->visibleDecodeDiagnostics(nowMs)}
+            {QStringLiteral("visible_decode"), visibleDecodeDiagnostics},
+            {QStringLiteral("visible_decode_retention_policy"), visibleDecodeRetentionPolicy}
         };
         const QJsonObject residency = m_cache->cacheResidencySnapshot();
         for (auto it = residency.begin(); it != residency.end(); ++it) {
@@ -160,6 +170,8 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     snapshot.insert(QStringLiteral("last_visible_request_decision"), m_lastVisibleRequestDecision);
     snapshot.insert(QStringLiteral("last_visible_request_block_reason"), m_lastVisibleRequestBlockReason);
     snapshot.insert(QStringLiteral("last_visible_request_cached"), m_lastVisibleRequestCached);
+    snapshot.insert(QStringLiteral("last_visible_request_exact_cached"), m_lastVisibleRequestExactCached);
+    snapshot.insert(QStringLiteral("last_visible_request_displayable_cached"), m_lastVisibleRequestDisplayableCached);
     snapshot.insert(QStringLiteral("last_visible_request_pending"), m_lastVisibleRequestPending);
     snapshot.insert(QStringLiteral("last_visible_request_force_retry"), m_lastVisibleRequestForceRetry);
     snapshot.insert(QStringLiteral("last_visible_request_backlog"), m_lastVisibleRequestBacklog);
@@ -174,6 +186,9 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
         snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
         snapshot.insert(QStringLiteral("active_frame_exact"), status.exact);
+        snapshot.insert(QStringLiteral("active_frame_up_to_date"), status.upToDate);
+        snapshot.insert(QStringLiteral("active_frame_not_up_to_date_failure"), status.currentFrameFailure);
+        snapshot.insert(QStringLiteral("active_frame_stale_rejected"), status.staleFrameRejected);
     }
     snapshot.insert(QStringLiteral("face_detections_query_debug"), m_lastFacedetectionsQueryDebug);
     snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
@@ -213,6 +228,10 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
     snapshot.insert(QStringLiteral("clip_count"), m_interaction.clips.size());
     snapshot.insert(QStringLiteral("show_current_speaker_name"), m_interaction.showCurrentSpeakerName);
     snapshot.insert(QStringLiteral("show_current_speaker_organization"), m_interaction.showCurrentSpeakerOrganization);
+    snapshot.insert(QStringLiteral("temporal_debug_overlay_enabled"),
+                    editor::debugTemporalDebugOverlayEnabled());
+    snapshot.insert(QStringLiteral("temporal_debug_overlay_text"),
+                    m_interaction.temporalDebugOverlayText);
     snapshot.insert(QStringLiteral("vulkan_decode_preference"),
                     editor::decodePreferenceToString(editor::debugDecodePreference()));
     snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"), true);
@@ -252,14 +271,20 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
     }
     if (m_cache) {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        const QJsonObject visibleDecodeRetentionPolicy =
+            m_cache->visibleDecodeRetentionPolicySnapshot(nowMs);
+        const QJsonObject visibleDecodeDiagnostics = m_cache->visibleDecodeDiagnostics(nowMs);
         snapshot.insert(QStringLiteral("cache_pending_visible_requests"), m_cache->pendingVisibleRequestCount());
         snapshot.insert(QStringLiteral("visible_decode_diagnostics"),
-                        m_cache->visibleDecodeDiagnostics(nowMs));
+                        visibleDecodeDiagnostics);
+        snapshot.insert(QStringLiteral("visible_decode_retention_policy"),
+                        visibleDecodeRetentionPolicy);
         snapshot.insert(QStringLiteral("cache"), QJsonObject{
             {QStringLiteral("hit_rate"), m_cache->cacheHitRate()},
             {QStringLiteral("total_memory_usage"), static_cast<qint64>(m_cache->totalMemoryUsage())},
             {QStringLiteral("total_cached_frames"), m_cache->totalCachedFrames()},
-            {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()}
+            {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
+            {QStringLiteral("visible_decode_retention_policy"), visibleDecodeRetentionPolicy}
         });
     }
     snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
@@ -271,6 +296,8 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
     snapshot.insert(QStringLiteral("last_visible_request_decision"), m_lastVisibleRequestDecision);
     snapshot.insert(QStringLiteral("last_visible_request_block_reason"), m_lastVisibleRequestBlockReason);
     snapshot.insert(QStringLiteral("last_visible_request_cached"), m_lastVisibleRequestCached);
+    snapshot.insert(QStringLiteral("last_visible_request_exact_cached"), m_lastVisibleRequestExactCached);
+    snapshot.insert(QStringLiteral("last_visible_request_displayable_cached"), m_lastVisibleRequestDisplayableCached);
     snapshot.insert(QStringLiteral("last_visible_request_pending"), m_lastVisibleRequestPending);
     snapshot.insert(QStringLiteral("last_visible_request_backlog"), m_lastVisibleRequestBacklog);
     snapshot.insert(QStringLiteral("last_visible_request_callback_payload"), m_lastVisibleRequestCallbackPayload);
@@ -284,6 +311,9 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
         snapshot.insert(QStringLiteral("active_requested_source_frame"), static_cast<qint64>(status.requestedSourceFrame));
         snapshot.insert(QStringLiteral("active_presented_source_frame"), static_cast<qint64>(status.presentedSourceFrame));
         snapshot.insert(QStringLiteral("active_frame_exact"), status.exact);
+        snapshot.insert(QStringLiteral("active_frame_up_to_date"), status.upToDate);
+        snapshot.insert(QStringLiteral("active_frame_not_up_to_date_failure"), status.currentFrameFailure);
+        snapshot.insert(QStringLiteral("active_frame_stale_rejected"), status.staleFrameRejected);
     }
     snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
     if (m_decoder && m_decoder->memoryBudget()) {
@@ -461,6 +491,7 @@ QJsonObject VulkanPreviewSurface::playbackSmoothnessSnapshot(const QJsonObject& 
         {QStringLiteral("exact_hit_rate"), 0.0},
         {QStringLiteral("approximate_hit_rate"), 0.0},
         {QStringLiteral("missing_frame_rate"), 0.0},
+        {QStringLiteral("current_frame_failure_rate"), 0.0},
         {QStringLiteral("late_sample_rate"), 0.0},
         {QStringLiteral("avg_frame_lag"), 0.0},
         {QStringLiteral("max_frame_lag"), 0},
@@ -524,6 +555,8 @@ QJsonObject VulkanPreviewSurface::playbackSmoothnessSnapshot(const QJsonObject& 
             static_cast<double>(approxTotal) / static_cast<double>(frameSamples);
         smoothness[QStringLiteral("missing_frame_rate")] =
             static_cast<double>(missingTotal) / static_cast<double>(frameSamples);
+        smoothness[QStringLiteral("current_frame_failure_rate")] =
+            static_cast<double>(approxTotal + missingTotal) / static_cast<double>(frameSamples);
     }
     if (availableSamples > 0) {
         smoothness[QStringLiteral("avg_frame_lag")] =

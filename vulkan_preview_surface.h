@@ -35,6 +35,7 @@ public:
     const QWidget* asWidget() const override;
 
     void setPlaybackState(bool playing) override;
+    void setPlaybackSpeed(qreal speed) override;
     void setCurrentFrame(int64_t frame) override;
     void setCurrentPlaybackSample(int64_t samplePosition) override;
     void setClipCount(int count) override;
@@ -221,6 +222,7 @@ private:
     PlaybackTuning m_playbackTuning;
     int m_adaptivePlaybackBoostLevel = 0;
     qint64 m_lastAdaptivePlaybackTuningAdjustMs = 0;
+    qreal m_playbackSpeed = 1.0;
     bool m_forcedPreviewDecodePreference = false;
     editor::DecodePreference m_previousDecodePreference = editor::DecodePreference::Hardware;
     bool m_bulkUpdating = false;
@@ -236,6 +238,8 @@ private:
     QString m_lastVisibleRequestDecision;
     QString m_lastVisibleRequestBlockReason;
     bool m_lastVisibleRequestCached = false;
+    bool m_lastVisibleRequestExactCached = false;
+    bool m_lastVisibleRequestDisplayableCached = false;
     bool m_lastVisibleRequestPending = false;
     bool m_lastVisibleRequestForceRetry = false;
     int m_lastVisibleRequestBacklog = 0;
