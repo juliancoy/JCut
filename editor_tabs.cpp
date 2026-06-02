@@ -261,7 +261,7 @@ void EditorWindow::createOutputTab()
 {
     m_outputTab = std::make_unique<OutputTab>(
         OutputTab::Widgets{
-            m_outputWidthSpin, m_outputHeightSpin,
+            m_outputWidthSpin, m_outputHeightSpin, m_outputFpsSpin,
             m_exportStartSpin, m_exportEndSpin,
             m_outputFormatCombo, m_outputRangeSummaryLabel, m_renderUseProxiesCheckBox,
             m_outputPlaybackCacheFallbackCheckBox, m_outputLeadPrefetchEnabledCheckBox,

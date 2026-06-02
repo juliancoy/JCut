@@ -111,6 +111,9 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
     request.outputSize = QSize(
         m_outputWidthSpin ? m_outputWidthSpin->value() : 1080,
         m_outputHeightSpin ? m_outputHeightSpin->value() : 1920);
+    request.outputFps = m_outputFpsSpin
+        ? m_outputFpsSpin->value()
+        : static_cast<double>(kTimelineFps);
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
     request.createVideoFromImageSequence = m_createImageSequenceCheckBox &&

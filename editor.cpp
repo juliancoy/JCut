@@ -920,6 +920,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     const int outputWidth = qMax(16, root.value(QStringLiteral("outputWidth")).toInt(1080));
     const int outputHeight = qMax(16, root.value(QStringLiteral("outputHeight")).toInt(1920));
+    const double storedOutputFps = root.value(QStringLiteral("outputFps"))
+                                       .toDouble(static_cast<double>(kTimelineFps));
+    const double outputFps = qBound(1.0,
+                                    root.value(QStringLiteral("timelineFps"))
+                                        .toDouble(storedOutputFps),
+                                    240.0);
     const QString outputFormat = root.value(QStringLiteral("outputFormat")).toString(QStringLiteral("mp4"));
     const QString renderBackendPreference = root.value(QStringLiteral("render_backend"))
                                                 .toString(QStringLiteral("vulkan"))
@@ -1310,6 +1316,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     
     if (m_outputWidthSpin) { QSignalBlocker block(m_outputWidthSpin); m_outputWidthSpin->setValue(outputWidth); }
     if (m_outputHeightSpin) { QSignalBlocker block(m_outputHeightSpin); m_outputHeightSpin->setValue(outputHeight); }
+    if (m_outputFpsSpin) { QSignalBlocker block(m_outputFpsSpin); m_outputFpsSpin->setValue(outputFps); }
     if (m_outputFormatCombo) {
         QSignalBlocker block(m_outputFormatCombo);
         const int formatIndex = m_outputFormatCombo->findData(outputFormat);

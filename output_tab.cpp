@@ -6,6 +6,8 @@
 #include <QMessageBox>
 #include <QSignalBlocker>
 
+#include "timeline_fps.h"
+
 OutputTab::OutputTab(const Widgets& widgets, const Dependencies& deps, QObject* parent)
     : QObject(parent)
     , m_widgets(widgets)
@@ -49,6 +51,10 @@ void OutputTab::wire()
     if (m_widgets.outputHeightSpin) {
         connect(m_widgets.outputHeightSpin, qOverload<int>(&QSpinBox::valueChanged),
                 this, &OutputTab::onOutputHeightChanged);
+    }
+    if (m_widgets.outputFpsSpin) {
+        connect(m_widgets.outputFpsSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, &OutputTab::onOutputFpsChanged);
     }
     if (m_widgets.exportStartSpin) {
         connect(m_widgets.exportStartSpin, qOverload<int>(&QSpinBox::valueChanged),
@@ -334,6 +340,9 @@ void OutputTab::renderFromInspector()
     request.outputSize = QSize(
         m_widgets.outputWidthSpin ? m_widgets.outputWidthSpin->value() : 1080,
         m_widgets.outputHeightSpin ? m_widgets.outputHeightSpin->value() : 1920);
+    request.outputFps = m_widgets.outputFpsSpin
+        ? m_widgets.outputFpsSpin->value()
+        : static_cast<double>(kTimelineFps);
     request.useProxyMedia = m_widgets.renderUseProxiesCheckBox &&
                             m_widgets.renderUseProxiesCheckBox->isChecked();
     
@@ -380,6 +389,14 @@ void OutputTab::onOutputHeightChanged(int value)
     if (m_deps.setOutputSize) {
         m_deps.setOutputSize(QSize(m_widgets.outputWidthSpin ? m_widgets.outputWidthSpin->value() : 1080, value));
     }
+    if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
+    if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
+}
+
+void OutputTab::onOutputFpsChanged(double value)
+{
+    Q_UNUSED(value);
+    if (m_updating) return;
     if (m_deps.scheduleSaveState) m_deps.scheduleSaveState();
     if (m_deps.pushHistorySnapshot) m_deps.pushHistorySnapshot();
 }

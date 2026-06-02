@@ -213,6 +213,7 @@ Rules:
 
 - Exact current frame is preferred.
 - Near-current cached hardware frame is acceptable when exact decode is late.
+- Original-media hardware decode is the expected direct Vulkan path. Proxy media may be used when explicitly enabled, but no-proxy hardware decode must not be treated as an exceptional or degraded mode.
 - Approximate displayability is only a presentation fallback. It must not suppress exact visible
   decode requests for the current frame or lookahead frames.
 - During playback, any non-exact visible video frame is a current-frame failure for diagnostics.

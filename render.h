@@ -1,6 +1,7 @@
 #pragma once
 
 #include "editor_shared.h"
+#include "timeline_fps.h"
 
 #include <QImage>
 #include <QJsonArray>
@@ -51,6 +52,7 @@ struct RenderRequest {
     QString outputFormat;
     QString imageSequenceFormat;  // "jpeg", "webp", or empty for none
     QSize outputSize;
+    double outputFps = static_cast<double>(kTimelineFps);
     bool useProxyMedia = false;
     bool bypassGrading = false;
     bool correctionsEnabled = true;

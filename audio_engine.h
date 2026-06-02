@@ -2172,9 +2172,12 @@ private:
             int64_t clipStartSample = 0;
             int64_t clipEndSample = 0;
             int64_t sourceInSample = 0;
+            int64_t maxSourceSample = 0;
+            int64_t playbackRateScaled = 1000;
             float transcriptNormalizeGain = 1.0f;
             QVector<TranscriptNormalizeSegment> transcriptNormalizeSegments;
             qreal precomputedTimeStretchSpeed = 1.0;
+            bool linearSourceMapping = false;
         };
         QVector<PreparedClipAudio> preparedClips;
         preparedClips.reserve(context.clips.size());
@@ -2354,7 +2357,15 @@ private:
             prepared.clipStartSample = clipStartSample;
             prepared.clipEndSample = clipEndSample;
             prepared.sourceInSample = sourceInSample;
+            prepared.maxSourceSample =
+                sourceInSample +
+                qMax<int64_t>(
+                    0,
+                    sourceFramesToSamples(clip, static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames))) - 1);
+            prepared.playbackRateScaled =
+                qMax<int64_t>(1, static_cast<int64_t>(clip.playbackRate * 1000.0));
             prepared.precomputedTimeStretchSpeed = usingPrecomputedTimeStretch ? timeStretchSpeed : 1.0;
+            prepared.linearSourceMapping = context.renderSyncMarkers.isEmpty();
             preparedClips.push_back(prepared);
 
             if (usingPrecomputedTimeStretch) {
@@ -2530,6 +2541,23 @@ private:
 
             return gain;
         };
+        auto sourceSampleAtTimelineSample = [&context](const PreparedClipAudio& prepared,
+                                                       int64_t timelineSamplePos) -> int64_t {
+            if (prepared.linearSourceMapping) {
+                const int64_t localTimelineSample =
+                    qMax<int64_t>(0, timelineSamplePos - prepared.clipStartSample);
+                const int64_t sourceOffset =
+                    (localTimelineSample * prepared.playbackRateScaled) / 1000;
+                return qMax<int64_t>(
+                    0,
+                    qMin<int64_t>(prepared.sourceInSample + sourceOffset,
+                                  prepared.maxSourceSample));
+            }
+            return sourceSampleForClipAtTimelineSample(
+                *prepared.clip,
+                timelineSamplePos,
+                context.renderSyncMarkers);
+        };
 
         int framesWithActiveClip = 0;
         int framesInputOutOfRange = 0;
@@ -2559,8 +2587,7 @@ private:
                 }
                 frameHadActiveClip = true;
 
-                const int64_t sourceFrame = sourceSampleForClipAtTimelineSample(
-                    clip, timelineSamplePos, context.renderSyncMarkers);
+                const int64_t sourceFrame = sourceSampleAtTimelineSample(prepared, timelineSamplePos);
                 int64_t inFrame = sourceFrame;
                 inFrame = timeStretchCacheSampleForSourceSample(
                     inFrame,
@@ -2631,8 +2658,8 @@ private:
                 }
 
                 if (secondarySpeechGain > 0.0f && secondaryTimelineSample >= 0) {
-                    int64_t secondaryInFrame = sourceSampleForClipAtTimelineSample(
-                        clip, secondaryTimelineSample, context.renderSyncMarkers);
+                    int64_t secondaryInFrame =
+                        sourceSampleAtTimelineSample(prepared, secondaryTimelineSample);
                     secondaryInFrame = timeStretchCacheSampleForSourceSample(
                         secondaryInFrame,
                         prepared.precomputedTimeStretchSpeed);

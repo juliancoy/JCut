@@ -27,6 +27,7 @@ set(EDITOR_TEST_TARGETS
     test_preview_face_track_click_policy
     test_facestream_overlay_snapshot
     test_direct_vulkan_handoff_pipeline_contract
+    test_no_proxy_hardware_playback_contract
     test_vulkan_text_generation
 )
 
@@ -49,6 +50,11 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+target_sources(test_no_proxy_hardware_playback_contract
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../playback_frame_pipeline.cpp
+)
 
 target_sources(test_vulkan_text_generation
     PRIVATE
@@ -75,6 +81,7 @@ set_tests_properties(
     test_transcript_logic
     test_transform_skip_aware_timing
     test_direct_vulkan_handoff_pipeline_contract
+    test_no_proxy_hardware_playback_contract
     PROPERTIES LABELS "temporal"
 )
 

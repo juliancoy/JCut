@@ -2,6 +2,7 @@
 #include "debug_controls.h"
 #include "editor_shared_render_sync.h"
 #include "media_pipeline_shared.h"
+#include "preview_frame_selection.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -695,7 +696,12 @@ void TimelineCache::onMemoryPressure() {
 }
 
 void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
-    QHash<QString, int64_t> activeLocalFrames;
+    struct ActiveVisibleTarget {
+        int64_t frame = -1;
+        int64_t staleToleranceFrames = 0;
+    };
+
+    QHash<QString, ActiveVisibleTarget> activeLocalFrames;
     {
         QMutexLocker lock(&m_clipsMutex);
         for (auto it = m_clips.cbegin(); it != m_clips.cend(); ++it) {
@@ -709,7 +715,12 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
                 sourceFrameForClipAtTimelinePosition(info.clip,
                                                      static_cast<qreal>(playheadFrame),
                                                      m_renderSyncMarkers);
-            activeLocalFrames.insert(it.key(), normalizeFrameNumber(info, activeSourceFrame));
+            activeLocalFrames.insert(
+                it.key(),
+                ActiveVisibleTarget{
+                    normalizeFrameNumber(info, activeSourceFrame),
+                    previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(info.clip)),
+                });
         }
     }
 
@@ -738,7 +749,8 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
 
             bool ok = false;
             const int64_t pendingFrame = key.mid(separator + 1).toLongLong(&ok);
-            if (!ok || pendingFrame >= activeIt.value()) {
+            const ActiveVisibleTarget activeTarget = activeIt.value();
+            if (!ok || pendingFrame + activeTarget.staleToleranceFrames >= activeTarget.frame) {
                 ++it;
                 continue;
             }
@@ -764,7 +776,8 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
 
             bool ok = false;
             const int64_t pendingFrame = key.mid(separator + 1).toLongLong(&ok);
-            if (!ok || pendingFrame >= activeIt.value()) {
+            const ActiveVisibleTarget activeTarget = activeIt.value();
+            if (!ok || pendingFrame + activeTarget.staleToleranceFrames >= activeTarget.frame) {
                 ++it;
                 continue;
             }
@@ -789,7 +802,11 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
             if (clipIt == m_clips.end() || clipIt->decodePath.isEmpty()) {
                 continue;
             }
-            const int64_t keepFromFrame = qMax<int64_t>(0, it.value() - effectiveVisibleDecodeKeepWindow());
+            const int64_t keepFromFrame = qMax<int64_t>(
+                0,
+                it.value().frame -
+                    qMax<int64_t>(effectiveVisibleDecodeKeepWindow(),
+                                  it.value().staleToleranceFrames));
             cancelDecoderBeforeThrottled(clipIt->decodePath, keepFromFrame);
         }
     }

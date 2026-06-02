@@ -8,6 +8,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QPainter>
+
+#include <cmath>
 using namespace render_detail;
 
 namespace {
@@ -77,13 +79,17 @@ void configureVideoCodecContext(AVCodecContext* ctx,
                                 AVPixelFormat pixelFormat,
                                 AVFormatContext* formatCtx)
 {
+    const double outputFps = std::isfinite(request.outputFps) && request.outputFps > 0.001
+        ? request.outputFps
+        : static_cast<double>(kTimelineFps);
+    const AVRational frameRate = av_d2q(outputFps, 1001000);
     ctx->codec_id = codec->id;
     ctx->codec_type = AVMEDIA_TYPE_VIDEO;
     ctx->width = request.outputSize.width();
     ctx->height = request.outputSize.height();
-    ctx->time_base = AVRational{1, kTimelineFps};
-    ctx->framerate = AVRational{kTimelineFps, 1};
-    ctx->gop_size = kTimelineFps;
+    ctx->time_base = av_inv_q(frameRate);
+    ctx->framerate = frameRate;
+    ctx->gop_size = qMax(1, static_cast<int>(std::lround(outputFps)));
     ctx->max_b_frames = 0;
     ctx->pix_fmt = pixelFormat;
     ctx->bit_rate = 8'000'000;

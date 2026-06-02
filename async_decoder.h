@@ -198,6 +198,7 @@ private:
         std::atomic<uint64_t> staleAfterDecode{0};
         std::atomic<uint64_t> decodeReturnedNull{0};
         std::atomic<uint64_t> decoderContextError{0};
+        std::atomic<uint64_t> visibleExactMiss{0};
     };
 
     struct DecodeTimingCounters {

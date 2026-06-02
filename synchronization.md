@@ -165,6 +165,7 @@ Synchronization rule:
 
 - Visible requests outrank prefetch.
 - Visible requests for the same file are not superseded by other visible requests merely because playback advanced.
+- Sequential decode may publish a batch of recently decoded frames, but a visible request is complete only when the exact requested source frame is present. Returning an older batch frame as the visible request result hides starvation and produces black/stale presentation failures.
 - Decode callbacks are delivered back through Qt queued invocation before cache mutation visible to UI consumers.
 
 ### 6. Frame Residency And Payload Validation
@@ -565,7 +566,7 @@ flowchart TD
 | Clock update | Audio/timer policy, playback speed | Timeline sample | Advance video independently |
 | Source mapping | Timeline sample, clip timing, sync markers | Source-frame request | Compare source frames as timeline frames |
 | Visible request | Source-frame request, backlog | Cache hit or pending decode | Let prefetch outrank current visible work |
-| Decode | Pending visible request | `FrameHandle` | Return CPU-only payload for strict Vulkan visible path |
+| Decode | Pending visible request | Exact `FrameHandle` or explicit miss | Return CPU-only payload for strict Vulkan visible path, or report an older batch frame as a completed visible request |
 | Cache store | Decoder callback | Resident frame | Drop current useful hardware frames as stale without diagnostics |
 | Frame status | Cache, clip state, effects | `VulkanPreviewClipFrameStatus` | Parse heavy artifacts or materialize CPU images |
 | Overlay prep | Source frame, artifact cache | Typed overlay snapshot | Block video playback |

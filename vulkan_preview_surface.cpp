@@ -57,11 +57,13 @@ QString cacheRegistrationKeyForClip(const TimelineClip& clip)
         .arg(QString::number(clip.sourceFps, 'f', 6));
 }
 
-TimelineClip directVulkanDecodeClip(const TimelineClip& clip)
+TimelineClip directVulkanDecodeClip(const TimelineClip& clip, bool useProxyMedia)
 {
     TimelineClip directClip = clip;
-    directClip.useProxy = false;
-    directClip.proxyPath.clear();
+    if (!useProxyMedia) {
+        directClip.useProxy = false;
+        directClip.proxyPath.clear();
+    }
     return directClip;
 }
 
@@ -918,7 +920,7 @@ void VulkanPreviewSurface::registerVisibleClips()
             clip.filePath.isEmpty()) {
             continue;
         }
-        const TimelineClip decodeClip = directVulkanDecodeClip(clip);
+        const TimelineClip decodeClip = directVulkanDecodeClip(clip, m_useProxyMedia);
         visible.insert(clip.id);
         const QString registrationKey = cacheRegistrationKeyForClip(decodeClip);
         nextRegisteredClipRegistrationKeys.insert(clip.id, registrationKey);
@@ -1004,7 +1006,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             true,
             requireDirectVulkanPayload);
         const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
-        const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 250);
+        const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 2000);
         const int backlog = m_cache->pendingVisibleRequestCount();
         m_lastVisibleRequestClipId = clip.id;
         m_lastVisibleRequestFrame = localFrame;
@@ -1162,6 +1164,8 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        const int64_t maxStaleFrameDelta =
+            editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
         const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
             editor::PreviewFrameSelectionRequest{
                 clip.id,
@@ -1177,24 +1181,23 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             m_cache.get(),
             nullptr,
             FrameHandle(),
-            [playing = m_interaction.playing,
-             localFrame,
-             maxStaleFrameDelta = editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip))](
-                const FrameHandle& frame) {
+            [](const FrameHandle& frame) {
                 return !frame.isNull() &&
-                       ((!frame.hasHardwareFrame() && !frame.hasGpuTexture()) ||
-                        (playing && editor::previewFrameIsTooStaleForPlayback(
-                                        frame, localFrame, maxStaleFrameDelta)));
+                       !frame.hasHardwareFrame() &&
+                       !frame.hasGpuTexture();
             });
         const FrameHandle exactFrame = frameSelection.exactFrame;
         FrameHandle selectedFrame = frameSelection.frame;
+        const bool selectedTooStale =
+            m_interaction.playing &&
+            editor::previewFrameIsTooStaleForPlayback(selectedFrame, localFrame, maxStaleFrameDelta);
 
         VulkanPreviewClipFrameStatus status;
         status.clipId = clip.id;
         status.label = clip.label;
         status.decodePath = QStringLiteral("missing");
         status.frameSelection = frameSelection.selection;
-        status.staleFrameRejected = frameSelection.rejectedStale;
+        status.staleFrameRejected = selectedTooStale;
         status.requestedSourceFrame = localFrame;
         status.active = true;
         status.effectsPath = QStringLiteral("evaluateEffectiveVisualEffectsAtPosition");
@@ -1287,7 +1290,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             if (!m_cache) {
                 status.missingReason = QStringLiteral("cache_unavailable");
             } else if (frameSelection.rejectedStale) {
-                status.missingReason = QStringLiteral("stale_hardware_frame_rejected");
+                status.missingReason = QStringLiteral("non_hardware_payload_rejected");
             } else if (selectedFrame.isNull()) {
                 status.missingReason = QStringLiteral("no_decoded_frame_for_active_clip");
             } else if (!selectedHasHardwareFrame && !selectedHasGpuTexture && !selectedHasCpuFrame) {
@@ -1414,7 +1417,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             requireDirectVulkanPayload);
         if (!targetExact) {
             const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
-            const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 250);
+            const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 2000);
             if (!pending || forceRetry) {
                 m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
                     queueFrameStatusRefresh(false);

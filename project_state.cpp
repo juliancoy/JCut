@@ -381,6 +381,11 @@ QJsonObject EditorWindow::buildStateJson() const
         m_outputWidthSpin ? m_outputWidthSpin->value() : 1080;
     root[QStringLiteral("outputHeight")] =
         m_outputHeightSpin ? m_outputHeightSpin->value() : 1920;
+    const double timelineFps =
+        m_outputFpsSpin ? m_outputFpsSpin->value() : static_cast<double>(kTimelineFps);
+    root[QStringLiteral("timelineFps")] = timelineFps;
+    // Backward compatibility for older state readers and export helpers.
+    root[QStringLiteral("outputFps")] = timelineFps;
     root[QStringLiteral("outputFormat")] =
         m_outputFormatCombo ? m_outputFormatCombo->currentData().toString()
                             : QStringLiteral("mp4");

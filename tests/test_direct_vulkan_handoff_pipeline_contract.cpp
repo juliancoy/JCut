@@ -19,6 +19,7 @@ private slots:
     void schedulingDiagnosticsExposeRequiredFields();
     void pipelineDiagnosticsDefaultToCompactSnapshot();
     void pitchPreservingAudioUsesExplicitSidecarGate();
+    void noProxyHardwarePathIsPrimaryAndHoldsLateFrames();
     void overlayWorkerKeepsNewestCoalescedRequest();
     void rendererConsumesLatchedPreviewSnapshot();
     void vulkanTextShaderUsesVulkanFramebufferYConvention();
@@ -324,8 +325,8 @@ void TestDirectVulkanHandoffPipelineContract::visibleDecodePriorityUsesTimelineD
              "Vulkan preview cache must receive the current playback speed");
     QVERIFY2(vulkanSurface.contains(QStringLiteral("previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip))")) &&
                  vulkanSurface.contains(QStringLiteral("previewFrameIsTooStaleForPlayback(")) &&
-                 vulkanSurface.contains(QStringLiteral("stale_hardware_frame_rejected")),
-             "Vulkan direct preview must reject stale approximate hardware frames instead of handing them off");
+                 vulkanSurface.contains(QStringLiteral("status.staleFrameRejected = selectedTooStale")),
+             "Vulkan direct preview must diagnose stale approximate hardware frames without converting them into missing/black frames");
     QVERIFY2(vulkanSurface.contains(QStringLiteral("displayableCached")) &&
                  vulkanSurface.contains(QStringLiteral("exactCached")) &&
                  vulkanSurface.contains(QStringLiteral("exact_frame_already_cached")),
@@ -462,6 +463,31 @@ void TestDirectVulkanHandoffPipelineContract::pitchPreservingAudioUsesExplicitSi
              "audio engine must expose whether required retimed audio needs generation");
     QVERIFY2(!audio.contains(QStringLiteral("SOLA")),
              "sidecar-only pitch-preserving playback must not retain an implicit SOLA fallback path");
+}
+
+void TestDirectVulkanHandoffPipelineContract::noProxyHardwarePathIsPrimaryAndHoldsLateFrames()
+{
+    const QString vulkanSurface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+    QVERIFY2(!vulkanSurface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
+
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("directVulkanDecodeClip(const TimelineClip& clip, bool useProxyMedia)")),
+             "direct Vulkan clip registration must make proxy use an explicit state, not an implicit fallback");
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("if (!useProxyMedia)")) &&
+                 vulkanSurface.contains(QStringLiteral("directClip.useProxy = false")) &&
+                 vulkanSurface.contains(QStringLiteral("directClip.proxyPath.clear()")),
+             "no-proxy direct Vulkan playback must keep the original media path and only clear proxy state when proxy mode is disabled");
+    QVERIFY2(!vulkanSurface.contains(QStringLiteral("stale_hardware_frame_rejected")),
+             "late hardware frames must not be converted into missing black frames in the direct Vulkan presenter");
+    QVERIFY2(vulkanSurface.contains(QStringLiteral("status.staleFrameRejected = selectedTooStale")),
+             "late hardware frames must still be diagnosed as stale/current-frame failures");
+
+    const QString testSource = readSourceFile(QStringLiteral("tests/test_no_proxy_hardware_playback_contract.cpp"));
+    QVERIFY2(testSource.contains(QStringLiteral("JCUT_NO_PROXY_HARDWARE_VIDEO")),
+             "the no-proxy hardware path must have an optional real-media headless fixture test");
+    QVERIFY2(testSource.contains(QStringLiteral("interactivePreviewMediaPathForClip(clip), fixturePath")),
+             "the optional fixture must assert the no-proxy path resolves to original media");
+    QVERIFY2(testSource.contains(QStringLiteral("frame.hasHardwareFrame()")),
+             "the optional fixture must assert hardware payloads, not CPU proxy fallback");
 }
 
 void TestDirectVulkanHandoffPipelineContract::overlayWorkerKeepsNewestCoalescedRequest()

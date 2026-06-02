@@ -610,6 +610,7 @@ void AsyncDecoder::runLane(LaneState* lane) {
         FrameHandle frame;
         QVector<FrameHandle> decodedFrames;
         QString errorMessage;
+        bool visibleExactMiss = false;
 
         const bool cancelled =
             request.generation != state->generation.load() ||
@@ -646,7 +647,7 @@ void AsyncDecoder::runLane(LaneState* lane) {
                         }
                     }
                     if (frame.isNull() && !decodedFrames.isEmpty()) {
-                        frame = decodedFrames.constFirst();
+                        visibleExactMiss = request.kind == DecodeRequestKind::Visible;
                     }
                 } else {
                     frame = state->context->decodeFrame(request.frameNumber);
@@ -672,8 +673,9 @@ void AsyncDecoder::runLane(LaneState* lane) {
             decodedFrames.clear();
         } else if (frame.isNull()) {
             recordNullCallback(request.kind,
-                               errorMessage.isEmpty() ? "decode_returned_null"
-                                                      : "decoder_context_error");
+                               visibleExactMiss ? "visible_exact_miss"
+                                                : (errorMessage.isEmpty() ? "decode_returned_null"
+                                                                          : "decoder_context_error"));
         }
 
         const qint64 decodeMs = decodeTraceMs() - startedAt;
@@ -824,6 +826,8 @@ void AsyncDecoder::recordNullCallback(DecodeRequestKind kind, const char* reason
         m_nullCallbackCounters.decodeReturnedNull.fetch_add(1, std::memory_order_relaxed);
     } else if (reasonText == QLatin1String("decoder_context_error")) {
         m_nullCallbackCounters.decoderContextError.fetch_add(1, std::memory_order_relaxed);
+    } else if (reasonText == QLatin1String("visible_exact_miss")) {
+        m_nullCallbackCounters.visibleExactMiss.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -872,7 +876,8 @@ QJsonObject AsyncDecoder::diagnosticsSnapshot() const {
         {QStringLiteral("generation_cancelled"), static_cast<qint64>(m_nullCallbackCounters.generationCancelled.load(std::memory_order_relaxed))},
         {QStringLiteral("stale_after_decode"), static_cast<qint64>(m_nullCallbackCounters.staleAfterDecode.load(std::memory_order_relaxed))},
         {QStringLiteral("decode_returned_null"), static_cast<qint64>(m_nullCallbackCounters.decodeReturnedNull.load(std::memory_order_relaxed))},
-        {QStringLiteral("decoder_context_error"), static_cast<qint64>(m_nullCallbackCounters.decoderContextError.load(std::memory_order_relaxed))}
+        {QStringLiteral("decoder_context_error"), static_cast<qint64>(m_nullCallbackCounters.decoderContextError.load(std::memory_order_relaxed))},
+        {QStringLiteral("visible_exact_miss"), static_cast<qint64>(m_nullCallbackCounters.visibleExactMiss.load(std::memory_order_relaxed))}
     };
 
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();

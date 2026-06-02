@@ -303,6 +303,11 @@ int runSpeakerExportHarness(const SpeakerExportHarnessConfig& config) {
             root.value(QStringLiteral("outputWidth")).toInt(1080),
             root.value(QStringLiteral("outputHeight")).toInt(1920));
     }
+    const double storedOutputFps = root.value(QStringLiteral("outputFps"))
+                                       .toDouble(static_cast<double>(kTimelineFps));
+    request.outputFps = qBound(1.0,
+                               root.value(QStringLiteral("timelineFps")).toDouble(storedOutputFps),
+                               240.0);
     request.correctionsEnabled = root.value(QStringLiteral("correctionsEnabled")).toBool(true);
     request.useProxyMedia = root.value(QStringLiteral("renderUseProxies")).toBool(false);
     if (config.useProxyOverride) {

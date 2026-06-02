@@ -507,6 +507,7 @@ private:
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;
+    QDoubleSpinBox *m_outputFpsSpin = nullptr;
     QSpinBox *m_exportStartSpin = nullptr;
     QSpinBox *m_exportEndSpin = nullptr;
     QComboBox *m_outputFormatCombo = nullptr;

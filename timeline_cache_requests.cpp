@@ -21,7 +21,7 @@ namespace editor {
 
 namespace {
 constexpr int64_t kObsoleteVisibleFrameSlack = 0;
-constexpr qint64 kVisiblePendingRetryMs = 250;
+constexpr qint64 kVisiblePendingRetryMs = 2000;
 
 QElapsedTimer& cacheTraceTimer() {
     static QElapsedTimer timer = []() {
@@ -301,20 +301,22 @@ void TimelineCache::requestFrame(const QString& clipId,
                     }
 
                     if (!deliveredFrame.isNull()) {
+                        const int64_t deliveredFrameNumber =
+                            deliveredFrame.frameNumber() >= 0 ? deliveredFrame.frameNumber() : canonicalFrame;
                         {
                             QMutexLocker pendingLock(&self->m_pendingMutex);
                             self->m_seekResync.satisfy(clipId,
-                                                       deliveredFrame.frameNumber(),
+                                                       deliveredFrameNumber,
                                                        QDateTime::currentMSecsSinceEpoch());
                         }
                         if (self->m_state.load() == PlaybackState::Playing) {
                             auto bufferIt = self->m_playbackBuffers.find(clipId);
                             if (bufferIt != self->m_playbackBuffers.end() && bufferIt.value()) {
-                                bufferIt.value()->insert(canonicalFrame, deliveredFrame);
+                                bufferIt.value()->insert(deliveredFrameNumber, deliveredFrame);
                             }
                         }
                         if (auto* cache = self->getOrCreateClipCache(clipId)) {
-                            cache->insert(canonicalFrame, deliveredFrame);
+                            cache->insert(deliveredFrameNumber, deliveredFrame);
                         }
                         if (deliveredFrame.hasHardwareFrame()) {
                             self->enforceHardwareFrameResidencyPolicy();

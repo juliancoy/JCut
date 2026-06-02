@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QSpinBox>
+#include <QDoubleSpinBox>
 #include <QComboBox>
 #include <QLabel>
 #include <QPushButton>
@@ -24,6 +25,7 @@ public:
     {
         QSpinBox* outputWidthSpin = nullptr;
         QSpinBox* outputHeightSpin = nullptr;
+        QDoubleSpinBox* outputFpsSpin = nullptr;
         QSpinBox* exportStartSpin = nullptr;
         QSpinBox* exportEndSpin = nullptr;
         QComboBox* outputFormatCombo = nullptr;
@@ -85,6 +87,7 @@ public:
 private slots:
     void onOutputWidthChanged(int value);
     void onOutputHeightChanged(int value);
+    void onOutputFpsChanged(double value);
     void onExportStartChanged(int value);
     void onExportEndChanged(int value);
     void onOutputFormatChanged(int index);

@@ -321,6 +321,7 @@ public:
 
     QSpinBox *outputWidthSpin() const { return m_outputWidthSpin; }
     QSpinBox *outputHeightSpin() const { return m_outputHeightSpin; }
+    QDoubleSpinBox *outputFpsSpin() const { return m_outputFpsSpin; }
     QSpinBox *exportStartSpin() const { return m_exportStartSpin; }
     QSpinBox *exportEndSpin() const { return m_exportEndSpin; }
     QComboBox *outputFormatCombo() const { return m_outputFormatCombo; }
@@ -689,6 +690,7 @@ private:
 
     QSpinBox *m_outputWidthSpin = nullptr;
     QSpinBox *m_outputHeightSpin = nullptr;
+    QDoubleSpinBox *m_outputFpsSpin = nullptr;
     QSpinBox *m_exportStartSpin = nullptr;
     QSpinBox *m_exportEndSpin = nullptr;
     QComboBox *m_outputFormatCombo = nullptr;

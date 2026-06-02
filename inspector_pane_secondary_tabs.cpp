@@ -106,6 +106,7 @@ QWidget *InspectorPane::buildOutputTab()
     auto *form = new QFormLayout;
     m_outputWidthSpin = new QSpinBox(page);
     m_outputHeightSpin = new QSpinBox(page);
+    m_outputFpsSpin = new QDoubleSpinBox(page);
     m_exportStartSpin = new QSpinBox(page);
     m_exportEndSpin = new QSpinBox(page);
     m_outputFormatCombo = new QComboBox(page);
@@ -115,6 +116,11 @@ QWidget *InspectorPane::buildOutputTab()
     m_outputWidthSpin->setValue(1080);
     m_outputHeightSpin->setRange(16, 4320);
     m_outputHeightSpin->setValue(1920);
+    m_outputFpsSpin->setRange(1.0, 240.0);
+    m_outputFpsSpin->setDecimals(3);
+    m_outputFpsSpin->setSingleStep(1.0);
+    m_outputFpsSpin->setValue(30.0);
+    m_outputFpsSpin->setSuffix(QStringLiteral(" fps"));
     m_exportStartSpin->setRange(0, 999999);
     m_exportEndSpin->setRange(0, 999999);
 
@@ -155,6 +161,7 @@ QWidget *InspectorPane::buildOutputTab()
 
     form->addRow(QStringLiteral("Output Width"), m_outputWidthSpin);
     form->addRow(QStringLiteral("Output Height"), m_outputHeightSpin);
+    form->addRow(QStringLiteral("Timeline / Output FPS"), m_outputFpsSpin);
     form->addRow(QStringLiteral("Export Range"), rangeBubblesRow);
     form->addRow(QStringLiteral("Output Format"), m_outputFormatCombo);
     form->addRow(QStringLiteral("Export Backend"), m_renderBackendCombo);

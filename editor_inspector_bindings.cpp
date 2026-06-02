@@ -159,6 +159,7 @@ void EditorWindow::bindInspectorWidgets()
     m_flipHorizontalButton = m_inspectorPane->flipHorizontalButton();
     m_outputWidthSpin = m_inspectorPane->outputWidthSpin();
     m_outputHeightSpin = m_inspectorPane->outputHeightSpin();
+    m_outputFpsSpin = m_inspectorPane->outputFpsSpin();
     m_exportStartSpin = m_inspectorPane->exportStartSpin();
     m_exportEndSpin = m_inspectorPane->exportEndSpin();
     m_outputFormatCombo = m_inspectorPane->outputFormatCombo();
