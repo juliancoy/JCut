@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
 #include <QPainter>
 #include <QRegularExpression>
 #include <QSet>
@@ -19,6 +20,14 @@ struct HoverSpeakerProfileCacheEntry {
     QHash<QString, HoverSpeakerProfile> profilesBySpeaker;
 };
 
+struct CurrentSpeakerRangeCacheEntry {
+    QString clipId;
+    QString transcriptPath;
+    QString speakerId;
+    int64_t startFrame = -1;
+    int64_t endFrame = -1;
+};
+
 QHash<QString, HoverSpeakerProfileCacheEntry>& hoverSpeakerProfileCache()
 {
     static QHash<QString, HoverSpeakerProfileCacheEntry> cache;
@@ -29,6 +38,71 @@ QHash<QString, QPixmap>& hoverSpeakerImageCache()
 {
     static QHash<QString, QPixmap> cache;
     return cache;
+}
+
+QMutex& currentSpeakerRangeCacheMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+CurrentSpeakerRangeCacheEntry& currentSpeakerRangeCache()
+{
+    static CurrentSpeakerRangeCacheEntry cache;
+    return cache;
+}
+
+CurrentSpeakerLabel currentSpeakerLabelFromSpeakerId(const QString& transcriptPath,
+                                                     const QString& speakerId)
+{
+    if (speakerId.trimmed().isEmpty()) {
+        return {};
+    }
+    const HoverSpeakerProfile* profile = hoverSpeakerProfileFor(transcriptPath, speakerId);
+    CurrentSpeakerLabel label;
+    label.speakerId = speakerId;
+    label.name = profile && !profile->name.trimmed().isEmpty()
+        ? profile->name.trimmed()
+        : speakerId;
+    label.organization = profile ? profile->organization.trimmed() : QString();
+    return label;
+}
+
+bool cachedCurrentSpeakerId(const QString& clipId,
+                            const QString& transcriptPath,
+                            int64_t sourceFrame,
+                            QString* speakerIdOut)
+{
+    QMutexLocker locker(&currentSpeakerRangeCacheMutex());
+    const CurrentSpeakerRangeCacheEntry& cache = currentSpeakerRangeCache();
+    if (cache.clipId == clipId &&
+        cache.transcriptPath == transcriptPath &&
+        sourceFrame >= cache.startFrame &&
+        sourceFrame <= cache.endFrame &&
+        !cache.speakerId.trimmed().isEmpty()) {
+        if (speakerIdOut) {
+            *speakerIdOut = cache.speakerId;
+        }
+        return true;
+    }
+    return false;
+}
+
+void rememberCurrentSpeakerIdRange(const QString& clipId,
+                                   const QString& transcriptPath,
+                                   const QString& speakerId,
+                                   const ExportRangeSegment& range)
+{
+    if (speakerId.trimmed().isEmpty() || range.startFrame < 0 || range.endFrame < range.startFrame) {
+        return;
+    }
+    QMutexLocker locker(&currentSpeakerRangeCacheMutex());
+    CurrentSpeakerRangeCacheEntry& cache = currentSpeakerRangeCache();
+    cache.clipId = clipId;
+    cache.transcriptPath = transcriptPath;
+    cache.speakerId = speakerId;
+    cache.startFrame = range.startFrame;
+    cache.endFrame = range.endFrame;
 }
 
 QString clippedSummaryFromWords(const QStringList& words)
@@ -277,6 +351,12 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
 
     for (const TimelineClip& clip : candidates) {
         const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+        const int64_t sourceFrame =
+            transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
+        QString speakerId;
+        if (cachedCurrentSpeakerId(clip.id, transcriptPath, sourceFrame, &speakerId)) {
+            return currentSpeakerLabelFromSpeakerId(transcriptPath, speakerId);
+        }
         const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
             loadTranscriptRuntimeDocument(transcriptPath);
         const QVector<TranscriptSection>& sections =
@@ -284,20 +364,13 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
         if (sections.isEmpty()) {
             continue;
         }
-        const int64_t sourceFrame =
-            transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
-        const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame);
+        ExportRangeSegment activeRange{-1, -1};
+        speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame, &activeRange);
         if (speakerId.isEmpty()) {
             continue;
         }
-        const HoverSpeakerProfile* profile = hoverSpeakerProfileFor(transcriptPath, speakerId);
-        CurrentSpeakerLabel label;
-        label.speakerId = speakerId;
-        label.name = profile && !profile->name.trimmed().isEmpty()
-            ? profile->name.trimmed()
-            : speakerId;
-        label.organization = profile ? profile->organization.trimmed() : QString();
-        return label;
+        rememberCurrentSpeakerIdRange(clip.id, transcriptPath, speakerId, activeRange);
+        return currentSpeakerLabelFromSpeakerId(transcriptPath, speakerId);
     }
 
     return {};
@@ -451,7 +524,15 @@ render_detail::SpeakerLabelOverlaySpec currentSpeakerLabelOverlaySpecForState(co
 
 QString speakerAtSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame)
 {
-    for (const TranscriptSection& section : sections) {
+    const auto firstPossibleSection = std::lower_bound(
+        sections.constBegin(),
+        sections.constEnd(),
+        sourceFrame,
+        [](const TranscriptSection& section, int64_t frame) {
+            return section.endFrame < frame;
+        });
+    for (auto it = firstPossibleSection; it != sections.constEnd(); ++it) {
+        const TranscriptSection& section = *it;
         if (sourceFrame < section.startFrame) {
             return QString();
         }

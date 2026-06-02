@@ -97,6 +97,7 @@ private slots:
     void testTranscriptOverlaySizingHelpersClampToBox();
     void testTranscriptOverlayLayoutHelperMatchesSectionLayout();
     void testTranscriptOverlayRespectsWordPadding();
+    void testTranscriptOverlaySpeakerLookupReturnsActiveRange();
     void testTranscriptOverlayHtmlUsesQtRichTextRgbColors();
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
@@ -685,6 +686,44 @@ void TestTranscriptLogic::testTranscriptOverlayRespectsWordPadding() {
     QCOMPARE(joinedEarlyLayout.lines.constFirst().activeWord, 1);
 
     setTranscriptOverlayTimingPaddingMs(150, 70);
+}
+
+void TestTranscriptLogic::testTranscriptOverlaySpeakerLookupReturnsActiveRange() {
+    TranscriptSection first;
+    first.startFrame = 0;
+    first.endFrame = 9;
+    first.text = QStringLiteral("alpha");
+    TranscriptWord firstWord;
+    firstWord.startFrame = 0;
+    firstWord.endFrame = 9;
+    firstWord.text = QStringLiteral("alpha");
+    firstWord.speaker = QStringLiteral("S1");
+    first.words.push_back(firstWord);
+
+    TranscriptSection second;
+    second.startFrame = 20;
+    second.endFrame = 29;
+    second.text = QStringLiteral("beta");
+    TranscriptWord secondWord;
+    secondWord.startFrame = 20;
+    secondWord.endFrame = 29;
+    secondWord.text = QStringLiteral("beta");
+    secondWord.speaker = QStringLiteral("S2");
+    second.words.push_back(secondWord);
+
+    const QVector<TranscriptSection> sections{first, second};
+    setTranscriptOverlayTimingPaddingMs(150, 70);
+
+    ExportRangeSegment activeRange{-1, -1};
+    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 16, &activeRange),
+             QStringLiteral("S2"));
+    QCOMPARE(activeRange.startFrame, int64_t(16));
+    QCOMPARE(activeRange.endFrame, int64_t(32));
+
+    activeRange = ExportRangeSegment{123, 456};
+    QVERIFY(transcriptOverlaySpeakerAtSourceFrame(sections, 14, &activeRange).isEmpty());
+    QCOMPARE(activeRange.startFrame, int64_t(-1));
+    QCOMPARE(activeRange.endFrame, int64_t(-1));
 }
 
 void TestTranscriptLogic::testTranscriptOverlayHtmlUsesQtRichTextRgbColors() {

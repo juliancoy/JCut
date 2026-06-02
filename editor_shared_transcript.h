@@ -71,7 +71,8 @@ TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(const TimelineClip&
                                                              const QVector<TranscriptSection>& sections,
                                                              int64_t sourceFrame);
 QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& sections,
-                                              int64_t sourceFrame);
+                                              int64_t sourceFrame,
+                                              ExportRangeSegment* activeRangeOut = nullptr);
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines);
 TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section,
                                                 int64_t sourceFrame,

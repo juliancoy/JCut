@@ -14,6 +14,9 @@ namespace jcut::preview_overlay {
 struct FacestreamOverlayCacheEntry {
     QString signature;
     QVector<FacestreamResolvedTrack> tracks;
+    QHash<int64_t, QVector<int>> trackIndicesBySourceFrame;
+    QVector<int64_t> trackIndexSourceFrames;
+    int64_t trackIndexTypicalFrameStep = 1;
     QVector<VulkanPreviewFacestreamOverlay> rawDetections;
     QHash<int64_t, QVector<VulkanPreviewFacestreamOverlay>> rawDetectionsBySourceFrame;
     QVector<int64_t> rawDetectionSourceFrames;
@@ -69,6 +72,14 @@ QRectF facestreamKeyframeBoxNorm(const FacestreamResolvedKeyframe& keyframe,
                                  const QSize& clipFrameSize);
 
 QVector<VulkanPreviewFacestreamOverlay> rawDetectionsFromCacheEntry(
+    const FacestreamOverlayCacheEntry& entry,
+    int64_t sourceFrame);
+
+void buildFacestreamTrackCandidateIndex(FacestreamOverlayCacheEntry& entry,
+                                        const TimelineClip& clip,
+                                        const QVector<RenderSyncMarker>& renderSyncMarkers);
+
+QVector<int> facestreamTrackCandidateIndicesFromCacheEntry(
     const FacestreamOverlayCacheEntry& entry,
     int64_t sourceFrame);
 

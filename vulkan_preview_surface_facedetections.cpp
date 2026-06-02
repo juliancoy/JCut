@@ -67,6 +67,21 @@ bool previousPlaybackOverlayIsCloseEnough(const QVector<VulkanPreviewFacestreamO
                std::numeric_limits<qint64>::max()) <= kMaxPreservedPlaybackOverlayDriftFrames;
 }
 
+quint64 renderSyncMarkerOverlaySignature(const QVector<RenderSyncMarker>& markers)
+{
+    quint64 signature = static_cast<quint64>(markers.size()) * 1469598103934665603ULL;
+    for (const RenderSyncMarker& marker : markers) {
+        signature ^= static_cast<quint64>(qHash(marker.clipId));
+        signature *= 1099511628211ULL;
+        signature ^= static_cast<quint64>(marker.frame);
+        signature *= 1099511628211ULL;
+        signature ^= static_cast<quint64>(qMax(1, marker.count));
+        signature *= 1099511628211ULL;
+        signature ^= static_cast<quint64>(static_cast<int>(marker.action));
+    }
+    return signature;
+}
+
 bool visualClipActiveAtSample(const TimelineClip& clip,
                               const QVector<TimelineTrack>& tracks,
                               int64_t samplePosition,
@@ -243,12 +258,15 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     const QFileInfo transcriptInfo(transcriptPath);
     const qint64 artifactRevisionMs =
         facedetectionsArtifactRevisionMsForTranscript(transcriptInfo.absoluteFilePath());
-    const QString signature = QStringLiteral("%1|%2|%3|%4|%5")
+    const quint64 renderSyncSignature =
+        renderSyncMarkerOverlaySignature(m_interaction.renderSyncMarkers);
+    const QString signature = QStringLiteral("%1|%2|%3|%4|%5|sync:%6")
                                   .arg(clip.id)
                                   .arg(transcriptInfo.absoluteFilePath())
                                   .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0)
                                   .arg(artifactRevisionMs)
-                                  .arg(QStringLiteral("%1|%2").arg(m_facedetectionsOverlaySource).arg(sourceFrame));
+                                  .arg(QStringLiteral("%1|%2").arg(m_facedetectionsOverlaySource).arg(sourceFrame))
+                                  .arg(renderSyncSignature);
     FacestreamOverlayCacheEntry& entry = m_facedetectionsOverlayCache[clipPath];
     if (entry.signature == signature) {
         return entry.tracks;
@@ -384,7 +402,12 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
         queryDebug[QStringLiteral("raw_detection_typical_frame_step")] =
             static_cast<qint64>(entry.rawDetectionTypicalFrameStep);
     }
+    jcut::preview_overlay::buildFacestreamTrackCandidateIndex(
+        entry, clip, m_interaction.renderSyncMarkers);
     queryDebug[QStringLiteral("final_track_count")] = entry.tracks.size();
+    queryDebug[QStringLiteral("track_index_source_frame_count")] = entry.trackIndexSourceFrames.size();
+    queryDebug[QStringLiteral("track_index_typical_frame_step")] =
+        static_cast<qint64>(entry.trackIndexTypicalFrameStep);
     queryDebug[QStringLiteral("final_raw_detection_count")] = entry.rawDetections.size();
     queryDebug[QStringLiteral("elapsed_ms")] = queryTimer.elapsed();
     if (queryTimer.elapsed() >= kFacestreamOverlaySlowQueryWarnMs) {
@@ -633,17 +656,21 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         const bool useCachedPlaybackOverlay =
             m_interaction.playing && cachedEntryIt != m_facedetectionsOverlayCache.constEnd();
         QVector<FacestreamTrack> tracks;
+        const FacestreamOverlayCacheEntry* overlayCacheEntry = nullptr;
         if (m_interaction.playing) {
             if (useCachedPlaybackOverlay) {
-                tracks = cachedEntryIt.value().tracks;
+                overlayCacheEntry = &cachedEntryIt.value();
+                tracks = overlayCacheEntry->tracks;
                 if (clip.id == m_interaction.selectedClipId) {
                     m_lastFacedetectionsQueryDebug = QJsonObject{
                         {QStringLiteral("status"), QStringLiteral("playback_cached_overlay")},
                         {QStringLiteral("clip_id"), clip.id},
                         {QStringLiteral("playback_active"), true},
                         {QStringLiteral("cached_track_count"), tracks.size()},
+                        {QStringLiteral("cached_track_index_source_frame_count"),
+                         overlayCacheEntry->trackIndexSourceFrames.size()},
                         {QStringLiteral("cached_raw_detection_frame_count"),
-                         cachedEntryIt.value().rawDetectionSourceFrames.size()},
+                         overlayCacheEntry->rawDetectionSourceFrames.size()},
                         {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
                         {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
                         {QStringLiteral("show_raw_detections"), m_showRawDetections},
@@ -671,6 +698,10 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
         } else {
             tracks = loadFacestreamTracksForClip(clip, localFrame);
+            const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(clipPath);
+            if (loadedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
+                overlayCacheEntry = &loadedEntryIt.value();
+            }
         }
         // Keep raw detections visible when explicitly enabled, even while the
         // Speakers tab turns on assignment interaction. The UI exposes these as
@@ -692,37 +723,56 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
         }
         int selectedClipOverlayCount = 0;
-        for (const FacestreamTrack& track : tracks) {
-            if (track.keyframes.isEmpty()) {
-                continue;
-            }
-            if (!facedetectionsOverlaySourceMatches(sourceFilter, track.source, track.streamId)) {
-                continue;
-            }
-            FacestreamResolvedSelection selection;
-            if (!resolveFacestreamTrackAtPlayhead(
-                    clip,
-                    track,
-                    m_interaction.renderSyncMarkers,
-                    clip.startFrame + localTimelineFrame,
-                    localFrame,
-                    &selection)) {
-                continue;
-            }
+        const bool needsTrackOverlays =
+            m_showSpeakerTrackBoxes || m_interaction.faceStreamAssignmentInteractionEnabled;
+        QVector<int> trackCandidateIndices;
+        if (needsTrackOverlays) {
+            trackCandidateIndices = overlayCacheEntry
+                ? jcut::preview_overlay::facestreamTrackCandidateIndicesFromCacheEntry(*overlayCacheEntry, localFrame)
+                : [&tracks]() {
+                      QVector<int> indices;
+                      indices.reserve(tracks.size());
+                      for (int i = 0; i < tracks.size(); ++i) {
+                          indices.push_back(i);
+                      }
+                      return indices;
+                  }();
+            for (int trackIndex : trackCandidateIndices) {
+                if (trackIndex < 0 || trackIndex >= tracks.size()) {
+                    continue;
+                }
+                const FacestreamTrack& track = tracks.at(trackIndex);
+                if (track.keyframes.isEmpty()) {
+                    continue;
+                }
+                if (!facedetectionsOverlaySourceMatches(sourceFilter, track.source, track.streamId)) {
+                    continue;
+                }
+                FacestreamResolvedSelection selection;
+                if (!resolveFacestreamTrackAtPlayhead(
+                        clip,
+                        track,
+                        m_interaction.renderSyncMarkers,
+                        clip.startFrame + localTimelineFrame,
+                        localFrame,
+                        &selection)) {
+                    continue;
+                }
 
-            VulkanPreviewFacestreamOverlay overlay;
-            overlay.clipId = clip.id;
-            overlay.streamId = track.streamId;
-            overlay.source = selection.keyframe.source.isEmpty() ? track.source : selection.keyframe.source;
-            overlay.trackId = track.trackId;
-            overlay.sourceFrame = selection.sourceFrame;
-            overlay.boxNorm = facestreamKeyframeBoxNorm(selection.keyframe, clipFrameSize);
-            if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
-                continue;
+                VulkanPreviewFacestreamOverlay overlay;
+                overlay.clipId = clip.id;
+                overlay.streamId = track.streamId;
+                overlay.source = selection.keyframe.source.isEmpty() ? track.source : selection.keyframe.source;
+                overlay.trackId = track.trackId;
+                overlay.sourceFrame = selection.sourceFrame;
+                overlay.boxNorm = facestreamKeyframeBoxNorm(selection.keyframe, clipFrameSize);
+                if (!overlay.boxNorm.isValid() || overlay.boxNorm.isEmpty()) {
+                    continue;
+                }
+                overlay.confidence = selection.keyframe.confidence;
+                overlays.push_back(overlay);
+                ++selectedClipOverlayCount;
             }
-            overlay.confidence = selection.keyframe.confidence;
-            overlays.push_back(overlay);
-            ++selectedClipOverlayCount;
         }
         if (clip.id == m_interaction.selectedClipId) {
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_source_frame")] =
@@ -732,6 +782,8 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_local_timeline_frame")] =
                 static_cast<qint64>(localTimelineFrame);
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_track_candidates")] = tracks.size();
+            m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_indexed_track_candidates")] =
+                trackCandidateIndices.size();
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_overlay_matches")] =
                 selectedClipOverlayCount;
             m_lastFacedetectionsQueryDebug[QStringLiteral("show_speaker_track_boxes")] =

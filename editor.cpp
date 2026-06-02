@@ -953,7 +953,7 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     const bool previewShowSpeakerTrackPoints =
         root.value(QStringLiteral("previewShowSpeakerTrackPoints")).toBool(false);
     const bool previewShowSpeakerTrackBoxes =
-        root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(true);
+        root.value(QStringLiteral("previewShowSpeakerTrackBoxes")).toBool(false);
     const bool previewShowRawDetections =
         root.value(QStringLiteral("previewShowRawDetections")).toBool(false);
     const bool previewShowCurrentSpeakerName =

@@ -21,6 +21,7 @@ private slots:
     void pitchPreservingAudioUsesExplicitSidecarGate();
     void noProxyHardwarePathIsPrimaryAndHoldsLateFrames();
     void overlayWorkerKeepsNewestCoalescedRequest();
+    void facestreamTrackBoxesAreNotBaselinePlaybackWork();
     void rendererConsumesLatchedPreviewSnapshot();
     void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
@@ -517,6 +518,24 @@ void TestDirectVulkanHandoffPipelineContract::overlayWorkerKeepsNewestCoalescedR
              "perf diagnostics must expose the queued overlay worker request key");
     QVERIFY2(profiling.contains(QStringLiteral("vulkan_overlay_worker_queued_clip_count")),
              "perf diagnostics must expose the queued overlay worker request size");
+}
+
+void TestDirectVulkanHandoffPipelineContract::facestreamTrackBoxesAreNotBaselinePlaybackWork()
+{
+    const QString header = readSourceFile(QStringLiteral("vulkan_preview_surface.h"));
+    QVERIFY2(!header.isEmpty(), "vulkan_preview_surface.h must be readable");
+    QVERIFY2(header.contains(QStringLiteral("bool m_showSpeakerTrackBoxes = false")),
+             "Vulkan preview must not default FaceDetections/speaker-track boxes on; they can walk thousands of tracks during playback");
+
+    const QString editor = readSourceFile(QStringLiteral("editor.cpp"));
+    QVERIFY2(!editor.isEmpty(), "editor.cpp must be readable");
+    QVERIFY2(editor.contains(QStringLiteral("root.value(QStringLiteral(\"previewShowSpeakerTrackBoxes\")).toBool(false)")),
+             "Project load fallback must keep FaceDetections/speaker-track boxes off unless explicitly saved enabled");
+
+    const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface_facedetections.cpp"));
+    QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface_facedetections.cpp must be readable");
+    QVERIFY2(surface.contains(QStringLiteral("!m_showSpeakerTrackBoxes && !m_interaction.faceStreamAssignmentInteractionEnabled && !m_showRawDetections")),
+             "FaceDetections overlay prep must be skipped entirely when boxes, raw detections, and assignment interaction are disabled");
 }
 
 void TestDirectVulkanHandoffPipelineContract::rendererConsumesLatchedPreviewSnapshot()

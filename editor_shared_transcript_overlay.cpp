@@ -130,7 +130,17 @@ ResolvedTranscriptOverlaySection resolveTranscriptOverlaySectionAtSourceFrame(
     const int postpendMs = transcriptOverlayPostpendMs().load();
     const int64_t prependFrames = transcriptPrependFramesForMs(prependMs);
     const int64_t postpendFrames = transcriptPostpendFramesForMs(postpendMs);
-    for (const TranscriptSection& section : sections) {
+    const auto firstPossibleSection = std::lower_bound(
+        sections.constBegin(),
+        sections.constEnd(),
+        sourceFrame,
+        [postpendFrames](const TranscriptSection& section, int64_t frame) {
+            const int64_t paddedEndFrame =
+                qMax<int64_t>(0, section.endFrame + postpendFrames);
+            return paddedEndFrame < frame;
+        });
+    for (auto it = firstPossibleSection; it != sections.constEnd(); ++it) {
+        const TranscriptSection& section = *it;
         if (section.words.isEmpty()) {
             continue;
         }
@@ -270,8 +280,12 @@ TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(
 }
 
 QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& sections,
-                                              int64_t sourceFrame)
+                                              int64_t sourceFrame,
+                                              ExportRangeSegment* activeRangeOut)
 {
+    if (activeRangeOut) {
+        *activeRangeOut = ExportRangeSegment{-1, -1};
+    }
     if (sections.isEmpty()) {
         return QString();
     }
@@ -280,7 +294,11 @@ QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& 
     if (!resolved.valid) {
         return QString();
     }
-    return resolved.section.words.at(resolved.activeWordIndex).speaker.trimmed();
+    const TranscriptWord& activeWord = resolved.section.words.at(resolved.activeWordIndex);
+    if (activeRangeOut) {
+        *activeRangeOut = ExportRangeSegment{activeWord.startFrame, activeWord.endFrame};
+    }
+    return activeWord.speaker.trimmed();
 }
 
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines) {

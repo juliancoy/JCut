@@ -74,7 +74,13 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         {QStringLiteral("has_organization"), !currentSpeakerLabel.organization.trimmed().isEmpty()}
     });
     snapshot.insert(QStringLiteral("current_speaker_label_debug"),
-                    currentSpeakerLabelDebugForState(&m_interaction));
+                    m_interaction.playing
+                        ? QJsonObject{
+                              {QStringLiteral("status"),
+                               QStringLiteral("suppressed_during_playback")},
+                              {QStringLiteral("reason"),
+                               QStringLiteral("candidate transcript scans are kept out of playback profiling snapshots")}}
+                        : currentSpeakerLabelDebugForState(&m_interaction));
     snapshot.insert(QStringLiteral("vulkan_decode_preference"), editor::decodePreferenceToString(editor::debugDecodePreference()));
     snapshot.insert(QStringLiteral("vulkan_visible_decode_requires_direct_vulkan_payload"), true);
     snapshot.insert(QStringLiteral("vulkan_visible_cpu_upload_fallback_enabled"), false);

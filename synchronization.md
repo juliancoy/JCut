@@ -248,6 +248,7 @@ Synchronization rule:
 - Overlay preparation is not a playback clock and must not block visible video.
 - Worker results are keyed and stale results are dropped.
 - The render thread consumes only the currently applied typed overlay snapshot.
+- FaceDetections/speaker-track boxes are an explicit diagnostic/assignment overlay and must default off. When enabled, playback preparation must use source-frame indexed candidates and then validate them through the normal time-domain resolver; it must not scan every cached track on every preview tick.
 
 ### 9. Text Layout And Atlas Preparation
 
@@ -256,6 +257,7 @@ Owner: direct Vulkan renderer text path
 Code:
 
 - `VulkanTextRenderer`
+- `currentSpeakerLabelForState(...)`
 - `prepareTranscriptOverlayAtlas(...)`
 - `prepareSpeakerLabelAtlas(...)`
 
@@ -276,6 +278,9 @@ Synchronization rule:
 - Text is rendered through Vulkan glyph-atlas passes.
 - Qt/QPainter whole-label CPU rendering is not part of the direct Vulkan preview path.
 - Live subtitles should prefer timing derived from the presented media source frame when a presented frame exists, so text does not lead late video.
+- Transcript/speaker discovery is metadata preparation, not presentation. It must be cached or bounded before command recording can depend on it.
+- Current-speaker labels must reuse the active transcript word/section range while the playhead remains inside that range. A rendered frame must not linearly rescan the whole transcript just to rediscover the same speaker name or organization.
+- Playback diagnostics may report the last/current speaker label, but verbose candidate-debug expansion is suppressed while playback is active unless an explicit heavy diagnostic path is requested.
 
 ### 10. GPU Handoff
 
@@ -422,7 +427,9 @@ Invalid transitions:
 | Clip/cache maps | `QMutexLocker` on clips/cache mutex | Do not call decoder or user callbacks while holding this lock |
 | Overlay worker -> preview state | Request key/generation plus queued application | Drop stale worker results instead of applying them late |
 | Frame-status refresh | Coalesced queued refresh when possible | Avoid recursive or duplicate refreshes during playback |
-| REST profile snapshot | Read-only snapshot builders | Must not trigger full CPU image materialization unless explicitly requested |
+| REST profile snapshot | Read-only snapshot builders | Must not trigger full CPU image materialization or full transcript/speaker candidate scans during playback unless explicitly requested |
+| Transcript section lookup | Sorted section search plus active-range cache | Per-frame speaker/title lookup must be bounded; cache invalidates by clip/transcript path and active source-frame range |
+| FaceDetections box lookup | Source-frame track index plus resolver validation | Per-frame overlay prep considers frame-local candidates, not the full artifact track cache |
 
 Lock-order rule:
 
@@ -571,6 +578,7 @@ flowchart TD
 | Frame status | Cache, clip state, effects | `VulkanPreviewClipFrameStatus` | Parse heavy artifacts or materialize CPU images |
 | Overlay prep | Source frame, artifact cache | Typed overlay snapshot | Block video playback |
 | Text prep | Transcript/source timing, output size | Glyph atlas draw inputs | Use Qt/Painter CPU label rendering in direct Vulkan |
+| Speaker/title metadata | Transcript runtime cache, active-range cache | Speaker id/title/layout input | Rescan the full transcript every rendered frame |
 | Handoff | Hardware/external frame | Sampled Vulkan image | Implicit CPU upload fallback |
 | Render pass | Status, handoff, text, overlays | Command buffer | Mutate scheduling state |
 | Present | Submitted swapchain frame | Visible frame, diagnostics | Fall back to OpenGL implicitly |
@@ -737,6 +745,7 @@ Interpretation:
 - Invariant 4: Direct Vulkan preview uses hardware/external GPU payloads for visible video.
 - Invariant 5: `VulkanPreviewClipFrameStatus` is the render boundary; do not bypass it with direct cache reads inside the presenter.
 - Invariant 6: Overlay and text preparation must not block visible video presentation.
+- Invariant 6a: Speaker/title metadata lookup is bounded during playback. Current-speaker labels reuse active source-frame ranges, FaceDetections boxes use indexed source-frame candidates, and profile snapshots do not expand full speaker candidate debug while playing.
 - Invariant 7: During playback, the active frame is up to date only when the presented source frame
   equals the requested source frame. Approximate presentation is a fallback, not a healthy state.
 - Invariant 7: Presented source frame is the visual timing truth after a frame is drawn.

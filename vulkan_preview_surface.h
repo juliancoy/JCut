@@ -213,7 +213,7 @@ private:
     bool m_correctionsEnabled = true;
     bool m_showCorrectionOverlays = true;
     bool m_showSpeakerTrackPoints = true;
-    bool m_showSpeakerTrackBoxes = true;
+    bool m_showSpeakerTrackBoxes = false;
     bool m_showRawDetections = false;
     bool m_audioSpeakerHoverModalEnabled = true;
     bool m_audioWaveformVisible = true;

@@ -6,7 +6,9 @@ using jcut::preview_overlay::FacestreamOverlayCacheEntry;
 using jcut::preview_overlay::FacestreamOverlayRequestClip;
 using jcut::preview_overlay::FacestreamOverlaySnapshotRequest;
 using jcut::preview_overlay::FacestreamOverlaySnapshotApplyDecision;
+using jcut::preview_overlay::buildFacestreamTrackCandidateIndex;
 using jcut::preview_overlay::buildFacestreamOverlaySnapshot;
+using jcut::preview_overlay::facestreamTrackCandidateIndicesFromCacheEntry;
 using jcut::preview_overlay::facestreamOverlaySnapshotApplyDecision;
 using jcut::preview_overlay::rawDetectionsFromCacheEntry;
 
@@ -17,6 +19,8 @@ private slots:
     void buildSnapshotPreservesDeterministicTrackOrder();
     void assignmentInteractionBuildsOverlaysWithoutVisibleTrackBoxes();
     void sourceFilterExcludesNonMatchingTracks();
+    void indexedTrackCandidatesAvoidFullCacheScan();
+    void rawOnlySnapshotDoesNotBuildTrackBoxes();
     void rawDetectionsUseSameBridgeAndEdgeHoldRules();
     void applyDecisionDropsPausedStaleAndOutOfOrderSnapshots();
 };
@@ -60,6 +64,16 @@ FacestreamResolvedTrack track(int id, const QString& source)
     t.keyframes = QVector<FacestreamResolvedKeyframe>{
         keyframe(4, 0.25 + (id * 0.01), 0.40, source),
         keyframe(8, 0.35 + (id * 0.01), 0.45, source)
+    };
+    return t;
+}
+
+FacestreamResolvedTrack trackAtFrames(int id, int64_t firstFrame, int64_t secondFrame)
+{
+    FacestreamResolvedTrack t = track(id, QStringLiteral("manual"));
+    t.keyframes = QVector<FacestreamResolvedKeyframe>{
+        keyframe(firstFrame, 0.25, 0.40, QStringLiteral("manual")),
+        keyframe(secondFrame, 0.35, 0.45, QStringLiteral("manual"))
     };
     return t;
 }
@@ -155,6 +169,49 @@ void TestFacestreamOverlaySnapshot::sourceFilterExcludesNonMatchingTracks()
     const auto snapshot = buildFacestreamOverlaySnapshot(snapshotRequest(cache, QStringLiteral("manual")));
     QCOMPARE(snapshot.overlays.size(), 1);
     QCOMPARE(snapshot.overlays.first().trackId, 1);
+}
+
+void TestFacestreamOverlaySnapshot::indexedTrackCandidatesAvoidFullCacheScan()
+{
+    FacestreamOverlayCacheEntry cache;
+    cache.tracks = QVector<FacestreamResolvedTrack>{
+        trackAtFrames(1, 4, 8),
+        trackAtFrames(2, 100, 104)
+    };
+    buildFacestreamTrackCandidateIndex(cache, makeClip(), {});
+
+    const QVector<int> candidates = facestreamTrackCandidateIndicesFromCacheEntry(cache, 6);
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first(), 0);
+
+    const auto snapshot = buildFacestreamOverlaySnapshot(snapshotRequest(cache));
+    QCOMPARE(snapshot.trackCandidateCount, 1);
+    QCOMPARE(snapshot.overlayMatchCount, 1);
+    QCOMPARE(snapshot.overlays.size(), 1);
+    QCOMPARE(snapshot.overlays.first().trackId, 1);
+    QCOMPARE(snapshot.debug.value(QStringLiteral("cached_track_count")).toInt(), 2);
+    QCOMPARE(snapshot.debug.value(QStringLiteral("selected_clip_track_candidates")).toInt(), 1);
+}
+
+void TestFacestreamOverlaySnapshot::rawOnlySnapshotDoesNotBuildTrackBoxes()
+{
+    FacestreamOverlayCacheEntry cache;
+    cache.tracks = QVector<FacestreamResolvedTrack>{trackAtFrames(1, 4, 8)};
+    cache.rawDetectionsBySourceFrame.insert(6, QVector<VulkanPreviewFacestreamOverlay>{rawDetection(6, 100)});
+    cache.rawDetectionSourceFrames = QVector<int64_t>{6};
+    buildFacestreamTrackCandidateIndex(cache, makeClip(), {});
+
+    auto request = snapshotRequest(cache);
+    request.showSpeakerTrackBoxes = false;
+    request.assignmentInteractionEnabled = false;
+    request.showRawDetections = true;
+
+    const auto snapshot = buildFacestreamOverlaySnapshot(request);
+    QCOMPARE(snapshot.trackCandidateCount, 0);
+    QCOMPARE(snapshot.overlayMatchCount, 0);
+    QCOMPARE(snapshot.overlays.size(), 0);
+    QCOMPARE(snapshot.rawDetections.size(), 1);
+    QCOMPARE(snapshot.debug.value(QStringLiteral("selected_clip_track_candidates")).toInt(), 0);
 }
 
 void TestFacestreamOverlaySnapshot::rawDetectionsUseSameBridgeAndEdgeHoldRules()
