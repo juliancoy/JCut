@@ -14,13 +14,36 @@
 
 namespace editor {
 
+namespace {
+bool shouldSkipBlockingAudioWarmup(PlaybackAudioWarpMode runtimeWarpMode,
+                                   qreal effectiveWarpRate,
+                                   bool needsPitchPreservingAudio)
+{
+    return runtimeWarpMode == PlaybackAudioWarpMode::TimeStretch &&
+           !needsPitchPreservingAudio &&
+           qAbs(effectiveWarpRate - 1.0) < 0.0001;
+}
+}
+
 void EditorWindow::advanceFrame()
 {
     if (!m_timeline) return;
+    editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                  1,
+                                  0,
+                                  0,
+                                  QStringLiteral("tick"),
+                                  QStringLiteral("advance_frame"));
     bool forceTimelineTimerFallback = false;
     const qint64 tickNowMs = nowMs();
     const bool pitchPreservingAudioRequired = needsPitchPreservingPlaybackAudio();
     const auto holdForPitchPreservingAudio = [&](const QString& reason) {
+        editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                      0,
+                                      0,
+                                      1,
+                                      QStringLiteral("source_unavailable"),
+                                      reason);
         if (m_audioEngine && m_audioEngine->hasPlayableAudio()) {
             const int64_t audioSample = qBound<int64_t>(
                 0,
@@ -106,12 +129,24 @@ void EditorWindow::advanceFrame()
             holdForPitchPreservingAudio(clockDecision.reason);
             return;
         case PlaybackClockAction::WaitForAudioClock:
+            editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                          0,
+                                          0,
+                                          1,
+                                          QStringLiteral("source_unavailable"),
+                                          clockDecision.reason);
             ++m_audioClockStallTicks;
             if (m_preview) {
                 m_preview->setCurrentPlaybackSample(clockDecision.sample);
             }
             return;
         case PlaybackClockAction::UseAudioSample:
+            editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                          0,
+                                          1,
+                                          0,
+                                          QStringLiteral("audio_master"),
+                                          clockDecision.reason);
             m_audioClockStallTicks = 0;
             if (m_preview) {
                 m_preview->setCurrentPlaybackSample(clockDecision.sample);
@@ -120,6 +155,15 @@ void EditorWindow::advanceFrame()
             setCurrentPlaybackSample(clockDecision.sample, false, true);
             return;
         case PlaybackClockAction::UseTimelineTimer:
+            editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                          0,
+                                          1,
+                                          clockDecision.reason == QLatin1String("audio_master_unavailable") ||
+                                                  clockDecision.reason == QLatin1String("audio_clock_stalled")
+                                              ? 1
+                                              : 0,
+                                          QStringLiteral("timeline_timer"),
+                                          clockDecision.reason);
             if (clockDecision.resetTimerContinuity) {
                 forceTimelineTimerFallback = true;
             }
@@ -145,6 +189,14 @@ void EditorWindow::advanceFrame()
     }
 
     m_audioClockStallTicks = 0;
+    editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                  0,
+                                  1,
+                                  0,
+                                  QStringLiteral("timeline_timer"),
+                                  forceTimelineTimerFallback
+                                      ? QStringLiteral("forced_timeline_fallback")
+                                      : QStringLiteral("timeline_timer"));
     if (forceTimelineTimerFallback) {
         // Preserve temporal continuity when abandoning audio clock for this tick.
         m_lastTimelineAdvanceTickMs = tickNowMs;
@@ -631,6 +683,14 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
 {
     QElapsedTimer seekUpdateTimer;
     seekUpdateTimer.start();
+    editor::accumulatePlaybackStageMetric(&m_playbackSampleApplyStageMetric,
+                                  1,
+                                  0,
+                                  0,
+                                  QStringLiteral("started"),
+                                  duringPlayback
+                                      ? QStringLiteral("during_playback")
+                                      : QStringLiteral("seek_or_idle"));
     const qint64 tickNowMs = nowMs();
     const int64_t boundedSample = qBound<int64_t>(0, samplePosition, frameToSamples(m_timeline->totalFrames()));
     const qreal framePosition = samplesToFramePosition(boundedSample);
@@ -723,6 +783,14 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
                           .arg(duringPlayback)
                           .arg(syncAudio));
     }
+    editor::accumulatePlaybackStageMetric(&m_playbackSampleApplyStageMetric,
+                                  0,
+                                  1,
+                                  0,
+                                  elapsedMs >= m_slowSeekWarnThresholdMs
+                                      ? QStringLiteral("slow")
+                                      : QStringLiteral("applied"),
+                                  QStringLiteral("elapsed_ms=%1").arg(elapsedMs));
 }
 
 void EditorWindow::setCurrentFrame(int64_t frame, bool syncAudio)
@@ -895,6 +963,9 @@ void EditorWindow::reconcileActivePlaybackAudioState()
                 return;
             }
             if (!needsPitchPreservingAudio &&
+                !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
+                                               effectiveAudioWarpRate(),
+                                               needsPitchPreservingAudio) &&
                 !m_audioEngine->warmPlaybackAudio(
                     m_timeline->currentFrame(),
                     qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
@@ -1121,6 +1192,9 @@ void EditorWindow::setPlaybackActive(bool playing)
                 return;
             }
             if (!needsPitchPreservingAudio &&
+                !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
+                                               effectiveAudioWarpRate(),
+                                               needsPitchPreservingAudio) &&
                 !m_audioEngine->warmPlaybackAudio(
                     m_timeline->currentFrame(),
                     qMax(5000, m_playbackStartLookaheadTimeoutMs))) {

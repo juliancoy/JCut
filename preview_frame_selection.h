@@ -65,6 +65,24 @@ struct PreviewFrameSelectionResult {
     bool rejectedStale = false;
 };
 
+struct PreviewVisibleRequestInputs {
+    bool exactCached = false;
+    bool displayableCached = false;
+    bool pending = false;
+    bool forceRetry = false;
+    int pendingBacklog = 0;
+    int backlogLimit = 1;
+};
+
+struct PreviewVisibleRequestDecision {
+    bool dispatch = false;
+    QString decision;
+    QString blockReason;
+};
+
+PreviewVisibleRequestDecision evaluatePreviewVisibleRequest(
+    const PreviewVisibleRequestInputs& inputs);
+
 PreviewFrameSelectionResult selectPreviewFrame(
     const PreviewFrameSelectionRequest& request,
     TimelineCache* cache,

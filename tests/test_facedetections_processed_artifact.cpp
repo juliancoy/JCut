@@ -203,7 +203,7 @@ private slots:
         QCOMPARE(range.frameCount, 796503LL);
     }
 
-    void sourceAbsoluteScanRangeRejectsInvalidSourceDuration()
+    void sourceAbsoluteScanRangeAllowsTrimmedSourceDuration()
     {
         TimelineClip clip;
         clip.sourceInFrame = 100;
@@ -212,8 +212,10 @@ private slots:
 
         const auto range = facedetectionsSourceAbsoluteScanRangeForClip(clip);
 
-        QVERIFY(!range.valid);
-        QVERIFY(range.error.contains(QStringLiteral("sourceInFrame=100")));
+        QVERIFY(range.valid);
+        QCOMPARE(range.startFrame, 100LL);
+        QCOMPARE(range.endFrameExclusive, 200LL);
+        QCOMPARE(range.frameCount, 100LL);
     }
 
     void manifestSidecarsReferenceGeneratedArtifactsWithoutInliningPayload()

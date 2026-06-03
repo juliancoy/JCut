@@ -18,6 +18,7 @@
 #include <QCoreApplication>
 #include <QSignalBlocker>
 #include <QGuiApplication>
+#include <algorithm>
 
 extern "C"
 {
@@ -177,6 +178,14 @@ void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
             .arg(totalMs)
             .arg(QString::number(perFrame, 'f', 2));
     };
+    const auto formatPlaybackCounter = [](const QJsonObject& metric) -> QString {
+        return QStringLiteral("attempts=%1 ok=%2 miss=%3 state=%4 reason=%5")
+            .arg(metric.value(QStringLiteral("attempts")).toInteger(0))
+            .arg(metric.value(QStringLiteral("successes")).toInteger(0))
+            .arg(metric.value(QStringLiteral("source_unavailable")).toInteger(0))
+            .arg(metric.value(QStringLiteral("last_state")).toString(QStringLiteral("n/a")),
+                 metric.value(QStringLiteral("last_reason")).toString(QStringLiteral("n/a")));
+    };
 
     const QJsonObject previewProfile = runtimeProfile.value(QStringLiteral("preview")).toObject();
     const QJsonObject renderBackendProfile = previewProfile.value(QStringLiteral("render_backend")).toObject();
@@ -277,6 +286,16 @@ void ProfileTab::updateProfileTable(const QJsonObject& runtimeProfile,
                .arg(decodeHardwareFrame)
                .arg(decodeCpuImage)
                .arg(decodeMissing));
+    const QJsonObject playbackStageMetrics =
+        runtimeProfile.value(QStringLiteral("playback_pipeline_stages")).toObject();
+    if (!playbackStageMetrics.isEmpty()) {
+        QStringList stageNames = playbackStageMetrics.keys();
+        std::sort(stageNames.begin(), stageNames.end());
+        for (const QString& stageName : stageNames) {
+            addRow(QStringLiteral("Playback Stage: %1").arg(stageName),
+                   formatPlaybackCounter(playbackStageMetrics.value(stageName).toObject()));
+        }
+    }
 
     const QJsonObject activeExport = runtimeProfile.value(QStringLiteral("export")).toObject();
     const QJsonObject exportStats = activeExport.value(QStringLiteral("live")).toObject();

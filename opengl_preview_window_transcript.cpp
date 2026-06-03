@@ -146,10 +146,6 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
             continuityRoot,
             QStringLiteral("streams_frame_domain"),
             &explicitFrameDomain);
-        if (!hasExplicitFrameDomain) {
-            it = m_speakerTrackPointsCache.insert(trackPointsCacheKey, entry);
-            return it->points;
-        }
         const QString sourceFilter = m_facedetectionsOverlaySource.trimmed().toLower();
         for (const QJsonValue& streamValue : streams) {
             const QJsonObject streamObj = streamValue.toObject();
@@ -170,7 +166,10 @@ const QVector<PreviewWindow::SpeakerTrackPoint>& PreviewWindow::speakerTrackPoin
                 streamFrameMin = qMin<int64_t>(streamFrameMin, frame);
                 streamFrameMax = qMax<int64_t>(streamFrameMax, frame);
             }
-            const FacestreamFrameDomain streamFrameDomain = explicitFrameDomain;
+            const FacestreamFrameDomain streamFrameDomain =
+                hasExplicitFrameDomain
+                    ? explicitFrameDomain
+                    : inferFacestreamFrameDomain(clip, streamFrameMin, streamFrameMax);
             for (const QJsonValue& keyValue : keyframes) {
                 const QJsonObject obj = keyValue.toObject();
                 if (obj.isEmpty()) {

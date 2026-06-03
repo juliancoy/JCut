@@ -161,6 +161,7 @@ public:
     qint64 maxRawDetectionsPanelRefreshDurationMs() const { return m_maxRawDetectionsPanelRefreshDurationMs; }
     QJsonObject speakerSectionSelectionTimingProfile() const { return m_sectionSelectionTiming.profileSnapshot(); }
     QJsonObject faceDetectionsDebugSnapshot() const;
+    QJsonObject trackAssignmentTimingProfile() const { return m_trackAssignmentTimingProfile; }
 
 signals:
     void transcriptDocumentChanged();
@@ -355,6 +356,10 @@ private:
                                   bool skipped);
     bool saveClipSpeakerFramingTargetsFromControls();
     bool saveClipSpeakerFramingEnabledFromControls();
+    bool applyPreviewFaceBoxSpeakerFramingTarget(const QString& clipId,
+                                                qreal xNorm,
+                                                qreal yNorm,
+                                                qreal boxSizeNorm);
     void populateSpeakerFramingEnabledKeyframeTable(const TimelineClip& clip);
     void syncSpeakerFramingEnabledTableToPlayhead();
     bool upsertSpeakerFramingEnabledKeyframeAtPlayhead(bool enabled);
@@ -365,6 +370,7 @@ private:
     Dependencies m_speakerDeps;
     TranscriptDocumentSession m_transcriptSession{QStringLiteral("speakers")};
     mutable QHash<QString, QPixmap> m_avatarCache;
+    mutable QHash<QString, QPixmap> m_playheadTrackAvatarCache;
     mutable QHash<QString, QJsonArray> m_continuityStreamsCache;
     mutable QHash<QString, TrackIdentityResolutionCache> m_trackIdentityResolutionCache;
     QString m_lastSelectedSpeakerIdHint;
@@ -400,6 +406,7 @@ private:
     qint64 m_lastRawDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxRawDetectionsPanelRefreshDurationMs = 0;
     QJsonObject m_lastFaceDetectionsDebugSnapshot;
+    QJsonObject m_trackAssignmentTimingProfile;
     SpeakerSectionSelectionTimingService m_sectionSelectionTiming;
     int m_lastPlayheadTrackCandidateCount = 0;
     QString m_lastPlayheadTrackCandidatesBlockReason;

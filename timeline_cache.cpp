@@ -25,7 +25,7 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kObsoleteVisibleFrameSlack = 0;
+constexpr int64_t kObsoleteVisibleFrameSlack = 4;
 constexpr int64_t kSeekGenerationDeltaFrames = 6;
 constexpr qint64 kVisiblePendingRetryMs = 250;
 constexpr qint64 kSeekResyncWindowMs = 400;
@@ -810,6 +810,53 @@ void TimelineCache::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
             cancelDecoderBeforeThrottled(clipIt->decodePath, keepFromFrame);
         }
     }
+}
+
+QVector<std::function<void(FrameHandle)>> TimelineCache::dropObsoletePendingVisibleRequestsLocked(
+    const QString& clipId,
+    int64_t canonicalFrame)
+{
+    QVector<std::function<void(FrameHandle)>> callbacksToCancel;
+
+    for (auto it = m_pendingVisibleRequests.begin(); it != m_pendingVisibleRequests.end();) {
+        const QString& key = it.key();
+        const int separator = key.indexOf(QLatin1Char(':'));
+        if (separator <= 0 || key.left(separator) != clipId) {
+            ++it;
+            continue;
+        }
+
+        bool ok = false;
+        const int64_t pendingFrame = key.mid(separator + 1).toLongLong(&ok);
+        if (!ok || pendingFrame + kObsoleteVisibleFrameSlack >= canonicalFrame) {
+            ++it;
+            continue;
+        }
+
+        callbacksToCancel += it->callbacks;
+        it = m_pendingVisibleRequests.erase(it);
+    }
+
+    for (auto it = m_pendingPrefetchRequests.begin(); it != m_pendingPrefetchRequests.end();) {
+        const QString& key = *it;
+        const int separator = key.indexOf(QLatin1Char(':'));
+        if (separator <= 0 || key.left(separator) != clipId) {
+            ++it;
+            continue;
+        }
+
+        bool ok = false;
+        const int64_t pendingFrame = key.mid(separator + 1).toLongLong(&ok);
+        if (!ok || pendingFrame + kObsoleteVisibleFrameSlack >= canonicalFrame) {
+            ++it;
+            continue;
+        }
+
+        it = m_pendingPrefetchRequests.erase(it);
+        m_inflightPrefetches.fetch_sub(1);
+    }
+
+    return callbacksToCancel;
 }
 
 int64_t TimelineCache::effectiveVisibleDecodeKeepWindow() const

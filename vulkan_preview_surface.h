@@ -6,6 +6,7 @@
 #include "facedetections_time_mapping.h"
 #include "facestream_overlay_snapshot.h"
 #include "debug_controls.h"
+#include "playback_stage_metrics.h"
 
 #include <QJsonObject>
 #include <QHash>
@@ -201,6 +202,8 @@ private:
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
     QHash<QString, FacestreamOverlayCacheEntry> m_facedetectionsOverlayCache;
+    QHash<QString, QJsonObject> m_facedetectionsArtifactRootCache;
+    QHash<QString, QJsonObject> m_facedetectionsProcessedArtifactRootCache;
     PreviewInteractionState m_interaction;
     AudioDynamicsSettings m_audioDynamics;
     LoiaconoSpectrumSettings m_loiaconoSpectrumSettings;
@@ -249,6 +252,17 @@ private:
     int64_t m_visibleRequestCallbacks = 0;
     int64_t m_visibleRequestNullCallbacks = 0;
     QString m_lastVisibleRequestCallbackPayload;
+    editor::PlaybackStageMetric m_timelineInputStageMetric;
+    editor::PlaybackStageMetric m_sourceMappingStageMetric;
+    editor::PlaybackStageMetric m_visibleRequestStageMetric;
+    editor::PlaybackStageMetric m_cacheLookupStageMetric;
+    editor::PlaybackStageMetric m_decoderOutputStageMetric;
+    editor::PlaybackStageMetric m_frameSelectionStageMetric;
+    editor::PlaybackStageMetric m_correctionsMaskStageMetric;
+    editor::PlaybackStageMetric m_effectsEvalStageMetric;
+    editor::PlaybackStageMetric m_gradingShaderStageMetric;
+    editor::PlaybackStageMetric m_transformStageMetric;
+    editor::PlaybackStageMetric m_overlayPrepStageMetric;
     QVector<PlaybackSmoothnessSample> m_playbackSmoothnessSamples;
     QJsonObject m_lastFacedetectionsQueryDebug;
     QString m_appliedFacestreamOverlaySnapshotKey;

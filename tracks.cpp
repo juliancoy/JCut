@@ -31,6 +31,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QSet>
 #include <QSignalBlocker>
@@ -1353,6 +1354,7 @@ void SpeakersTab::refreshRawDetectionsPanel(const QJsonObject& continuityRoot)
 void SpeakersTab::clearFaceDetectionsDerivedCaches()
 {
     m_avatarCache.clear();
+    m_playheadTrackAvatarCache.clear();
     m_avatarHoverTooltipHtmlCache.clear();
     m_continuityStreamsCache.clear();
     m_trackIdentityResolutionCache.clear();
@@ -1385,10 +1387,37 @@ bool SpeakersTab::persistTrackAssignments(
     const std::function<bool(const QJsonObject&, const QJsonObject&)>& faceRefMatches,
     bool evictExistingForSpeaker)
 {
+    QElapsedTimer assignmentTimer;
+    assignmentTimer.start();
+    qint64 buildPayloadMs = 0;
+    qint64 mutateDocumentMs = 0;
+    qint64 queueSaveMs = 0;
+    qint64 postUpdateMs = 0;
+    auto updateAssignmentProfile = [&](bool ok, const QString& failureReason = QString()) {
+        const qint64 totalMs = assignmentTimer.isValid() ? assignmentTimer.elapsed() : 0;
+        QJsonObject nextProfile = m_trackAssignmentTimingProfile;
+        const qint64 previousMax = nextProfile.value(QStringLiteral("max_total_ms")).toInteger(0);
+        nextProfile[QStringLiteral("last_total_ms")] = totalMs;
+        nextProfile[QStringLiteral("max_total_ms")] = qMax(previousMax, totalMs);
+        nextProfile[QStringLiteral("last_payload_build_ms")] = buildPayloadMs;
+        nextProfile[QStringLiteral("last_document_mutate_ms")] = mutateDocumentMs;
+        nextProfile[QStringLiteral("last_save_queue_ms")] = queueSaveMs;
+        nextProfile[QStringLiteral("last_post_update_ms")] = postUpdateMs;
+        nextProfile[QStringLiteral("last_ok")] = ok;
+        nextProfile[QStringLiteral("last_failure_reason")] = failureReason;
+        nextProfile[QStringLiteral("last_clip_id")] = clipId;
+        nextProfile[QStringLiteral("last_speaker_id")] = speakerId;
+        nextProfile[QStringLiteral("last_anchor_count")] = trackAnchors.size();
+        nextProfile[QStringLiteral("last_resolution_source")] = resolutionSource;
+        nextProfile[QStringLiteral("last_sync_transcript_io")] = shouldUseSynchronousTranscriptIo();
+        m_trackAssignmentTimingProfile = nextProfile;
+    };
+
     const QString trimmedSpeakerId = speakerId.trimmed();
     const QString trimmedClipId = clipId.trimmed();
     if (!activeCutMutable() || trimmedSpeakerId.isEmpty() || trimmedClipId.isEmpty() ||
         trackAnchors.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
+        updateAssignmentProfile(false, QStringLiteral("invalid_input_or_no_loaded_document"));
         return false;
     }
 
@@ -1402,9 +1431,12 @@ bool SpeakersTab::persistTrackAssignments(
         anchorByTrackId.insert(trackId, anchor);
     }
     if (anchorByTrackId.isEmpty()) {
+        updateAssignmentProfile(false, QStringLiteral("no_valid_track_anchors"));
         return false;
     }
 
+    QElapsedTimer phaseTimer;
+    phaseTimer.start();
     const QString effectiveResolutionSource = resolutionSource.trimmed().isEmpty()
         ? QStringLiteral("speaker_track_picker")
         : resolutionSource.trimmed();
@@ -1539,13 +1571,30 @@ bool SpeakersTab::persistTrackAssignments(
     clipsRoot[trimmedClipId] = clipRoot;
     speakerFlow[QStringLiteral("clips")] = clipsRoot;
     transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+    buildPayloadMs = phaseTimer.elapsed();
+
+    phaseTimer.restart();
     if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
             root = transcriptRoot;
             return true;
-        }, false) || !saveLoadedTranscriptDocumentNow()) {
+        }, false)) {
+        mutateDocumentMs = phaseTimer.elapsed();
+        updateAssignmentProfile(false, QStringLiteral("document_mutation_failed"));
         refresh();
         return false;
     }
+    mutateDocumentMs = phaseTimer.elapsed();
+
+    phaseTimer.restart();
+    if (!saveLoadedTranscriptDocument()) {
+        queueSaveMs = phaseTimer.elapsed();
+        updateAssignmentProfile(false, QStringLiteral("save_queue_failed"));
+        refresh();
+        return false;
+    }
+    queueSaveMs = phaseTimer.elapsed();
+
+    phaseTimer.restart();
     m_avatarHoverTooltipHtmlCache.clear();
 
     m_trackIdentityResolutionCache.clear();
@@ -1581,6 +1630,20 @@ bool SpeakersTab::persistTrackAssignments(
     }
     updateSpeakerTrackingStatusLabelFast();
     scheduleSelectedSpeakerPanelRefresh();
+    postUpdateMs = phaseTimer.elapsed();
+    updateAssignmentProfile(true);
+    if (m_trackAssignmentTimingProfile.value(QStringLiteral("last_total_ms")).toInteger(0) >= 75) {
+        qWarning().noquote()
+            << QStringLiteral("[SPEAKERS WARN] track assignment persist slow total=%1ms build=%2ms mutate=%3ms save_queue=%4ms post=%5ms anchors=%6 source=%7 sync_io=%8")
+                   .arg(m_trackAssignmentTimingProfile.value(QStringLiteral("last_total_ms")).toInteger(0))
+                   .arg(buildPayloadMs)
+                   .arg(mutateDocumentMs)
+                   .arg(queueSaveMs)
+                   .arg(postUpdateMs)
+                   .arg(trackAnchors.size())
+                   .arg(effectiveResolutionSource)
+                   .arg(shouldUseSynchronousTranscriptIo() ? QStringLiteral("true") : QStringLiteral("false"));
+    }
     return true;
 }
 
@@ -1768,6 +1831,83 @@ bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
             return faceRef.value(QStringLiteral("track_id")).toInt(-1) == trackId;
         },
         evictExistingForSpeaker);
+}
+
+bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTarget(const QString& clipId,
+                                                          qreal xNorm,
+                                                          qreal yNorm,
+                                                          qreal boxSizeNorm)
+{
+    const QString trimmedClipId = clipId.trimmed();
+    if (trimmedClipId.isEmpty() || !activeCutMutable() || !m_speakerDeps.updateClipById) {
+        return false;
+    }
+
+    const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!selectedClip || selectedClip->id != trimmedClipId) {
+        return false;
+    }
+
+    const int64_t timelineFrame =
+        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : selectedClip->startFrame;
+    const int64_t localFrame = qBound<int64_t>(
+        0,
+        timelineFrame - selectedClip->startFrame,
+        qMax<int64_t>(0, selectedClip->durationFrames - 1));
+
+    const qreal targetX = qBound<qreal>(0.0, xNorm, 1.0);
+    const qreal targetY = qBound<qreal>(0.0, yNorm, 1.0);
+    const qreal detectedBox = qBound<qreal>(0.01, boxSizeNorm, 1.0);
+    const qreal targetBox = qBound<qreal>(0.12, qMax<qreal>(0.20, detectedBox * 2.5), 0.45);
+
+    const bool changed = m_speakerDeps.updateClipById(trimmedClipId, [&](TimelineClip& editableClip) {
+        TimelineClip::TransformKeyframe target;
+        target.frame = localFrame;
+        target.translationX = targetX;
+        target.translationY = targetY;
+        target.rotation = 0.0;
+        target.scaleX = targetBox;
+        target.scaleY = targetBox;
+        target.linearInterpolation = true;
+
+        bool replacedTarget = false;
+        for (TimelineClip::TransformKeyframe& keyframe : editableClip.speakerFramingTargetKeyframes) {
+            if (keyframe.frame == localFrame) {
+                keyframe = target;
+                replacedTarget = true;
+                break;
+            }
+        }
+        if (!replacedTarget) {
+            editableClip.speakerFramingTargetKeyframes.push_back(target);
+        }
+
+        bool replacedEnabled = false;
+        for (TimelineClip::BoolKeyframe& keyframe : editableClip.speakerFramingEnabledKeyframes) {
+            if (keyframe.frame == localFrame) {
+                keyframe.enabled = true;
+                replacedEnabled = true;
+                break;
+            }
+        }
+        if (!replacedEnabled) {
+            editableClip.speakerFramingEnabledKeyframes.push_back(
+                TimelineClip::BoolKeyframe{localFrame, true});
+        }
+        editableClip.speakerFramingEnabled = true;
+        normalizeClipTransformKeyframes(editableClip);
+    });
+
+    if (changed) {
+        m_selectedSpeakerFramingEnabledFrame = localFrame;
+        m_selectedSpeakerFramingEnabledFrames = {localFrame};
+        if (m_deps.scheduleSaveState) {
+            m_deps.scheduleSaveState();
+        }
+        updateSpeakerFramingTargetControls();
+        updateSpeakerTrackingStatusLabelFast();
+    }
+    return changed;
 }
 
 bool SpeakersTab::deassignTrackFromSpeaker(const QString& speakerId, int trackId)
@@ -2178,16 +2318,30 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         QStringLiteral("preview_click"),
         true);
     logTiming(QStringLiteral("assigned_track"));
+    bool framingApplied = false;
+    if (assigned) {
+        framingApplied = applyPreviewFaceBoxSpeakerFramingTarget(clipId, xNorm, yNorm, boxSizeNorm);
+        logTiming(framingApplied
+                      ? QStringLiteral("applied_framing_target")
+                      : QStringLiteral("framing_target_unchanged"));
+    }
     if (assigned && m_speakerDeps.refreshPreview) {
-        m_speakerDeps.refreshPreview();
-        logTiming(QStringLiteral("refreshed_preview"));
+        QPointer<SpeakersTab> self(this);
+        QTimer::singleShot(0, this, [self]() {
+            if (!self || !self->m_speakerDeps.refreshPreview) {
+                return;
+            }
+            self->m_speakerDeps.refreshPreview();
+        });
+        logTiming(QStringLiteral("queued_preview_refresh"));
     }
     if (assigned) {
-        report(QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4).")
+        report(QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4). Face zoom %5.")
                    .arg(trackId)
                    .arg(speakerDisplayLabel(speakerId))
                    .arg(mediaSourceFrame)
-                   .arg(speakerResolutionDetail));
+                   .arg(speakerResolutionDetail)
+                   .arg(framingApplied ? QStringLiteral("applied") : QStringLiteral("unchanged")));
     } else {
         report(QStringLiteral("Face box click failed: track %1 was not assigned to %2.")
                    .arg(trackId)
@@ -2397,17 +2551,6 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
     const int64_t playheadSourceFrame =
         sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
     const QHash<int, QString> assignedIdentityByTrackId = resolvedIdentityByTrackId(clip, streams);
-    std::unique_ptr<editor::DecoderContext> decoder;
-    if (!playbackActive) {
-        const QString mediaPath = interactivePreviewMediaPathForClip(clip);
-        if (!mediaPath.isEmpty()) {
-            decoder = std::make_unique<editor::DecoderContext>(mediaPath);
-            if (!decoder->initialize()) {
-                decoder.reset();
-            }
-        }
-    }
-    QHash<int64_t, QImage> frameImageCache;
     for (const QJsonValue& value : streams) {
         const QJsonObject streamObj = value.toObject();
         const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
@@ -2428,26 +2571,24 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         const QString assignedSpeakerId = assignedIdentityByTrackId.value(trackId).trimmed();
         const QString assignedLabel =
             assignedSpeakerId.isEmpty() ? QStringLiteral("Unassigned") : speakerDisplayLabel(assignedSpeakerId);
-        const QJsonObject previewKeyframe{
-            {QString(kTranscriptSpeakerTrackingFrameKey),
-             static_cast<qint64>(qMax<int64_t>(0, selection.sourceFrame))},
-            {QString(kTranscriptSpeakerLocationXKey), selection.keyframe.xNorm},
-            {QString(kTranscriptSpeakerLocationYKey), selection.keyframe.yNorm},
-            {QString(kTranscriptSpeakerTrackingBoxSizeKey), selection.keyframe.boxSizeNorm},
-            {QStringLiteral("confidence"), selection.keyframe.confidence},
-            {QStringLiteral("source"), selection.keyframe.source},
-        };
-        QListWidgetItem* item = playbackActive
+        QPixmap itemAvatar;
+        if (!playbackActive) {
+            const QString avatarCacheKey = QStringLiteral("%1|%2|%3|%4")
+                                               .arg(clip.id)
+                                               .arg(trackId)
+                                               .arg(speakerId)
+                                               .arg(72);
+            const auto cachedAvatar = m_playheadTrackAvatarCache.constFind(avatarCacheKey);
+            if (cachedAvatar != m_playheadTrackAvatarCache.cend()) {
+                itemAvatar = cachedAvatar.value();
+            } else {
+                itemAvatar = continuityTrackAvatar(clip, speakerId, streamObj, 72, nullptr, nullptr);
+                m_playheadTrackAvatarCache.insert(avatarCacheKey, itemAvatar);
+            }
+        }
+        QListWidgetItem* item = itemAvatar.isNull()
             ? new QListWidgetItem(QStringLiteral("%1\n%2").arg(streamId, assignedLabel))
-            : new QListWidgetItem(
-                  QIcon(faceStreamPreviewAvatarWithDecoder(
-                      clip,
-                      speakerId,
-                      previewKeyframe,
-                      72,
-                      decoder.get(),
-                      &frameImageCache)),
-                  QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
+            : new QListWidgetItem(QIcon(itemAvatar), QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
         item->setData(Qt::UserRole, trackId);
         item->setData(Qt::UserRole + 1, streamId);
         item->setData(Qt::UserRole + 2, QVariant::fromValue<qlonglong>(selection.sourceFrame));

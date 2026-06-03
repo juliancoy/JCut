@@ -1029,6 +1029,16 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         }
     }
     const bool cpuUploadPath = false;
+    const QJsonObject playbackStageMetrics{
+        {QStringLiteral("text_prep"),
+         editor::playbackStageMetricToJson(m_stats.textPrepStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("gpu_handoff"),
+         editor::playbackStageMetricToJson(m_stats.gpuHandoffStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("command_recording"),
+         editor::playbackStageMetricToJson(m_stats.commandRecordingStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("presentation"),
+         editor::playbackStageMetricToJson(m_stats.presentationStageMetric, QStringLiteral("presenter"))},
+    };
     return QJsonObject{
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
@@ -1153,7 +1163,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("last_external_image_size"), m_stats.lastExternalImageSize.isValid()
              ? QStringLiteral("%1x%2").arg(m_stats.lastExternalImageSize.width()).arg(m_stats.lastExternalImageSize.height())
              : QString()},
-        {QStringLiteral("failure_reason"), m_failureReason}
+        {QStringLiteral("failure_reason"), m_failureReason},
+        {QStringLiteral("playback_pipeline_stages"), playbackStageMetrics}
     };
 }
 
@@ -1191,6 +1202,16 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         }
     }
     const bool cpuUploadPath = false;
+    const QJsonObject playbackStageMetrics{
+        {QStringLiteral("text_prep"),
+         editor::playbackStageMetricToJson(m_stats.textPrepStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("gpu_handoff"),
+         editor::playbackStageMetricToJson(m_stats.gpuHandoffStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("command_recording"),
+         editor::playbackStageMetricToJson(m_stats.commandRecordingStageMetric, QStringLiteral("presenter"))},
+        {QStringLiteral("presentation"),
+         editor::playbackStageMetricToJson(m_stats.presentationStageMetric, QStringLiteral("presenter"))},
+    };
     return QJsonObject{
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
@@ -1244,7 +1265,8 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("last_handoff_probe_path"), m_stats.lastProbePath},
         {QStringLiteral("last_hardware_sw_format"), m_stats.lastHardwareSwFormat},
         {QStringLiteral("last_vulkan_image_format"), m_stats.lastVulkanImageFormat},
-        {QStringLiteral("failure_reason"), m_failureReason}
+        {QStringLiteral("failure_reason"), m_failureReason},
+        {QStringLiteral("playback_pipeline_stages"), playbackStageMetrics}
     };
 }
 

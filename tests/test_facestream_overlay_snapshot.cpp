@@ -20,6 +20,7 @@ private slots:
     void assignmentInteractionBuildsOverlaysWithoutVisibleTrackBoxes();
     void sourceFilterExcludesNonMatchingTracks();
     void indexedTrackCandidatesAvoidFullCacheScan();
+    void indexedTrackCandidatesHoldForFullDetectedStrideAtEdges();
     void rawOnlySnapshotDoesNotBuildTrackBoxes();
     void rawDetectionsUseSameBridgeAndEdgeHoldRules();
     void applyDecisionDropsPausedStaleAndOutOfOrderSnapshots();
@@ -193,6 +194,19 @@ void TestFacestreamOverlaySnapshot::indexedTrackCandidatesAvoidFullCacheScan()
     QCOMPARE(snapshot.debug.value(QStringLiteral("selected_clip_track_candidates")).toInt(), 1);
 }
 
+void TestFacestreamOverlaySnapshot::indexedTrackCandidatesHoldForFullDetectedStrideAtEdges()
+{
+    FacestreamOverlayCacheEntry cache;
+    cache.tracks = QVector<FacestreamResolvedTrack>{trackAtFrames(1, 4, 8)};
+    buildFacestreamTrackCandidateIndex(cache, makeClip(), {});
+
+    const QVector<int> heldAtStrideEdge = facestreamTrackCandidateIndicesFromCacheEntry(cache, 12);
+    QCOMPARE(heldAtStrideEdge.size(), 1);
+    QCOMPARE(heldAtStrideEdge.first(), 0);
+
+    QVERIFY(facestreamTrackCandidateIndicesFromCacheEntry(cache, 13).isEmpty());
+}
+
 void TestFacestreamOverlaySnapshot::rawOnlySnapshotDoesNotBuildTrackBoxes()
 {
     FacestreamOverlayCacheEntry cache;
@@ -231,7 +245,12 @@ void TestFacestreamOverlaySnapshot::rawDetectionsUseSameBridgeAndEdgeHoldRules()
     QCOMPARE(edgeHeld.size(), 1);
     QCOMPARE(edgeHeld.first().sourceFrame, 8LL);
 
-    QVERIFY(rawDetectionsFromCacheEntry(cache, 14).isEmpty());
+    const QVector<VulkanPreviewFacestreamOverlay> heldAtStrideEdge =
+        rawDetectionsFromCacheEntry(cache, 12);
+    QCOMPARE(heldAtStrideEdge.size(), 1);
+    QCOMPARE(heldAtStrideEdge.first().sourceFrame, 8LL);
+
+    QVERIFY(rawDetectionsFromCacheEntry(cache, 13).isEmpty());
 }
 
 void TestFacestreamOverlaySnapshot::applyDecisionDropsPausedStaleAndOutOfOrderSnapshots()

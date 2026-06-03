@@ -8,6 +8,7 @@
 #include "timeline_widget.h"
 #include "opengl_preview.h"
 #include "preview_surface.h"
+#include "playback_stage_metrics.h"
 #include "editor_pane.h"
 #include "explorer_pane.h"
 #include "inspector_pane.h"
@@ -86,6 +87,7 @@ public:
     struct OptimizedPreviewProfile {
         int playbackStartLookaheadFrames = 5;
         int playbackStartLookaheadTimeoutMs = 1200;
+        int decoderWorkerCount = 0;
         PreviewSurface::PlaybackTuning previewTuning;
     };
 
@@ -137,6 +139,7 @@ private:
     QString frameToTimecode(int64_t frame) const;
     QJsonObject profilingSnapshot() const;
     QJsonObject pipelineSnapshot(bool verbose = false) const;
+    QJsonObject playbackStageMetricsSnapshot() const;
     QJsonObject startupProfileSnapshot() const;
     QJsonObject startupReadinessSnapshot() const;
     QJsonObject startupOptimizationSnapshot() const;
@@ -726,6 +729,8 @@ private:
     std::atomic<qint64> m_lastSetCurrentPlaybackSampleDurationMs{0};
     std::atomic<qint64> m_maxSetCurrentPlaybackSampleDurationMs{0};
     std::atomic<qint64> m_setCurrentPlaybackSampleSlowCount{0};
+    PlaybackStageMetric m_playbackClockStageMetric;
+    PlaybackStageMetric m_playbackSampleApplyStageMetric;
     std::atomic<qint64> m_lastInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_maxInspectorRefreshDurationMs{0};
     std::atomic<qint64> m_inspectorRefreshSlowCount{0};

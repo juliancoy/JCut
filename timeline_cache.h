@@ -268,6 +268,9 @@ private:
     void cancelDecoderBeforeThrottled(const QString& decodePath,
                                       int64_t keepFromFrame,
                                       qint64 nowMs = -1);
+    QVector<std::function<void(FrameHandle)>> dropObsoletePendingVisibleRequestsLocked(
+        const QString& clipId,
+        int64_t canonicalFrame);
     void enforceHardwareFrameResidencyPolicy();
     void dropStaleRequestsForPlayhead(int64_t playheadFrame);
     void beginSeekResyncForPlayhead(int64_t playheadFrame);

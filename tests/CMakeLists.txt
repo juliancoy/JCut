@@ -8,6 +8,7 @@ set(EDITOR_TEST_TARGETS
     test_transcript_tab_follow
     test_playback_policy
     test_temporal_sync_contract
+    test_standard_preview_presentation_pipeline
     test_audio_time_stretch
     test_audio_time_stretch_cache
     test_transform_skip_aware_timing
@@ -56,6 +57,11 @@ target_sources(test_no_proxy_hardware_playback_contract
         ${CMAKE_CURRENT_SOURCE_DIR}/../playback_frame_pipeline.cpp
 )
 
+target_sources(test_standard_preview_presentation_pipeline
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../playback_frame_pipeline.cpp
+)
+
 target_sources(test_vulkan_text_generation
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
@@ -76,6 +82,7 @@ endif()
 set_tests_properties(
     test_playback_policy
     test_temporal_sync_contract
+    test_standard_preview_presentation_pipeline
     test_timeline_cache
     test_audio_time_stretch_cache
     test_transcript_logic

@@ -33,6 +33,31 @@ void markCacheSelection(PreviewFrameSelectionResult* result,
 
 }  // namespace
 
+PreviewVisibleRequestDecision evaluatePreviewVisibleRequest(
+    const PreviewVisibleRequestInputs& inputs)
+{
+    PreviewVisibleRequestDecision decision;
+
+    if (inputs.exactCached) {
+        decision.decision = QStringLiteral("skipped");
+        decision.blockReason = QStringLiteral("exact_frame_already_cached");
+        return decision;
+    }
+
+    if (inputs.pending && !inputs.forceRetry) {
+        decision.decision = QStringLiteral("skipped");
+        decision.blockReason = QStringLiteral("visible_request_already_pending");
+        return decision;
+    }
+
+    decision.dispatch = true;
+    decision.decision =
+        inputs.pendingBacklog >= qMax(1, inputs.backlogLimit)
+            ? QStringLiteral("dispatch_current_over_backlog")
+            : QStringLiteral("dispatch");
+    return decision;
+}
+
 PreviewFrameSelectionResult selectPreviewFrame(
     const PreviewFrameSelectionRequest& request,
     TimelineCache* cache,

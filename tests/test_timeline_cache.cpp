@@ -21,6 +21,8 @@ private slots:
     void testPlaybackState();
     void testStaticImageCaching();
     void testVisibleRequestRetryUsesWallClockAge();
+    void testPlayingVisibleRequestDropsOlderPendingFrames();
+    void testPlayingVisibleRequestKeepsNearbyPendingFrames();
     void testSourceFrameTimelineDomainMapping();
     void testLatestAtOrBeforeNeverReturnsFutureFrame();
 };
@@ -166,6 +168,67 @@ void TestTimelineCache::testVisibleRequestRetryUsesWallClockAge() {
     const QJsonArray pending = cache.pendingVisibleDebugSnapshot(QDateTime::currentMSecsSinceEpoch(), 1);
     QCOMPARE(pending.size(), 1);
     QVERIFY(pending.at(0).toObject().value(QStringLiteral("age_ms")).toInteger() >= 100);
+}
+
+void TestTimelineCache::testPlayingVisibleRequestDropsOlderPendingFrames() {
+    MemoryBudget budget;
+    TimelineCache cache(nullptr, &budget);
+
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip1");
+    clip.filePath = QStringLiteral("/tmp/test-visible-freshness.mp4");
+    clip.mediaType = ClipMediaType::Video;
+    clip.sourceKind = MediaSourceKind::File;
+    clip.startFrame = 0;
+    clip.durationFrames = 100;
+    clip.sourceDurationFrames = 100;
+    cache.registerClip(clip);
+    cache.setPlaybackState(TimelineCache::PlaybackState::Playing);
+
+    bool olderCallbackCalled = false;
+    bool olderCallbackDeliveredFrame = true;
+    cache.requestFrame("clip1", 12, [&](FrameHandle frame) {
+        olderCallbackCalled = true;
+        olderCallbackDeliveredFrame = !frame.isNull();
+    });
+
+    QVERIFY(cache.isVisibleRequestPending("clip1", 12));
+
+    cache.requestFrame("clip1", 18, [](FrameHandle) {});
+
+    QVERIFY(olderCallbackCalled);
+    QVERIFY(!olderCallbackDeliveredFrame);
+    QVERIFY(!cache.isVisibleRequestPending("clip1", 12));
+    QVERIFY(cache.isVisibleRequestPending("clip1", 18));
+}
+
+void TestTimelineCache::testPlayingVisibleRequestKeepsNearbyPendingFrames() {
+    MemoryBudget budget;
+    TimelineCache cache(nullptr, &budget);
+
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip1");
+    clip.filePath = QStringLiteral("/tmp/test-visible-nearby.mp4");
+    clip.mediaType = ClipMediaType::Video;
+    clip.sourceKind = MediaSourceKind::File;
+    clip.startFrame = 0;
+    clip.durationFrames = 100;
+    clip.sourceDurationFrames = 100;
+    cache.registerClip(clip);
+    cache.setPlaybackState(TimelineCache::PlaybackState::Playing);
+
+    bool olderCallbackCalled = false;
+    cache.requestFrame("clip1", 12, [&](FrameHandle) {
+        olderCallbackCalled = true;
+    });
+
+    QVERIFY(cache.isVisibleRequestPending("clip1", 12));
+
+    cache.requestFrame("clip1", 15, [](FrameHandle) {});
+
+    QVERIFY(!olderCallbackCalled);
+    QVERIFY(cache.isVisibleRequestPending("clip1", 12));
+    QVERIFY(cache.isVisibleRequestPending("clip1", 15));
 }
 
 void TestTimelineCache::testSourceFrameTimelineDomainMapping() {

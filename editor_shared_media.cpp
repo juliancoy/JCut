@@ -665,10 +665,7 @@ bool shouldUseAudioMasterClock(PlaybackClockSource source,
     case PlaybackClockSource::Audio:
         return speedIsUnity || effectiveMode != PlaybackAudioWarpMode::Disabled;
     case PlaybackClockSource::Timeline:
-        if (!speedIsUnity && effectiveMode == PlaybackAudioWarpMode::TimeStretch) {
-            return true;
-        }
-        return false;
+        return effectiveMode == PlaybackAudioWarpMode::TimeStretch;
     case PlaybackClockSource::Auto:
     default:
         return speedIsUnity || effectiveMode != PlaybackAudioWarpMode::Disabled;

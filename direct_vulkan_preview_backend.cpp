@@ -2122,6 +2122,14 @@ public:
         if (m_presentedFrames) {
             ++(*m_presentedFrames);
         }
+        if (m_stats) {
+            editor::accumulatePlaybackStageMetric(&m_stats->presentationStageMetric,
+                                          0,
+                                          1,
+                                          0,
+                                          QStringLiteral("presented"),
+                                          QStringLiteral("frame_ready"));
+        }
     }
     void markPresentedSourceFrame(int64_t frame)
     {
@@ -2823,7 +2831,29 @@ void DirectVulkanPreviewRenderer::recordImageReadback(VkCommandBuffer cb,
 void DirectVulkanPreviewRenderer::startNextFrame()
 {
     if (!m_owner || !m_window || !m_devFuncs) {
+        if (m_owner && m_owner->stats()) {
+            editor::accumulatePlaybackStageMetric(&m_owner->stats()->commandRecordingStageMetric,
+                                          1,
+                                          0,
+                                          1,
+                                          QStringLiteral("source_unavailable"),
+                                          QStringLiteral("renderer_or_device_unavailable"));
+        }
         return;
+    }
+    if (m_owner->stats()) {
+        editor::accumulatePlaybackStageMetric(&m_owner->stats()->commandRecordingStageMetric,
+                                      1,
+                                      0,
+                                      0,
+                                      QStringLiteral("recording_started"),
+                                      QStringLiteral("start_next_frame"));
+        editor::accumulatePlaybackStageMetric(&m_owner->stats()->presentationStageMetric,
+                                      1,
+                                      0,
+                                      0,
+                                      QStringLiteral("present_pending"),
+                                      QStringLiteral("start_next_frame"));
     }
 
     const PreviewInteractionState* liveState = m_owner->state();
@@ -3122,6 +3152,27 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         preparedTemporalDebugLabel =
             m_temporalDebugTextRenderer->prepareSpeakerLabelAtlas(cb, state->outputSize, preparedTemporalDebugSpec);
     }
+    if (m_owner->stats()) {
+        const qint64 textAttemptCount =
+            preparedTranscriptOverlays.size() +
+            ((preparedSpeakerSpec.showName || preparedSpeakerSpec.showOrganization) ? 1 : 0) +
+            (!preparedTemporalDebugSpec.organization.trimmed().isEmpty() ? 1 : 0);
+        const qint64 textSuccessCount =
+            preparedTranscriptAtlasClipIds.size() +
+            (preparedSpeakerLabel ? 1 : 0) +
+            (preparedTemporalDebugLabel ? 1 : 0);
+        editor::accumulatePlaybackStageMetric(&m_owner->stats()->textPrepStageMetric,
+                                      qMax<qint64>(1, textAttemptCount),
+                                      textSuccessCount,
+                                      qMax<qint64>(0, textAttemptCount - textSuccessCount),
+                                      textAttemptCount > 0
+                                          ? QStringLiteral("text_prepared")
+                                          : QStringLiteral("text_not_requested"),
+                                      QStringLiteral("transcript=%1 speaker=%2 debug=%3")
+                                          .arg(preparedTranscriptAtlasClipIds.size())
+                                          .arg(preparedSpeakerLabel ? 1 : 0)
+                                          .arg(preparedTemporalDebugLabel ? 1 : 0));
+    }
     m_devFuncs->vkCmdBeginRenderPass(cb, &rp, VK_SUBPASS_CONTENTS_INLINE);
     auto drawPreparedOverlay = [&](const PreparedOverlayTexture& overlay) {
         if (!overlay.ready ||
@@ -3167,6 +3218,14 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             &audioWaitingForWaveform)) {
         drawPreparedOverlay(preparedPlaybackStatusOverlay);
         m_devFuncs->vkCmdEndRenderPass(cb);
+        if (m_owner->stats()) {
+            editor::accumulatePlaybackStageMetric(&m_owner->stats()->commandRecordingStageMetric,
+                                          0,
+                                          1,
+                                          0,
+                                          QStringLiteral("recorded"),
+                                          QStringLiteral("audio_view_frame"));
+        }
         m_owner->markPresented();
         m_window->frameReady();
         m_owner->markPreviewUpdateDelivered();
@@ -3176,6 +3235,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         return;
     }
     int64_t presentedSourceFrame = -1;
+    qint64 handoffAttemptCount = 0;
+    qint64 handoffSuccessCount = 0;
     if (state) {
         VkViewport viewport{};
         viewport.x = 0.0f;
@@ -3243,6 +3304,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             const bool sampledFrameReady =
                 handoffResult.sampledFrameReady && handoffResult.descriptorSet != VK_NULL_HANDLE;
             const bool handoffAttempted = handoffResult.attempted;
+            handoffAttemptCount += handoffAttempted ? 1 : 0;
+            handoffSuccessCount += sampledFrameReady ? 1 : 0;
             if (sampledFrameReady) {
                 decoderReadbackCandidate.image = handoffResult.image;
                 decoderReadbackCandidate.layout = handoffResult.layout;
@@ -3449,6 +3512,24 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         }
     }
     m_devFuncs->vkCmdEndRenderPass(cb);
+    if (m_owner->stats()) {
+        editor::accumulatePlaybackStageMetric(&m_owner->stats()->gpuHandoffStageMetric,
+                                      qMax<qint64>(1, handoffAttemptCount),
+                                      handoffSuccessCount,
+                                      qMax<qint64>(0, handoffAttemptCount - handoffSuccessCount),
+                                      handoffAttemptCount > 0
+                                          ? QStringLiteral("handoff_evaluated")
+                                          : QStringLiteral("source_unavailable"),
+                                      handoffAttemptCount > 0
+                                          ? QStringLiteral("ready=%1").arg(handoffSuccessCount)
+                                          : QStringLiteral("no_active_handoff_attempts"));
+        editor::accumulatePlaybackStageMetric(&m_owner->stats()->commandRecordingStageMetric,
+                                      0,
+                                      1,
+                                      0,
+                                      QStringLiteral("recorded"),
+                                      QStringLiteral("video_frame"));
+    }
 
     m_owner->markPresentedSourceFrame(presentedSourceFrame);
     m_owner->markPresented();

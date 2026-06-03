@@ -20,7 +20,7 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kObsoleteVisibleFrameSlack = 0;
+constexpr int64_t kObsoleteVisibleFrameSlack = 4;
 constexpr qint64 kVisiblePendingRetryMs = 2000;
 
 QElapsedTimer& cacheTraceTimer() {
@@ -158,10 +158,14 @@ void TimelineCache::requestFrame(const QString& clipId,
     const QString key = requestKey(clipId, canonicalFrame);
     const uint64_t requestGeneration = m_visibleRequestGeneration.load();
     constexpr qint64 kPendingRequestStaleMs = kVisiblePendingRetryMs;
+    QVector<std::function<void(FrameHandle)>> callbacksToCancel;
 
     {
         QMutexLocker pendingLock(&m_pendingMutex);
         m_latestVisibleTargets.insert(clipId, canonicalFrame);
+        if (m_state.load() == PlaybackState::Playing && !info.isSingleFrame) {
+            callbacksToCancel = dropObsoletePendingVisibleRequestsLocked(clipId, canonicalFrame);
+        }
 
         auto existing = m_pendingVisibleRequests.find(key);
         if (existing != m_pendingVisibleRequests.end()) {
@@ -210,6 +214,12 @@ void TimelineCache::requestFrame(const QString& clipId,
         }
     }
 
+    for (const auto& canceled : callbacksToCancel) {
+        if (canceled) {
+            canceled(FrameHandle());
+        }
+    }
+
     if (!m_decoder) {
         return;
     }
@@ -217,6 +227,7 @@ void TimelineCache::requestFrame(const QString& clipId,
     if (m_state.load() == PlaybackState::Playing && !info.isSingleFrame) {
         const int64_t keepFromFrame = qMax<int64_t>(0, canonicalFrame - effectiveVisibleDecodeKeepWindow());
         cancelDecoderBeforeThrottled(info.decodePath, keepFromFrame, requestedAtWallMs);
+        m_decoder->cancelQueuedNonVisibleForFile(info.decodePath);
     }
 
     const int priority = calculatePriority(info, canonicalFrame);

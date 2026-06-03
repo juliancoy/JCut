@@ -40,6 +40,23 @@ QJsonArray pipelineStagesToJson(const QVector<PreviewSurface::PipelineStageSnaps
 
 } // namespace
 
+QJsonObject EditorWindow::playbackStageMetricsSnapshot() const
+{
+    QJsonObject stages;
+    stages.insert(QStringLiteral("clock_update"),
+                  editor::playbackStageMetricToJson(m_playbackClockStageMetric,
+                                            QStringLiteral("editor")));
+    stages.insert(QStringLiteral("playback_sample_apply"),
+                  editor::playbackStageMetricToJson(m_playbackSampleApplyStageMetric,
+                                            QStringLiteral("editor")));
+    if (m_preview) {
+        mergePlaybackStageMetricObjects(
+            &stages,
+            m_preview->profilingSnapshot().value(QStringLiteral("playback_pipeline_stages")).toObject());
+    }
+    return stages;
+}
+
 void appendRuntimePatch(QJsonArray* log,
                         qint64* sequence,
                         const QString& domain,
@@ -162,6 +179,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("active"), m_renderInProgress},
         {QStringLiteral("live"), m_liveRenderProfile},
         {QStringLiteral("last"), m_lastRenderProfile}};
+    snapshot[QStringLiteral("playback_pipeline_stages")] = playbackStageMetricsSnapshot();
     snapshot[QStringLiteral("speaker_tracking")] = transcriptSpeakerTrackingProfilingSnapshot();
     snapshot[QStringLiteral("speakers_refresh")] = m_speakersTab
         ? QJsonObject{
@@ -185,6 +203,8 @@ QJsonObject EditorWindow::profilingSnapshot() const
                m_speakersTab->maxRawDetectionsPanelRefreshDurationMs()},
               {QStringLiteral("face_detections_debug"),
                m_speakersTab->faceDetectionsDebugSnapshot()},
+              {QStringLiteral("track_assignment"),
+               m_speakersTab->trackAssignmentTimingProfile()},
               {QStringLiteral("section_selection"),
                m_speakersTab->speakerSectionSelectionTimingProfile()}}
         : QJsonObject{};
@@ -248,6 +268,7 @@ QJsonObject EditorWindow::pipelineSnapshot(bool verbose) const
         preview.insert(QStringLiteral("diagnostic_detail"),
                        QStringLiteral("compact stage state; use /pipeline?verbose=1 for full overlay dumps"));
     }
+    preview.insert(QStringLiteral("playback_pipeline_stages"), playbackStageMetricsSnapshot());
     return preview;
 }
 

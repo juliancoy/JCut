@@ -108,6 +108,11 @@ EditorWindow::OptimizedPreviewProfile profileFromJson(
         positiveIntOr(object,
                       QStringLiteral("playback_start_lookahead_timeout_ms"),
                       fallback.playbackStartLookaheadTimeoutMs);
+    profile.decoderWorkerCount =
+        qBound(0,
+               object.value(QStringLiteral("decoder_worker_count"))
+                   .toInt(fallback.decoderWorkerCount),
+               16);
     profile.previewTuning =
         tuningFromJson(object.value(QStringLiteral("preview_tuning")).toObject(), fallback.previewTuning);
     return profile;
@@ -118,6 +123,7 @@ QJsonObject profileToJson(const EditorWindow::OptimizedPreviewProfile& profile)
     return QJsonObject{
         {QStringLiteral("playback_start_lookahead_frames"), profile.playbackStartLookaheadFrames},
         {QStringLiteral("playback_start_lookahead_timeout_ms"), profile.playbackStartLookaheadTimeoutMs},
+        {QStringLiteral("decoder_worker_count"), profile.decoderWorkerCount},
         {QStringLiteral("preview_tuning"), tuningToJson(profile.previewTuning)}
     };
 }
@@ -127,23 +133,23 @@ QVector<OptimizationCandidate> candidatesForBackend(const QString& backendFamily
     QVector<OptimizationCandidate> candidates;
     if (backendFamily == QStringLiteral("vulkan")) {
         candidates.push_back({QStringLiteral("conservative"),
-                              {3, 900, {2, 4, 10}}});
+                              {3, 900, qMin(coreCount, 8), {2, 4, 10}}});
         candidates.push_back({QStringLiteral("balanced"),
-                              {4, 1100, {3, 6, 12}}});
+                              {4, 1100, qMin(coreCount, 12), {3, 6, 12}}});
         candidates.push_back({QStringLiteral("throughput"),
-                              {6, 1300, {4, 8, 14}}});
+                              {6, 1300, qMin(coreCount, 16), {4, 8, 14}}});
         if (coreCount >= 8) {
             candidates.push_back({QStringLiteral("aggressive"),
-                                  {8, 1600, {5, 10, 16}}});
+                                  {8, 1600, qMin(coreCount, 16), {5, 10, 16}}});
         }
     } else {
         candidates.push_back({QStringLiteral("balanced"),
-                              {5, 1100, {4, 5, 8}}});
+                              {5, 1100, qMin(coreCount, 8), {4, 5, 8}}});
         candidates.push_back({QStringLiteral("throughput"),
-                              {6, 1300, {4, 6, 10}}});
+                              {6, 1300, qMin(coreCount, 12), {4, 6, 10}}});
         if (coreCount >= 8) {
             candidates.push_back({QStringLiteral("aggressive"),
-                                  {8, 1600, {5, 8, 12}}});
+                                  {8, 1600, qMin(coreCount, 16), {5, 8, 12}}});
         }
     }
     return candidates;
@@ -198,6 +204,7 @@ EditorWindow::OptimizedPreviewProfile EditorWindow::defaultOptimizedPreviewProfi
     OptimizedPreviewProfile profile;
     profile.playbackStartLookaheadFrames = 5;
     profile.playbackStartLookaheadTimeoutMs = 1200;
+    profile.decoderWorkerCount = qBound(1, QThread::idealThreadCount(), 16);
     const QString backendFamily =
         m_preview ? backendFamilyForName(m_preview->backendName()) : QStringLiteral("unknown");
     if (m_preview) {
@@ -214,12 +221,14 @@ void EditorWindow::applyOptimizedProfile(const OptimizedPreviewProfile& profile)
     OptimizedPreviewProfile normalized = profile;
     normalized.playbackStartLookaheadFrames = qMax(1, normalized.playbackStartLookaheadFrames);
     normalized.playbackStartLookaheadTimeoutMs = qMax(100, normalized.playbackStartLookaheadTimeoutMs);
+    normalized.decoderWorkerCount = qBound(0, normalized.decoderWorkerCount, 16);
     const QString backendFamily =
         m_preview ? backendFamilyForName(m_preview->backendName()) : QStringLiteral("unknown");
     normalized.previewTuning =
         normalizedPreviewTuningForBackend(backendFamily, normalized.previewTuning);
     m_playbackStartLookaheadFrames = normalized.playbackStartLookaheadFrames;
     m_playbackStartLookaheadTimeoutMs = normalized.playbackStartLookaheadTimeoutMs;
+    editor::setDebugDecoderLaneCount(normalized.decoderWorkerCount);
     if (m_preview) {
         m_preview->setPlaybackTuning(normalized.previewTuning);
     }
@@ -249,8 +258,25 @@ bool EditorWindow::loadOptimizedProfileFromDisk(QJsonObject* loadedProfile)
         return false;
     }
 
-    const QJsonObject selectedProfileObject =
-        root.value(QStringLiteral("selected_profile")).toObject();
+    QJsonObject selectedProfileObject = root.value(QStringLiteral("selected_profile")).toObject();
+    if (!selectedProfileObject.contains(QStringLiteral("decoder_worker_count"))) {
+        const QString selectedName = root.value(QStringLiteral("selected_name")).toString();
+        const QJsonArray results = root.value(QStringLiteral("results")).toArray();
+        for (const QJsonValue& value : results) {
+            const QJsonObject result = value.toObject();
+            if (result.value(QStringLiteral("name")).toString() != selectedName) {
+                continue;
+            }
+            const int workerCount = qBound(
+                0,
+                result.value(QStringLiteral("decoder_worker_count")).toInt(0),
+                16);
+            if (workerCount > 0) {
+                selectedProfileObject[QStringLiteral("decoder_worker_count")] = workerCount;
+            }
+            break;
+        }
+    }
     const OptimizedPreviewProfile profile =
         profileFromJson(selectedProfileObject, defaultOptimizedPreviewProfile());
     applyOptimizedProfile(profile);

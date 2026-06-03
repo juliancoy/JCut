@@ -88,6 +88,10 @@ void TestPlaybackPolicy::testAudioMasterClockPolicy() {
                                        true));
     QVERIFY(shouldUseAudioMasterClock(PlaybackClockSource::Timeline,
                                       PlaybackAudioWarpMode::TimeStretch,
+                                      1.0,
+                                      true));
+    QVERIFY(shouldUseAudioMasterClock(PlaybackClockSource::Timeline,
+                                      PlaybackAudioWarpMode::TimeStretch,
                                       1.5,
                                       true));
 }

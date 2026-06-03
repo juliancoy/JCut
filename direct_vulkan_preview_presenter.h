@@ -1,6 +1,7 @@
 #pragma once
 
 #include "preview_interaction_state.h"
+#include "playback_stage_metrics.h"
 
 #include <functional>
 #include <QJsonObject>
@@ -64,6 +65,10 @@ struct DirectVulkanPreviewStats {
     int descriptorSetCount = 0;
     int activeClipHandoffResourceCount = 0;
     int retiredClipHandoffResourceCount = 0;
+    editor::PlaybackStageMetric textPrepStageMetric;
+    editor::PlaybackStageMetric gpuHandoffStageMetric;
+    editor::PlaybackStageMetric commandRecordingStageMetric;
+    editor::PlaybackStageMetric presentationStageMetric;
 };
 
 class DirectVulkanPreviewPresenter final {

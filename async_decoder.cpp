@@ -33,6 +33,7 @@ namespace editor {
 
 namespace {
 constexpr int kMaxDecoderLaneCount = 16;
+constexpr int64_t kQueuedVisibleSupersedeSlackFrames = 4;
 
 void storeAtomicMax(std::atomic<int64_t>* target, int64_t value) {
     if (!target) {
@@ -329,6 +330,40 @@ void AsyncDecoder::cancelForFile(const QString& path) {
     emit queuePressureChanged(totalPendingRequests());
 }
 
+void AsyncDecoder::cancelQueuedNonVisibleForFile(const QString& path) {
+    const std::vector<LaneState*> lanes = lanesForPath(path);
+    if (lanes.empty()) {
+        return;
+    }
+
+    QVector<DroppedCallback> callbacks;
+
+    for (LaneState* lane : lanes) {
+        if (!lane) {
+            continue;
+        }
+
+        std::unique_lock<std::mutex> lock(lane->mutex);
+        for (auto it = lane->queue.begin(); it != lane->queue.end();) {
+            if (it->filePath == path && it->kind != DecodeRequestKind::Visible) {
+                if (it->callback) {
+                    callbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
+                }
+                it = lane->queue.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    for (auto& callback : callbacks) {
+        recordNullCallback(callback.kind, "cancel_file");
+        invokeRequestCallback(std::move(callback.callback), FrameHandle());
+    }
+
+    emit queuePressureChanged(totalPendingRequests());
+}
+
 void AsyncDecoder::cancelForFileBefore(const QString& path, int64_t frameNumber) {
     const std::vector<LaneState*> lanes = lanesForPath(path);
     if (lanes.empty()) {
@@ -464,7 +499,7 @@ int AsyncDecoder::resolveWorkerCount(int requestedCount) const {
     if (requestedCount > 0) {
         return qBound(1, requestedCount, kMaxDecoderLaneCount);
     }
-    return qBound(2, QThread::idealThreadCount(), 6);
+    return qBound(2, QThread::idealThreadCount(), kMaxDecoderLaneCount);
 }
 
 int AsyncDecoder::totalPendingRequests() const {
@@ -771,6 +806,17 @@ void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
     for (int i = static_cast<int>(queue.size()) - 1; i >= 0; --i) {
         const DecodeRequest& queued = queue[static_cast<size_t>(i)];
         if (queued.filePath != req.filePath) {
+            continue;
+        }
+        if (req.kind == DecodeRequestKind::Visible &&
+            queued.kind == DecodeRequestKind::Visible &&
+            qAbs(queued.frameNumber - req.frameNumber) > kQueuedVisibleSupersedeSlackFrames) {
+            if (queue[static_cast<size_t>(i)].callback) {
+                droppedCallbacks->push_back(
+                    DroppedCallback{queue[static_cast<size_t>(i)].kind,
+                                    std::move(queue[static_cast<size_t>(i)].callback)});
+            }
+            queue.erase(queue.begin() + i);
             continue;
         }
         if (queued.frameNumber >= req.frameNumber) {

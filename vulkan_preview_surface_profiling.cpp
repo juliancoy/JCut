@@ -198,6 +198,42 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
     }
     snapshot.insert(QStringLiteral("face_detections_query_debug"), m_lastFacedetectionsQueryDebug);
     snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
+    QJsonObject playbackStageMetrics =
+        snapshot.value(QStringLiteral("playback_pipeline_stages")).toObject();
+    playbackStageMetrics.insert(
+        QStringLiteral("timeline_input"),
+        editor::playbackStageMetricToJson(m_timelineInputStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("source_mapping"),
+        editor::playbackStageMetricToJson(m_sourceMappingStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("visible_request"),
+        editor::playbackStageMetricToJson(m_visibleRequestStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("cache_lookup"),
+        editor::playbackStageMetricToJson(m_cacheLookupStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("decoder_output"),
+        editor::playbackStageMetricToJson(m_decoderOutputStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("frame_selection"),
+        editor::playbackStageMetricToJson(m_frameSelectionStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("corrections_mask"),
+        editor::playbackStageMetricToJson(m_correctionsMaskStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("effects_eval"),
+        editor::playbackStageMetricToJson(m_effectsEvalStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("grading_shader"),
+        editor::playbackStageMetricToJson(m_gradingShaderStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("transform"),
+        editor::playbackStageMetricToJson(m_transformStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("overlay_prep"),
+        editor::playbackStageMetricToJson(m_overlayPrepStageMetric, QStringLiteral("preview")));
+    snapshot.insert(QStringLiteral("playback_pipeline_stages"), playbackStageMetrics);
     if (m_decoder && m_decoder->memoryBudget()) {
         const editor::MemoryBudget* budget = m_decoder->memoryBudget();
         snapshot.insert(QStringLiteral("memory_budget"), QJsonObject{
@@ -322,6 +358,42 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
         snapshot.insert(QStringLiteral("active_frame_stale_rejected"), status.staleFrameRejected);
     }
     snapshot.insert(QStringLiteral("playback_smoothness"), playbackSmoothnessSnapshot(snapshot));
+    QJsonObject playbackStageMetrics =
+        snapshot.value(QStringLiteral("playback_pipeline_stages")).toObject();
+    playbackStageMetrics.insert(
+        QStringLiteral("timeline_input"),
+        editor::playbackStageMetricToJson(m_timelineInputStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("source_mapping"),
+        editor::playbackStageMetricToJson(m_sourceMappingStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("visible_request"),
+        editor::playbackStageMetricToJson(m_visibleRequestStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("cache_lookup"),
+        editor::playbackStageMetricToJson(m_cacheLookupStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("decoder_output"),
+        editor::playbackStageMetricToJson(m_decoderOutputStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("frame_selection"),
+        editor::playbackStageMetricToJson(m_frameSelectionStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("corrections_mask"),
+        editor::playbackStageMetricToJson(m_correctionsMaskStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("effects_eval"),
+        editor::playbackStageMetricToJson(m_effectsEvalStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("grading_shader"),
+        editor::playbackStageMetricToJson(m_gradingShaderStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("transform"),
+        editor::playbackStageMetricToJson(m_transformStageMetric, QStringLiteral("preview")));
+    playbackStageMetrics.insert(
+        QStringLiteral("overlay_prep"),
+        editor::playbackStageMetricToJson(m_overlayPrepStageMetric, QStringLiteral("preview")));
+    snapshot.insert(QStringLiteral("playback_pipeline_stages"), playbackStageMetrics);
     if (m_decoder && m_decoder->memoryBudget()) {
         const editor::MemoryBudget* budget = m_decoder->memoryBudget();
         snapshot.insert(QStringLiteral("memory_budget"), QJsonObject{

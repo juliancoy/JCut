@@ -426,9 +426,13 @@ void VulkanPreviewSurface::invalidateTranscriptOverlayCache(const QString& clipF
 {
     if (clipFilePath.trimmed().isEmpty()) {
         m_facedetectionsOverlayCache.clear();
+        m_facedetectionsArtifactRootCache.clear();
+        m_facedetectionsProcessedArtifactRootCache.clear();
     } else {
         m_facedetectionsOverlayCache.remove(QFileInfo(clipFilePath).absoluteFilePath());
         m_facedetectionsOverlayCache.remove(clipFilePath);
+        m_facedetectionsArtifactRootCache.clear();
+        m_facedetectionsProcessedArtifactRootCache.clear();
     }
     refreshFacestreamOverlays();
     requestNativeUpdate();
@@ -953,6 +957,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         return;
     }
 
+    int activeDecodableClipCount = 0;
     bool hasActiveDecodableClip = false;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
@@ -964,9 +969,29 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                                      m_interaction.currentFramePosition,
                                      m_bypassGrading)) {
             hasActiveDecodableClip = true;
-            break;
+            ++activeDecodableClipCount;
         }
     }
+    editor::accumulatePlaybackStageMetric(&m_timelineInputStageMetric,
+                                  1,
+                                  hasActiveDecodableClip ? 1 : 0,
+                                  hasActiveDecodableClip ? 0 : 1,
+                                  hasActiveDecodableClip
+                                      ? QStringLiteral("active_clip")
+                                      : QStringLiteral("source_unavailable"),
+                                  hasActiveDecodableClip
+                                      ? QStringLiteral("timeline_input_ready")
+                                      : QStringLiteral("no_active_decodable_clip"));
+    editor::accumulatePlaybackStageMetric(&m_sourceMappingStageMetric,
+                                  1,
+                                  hasActiveDecodableClip ? 1 : 0,
+                                  hasActiveDecodableClip ? 0 : 1,
+                                  hasActiveDecodableClip
+                                      ? QStringLiteral("mapped")
+                                      : QStringLiteral("source_unavailable"),
+                                  hasActiveDecodableClip
+                                      ? QStringLiteral("active_clip_count=%1").arg(activeDecodableClipCount)
+                                      : QStringLiteral("no_active_decodable_clip"));
     if (!hasActiveDecodableClip) {
         refreshVulkanFrameStatuses();
         return;
@@ -974,11 +999,21 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
 
     ensureFramePipeline();
     if (!m_cache) {
+        editor::accumulatePlaybackStageMetric(&m_visibleRequestStageMetric,
+                                      1,
+                                      0,
+                                      1,
+                                      QStringLiteral("source_unavailable"),
+                                      QStringLiteral("cache_unavailable"));
         refreshVulkanFrameStatuses();
         return;
     }
 
     registerVisibleClips();
+    qint64 visibleAttemptCount = 0;
+    qint64 visibleDispatchedCount = 0;
+    qint64 visibleRequestReadyCount = 0;
+    qint64 visibleRequestUnavailableCount = 0;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
             continue;
@@ -1008,6 +1043,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
         const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 2000);
         const int backlog = m_cache->pendingVisibleRequestCount();
+        ++visibleAttemptCount;
         m_lastVisibleRequestClipId = clip.id;
         m_lastVisibleRequestFrame = localFrame;
         m_lastVisibleRequestCached = exactCached;
@@ -1017,24 +1053,31 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         m_lastVisibleRequestForceRetry = forceRetry;
         m_lastVisibleRequestBacklog = backlog;
         ++m_visibleRequestAttempts;
-        if (exactCached) {
-            m_lastVisibleRequestDecision = QStringLiteral("skipped");
-            m_lastVisibleRequestBlockReason = QStringLiteral("exact_frame_already_cached");
+        // Keep the visible-request contract explicit in this hot path:
+        // - exact_frame_already_cached only blocks when the exact frame is already resident
+        // - a merely displayableCached approximate frame does not suppress an exact request
+        // - saturated lookahead still dispatches the current visible request as
+        //   "dispatch_current_over_backlog"
+        const editor::PreviewVisibleRequestDecision requestDecision =
+            editor::evaluatePreviewVisibleRequest(editor::PreviewVisibleRequestInputs{
+                exactCached,
+                displayableCached,
+                pending,
+                forceRetry,
+                backlog,
+                m_playbackTuning.visibleBacklogLimit,
+            });
+        m_lastVisibleRequestDecision = requestDecision.decision;
+        m_lastVisibleRequestBlockReason = requestDecision.blockReason;
+        if (!requestDecision.dispatch) {
             ++m_visibleRequestBlocked;
+            visibleRequestUnavailableCount += (!displayableCached && !exactCached) ? 1 : 0;
             continue;
         }
-        if (pending && !forceRetry) {
-            m_lastVisibleRequestDecision = QStringLiteral("skipped");
-            m_lastVisibleRequestBlockReason = QStringLiteral("visible_request_already_pending");
-            ++m_visibleRequestBlocked;
-            continue;
-        }
-        m_lastVisibleRequestDecision =
-            backlog >= m_playbackTuning.visibleBacklogLimit
-                ? QStringLiteral("dispatch_current_over_backlog")
-                : QStringLiteral("dispatch");
-        m_lastVisibleRequestBlockReason.clear();
         ++m_visibleRequestDispatched;
+        ++visibleDispatchedCount;
+        visibleRequestReadyCount += displayableCached || exactCached ? 1 : 0;
+        visibleRequestUnavailableCount += (!displayableCached && !exactCached) ? 1 : 0;
         const QString requestedClipId = clip.id;
         const int64_t requestedFrame = localFrame;
         m_cache->requestFrame(clip.id, localFrame, [this, requestedClipId, requestedFrame](FrameHandle frame) {
@@ -1067,6 +1110,16 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
                     Qt::QueuedConnection);
             },
             requireDirectVulkanPayload);
+    }
+    if (visibleAttemptCount > 0) {
+        editor::accumulatePlaybackStageMetric(&m_visibleRequestStageMetric,
+                                      visibleAttemptCount,
+                                      visibleDispatchedCount,
+                                      visibleRequestUnavailableCount,
+                                      QStringLiteral("request_evaluated"),
+                                      QStringLiteral("ready=%1 blocked=%2")
+                                          .arg(visibleRequestReadyCount)
+                                          .arg(visibleRequestUnavailableCount));
     }
     refreshVulkanFrameStatuses();
 }
@@ -1150,6 +1203,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
     int hardwareCount = 0;
     int cpuCount = 0;
     int64_t maxFrameLag = 0;
+    qint64 correctionsUnavailableCount = 0;
 
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
@@ -1254,6 +1308,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             }
         } else if (status.correctionPolygonCount > 0) {
             status.missingReason = QStringLiteral("vulkan_correction_masks_require_cpu_upload_frame");
+            ++correctionsUnavailableCount;
         }
         const bool selectedHasHardwareFrame = !selectedFrame.isNull() && selectedFrame.hasHardwareFrame();
         const bool selectedHasGpuTexture = !selectedFrame.isNull() && selectedFrame.hasGpuTexture();
@@ -1303,6 +1358,78 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         }
         statuses.push_back(status);
     }
+
+    editor::accumulatePlaybackStageMetric(&m_cacheLookupStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  statuses.size() - missingCount,
+                                  missingCount,
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("source_unavailable")
+                                      : QStringLiteral("cache_checked"),
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("no_active_statuses")
+                                      : QStringLiteral("missing=%1").arg(missingCount));
+    editor::accumulatePlaybackStageMetric(&m_decoderOutputStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  exactCount + approxCount,
+                                  missingCount,
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("source_unavailable")
+                                      : QStringLiteral("decode_evaluated"),
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("no_active_statuses")
+                                      : QStringLiteral("hardware=%1 cpu=%2 missing=%3")
+                                            .arg(hardwareCount)
+                                            .arg(cpuCount)
+                                            .arg(missingCount));
+    qint64 selectionUnavailableCount = 0;
+    for (const VulkanPreviewClipFrameStatus& status : std::as_const(statuses)) {
+        if (!status.selectedFrameAvailable || status.staleFrameRejected) {
+            ++selectionUnavailableCount;
+        }
+    }
+    editor::accumulatePlaybackStageMetric(&m_frameSelectionStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  statuses.size() - selectionUnavailableCount,
+                                  selectionUnavailableCount,
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("source_unavailable")
+                                      : QStringLiteral("selection_evaluated"),
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("no_active_statuses")
+                                      : QStringLiteral("exact=%1 approx=%2 stale=%3")
+                                            .arg(exactCount)
+                                            .arg(approxCount)
+                                            .arg(selectionUnavailableCount));
+    editor::accumulatePlaybackStageMetric(&m_correctionsMaskStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  statuses.size() - correctionsUnavailableCount,
+                                  correctionsUnavailableCount,
+                                  QStringLiteral("mask_evaluated"),
+                                  QStringLiteral("corrections_unavailable=%1")
+                                      .arg(correctionsUnavailableCount));
+    editor::accumulatePlaybackStageMetric(&m_effectsEvalStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  statuses.size(),
+                                  0,
+                                  QStringLiteral("effects_evaluated"),
+                                  QStringLiteral("active_statuses=%1").arg(statuses.size()));
+    editor::accumulatePlaybackStageMetric(&m_gradingShaderStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  statuses.size(),
+                                  0,
+                                  QStringLiteral("grading_evaluated"),
+                                  QStringLiteral("active_statuses=%1").arg(statuses.size()));
+    editor::accumulatePlaybackStageMetric(&m_transformStageMetric,
+                                  qMax<qint64>(1, statuses.size()),
+                                  statuses.size(),
+                                  statuses.isEmpty() ? 1 : 0,
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("source_unavailable")
+                                      : QStringLiteral("transform_evaluated"),
+                                  statuses.isEmpty()
+                                      ? QStringLiteral("no_active_statuses")
+                                      : QStringLiteral("active_statuses=%1").arg(statuses.size()));
 
     m_interaction.vulkanFrameStatuses = statuses;
     if (editor::debugTemporalDebugOverlayEnabled()) {
@@ -1530,10 +1657,62 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
     QVector<PipelineStageSnapshot> snapshots;
     const QImage previewImage;
     const QImage decoderDiagnosticImage;
+    const QJsonObject presenterSnapshot = m_presenter ? m_presenter->profilingSnapshot() : QJsonObject{};
+    auto playbackCounterForLabel = [this, &presenterSnapshot](const QString& label) -> QJsonObject {
+        if (label == QStringLiteral("01 Timeline Input")) {
+            return editor::playbackStageMetricToJson(m_timelineInputStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("02 Source Mapping")) {
+            return editor::playbackStageMetricToJson(m_sourceMappingStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("03 Cache Lookup")) {
+            return editor::playbackStageMetricToJson(m_cacheLookupStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("04 Decoder Output")) {
+            return editor::playbackStageMetricToJson(m_decoderOutputStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("05 Hardware Handoff")) {
+            return presenterSnapshot.value(QStringLiteral("playback_pipeline_stages"))
+                .toObject()
+                .value(QStringLiteral("gpu_handoff"))
+                .toObject();
+        }
+        if (label == QStringLiteral("06 Frame Selection")) {
+            return editor::playbackStageMetricToJson(m_frameSelectionStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("07 Corrections / Mask")) {
+            return editor::playbackStageMetricToJson(m_correctionsMaskStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("08 Effects Evaluation")) {
+            return editor::playbackStageMetricToJson(m_effectsEvalStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("09 Grading Shader Output")) {
+            return editor::playbackStageMetricToJson(m_gradingShaderStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("10 Transform")) {
+            return editor::playbackStageMetricToJson(m_transformStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("11 Vulkan Composite")) {
+            return presenterSnapshot.value(QStringLiteral("playback_pipeline_stages"))
+                .toObject()
+                .value(QStringLiteral("command_recording"))
+                .toObject();
+        }
+        if (label == QStringLiteral("12 FaceDetections Overlay")) {
+            return editor::playbackStageMetricToJson(m_overlayPrepStageMetric, QStringLiteral("preview"));
+        }
+        if (label == QStringLiteral("14 Presented Surface")) {
+            return presenterSnapshot.value(QStringLiteral("playback_pipeline_stages"))
+                .toObject()
+                .value(QStringLiteral("presentation"))
+                .toObject();
+        }
+        return QJsonObject{};
+    };
     auto decoderStageImage = [](const VulkanPreviewClipFrameStatus& status) {
         return QImage();
     };
-    auto addStage = [&snapshots](const QString& label,
+    auto addStage = [&snapshots, &playbackCounterForLabel](const QString& label,
                                  const QString& detail,
                                  const QImage& image,
                                  const QString& kind,
@@ -1541,7 +1720,16 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                                  bool active,
                                  const QString& state = QString(),
                                  const QJsonObject& facts = QJsonObject{}) {
-        snapshots.push_back(PipelineStageSnapshot{label, detail, image, kind, exact, active, state, facts});
+        QJsonObject nextFacts = facts;
+        const QJsonObject counter = playbackCounterForLabel(label);
+        QString nextDetail = detail;
+        if (!counter.isEmpty()) {
+            nextFacts.insert(QStringLiteral("playback_counter"), counter);
+            nextDetail += QStringLiteral(" | count %1 miss %2")
+                              .arg(counter.value(QStringLiteral("attempts")).toInteger(0))
+                              .arg(counter.value(QStringLiteral("source_unavailable")).toInteger(0));
+        }
+        snapshots.push_back(PipelineStageSnapshot{label, nextDetail, image, kind, exact, active, state, nextFacts});
     };
 
     addStage(QStringLiteral("00 Preview State"),
@@ -1555,7 +1743,6 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
              true,
              true);
 
-    const QJsonObject presenterSnapshot = m_presenter ? m_presenter->profilingSnapshot() : QJsonObject{};
     const int cachePendingVisible = m_cache ? m_cache->pendingVisibleRequestCount() : 0;
     const qint64 textureDraws =
         static_cast<qint64>(presenterSnapshot.value(QStringLiteral("texture_draw_count")).toDouble());

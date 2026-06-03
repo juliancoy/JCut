@@ -514,6 +514,7 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("playbackSpeed")] = playbackConfig.speed;
     root[QStringLiteral("playbackClockSource")] =
         playbackClockSourceToString(playbackConfig.clockSource);
+    root[QStringLiteral("playbackClockSourceExplicit")] = true;
     root[QStringLiteral("playbackAudioWarpMode")] =
         playbackAudioWarpModeToString(playbackConfig.audioWarpMode);
     root[QStringLiteral("playbackAudioWarpModeExplicit")] = true;

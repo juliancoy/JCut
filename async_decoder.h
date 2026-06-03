@@ -122,6 +122,7 @@ public:
     
     // Cancel pending requests
     void cancelForFile(const QString& path);
+    void cancelQueuedNonVisibleForFile(const QString& path);
     void cancelForFileBefore(const QString& path, int64_t frameNumber);
     void cancelAll();
     

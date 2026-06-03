@@ -45,14 +45,6 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
         keyframeMin >= 0 &&
         keyframeMax <= (clipTimelineEnd + 2);
 
-    if (likelySourceAbsolute && likelyClipTimeline) {
-        const int64_t clipDistance = std::llabs(keyframeMax - clipTimelineEnd);
-        const int64_t sourceDistance = std::llabs(keyframeMax - sourceEnd);
-        if (clipDistance <= sourceDistance) {
-            return FacestreamFrameDomain::ClipTimeline30Fps;
-        }
-        return FacestreamFrameDomain::SourceAbsolute;
-    }
     if (likelySourceAbsolute) {
         return FacestreamFrameDomain::SourceAbsolute;
     }
@@ -66,7 +58,8 @@ FacestreamSourceScanRange facedetectionsSourceAbsoluteScanRangeForClip(const Tim
 {
     FacestreamSourceScanRange range;
     range.startFrame = qMax<int64_t>(0, clip.sourceInFrame);
-    range.endFrameExclusive = qMax<int64_t>(0, clip.sourceDurationFrames);
+    range.endFrameExclusive =
+        range.startFrame + qMax<int64_t>(0, clip.sourceDurationFrames);
     if (range.endFrameExclusive <= range.startFrame) {
         range.error = QStringLiteral("Invalid source-frame scan range: sourceInFrame=%1 sourceDurationFrames=%2")
                           .arg(range.startFrame)
@@ -143,7 +136,7 @@ bool facedetectionsShouldBridgeGap(int64_t previousFrame,
 int64_t facedetectionsMaxEdgeHoldFrames(int64_t typicalStep)
 {
     const int64_t safeStep = qMax<int64_t>(1, typicalStep);
-    return qMax<int64_t>(1, safeStep / 2);
+    return safeStep;
 }
 
 bool resolveFacestreamTrackAtPlayhead(const TimelineClip& clip,
