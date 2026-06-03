@@ -21,6 +21,9 @@
 
 namespace editor {
 
+// Forward declaration
+class FrameDispatcher;
+
 // ============================================================================
 // CachedFrame - Frame storage with metadata
 // ============================================================================
@@ -121,7 +124,10 @@ public:
         Backward
     };
 
-    explicit TimelineCache(AsyncDecoder* decoder, MemoryBudget* budget, QObject* parent = nullptr);
+    explicit TimelineCache(AsyncDecoder* decoder,
+                           MemoryBudget* budget,
+                           FrameDispatcher* dispatcher = nullptr,
+                           QObject* parent = nullptr);
     ~TimelineCache();
     
     // Configuration
@@ -182,6 +188,9 @@ public:
     QJsonObject cacheResidencySnapshot() const;
     int pendingVisibleRequestCount() const;
     bool isVisibleRequestPending(const QString& clipId, int64_t frameNumber) const;
+    bool isNearbyVisibleRequestPending(const QString& clipId,
+                                       int64_t frameNumber,
+                                       int64_t slackFrames) const;
     bool shouldForceVisibleRequestRetry(const QString& clipId,
                                         int64_t frameNumber,
                                         qint64 staleAfterMs) const;
@@ -282,6 +291,7 @@ private:
     void evictOldestFrames(size_t targetMemory);
     
     AsyncDecoder* m_decoder = nullptr;
+    FrameDispatcher* m_dispatcher = nullptr;
     MemoryBudget* m_budget = nullptr;
     
     mutable QMutex m_clipsMutex;

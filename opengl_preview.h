@@ -25,6 +25,7 @@
 #include "facedetections_time_mapping.h"
 #include "timeline_widget.h"
 #include "async_decoder.h"
+#include "frame_dispatcher.h"
 #include "timeline_cache.h"
 #include "playback_frame_pipeline.h"
 #include "preview_interaction_state.h"
@@ -288,6 +289,7 @@ private:
     bool ensureVulkanPreviewRenderer(bool promptOnFallback);
 
     std::unique_ptr<AsyncDecoder> m_decoder;
+    std::unique_ptr<FrameDispatcher> m_dispatcher;
     std::unique_ptr<TimelineCache> m_cache;
     std::unique_ptr<PlaybackFramePipeline> m_playbackPipeline;
     std::unique_ptr<render_detail::OffscreenRenderer> m_vulkanPreviewRenderer;

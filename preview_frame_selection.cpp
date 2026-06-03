@@ -50,6 +50,12 @@ PreviewVisibleRequestDecision evaluatePreviewVisibleRequest(
         return decision;
     }
 
+    if (inputs.pendingNearby && !inputs.forceRetry) {
+        decision.decision = QStringLiteral("skipped");
+        decision.blockReason = QStringLiteral("nearby_frame_already_pending");
+        return decision;
+    }
+
     decision.dispatch = true;
     decision.decision =
         inputs.pendingBacklog >= qMax(1, inputs.backlogLimit)

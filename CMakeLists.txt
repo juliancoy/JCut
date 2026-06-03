@@ -441,6 +441,7 @@ set(EDITOR_TEST_SUPPORT_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_tracking.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_time_mapping.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facestream_overlay_snapshot.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/frame_dispatcher.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/identity_resolution.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/media_pipeline_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/memory_budget.cpp

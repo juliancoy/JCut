@@ -7,9 +7,11 @@
 #include "audio_preview_support.h"
 #include "debug_controls.h"
 #include "direct_vulkan_preview_presenter.h"
+#include "frame_dispatcher.h"
 #include "frame_handle.h"
 #include "media_pipeline_shared.h"
 #include "editor_shared.h"
+#include "playback_frame_pipeline.h"
 #include "preview_frame_selection.h"
 #include "preview_view_transform.h"
 #include "timeline_cache.h"
@@ -36,7 +38,6 @@
 using editor::FrameHandle;
 
 namespace {
-constexpr int kDefaultMaxVisibleBacklog = 1;
 constexpr size_t kVulkanPreviewCpuCacheBytes = 192ull * 1024ull * 1024ull;
 constexpr size_t kVulkanPreviewGpuCacheBytes = 512ull * 1024ull * 1024ull;
 constexpr int kDefaultVulkanPreviewSourceLookaheadFrames = 2;
@@ -97,6 +98,24 @@ bool gradingUsesCurveLut(const TimelineClip::GradingKeyframe& grade)
            gradingCurveDiffersFromIdentity(grade.curvePointsLuma, grade.curveSmoothingEnabled);
 }
 
+QVector<TimelineClip> directVulkanPlaybackClips(const QVector<TimelineClip>& clips,
+                                                const QVector<TimelineTrack>& tracks,
+                                                bool useProxyMedia)
+{
+    QVector<TimelineClip> playbackClips;
+    playbackClips.reserve(clips.size());
+    for (const TimelineClip& clip : clips) {
+        if (!clipVisualPlaybackEnabled(clip, tracks) ||
+            clip.mediaType != ClipMediaType::Video ||
+            clip.sourceKind == MediaSourceKind::ImageSequence ||
+            clip.filePath.isEmpty()) {
+            continue;
+        }
+        playbackClips.push_back(directVulkanDecodeClip(clip, useProxyMedia));
+    }
+    return playbackClips;
+}
+
 bool pointInNormalizedPolygon(const QPointF& p, const QVector<QPointF>& polygon)
 {
     bool inside = false;
@@ -145,7 +164,7 @@ QImage applyCorrectionMasksToCpuImage(const QImage& source,
 VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
 {
     m_pipelineOwner = std::make_unique<QObject>();
-    m_playbackTuning.visibleBacklogLimit = kDefaultMaxVisibleBacklog;
+    m_playbackTuning.visibleBacklogLimit = editor::debugMaxVisibleBacklog();
     m_playbackTuning.sourceLookaheadFrames = kDefaultVulkanPreviewSourceLookaheadFrames;
     m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
     m_configuredPlaybackTuning = m_playbackTuning;
@@ -290,6 +309,10 @@ void VulkanPreviewSurface::setPlaybackState(bool playing)
         m_cache->setPlaybackState(playing ? editor::TimelineCache::PlaybackState::Playing
                                           : editor::TimelineCache::PlaybackState::Stopped);
     }
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setPlaybackActive(playing);
+        m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    }
     requestFramesForCurrentPosition();
     requestNativeUpdate();
 }
@@ -309,6 +332,9 @@ void VulkanPreviewSurface::setCurrentFrame(int64_t frame)
     if (m_cache) {
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
     }
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    }
     requestFramesForCurrentPosition();
     updateNativeTitle();
     requestNativeUpdate();
@@ -323,6 +349,9 @@ void VulkanPreviewSurface::setCurrentPlaybackSample(int64_t samplePosition)
     syncAudioPreviewPanToPlayhead(&m_interaction);
     if (m_cache) {
         m_cache->setPlayheadFrame(m_interaction.currentFrame);
+    }
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
     }
     requestFramesForCurrentPosition();
     requestNativeUpdate();
@@ -345,6 +374,10 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
     m_interaction.clips = clips;
     m_interaction.clipCount = clips.size();
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setTimelineClips(
+            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+    }
     registerVisibleClips();
     updateNativeTitle();
     requestFramesForCurrentPosition();
@@ -354,6 +387,10 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 void VulkanPreviewSurface::setTimelineTracks(const QVector<TimelineTrack>& tracks)
 {
     m_interaction.tracks = tracks;
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setTimelineClips(
+            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+    }
     registerVisibleClips();
     requestFramesForCurrentPosition();
     requestNativeUpdate();
@@ -364,6 +401,9 @@ void VulkanPreviewSurface::setRenderSyncMarkers(const QVector<RenderSyncMarker>&
     m_interaction.renderSyncMarkers = markers;
     if (m_cache) {
         m_cache->setRenderSyncMarkers(markers);
+    }
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setRenderSyncMarkers(markers);
     }
     requestFramesForCurrentPosition();
     requestNativeUpdate();
@@ -390,6 +430,10 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
         }
         m_registeredClips.clear();
         m_registeredClipRegistrationKeys.clear();
+    }
+    if (m_playbackPipeline) {
+        m_playbackPipeline->setTimelineClips(
+            directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
     }
     registerVisibleClips();
     requestFramesForCurrentPosition();
@@ -883,7 +927,12 @@ void VulkanPreviewSurface::ensureFramePipeline()
         budget->setMaxGpuMemory(kVulkanPreviewGpuCacheBytes);
     }
 
-    m_cache = std::make_unique<editor::TimelineCache>(m_decoder.get(), m_decoder->memoryBudget());
+    // Create the unified FrameDispatcher that both TimelineCache and
+    // PlaybackFramePipeline will use for decode requests.
+    m_dispatcher = std::make_unique<editor::FrameDispatcher>(m_decoder.get());
+
+    m_cache = std::make_unique<editor::TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(),
+                                                      m_dispatcher.get());
     m_cache->setMaxMemory(kVulkanPreviewCpuCacheBytes);
     if (editor::MemoryBudget* budget = m_decoder->memoryBudget()) {
         budget->setMaxCpuMemory(kVulkanPreviewCpuCacheBytes);
@@ -896,6 +945,14 @@ void VulkanPreviewSurface::ensureFramePipeline()
     m_cache->setPlayheadFrame(m_interaction.currentFrame);
     m_cache->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
     m_cache->setExportRanges(m_interaction.exportRanges);
+    m_playbackPipeline = std::make_unique<editor::PlaybackFramePipeline>(m_decoder.get(),
+                                                                          m_dispatcher.get(),
+                                                                          m_pipelineOwner.get());
+    m_playbackPipeline->setPlaybackActive(m_interaction.playing);
+    m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
+    m_playbackPipeline->setTimelineClips(
+        directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));
+    m_playbackPipeline->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
     QObject::connect(m_cache.get(),
                      &editor::TimelineCache::frameLoaded,
                      m_pipelineOwner.get(),
@@ -903,6 +960,12 @@ void VulkanPreviewSurface::ensureFramePipeline()
                          if (!loadedFrameAffectsCurrentView(clipId, frame)) {
                              return;
                          }
+                         queueFrameStatusRefresh(false);
+                     });
+    QObject::connect(m_playbackPipeline.get(),
+                     &editor::PlaybackFramePipeline::frameAvailable,
+                     m_pipelineOwner.get(),
+                     [this]() {
                          queueFrameStatusRefresh(false);
                      });
     registerVisibleClips();
@@ -1010,6 +1073,72 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
     }
 
     registerVisibleClips();
+    if (m_interaction.playing && m_playbackPipeline) {
+        qint64 visibleAttemptCount = 0;
+        qint64 readyCount = 0;
+        qint64 unavailableCount = 0;
+        const int backlog = m_playbackPipeline->pendingVisibleRequestCount();
+        for (const TimelineClip& clip : m_interaction.clips) {
+            if (clip.mediaType != ClipMediaType::Video ||
+                clip.sourceKind == MediaSourceKind::ImageSequence ||
+                clip.filePath.isEmpty()) {
+                continue;
+            }
+            if (!visualClipActiveAtSample(clip,
+                                          m_interaction.tracks,
+                                          m_interaction.currentSample,
+                                          m_interaction.currentFramePosition,
+                                          m_bypassGrading)) {
+                continue;
+            }
+            const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+            const bool exactBuffered = m_playbackPipeline->isFrameBuffered(clip.id, localFrame);
+            const bool displayableBuffered =
+                !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull();
+            ++visibleAttemptCount;
+            ++m_visibleRequestAttempts;
+            m_lastVisibleRequestClipId = clip.id;
+            m_lastVisibleRequestFrame = localFrame;
+            m_lastVisibleRequestCached = exactBuffered;
+            m_lastVisibleRequestExactCached = exactBuffered;
+            m_lastVisibleRequestDisplayableCached = displayableBuffered;
+            m_lastVisibleRequestPending = backlog > 0;
+            m_lastVisibleRequestForceRetry = false;
+            m_lastVisibleRequestBacklog = backlog;
+            m_lastVisibleRequestDecision = QStringLiteral("playback_pipeline_window");
+            m_lastVisibleRequestBlockReason.clear();
+            readyCount += (exactBuffered || displayableBuffered) ? 1 : 0;
+            unavailableCount += (!exactBuffered && !displayableBuffered) ? 1 : 0;
+        }
+        if (visibleAttemptCount > 0) {
+            ++m_visibleRequestDispatched;
+            m_playbackPipeline->requestFramesForSample(
+                m_interaction.currentSample,
+                [this]() {
+                    if (!m_pipelineOwner) {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        m_pipelineOwner.get(),
+                        [this]() {
+                            queueFrameStatusRefresh(false);
+                        },
+                        Qt::QueuedConnection);
+                });
+            editor::accumulatePlaybackStageMetric(&m_visibleRequestStageMetric,
+                                                  visibleAttemptCount,
+                                                  readyCount,
+                                                  unavailableCount,
+                                                  unavailableCount == 0
+                                                      ? QStringLiteral("ready")
+                                                      : QStringLiteral("source_unavailable"),
+                                                  QStringLiteral("playback_pipeline pending=%1")
+                                                      .arg(backlog));
+        }
+        refreshVulkanFrameStatuses();
+        return;
+    }
+
     qint64 visibleAttemptCount = 0;
     qint64 visibleDispatchedCount = 0;
     qint64 visibleRequestReadyCount = 0;
@@ -1041,6 +1170,8 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
             true,
             requireDirectVulkanPayload);
         const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
+        const bool pendingNearby = m_cache->isNearbyVisibleRequestPending(
+            clip.id, localFrame, editor::debugSupersedeSlackFrames());
         const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 2000);
         const int backlog = m_cache->pendingVisibleRequestCount();
         ++visibleAttemptCount;
@@ -1058,11 +1189,14 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         // - a merely displayableCached approximate frame does not suppress an exact request
         // - saturated lookahead still dispatches the current visible request as
         //   "dispatch_current_over_backlog"
+        // - pendingNearby suppresses dispatch when a nearby frame is already pending,
+        //   reducing redundant decode work that gets superseded before completion
         const editor::PreviewVisibleRequestDecision requestDecision =
             editor::evaluatePreviewVisibleRequest(editor::PreviewVisibleRequestInputs{
                 exactCached,
                 displayableCached,
                 pending,
+                pendingNearby,
                 forceRetry,
                 backlog,
                 m_playbackTuning.visibleBacklogLimit,
@@ -1220,20 +1354,21 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
         const int64_t maxStaleFrameDelta =
             editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
+        const bool usePlaybackPipeline = m_interaction.playing && m_playbackPipeline;
         const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
             editor::PreviewFrameSelectionRequest{
                 clip.id,
                 localFrame,
                 m_interaction.playing,
-                false,
+                usePlaybackPipeline,
                 false,
                 m_interaction.playing,
                 false,
                 false,
-                -1,
+                usePlaybackPipeline ? maxStaleFrameDelta : -1,
             },
             m_cache.get(),
-            nullptr,
+            m_playbackPipeline.get(),
             FrameHandle(),
             [](const FrameHandle& frame) {
                 return !frame.isNull() &&
@@ -1467,7 +1602,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         if (m_cache) {
             const QJsonObject retention =
                 m_cache->visibleDecodeRetentionPolicySnapshot(QDateTime::currentMSecsSinceEpoch());
-            debugLines << QStringLiteral("pending=%1 keep=%2 reason=%3")
+            debugLines << QStringLiteral("cache pending=%1 keep=%2 reason=%3")
                               .arg(m_cache->pendingVisibleRequestCount())
                               .arg(retention.value(QStringLiteral("effective_keep_frames")).toInt())
                               .arg(retention.value(QStringLiteral("reason")).toString());
@@ -1475,6 +1610,11 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                               .arg(m_lastVisibleRequestExactCached ? QStringLiteral("yes") : QStringLiteral("no"))
                               .arg(m_lastVisibleRequestDisplayableCached ? QStringLiteral("yes") : QStringLiteral("no"))
                               .arg(m_lastVisibleRequestDecision);
+        }
+        if (m_playbackPipeline) {
+            debugLines << QStringLiteral("playback pending=%1 buffered=%2")
+                              .arg(m_playbackPipeline->pendingVisibleRequestCount())
+                              .arg(m_playbackPipeline->bufferedFrameCount());
         }
         m_interaction.temporalDebugOverlayText = debugLines.join(QStringLiteral(" | "));
     } else {
@@ -1515,9 +1655,11 @@ bool VulkanPreviewSurface::preparePlaybackAdvance(int64_t targetFrame)
 bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
 {
     ensureFramePipeline();
-    if (!m_cache) {
+    if (!m_cache || !m_playbackPipeline) {
         return false;
     }
+    m_playbackPipeline->setPlaybackActive(true);
+    m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
 
     bool ready = true;
     for (const TimelineClip& clip : m_interaction.clips) {
@@ -1528,65 +1670,54 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
             !isSampleWithinClip(clip, targetSample)) {
             continue;
         }
-        constexpr bool requireDirectVulkanPayload = true;
         const int64_t localFrame = sourceFrameForSample(clip, targetSample);
-        const bool targetDisplayable = m_cache->hasDisplayableFrameForPreview(
-            clip.id,
-            localFrame,
-            m_interaction.playing,
-            true,
-            requireDirectVulkanPayload);
-        const bool targetExact = m_cache->hasExactFrameForPreview(
-            clip.id,
-            localFrame,
-            m_interaction.playing,
-            true,
-            requireDirectVulkanPayload);
+        const bool targetDisplayable =
+            !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull();
+        const bool targetExact = m_playbackPipeline->isFrameBuffered(clip.id, localFrame);
         if (!targetExact) {
-            const bool pending = m_cache->isVisibleRequestPending(clip.id, localFrame);
-            const bool forceRetry = m_cache->shouldForceVisibleRequestRetry(clip.id, localFrame, 2000);
-            if (!pending || forceRetry) {
-                m_cache->requestFrame(clip.id, localFrame, [this](FrameHandle) {
-                    queueFrameStatusRefresh(false);
-                }, requireDirectVulkanPayload);
-            }
+            m_playbackPipeline->requestFramesForSample(
+                targetSample,
+                [this]() {
+                    if (!m_pipelineOwner) {
+                        return;
+                    }
+                    QMetaObject::invokeMethod(
+                        m_pipelineOwner.get(),
+                        [this]() {
+                            queueFrameStatusRefresh(false);
+                        },
+                        Qt::QueuedConnection);
+                });
         }
         if (!targetDisplayable) {
             ready = false;
             continue;
         }
 
-        const int lookaheadFrames = qMax(0, effectivePlaybackLookaheadFrames());
-        for (int offset = 1; offset <= lookaheadFrames; ++offset) {
-            if (m_cache->pendingVisibleRequestCount() >= m_playbackTuning.visibleBacklogLimit) {
-                break;
-            }
-            const int64_t sample = targetSample + frameToSamples(offset);
-            if (!isSampleWithinClip(clip, sample)) {
-                continue;
-            }
-            const int64_t lookaheadFrame = sourceFrameForSample(clip, sample);
-            if (m_cache->hasExactFrameForPreview(
-                    clip.id,
-                    lookaheadFrame,
-                    m_interaction.playing,
-                    true,
-                    requireDirectVulkanPayload) ||
-                m_cache->isVisibleRequestPending(clip.id, lookaheadFrame)) {
-                continue;
-            }
-            m_cache->requestFrame(clip.id, lookaheadFrame, [this](FrameHandle) {
-                queueFrameStatusRefresh(false);
-            }, requireDirectVulkanPayload);
-        }
+        m_playbackPipeline->requestFramesForSample(
+            targetSample,
+            [this]() {
+                if (!m_pipelineOwner) {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    m_pipelineOwner.get(),
+                    [this]() {
+                        queueFrameStatusRefresh(false);
+                    },
+                    Qt::QueuedConnection);
+            });
     }
     return ready;
 }
 
 bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
 {
-    if (futureFrames < 0 || !m_cache) {
+    if (futureFrames < 0) {
         return true;
+    }
+    if (!m_playbackPipeline) {
+        return false;
     }
 
     for (int offset = 0; offset <= futureFrames; ++offset) {
@@ -1606,13 +1737,7 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
                 continue;
             }
             const int64_t localFrame = sourceFrameForSample(clip, samplePosition);
-            constexpr bool requireDirectVulkanPayload = true;
-            if (!m_cache->hasDisplayableFrameForPreview(
-                    clip.id,
-                    localFrame,
-                    true,
-                    true,
-                    requireDirectVulkanPayload)) {
+            if (m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
                 return false;
             }
         }
@@ -1627,9 +1752,11 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
         return true;
     }
     ensureFramePipeline();
-    if (!m_cache) {
+    if (!m_playbackPipeline) {
         return false;
     }
+    m_playbackPipeline->setPlaybackActive(true);
+    m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
     const int cappedFutureFrames = std::min(futureFrames, effectivePlaybackLookaheadFrames());
     QElapsedTimer timer;
     timer.start();
@@ -1744,6 +1871,8 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
              true);
 
     const int cachePendingVisible = m_cache ? m_cache->pendingVisibleRequestCount() : 0;
+    const int playbackPendingVisible =
+        m_playbackPipeline ? m_playbackPipeline->pendingVisibleRequestCount() : 0;
     const qint64 textureDraws =
         static_cast<qint64>(presenterSnapshot.value(QStringLiteral("texture_draw_count")).toDouble());
     const qint64 fallbackDraws =
@@ -1807,10 +1936,11 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      {QStringLiteral("current_sample"), static_cast<qint64>(m_interaction.currentSample)},
                      {QStringLiteral("sync_marker_count"), m_interaction.renderSyncMarkers.size()}
                  });
-        addStage(QStringLiteral("03 Cache Lookup"),
-                 QStringLiteral("exact frame %1 | selected frame %2 | pending visible %3")
+        addStage(QStringLiteral("03 Frame Source Lookup"),
+                 QStringLiteral("exact frame %1 | selected frame %2 | playback pending %3 | cache pending %4")
                      .arg(status.exactFrameAvailable ? QStringLiteral("yes") : QStringLiteral("no"))
                      .arg(status.selectedFrameAvailable ? QStringLiteral("yes") : QStringLiteral("no"))
+                     .arg(playbackPendingVisible)
                      .arg(cachePendingVisible),
                  QImage(),
                  QStringLiteral("selection"),
@@ -1824,10 +1954,11 @@ QVector<PreviewSurface::PipelineStageSnapshot> VulkanPreviewSurface::livePipelin
                      {QStringLiteral("selected_frame_available"), status.selectedFrameAvailable},
                      {QStringLiteral("up_to_date"), status.upToDate},
                      {QStringLiteral("current_frame_failure"), status.currentFrameFailure},
-                     {QStringLiteral("frame_selection"), status.frameSelection},
-                     {QStringLiteral("pending_visible_requests"), cachePendingVisible},
-                     {QStringLiteral("frame_lag"), frameLag}
-                 });
+	                     {QStringLiteral("frame_selection"), status.frameSelection},
+	                     {QStringLiteral("playback_pending_visible_requests"), playbackPendingVisible},
+	                     {QStringLiteral("pending_visible_requests"), cachePendingVisible},
+	                     {QStringLiteral("frame_lag"), frameLag}
+	                 });
         addStage(QStringLiteral("04 Decoder Output"),
                  QStringLiteral("presented frame %1 | %2 | size %3x%4 | exact frame %5")
                      .arg(status.presentedSourceFrame)

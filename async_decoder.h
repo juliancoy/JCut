@@ -176,7 +176,9 @@ private:
     void stopLane(LaneState* lane);
     void runLane(LaneState* lane);
     void insertByPriority(std::deque<DecodeRequest>& queue, const DecodeRequest& req);
-    void collectSupersededRequests(const DecodeRequest& req,
+    // Returns true if the request was coalesced into an existing nearby request
+    // (in which case the caller should skip inserting the new request).
+    bool collectSupersededRequests(const DecodeRequest& req,
                                    std::deque<DecodeRequest>& queue,
                                    QVector<DroppedCallback>* droppedCallbacks);
     void recordNullCallback(DecodeRequestKind kind, const char* reason);

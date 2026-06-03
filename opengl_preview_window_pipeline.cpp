@@ -165,8 +165,14 @@ void PreviewWindow::ensurePipeline() {
         budget->setMaxCpuMemory(1536 * 1024 * 1024); // 1.5GB
     }
 
-    m_cache = std::make_unique<TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(), this);
-    m_playbackPipeline = std::make_unique<PlaybackFramePipeline>(m_decoder.get(), this);
+    // Create the unified FrameDispatcher that both TimelineCache and
+    // PlaybackFramePipeline will use for decode requests.
+    m_dispatcher = std::make_unique<FrameDispatcher>(m_decoder.get());
+
+    m_cache = std::make_unique<TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(),
+                                              m_dispatcher.get(), this);
+    m_playbackPipeline = std::make_unique<PlaybackFramePipeline>(m_decoder.get(),
+                                                                  m_dispatcher.get(), this);
     connect(m_cache.get(), &TimelineCache::frameLoaded, this,
             [this](const QString&, int64_t, FrameHandle frame) {
                 if (frame.isNull()) {

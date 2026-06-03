@@ -1296,6 +1296,132 @@ bool ControlServerWorker::handleThrottleRoutes(QTcpSocket* socket, const Request
 }
 
 bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback/diagnostics")) {
+        const QUrlQuery query(request.url);
+        const bool verbose =
+            queryBool(query, QStringLiteral("verbose")) ||
+            queryBool(query, QStringLiteral("debug")) ||
+            queryBool(query, QStringLiteral("full"));
+        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+        QJsonObject preview;
+        QString liveError;
+        if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, verbose, &preview, &liveError)) {
+            const QString error = liveError.isEmpty()
+                ? QStringLiteral("pipeline snapshot unavailable")
+                : liveError;
+            writeError(socket, 503, error);
+            return true;
+        }
+
+        QJsonObject diagnostics;
+        diagnostics.insert(QStringLiteral("decoder_diagnostics"),
+                           preview.value(QStringLiteral("decoder_diagnostics")).toObject());
+        diagnostics.insert(QStringLiteral("pending_visible_requests"),
+                           preview.value(QStringLiteral("pending_visible_requests")).toArray());
+        diagnostics.insert(QStringLiteral("visible_decode_diagnostics"),
+                           preview.value(QStringLiteral("visible_decode_diagnostics")).toObject());
+        diagnostics.insert(QStringLiteral("visible_decode_retention_policy"),
+                           preview.value(QStringLiteral("visible_decode_retention_policy")).toObject());
+        diagnostics.insert(QStringLiteral("cache_pending_visible_requests"),
+                           preview.value(QStringLiteral("cache_pending_visible_requests")).toDouble());
+        diagnostics.insert(QStringLiteral("playback_pending_visible_requests"),
+                           preview.value(QStringLiteral("playback_pending_visible_requests")).toDouble());
+        diagnostics.insert(QStringLiteral("playback_buffered_frames"),
+                           preview.value(QStringLiteral("playback_buffered_frames")).toDouble());
+        diagnostics.insert(QStringLiteral("playback_dropped_presentation_frames"),
+                           preview.value(QStringLiteral("playback_dropped_presentation_frames")).toDouble());
+        diagnostics.insert(QStringLiteral("playback_decode"),
+                           preview.value(QStringLiteral("playback_decode")).toObject());
+        diagnostics.insert(QStringLiteral("playback_smoothness"),
+                           preview.value(QStringLiteral("playback_smoothness")).toObject());
+        diagnostics.insert(QStringLiteral("visible_request_attempts"),
+                           preview.value(QStringLiteral("visible_request_attempts")).toDouble());
+        diagnostics.insert(QStringLiteral("visible_request_dispatched"),
+                           preview.value(QStringLiteral("visible_request_dispatched")).toDouble());
+        diagnostics.insert(QStringLiteral("visible_request_blocked"),
+                           preview.value(QStringLiteral("visible_request_blocked")).toDouble());
+        diagnostics.insert(QStringLiteral("visible_request_callbacks"),
+                           preview.value(QStringLiteral("visible_request_callbacks")).toDouble());
+        diagnostics.insert(QStringLiteral("visible_request_null_callbacks"),
+                           preview.value(QStringLiteral("visible_request_null_callbacks")).toDouble());
+        diagnostics.insert(QStringLiteral("last_visible_request_decision"),
+                           preview.value(QStringLiteral("last_visible_request_decision")).toString());
+        diagnostics.insert(QStringLiteral("last_visible_request_block_reason"),
+                           preview.value(QStringLiteral("last_visible_request_block_reason")).toString());
+        diagnostics.insert(QStringLiteral("last_visible_request_backlog"),
+                           preview.value(QStringLiteral("last_visible_request_backlog")).toDouble());
+        diagnostics.insert(QStringLiteral("active_frame_selection"),
+                           preview.value(QStringLiteral("active_frame_selection")).toString());
+        diagnostics.insert(QStringLiteral("active_requested_source_frame"),
+                           preview.value(QStringLiteral("active_requested_source_frame")).toDouble());
+        diagnostics.insert(QStringLiteral("active_presented_source_frame"),
+                           preview.value(QStringLiteral("active_presented_source_frame")).toDouble());
+        diagnostics.insert(QStringLiteral("active_frame_exact"),
+                           preview.value(QStringLiteral("active_frame_exact")).toBool());
+        diagnostics.insert(QStringLiteral("active_frame_up_to_date"),
+                           preview.value(QStringLiteral("active_frame_up_to_date")).toBool());
+        diagnostics.insert(QStringLiteral("active_frame_not_up_to_date_failure"),
+                           preview.value(QStringLiteral("active_frame_not_up_to_date_failure")).toString());
+        diagnostics.insert(QStringLiteral("active_frame_stale_rejected"),
+                           preview.value(QStringLiteral("active_frame_stale_rejected")).toBool());
+        diagnostics.insert(QStringLiteral("playing"),
+                           preview.value(QStringLiteral("playing")).toBool());
+        diagnostics.insert(QStringLiteral("current_frame"),
+                           preview.value(QStringLiteral("current_frame")).toDouble());
+        diagnostics.insert(QStringLiteral("frame_status_refresh_count"),
+                           preview.value(QStringLiteral("frame_status_refresh_count")).toDouble());
+        diagnostics.insert(QStringLiteral("frame_status_last_refresh_ms"),
+                           preview.value(QStringLiteral("frame_status_last_refresh_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("frame_status_max_refresh_ms"),
+                           preview.value(QStringLiteral("frame_status_max_refresh_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("playback_frame_trace"),
+                           preview.value(QStringLiteral("playback_frame_trace")).toArray());
+
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("live"), true},
+            {QStringLiteral("verbose"), verbose},
+            {QStringLiteral("diagnostics"), diagnostics}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback/diagnostics/debug-controls")) {
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("debug_controls"), editor::debugControlsSnapshot()}
+        });
+        return true;
+    }
+
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback/diagnostics/frame-trace")) {
+        const QUrlQuery query(request.url);
+        const int limit = query.queryItemValue(QStringLiteral("limit")).toInt();
+        QJsonObject preview;
+        QString liveError;
+        if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, false, &preview, &liveError)) {
+            const QString error = liveError.isEmpty()
+                ? QStringLiteral("pipeline snapshot unavailable")
+                : liveError;
+            writeError(socket, 503, error);
+            return true;
+        }
+        const QJsonArray frameTrace = preview.value(QStringLiteral("playback_frame_trace")).toArray();
+        const int effectiveLimit = limit > 0 ? qMin(limit, frameTrace.size()) : frameTrace.size();
+        QJsonArray result;
+        const int start = frameTrace.size() - effectiveLimit;
+        for (int i = start; i < frameTrace.size(); ++i) {
+            result.append(frameTrace.at(i));
+        }
+        writeJson(socket, 200, QJsonObject{
+            {QStringLiteral("ok"), true},
+            {QStringLiteral("trace"), result},
+            {QStringLiteral("total_count"), frameTrace.size()},
+            {QStringLiteral("returned_count"), result.size()}
+        });
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback")) {
         QJsonObject playbackConfig;
         if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &playbackConfig, [this]() {

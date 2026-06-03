@@ -3,6 +3,7 @@
 #include "async_decoder.h"
 #include "debug_controls.h"
 #include "direct_vulkan_preview_presenter.h"
+#include "playback_frame_pipeline.h"
 #include "preview_speaker_profiles.h"
 #include "timeline_cache.h"
 
@@ -166,6 +167,17 @@ QJsonObject VulkanPreviewSurface::profilingSnapshot() const
         }
         snapshot.insert(QStringLiteral("cache"), cacheSnapshot);
     }
+    if (m_playbackPipeline) {
+        snapshot.insert(QStringLiteral("playback_pending_visible_requests"),
+                        m_playbackPipeline->pendingVisibleRequestCount());
+        snapshot.insert(QStringLiteral("playback_buffered_frames"),
+                        m_playbackPipeline->bufferedFrameCount());
+        snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
+                        m_playbackPipeline->droppedPresentationFrameCount());
+        snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
+        snapshot.insert(QStringLiteral("playback_frame_trace"),
+                        m_playbackPipeline->frameTraceSnapshot(200));
+    }
     snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
     snapshot.insert(QStringLiteral("visible_request_dispatched"), static_cast<double>(m_visibleRequestDispatched));
     snapshot.insert(QStringLiteral("visible_request_blocked"), static_cast<double>(m_visibleRequestBlocked));
@@ -328,6 +340,15 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
             {QStringLiteral("pending_visible_requests"), m_cache->pendingVisibleRequestCount()},
             {QStringLiteral("visible_decode_retention_policy"), visibleDecodeRetentionPolicy}
         });
+    }
+    if (m_playbackPipeline) {
+        snapshot.insert(QStringLiteral("playback_pending_visible_requests"),
+                        m_playbackPipeline->pendingVisibleRequestCount());
+        snapshot.insert(QStringLiteral("playback_buffered_frames"),
+                        m_playbackPipeline->bufferedFrameCount());
+        snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
+                        m_playbackPipeline->droppedPresentationFrameCount());
+        snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
     }
     snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
     snapshot.insert(QStringLiteral("visible_request_dispatched"), static_cast<double>(m_visibleRequestDispatched));

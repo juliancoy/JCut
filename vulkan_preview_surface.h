@@ -21,6 +21,8 @@ class DirectVulkanPreviewPresenter;
 
 namespace editor {
 class AsyncDecoder;
+class FrameDispatcher;
+class PlaybackFramePipeline;
 class TimelineCache;
 }
 
@@ -198,7 +200,9 @@ private:
     std::unique_ptr<DirectVulkanPreviewPresenter> m_presenter;
     std::unique_ptr<QObject> m_pipelineOwner;
     std::unique_ptr<editor::AsyncDecoder> m_decoder;
+    std::unique_ptr<editor::FrameDispatcher> m_dispatcher;
     std::unique_ptr<editor::TimelineCache> m_cache;
+    std::unique_ptr<editor::PlaybackFramePipeline> m_playbackPipeline;
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
     QHash<QString, FacestreamOverlayCacheEntry> m_facedetectionsOverlayCache;

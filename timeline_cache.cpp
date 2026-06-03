@@ -1,6 +1,7 @@
 #include "timeline_cache.h"
 #include "debug_controls.h"
 #include "editor_shared_render_sync.h"
+#include "frame_dispatcher.h"
 #include "media_pipeline_shared.h"
 #include "preview_frame_selection.h"
 
@@ -175,8 +176,11 @@ bool isSingleFramePath(const QString& path) {
 // TimelineCache Implementation
 // ============================================================================
 
-TimelineCache::TimelineCache(AsyncDecoder* decoder, MemoryBudget* budget, QObject* parent)
-    : QObject(parent), m_decoder(decoder), m_budget(budget) {
+TimelineCache::TimelineCache(AsyncDecoder* decoder,
+                             MemoryBudget* budget,
+                             FrameDispatcher* dispatcher,
+                             QObject* parent)
+    : QObject(parent), m_decoder(decoder), m_dispatcher(dispatcher), m_budget(budget) {
     m_prefetchTimer.setInterval(16);
     connect(&m_prefetchTimer, &QTimer::timeout, this, &TimelineCache::onPrefetchTimer);
     if (m_decoder) {
@@ -921,8 +925,8 @@ void TimelineCache::cancelDecoderBeforeThrottled(const QString& decodePath,
             m_lastCancelKeepFromByPath.value(decodePath, std::numeric_limits<int64_t>::min());
         const qint64 previousCancelAt = m_lastCancelAtMsByPath.value(decodePath, 0);
         const bool advancedEnough =
-            keepFromFrame >= previousKeepFrom + kCancelBeforeMinFrameAdvance;
-        const bool overdue = previousCancelAt <= 0 || (nowMs - previousCancelAt) >= kCancelBeforeMinIntervalMs;
+            keepFromFrame >= previousKeepFrom + debugCancelBeforeMinFrameAdvance();
+        const bool overdue = previousCancelAt <= 0 || (nowMs - previousCancelAt) >= debugCancelBeforeMinIntervalMs();
         shouldCancel = advancedEnough || overdue;
         if (shouldCancel) {
             m_lastCancelKeepFromByPath.insert(decodePath, keepFromFrame);

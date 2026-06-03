@@ -2318,30 +2318,27 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
         QStringLiteral("preview_click"),
         true);
     logTiming(QStringLiteral("assigned_track"));
-    bool framingApplied = false;
     if (assigned) {
-        framingApplied = applyPreviewFaceBoxSpeakerFramingTarget(clipId, xNorm, yNorm, boxSizeNorm);
-        logTiming(framingApplied
-                      ? QStringLiteral("applied_framing_target")
-                      : QStringLiteral("framing_target_unchanged"));
-    }
-    if (assigned && m_speakerDeps.refreshPreview) {
         QPointer<SpeakersTab> self(this);
-        QTimer::singleShot(0, this, [self]() {
-            if (!self || !self->m_speakerDeps.refreshPreview) {
+        const QString statusMessage =
+            QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4).")
+                .arg(trackId)
+                .arg(speakerDisplayLabel(speakerId))
+                .arg(mediaSourceFrame)
+                .arg(speakerResolutionDetail);
+        QTimer::singleShot(0, this, [self, clickTimer, statusMessage]() mutable {
+            if (!self) {
                 return;
             }
-            self->m_speakerDeps.refreshPreview();
+            if (self->m_speakerDeps.refreshPreview) {
+                self->m_speakerDeps.refreshPreview();
+                qInfo().noquote()
+                    << QStringLiteral("Face box click timing: phase=refreshed_preview elapsed_ms=%1")
+                           .arg(clickTimer.elapsed());
+            }
+            self->showPreviewFaceDetectionsClickStatus(statusMessage);
         });
-        logTiming(QStringLiteral("queued_preview_refresh"));
-    }
-    if (assigned) {
-        report(QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4). Face zoom %5.")
-                   .arg(trackId)
-                   .arg(speakerDisplayLabel(speakerId))
-                   .arg(mediaSourceFrame)
-                   .arg(speakerResolutionDetail)
-                   .arg(framingApplied ? QStringLiteral("applied") : QStringLiteral("unchanged")));
+        logTiming(QStringLiteral("queued_post_assignment_ui"));
     } else {
         report(QStringLiteral("Face box click failed: track %1 was not assigned to %2.")
                    .arg(trackId)

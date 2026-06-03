@@ -50,14 +50,10 @@ PlaybackClockDecision evaluatePlaybackClock(const PlaybackClockInput& input)
     }
 
     if (audioFrame == currentFrame) {
-        if (input.audioClockStallTicks <= input.audioClockStallThresholdTicks) {
-            decision.action = PlaybackClockAction::WaitForAudioClock;
-            decision.reason = QStringLiteral("audio_clock_same_frame");
-            return decision;
-        }
-        decision.resetTimerContinuity = true;
-        decision.action = PlaybackClockAction::UseTimelineTimer;
-        decision.reason = QStringLiteral("audio_clock_stalled");
+        decision.action = PlaybackClockAction::WaitForAudioClock;
+        decision.reason = input.audioClockStallTicks <= input.audioClockStallThresholdTicks
+                              ? QStringLiteral("audio_clock_same_frame")
+                              : QStringLiteral("audio_clock_stalled");
         return decision;
     }
 

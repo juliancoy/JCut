@@ -69,6 +69,7 @@ struct PreviewVisibleRequestInputs {
     bool exactCached = false;
     bool displayableCached = false;
     bool pending = false;
+    bool pendingNearby = false;
     bool forceRetry = false;
     int pendingBacklog = 0;
     int backlogLimit = 1;

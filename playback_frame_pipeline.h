@@ -6,6 +6,7 @@
 
 #include <QObject>
 #include <QHash>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QMutex>
 #include <QSet>
@@ -14,11 +15,16 @@
 
 namespace editor {
 
+// Forward declaration
+class FrameDispatcher;
+
 class PlaybackFramePipeline : public QObject {
     Q_OBJECT
 
 public:
-    explicit PlaybackFramePipeline(AsyncDecoder* decoder, QObject* parent = nullptr);
+    explicit PlaybackFramePipeline(AsyncDecoder* decoder,
+                                   FrameDispatcher* dispatcher = nullptr,
+                                   QObject* parent = nullptr);
     ~PlaybackFramePipeline() override;
 
     void setTimelineClips(const QVector<TimelineClip>& clips);
@@ -37,6 +43,7 @@ public:
     int bufferedFrameCount() const;
     int droppedPresentationFrameCount() const { return m_droppedPresentationFrames.load(); }
     QJsonObject decodeDiagnostics() const;
+    QJsonArray frameTraceSnapshot(int limit = 200) const;
 
 signals:
     void frameAvailable();
@@ -71,7 +78,7 @@ private:
 
         mutable QMutex m_mutex;
         QHash<int64_t, PlaybackFrameInfo> m_frames;
-        static constexpr int kMaxFrames = 24;
+        static constexpr int kMaxFrames = 96;
     };
 
     QString requestKey(const QString& clipId, int64_t frameNumber) const;
@@ -79,12 +86,14 @@ private:
     int64_t normalizeFrameNumber(const ClipInfo& info, int64_t frameNumber) const;
     void clearBuffers();
     void dropStaleRequestsForPlayhead(int64_t playheadFrame);
-    void schedulePlaybackWindow(const ClipInfo& info,
-                                int64_t canonicalFrame,
-                                const std::function<void()>& onFrameReady);
     void cancelDecoderBeforeThrottled(const QString& playbackPath,
                                       int64_t keepFromFrame,
-                                      qint64 nowMs = -1);
+                                      qint64 nowMs);
+    void schedulePlaybackWindow(const ClipInfo& info,
+                                int64_t samplePosition,
+                                int64_t canonicalFrame,
+                                const QVector<RenderSyncMarker>& markers,
+                                const std::function<void()>& onFrameReady);
 
     struct DecodeDiagnostics {
         uint64_t visibleDispatched = 0;
@@ -105,23 +114,44 @@ private:
         QString lastVisibleOutcome;
     };
 
+    struct FrameTraceEvent {
+        qint64 timestampMs = 0;
+        qint64 playheadFrame = 0;
+        int64_t targetFrame = 0;
+        QString clipId;
+        QString event;  // "dispatch", "null", "buffered", "obsolete", "nearby_pending_skip", "cancel_before"
+        QString payload;
+        qint64 waitMs = 0;
+    };
+
     AsyncDecoder* m_decoder = nullptr;
+    FrameDispatcher* m_dispatcher = nullptr;
+
+    // Legacy pending tracking (used when no dispatcher is configured)
+    mutable QMutex m_pendingMutex;
+    QSet<QString> m_pendingVisibleRequests;
+    QSet<QString> m_pendingPrefetchRequests;
+    QHash<QString, int64_t> m_latestVisibleTargets;
 
     mutable QMutex m_clipsMutex;
     QHash<QString, ClipInfo> m_clips;
     QHash<QString, PlaybackBuffer*> m_buffers;
 
-    mutable QMutex m_pendingMutex;
-    QSet<QString> m_pendingVisibleRequests;
-    QSet<QString> m_pendingPrefetchRequests;
-    QHash<QString, int64_t> m_latestVisibleTargets;
-    QHash<QString, int64_t> m_lastCancelKeepFromByPath;
-    QHash<QString, qint64> m_lastCancelAtMsByPath;
     mutable QMutex m_decodeDiagnosticsMutex;
     DecodeDiagnostics m_decodeDiagnostics;
 
     mutable QMutex m_markersMutex;
     QVector<RenderSyncMarker> m_renderSyncMarkers;
+
+    // Frame-level trace ring buffer
+    void recordFrameTraceEvent(const QString& event,
+                               const QString& clipId,
+                               int64_t targetFrame,
+                               const QString& payload = QString(),
+                               qint64 waitMs = 0);
+    mutable QMutex m_frameTraceMutex;
+    QVector<FrameTraceEvent> m_frameTraceEvents;
+    static constexpr int kMaxFrameTraceEvents = 1000;
 
     std::atomic<bool> m_active{false};
     std::atomic<int64_t> m_playheadFrame{0};

@@ -47,7 +47,7 @@ void EditorWindow::advanceFrame()
         if (m_audioEngine && m_audioEngine->hasPlayableAudio()) {
             const int64_t audioSample = qBound<int64_t>(
                 0,
-                m_audioEngine->currentSample(),
+                m_audioEngine->playbackClockSample(),
                 frameToSamples(m_timeline->totalFrames()));
             if (qAbs(audioSample - m_absolutePlaybackSample) > kSamplesPerFrame) {
                 setCurrentPlaybackSample(audioSample, false, true);
@@ -83,7 +83,7 @@ void EditorWindow::advanceFrame()
     const bool audioClockAvailable = m_audioEngine && m_audioEngine->audioClockAvailable();
     const bool hasPlayableAudio = m_audioEngine && m_audioEngine->hasPlayableAudio();
     if (audioMasterEnabled && audioClockAvailable && hasPlayableAudio) {
-        int64_t audioSample = qMax<int64_t>(0, m_audioEngine->currentSample());
+        int64_t audioSample = qMax<int64_t>(0, m_audioEngine->playbackClockSample());
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (!ranges.isEmpty()) {
             bool reachedEnd = false;
@@ -105,6 +105,18 @@ void EditorWindow::advanceFrame()
                 }
                 setCurrentPlaybackSample(rangedSample, false, true);
                 stopPlaybackWithReason(QStringLiteral("range_end"));
+                return;
+            }
+            const int64_t sourceAudioSample = audioSample;
+            if (rangedSample > sourceAudioSample + kSamplesPerFrame && m_preview &&
+                !m_preview->preparePlaybackAdvanceSample(rangedSample)) {
+                editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                              0,
+                                              0,
+                                              1,
+                                              QStringLiteral("source_unavailable"),
+                                              QStringLiteral("playback_range_target_not_ready"));
+                ++m_audioClockStallTicks;
                 return;
             }
             audioSample = rangedSample;

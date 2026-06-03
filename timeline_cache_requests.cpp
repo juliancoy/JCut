@@ -2,6 +2,7 @@
 
 #include "debug_controls.h"
 #include "editor_shared_timing.h"
+#include "frame_dispatcher.h"
 #include "preview_frame_selection.h"
 
 #include <QDateTime>
@@ -20,8 +21,6 @@
 namespace editor {
 
 namespace {
-constexpr int64_t kObsoleteVisibleFrameSlack = 4;
-constexpr qint64 kVisiblePendingRetryMs = 2000;
 
 QElapsedTimer& cacheTraceTimer() {
     static QElapsedTimer timer = []() {
@@ -103,6 +102,7 @@ void TimelineCache::requestFrame(const QString& clipId,
     const qint64 requestedAtWallMs = QDateTime::currentMSecsSinceEpoch();
     const int64_t normalizedFrame = normalizeFrameNumber(clipId, frameNumber);
 
+    // --- Step 1: Check cache ---
     FrameHandle cached;
     if (m_state.load() == PlaybackState::Playing) {
         cached = getPlaybackFrame(clipId, normalizedFrame);
@@ -137,6 +137,7 @@ void TimelineCache::requestFrame(const QString& clipId,
                            .arg(normalizedFrame));
     }
 
+    // --- Step 2: Look up clip info ---
     QMutexLocker lock(&m_clipsMutex);
     auto it = m_clips.find(clipId);
     if (it == m_clips.end()) {
@@ -155,316 +156,179 @@ void TimelineCache::requestFrame(const QString& clipId,
         return;
     }
 
-    const QString key = requestKey(clipId, canonicalFrame);
-    const uint64_t requestGeneration = m_visibleRequestGeneration.load();
-    constexpr qint64 kPendingRequestStaleMs = kVisiblePendingRetryMs;
-    QVector<std::function<void(FrameHandle)>> callbacksToCancel;
+    // --- Step 3: Route through FrameDispatcher ---
+    if (m_dispatcher) {
+        const int priority = calculatePriority(info, canonicalFrame);
 
-    {
-        QMutexLocker pendingLock(&m_pendingMutex);
-        m_latestVisibleTargets.insert(clipId, canonicalFrame);
+        // Cancel-before is now handled by the dispatcher
         if (m_state.load() == PlaybackState::Playing && !info.isSingleFrame) {
-            callbacksToCancel = dropObsoletePendingVisibleRequestsLocked(clipId, canonicalFrame);
+            const int64_t keepFromFrame = qMax<int64_t>(0, canonicalFrame - effectiveVisibleDecodeKeepWindow());
+            m_dispatcher->cancelBefore(info.decodePath, keepFromFrame);
         }
 
-        auto existing = m_pendingVisibleRequests.find(key);
-        if (existing != m_pendingVisibleRequests.end()) {
-            const bool generationChanged = existing->generation != requestGeneration;
-            const bool staleByAge =
-                existing->requestedAtMs > 0 &&
-                (requestedAtWallMs - existing->requestedAtMs) > kPendingRequestStaleMs;
-            if (!generationChanged && !staleByAge) {
-                existing->callbacks.push_back(std::move(callback));
-                cacheTrace(QStringLiteral("TimelineCache::requestFrame.dedup"),
-                           QStringLiteral("clip=%1 frame=%2 normalized=%3 listeners=%4")
-                               .arg(clipId)
-                               .arg(frameNumber)
-                               .arg(canonicalFrame)
-                               .arg(existing->callbacks.size()));
-                return;
-            }
+        cacheTrace(QStringLiteral("TimelineCache::requestFrame.dispatch"),
+                   QStringLiteral("clip=%1 frame=%2 normalized=%3 priority=%4")
+                       .arg(clipId)
+                       .arg(frameNumber)
+                       .arg(canonicalFrame)
+                       .arg(priority));
 
-            QVector<std::function<void(FrameHandle)>> mergedCallbacks = std::move(existing->callbacks);
-            mergedCallbacks.push_back(std::move(callback));
-            m_pendingVisibleRequests.erase(existing);
+        // Wrap the callback to insert into cache/playback buffer on completion
+        QPointer<TimelineCache> self(this);
+        const std::shared_ptr<std::atomic<bool>> aliveToken = m_aliveToken;
 
-            PendingVisibleRequest pending;
-            pending.callbacks = std::move(mergedCallbacks);
-            pending.generation = requestGeneration;
-            pending.requestedAtMs = requestedAtWallMs;
-            pending.dispatchedAtMs = requestedAtWallMs;
-            m_pendingVisibleRequests.insert(key, std::move(pending));
-            m_pendingPrefetchRequests.remove(key);
-
-            cacheTrace(QStringLiteral("TimelineCache::requestFrame.refresh"),
-                       QStringLiteral("clip=%1 frame=%2 normalized=%3 generationChanged=%4 staleByAge=%5")
-                           .arg(clipId)
-                           .arg(frameNumber)
-                           .arg(canonicalFrame)
-                           .arg(generationChanged)
-                           .arg(staleByAge));
-        } else {
-            PendingVisibleRequest pending;
-            pending.callbacks.push_back(std::move(callback));
-            pending.generation = requestGeneration;
-            pending.requestedAtMs = requestedAtWallMs;
-            pending.dispatchedAtMs = requestedAtWallMs;
-            m_pendingVisibleRequests.insert(key, std::move(pending));
-            m_pendingPrefetchRequests.remove(key);
-        }
-    }
-
-    for (const auto& canceled : callbacksToCancel) {
-        if (canceled) {
-            canceled(FrameHandle());
-        }
-    }
-
-    if (!m_decoder) {
-        return;
-    }
-
-    if (m_state.load() == PlaybackState::Playing && !info.isSingleFrame) {
-        const int64_t keepFromFrame = qMax<int64_t>(0, canonicalFrame - effectiveVisibleDecodeKeepWindow());
-        cancelDecoderBeforeThrottled(info.decodePath, keepFromFrame, requestedAtWallMs);
-        m_decoder->cancelQueuedNonVisibleForFile(info.decodePath);
-    }
-
-    const int priority = calculatePriority(info, canonicalFrame);
-    QPointer<TimelineCache> self(this);
-    const std::shared_ptr<std::atomic<bool>> aliveToken = m_aliveToken;
-
-    cacheTrace(QStringLiteral("TimelineCache::requestFrame.dispatch"),
-               QStringLiteral("clip=%1 frame=%2 normalized=%3 priority=%4")
-                   .arg(clipId)
-                   .arg(frameNumber)
-                   .arg(canonicalFrame)
-                   .arg(priority));
-    {
-        QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
-        ++m_visibleDecodeDiagnostics.dispatched;
-        m_visibleDecodeDiagnostics.lastClipId = clipId;
-        m_visibleDecodeDiagnostics.lastRequestFrame = canonicalFrame;
-        m_visibleDecodeDiagnostics.lastOutcome = QStringLiteral("dispatched");
-    }
-
-    const uint64_t seqId = m_decoder->requestFrame(
-        info.decodePath,
-        canonicalFrame,
-        priority,
-        30000,
-        DecodeRequestKind::Visible,
-        [self,
-         aliveToken,
-         clipId,
-         canonicalFrame,
-         requestedAtTraceMs,
-         requestedAtWallMs,
-         key,
-         requestGeneration,
-         requireHardwareOrGpuPayload](FrameHandle frame) {
+        auto wrappedCallback = [self, aliveToken, clipId, canonicalFrame,
+                                requestedAtTraceMs, requestedAtWallMs,
+                                requireHardwareOrGpuPayload,
+                                callback = std::move(callback)](FrameHandle frame) mutable {
             if (!aliveToken->load() || !self) {
                 return;
             }
-            const qint64 decoderCallbackAtMs = QDateTime::currentMSecsSinceEpoch();
 
-            QMetaObject::invokeMethod(
-                self,
-                [self,
-                 aliveToken,
-                 clipId,
-                 canonicalFrame,
-                 requestedAtTraceMs,
-                 requestedAtWallMs,
-                 decoderCallbackAtMs,
-                 key,
-                 frame,
-                 requestGeneration,
-                 requireHardwareOrGpuPayload]() {
-                    if (!aliveToken->load() || !self) {
-                        return;
+            FrameHandle deliveredFrame = frame;
+            if (requireHardwareOrGpuPayload &&
+                !deliveredFrame.isNull() &&
+                !deliveredFrame.hasHardwareFrame() &&
+                !deliveredFrame.hasGpuTexture()) {
+                cacheWarnTrace(
+                    QStringLiteral("TimelineCache::visible-strict-payload-rejected"),
+                    QStringLiteral("clip=%1 frame=%2 payload=cpu_image")
+                        .arg(clipId)
+                        .arg(canonicalFrame));
+                deliveredFrame = FrameHandle();
+            }
+
+            if (!deliveredFrame.isNull()) {
+                const int64_t deliveredFrameNumber =
+                    deliveredFrame.frameNumber() >= 0 ? deliveredFrame.frameNumber() : canonicalFrame;
+                self->m_seekResync.satisfy(clipId, deliveredFrameNumber,
+                                           QDateTime::currentMSecsSinceEpoch());
+                if (self->m_state.load() == PlaybackState::Playing) {
+                    auto bufferIt = self->m_playbackBuffers.find(clipId);
+                    if (bufferIt != self->m_playbackBuffers.end() && bufferIt.value()) {
+                        bufferIt.value()->insert(deliveredFrameNumber, deliveredFrame);
                     }
+                }
+                if (auto* cache = self->getOrCreateClipCache(clipId)) {
+                    cache->insert(deliveredFrameNumber, deliveredFrame);
+                }
+                if (deliveredFrame.hasHardwareFrame()) {
+                    self->enforceHardwareFrameResidencyPolicy();
+                }
+            }
 
-                    FrameHandle deliveredFrame = frame;
-                    const QString rawPayload = framePayloadForDiagnostics(deliveredFrame);
-                    if (requireHardwareOrGpuPayload &&
-                        !deliveredFrame.isNull() &&
-                        !deliveredFrame.hasHardwareFrame() &&
-                        !deliveredFrame.hasGpuTexture()) {
-                        cacheWarnTrace(
-                            QStringLiteral("TimelineCache::visible-strict-payload-rejected"),
-                            QStringLiteral("clip=%1 frame=%2 payload=cpu_image")
-                                .arg(clipId)
-                                .arg(canonicalFrame));
-                        deliveredFrame = FrameHandle();
-                        QMutexLocker diagnosticsLock(&self->m_visibleDecodeDiagnosticsMutex);
-                        ++self->m_visibleDecodeDiagnostics.strictPayloadRejected;
-                    }
-
-                    int64_t latestVisibleTarget = canonicalFrame;
-                    bool obsoleteVisibleRequest = false;
-                    {
-                        QMutexLocker pendingLock(&self->m_pendingMutex);
-                        latestVisibleTarget = self->m_latestVisibleTargets.value(clipId, canonicalFrame);
-                        obsoleteVisibleRequest =
-                            self->m_state.load() == PlaybackState::Playing &&
-                            canonicalFrame + kObsoleteVisibleFrameSlack < latestVisibleTarget;
-                    }
-
-                    if (!deliveredFrame.isNull()) {
-                        const int64_t deliveredFrameNumber =
-                            deliveredFrame.frameNumber() >= 0 ? deliveredFrame.frameNumber() : canonicalFrame;
-                        {
-                            QMutexLocker pendingLock(&self->m_pendingMutex);
-                            self->m_seekResync.satisfy(clipId,
-                                                       deliveredFrameNumber,
-                                                       QDateTime::currentMSecsSinceEpoch());
-                        }
-                        if (self->m_state.load() == PlaybackState::Playing) {
-                            auto bufferIt = self->m_playbackBuffers.find(clipId);
-                            if (bufferIt != self->m_playbackBuffers.end() && bufferIt.value()) {
-                                bufferIt.value()->insert(deliveredFrameNumber, deliveredFrame);
-                            }
-                        }
-                        if (auto* cache = self->getOrCreateClipCache(clipId)) {
-                            cache->insert(deliveredFrameNumber, deliveredFrame);
-                        }
-                        if (deliveredFrame.hasHardwareFrame()) {
-                            self->enforceHardwareFrameResidencyPolicy();
-                        }
-                    }
-
-                    QVector<std::function<void(FrameHandle)>> callbacks;
-                    bool completionStaleByGeneration = false;
-                    {
-                        QMutexLocker pendingLock(&self->m_pendingMutex);
-                        auto it = self->m_pendingVisibleRequests.find(key);
-                        if (it != self->m_pendingVisibleRequests.end()) {
-                            if (it->generation == requestGeneration) {
-                                callbacks = std::move(it->callbacks);
-                                self->m_pendingVisibleRequests.erase(it);
-                            } else {
-                                completionStaleByGeneration = true;
-                            }
-                        }
-                        if (canonicalFrame >= latestVisibleTarget) {
-                            self->m_latestVisibleTargets.remove(clipId);
-                        }
-                    }
-
-                    if (completionStaleByGeneration) {
-                        deliveredFrame = FrameHandle();
-                    }
-
-                    const qint64 completedAtMs = QDateTime::currentMSecsSinceEpoch();
-                    const qint64 wallWaitMs =
-                        requestedAtWallMs > 0 ? completedAtMs - requestedAtWallMs : -1;
-                    const qint64 qtDeliveryDelayMs =
-                        decoderCallbackAtMs > 0 ? completedAtMs - decoderCallbackAtMs : -1;
-                    {
-                        QMutexLocker diagnosticsLock(&self->m_visibleDecodeDiagnosticsMutex);
-                        auto& diagnostics = self->m_visibleDecodeDiagnostics;
-                        ++diagnostics.completed;
-                        diagnostics.lastClipId = clipId;
-                        diagnostics.lastRequestFrame = canonicalFrame;
-                        diagnostics.lastCompletedFrame = deliveredFrame.isNull()
-                                                             ? static_cast<qint64>(-1)
-                                                             : static_cast<qint64>(deliveredFrame.frameNumber());
-                        diagnostics.lastCallbackWaitMs = wallWaitMs;
-                        diagnostics.maxCallbackWaitMs = qMax(diagnostics.maxCallbackWaitMs, wallWaitMs);
-                        diagnostics.lastQtDeliveryDelayMs = qtDeliveryDelayMs;
-                        diagnostics.maxQtDeliveryDelayMs =
-                            qMax(diagnostics.maxQtDeliveryDelayMs, qtDeliveryDelayMs);
-                        diagnostics.lastCompletedAtMs = completedAtMs;
-                        diagnostics.lastPayload = completionStaleByGeneration
-                                                      ? QStringLiteral("stale_generation")
-                                                      : rawPayload;
-                        if (completionStaleByGeneration) {
-                            ++diagnostics.staleGenerationCompleted;
-                            diagnostics.lastOutcome = QStringLiteral("stale_generation");
-                        } else if (deliveredFrame.isNull()) {
-                            ++diagnostics.nullCompleted;
-                            diagnostics.lastOutcome = QStringLiteral("null");
-                        } else if (deliveredFrame.hasHardwareFrame()) {
-                            ++diagnostics.hardwareCompleted;
-                            diagnostics.lastOutcome = QStringLiteral("stored");
-                        } else if (deliveredFrame.hasGpuTexture()) {
-                            ++diagnostics.gpuTextureCompleted;
-                            diagnostics.lastOutcome = QStringLiteral("stored");
-                        } else {
-                            ++diagnostics.cpuCompleted;
-                            diagnostics.lastOutcome = QStringLiteral("stored");
-                        }
-                    }
-
-                    cacheTrace(QStringLiteral("TimelineCache::requestFrame.complete"),
-                               QStringLiteral("clip=%1 frame=%2 null=%3 waitMs=%4")
-                                   .arg(clipId)
-                                   .arg(canonicalFrame)
-                                   .arg(deliveredFrame.isNull())
-                                   .arg(cacheTraceMs() - requestedAtTraceMs));
-
-                    const qint64 waitMs = cacheTraceMs() - requestedAtTraceMs;
-                    if (debugCacheWarnOnlyEnabled()) {
-                        if (obsoleteVisibleRequest && !deliveredFrame.isNull()) {
-                            cacheWarnTrace(QStringLiteral("TimelineCache::visible-late-kept"),
-                                           QStringLiteral("clip=%1 frame=%2 latest=%3 waitMs=%4 listeners=%5")
-                                               .arg(clipId)
-                                               .arg(canonicalFrame)
-                                               .arg(latestVisibleTarget)
-                                               .arg(waitMs)
-                                               .arg(callbacks.size()));
-                        } else if (deliveredFrame.isNull() || waitMs > 33) {
-                            cacheWarnTrace(QStringLiteral("TimelineCache::visible-complete"),
-                                           QStringLiteral("clip=%1 frame=%2 null=%3 waitMs=%4 listeners=%5")
-                                               .arg(clipId)
-                                               .arg(canonicalFrame)
-                                               .arg(deliveredFrame.isNull())
-                                               .arg(waitMs)
-                                               .arg(callbacks.size()));
-                        }
-                    }
-
-                    for (const auto& cb : callbacks) {
-                        if (cb) {
-                            cb(deliveredFrame);
-                        }
-                    }
-                },
-                Qt::QueuedConnection);
-        });
-
-    if (seqId == 0 && debugCacheWarnOnlyEnabled()) {
-        cacheWarnTrace(QStringLiteral("TimelineCache::visible-rejected"),
-                       QStringLiteral("clip=%1 frame=%2 normalized=%3 priority=%4 pending=%5")
+            cacheTrace(QStringLiteral("TimelineCache::requestFrame.complete"),
+                       QStringLiteral("clip=%1 frame=%2 null=%3 waitMs=%4")
                            .arg(clipId)
-                           .arg(frameNumber)
                            .arg(canonicalFrame)
-                           .arg(priority)
-                           .arg(m_decoder->pendingRequestCount()));
-    }
-    if (seqId == 0) {
-        QVector<std::function<void(FrameHandle)>> callbacks;
-        {
-            QMutexLocker diagnosticsLock(&m_visibleDecodeDiagnosticsMutex);
-            ++m_visibleDecodeDiagnostics.decoderRejected;
-            m_visibleDecodeDiagnostics.lastClipId = clipId;
-            m_visibleDecodeDiagnostics.lastRequestFrame = canonicalFrame;
-            m_visibleDecodeDiagnostics.lastPayload = QStringLiteral("null");
-            m_visibleDecodeDiagnostics.lastOutcome = QStringLiteral("decoder_rejected");
-        }
-        {
-            QMutexLocker pendingLock(&m_pendingMutex);
-            auto it = m_pendingVisibleRequests.find(key);
-            if (it != m_pendingVisibleRequests.end() && it->generation == requestGeneration) {
-                callbacks = std::move(it->callbacks);
-                m_pendingVisibleRequests.erase(it);
+                           .arg(deliveredFrame.isNull())
+                           .arg(cacheTraceMs() - requestedAtTraceMs));
+
+            if (callback) {
+                callback(deliveredFrame);
             }
+        };
+
+        const bool accepted = m_dispatcher->requestFrame(
+            info.decodePath,
+            canonicalFrame,
+            priority,
+            30000,
+            DecodeRequestKind::Visible,
+            std::move(wrappedCallback));
+
+        if (!accepted) {
+            // Rate-limited or rejected — invoke callback with null frame
+            cacheTrace(QStringLiteral("TimelineCache::requestFrame.rate-limited"),
+                       QStringLiteral("clip=%1 frame=%2").arg(clipId).arg(canonicalFrame));
+            callback(FrameHandle());
         }
-        for (const auto& cb : callbacks) {
-            if (cb) {
-                cb(FrameHandle());
-            }
+    } else {
+        // Fallback: direct dispatch (no dispatcher configured)
+        const int priority = calculatePriority(info, canonicalFrame);
+        QPointer<TimelineCache> self(this);
+        const std::shared_ptr<std::atomic<bool>> aliveToken = m_aliveToken;
+
+        cacheTrace(QStringLiteral("TimelineCache::requestFrame.dispatch-direct"),
+                   QStringLiteral("clip=%1 frame=%2 normalized=%3 priority=%4")
+                       .arg(clipId)
+                       .arg(frameNumber)
+                       .arg(canonicalFrame)
+                       .arg(priority));
+
+        const uint64_t seqId = m_decoder->requestFrame(
+            info.decodePath,
+            canonicalFrame,
+            priority,
+            30000,
+            DecodeRequestKind::Visible,
+            [self, aliveToken, clipId, canonicalFrame,
+             requestedAtTraceMs, requestedAtWallMs,
+             requireHardwareOrGpuPayload,
+             callback = std::move(callback)](FrameHandle frame) mutable {
+                if (!aliveToken->load() || !self) {
+                    return;
+                }
+                QMetaObject::invokeMethod(
+                    self,
+                    [self, aliveToken, clipId, canonicalFrame,
+                     requestedAtTraceMs, requestedAtWallMs,
+                     frame, requireHardwareOrGpuPayload,
+                     callback = std::move(callback)]() mutable {
+                        if (!aliveToken->load() || !self) {
+                            return;
+                        }
+
+                        FrameHandle deliveredFrame = frame;
+                        if (requireHardwareOrGpuPayload &&
+                            !deliveredFrame.isNull() &&
+                            !deliveredFrame.hasHardwareFrame() &&
+                            !deliveredFrame.hasGpuTexture()) {
+                            cacheWarnTrace(
+                                QStringLiteral("TimelineCache::visible-strict-payload-rejected"),
+                                QStringLiteral("clip=%1 frame=%2 payload=cpu_image")
+                                    .arg(clipId)
+                                    .arg(canonicalFrame));
+                            deliveredFrame = FrameHandle();
+                        }
+
+                        if (!deliveredFrame.isNull()) {
+                            const int64_t deliveredFrameNumber =
+                                deliveredFrame.frameNumber() >= 0 ? deliveredFrame.frameNumber() : canonicalFrame;
+                            self->m_seekResync.satisfy(clipId, deliveredFrameNumber,
+                                                       QDateTime::currentMSecsSinceEpoch());
+                            if (self->m_state.load() == PlaybackState::Playing) {
+                                auto bufferIt = self->m_playbackBuffers.find(clipId);
+                                if (bufferIt != self->m_playbackBuffers.end() && bufferIt.value()) {
+                                    bufferIt.value()->insert(deliveredFrameNumber, deliveredFrame);
+                                }
+                            }
+                            if (auto* cache = self->getOrCreateClipCache(clipId)) {
+                                cache->insert(deliveredFrameNumber, deliveredFrame);
+                            }
+                            if (deliveredFrame.hasHardwareFrame()) {
+                                self->enforceHardwareFrameResidencyPolicy();
+                            }
+                        }
+
+                        cacheTrace(QStringLiteral("TimelineCache::requestFrame.complete"),
+                                   QStringLiteral("clip=%1 frame=%2 null=%3 waitMs=%4")
+                                       .arg(clipId)
+                                       .arg(canonicalFrame)
+                                       .arg(deliveredFrame.isNull())
+                                       .arg(cacheTraceMs() - requestedAtTraceMs));
+
+                        if (callback) {
+                            callback(deliveredFrame);
+                        }
+                    },
+                    Qt::QueuedConnection);
+            });
+
+        if (seqId == 0) {
+            cacheTrace(QStringLiteral("TimelineCache::requestFrame.rejected"),
+                       QStringLiteral("clip=%1 frame=%2").arg(clipId).arg(canonicalFrame));
+            callback(FrameHandle());
         }
     }
 
@@ -575,6 +439,27 @@ bool TimelineCache::isVisibleRequestPending(const QString& clipId, int64_t frame
     frameNumber = normalizeFrameNumber(clipId, frameNumber);
     QMutexLocker pendingLock(&m_pendingMutex);
     return m_pendingVisibleRequests.contains(requestKey(clipId, frameNumber));
+}
+
+bool TimelineCache::isNearbyVisibleRequestPending(const QString& clipId,
+                                                   int64_t frameNumber,
+                                                   int64_t slackFrames) const {
+    frameNumber = normalizeFrameNumber(clipId, frameNumber);
+    const QString prefix = clipId + QLatin1Char(':');
+    QMutexLocker pendingLock(&m_pendingMutex);
+    for (auto it = m_pendingVisibleRequests.cbegin(); it != m_pendingVisibleRequests.cend(); ++it) {
+        if (!it.key().startsWith(prefix)) {
+            continue;
+        }
+        // Extract the frame number from the key (format: "clipId:frameNumber")
+        const QStringView ref = QStringView(it.key()).mid(prefix.length());
+        bool ok = false;
+        const int64_t pendingFrame = ref.toLongLong(&ok);
+        if (ok && qAbs(pendingFrame - frameNumber) <= slackFrames) {
+            return true;
+        }
+    }
+    return false;
 }
 
 bool TimelineCache::shouldForceVisibleRequestRetry(const QString& clipId,

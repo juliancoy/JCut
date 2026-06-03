@@ -23,6 +23,20 @@ constexpr int kDefaultPrefetchSkipVisiblePendingThreshold = 2;
 constexpr int kDefaultVisibleQueueReserve = 24;
 constexpr int kDefaultPlaybackWindowAhead = 16;
 constexpr int kDefaultDecoderLaneCount = 0; // 0 => auto lane count
+constexpr int kDefaultSupersedeSlackFrames = 12;
+constexpr int kDefaultVisibleDecodeKeepWindow = 16;
+constexpr int kDefaultObsoleteVisibleFrameSlack = 4;
+constexpr int kDefaultCancelBeforeMinFrameAdvance = 2;
+constexpr qint64 kDefaultCancelBeforeMinIntervalMs = 16;
+constexpr int kDefaultMaxPresentationPastFrameDelta = 4;
+constexpr int kDefaultMaxPresentationFutureFrameDelta = 4;
+constexpr int kDefaultFileVideoPlaybackWindowAhead = 4;
+constexpr int kDefaultVisiblePendingRetryMs = 2000;
+constexpr int kDefaultCacheObsoleteVisibleFrameSlack = 4;
+constexpr int kDefaultMaxVisibleBacklog = 1;
+constexpr int kDefaultSequenceVisibleDecodeKeepWindow = 32;
+constexpr int kDefaultSequenceObsoleteVisibleFrameSlack = 8;
+constexpr int kDefaultSequenceLateBufferSeedSlack = 16;
 constexpr int kDefaultTimelineAudioEnvelopeGranularity = 256;
 constexpr DecodePreference kDefaultDecodePreference = DecodePreference::Hardware;
 
@@ -53,6 +67,20 @@ std::atomic<int> g_debugPrefetchSkipVisiblePendingThreshold{kDefaultPrefetchSkip
 std::atomic<int> g_debugVisibleQueueReserve{kDefaultVisibleQueueReserve};
 std::atomic<int> g_debugPlaybackWindowAhead{kDefaultPlaybackWindowAhead};
 std::atomic<int> g_debugDecoderLaneCount{kDefaultDecoderLaneCount};
+std::atomic<int> g_debugSupersedeSlackFrames{kDefaultSupersedeSlackFrames};
+std::atomic<int> g_debugVisibleDecodeKeepWindow{kDefaultVisibleDecodeKeepWindow};
+std::atomic<int> g_debugObsoleteVisibleFrameSlack{kDefaultObsoleteVisibleFrameSlack};
+std::atomic<int> g_debugCancelBeforeMinFrameAdvance{kDefaultCancelBeforeMinFrameAdvance};
+std::atomic<qint64> g_debugCancelBeforeMinIntervalMs{kDefaultCancelBeforeMinIntervalMs};
+std::atomic<int> g_debugMaxPresentationPastFrameDelta{kDefaultMaxPresentationPastFrameDelta};
+std::atomic<int> g_debugMaxPresentationFutureFrameDelta{kDefaultMaxPresentationFutureFrameDelta};
+std::atomic<int> g_debugFileVideoPlaybackWindowAhead{kDefaultFileVideoPlaybackWindowAhead};
+std::atomic<int> g_debugVisiblePendingRetryMs{kDefaultVisiblePendingRetryMs};
+std::atomic<int> g_debugCacheObsoleteVisibleFrameSlack{kDefaultCacheObsoleteVisibleFrameSlack};
+std::atomic<int> g_debugMaxVisibleBacklog{kDefaultMaxVisibleBacklog};
+std::atomic<int> g_debugSequenceVisibleDecodeKeepWindow{kDefaultSequenceVisibleDecodeKeepWindow};
+std::atomic<int> g_debugSequenceObsoleteVisibleFrameSlack{kDefaultSequenceObsoleteVisibleFrameSlack};
+std::atomic<int> g_debugSequenceLateBufferSeedSlack{kDefaultSequenceLateBufferSeedSlack};
 std::atomic<int> g_decodePreference{static_cast<int>(kDefaultDecodePreference)};
 std::atomic<int> g_h26xSoftwareThreadingMode{static_cast<int>(H26xSoftwareThreadingMode::Auto)};
 std::atomic<bool> g_debugPlayheadNoRepaint{false};
@@ -405,6 +433,62 @@ int debugDecoderLaneCount() {
     return g_debugDecoderLaneCount.load();
 }
 
+int debugSupersedeSlackFrames() {
+    return g_debugSupersedeSlackFrames.load();
+}
+
+int debugVisibleDecodeKeepWindow() {
+    return g_debugVisibleDecodeKeepWindow.load();
+}
+
+int debugObsoleteVisibleFrameSlack() {
+    return g_debugObsoleteVisibleFrameSlack.load();
+}
+
+int debugCancelBeforeMinFrameAdvance() {
+    return g_debugCancelBeforeMinFrameAdvance.load();
+}
+
+qint64 debugCancelBeforeMinIntervalMs() {
+    return g_debugCancelBeforeMinIntervalMs.load();
+}
+
+int debugMaxPresentationPastFrameDelta() {
+    return g_debugMaxPresentationPastFrameDelta.load();
+}
+
+int debugMaxPresentationFutureFrameDelta() {
+    return g_debugMaxPresentationFutureFrameDelta.load();
+}
+
+int debugFileVideoPlaybackWindowAhead() {
+    return g_debugFileVideoPlaybackWindowAhead.load();
+}
+
+int debugVisiblePendingRetryMs() {
+    return g_debugVisiblePendingRetryMs.load();
+}
+
+int debugCacheObsoleteVisibleFrameSlack() {
+    return g_debugCacheObsoleteVisibleFrameSlack.load();
+}
+
+int debugMaxVisibleBacklog() {
+    return g_debugMaxVisibleBacklog.load();
+}
+
+int debugSequenceVisibleDecodeKeepWindow() {
+    return g_debugSequenceVisibleDecodeKeepWindow.load();
+}
+
+int debugSequenceObsoleteVisibleFrameSlack() {
+    return g_debugSequenceObsoleteVisibleFrameSlack.load();
+}
+
+int debugSequenceLateBufferSeedSlack() {
+    return g_debugSequenceLateBufferSeedSlack.load();
+}
+
 DecodePreference debugDecodePreference() {
     return static_cast<DecodePreference>(g_decodePreference.load());
 }
@@ -526,6 +610,62 @@ void setDebugDecoderLaneCount(int count) {
     }
 }
 
+void setDebugSupersedeSlackFrames(int slack) {
+    g_debugSupersedeSlackFrames.store(qBound(1, slack, 64));
+}
+
+void setDebugVisibleDecodeKeepWindow(int window) {
+    g_debugVisibleDecodeKeepWindow.store(qBound(1, window, 128));
+}
+
+void setDebugObsoleteVisibleFrameSlack(int slack) {
+    g_debugObsoleteVisibleFrameSlack.store(qBound(0, slack, 32));
+}
+
+void setDebugCancelBeforeMinFrameAdvance(int advance) {
+    g_debugCancelBeforeMinFrameAdvance.store(qBound(1, advance, 64));
+}
+
+void setDebugCancelBeforeMinIntervalMs(qint64 ms) {
+    g_debugCancelBeforeMinIntervalMs.store(qBound<qint64>(qint64(1), ms, qint64(1000)));
+}
+
+void setDebugMaxPresentationPastFrameDelta(int delta) {
+    g_debugMaxPresentationPastFrameDelta.store(qBound(0, delta, 64));
+}
+
+void setDebugMaxPresentationFutureFrameDelta(int delta) {
+    g_debugMaxPresentationFutureFrameDelta.store(qBound(0, delta, 64));
+}
+
+void setDebugFileVideoPlaybackWindowAhead(int ahead) {
+    g_debugFileVideoPlaybackWindowAhead.store(qBound(0, ahead, 32));
+}
+
+void setDebugVisiblePendingRetryMs(int ms) {
+    g_debugVisiblePendingRetryMs.store(qBound(100, ms, 30000));
+}
+
+void setDebugCacheObsoleteVisibleFrameSlack(int slack) {
+    g_debugCacheObsoleteVisibleFrameSlack.store(qBound(0, slack, 32));
+}
+
+void setDebugMaxVisibleBacklog(int backlog) {
+    g_debugMaxVisibleBacklog.store(qBound(0, backlog, 16));
+}
+
+void setDebugSequenceVisibleDecodeKeepWindow(int window) {
+    g_debugSequenceVisibleDecodeKeepWindow.store(qBound(1, window, 256));
+}
+
+void setDebugSequenceObsoleteVisibleFrameSlack(int slack) {
+    g_debugSequenceObsoleteVisibleFrameSlack.store(qBound(0, slack, 64));
+}
+
+void setDebugSequenceLateBufferSeedSlack(int slack) {
+    g_debugSequenceLateBufferSeedSlack.store(qBound(0, slack, 64));
+}
+
 void setDebugDecodePreference(DecodePreference preference) {
     g_decodePreference.store(static_cast<int>(preference));
 }
@@ -631,6 +771,18 @@ QJsonObject debugControlsSnapshot() {
         {QStringLiteral("visible_queue_reserve"), debugVisibleQueueReserve()},
         {QStringLiteral("playback_window_ahead"), debugPlaybackWindowAhead()},
         {QStringLiteral("decoder_lane_count"), debugDecoderLaneCount()},
+        {QStringLiteral("supersede_slack_frames"), debugSupersedeSlackFrames()},
+        {QStringLiteral("visible_decode_keep_window"), debugVisibleDecodeKeepWindow()},
+        {QStringLiteral("obsolete_visible_frame_slack"), debugObsoleteVisibleFrameSlack()},
+        {QStringLiteral("cancel_before_min_frame_advance"), debugCancelBeforeMinFrameAdvance()},
+        {QStringLiteral("cancel_before_min_interval_ms"), debugCancelBeforeMinIntervalMs()},
+        {QStringLiteral("max_presentation_past_frame_delta"), debugMaxPresentationPastFrameDelta()},
+        {QStringLiteral("max_presentation_future_frame_delta"), debugMaxPresentationFutureFrameDelta()},
+        {QStringLiteral("file_video_playback_window_ahead"), debugFileVideoPlaybackWindowAhead()},
+        {QStringLiteral("visible_pending_retry_ms"), debugVisiblePendingRetryMs()},
+        {QStringLiteral("cache_obsolete_visible_frame_slack"), debugCacheObsoleteVisibleFrameSlack()},
+        {QStringLiteral("max_visible_backlog"), debugMaxVisibleBacklog()},
+        {QStringLiteral("sequence_visible_decode_keep_window"), debugSequenceVisibleDecodeKeepWindow()},
         {QStringLiteral("decode_mode"), decodePreferenceToString(debugDecodePreference())},
         {QStringLiteral("h26x_software_threading_mode"),
          h26xSoftwareThreadingModeToString(debugH26xSoftwareThreadingMode())},
@@ -731,6 +883,62 @@ bool setDebugOption(const QString& name, const QJsonValue& value) {
     }
     if (name == QStringLiteral("decoder_lane_count") && value.isDouble()) {
         setDebugDecoderLaneCount(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("supersede_slack_frames") && value.isDouble()) {
+        setDebugSupersedeSlackFrames(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("visible_decode_keep_window") && value.isDouble()) {
+        setDebugVisibleDecodeKeepWindow(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("obsolete_visible_frame_slack") && value.isDouble()) {
+        setDebugObsoleteVisibleFrameSlack(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("cancel_before_min_frame_advance") && value.isDouble()) {
+        setDebugCancelBeforeMinFrameAdvance(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("cancel_before_min_interval_ms") && value.isDouble()) {
+        setDebugCancelBeforeMinIntervalMs(static_cast<qint64>(value.toDouble()));
+        return true;
+    }
+    if (name == QStringLiteral("max_presentation_past_frame_delta") && value.isDouble()) {
+        setDebugMaxPresentationPastFrameDelta(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("max_presentation_future_frame_delta") && value.isDouble()) {
+        setDebugMaxPresentationFutureFrameDelta(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("file_video_playback_window_ahead") && value.isDouble()) {
+        setDebugFileVideoPlaybackWindowAhead(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("visible_pending_retry_ms") && value.isDouble()) {
+        setDebugVisiblePendingRetryMs(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("cache_obsolete_visible_frame_slack") && value.isDouble()) {
+        setDebugCacheObsoleteVisibleFrameSlack(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("max_visible_backlog") && value.isDouble()) {
+        setDebugMaxVisibleBacklog(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("sequence_visible_decode_keep_window") && value.isDouble()) {
+        setDebugSequenceVisibleDecodeKeepWindow(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("sequence_obsolete_visible_frame_slack") && value.isDouble()) {
+        setDebugSequenceObsoleteVisibleFrameSlack(value.toInt());
+        return true;
+    }
+    if (name == QStringLiteral("sequence_late_buffer_seed_slack") && value.isDouble()) {
+        setDebugSequenceLateBufferSeedSlack(value.toInt());
         return true;
     }
     if (name == QStringLiteral("decode_mode") && value.isString()) {

@@ -33,7 +33,6 @@ namespace editor {
 
 namespace {
 constexpr int kMaxDecoderLaneCount = 16;
-constexpr int64_t kQueuedVisibleSupersedeSlackFrames = 4;
 
 void storeAtomicMax(std::atomic<int64_t>* target, int64_t value) {
     if (!target) {
@@ -211,42 +210,48 @@ uint64_t AsyncDecoder::requestFrame(const QString& path,
         req.generation = state->generation.load();
         pendingBefore = static_cast<int>(lane->queue.size()) + lane->activeRequests;
 
-        collectSupersededRequests(req, lane->queue, &droppedCallbacks);
+        const bool coalesced = collectSupersededRequests(req, lane->queue, &droppedCallbacks);
 
-        constexpr int kMaxPendingRequests = 128;
-        const int visibleReserve = qBound(0, debugVisibleQueueReserve(), kMaxPendingRequests - 1);
-        const int nonVisibleLimit = kMaxPendingRequests - visibleReserve;
-
-        if (req.kind != DecodeRequestKind::Visible &&
-            static_cast<int>(lane->queue.size()) >= nonVisibleLimit) {
-            accepted = false;
+        if (coalesced) {
+            // Request was coalesced into an existing nearby queued request.
+            // The callback has been chained; skip inserting a new entry.
+            accepted = true;
         } else {
-            if (static_cast<int>(lane->queue.size()) >= kMaxPendingRequests) {
-                bool dropped = false;
-                for (auto it = lane->queue.end(); it != lane->queue.begin();) {
-                    --it;
-                    const bool kindFavored =
-                        req.kind == DecodeRequestKind::Visible &&
-                        it->kind != DecodeRequestKind::Visible;
-                    if (kindFavored || it->priority < req.priority) {
-                        if (it->callback) {
-                            droppedCallbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
-                        }
-                        lane->queue.erase(it);
-                        dropped = true;
-                        break;
-                    }
-                }
+            constexpr int kMaxPendingRequests = 128;
+            const int visibleReserve = qBound(0, debugVisibleQueueReserve(), kMaxPendingRequests - 1);
+            const int nonVisibleLimit = kMaxPendingRequests - visibleReserve;
 
-                if (!dropped) {
-                    accepted = false;
+            if (req.kind != DecodeRequestKind::Visible &&
+                static_cast<int>(lane->queue.size()) >= nonVisibleLimit) {
+                accepted = false;
+            } else {
+                if (static_cast<int>(lane->queue.size()) >= kMaxPendingRequests) {
+                    bool dropped = false;
+                    for (auto it = lane->queue.end(); it != lane->queue.begin();) {
+                        --it;
+                        const bool kindFavored =
+                            req.kind == DecodeRequestKind::Visible &&
+                            it->kind != DecodeRequestKind::Visible;
+                        if (kindFavored || it->priority < req.priority) {
+                            if (it->callback) {
+                                droppedCallbacks.push_back(DroppedCallback{it->kind, std::move(it->callback)});
+                            }
+                            lane->queue.erase(it);
+                            dropped = true;
+                            break;
+                        }
+                    }
+
+                    if (!dropped) {
+                        accepted = false;
+                    } else {
+                        insertByPriority(lane->queue, req);
+                        accepted = true;
+                    }
                 } else {
                     insertByPriority(lane->queue, req);
                     accepted = true;
                 }
-            } else {
-                insertByPriority(lane->queue, req);
-                accepted = true;
             }
         }
 
@@ -796,27 +801,24 @@ void AsyncDecoder::insertByPriority(std::deque<DecodeRequest>& queue, const Deco
     queue.insert(insertAt, req);
 }
 
-void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
-                                             std::deque<DecodeRequest>& queue,
-                                             QVector<DroppedCallback>* droppedCallbacks) {
+bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
+                                              std::deque<DecodeRequest>& queue,
+                                              QVector<DroppedCallback>* droppedCallbacks) {
     if (!droppedCallbacks) {
-        return;
+        return false;
     }
 
+    // Visible-request coalescing is now handled by FrameDispatcher before dispatch.
+    // This method only handles basic superseding for non-visible requests within
+    // the decoder's queue (e.g., prefetch requests that are no longer relevant).
+    bool coalesced = false;
     for (int i = static_cast<int>(queue.size()) - 1; i >= 0; --i) {
-        const DecodeRequest& queued = queue[static_cast<size_t>(i)];
+        DecodeRequest& queued = queue[static_cast<size_t>(i)];
         if (queued.filePath != req.filePath) {
             continue;
         }
-        if (req.kind == DecodeRequestKind::Visible &&
-            queued.kind == DecodeRequestKind::Visible &&
-            qAbs(queued.frameNumber - req.frameNumber) > kQueuedVisibleSupersedeSlackFrames) {
-            if (queue[static_cast<size_t>(i)].callback) {
-                droppedCallbacks->push_back(
-                    DroppedCallback{queue[static_cast<size_t>(i)].kind,
-                                    std::move(queue[static_cast<size_t>(i)].callback)});
-            }
-            queue.erase(queue.begin() + i);
+        // Skip visible requests - they are managed by FrameDispatcher
+        if (queued.kind == DecodeRequestKind::Visible) {
             continue;
         }
         if (queued.frameNumber >= req.frameNumber) {
@@ -825,22 +827,15 @@ void AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         if (queued.priority > req.priority) {
             continue;
         }
-        if (queued.kind == DecodeRequestKind::Visible &&
-            req.kind == DecodeRequestKind::Visible) {
-            continue;
-        }
-        if (queued.kind == DecodeRequestKind::Visible &&
-            req.kind != DecodeRequestKind::Visible) {
-            continue;
-        }
 
-        if (queue[static_cast<size_t>(i)].callback) {
+        if (queued.callback) {
             droppedCallbacks->push_back(
-                DroppedCallback{queue[static_cast<size_t>(i)].kind,
-                                std::move(queue[static_cast<size_t>(i)].callback)});
+                DroppedCallback{queued.kind,
+                                std::move(queued.callback)});
         }
         queue.erase(queue.begin() + i);
     }
+    return coalesced;
 }
 
 void AsyncDecoder::recordNullCallback(DecodeRequestKind kind, const char* reason) {

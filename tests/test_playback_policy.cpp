@@ -176,7 +176,7 @@ void TestPlaybackPolicy::testPlaybackClockCoordinator() {
 
     input.audioClockStallTicks = 3;
     decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTimelineTimer);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::WaitForAudioClock);
     QCOMPARE(decision.reason, QStringLiteral("audio_clock_stalled"));
 
     input.audioSample = frameToSamples(121);

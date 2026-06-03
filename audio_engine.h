@@ -816,6 +816,16 @@ public:
     }
 
     int64_t currentSample() const {
+        const int64_t audibleSample = playbackClockSample();
+        int64_t previous = m_lastReportedCurrentSample.load(std::memory_order_acquire);
+        while (audibleSample > previous &&
+               !m_lastReportedCurrentSample.compare_exchange_weak(
+                   previous, audibleSample, std::memory_order_release, std::memory_order_acquire)) {
+        }
+        return qMax(previous, audibleSample);
+    }
+
+    int64_t playbackClockSample() const {
         const int64_t submittedSample = m_audioClockSample.load(std::memory_order_acquire);
         const qreal playbackRate = qBound<qreal>(
             0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
@@ -828,13 +838,7 @@ public:
             static_cast<int64_t>(std::llround(
                 static_cast<long double>(qMax<long>(0, latencyFrames)) *
                 static_cast<long double>(playbackRate))));
-        const int64_t audibleSample = qMax<int64_t>(0, submittedSample - latencyTimelineSamples);
-        int64_t previous = m_lastReportedCurrentSample.load(std::memory_order_acquire);
-        while (audibleSample > previous &&
-               !m_lastReportedCurrentSample.compare_exchange_weak(
-                   previous, audibleSample, std::memory_order_release, std::memory_order_acquire)) {
-        }
-        return qMax(previous, audibleSample);
+        return qMax<int64_t>(0, submittedSample - latencyTimelineSamples);
     }
 
     int64_t currentFrame() const {
