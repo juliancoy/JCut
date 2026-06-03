@@ -349,6 +349,8 @@ QJsonObject VulkanPreviewSurface::pipelineHealthSnapshot() const
         snapshot.insert(QStringLiteral("playback_dropped_presentation_frames"),
                         m_playbackPipeline->droppedPresentationFrameCount());
         snapshot.insert(QStringLiteral("playback_decode"), m_playbackPipeline->decodeDiagnostics());
+        snapshot.insert(QStringLiteral("playback_frame_trace"),
+                        m_playbackPipeline->frameTraceSnapshot(200));
     }
     snapshot.insert(QStringLiteral("visible_request_attempts"), static_cast<double>(m_visibleRequestAttempts));
     snapshot.insert(QStringLiteral("visible_request_dispatched"), static_cast<double>(m_visibleRequestDispatched));
