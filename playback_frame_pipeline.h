@@ -15,15 +15,11 @@
 
 namespace editor {
 
-// Forward declaration
-class FrameDispatcher;
-
 class PlaybackFramePipeline : public QObject {
     Q_OBJECT
 
 public:
     explicit PlaybackFramePipeline(AsyncDecoder* decoder,
-                                   FrameDispatcher* dispatcher = nullptr,
                                    QObject* parent = nullptr);
     ~PlaybackFramePipeline() override;
 
@@ -106,6 +102,12 @@ private:
         qint64 lastVisibleFrame = -1;
         qint64 lastVisibleWaitMs = -1;
         qint64 maxVisibleWaitMs = 0;
+        qint64 lastVisibleRetentionFrames = 0;
+        qint64 lastVisibleRetentionLatencyFrames = 0;
+        qint64 lastConfiguredPlaybackWindowAhead = 0;
+        qint64 lastEffectivePlaybackWindowAhead = 0;
+        qint64 lastPendingVisibleRequests = 0;
+        qint64 lastCancelKeepFromFrame = -1;
         qint64 lastVisibleQtDeliveryDelayMs = -1;
         qint64 maxVisibleQtDeliveryDelayMs = 0;
         qint64 lastCompletedAtMs = 0;
@@ -125,13 +127,12 @@ private:
     };
 
     AsyncDecoder* m_decoder = nullptr;
-    FrameDispatcher* m_dispatcher = nullptr;
-
-    // Legacy pending tracking (used when no dispatcher is configured)
     mutable QMutex m_pendingMutex;
     QSet<QString> m_pendingVisibleRequests;
     QSet<QString> m_pendingPrefetchRequests;
     QHash<QString, int64_t> m_latestVisibleTargets;
+    QHash<QString, int64_t> m_lastCancelKeepFromByPath;
+    QHash<QString, qint64> m_lastCancelAtMsByPath;
 
     mutable QMutex m_clipsMutex;
     QHash<QString, ClipInfo> m_clips;

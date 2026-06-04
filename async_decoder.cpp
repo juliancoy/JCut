@@ -808,16 +808,15 @@ bool AsyncDecoder::collectSupersededRequests(const DecodeRequest& req,
         return false;
     }
 
-    // Visible-request coalescing is now handled by FrameDispatcher before dispatch.
-    // This method only handles basic superseding for non-visible requests within
-    // the decoder's queue (e.g., prefetch requests that are no longer relevant).
+    // Visible requests are never proximity-superseded here. The current visible
+    // frame must either complete exactly or fail explicitly so preview callers can
+    // distinguish starvation from successful presentation.
     bool coalesced = false;
     for (int i = static_cast<int>(queue.size()) - 1; i >= 0; --i) {
         DecodeRequest& queued = queue[static_cast<size_t>(i)];
         if (queued.filePath != req.filePath) {
             continue;
         }
-        // Skip visible requests - they are managed by FrameDispatcher
         if (queued.kind == DecodeRequestKind::Visible) {
             continue;
         }

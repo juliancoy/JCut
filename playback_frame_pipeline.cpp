@@ -1,7 +1,7 @@
 #include "playback_frame_pipeline.h"
 #include "debug_controls.h"
+#include "editor_shared_timing.h"
 #include "frame_buffer_utils.h"
-#include "frame_dispatcher.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>
@@ -188,20 +188,9 @@ void PlaybackFramePipeline::PlaybackBuffer::trimLocked() {
 }
 
 PlaybackFramePipeline::PlaybackFramePipeline(AsyncDecoder* decoder,
-                                             FrameDispatcher* dispatcher,
                                              QObject* parent)
-    : QObject(parent), m_decoder(decoder), m_dispatcher(dispatcher) {
-    if (m_dispatcher) {
-        // Route completed frames from the dispatcher into our playback buffers
-        connect(m_dispatcher, &FrameDispatcher::frameAvailable,
-                this, [this](const QString& /*filePath*/, int64_t /*frameNumber*/) {
-                    // The dispatcher's onFrameDecoded already invokes callbacks
-                    // that insert into our buffers. This signal just notifies us
-                    // that a new frame may be available.
-                    emit frameAvailable();
-                });
-    } else if (m_decoder) {
-        // Fallback: connect directly to decoder (legacy path)
+    : QObject(parent), m_decoder(decoder) {
+    if (m_decoder) {
         connect(m_decoder, &AsyncDecoder::frameReady, this, &PlaybackFramePipeline::onFrameReady);
     }
 }
@@ -262,8 +251,6 @@ void PlaybackFramePipeline::setPlayheadFrame(int64_t playheadFrame) {
 }
 
 void PlaybackFramePipeline::dropStaleRequestsForPlayhead(int64_t playheadFrame) {
-    // Stale request pruning is now handled by FrameDispatcher::cancelBefore()
-    // which is called from schedulePlaybackWindow().
     Q_UNUSED(playheadFrame);
 }
 
@@ -272,7 +259,7 @@ void PlaybackFramePipeline::requestFramesForSample(int64_t samplePosition,
     if (!m_active.load()) {
         return;
     }
-    if (!m_decoder && !m_dispatcher) {
+    if (!m_decoder) {
         return;
     }
 
@@ -343,11 +330,8 @@ bool PlaybackFramePipeline::isFrameBuffered(const QString& clipId, int64_t frame
 }
 
 int PlaybackFramePipeline::pendingVisibleRequestCount() const {
-    if (m_dispatcher) {
-        return m_dispatcher->pendingCount();
-    }
-    // Legacy fallback: no dispatcher configured, return 0
-    return 0;
+    QMutexLocker lock(&m_pendingMutex);
+    return m_pendingVisibleRequests.size();
 }
 
 int PlaybackFramePipeline::bufferedFrameCount() const {
@@ -379,6 +363,15 @@ QJsonObject PlaybackFramePipeline::decodeDiagnostics() const {
         {QStringLiteral("last_visible_outcome"), m_decodeDiagnostics.lastVisibleOutcome},
         {QStringLiteral("last_visible_wait_ms"), m_decodeDiagnostics.lastVisibleWaitMs},
         {QStringLiteral("max_visible_wait_ms"), m_decodeDiagnostics.maxVisibleWaitMs},
+        {QStringLiteral("last_visible_retention_frames"), m_decodeDiagnostics.lastVisibleRetentionFrames},
+        {QStringLiteral("last_visible_retention_latency_frames"), m_decodeDiagnostics.lastVisibleRetentionLatencyFrames},
+        {QStringLiteral("last_configured_playback_window_ahead"),
+         m_decodeDiagnostics.lastConfiguredPlaybackWindowAhead},
+        {QStringLiteral("last_effective_playback_window_ahead"),
+         m_decodeDiagnostics.lastEffectivePlaybackWindowAhead},
+        {QStringLiteral("last_pending_visible_requests"),
+         m_decodeDiagnostics.lastPendingVisibleRequests},
+        {QStringLiteral("last_cancel_keep_from_frame"), m_decodeDiagnostics.lastCancelKeepFromFrame},
         {QStringLiteral("last_visible_qt_delivery_delay_ms"),
          m_decodeDiagnostics.lastVisibleQtDeliveryDelayMs},
         {QStringLiteral("max_visible_qt_delivery_delay_ms"),
@@ -493,20 +486,40 @@ void PlaybackFramePipeline::clearBuffers() {
             }
         }
     }
-    if (m_dispatcher) {
-        m_dispatcher->cancelAll();
-    }
     m_droppedPresentationFrames.store(0);
 }
 
 void PlaybackFramePipeline::cancelDecoderBeforeThrottled(const QString& playbackPath,
                                                          int64_t keepFromFrame,
                                                          qint64 nowMs) {
-    // Cancel-before is now handled by FrameDispatcher::cancelBefore()
-    // which is called from schedulePlaybackWindow().
-    Q_UNUSED(playbackPath);
-    Q_UNUSED(keepFromFrame);
-    Q_UNUSED(nowMs);
+    if (!m_decoder || playbackPath.isEmpty()) {
+        return;
+    }
+
+    const qint64 currentMs = nowMs >= 0 ? nowMs : QDateTime::currentMSecsSinceEpoch();
+    QMutexLocker pendingLock(&m_pendingMutex);
+    const int64_t previousKeepFrom =
+        m_lastCancelKeepFromByPath.value(playbackPath, std::numeric_limits<int64_t>::min());
+    const qint64 previousCancelAt = m_lastCancelAtMsByPath.value(playbackPath, 0);
+    if (keepFromFrame <= previousKeepFrom) {
+        return;
+    }
+    const bool advancedEnough =
+        keepFromFrame >= previousKeepFrom + debugCancelBeforeMinFrameAdvance();
+    const bool overdue =
+        previousCancelAt <= 0 || (currentMs - previousCancelAt) >= debugCancelBeforeMinIntervalMs();
+    if (!advancedEnough && !overdue) {
+        return;
+    }
+    m_lastCancelKeepFromByPath.insert(playbackPath, keepFromFrame);
+    m_lastCancelAtMsByPath.insert(playbackPath, currentMs);
+    pendingLock.unlock();
+
+    m_decoder->cancelForFileBefore(playbackPath, keepFromFrame);
+    recordFrameTraceEvent(QStringLiteral("cancel_before"),
+                          QString(),
+                          keepFromFrame,
+                          playbackPath);
 }
 
 void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
@@ -515,102 +528,104 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                                                    const QVector<RenderSyncMarker>& markers,
                                                    const std::function<void()>& onFrameReady) {
     const bool isSequenceClip = isImageSequencePlaybackClip(info.clip);
-    const int playbackWindowAhead = isSequenceClip
-                                        ? debugPlaybackWindowAhead()
-                                        : static_cast<int>(debugFileVideoPlaybackWindowAhead());
-    if (info.isSingleFrame || !m_active.load() || playbackWindowAhead < 0) {
+    const int configuredPlaybackWindowAhead = isSequenceClip
+                                                  ? debugPlaybackWindowAhead()
+                                                  : debugFileVideoPlaybackWindowAhead();
+    if (info.isSingleFrame || !m_active.load() || configuredPlaybackWindowAhead < 0) {
         return;
     }
-    if (!m_decoder && !m_dispatcher) {
+    if (!m_decoder) {
         return;
     }
 
-    const int64_t keepWindow = isSequenceClip
-                                   ? debugSequenceVisibleDecodeKeepWindow()
-                                   : debugVisibleDecodeKeepWindow();
+    const int64_t configuredKeepWindow = isSequenceClip
+                                             ? debugSequenceVisibleDecodeKeepWindow()
+                                             : debugVisibleDecodeKeepWindow();
     const int64_t obsoleteVisibleFrameSlack = isSequenceClip
                                                   ? debugSequenceObsoleteVisibleFrameSlack()
                                                   : debugObsoleteVisibleFrameSlack();
     const int64_t lateBufferSeedSlack = isSequenceClip
                                             ? debugSequenceLateBufferSeedSlack()
                                             : obsoleteVisibleFrameSlack;
-
-    // Cancel-before via dispatcher (or legacy path)
-    if (m_dispatcher) {
-        m_dispatcher->cancelBefore(info.playbackPath,
-                                   qMax<int64_t>(0, canonicalFrame - keepWindow));
-    } else {
-        cancelDecoderBeforeThrottled(info.playbackPath,
-                                     qMax<int64_t>(0, canonicalFrame - keepWindow),
-                                     QDateTime::currentMSecsSinceEpoch());
+    const qreal sourceFps = qMax<qreal>(1.0, resolvedSourceFps(info.clip));
+    qint64 recentVisibleWaitMs = 0;
+    {
+        QMutexLocker diagnosticsLock(&m_decodeDiagnosticsMutex);
+        recentVisibleWaitMs =
+            qBound<qint64>(qint64{0}, m_decodeDiagnostics.lastVisibleWaitMs, qint64{500});
+    }
+    int pendingVisibleCount = 0;
+    {
+        QMutexLocker pendingLock(&m_pendingMutex);
+        pendingVisibleCount = m_pendingVisibleRequests.size();
+    }
+    int playbackWindowAhead = configuredPlaybackWindowAhead;
+    const int latencyLeadFrames = configuredPlaybackWindowAhead > 0
+        ? qBound(1,
+                 static_cast<int>(std::ceil(((recentVisibleWaitMs + 20) * sourceFps) / 1000.0)),
+                 configuredPlaybackWindowAhead)
+        : 0;
+    if (!isSequenceClip) {
+        if (pendingVisibleCount >= qMax(1, debugMaxVisibleBacklog()) ||
+            recentVisibleWaitMs > 33) {
+            playbackWindowAhead = qMin(configuredPlaybackWindowAhead,
+                                       qMax(1, latencyLeadFrames + 2));
+        } else if (recentVisibleWaitMs > 16) {
+            playbackWindowAhead = qMin(playbackWindowAhead,
+                                       qMax(2, latencyLeadFrames));
+        }
+    }
+    const int64_t latencyRetentionFrames =
+        qBound<int64_t>(int64_t{0},
+                        static_cast<int64_t>(std::ceil((recentVisibleWaitMs * sourceFps) / 1000.0)),
+                        int64_t{30});
+    const int64_t effectiveKeepWindow = isSequenceClip
+        ? configuredKeepWindow
+        : qMax<int64_t>(configuredKeepWindow,
+                        playbackWindowAhead +
+                            lateBufferSeedSlack +
+                            debugMaxPresentationPastFrameDelta() +
+                            latencyRetentionFrames +
+                            4);
+    const int64_t decoderKeepFromFrame =
+        qMax<int64_t>(0, canonicalFrame - obsoleteVisibleFrameSlack);
+    cancelDecoderBeforeThrottled(info.playbackPath,
+                                 decoderKeepFromFrame,
+                                 QDateTime::currentMSecsSinceEpoch());
+    {
+        QMutexLocker diagnosticsLock(&m_decodeDiagnosticsMutex);
+        m_decodeDiagnostics.lastVisibleRetentionFrames = effectiveKeepWindow;
+        m_decodeDiagnostics.lastVisibleRetentionLatencyFrames = latencyRetentionFrames;
+        m_decodeDiagnostics.lastConfiguredPlaybackWindowAhead = configuredPlaybackWindowAhead;
+        m_decodeDiagnostics.lastEffectivePlaybackWindowAhead = playbackWindowAhead;
+        m_decodeDiagnostics.lastPendingVisibleRequests = pendingVisibleCount;
+        m_decodeDiagnostics.lastCancelKeepFromFrame = decoderKeepFromFrame;
     }
 
-    for (int offset = 0; offset <= playbackWindowAhead; ++offset) {
+    const int firstOffset =
+        (!isSequenceClip && pendingVisibleCount >= qMax(1, debugMaxVisibleBacklog()))
+            ? 1
+            : 0;
+    for (int offset = firstOffset; offset <= playbackWindowAhead; ++offset) {
         const int64_t targetFrame = offset == 0
                                         ? canonicalFrame
-                                        : normalizeFrameNumber(
-                                              info,
-                                              sourceFrameForClipAtTimelineSample(
-                                                  info.clip,
-                                                  samplePosition + frameToSamples(offset),
-                                                  markers));
+                                        : (isSequenceClip
+                                               ? normalizeFrameNumber(
+                                                     info,
+                                                     sourceFrameForClipAtTimelineSample(
+                                                         info.clip,
+                                                         samplePosition + frameToSamples(offset),
+                                                         markers))
+                                               : normalizeFrameNumber(info, canonicalFrame + offset));
         const QString key = requestKey(info.clip.id, targetFrame);
         if (isFrameBuffered(info.clip.id, targetFrame)) {
             continue;
         }
 
-        // Check if already pending (via dispatcher or legacy pending sets)
-        if (m_dispatcher) {
-            if (m_dispatcher->isPending(info.playbackPath, targetFrame)) {
-                continue;
-            }
-            // Proximity dedup via dispatcher
-            if (offset == 0 && obsoleteVisibleFrameSlack > 0 &&
-                m_dispatcher->isNearbyPending(info.playbackPath, targetFrame,
-                                              static_cast<int>(obsoleteVisibleFrameSlack))) {
-                recordFrameTraceEvent(QStringLiteral("nearby_pending_skip"),
-                                      info.clip.id, targetFrame,
-                                      QStringLiteral("slack=%1").arg(obsoleteVisibleFrameSlack));
-                playbackPipelineTrace(QStringLiteral("schedulePlaybackWindow.nearby-pending-skip"),
-                                      QStringLiteral("clip=%1 target=%2 slack=%3")
-                                          .arg(info.clip.id)
-                                          .arg(targetFrame)
-                                          .arg(obsoleteVisibleFrameSlack));
-                continue;
-            }
-        } else {
-            // Legacy path: check local pending sets
+        {
             QMutexLocker pendingLock(&m_pendingMutex);
             if (m_pendingVisibleRequests.contains(key) || m_pendingPrefetchRequests.contains(key)) {
                 continue;
-            }
-            // Proximity dedup on local pending sets
-            if (offset == 0 && obsoleteVisibleFrameSlack > 0) {
-                const QString clipPrefix = info.clip.id + QLatin1Char(':');
-                bool nearbyPending = false;
-                for (auto it = m_pendingVisibleRequests.cbegin(); it != m_pendingVisibleRequests.cend(); ++it) {
-                    if (!it->startsWith(clipPrefix)) {
-                        continue;
-                    }
-                    const QStringView ref = QStringView(*it).mid(clipPrefix.length());
-                    bool ok = false;
-                    const int64_t pendingFrame = ref.toLongLong(&ok);
-                    if (ok && qAbs(pendingFrame - targetFrame) <= obsoleteVisibleFrameSlack) {
-                        nearbyPending = true;
-                        break;
-                    }
-                }
-                if (nearbyPending) {
-                    recordFrameTraceEvent(QStringLiteral("nearby_pending_skip"),
-                                          info.clip.id, targetFrame,
-                                          QStringLiteral("slack=%1").arg(obsoleteVisibleFrameSlack));
-                    playbackPipelineTrace(QStringLiteral("schedulePlaybackWindow.nearby-pending-skip"),
-                                          QStringLiteral("clip=%1 target=%2 slack=%3")
-                                              .arg(info.clip.id)
-                                              .arg(targetFrame)
-                                              .arg(obsoleteVisibleFrameSlack));
-                    continue;
-                }
             }
             if (offset == 0) {
                 m_pendingVisibleRequests.insert(key);
@@ -625,7 +640,7 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
         const qint64 requestedAtWallMs = QDateTime::currentMSecsSinceEpoch();
         const DecodeRequestKind kind = offset == 0 ? DecodeRequestKind::Visible
                                                    : DecodeRequestKind::Prefetch;
-        const int priority = kind == DecodeRequestKind::Visible ? 100 : qMax(80, 99 - offset);
+        const int priority = kind == DecodeRequestKind::Visible ? 100 : qMax(10, 60 - offset);
         {
             QMutexLocker diagnosticsLock(&m_decodeDiagnosticsMutex);
             if (kind == DecodeRequestKind::Visible) {
@@ -681,10 +696,11 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                 if (!self) {
                     return;
                 }
-                // Remove from local pending sets (used both in legacy path and
-                // when the dispatcher rate-limited the request and we tracked it locally).
+                int64_t latestTargetFrame = targetFrame;
+                // Remove from local pending sets.
                 {
                     QMutexLocker pendingLock(&self->m_pendingMutex);
+                    latestTargetFrame = self->m_latestVisibleTargets.value(clipId, targetFrame);
                     if (kind == DecodeRequestKind::Visible) {
                         self->m_pendingVisibleRequests.remove(key);
                         const int64_t latest = self->m_latestVisibleTargets.value(clipId, targetFrame);
@@ -697,12 +713,13 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                 }
 
                 const int64_t playheadFrame = self->m_playheadFrame.load();
+                Q_UNUSED(playheadFrame);
                 const bool obsoleteForPresentation =
                     !frame.isNull() &&
-                    targetFrame < qMax<int64_t>(0, playheadFrame - obsoleteVisibleFrameSlack);
+                    targetFrame < qMax<int64_t>(0, latestTargetFrame - obsoleteVisibleFrameSlack);
                 const bool bufferableLateCompletion =
                     !frame.isNull() &&
-                    targetFrame >= qMax<int64_t>(0, playheadFrame - lateBufferSeedSlack);
+                    targetFrame >= qMax<int64_t>(0, latestTargetFrame - lateBufferSeedSlack);
 
                 if (!frame.isNull() &&
                     (!obsoleteForPresentation || bufferableLateCompletion)) {
@@ -787,37 +804,12 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                 Qt::QueuedConnection);
         };
 
-        // Dispatch via dispatcher or legacy decoder path
-        if (m_dispatcher) {
-            const bool accepted = m_dispatcher->requestFrame(
-                info.playbackPath,
-                targetFrame,
-                priority,
-                kind == DecodeRequestKind::Visible ? 30000 : 12000,
-                kind,
-                std::move(completionCallback));
-            if (!accepted) {
-                // Rate-limited or rejected — track locally so we don't
-                // retry this frame on every tick.
-                QMutexLocker pendingLock(&m_pendingMutex);
-                if (kind == DecodeRequestKind::Visible) {
-                    m_pendingVisibleRequests.insert(key);
-                    m_latestVisibleTargets.insert(info.clip.id, targetFrame);
-                } else {
-                    m_pendingPrefetchRequests.insert(key);
-                }
-                recordFrameTraceEvent(QStringLiteral("rate_limited"),
-                                      info.clip.id, targetFrame,
-                                      QStringLiteral("canonical=%1").arg(canonicalFrame));
-            }
-        } else {
-            m_decoder->requestFrame(info.playbackPath,
-                                    targetFrame,
-                                    priority,
-                                    kind == DecodeRequestKind::Visible ? 30000 : 12000,
-                                    kind,
-                                    std::move(completionCallback));
-        }
+        m_decoder->requestFrame(info.playbackPath,
+                                targetFrame,
+                                priority,
+                                kind == DecodeRequestKind::Visible ? 30000 : 12000,
+                                kind,
+                                std::move(completionCallback));
     }
 }
 

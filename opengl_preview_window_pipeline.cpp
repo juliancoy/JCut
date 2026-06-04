@@ -97,13 +97,6 @@ bool PreviewWindow::warmPlaybackLookahead(int futureFrames, int timeoutMs) {
         for (int offset = 0; offset <= cappedFutureFrames; ++offset) {
             const int64_t targetSample = m_interaction.currentSample + frameToSamples(offset);
             preparePlaybackAdvanceSample(targetSample);
-            if (m_playbackPipeline) {
-                m_playbackPipeline->requestFramesForSample(
-                    targetSample,
-                    [this]() {
-                        QMetaObject::invokeMethod(this, [this]() { scheduleRepaint(); }, Qt::QueuedConnection);
-                    });
-            }
         }
 
         QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
@@ -165,14 +158,10 @@ void PreviewWindow::ensurePipeline() {
         budget->setMaxCpuMemory(1536 * 1024 * 1024); // 1.5GB
     }
 
-    // Create the unified FrameDispatcher that both TimelineCache and
-    // PlaybackFramePipeline will use for decode requests.
-    m_dispatcher = std::make_unique<FrameDispatcher>(m_decoder.get());
-
     m_cache = std::make_unique<TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(),
-                                              m_dispatcher.get(), this);
+                                              this);
     m_playbackPipeline = std::make_unique<PlaybackFramePipeline>(m_decoder.get(),
-                                                                  m_dispatcher.get(), this);
+                                                                  this);
     connect(m_cache.get(), &TimelineCache::frameLoaded, this,
             [this](const QString&, int64_t, FrameHandle frame) {
                 if (frame.isNull()) {

@@ -78,6 +78,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         obj[QStringLiteral("speakerFramingBakedTargetYNorm")] = clip.speakerFramingBakedTargetYNorm;
         obj[QStringLiteral("speakerFramingBakedTargetBoxNorm")] = clip.speakerFramingBakedTargetBoxNorm;
         obj[QStringLiteral("speakerFramingMinConfidence")] = clip.speakerFramingMinConfidence;
+        obj[QStringLiteral("speakerFramingManualTrackId")] = clip.speakerFramingManualTrackId;
+        obj[QStringLiteral("speakerFramingManualStreamId")] = clip.speakerFramingManualStreamId;
         obj[QStringLiteral("speakerFramingCenterSmoothingFrames")] = clip.speakerFramingCenterSmoothingFrames;
         obj[QStringLiteral("speakerFramingZoomSmoothingFrames")] = clip.speakerFramingZoomSmoothingFrames;
         obj[QStringLiteral("speakerFramingSmoothingMode")] = clip.speakerFramingSmoothingMode;
@@ -401,6 +403,10 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.speakerFramingBakedTargetBoxNorm = obj.value(QStringLiteral("speakerFramingBakedTargetBoxNorm"))
             .toDouble(-1.0);
         clip.speakerFramingMinConfidence = obj.value(QStringLiteral("speakerFramingMinConfidence")).toDouble(0.08);
+        clip.speakerFramingManualTrackId =
+            obj.value(QStringLiteral("speakerFramingManualTrackId")).toInt(-1);
+        clip.speakerFramingManualStreamId =
+            obj.value(QStringLiteral("speakerFramingManualStreamId")).toString().trimmed();
         clip.speakerFramingCenterSmoothingFrames =
             qBound(0,
                    obj.value(QStringLiteral("speakerFramingCenterSmoothingFrames")).toInt(0),

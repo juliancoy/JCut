@@ -100,7 +100,7 @@ void recordRenderSkip(QJsonArray* skippedClips,
                       QJsonObject* skippedReasonCounts,
                       const TimelineClip& clip,
                       const QString& reason,
-                      int64_t timelineFrame,
+                      qreal timelineFrame,
                       int64_t localFrame = -1);
 void accumulateClipStageStats(QHash<QString, RenderClipStageStats>* clipStageStats,
                               const TimelineClip& clip,
@@ -227,7 +227,7 @@ public:
 
     virtual bool initialize(const QSize& outputSize, QString* errorMessage) = 0;
     virtual QImage renderFrame(const RenderRequest& request,
-                               int64_t timelineFrame,
+                               qreal timelineFrame,
                                QHash<QString, editor::DecoderContext*>& decoders,
                                editor::AsyncDecoder* asyncDecoder,
                                QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -261,7 +261,7 @@ public:
         return output.cpuImage;
     }
     virtual bool renderFrameToOutput(const RenderRequest& request,
-                                     int64_t timelineFrame,
+                                     qreal timelineFrame,
                                      QHash<QString, editor::DecoderContext*>& decoders,
                                      editor::AsyncDecoder* asyncDecoder,
                                      QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -336,7 +336,7 @@ public:
 
     bool initialize(const QSize& outputSize, QString* errorMessage) override;
     QImage renderFrame(const RenderRequest& request,
-                       int64_t timelineFrame,
+                       qreal timelineFrame,
                        QHash<QString, editor::DecoderContext*>& decoders,
                        editor::AsyncDecoder* asyncDecoder,
                        QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -349,7 +349,7 @@ public:
                        QJsonArray* skippedClips = nullptr,
                        QJsonObject* skippedReasonCounts = nullptr) override;
     bool renderFrameToOutput(const RenderRequest& request,
-                             int64_t timelineFrame,
+                             qreal timelineFrame,
                              QHash<QString, editor::DecoderContext*>& decoders,
                              editor::AsyncDecoder* asyncDecoder,
                              QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -384,7 +384,7 @@ public:
 
     bool initialize(const QSize& outputSize, QString* errorMessage) override;
     QImage renderFrame(const RenderRequest& request,
-                       int64_t timelineFrame,
+                       qreal timelineFrame,
                        QHash<QString, editor::DecoderContext*>& decoders,
                        editor::AsyncDecoder* asyncDecoder,
                        QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -397,7 +397,7 @@ public:
                        QJsonArray* skippedClips = nullptr,
                        QJsonObject* skippedReasonCounts = nullptr) override;
     bool renderFrameToOutput(const RenderRequest& request,
-                             int64_t timelineFrame,
+                             qreal timelineFrame,
                              QHash<QString, editor::DecoderContext*>& decoders,
                              editor::AsyncDecoder* asyncDecoder,
                              QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -444,7 +444,7 @@ private:
 };
 
 QImage renderTimelineFrame(const RenderRequest& request,
-                           int64_t timelineFrame,
+                           qreal timelineFrame,
                            QHash<QString, editor::DecoderContext*>& decoders,
                            editor::AsyncDecoder* asyncDecoder,
                            QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -454,7 +454,7 @@ QImage renderTimelineFrame(const RenderRequest& request,
                            QJsonObject* skippedReasonCounts = nullptr);
 
 bool renderTimelineFrameToOutput(const RenderRequest& request,
-                                 int64_t timelineFrame,
+                                 qreal timelineFrame,
                                  QHash<QString, editor::DecoderContext*>& decoders,
                                  editor::AsyncDecoder* asyncDecoder,
                                  QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,

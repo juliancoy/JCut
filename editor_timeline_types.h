@@ -182,6 +182,8 @@ struct TimelineClip {
     qreal speakerFramingBakedTargetYNorm = 0.35;
     qreal speakerFramingBakedTargetBoxNorm = -1.0;
     qreal speakerFramingMinConfidence = 0.08;
+    int speakerFramingManualTrackId = -1;
+    QString speakerFramingManualStreamId;
     int speakerFramingCenterSmoothingFrames = 0;
     int speakerFramingZoomSmoothingFrames = 0;
     int speakerFramingSmoothingMode = 0;

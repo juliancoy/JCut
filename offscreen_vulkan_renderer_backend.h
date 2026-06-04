@@ -21,6 +21,7 @@ extern "C" {
 #include <cuda.h>
 #endif
 #include <vulkan/vulkan.h>
+#include <cmath>
 #include <cstring>
 #include <unistd.h>
 
@@ -2865,7 +2866,7 @@ bool OffscreenVulkanRenderer::initialize(const QSize& outputSize, QString* error
 }
 
 QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
-                                            int64_t timelineFrame,
+                                            qreal timelineFrame,
                                             QHash<QString, editor::DecoderContext*>& decoders,
                                             editor::AsyncDecoder* asyncDecoder,
                                             QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -2930,7 +2931,8 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
             if (clip.titleKeyframes.isEmpty()) {
                 continue;
             }
-            const int64_t localFrame = qMax<int64_t>(0, timelineFrame - clip.startFrame);
+            const int64_t localFrame =
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame - clip.startFrame)));
             const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
             const EvaluatedTitle title = composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(grade.opacity));
             if (!title.valid || title.text.isEmpty() || title.opacity <= 0.001) {
@@ -3028,7 +3030,11 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
     }
     if (hasTranscriptCandidate) {
         const OverlayImage transcriptLayer =
-            d->buildTranscriptOverlayImage(request.outputSize, request, timelineFrame, orderedClips);
+            d->buildTranscriptOverlayImage(
+                request.outputSize,
+                request,
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
+                orderedClips);
         transcriptLayerBounds = alphaBoundsForOverlayImage(transcriptLayer);
         OffscreenVulkanRendererPrivate::LayerInput overlay;
         overlay.overlayImage = transcriptLayer;
@@ -3092,7 +3098,7 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
 
 bool OffscreenVulkanRenderer::renderFrameToOutput(
     const RenderRequest& request,
-    int64_t timelineFrame,
+    qreal timelineFrame,
     QHash<QString, editor::DecoderContext*>& decoders,
     editor::AsyncDecoder* asyncDecoder,
     QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,

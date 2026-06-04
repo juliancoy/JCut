@@ -269,23 +269,46 @@ void TestDirectVulkanHandoffPipelineContract::visibleDecodePriorityUsesTimelineD
 
     const QString surface = readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
     QVERIFY2(!surface.isEmpty(), "vulkan_preview_surface.cpp must be readable");
-    QVERIFY2(surface.contains(QStringLiteral("effectivePlaybackLookaheadFrames()")) &&
-                 surface.contains(QStringLiteral("targetSample + frameToSamples(offset)")),
-             "playback advance must schedule visible future frames, not just chase the current audio-clock frame");
-    QVERIFY2(surface.contains(QStringLiteral("dispatch_current_over_backlog")),
-             "exact/current visible frame requests must be allowed through a saturated lookahead backlog");
-    QVERIFY2(surface.contains(QStringLiteral("if (!targetExact)")) &&
-                 surface.contains(QStringLiteral("if (!targetDisplayable)")) &&
-                 surface.contains(QStringLiteral("continue;")) &&
-                 surface.contains(QStringLiteral("for (int offset = 1; offset <= lookaheadFrames; ++offset)")),
-             "lookahead scheduling must request exact target frames while only gating readiness on displayable frames");
+    QVERIFY2(surface.contains(QStringLiteral("m_playbackPipeline->requestFramesForSample")) &&
+                 surface.contains(QStringLiteral("playback_pipeline_window")),
+             "active direct-Vulkan playback must route visible decode through PlaybackFramePipeline");
+    const int prepareStart = surface.indexOf(QStringLiteral("bool VulkanPreviewSurface::preparePlaybackAdvanceSample"));
+    const int lookaheadStart = surface.indexOf(QStringLiteral("bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered"));
+    QVERIFY2(prepareStart >= 0 && lookaheadStart > prepareStart,
+             "direct-Vulkan playback readiness probe must be present and bounded for source inspection");
+    const QString prepareBody = surface.mid(prepareStart, lookaheadStart - prepareStart);
+    QVERIFY2(!prepareBody.contains(QStringLiteral("requestFramesForSample")),
+             "preparePlaybackAdvanceSample must only check readiness; requestFramesForCurrentPosition is the single active scheduler");
+    const int warmupStart = surface.indexOf(QStringLiteral("bool VulkanPreviewSurface::warmPlaybackLookahead"));
+    QVERIFY2(warmupStart > lookaheadStart,
+             "direct-Vulkan startup warmup must be present for source inspection");
+    const QString warmupBody = surface.mid(warmupStart);
+    QVERIFY2(warmupBody.contains(QStringLiteral("m_playbackPipeline->requestFramesForSample")) &&
+                 !warmupBody.contains(QStringLiteral("requestFramesForCurrentPosition()")),
+             "startup warmup must schedule PlaybackFramePipeline directly because playback state is not active yet");
+    QVERIFY2(!surface.contains(QStringLiteral("m_cache->startPrefetching()")) &&
+                 !surface.contains(QStringLiteral("TimelineCache::PlaybackState::Playing")),
+             "direct-Vulkan active playback must not start TimelineCache playback prefetch alongside PlaybackFramePipeline");
+
+    const QString playbackPipeline = readSourceFile(QStringLiteral("playback_frame_pipeline.cpp"));
+    QVERIFY2(!playbackPipeline.isEmpty(), "playback_frame_pipeline.cpp must be readable");
+    QVERIFY2(playbackPipeline.contains(QStringLiteral("offset == 0 ? DecodeRequestKind::Visible")) &&
+                 playbackPipeline.contains(QStringLiteral(": DecodeRequestKind::Prefetch")),
+             "only the current playback sample is visible; future warmup must be prefetch");
+    QVERIFY2(playbackPipeline.contains(QStringLiteral("recentVisibleWaitMs > 33")) &&
+                 playbackPipeline.contains(QStringLiteral("pendingVisibleCount >= qMax(1, debugMaxVisibleBacklog())")) &&
+                 playbackPipeline.contains(QStringLiteral("latencyLeadFrames + 2")) &&
+                 playbackPipeline.contains(QStringLiteral("firstOffset")),
+             "playback prefetch must become latency-sized future buffering when current visible decode is late or already pending");
+    QVERIFY2(playbackPipeline.contains(QStringLiteral("kind == DecodeRequestKind::Visible ? 100 : qMax(10, 60 - offset)")),
+             "prefetch priority must be materially lower than current visible priority");
 
     const QString decoder = readSourceFile(QStringLiteral("async_decoder.cpp"));
     QVERIFY2(!decoder.isEmpty(), "async_decoder.cpp must be readable");
     QVERIFY2(decoder.contains(QStringLiteral("queued.kind == DecodeRequestKind::Visible")) &&
                  decoder.contains(QStringLiteral("req.kind == DecodeRequestKind::Visible")) &&
                  decoder.contains(QStringLiteral("continue;")),
-             "visible lookahead frames must coexist; newer visible frames must not supersede older visible frames");
+             "visible requests must not be hidden by proximity supersession; stale cancellation must be explicit");
 
     const QString cacheSource = readSourceFile(QStringLiteral("timeline_cache.cpp"));
     QVERIFY2(cacheSource.contains(QStringLiteral("effectiveVisibleDecodeKeepWindow()")),
@@ -295,12 +318,21 @@ void TestDirectVulkanHandoffPipelineContract::visibleDecodePriorityUsesTimelineD
     QVERIFY2(cacheSource.contains(QStringLiteral("kVisibleDecodeBaseKeepFrames = 96")) &&
                  cacheSource.contains(QStringLiteral("kVisibleDecodeMaxKeepFrames = 240")),
              "visible decode retention must retain the proven baseline while allowing bounded adaptation");
+    const int onDecodedStart = cacheSource.indexOf(QStringLiteral("void TimelineCache::onFrameDecoded"));
+    const int memoryPressureStart = cacheSource.indexOf(QStringLiteral("void TimelineCache::onMemoryPressure"));
+    QVERIFY2(onDecodedStart >= 0 && memoryPressureStart > onDecodedStart,
+             "TimelineCache global decoder completion hook must be present and bounded for source inspection");
+    const QString onDecodedBody = cacheSource.mid(onDecodedStart, memoryPressureStart - onDecodedStart);
+    QVERIFY2(!onDecodedBody.contains(QStringLiteral("m_playbackBuffers")),
+             "global decoder completions may seed cache, but must not populate TimelineCache playback buffers for PlaybackFramePipeline work");
 
     const QString cacheRequests = readSourceFile(QStringLiteral("timeline_cache_requests.cpp"));
-    QVERIFY2(cacheRequests.contains(QStringLiteral("effectiveVisibleDecodeKeepWindow()")),
-             "active visible request cancellation must use the same adaptive policy as cache playback resync");
     QVERIFY2(!cacheRequests.contains(QStringLiteral("kVisibleDecodeKeepWindow")),
              "timeline_cache_requests.cpp must not carry a second visible decode keep-window constant");
+    QVERIFY2(playbackPipeline.contains(QStringLiteral("cancelDecoderBeforeThrottled")) &&
+                 playbackPipeline.contains(QStringLiteral("m_decoder->cancelForFileBefore")) &&
+                 playbackPipeline.contains(QStringLiteral("decoderKeepFromFrame")),
+             "active playback visible request cancellation must live in PlaybackFramePipeline");
     QVERIFY2(cacheRequests.contains(QStringLiteral("previewMaxPlaybackStaleFrameDelta(sourceFps")) &&
                  cacheRequests.contains(QStringLiteral("previewFrameIsTooStaleForPlayback(frame, frameNumber, maxStaleFrameDelta)")),
              "cache displayability must reject stale approximate playback frames with the shared source-rate-aware preview stale-frame policy");

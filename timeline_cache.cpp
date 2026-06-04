@@ -1,7 +1,6 @@
 #include "timeline_cache.h"
 #include "debug_controls.h"
 #include "editor_shared_render_sync.h"
-#include "frame_dispatcher.h"
 #include "media_pipeline_shared.h"
 #include "preview_frame_selection.h"
 
@@ -178,9 +177,8 @@ bool isSingleFramePath(const QString& path) {
 
 TimelineCache::TimelineCache(AsyncDecoder* decoder,
                              MemoryBudget* budget,
-                             FrameDispatcher* dispatcher,
                              QObject* parent)
-    : QObject(parent), m_decoder(decoder), m_dispatcher(dispatcher), m_budget(budget) {
+    : QObject(parent), m_decoder(decoder), m_budget(budget) {
     m_prefetchTimer.setInterval(16);
     connect(&m_prefetchTimer, &QTimer::timeout, this, &TimelineCache::onPrefetchTimer);
     if (m_decoder) {
@@ -220,13 +218,15 @@ void TimelineCache::setMaxMemory(size_t bytes) {
 
 void TimelineCache::setPlayheadFrame(int64_t frame) {
     const int64_t previous = m_playhead.exchange(frame);
-    const bool discontinuousJump = qAbs(frame - previous) > kSeekGenerationDeltaFrames;
+    const bool playing = m_state.load() == PlaybackState::Playing;
+    const bool discontinuousJump =
+        !playing && qAbs(frame - previous) > kSeekGenerationDeltaFrames;
     if (discontinuousJump) {
         m_visibleRequestGeneration.fetch_add(1);
         beginSeekResyncForPlayhead(frame);
     }
 
-    if (m_state.load() == PlaybackState::Playing) {
+    if (playing) {
         dropStaleRequestsForPlayhead(frame);
     }
 }
@@ -676,14 +676,6 @@ void TimelineCache::onFrameDecoded(FrameHandle frame) {
     }
 
     for (const auto& target : targets) {
-        if (m_state.load() == PlaybackState::Playing) {
-            QMutexLocker lock(&m_clipsMutex);
-            auto it = m_playbackBuffers.find(target.first);
-            if (it != m_playbackBuffers.end() && it.value()) {
-                it.value()->insert(target.second, frame);
-            }
-        }
-
         if (ClipCache* cache = getOrCreateClipCache(target.first)) {
             cache->insert(target.second, frame);
         }

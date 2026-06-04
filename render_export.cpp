@@ -180,11 +180,20 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         }
         return a.startFrame < b.startFrame;
     });
+    const double outputFps = std::isfinite(request.outputFps) && request.outputFps > 0.001
+        ? request.outputFps
+        : static_cast<double>(kTimelineFps);
+    const qreal timelineFramesPerOutputFrame =
+        static_cast<qreal>(kTimelineFps) / static_cast<qreal>(outputFps);
     int64_t totalFramesToRender = 0;
     for (const ExportRangeSegment& range : exportRanges) {
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
-        totalFramesToRender += (exportEnd - exportStart + 1);
+        const qreal durationSeconds =
+            static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps);
+        totalFramesToRender += qMax<int64_t>(
+            1,
+            static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
     }
     const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips, request.tracks);
     QString gpuInitializationError;
@@ -705,13 +714,30 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         const ExportRangeSegment& range = exportRanges[segmentIndex];
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
+        const qreal durationSeconds =
+            static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps);
+        const int64_t segmentOutputFrames = qMax<int64_t>(
+            1,
+            static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
         prewarmRenderSequenceSegment(request,
                                      exportStart,
                                      exportEnd,
                                      orderedClips,
                                      &asyncDecoder,
                                      asyncFrameCache);
-        for (int64_t timelineFrame = exportStart; timelineFrame <= exportEnd; ++timelineFrame) {
+        for (int64_t segmentOutputFrame = 0;
+             segmentOutputFrame < segmentOutputFrames;
+             ++segmentOutputFrame) {
+            const qreal timelineFramePosition =
+                qMin<qreal>(static_cast<qreal>(exportEnd),
+                             static_cast<qreal>(exportStart) +
+                                 (static_cast<qreal>(segmentOutputFrame) *
+                                  timelineFramesPerOutputFrame));
+            const int64_t timelineFrame = qBound<int64_t>(
+                exportStart,
+                static_cast<int64_t>(std::floor(timelineFramePosition)),
+                exportEnd);
+            const int64_t outputFrameNumber = framesCompleted;
             enqueueRenderSequenceLookahead(request,
                                           timelineFrame,
                                           orderedClips,
@@ -776,7 +802,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             render_detail::OffscreenRenderFrame renderedFrame;
             const bool renderedOk = useGpuRenderer
                 ? activeRenderer->renderFrameToOutput(request,
-                                                      timelineFrame,
+                                                      timelineFramePosition,
                                                       decoders,
                                                       &asyncDecoder,
                                                       &asyncFrameCache,
@@ -791,7 +817,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                                       &frameSkippedClips,
                                                       &skippedReasonCounts)
                 : renderTimelineFrameToOutput(request,
-                                              timelineFrame,
+                                              timelineFramePosition,
                                               decoders,
                                               &asyncDecoder,
                                               &asyncFrameCache,
@@ -839,9 +865,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 QString extension = format;
                 
                 if (format == "webp") {
-                    imagePath = QString("%1/frame_%2.webp").arg(namedDirPath).arg(timelineFrame, 8, 10, QChar('0'));
+                    imagePath = QString("%1/frame_%2.webp").arg(namedDirPath).arg(outputFrameNumber, 8, 10, QChar('0'));
                 } else if (format == "jpeg" || format == "jpg") {
-                    imagePath = QString("%1/frame_%2.jpg").arg(namedDirPath).arg(timelineFrame, 8, 10, QChar('0'));
+                    imagePath = QString("%1/frame_%2.jpg").arg(namedDirPath).arg(outputFrameNumber, 8, 10, QChar('0'));
                     format = "JPEG";  // QImage expects "JPEG" not "jpeg"
                 } else {
                     qWarning() << "Unsupported image sequence format:" << request.imageSequenceFormat;

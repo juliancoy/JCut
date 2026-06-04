@@ -7,7 +7,6 @@
 #include "audio_preview_support.h"
 #include "debug_controls.h"
 #include "direct_vulkan_preview_presenter.h"
-#include "frame_dispatcher.h"
 #include "frame_handle.h"
 #include "media_pipeline_shared.h"
 #include "editor_shared.h"
@@ -306,8 +305,7 @@ void VulkanPreviewSurface::setPlaybackState(bool playing)
         applyAdaptivePlaybackTuning();
     }
     if (m_cache) {
-        m_cache->setPlaybackState(playing ? editor::TimelineCache::PlaybackState::Playing
-                                          : editor::TimelineCache::PlaybackState::Stopped);
+        m_cache->setPlaybackState(editor::TimelineCache::PlaybackState::Stopped);
     }
     if (m_playbackPipeline) {
         m_playbackPipeline->setPlaybackActive(playing);
@@ -927,12 +925,8 @@ void VulkanPreviewSurface::ensureFramePipeline()
         budget->setMaxGpuMemory(kVulkanPreviewGpuCacheBytes);
     }
 
-    // Create the unified FrameDispatcher that both TimelineCache and
-    // PlaybackFramePipeline will use for decode requests.
-    m_dispatcher = std::make_unique<editor::FrameDispatcher>(m_decoder.get());
-
     m_cache = std::make_unique<editor::TimelineCache>(m_decoder.get(), m_decoder->memoryBudget(),
-                                                      m_dispatcher.get());
+                                                      nullptr);
     m_cache->setMaxMemory(kVulkanPreviewCpuCacheBytes);
     if (editor::MemoryBudget* budget = m_decoder->memoryBudget()) {
         budget->setMaxCpuMemory(kVulkanPreviewCpuCacheBytes);
@@ -940,13 +934,11 @@ void VulkanPreviewSurface::ensureFramePipeline()
     }
     m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
     m_cache->setPlaybackSpeed(m_playbackSpeed);
-    m_cache->setPlaybackState(m_interaction.playing ? editor::TimelineCache::PlaybackState::Playing
-                                                     : editor::TimelineCache::PlaybackState::Stopped);
+    m_cache->setPlaybackState(editor::TimelineCache::PlaybackState::Stopped);
     m_cache->setPlayheadFrame(m_interaction.currentFrame);
     m_cache->setRenderSyncMarkers(m_interaction.renderSyncMarkers);
     m_cache->setExportRanges(m_interaction.exportRanges);
     m_playbackPipeline = std::make_unique<editor::PlaybackFramePipeline>(m_decoder.get(),
-                                                                          m_dispatcher.get(),
                                                                           m_pipelineOwner.get());
     m_playbackPipeline->setPlaybackActive(m_interaction.playing);
     m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
@@ -969,7 +961,6 @@ void VulkanPreviewSurface::ensureFramePipeline()
                          queueFrameStatusRefresh(false);
                      });
     registerVisibleClips();
-    m_cache->startPrefetching();
 }
 
 void VulkanPreviewSurface::registerVisibleClips()
@@ -1661,6 +1652,7 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
     m_playbackPipeline->setPlaybackActive(true);
     m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
 
+    const bool targetIsCurrentPresentationSample = targetSample == m_interaction.currentSample;
     bool ready = true;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.sourceKind == MediaSourceKind::ImageSequence || clip.filePath.isEmpty()) {
@@ -1673,40 +1665,12 @@ bool VulkanPreviewSurface::preparePlaybackAdvanceSample(int64_t targetSample)
         const int64_t localFrame = sourceFrameForSample(clip, targetSample);
         const bool targetDisplayable =
             !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull();
-        const bool targetExact = m_playbackPipeline->isFrameBuffered(clip.id, localFrame);
-        if (!targetExact) {
-            m_playbackPipeline->requestFramesForSample(
-                targetSample,
-                [this]() {
-                    if (!m_pipelineOwner) {
-                        return;
-                    }
-                    QMetaObject::invokeMethod(
-                        m_pipelineOwner.get(),
-                        [this]() {
-                            queueFrameStatusRefresh(false);
-                        },
-                        Qt::QueuedConnection);
-                });
-        }
         if (!targetDisplayable) {
-            ready = false;
+            if (targetIsCurrentPresentationSample) {
+                ready = false;
+            }
             continue;
         }
-
-        m_playbackPipeline->requestFramesForSample(
-            targetSample,
-            [this]() {
-                if (!m_pipelineOwner) {
-                    return;
-                }
-                QMetaObject::invokeMethod(
-                    m_pipelineOwner.get(),
-                    [this]() {
-                        queueFrameStatusRefresh(false);
-                    },
-                    Qt::QueuedConnection);
-            });
     }
     return ready;
 }
@@ -1757,15 +1721,25 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
     }
     m_playbackPipeline->setPlaybackActive(true);
     m_playbackPipeline->setPlayheadFrame(m_interaction.currentFrame);
-    const int cappedFutureFrames = std::min(futureFrames, effectivePlaybackLookaheadFrames());
+    const int cappedFutureFrames = qMin(futureFrames, effectivePlaybackLookaheadFrames());
+    m_playbackPipeline->requestFramesForSample(
+        m_interaction.currentSample,
+        [this]() {
+            if (!m_pipelineOwner) {
+                return;
+            }
+            QMetaObject::invokeMethod(
+                m_pipelineOwner.get(),
+                [this]() {
+                    queueFrameStatusRefresh(false);
+                },
+                Qt::QueuedConnection);
+        });
     QElapsedTimer timer;
     timer.start();
     while (timer.elapsed() < timeoutMs) {
         if (hasPlaybackLookaheadBuffered(cappedFutureFrames)) {
             return true;
-        }
-        for (int offset = 0; offset <= cappedFutureFrames; ++offset) {
-            preparePlaybackAdvanceSample(m_interaction.currentSample + frameToSamples(offset));
         }
         QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
         QThread::msleep(8);

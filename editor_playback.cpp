@@ -1112,20 +1112,16 @@ void EditorWindow::updatePlaybackTimerInterval()
         return;
     }
 
-    // Determine effective FPS for playback timer
+    // Determine effective FPS for playback timer. Audio can remain the clock
+    // source, but video scheduling still needs to tick at the active clip cadence.
     qreal effectiveFps = kTimelineFps;
-
-    // If no audio master, use the video clip's FPS
-    if (!shouldUseAudioMasterClock()) {
-        for (const TimelineClip& clip : m_timeline->clips()) {
-            const int64_t currentFrame = m_timeline->currentFrame();
-            // Find clip that contains current frame
-            if (currentFrame >= clip.startFrame && currentFrame < clip.startFrame + clip.durationFrames) {
-                const qreal clipFps = effectiveFpsForClip(clip);
-                if (clipFps > 0) {
-                    effectiveFps = clipFps;
-                    break;
-                }
+    for (const TimelineClip& clip : m_timeline->clips()) {
+        const int64_t currentFrame = m_timeline->currentFrame();
+        if (currentFrame >= clip.startFrame && currentFrame < clip.startFrame + clip.durationFrames) {
+            const qreal clipFps = effectiveFpsForClip(clip);
+            if (clipFps > 0) {
+                effectiveFps = qMax(effectiveFps, clipFps);
+                break;
             }
         }
     }

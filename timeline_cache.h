@@ -21,9 +21,6 @@
 
 namespace editor {
 
-// Forward declaration
-class FrameDispatcher;
-
 // ============================================================================
 // CachedFrame - Frame storage with metadata
 // ============================================================================
@@ -126,7 +123,6 @@ public:
 
     explicit TimelineCache(AsyncDecoder* decoder,
                            MemoryBudget* budget,
-                           FrameDispatcher* dispatcher = nullptr,
                            QObject* parent = nullptr);
     ~TimelineCache();
     
@@ -291,7 +287,6 @@ private:
     void evictOldestFrames(size_t targetMemory);
     
     AsyncDecoder* m_decoder = nullptr;
-    FrameDispatcher* m_dispatcher = nullptr;
     MemoryBudget* m_budget = nullptr;
     
     mutable QMutex m_clipsMutex;

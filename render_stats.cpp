@@ -1,5 +1,7 @@
 #include "render_internal.h"
 
+#include <cmath>
+
 namespace render_detail {
 
 size_t qHash(const RenderAsyncFrameKey& key, size_t seed) {
@@ -21,14 +23,14 @@ void recordRenderSkip(QJsonArray* skippedClips,
                       QJsonObject* skippedReasonCounts,
                       const TimelineClip& clip,
                       const QString& reason,
-                      int64_t timelineFrame,
+                      qreal timelineFrame,
                       int64_t localFrame) {
     if (skippedClips) {
         QJsonObject obj{
             {QStringLiteral("id"), clip.id},
             {QStringLiteral("label"), clip.label},
             {QStringLiteral("reason"), reason},
-            {QStringLiteral("timeline_frame"), static_cast<qint64>(timelineFrame)}
+            {QStringLiteral("timeline_frame"), static_cast<qint64>(std::floor(timelineFrame))}
         };
         if (localFrame >= 0) {
             obj.insert(QStringLiteral("local_frame"), static_cast<qint64>(localFrame));

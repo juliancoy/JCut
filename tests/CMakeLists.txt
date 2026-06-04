@@ -8,6 +8,8 @@ set(EDITOR_TEST_TARGETS
     test_transcript_tab_follow
     test_playback_policy
     test_temporal_sync_contract
+    test_realtime_render_contract
+    test_realtime_frame_loss_probe
     test_standard_preview_presentation_pipeline
     test_audio_time_stretch
     test_audio_time_stretch_cache
@@ -82,6 +84,8 @@ endif()
 set_tests_properties(
     test_playback_policy
     test_temporal_sync_contract
+    test_realtime_render_contract
+    test_realtime_frame_loss_probe
     test_standard_preview_presentation_pipeline
     test_timeline_cache
     test_audio_time_stretch_cache
@@ -186,6 +190,18 @@ target_sources(test_facedetections_flow
 )
 
 find_program(JCUT_PYTHON3_EXECUTABLE NAMES python3 python REQUIRED)
+
+add_test(
+    NAME test_live_playback_lag_probe
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/live_playback_lag_probe.py
+            --seconds 2
+            --allow-not-playing
+)
+set_tests_properties(test_live_playback_lag_probe PROPERTIES
+    LABELS "temporal;live"
+    SKIP_RETURN_CODE 77
+)
 
 add_test(
     NAME test_ui_smoke_harness_offscreen

@@ -114,7 +114,9 @@ PreviewFrameSelectionResult selectPreviewFrame(
     if (request.usePlaybackPipeline && playbackPipeline && result.frame.isNull()) {
         result.frame = !result.exactFrame.isNull()
                            ? result.exactFrame
-                           : playbackPipeline->getBestFrame(request.clipId, request.frameNumber);
+                           : (request.playing
+                                  ? FrameHandle()
+                                  : playbackPipeline->getBestFrame(request.clipId, request.frameNumber));
         markCacheSelection(&result, false, result.exactFrame);
     }
 

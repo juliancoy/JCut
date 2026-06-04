@@ -7,6 +7,8 @@
 #include <QByteArray>
 #include <QPainter>
 
+#include <cmath>
+
 namespace render_detail {
 
 namespace {
@@ -254,7 +256,7 @@ public:
     }
 
     QImage renderFrame(const RenderRequest& request,
-                       int64_t timelineFrame,
+                       qreal timelineFrame,
                        QHash<QString, editor::DecoderContext*>& decoders,
                        editor::AsyncDecoder* asyncDecoder,
                        QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -304,7 +306,8 @@ public:
                     continue;
                 }
                 
-                const int64_t localFrame = timelineFrame - clip.startFrame;
+                const int64_t localFrame =
+                    qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame - clip.startFrame)));
                 const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
                 const EvaluatedTitle title =
                     composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(grade.opacity));
@@ -822,7 +825,7 @@ bool OffscreenGpuRenderer::initialize(const QSize& outputSize, QString* errorMes
 }
 
 QImage OffscreenGpuRenderer::renderFrame(const RenderRequest& request,
-                                          int64_t timelineFrame,
+                                          qreal timelineFrame,
                                           QHash<QString, editor::DecoderContext*>& decoders,
                                           editor::AsyncDecoder* asyncDecoder,
                                           QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -841,7 +844,7 @@ QImage OffscreenGpuRenderer::renderFrame(const RenderRequest& request,
 
 bool OffscreenGpuRenderer::renderFrameToOutput(
     const RenderRequest& request,
-    int64_t timelineFrame,
+    qreal timelineFrame,
     QHash<QString, editor::DecoderContext*>& decoders,
     editor::AsyncDecoder* asyncDecoder,
     QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -906,7 +909,7 @@ QString OffscreenGpuRenderer::backendId() const
 }
 
 bool renderTimelineFrameToOutput(const RenderRequest& request,
-                                 int64_t timelineFrame,
+                                 qreal timelineFrame,
                                  QHash<QString, editor::DecoderContext*>& decoders,
                                  editor::AsyncDecoder* asyncDecoder,
                                  QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -953,7 +956,7 @@ bool renderTimelineFrameToOutput(const RenderRequest& request,
 }
 
 QImage renderTimelineFrame(const RenderRequest& request,
-                           int64_t timelineFrame,
+                           qreal timelineFrame,
                            QHash<QString, editor::DecoderContext*>& decoders,
                            editor::AsyncDecoder* asyncDecoder,
                            QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
@@ -973,7 +976,7 @@ QImage renderTimelineFrame(const RenderRequest& request,
             continue;
         }
 
-        EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtFrame(
+        EffectiveVisualEffects effects = evaluateEffectiveVisualEffectsAtPosition(
             clip, request.tracks, timelineFrame, request.renderSyncMarkers);
         if (!request.correctionsEnabled) {
             effects.correctionPolygons.clear();
@@ -990,7 +993,8 @@ QImage renderTimelineFrame(const RenderRequest& request,
                 continue;
             }
             
-            const int64_t localFrame = timelineFrame - clip.startFrame;
+            const int64_t localFrame =
+                qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame - clip.startFrame)));
             const EvaluatedTitle evaluatedTitle = evaluateTitleAtLocalFrame(clip, localFrame);
             const EvaluatedTitle title =
                 composeTitleWithOpacity(evaluatedTitle, static_cast<qreal>(effects.grading.opacity));

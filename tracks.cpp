@@ -1833,13 +1833,13 @@ bool SpeakersTab::assignTrackToSpeaker(const QString& speakerId,
         evictExistingForSpeaker);
 }
 
-bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTarget(const QString& clipId,
-                                                          qreal xNorm,
-                                                          qreal yNorm,
-                                                          qreal boxSizeNorm)
+bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString& clipId,
+                                                                  int trackId,
+                                                                  const QString& streamId,
+                                                                  qreal boxSizeNorm)
 {
     const QString trimmedClipId = clipId.trimmed();
-    if (trimmedClipId.isEmpty() || !activeCutMutable() || !m_speakerDeps.updateClipById) {
+    if (trimmedClipId.isEmpty() || trackId < 0 || !m_speakerDeps.updateClipById) {
         return false;
     }
 
@@ -1855,10 +1855,14 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTarget(const QString& clipId,
         timelineFrame - selectedClip->startFrame,
         qMax<int64_t>(0, selectedClip->durationFrames - 1));
 
-    const qreal targetX = qBound<qreal>(0.0, xNorm, 1.0);
-    const qreal targetY = qBound<qreal>(0.0, yNorm, 1.0);
     const qreal detectedBox = qBound<qreal>(0.01, boxSizeNorm, 1.0);
-    const qreal targetBox = qBound<qreal>(0.12, qMax<qreal>(0.20, detectedBox * 2.5), 0.45);
+    const TimelineClip::TransformKeyframe currentTarget =
+        evaluateClipSpeakerFramingTargetAtFrame(*selectedClip, timelineFrame);
+    const qreal targetX = qBound<qreal>(0.0, currentTarget.translationX, 1.0);
+    const qreal targetY = qBound<qreal>(0.0, currentTarget.translationY, 1.0);
+    const qreal targetBox = currentTarget.scaleX > 0.0
+        ? qBound<qreal>(0.01, currentTarget.scaleX, 1.0)
+        : qBound<qreal>(0.12, qMax<qreal>(0.20, detectedBox * 2.5), 0.45);
 
     const bool changed = m_speakerDeps.updateClipById(trimmedClipId, [&](TimelineClip& editableClip) {
         TimelineClip::TransformKeyframe target;
@@ -1869,6 +1873,10 @@ bool SpeakersTab::applyPreviewFaceBoxSpeakerFramingTarget(const QString& clipId,
         target.scaleX = targetBox;
         target.scaleY = targetBox;
         target.linearInterpolation = true;
+
+        editableClip.speakerFramingManualTrackId = trackId;
+        editableClip.speakerFramingManualStreamId = streamId.trimmed();
+        editableClip.speakerFramingKeyframes.clear();
 
         bool replacedTarget = false;
         for (TimelineClip::TransformKeyframe& keyframe : editableClip.speakerFramingTargetKeyframes) {
@@ -2245,6 +2253,11 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
         m_speakerDeps.setPreviewAssignedFaceTrackIds(QSet<int>{trackId});
     }
+    const bool framingTrackingApplied =
+        applyPreviewFaceBoxSpeakerFramingTrackSelection(clipId, trackId, streamId, boxSizeNorm);
+    if (framingTrackingApplied && m_speakerDeps.refreshPreview) {
+        m_speakerDeps.refreshPreview();
+    }
     logTiming(selectedPlayheadTrack
                   ? QStringLiteral("selected_playhead_track")
                   : QStringLiteral("highlighted_preview_track"));
@@ -2279,10 +2292,13 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     if (assignmentAction == jcut::preview::FaceTrackClickAssignmentAction::SelectOnlyNoSpeaker) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
         report(QStringLiteral("Face box click selected: track %1 focused at media source frame %2. "
-                              "No assignment was saved because there is no transcript-active speaker "
-                              "(transcript frame %3 at %4 fps; gap hold=%5 transcript frame(s)).")
+                              "%3No assignment was saved because there is no transcript-active speaker "
+                              "(transcript frame %4 at %5 fps; gap hold=%6 transcript frame(s)).")
                    .arg(trackId)
                    .arg(mediaSourceFrame)
+                   .arg(framingTrackingApplied
+                            ? QStringLiteral("Speaker framing tracking was updated. ")
+                            : QStringLiteral("Speaker framing tracking was not updated. "))
                    .arg(transcriptFrame)
                    .arg(sourceFps, 0, 'f', 3)
                    .arg(gapHoldFrames));
@@ -2298,11 +2314,14 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
 
     if (assignmentAction == jcut::preview::FaceTrackClickAssignmentAction::SelectOnlyReadOnly) {
         report(QStringLiteral("Face box click selected: track %1 focused for %2 at media source frame %3 (%4). "
-                              "Assignment was not saved because the active cut is read-only.")
+                              "%5Assignment was not saved because the active cut is read-only.")
                    .arg(trackId)
                    .arg(speakerDisplayLabel(speakerId))
                    .arg(mediaSourceFrame)
-                   .arg(speakerResolutionDetail));
+                   .arg(speakerResolutionDetail)
+                   .arg(framingTrackingApplied
+                            ? QStringLiteral("Speaker framing tracking was updated. ")
+                            : QStringLiteral("Speaker framing tracking was not updated. ")));
         logTiming(QStringLiteral("complete_selected_readonly"));
         return true;
     }
@@ -2321,11 +2340,14 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     if (assigned) {
         QPointer<SpeakersTab> self(this);
         const QString statusMessage =
-            QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4).")
+            QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4). %5")
                 .arg(trackId)
                 .arg(speakerDisplayLabel(speakerId))
                 .arg(mediaSourceFrame)
-                .arg(speakerResolutionDetail);
+                .arg(speakerResolutionDetail)
+                .arg(framingTrackingApplied
+                         ? QStringLiteral("Speaker framing tracking updated.")
+                         : QStringLiteral("Speaker framing tracking was not updated."));
         QTimer::singleShot(0, this, [self, clickTimer, statusMessage]() mutable {
             if (!self) {
                 return;

@@ -843,7 +843,6 @@ bool ControlServerWorker::handleProfileRoutes(QTcpSocket* socket, const Request&
             queryBool(query, QStringLiteral("verbose")) ||
             queryBool(query, QStringLiteral("debug")) ||
             queryBool(query, QStringLiteral("full"));
-        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
         QJsonObject preview;
         QString liveError;
         if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, verbose, &preview, &liveError)) {
@@ -1302,7 +1301,7 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
             queryBool(query, QStringLiteral("verbose")) ||
             queryBool(query, QStringLiteral("debug")) ||
             queryBool(query, QStringLiteral("full"));
-        m_lastProfileDemandMs = QDateTime::currentMSecsSinceEpoch();
+        const QJsonObject fast = fastSnapshot();
         QJsonObject preview;
         QString liveError;
         if (!refreshPipelineSnapshotFromUi(m_uiInvokeTimeoutMs, verbose, &preview, &liveError)) {
@@ -1366,6 +1365,16 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
                            preview.value(QStringLiteral("active_frame_stale_rejected")).toBool());
         diagnostics.insert(QStringLiteral("playing"),
                            preview.value(QStringLiteral("playing")).toBool());
+        diagnostics.insert(QStringLiteral("playback_active"),
+                           fast.value(QStringLiteral("playback_active")).toBool());
+        diagnostics.insert(QStringLiteral("editor_playback_active"),
+                           fast.value(QStringLiteral("playback_active")).toBool());
+        diagnostics.insert(QStringLiteral("fast_current_frame"),
+                           fast.value(QStringLiteral("current_frame")).toDouble());
+        diagnostics.insert(QStringLiteral("main_thread_heartbeat_age_ms"),
+                           fast.value(QStringLiteral("main_thread_heartbeat_age_ms")).toDouble());
+        diagnostics.insert(QStringLiteral("last_playhead_advance_age_ms"),
+                           fast.value(QStringLiteral("last_playhead_advance_age_ms")).toDouble());
         diagnostics.insert(QStringLiteral("current_frame"),
                            preview.value(QStringLiteral("current_frame")).toDouble());
         diagnostics.insert(QStringLiteral("frame_status_refresh_count"),
@@ -1381,6 +1390,7 @@ bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request
             {QStringLiteral("ok"), true},
             {QStringLiteral("live"), true},
             {QStringLiteral("verbose"), verbose},
+            {QStringLiteral("fast_snapshot"), fast},
             {QStringLiteral("diagnostics"), diagnostics}
         });
         return true;

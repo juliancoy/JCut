@@ -116,32 +116,41 @@ int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
     return qMax<int64_t>(0, boundedLocalFrame + static_cast<int64_t>(delta));
 }
 
-int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
-                                             qreal timelineFramePosition,
-                                             const QVector<RenderSyncMarker>& markers) {
+qreal sourceFramePositionForClipAtTimelinePosition(const TimelineClip& clip,
+                                                  qreal timelineFramePosition,
+                                                  const QVector<RenderSyncMarker>& markers) {
     const qreal maxFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
     const qreal localTimelineFramePosition =
         qBound<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
     const int64_t steppedLocalTimelineFrame =
         qMax<int64_t>(0, static_cast<int64_t>(std::floor(localTimelineFramePosition)));
+    const qreal subframePosition =
+        qBound<qreal>(0.0,
+                      localTimelineFramePosition - static_cast<qreal>(steppedLocalTimelineFrame),
+                      1.0);
     const int64_t adjustedLocalFrame =
         adjustedClipLocalFrameAtTimelineFrame(clip, steppedLocalTimelineFrame, markers);
-    
-    // Use fixed-point arithmetic for FPS scaling and playback rate
+
     const qreal sourceFps = resolvedSourceFps(clip);
-    const int64_t sourceFpsScaled = qMax<int64_t>(1, static_cast<int64_t>(sourceFps * 1000.0));
-    const int64_t timelineFpsScaled = static_cast<int64_t>(kTimelineFps * 1000.0);
-    const int64_t playbackRateScaled = qMax<int64_t>(1, static_cast<int64_t>(clip.playbackRate * 1000.0));
-    
-    // Calculate source frame offset using 64-bit integer arithmetic
-    // (adjustedLocalFrame * playbackRate * sourceFps) / timelineFps
-    const int64_t numerator = adjustedLocalFrame * playbackRateScaled * sourceFpsScaled;
-    const int64_t denominator = timelineFpsScaled * 1000LL; // Extra 1000 for playbackRate scaling
-    const int64_t sourceFrameOffset = numerator / denominator;
-    
-    return qMax<int64_t>(0,
-                         qMin<int64_t>(qMax<int64_t>(0, clip.sourceDurationFrames - 1),
-                                       clip.sourceInFrame + sourceFrameOffset));
+    const qreal playbackRate = qMax<qreal>(0.001, clip.playbackRate);
+    const qreal adjustedLocalFramePosition =
+        static_cast<qreal>(adjustedLocalFrame) + subframePosition;
+    const qreal sourceFrameOffset =
+        adjustedLocalFramePosition * playbackRate * sourceFps / static_cast<qreal>(kTimelineFps);
+    const qreal maxSourceFrame = static_cast<qreal>(qMax<int64_t>(0, clip.sourceDurationFrames - 1));
+    return qBound<qreal>(0.0,
+                         static_cast<qreal>(clip.sourceInFrame) + sourceFrameOffset,
+                         maxSourceFrame);
+}
+
+int64_t sourceFrameForClipAtTimelinePosition(const TimelineClip& clip,
+                                             qreal timelineFramePosition,
+                                             const QVector<RenderSyncMarker>& markers) {
+    return qMax<int64_t>(
+        0,
+        static_cast<int64_t>(
+            std::floor(sourceFramePositionForClipAtTimelinePosition(
+                clip, timelineFramePosition, markers))));
 }
 
 int64_t approximateTimelineFrameForClipSourceFrame(const TimelineClip& clip,

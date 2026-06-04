@@ -356,10 +356,10 @@ private:
                                   bool skipped);
     bool saveClipSpeakerFramingTargetsFromControls();
     bool saveClipSpeakerFramingEnabledFromControls();
-    bool applyPreviewFaceBoxSpeakerFramingTarget(const QString& clipId,
-                                                qreal xNorm,
-                                                qreal yNorm,
-                                                qreal boxSizeNorm);
+    bool applyPreviewFaceBoxSpeakerFramingTrackSelection(const QString& clipId,
+                                                        int trackId,
+                                                        const QString& streamId,
+                                                        qreal boxSizeNorm);
     void populateSpeakerFramingEnabledKeyframeTable(const TimelineClip& clip);
     void syncSpeakerFramingEnabledTableToPlayhead();
     bool upsertSpeakerFramingEnabledKeyframeAtPlayhead(bool enabled);
