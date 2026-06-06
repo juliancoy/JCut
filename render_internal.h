@@ -133,6 +133,9 @@ editor::FrameHandle decodeRenderFrame(const QString& path,
                                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache);
 QString avErrToString(int errnum);
 QRect fitRect(const QSize& source, const QSize& bounds);
+QRect coverRect(const QSize& source, const QSize& bounds);
+bool shouldDrawBlurredFillBackground(const QSize& source, const QSize& output);
+QImage buildBlurredFillBackground(const QImage& source, const QSize& outputSize);
 TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip,
                                                         int64_t timelineFrame,
                                                         const QVector<RenderSyncMarker>& markers,
@@ -193,6 +196,8 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
 
 QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
                                         const QVector<TimelineTrack>& tracks);
+QVector<TimelineClip> sortedTranscriptOverlayClips(const QVector<TimelineClip>& clips,
+                                                   const QVector<TimelineTrack>& tracks);
 
 class OffscreenGpuRendererPrivate;
 class OffscreenVulkanRendererPrivate;

@@ -37,28 +37,40 @@
 #include <QVBoxLayout>
 
 namespace {
-class HorizontalTextTabBar final : public QTabBar {
+class HoverDockTabBar final : public QTabBar {
 public:
-    using QTabBar::QTabBar;
+    explicit HoverDockTabBar(QWidget* parent = nullptr)
+        : QTabBar(parent)
+    {
+        setMouseTracking(true);
+    }
 
     QSize sizeHint() const override {
         const QSize base = QTabBar::sizeHint();
-        const int tabWidth = qBound(96, m_columnWidth, 220);
-        return QSize(tabWidth, qMin(base.height(), 420));
+        return QSize(railWidth(), qMin(base.height(), 520));
     }
 
     QSize minimumSizeHint() const override {
-        return QSize(qBound(96, m_columnWidth, 220), 120);
+        return QSize(m_collapsedWidth, 120);
     }
 
     QSize tabSizeHint(int index) const override {
         const QSize base = QTabBar::tabSizeHint(index);
-        const int tabWidth = qBound(96, m_columnWidth, 220);
-        const int tabHeight = qBound(24, base.height() + 2, 32);
-        return QSize(tabWidth, tabHeight);
+        const int tabHeight = qBound(34, base.height() + 8, 42);
+        return QSize(railWidth(), tabHeight);
     }
 
 protected:
+    bool event(QEvent* event) override {
+        if (event && event->type() == QEvent::Enter) {
+            setExpanded(true);
+        } else if (event && event->type() == QEvent::Leave) {
+            setExpanded(false);
+            setHoveredIndex(-1);
+        }
+        return QTabBar::event(event);
+    }
+
     void paintEvent(QPaintEvent* event) override {
         Q_UNUSED(event);
         QStylePainter painter(this);
@@ -67,89 +79,94 @@ protected:
             initStyleOption(&option, i);
             painter.drawControl(QStyle::CE_TabBarTabShape, option);
 
-            const QRect rect = tabRect(i).adjusted(10, 0, -10, 0);
-            QRect iconRect = rect;
-            QRect textRect = rect;
-            const QIcon icon = tabIcon(i);
-            const QSize iconExtent(16, 16);
-            if (!icon.isNull()) {
-                iconRect.setWidth(iconExtent.width());
-                const QPixmap pixmap = icon.pixmap(iconExtent, isTabEnabled(i) ? QIcon::Normal : QIcon::Disabled);
-                const QPoint iconTopLeft(iconRect.left(),
-                                         rect.top() + ((rect.height() - iconExtent.height()) / 2));
-                painter.drawPixmap(iconTopLeft, pixmap);
-                textRect.setLeft(iconRect.right() + 8);
+            const QRect tabBounds = tabRect(i);
+            const bool hovered = i == m_hoveredIndex;
+            const bool selected = i == currentIndex();
+            if (hovered || selected) {
+                painter.save();
+                painter.setRenderHint(QPainter::Antialiasing, true);
+                const QRect highlightRect = tabBounds.adjusted(5, 3, -5, -3);
+                const QColor fill = selected
+                    ? QColor(QStringLiteral("#26384a"))
+                    : QColor(QStringLiteral("#213044"));
+                const QColor border = hovered
+                    ? QColor(QStringLiteral("#5d7590"))
+                    : QColor(QStringLiteral("#43566c"));
+                painter.setBrush(fill);
+                painter.setPen(QPen(border, 1));
+                painter.drawRoundedRect(highlightRect, 7, 7);
+                if (hovered) {
+                    painter.setPen(QPen(QColor(QStringLiteral("#8fb8e8")), 2));
+                    painter.drawLine(highlightRect.right(), highlightRect.top() + 7,
+                                     highlightRect.right(), highlightRect.bottom() - 7);
+                }
+                painter.restore();
             }
 
-            painter.save();
-            painter.setPen(isTabEnabled(i) ? Qt::white : QColor(QStringLiteral("#7f8b99")));
-            painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, tabText(i));
-            painter.restore();
-        }
-    }
+            const QRect rect = tabBounds.adjusted(m_expanded ? 10 : 0, 0, m_expanded ? -10 : 0, 0);
+            QRect textRect = rect;
+            const QIcon icon = tabIcon(i);
+            const QSize iconExtent(20, 20);
+            if (!icon.isNull()) {
+                const QPixmap pixmap = icon.pixmap(iconExtent, isTabEnabled(i) ? QIcon::Normal : QIcon::Disabled);
+                const int iconLeft = m_expanded
+                    ? rect.left()
+                    : tabBounds.left() + ((tabBounds.width() - iconExtent.width()) / 2);
+                const QPoint iconTopLeft(iconLeft,
+                                         tabBounds.top() + ((tabBounds.height() - iconExtent.height()) / 2));
+                painter.drawPixmap(iconTopLeft, pixmap);
+                textRect.setLeft(iconTopLeft.x() + iconExtent.width() + 9);
+            }
 
-    void mousePressEvent(QMouseEvent* event) override {
-        if (event && event->button() == Qt::LeftButton && isNearResizeEdge(event->position().toPoint())) {
-            m_resizing = true;
-            m_resizeStartGlobalX = static_cast<int>(event->globalPosition().x());
-            m_resizeStartWidth = width();
-            event->accept();
-            return;
+            if (m_expanded) {
+                painter.save();
+                painter.setPen(isTabEnabled(i) ? Qt::white : QColor(QStringLiteral("#7f8b99")));
+                painter.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft, tabText(i));
+                painter.restore();
+            }
         }
-        QTabBar::mousePressEvent(event);
     }
 
     void mouseMoveEvent(QMouseEvent* event) override {
         if (!event) {
             return;
         }
-        if (m_resizing) {
-            const int currentGlobalX = static_cast<int>(event->globalPosition().x());
-            const int delta = m_resizeStartGlobalX - currentGlobalX;
-            const int newWidth = qBound(96, m_resizeStartWidth + delta, 220);
-            if (newWidth != m_columnWidth) {
-                m_columnWidth = newWidth;
-                updateGeometry();
-                if (parentWidget()) {
-                    parentWidget()->updateGeometry();
-                    parentWidget()->update();
-                }
-            }
-            event->accept();
-            return;
-        }
-
-        const bool nearEdge = isNearResizeEdge(event->position().toPoint());
-        setCursor(nearEdge ? Qt::SizeHorCursor : Qt::ArrowCursor);
+        setExpanded(true);
+        setHoveredIndex(tabAt(event->position().toPoint()));
+        unsetCursor();
         QTabBar::mouseMoveEvent(event);
     }
 
-    void mouseReleaseEvent(QMouseEvent* event) override {
-        if (m_resizing && event && event->button() == Qt::LeftButton) {
-            m_resizing = false;
-            setCursor(Qt::ArrowCursor);
-            event->accept();
+private:
+    int railWidth() const {
+        return m_expanded ? m_expandedWidth : m_collapsedWidth;
+    }
+
+    void setExpanded(bool expanded) {
+        if (m_expanded == expanded) {
             return;
         }
-        QTabBar::mouseReleaseEvent(event);
-    }
-
-    void leaveEvent(QEvent* event) override {
-        if (!m_resizing) {
-            unsetCursor();
+        m_expanded = expanded;
+        updateGeometry();
+        update();
+        if (parentWidget()) {
+            parentWidget()->updateGeometry();
+            parentWidget()->update();
         }
-        QTabBar::leaveEvent(event);
     }
 
-private:
-    bool isNearResizeEdge(const QPoint& pos) const {
-        return pos.x() >= 0 && pos.x() <= 8;
+    void setHoveredIndex(int index) {
+        if (m_hoveredIndex == index) {
+            return;
+        }
+        m_hoveredIndex = index;
+        update();
     }
 
-    int m_columnWidth = 144;
-    bool m_resizing = false;
-    int m_resizeStartGlobalX = 0;
-    int m_resizeStartWidth = 0;
+    static constexpr int m_collapsedWidth = 48;
+    static constexpr int m_expandedWidth = 156;
+    bool m_expanded = false;
+    int m_hoveredIndex = -1;
 };
 
 class InspectorTabWidget final : public QTabWidget {
@@ -157,7 +174,7 @@ public:
     explicit InspectorTabWidget(QWidget* parent = nullptr)
         : QTabWidget(parent)
     {
-        setTabBar(new HorizontalTextTabBar(this));
+        setTabBar(new HoverDockTabBar(this));
         tabBar()->setUsesScrollButtons(true);
         tabBar()->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
         setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
@@ -1106,7 +1123,9 @@ QWidget *InspectorPane::buildTranscriptTab()
         new QCheckBox(QStringLiteral("Show Lines Not In Active Cut"), settingsContainer);
 
     m_transcriptMaxLinesSpin->setRange(1, 20);
-    m_transcriptMaxCharsSpin->setRange(1, 200);
+    m_transcriptMaxCharsSpin->setRange(
+        TimelineClip::TranscriptOverlaySettings::kMinReadableCharsPerLine,
+        200);
     m_transcriptOverlayXSpin->setDecimals(3);
     m_transcriptOverlayYSpin->setDecimals(3);
     m_transcriptOverlayXSpin->setRange(-1.0, 1.0);
@@ -1117,9 +1136,15 @@ QWidget *InspectorPane::buildTranscriptTab()
         QStringLiteral("Normalized horizontal offset from center (-1.0 left, +1.0 right)."));
     m_transcriptOverlayYSpin->setToolTip(
         QStringLiteral("Normalized vertical offset from center (-1.0 up, +1.0 down)."));
-    m_transcriptOverlayWidthSpin->setRange(1, 10000);
-    m_transcriptOverlayHeightSpin->setRange(1, 10000);
-    m_transcriptFontSizeSpin->setRange(8, 256);
+    m_transcriptOverlayWidthSpin->setRange(
+        static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth),
+        10000);
+    m_transcriptOverlayHeightSpin->setRange(
+        static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight),
+        10000);
+    m_transcriptFontSizeSpin->setRange(
+        TimelineClip::TranscriptOverlaySettings::kMinReadableFontPointSize,
+        256);
 
     form->addRow(QStringLiteral("Overlay"), m_transcriptOverlayEnabledCheckBox);
     form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
@@ -1401,11 +1426,12 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerCurrentSpeakerOrganizationYPositionSpin->setToolTip(
         QStringLiteral("Set the active speaker organization vertical position in the preview. 0% is top; 100% is bottom."));
     m_speakerSectionsTable = new QTableWidget(page);
-    m_speakerSectionsTable->setColumnCount(5);
+    m_speakerSectionsTable->setColumnCount(6);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
         {QStringLiteral("#"),
          QStringLiteral("Speaker"),
          QStringLiteral("Range"),
+         QStringLiteral("Track"),
          QStringLiteral("Words"),
          QStringLiteral("Transcript")});
     m_speakerSectionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1424,7 +1450,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::Stretch);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
     m_speakerSectionsTable->hide();
 
     auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);
@@ -1998,6 +2025,7 @@ QWidget *InspectorPane::buildPane()
     layout->addWidget(headerRow);
 
     m_inspectorTabs = new InspectorTabWidget(pane);
+    m_inspectorTabs->setObjectName(QStringLiteral("tabs.inspector"));
     m_inspectorTabs->addTab(buildGradingTab(), QStringLiteral("Grade"));
     m_inspectorTabs->addTab(buildOpacityTab(), QStringLiteral("Opacity"));
     m_inspectorTabs->addTab(buildEffectsTab(), QStringLiteral("Effects"));

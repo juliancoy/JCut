@@ -203,6 +203,8 @@ private:
     void advanceFrame();
     bool speechFilterPlaybackEnabled() const;
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
+    int64_t absolutePlaybackSampleForFilteredSample(int64_t filteredSample) const;
+    int64_t playbackSampleForAudioClockSample(int64_t audioClockSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
     QString playbackRangeCacheSignature(bool discrete, int neighborWordRadius = 0) const;
@@ -647,11 +649,13 @@ private:
     QColor m_backgroundColor = QColor(Qt::black);
     int64_t m_absolutePlaybackSample = 0;
     int64_t m_filteredPlaybackSample = 0;
+    int64_t m_playbackAudioClockAnchorAbsoluteSample = 0;
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
     QString m_lastPlaybackStopReason = QStringLiteral("none");
     bool m_playbackAudioWarmupPending = false;
+    bool m_playbackVideoWarmupPending = false;
     bool m_retimingAudioForPlayback = false;
     bool m_startPlaybackAfterAudioWarmup = false;
     int m_playbackAudioWarmupRequestId = 0;

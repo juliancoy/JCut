@@ -147,6 +147,7 @@ private:
     void updateNativeTitle();
     void ensureFramePipeline();
     bool hasPlaybackLookaheadBuffered(int futureFrames) const;
+    bool currentPlaybackFrameReadyForStart() const;
     int effectivePlaybackLookaheadFrames() const;
     void registerVisibleClips();
     void requestFramesForCurrentPosition();
@@ -181,6 +182,7 @@ private:
                                                           const QJsonArray& streams,
                                                           const QJsonObject& continuityRoot) const;
     QVector<FacestreamTrack> convertContinuityTrackModelsForClip(
+        const TimelineClip& clip,
         const QVector<jcut::facedetections::FacestreamTrack>& tracks,
         const QString& frameDomain,
         const QString& detectorMode) const;

@@ -1,5 +1,7 @@
 #include "facedetections_time_mapping.h"
 
+#include "editor_shared_timing.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -102,6 +104,32 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
         return safeFrame;
     }
     return qMax<int64_t>(0, clip.sourceInFrame + safeFrame);
+}
+
+bool facestreamLegacyTimelineFallbackAllowed(const TimelineClip& clip,
+                                             FacestreamFrameDomain declaredDomain)
+{
+    return declaredDomain == FacestreamFrameDomain::SourceAbsolute &&
+           resolvedSourceFps(clip) > static_cast<qreal>(kTimelineFps) + 0.5 &&
+           clip.durationFrames > 0 &&
+           clip.sourceDurationFrames > clip.durationFrames + 2;
+}
+
+bool sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(const TimelineClip& clip,
+                                                        const QVector<int64_t>& sortedFrames)
+{
+    if (!facestreamLegacyTimelineFallbackAllowed(clip, FacestreamFrameDomain::SourceAbsolute) ||
+        sortedFrames.isEmpty()) {
+        return false;
+    }
+
+    const int64_t timelineEnd = qMax<int64_t>(0, clip.durationFrames - 1);
+    const int64_t sourceEnd =
+        qMax<int64_t>(0, clip.sourceInFrame) + qMax<int64_t>(0, clip.sourceDurationFrames - 1);
+    return sortedFrames.constFirst() >= 0 &&
+           sortedFrames.constLast() <= timelineEnd + 2 &&
+           sortedFrames.constLast() >= qMax<int64_t>(0, (timelineEnd * 9) / 10) &&
+           sourceEnd > timelineEnd + 2;
 }
 
 int64_t facedetectionsTypicalFrameStep(const QVector<int64_t>& sortedFrames)

@@ -79,6 +79,9 @@ void buildFacestreamTrackCandidateIndex(FacestreamOverlayCacheEntry& entry,
                                         const TimelineClip& clip,
                                         const QVector<RenderSyncMarker>& renderSyncMarkers);
 
+int normalizeLegacyFacestreamTrackFrameDomains(FacestreamOverlayCacheEntry& entry,
+                                               const TimelineClip& clip);
+
 QVector<int> facestreamTrackCandidateIndicesFromCacheEntry(
     const FacestreamOverlayCacheEntry& entry,
     int64_t sourceFrame);

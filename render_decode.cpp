@@ -3,6 +3,9 @@
 #include "cpu_overlay_render_backend.h"
 
 #include <QFileInfo>
+#include <QPainter>
+
+#include <algorithm>
 
 namespace render_detail {
 
@@ -18,6 +21,28 @@ QString transcriptSectionsCacheKeyForClip(const TimelineClip& clip)
 }
 
 } // namespace
+
+QVector<TimelineClip> sortedTranscriptOverlayClips(const QVector<TimelineClip>& clips,
+                                                   const QVector<TimelineTrack>& tracks) {
+    QVector<TimelineClip> overlayClips;
+    for (const TimelineClip& clip : clips) {
+        const bool visual = clipVisualPlaybackEnabled(clip, tracks);
+        const bool transcriptOverlay =
+            (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) &&
+            clip.transcriptOverlay.enabled &&
+            trackVisualModeForClip(clip, tracks) != TrackVisualMode::Hidden;
+        if (visual || transcriptOverlay) {
+            overlayClips.push_back(clip);
+        }
+    }
+    std::sort(overlayClips.begin(), overlayClips.end(), [](const TimelineClip& a, const TimelineClip& b) {
+        if (a.trackIndex == b.trackIndex) {
+            return clipTimelineStartSamples(a) < clipTimelineStartSamples(b);
+        }
+        return a.trackIndex > b.trackIndex;
+    });
+    return overlayClips;
+}
 
 void enqueueRenderSequenceLookahead(const RenderRequest& request,
                                     int64_t timelineFrame,
@@ -188,6 +213,70 @@ QString avErrToString(int errnum) {
 
 QRect fitRect(const QSize& source, const QSize& bounds) {
     return previewFitRectToBounds(source, QRect(QPoint(0, 0), bounds));
+}
+
+QRect coverRect(const QSize& source, const QSize& bounds)
+{
+    if (!source.isValid() || source.isEmpty() || !bounds.isValid() || bounds.isEmpty()) {
+        return QRect(QPoint(0, 0), bounds);
+    }
+
+    const qreal scale = qMax(static_cast<qreal>(bounds.width()) / source.width(),
+                             static_cast<qreal>(bounds.height()) / source.height());
+    const int width = qMax(1, qRound(source.width() * scale));
+    const int height = qMax(1, qRound(source.height() * scale));
+    return QRect((bounds.width() - width) / 2,
+                 (bounds.height() - height) / 2,
+                 width,
+                 height);
+}
+
+bool shouldDrawBlurredFillBackground(const QSize& source, const QSize& output)
+{
+    if (!source.isValid() || source.isEmpty() || !output.isValid() || output.isEmpty()) {
+        return false;
+    }
+    const QRect fitted = fitRect(source, output);
+    return fitted.width() < output.width() || fitted.height() < output.height();
+}
+
+QImage buildBlurredFillBackground(const QImage& source, const QSize& outputSize)
+{
+    if (source.isNull() || !outputSize.isValid() || outputSize.isEmpty()) {
+        return QImage();
+    }
+
+    QImage sourceArgb = source;
+    if (sourceArgb.format() != QImage::Format_ARGB32 &&
+        sourceArgb.format() != QImage::Format_ARGB32_Premultiplied) {
+        sourceArgb = source.convertToFormat(QImage::Format_ARGB32);
+    }
+    if (sourceArgb.isNull()) {
+        return QImage();
+    }
+
+    QImage background(outputSize, QImage::Format_ARGB32_Premultiplied);
+    background.fill(Qt::black);
+    {
+        QPainter painter(&background);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawImage(QRectF(coverRect(sourceArgb.size(), outputSize)), sourceArgb);
+    }
+
+    const QSize blurSize(qMax(24, outputSize.width() / 18),
+                         qMax(24, outputSize.height() / 18));
+    QImage blurred = background.scaled(blurSize,
+                                       Qt::IgnoreAspectRatio,
+                                       Qt::SmoothTransformation)
+                         .scaled(outputSize,
+                                 Qt::IgnoreAspectRatio,
+                                 Qt::SmoothTransformation);
+    if (blurred.format() != QImage::Format_ARGB32_Premultiplied) {
+        blurred = blurred.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    }
+    QPainter painter(&blurred);
+    painter.fillRect(blurred.rect(), QColor(0, 0, 0, 72));
+    return blurred;
 }
 
 QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {

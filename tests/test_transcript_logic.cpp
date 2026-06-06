@@ -9,6 +9,7 @@
 #include "../editor_shared.h"
 #include "../editor_shared_keyframes.h"
 #include "../editor_shared_transcript.h"
+#include "../clip_serialization.h"
 #include "../transcript_engine.h"
 
 using namespace editor;
@@ -102,6 +103,7 @@ private slots:
     void testTranscriptOverlayRectInOutputSpaceUsesSpeakerLocation();
     void testTranscriptOverlayRectInOutputSpaceFallsBackToManualTranslation();
     void testTranscriptOverlayManualPlacementOverridesSpeakerTracking();
+    void testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry();
     void testSpeakerFramingEnabledKeyframesOverrideGlobalFallback();
     void testSpeakerFramingRuntimeSpeakerDescendsFromTranscript();
     void testSpeakerFramingGapHoldPersistsTranscriptSpeaker();
@@ -859,6 +861,31 @@ void TestTranscriptLogic::testTranscriptOverlayManualPlacementOverridesSpeakerTr
 
     QVERIFY(std::abs(rect.center().x() - (540.0 - 220.0)) < 0.001);
     QVERIFY(std::abs(rect.center().y() - (960.0 + 50.0)) < 0.001);
+}
+
+void TestTranscriptLogic::testTranscriptOverlayProjectLoadNormalizesUnreadableGeometry() {
+    TimelineClip source = makeAudioClip(QStringLiteral("clip-1"),
+                                        QStringLiteral("/tmp/clip.wav"),
+                                        0,
+                                        90);
+    source.transcriptOverlay.enabled = true;
+    source.transcriptOverlay.useManualPlacement = true;
+    source.transcriptOverlay.boxWidth = 1.0;
+    source.transcriptOverlay.boxHeight = 1.0;
+    source.transcriptOverlay.maxCharsPerLine = 1;
+    source.transcriptOverlay.fontPointSize = 8;
+
+    const QJsonObject json = clipToJson(source);
+    TimelineClip loaded = clipFromJson(json);
+
+    QCOMPARE(loaded.transcriptOverlay.boxWidth,
+             TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth);
+    QCOMPARE(loaded.transcriptOverlay.boxHeight,
+             TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight);
+    QCOMPARE(loaded.transcriptOverlay.maxCharsPerLine,
+             TimelineClip::TranscriptOverlaySettings::kMinReadableCharsPerLine);
+    QCOMPARE(loaded.transcriptOverlay.fontPointSize,
+             TimelineClip::TranscriptOverlaySettings::kMinReadableFontPointSize);
 }
 
 void TestTranscriptLogic::testSpeakerFramingEnabledKeyframesOverrideGlobalFallback() {

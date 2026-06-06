@@ -10,6 +10,7 @@ using jcut::preview_overlay::buildFacestreamTrackCandidateIndex;
 using jcut::preview_overlay::buildFacestreamOverlaySnapshot;
 using jcut::preview_overlay::facestreamTrackCandidateIndicesFromCacheEntry;
 using jcut::preview_overlay::facestreamOverlaySnapshotApplyDecision;
+using jcut::preview_overlay::normalizeLegacyFacestreamTrackFrameDomains;
 using jcut::preview_overlay::rawDetectionsFromCacheEntry;
 
 class TestFacestreamOverlaySnapshot : public QObject {
@@ -21,6 +22,7 @@ private slots:
     void sourceFilterExcludesNonMatchingTracks();
     void indexedTrackCandidatesAvoidFullCacheScan();
     void indexedTrackCandidatesHoldForFullDetectedStrideAtEdges();
+    void legacyTimelineDomainArtifactsAreIndexedAtSourceFps();
     void rawOnlySnapshotDoesNotBuildTrackBoxes();
     void rawDetectionsUseSameBridgeAndEdgeHoldRules();
     void applyDecisionDropsPausedStaleAndOutOfOrderSnapshots();
@@ -205,6 +207,38 @@ void TestFacestreamOverlaySnapshot::indexedTrackCandidatesHoldForFullDetectedStr
     QCOMPARE(heldAtStrideEdge.first(), 0);
 
     QVERIFY(facestreamTrackCandidateIndicesFromCacheEntry(cache, 13).isEmpty());
+}
+
+void TestFacestreamOverlaySnapshot::legacyTimelineDomainArtifactsAreIndexedAtSourceFps()
+{
+    TimelineClip clip = makeClip();
+    clip.sourceFps = 60.0;
+    clip.durationFrames = 300;
+    clip.sourceDurationFrames = 600;
+
+    FacestreamOverlayCacheEntry cache;
+    cache.tracks = QVector<FacestreamResolvedTrack>{
+        trackAtFrames(1, 296, 299),
+        trackAtFrames(2, 40, 44)
+    };
+
+    QCOMPARE(normalizeLegacyFacestreamTrackFrameDomains(cache, clip), 2);
+    buildFacestreamTrackCandidateIndex(cache, clip, {});
+
+    const QVector<int> candidates = facestreamTrackCandidateIndicesFromCacheEntry(cache, 598);
+    QCOMPARE(candidates.size(), 1);
+    QCOMPARE(candidates.first(), 0);
+
+    auto request = snapshotRequest(cache);
+    request.clips[0].clip = clip;
+    request.clips[0].localFrame = 598;
+    request.clips[0].localSourceFrame = 598;
+    request.clips[0].localTimelineFrame = 299;
+
+    const auto snapshot = buildFacestreamOverlaySnapshot(request);
+    QCOMPARE(snapshot.overlayMatchCount, 1);
+    QCOMPARE(snapshot.overlays.size(), 1);
+    QCOMPARE(snapshot.overlays.first().trackId, 1);
 }
 
 void TestFacestreamOverlaySnapshot::rawOnlySnapshotDoesNotBuildTrackBoxes()

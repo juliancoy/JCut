@@ -27,7 +27,7 @@ void InspectorPane::configureInspectorTabs()
     m_inspectorTabs->setDocumentMode(true);
     bar->setExpanding(false);
     bar->setUsesScrollButtons(true);
-    bar->setIconSize(QSize(16, 16));
+    bar->setIconSize(QSize(20, 20));
     bar->setDrawBase(false);
 
     struct TabSpec {
@@ -76,10 +76,10 @@ void InspectorPane::configureInspectorTabs()
 
     bar->setStyleSheet(QStringLiteral(
         "QTabBar::tab {"
-        " min-width: 112px;"
-        " min-height: 28px;"
+        " min-width: 36px;"
+        " min-height: 34px;"
         " margin: 0;"
-        " padding: 4px 10px;"
+        " padding: 4px 6px;"
         " text-align: left;"
         " color: #ffffff;"
         " }"

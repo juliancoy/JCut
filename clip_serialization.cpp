@@ -613,6 +613,7 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         clip.transcriptOverlay.italic = transcriptOverlayObj.value(QStringLiteral("italic")).toBool(false);
         clip.transcriptOverlay.textColor =
             QColor(transcriptOverlayObj.value(QStringLiteral("textColor")).toString(QStringLiteral("#ffffffff")));
+        clip.transcriptOverlay.normalizeReadableBounds();
         clip.fadeSamples = qMax(0, obj.value(QStringLiteral("fadeSamples")).toInt(250));
         clip.locked = obj.value(QStringLiteral("locked")).toBool(false);
         clip.maskFeather = qMax(0.0, obj.value(QStringLiteral("maskFeather")).toDouble(0.0));

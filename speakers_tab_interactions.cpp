@@ -251,8 +251,10 @@ void SpeakersTab::updateSelectedSpeakerPanel()
         const QVector<int> assignedTrackIds =
             resolvedAssignedTrackIdsForSpeaker(*clip, streams, speakerId);
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
+            const QVector<int> activeAssignedTrackIds =
+                playheadAssignedTrackIdsForSpeaker(*clip, streams, speakerId);
             QSet<int> assignedTrackIdSet;
-            for (int trackId : assignedTrackIds) {
+            for (int trackId : activeAssignedTrackIds) {
                 assignedTrackIdSet.insert(trackId);
             }
             m_speakerDeps.setPreviewAssignedFaceTrackIds(assignedTrackIdSet);
@@ -346,9 +348,6 @@ void SpeakersTab::updateSelectedSpeakerPanelFast()
         m_widgets.speakerCurrentSentenceLabel->setText(currentSpeakerSentenceAtCurrentFrame(speakerId));
     }
 
-    if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
-        m_speakerDeps.setPreviewAssignedFaceTrackIds({});
-    }
     updateSpeakerFramingTargetControls();
 }
 
@@ -1496,9 +1495,9 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     if (!speakerItem) {
         return;
     }
-    const QString speakerId = speakerItem->data(Qt::UserRole).toString().trimmed();
-    const int64_t startFrame = speakerItem->data(Qt::UserRole + 1).toLongLong();
-    const int64_t endFrame = speakerItem->data(Qt::UserRole + 2).toLongLong();
+    const QString speakerId = speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
+    const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
+    const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
     if (speakerId.isEmpty() || startFrame < 0 || endFrame < startFrame) {
         return;
     }

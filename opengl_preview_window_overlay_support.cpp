@@ -98,6 +98,9 @@ void PreviewWindow::drawPlaybackStatusOverlay(QPainter* painter, const QRect& bo
     if (!painter || text.isEmpty() || bounds.isEmpty()) {
         return;
     }
+    const bool rubberBandGenerating =
+        text.contains(QStringLiteral("Rubber Band"), Qt::CaseInsensitive) ||
+        text.contains(QStringLiteral("Playback waiting"), Qt::CaseInsensitive);
 
     painter->save();
     painter->setRenderHint(QPainter::Antialiasing, true);
@@ -105,37 +108,61 @@ void PreviewWindow::drawPlaybackStatusOverlay(QPainter* painter, const QRect& bo
 
     QFont font = painter->font();
     font.setBold(true);
-    font.setPointSize(qMax(11, font.pointSize() + 2));
+    font.setPointSize(rubberBandGenerating
+                          ? qMax(14, font.pointSize() + 5)
+                          : qMax(11, font.pointSize() + 2));
     painter->setFont(font);
 
     const QFontMetrics metrics(font);
-    const int maxWidth = qMax(64, bounds.width() - 40);
-    const QString visibleText = metrics.elidedText(text, Qt::ElideRight, qMax(1, maxWidth - 36));
+    const int maxWidth = qMax(64, bounds.width() - (rubberBandGenerating ? 24 : 40));
+    const int horizontalPadding = rubberBandGenerating ? 56 : 36;
+    const QString visibleText = metrics.elidedText(text, Qt::ElideRight, qMax(1, maxWidth - horizontalPadding));
     const bool showProgress = m_interaction.playbackStatusOverlayProgress >= 0.0;
-    const int badgeWidth = qMin(maxWidth, qMax(metrics.horizontalAdvance(visibleText) + 36, showProgress ? 320 : 0));
-    const int badgeHeight = qMax(showProgress ? 54 : 36, metrics.height() + (showProgress ? 30 : 18));
+    const int badgeWidth = qMin(
+        maxWidth,
+        qMax(metrics.horizontalAdvance(visibleText) + horizontalPadding,
+             showProgress ? (rubberBandGenerating ? 520 : 320) : 0));
+    const int badgeHeight = qMax(rubberBandGenerating ? 78 : (showProgress ? 54 : 36),
+                                 metrics.height() + (showProgress ? (rubberBandGenerating ? 42 : 30) : 18));
     const QRectF badgeRect(bounds.center().x() - badgeWidth / 2.0,
-                           bounds.top() + 18.0,
+                           bounds.top() + (rubberBandGenerating ? 28.0 : 18.0),
                            badgeWidth,
                            badgeHeight);
 
-    painter->setPen(QPen(QColor(255, 209, 102, 240), 2.0));
-    painter->setBrush(QColor(12, 16, 22, 226));
+    if (rubberBandGenerating) {
+        const QRectF scrimRect = badgeRect.adjusted(-10.0, -10.0, 10.0, 10.0);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(0, 0, 0, 92));
+        painter->drawRoundedRect(scrimRect, 10.0, 10.0);
+    }
+
+    painter->setPen(QPen(rubberBandGenerating ? QColor(255, 116, 64, 255) : QColor(255, 209, 102, 240),
+                         rubberBandGenerating ? 3.0 : 2.0));
+    painter->setBrush(rubberBandGenerating ? QColor(31, 13, 8, 238) : QColor(12, 16, 22, 226));
     painter->drawRoundedRect(badgeRect, 8.0, 8.0);
-    painter->setPen(QColor(255, 244, 204, 255));
+    if (rubberBandGenerating) {
+        const QRectF accentRect(badgeRect.left(), badgeRect.top(), 9.0, badgeRect.height());
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 116, 64, 255));
+        painter->drawRoundedRect(accentRect, 4.0, 4.0);
+    }
+    painter->setPen(rubberBandGenerating ? QColor(255, 250, 235, 255) : QColor(255, 244, 204, 255));
     painter->drawText(badgeRect.adjusted(14.0, 0.0, -14.0, 0.0),
                       Qt::AlignCenter,
                       visibleText);
     if (showProgress) {
-        const QRectF trackRect = badgeRect.adjusted(18.0, badgeRect.height() - 16.0, -18.0, -8.0);
+        const QRectF trackRect = badgeRect.adjusted(18.0,
+                                                    badgeRect.height() - (rubberBandGenerating ? 22.0 : 16.0),
+                                                    -18.0,
+                                                    rubberBandGenerating ? -9.0 : -8.0);
         const qreal progress = qBound<qreal>(0.0, m_interaction.playbackStatusOverlayProgress, 1.0);
         painter->setPen(Qt::NoPen);
-        painter->setBrush(QColor(255, 244, 204, 56));
-        painter->drawRoundedRect(trackRect, 3.0, 3.0);
+        painter->setBrush(rubberBandGenerating ? QColor(255, 246, 230, 72) : QColor(255, 244, 204, 56));
+        painter->drawRoundedRect(trackRect, rubberBandGenerating ? 5.0 : 3.0, rubberBandGenerating ? 5.0 : 3.0);
         QRectF fillRect = trackRect;
         fillRect.setWidth(qMax<qreal>(2.0, trackRect.width() * progress));
-        painter->setBrush(QColor(255, 209, 102, 235));
-        painter->drawRoundedRect(fillRect, 3.0, 3.0);
+        painter->setBrush(rubberBandGenerating ? QColor(255, 116, 64, 255) : QColor(255, 209, 102, 235));
+        painter->drawRoundedRect(fillRect, rubberBandGenerating ? 5.0 : 3.0, rubberBandGenerating ? 5.0 : 3.0);
     }
     painter->restore();
 }

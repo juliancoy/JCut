@@ -13,11 +13,22 @@ struct AudioTimeStretchCacheEntry {
     bool fullyDecoded = false;
 };
 
+struct AudioTimeStretchSidecarMetadata {
+    int sampleRate = 48000;
+    int channelCount = 2;
+    bool valid = false;
+    bool fullyDecoded = false;
+};
+
 QString audioTimeStretchSidecarPathForSource(const QString& sourcePath, int speedKey);
 
 bool readAudioTimeStretchSidecar(const QString& sourcePath,
                                  int speedKey,
                                  AudioTimeStretchCacheEntry* entryOut);
+
+bool readAudioTimeStretchSidecarMetadata(const QString& sourcePath,
+                                         int speedKey,
+                                         AudioTimeStretchSidecarMetadata* metadataOut);
 
 bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                   int speedKey,

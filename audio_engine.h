@@ -549,9 +549,10 @@ public:
             return true;
         }
 
-        AudioTimeStretchCacheEntry sidecar;
-        return !readAudioTimeStretchSidecar(audioPath, sidecarSpeedKey, &sidecar) ||
-               !sidecar.valid;
+        AudioTimeStretchSidecarMetadata metadata;
+        return !readAudioTimeStretchSidecarMetadata(audioPath, sidecarSpeedKey, &metadata) ||
+               !metadata.valid ||
+               !metadata.fullyDecoded;
     }
 
     bool audioClockAvailable() const {
@@ -852,6 +853,10 @@ public:
                 m_timeStretchGenerationProgressPermille.load(std::memory_order_acquire)) /
                 1000.0,
             1.0);
+    }
+
+    bool timeStretchGenerationActive() const {
+        return m_timeStretchGenerationActive.load(std::memory_order_acquire);
     }
 
 private:
@@ -1882,7 +1887,8 @@ private:
             return {};
         }
         const AudioClipCacheEntry sidecarEntry =
-            audioCacheEntryFromTimeStretchEntry(readTimeStretchSidecarEntry(path, sidecarSpeedKey));
+            audioCacheEntryFromTimeStretchEntry(
+                readTimeStretchSidecarEntrySingleFlight(path, sidecarSpeedKey));
         if (!sidecarEntry.valid) {
             return {};
         }
@@ -1985,9 +1991,45 @@ private:
         return entry;
     }
 
+    static QString timeStretchSidecarLoadKey(const QString& path, int speedKey)
+    {
+        return QStringLiteral("%1|%2").arg(path, QString::number(speedKey));
+    }
+
+    AudioTimeStretchCacheEntry readTimeStretchSidecarEntrySingleFlight(const QString& path, int speedKey)
+    {
+        const QString key = timeStretchSidecarLoadKey(path, speedKey);
+        {
+            std::unique_lock<std::mutex> lock(m_stateMutex);
+            while (m_timeStretchSidecarLoadsInFlight.contains(key)) {
+                m_stateCondition.wait(lock);
+                const auto loadedIt = m_timeStretchSidecarEntryCache.constFind(key);
+                if (loadedIt != m_timeStretchSidecarEntryCache.constEnd()) {
+                    return loadedIt.value();
+                }
+            }
+            const auto loadedIt = m_timeStretchSidecarEntryCache.constFind(key);
+            if (loadedIt != m_timeStretchSidecarEntryCache.constEnd()) {
+                return loadedIt.value();
+            }
+            m_timeStretchSidecarLoadsInFlight.insert(key);
+        }
+
+        AudioTimeStretchCacheEntry entry = readTimeStretchSidecarEntry(path, speedKey);
+        {
+            std::lock_guard<std::mutex> lock(m_stateMutex);
+            if (entry.valid && entry.fullyDecoded) {
+                m_timeStretchSidecarEntryCache.insert(key, entry);
+            }
+            m_timeStretchSidecarLoadsInFlight.remove(key);
+        }
+        m_stateCondition.notify_all();
+        return entry;
+    }
+
     AudioClipCacheEntry buildTimeStretchCacheEntry(const QString& path,
                                                    const AudioClipCacheEntry& decoded,
-                                                   qreal speed) const {
+                                                   qreal speed) {
         AudioClipCacheEntry warped;
         const int sidecarSpeedKey = precomputedTimeStretchSpeedKey(speed);
         if (!decoded.valid || decoded.samples.isEmpty() || !pitchPreservingTimeStretchActive(speed)) {
@@ -2015,7 +2057,7 @@ private:
                 m_timeStretchGenerationActive.store(true, std::memory_order_release);
             }
             warped = audioCacheEntryFromTimeStretchEntry(
-                readTimeStretchSidecarEntry(path, sidecarSpeedKey));
+                readTimeStretchSidecarEntrySingleFlight(path, sidecarSpeedKey));
             const int64_t warpedFrames =
                 static_cast<int64_t>(warped.samples.size() / qMax(1, warped.channelCount));
             const int64_t minExpectedFrames =
@@ -2092,7 +2134,7 @@ private:
                 m_timeStretchGenerationProgressPermille.store(980, std::memory_order_release);
                 if (writeAudioTimeStretchSidecar(path, sidecarSpeedKey, sidecar)) {
                     warped = audioCacheEntryFromTimeStretchEntry(
-                        readTimeStretchSidecarEntry(path, sidecarSpeedKey));
+                        readTimeStretchSidecarEntrySingleFlight(path, sidecarSpeedKey));
                 }
             }
         }
@@ -2127,7 +2169,7 @@ private:
     QHash<int, AudioClipCacheEntry> buildPrecomputedTimeStretchEntries(
         const QString& path,
         const AudioClipCacheEntry& decoded,
-        bool precomputeRequested) const {
+        bool precomputeRequested) {
         QHash<int, AudioClipCacheEntry> warpedBySpeed;
         if (!precomputeRequested &&
             static_cast<PlaybackAudioWarpMode>(m_playbackWarpMode.load(std::memory_order_acquire)) !=
@@ -3117,6 +3159,8 @@ private:
     QVector<ExportRangeSegment> m_transcriptNormalizeRanges;
     QHash<QString, AudioClipCacheEntry> m_audioCache;
     QHash<QString, QHash<int, QVector<AudioClipCacheEntry>>> m_timeStretchAudioCache;
+    QHash<QString, AudioTimeStretchCacheEntry> m_timeStretchSidecarEntryCache;
+    QSet<QString> m_timeStretchSidecarLoadsInFlight;
     std::deque<DecodeTask> m_pendingDecodePaths;
     QSet<QString> m_pendingDecodeSet;
     QHash<QString, bool> m_activeDecodeFullDecode;

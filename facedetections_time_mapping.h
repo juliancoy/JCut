@@ -69,6 +69,12 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
                                        FacestreamFrameDomain domain,
                                        const QVector<RenderSyncMarker>& markers);
 
+bool facestreamLegacyTimelineFallbackAllowed(const TimelineClip& clip,
+                                             FacestreamFrameDomain declaredDomain);
+
+bool sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(const TimelineClip& clip,
+                                                        const QVector<int64_t>& sortedFrames);
+
 int64_t facedetectionsTypicalFrameStep(const QVector<int64_t>& sortedFrames);
 
 bool facedetectionsShouldBridgeGap(int64_t previousFrame,

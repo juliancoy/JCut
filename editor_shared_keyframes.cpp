@@ -199,21 +199,6 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         domain = inferFacestreamFrameDomain(clip, minFrame, maxFrame);
     }
 
-    const qreal localTimelineFrame =
-        qMax<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame));
-    const qreal localMediaSourceFrame =
-        qMax<qreal>(0.0,
-                    mediaSourceFramePosition - static_cast<qreal>(qMax<int64_t>(0, clip.sourceInFrame)));
-    qreal lookupFramePosition = localMediaSourceFrame;
-    if (domain == FacestreamFrameDomain::ClipTimeline30Fps) {
-        lookupFramePosition = localTimelineFrame;
-    } else if (domain == FacestreamFrameDomain::SourceAbsolute) {
-        lookupFramePosition = qMax<qreal>(0.0, mediaSourceFramePosition);
-    }
-    const int64_t lookupFrame = qMax<int64_t>(
-        0,
-        static_cast<int64_t>(std::floor(lookupFramePosition)));
-
     const auto firstValidIt = std::find_if(
         stream.keyframes.constBegin(),
         stream.keyframes.constEnd(),
@@ -223,10 +208,52 @@ bool streamSampleAtFrame(const TimelineClip& clip,
     if (firstValidIt == stream.keyframes.constEnd()) {
         return false;
     }
+    int64_t lastValidFrame = -1;
+    for (int i = stream.keyframes.size() - 1; i >= 0; --i) {
+        if (stream.keyframes.at(i).frame >= 0) {
+            lastValidFrame = stream.keyframes.at(i).frame;
+            break;
+        }
+    }
     const int64_t typicalStep = qMax<int64_t>(1, stream.summary.typicalFrameStep);
     const int64_t edgeHoldFrames = qMax<int64_t>(
         facedetectionsMaxEdgeHoldFrames(typicalStep),
         qBound(0, gapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames));
+
+    const qreal localTimelineFrame =
+        qMax<qreal>(0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame));
+    const qreal localMediaSourceFrame =
+        qMax<qreal>(0.0,
+                    mediaSourceFramePosition - static_cast<qreal>(qMax<int64_t>(0, clip.sourceInFrame)));
+    auto lookupPositionForDomain = [&](FacestreamFrameDomain lookupDomain) {
+        if (lookupDomain == FacestreamFrameDomain::ClipTimeline30Fps) {
+            return localTimelineFrame;
+        }
+        if (lookupDomain == FacestreamFrameDomain::SourceAbsolute) {
+            return qMax<qreal>(0.0, mediaSourceFramePosition);
+        }
+        return localMediaSourceFrame;
+    };
+    qreal lookupFramePosition = lookupPositionForDomain(domain);
+    if (facestreamLegacyTimelineFallbackAllowed(clip, domain) && lastValidFrame >= 0) {
+        const qreal timelineLookupFramePosition =
+            lookupPositionForDomain(FacestreamFrameDomain::ClipTimeline30Fps);
+        const qreal firstFrame = static_cast<qreal>(firstValidIt->frame);
+        const qreal lastFrame = static_cast<qreal>(lastValidFrame);
+        const qreal edgeHold = static_cast<qreal>(edgeHoldFrames);
+        const bool declaredSourceLookupMissesAfterTrack =
+            lookupFramePosition > lastFrame + edgeHold;
+        const bool timelineLookupIsInTrackRange =
+            timelineLookupFramePosition >= firstFrame - edgeHold &&
+            timelineLookupFramePosition <= lastFrame + edgeHold;
+        if (declaredSourceLookupMissesAfterTrack && timelineLookupIsInTrackRange) {
+            domain = FacestreamFrameDomain::ClipTimeline30Fps;
+            lookupFramePosition = timelineLookupFramePosition;
+        }
+    }
+    const int64_t lookupFrame = qMax<int64_t>(
+        0,
+        static_cast<int64_t>(std::floor(lookupFramePosition)));
 
     const auto nextIt = std::lower_bound(
         firstValidIt,
@@ -1294,6 +1321,59 @@ bool evaluateClipSpeakerFramingEnabledAtPosition(const TimelineClip& clip, qreal
         clip, static_cast<int64_t>(std::floor(timelineFramePosition)));
 }
 
+TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
+    const TimelineClip& clip,
+    qreal timelineFramePosition,
+    const QPointF& locationNorm,
+    qreal boxSizeNorm,
+    const QSize& outputSize)
+{
+    TimelineClip::TransformKeyframe state;
+    state.rotation = 0.0;
+    state.scaleX = 1.0;
+    state.scaleY = 1.0;
+
+    const qreal maxFrame = static_cast<qreal>(qMax<int64_t>(0, clip.durationFrames - 1));
+    const qreal localFrame = qBound<qreal>(
+        0.0, timelineFramePosition - static_cast<qreal>(clip.startFrame), maxFrame);
+    const TimelineClip::TransformKeyframe target =
+        evaluateClipSpeakerFramingTargetAtPosition(clip, timelineFramePosition);
+    const qreal targetXNorm = qBound<qreal>(0.0, target.translationX, 1.0);
+    const qreal targetYNorm = qBound<qreal>(0.0, target.translationY, 1.0);
+    const qreal targetBoxNorm = qBound<qreal>(-1.0, target.scaleX, 1.0);
+    const qreal safeBoxSizeNorm = qBound<qreal>(0.0, boxSizeNorm, 1.0);
+    if (targetBoxNorm <= 0.0 || safeBoxSizeNorm <= 0.0) {
+        return state;
+    }
+
+    const QSize safeOutput = outputSize.isValid() ? outputSize : QSize(1080, 1920);
+    const QSize sourceSize = sourceSizeForClipCached(clip, safeOutput);
+    const QRect fittedRect = fitRectForSourceInOutput(sourceSize, safeOutput);
+    const qreal fittedCenterX = static_cast<qreal>(fittedRect.center().x());
+    const qreal fittedCenterY = static_cast<qreal>(fittedRect.center().y());
+    const qreal fittedWidth = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.width()));
+    const qreal fittedHeight = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.height()));
+    const qreal fittedMinSide = qMax<qreal>(1.0, qMin(fittedWidth, fittedHeight));
+    const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.width()));
+    const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.height()));
+    const qreal outputMinSide = qMax<qreal>(1.0, qMin(outputWidth, outputHeight));
+    const qreal targetXPx = targetXNorm * outputWidth;
+    const qreal targetYPx = targetYNorm * outputHeight;
+    const qreal faceSideOutputPx = qMax<qreal>(1.0, safeBoxSizeNorm * fittedMinSide);
+    const qreal targetSideOutputPx = qMax<qreal>(1.0, targetBoxNorm * outputMinSide);
+    const qreal scale = sanitizeScaleValue(targetSideOutputPx / faceSideOutputPx);
+    const qreal localX = (qBound<qreal>(0.0, locationNorm.x(), 1.0) - 0.5) * fittedWidth;
+    const qreal localY = (qBound<qreal>(0.0, locationNorm.y(), 1.0) - 0.5) * fittedHeight;
+    state.frame = static_cast<int64_t>(std::floor(localFrame));
+    state.translationX = targetXPx - (fittedCenterX + (scale * localX));
+    state.translationY = targetYPx - (fittedCenterY + (scale * localY));
+    state.rotation = 0.0;
+    state.scaleX = scale;
+    state.scaleY = scale;
+    state.linearInterpolation = true;
+    return state;
+}
+
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
                                                                   int64_t timelineFrame,
                                                                   const QSize& outputSize) {
@@ -1366,32 +1446,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         if (!hasSample || boxSize <= 0.0) {
             return state;
         }
-        const QSize safeOutput = outputSize.isValid() ? outputSize : QSize(1080, 1920);
-        const QSize sourceSize = sourceSizeForClipCached(clip, safeOutput);
-        const QRect fittedRect = fitRectForSourceInOutput(sourceSize, safeOutput);
-        const qreal fittedCenterX = static_cast<qreal>(fittedRect.center().x());
-        const qreal fittedCenterY = static_cast<qreal>(fittedRect.center().y());
-        const qreal fittedWidth = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.width()));
-        const qreal fittedHeight = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.height()));
-        const qreal fittedMinSide = qMax<qreal>(1.0, qMin(fittedWidth, fittedHeight));
-        const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.width()));
-        const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.height()));
-        const qreal outputMinSide = qMax<qreal>(1.0, qMin(outputWidth, outputHeight));
-        const qreal targetXPx = targetXNorm * outputWidth;
-        const qreal targetYPx = targetYNorm * outputHeight;
-        const qreal faceSideOutputPx = qMax<qreal>(1.0, boxSize * fittedMinSide);
-        const qreal targetSideOutputPx = qMax<qreal>(1.0, targetBoxNorm * outputMinSide);
-        const qreal scale = sanitizeScaleValue(targetSideOutputPx / faceSideOutputPx);
-        const qreal localX = (qBound<qreal>(0.0, location.x(), 1.0) - 0.5) * fittedWidth;
-        const qreal localY = (qBound<qreal>(0.0, location.y(), 1.0) - 0.5) * fittedHeight;
-        state.frame = localFrame;
-        state.translationX = targetXPx - (fittedCenterX + (scale * localX));
-        state.translationY = targetYPx - (fittedCenterY + (scale * localY));
-        state.rotation = 0.0;
-        state.scaleX = scale;
-        state.scaleY = scale;
-        state.linearInterpolation = true;
-        return state;
+        return evaluateClipSpeakerFramingForFaceBoxAtPosition(
+            clip, static_cast<qreal>(timelineFrame), location, boxSize, outputSize);
     }
     TimelineClip::TransformKeyframe framingState;
     if (localFrame <= clip.speakerFramingKeyframes.constFirst().frame) {
@@ -1491,32 +1547,8 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         if (!hasSample || boxSize <= 0.0) {
             return state;
         }
-        const QSize safeOutput = outputSize.isValid() ? outputSize : QSize(1080, 1920);
-        const QSize sourceSize = sourceSizeForClipCached(clip, safeOutput);
-        const QRect fittedRect = fitRectForSourceInOutput(sourceSize, safeOutput);
-        const qreal fittedCenterX = static_cast<qreal>(fittedRect.center().x());
-        const qreal fittedCenterY = static_cast<qreal>(fittedRect.center().y());
-        const qreal fittedWidth = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.width()));
-        const qreal fittedHeight = qMax<qreal>(1.0, static_cast<qreal>(fittedRect.height()));
-        const qreal fittedMinSide = qMax<qreal>(1.0, qMin(fittedWidth, fittedHeight));
-        const qreal outputWidth = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.width()));
-        const qreal outputHeight = qMax<qreal>(1.0, static_cast<qreal>(safeOutput.height()));
-        const qreal outputMinSide = qMax<qreal>(1.0, qMin(outputWidth, outputHeight));
-        const qreal targetXPx = targetXNorm * outputWidth;
-        const qreal targetYPx = targetYNorm * outputHeight;
-        const qreal faceSideOutputPx = qMax<qreal>(1.0, boxSize * fittedMinSide);
-        const qreal targetSideOutputPx = qMax<qreal>(1.0, targetBoxNorm * outputMinSide);
-        const qreal scale = sanitizeScaleValue(targetSideOutputPx / faceSideOutputPx);
-        const qreal localX = (qBound<qreal>(0.0, location.x(), 1.0) - 0.5) * fittedWidth;
-        const qreal localY = (qBound<qreal>(0.0, location.y(), 1.0) - 0.5) * fittedHeight;
-        state.frame = mediaSourceFrame;
-        state.translationX = targetXPx - (fittedCenterX + (scale * localX));
-        state.translationY = targetYPx - (fittedCenterY + (scale * localY));
-        state.rotation = 0.0;
-        state.scaleX = scale;
-        state.scaleY = scale;
-        state.linearInterpolation = true;
-        return state;
+        return evaluateClipSpeakerFramingForFaceBoxAtPosition(
+            clip, timelineFramePosition, location, boxSize, outputSize);
     }
     if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
         state = clip.speakerFramingKeyframes.constFirst();

@@ -84,6 +84,7 @@ void EditorWindow::advanceFrame()
     const bool hasPlayableAudio = m_audioEngine && m_audioEngine->hasPlayableAudio();
     if (audioMasterEnabled && audioClockAvailable && hasPlayableAudio) {
         int64_t audioSample = qMax<int64_t>(0, m_audioEngine->playbackClockSample());
+        audioSample = playbackSampleForAudioClockSample(audioSample);
         const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
         if (!ranges.isEmpty()) {
             bool reachedEnd = false;
@@ -282,6 +283,45 @@ int64_t EditorWindow::filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSa
         filteredSample += (rangeEndSampleExclusive - rangeStartSample);
     }
     return filteredSample;
+}
+
+int64_t EditorWindow::absolutePlaybackSampleForFilteredSample(int64_t filteredSample) const
+{
+    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+    if (ranges.isEmpty()) {
+        return qMax<int64_t>(0, filteredSample);
+    }
+
+    int64_t remaining = qMax<int64_t>(0, filteredSample);
+    for (const ExportRangeSegment& range : ranges) {
+        const int64_t rangeStartSample = frameToSamples(range.startFrame);
+        const int64_t rangeEndSampleExclusive = frameToSamples(range.endFrame + 1);
+        const int64_t rangeLength = qMax<int64_t>(0, rangeEndSampleExclusive - rangeStartSample);
+        if (remaining < rangeLength) {
+            return rangeStartSample + remaining;
+        }
+        remaining -= rangeLength;
+    }
+
+    const ExportRangeSegment& last = ranges.constLast();
+    return frameToSamples(last.endFrame + 1);
+}
+
+int64_t EditorWindow::playbackSampleForAudioClockSample(int64_t audioClockSample) const
+{
+    if (!speechFilterPlaybackEnabled()) {
+        return qMax<int64_t>(0, audioClockSample);
+    }
+
+    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+    if (ranges.isEmpty()) {
+        return qMax<int64_t>(0, audioClockSample);
+    }
+
+    const int64_t anchorAbsolute = qMax<int64_t>(0, m_playbackAudioClockAnchorAbsoluteSample);
+    const int64_t anchorFiltered = filteredPlaybackSampleForAbsoluteSample(anchorAbsolute);
+    const int64_t elapsedPlaybackSamples = qMax<int64_t>(0, audioClockSample - anchorAbsolute);
+    return absolutePlaybackSampleForFilteredSample(anchorFiltered + elapsedPlaybackSamples);
 }
 
 QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
@@ -718,6 +758,9 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     
     m_absolutePlaybackSample = boundedSample;
     m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(boundedSample);
+    if (!duringPlayback || syncAudio) {
+        m_playbackAudioClockAnchorAbsoluteSample = boundedSample;
+    }
     m_fastCurrentFrame.store(bounded);
     
     if (syncAudio && m_audioEngine && m_audioEngine->audioClockAvailable()) {
@@ -1022,6 +1065,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
         m_playbackAudioWarmupPending = false;
         m_retimingAudioForPlayback = false;
         updateTransportLabels();
+        updatePlaybackStatusOverlay();
         if (startWhenReady) {
             setPlaybackActive(true);
         }
@@ -1034,6 +1078,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
     m_startPlaybackAfterAudioWarmup = startWhenReady;
     const int requestId = ++m_playbackAudioWarmupRequestId;
     updateTransportLabels();
+    updatePlaybackStatusOverlay();
 
     AudioEngine* audioEngine = m_audioEngine.get();
     const int timeoutMs = sidecarMissing
@@ -1053,6 +1098,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
                 m_retimingAudioForPlayback = false;
                 m_startPlaybackAfterAudioWarmup = false;
                 updateTransportLabels();
+                updatePlaybackStatusOverlay();
 
                 if (!ready) {
                     m_lastPlaybackStopReason = QStringLiteral("audio_not_ready");
@@ -1060,6 +1106,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
                         << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for re-timed audio at frame %1 timed out")
                                .arg(frame);
                     updateTransportLabels();
+                    updatePlaybackStatusOverlay();
                     return;
                 }
 
@@ -1085,18 +1132,27 @@ void EditorWindow::updatePlaybackStatusOverlay()
         const bool audioReady =
             m_audioEngine && m_timeline &&
             m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame());
-        if (m_retimingAudioForPlayback) {
+        const bool timeStretchGenerationActive =
+            m_audioEngine && m_audioEngine->timeStretchGenerationActive();
+        if (m_retimingAudioForPlayback || timeStretchGenerationActive) {
             progress = m_audioEngine ? m_audioEngine->timeStretchGenerationProgress() : -1.0;
             const int generationPercent = progress >= 0.0 ? qRound(progress * 100.0) : 0;
             text = progress >= 0.0
-                ? QStringLiteral("Audio being generated (%1%) %2%")
+                ? QStringLiteral("Playback waiting: loading audio with Rubber Band tempo shift (%1%) %2%")
                       .arg(percent)
                       .arg(generationPercent)
-                : QStringLiteral("Audio being generated (%1%)").arg(percent);
+                : QStringLiteral("Playback waiting: loading audio with Rubber Band tempo shift (%1%)").arg(percent);
         } else if (m_playbackAudioWarmupPending) {
-            text = QStringLiteral("Loading re-timed audio (%1%)").arg(percent);
+            text = QStringLiteral("Playback waiting: loading re-timed audio (%1%)").arg(percent);
         } else if (!audioReady && m_lastPlaybackStopReason == QStringLiteral("audio_not_ready")) {
-            text = QStringLiteral("Waiting for precomputed %1% audio").arg(percent);
+            text = QStringLiteral("Playback waiting: loading precomputed %1% audio").arg(percent);
+        }
+    }
+    if (text.isEmpty()) {
+        if (m_playbackVideoWarmupPending) {
+            text = QStringLiteral("Playback waiting: buffering video frames");
+        } else if (m_lastPlaybackStopReason == QStringLiteral("video_not_ready")) {
+            text = QStringLiteral("Playback waiting: video frames are still buffering");
         }
     }
     m_preview->setPlaybackStatusOverlayText(text);
@@ -1161,14 +1217,25 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_lastPlaybackStopReason = QStringLiteral("none");
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = nowMs();
-        if (m_preview &&
-            !m_preview->warmPlaybackLookahead(m_playbackStartLookaheadFrames,
-                                              m_playbackStartLookaheadTimeoutMs)) {
-            qWarning().noquote()
-                << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for %1 buffered future frames timed out")
-                       .arg(m_playbackStartLookaheadFrames);
+        m_playbackAudioClockAnchorAbsoluteSample = frameToSamples(m_timeline->currentFrame());
+        if (m_preview) {
+            m_playbackVideoWarmupPending = true;
             updateTransportLabels();
-            return;
+            updatePlaybackStatusOverlay();
+            const bool videoLookaheadReady =
+                m_preview->warmPlaybackLookahead(m_playbackStartLookaheadFrames,
+                                                 m_playbackStartLookaheadTimeoutMs);
+            m_playbackVideoWarmupPending = false;
+            if (!videoLookaheadReady) {
+                m_lastPlaybackStopReason = QStringLiteral("video_not_ready");
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for %1 buffered future frames timed out")
+                           .arg(m_playbackStartLookaheadFrames);
+                updateTransportLabels();
+                updatePlaybackStatusOverlay();
+                return;
+            }
+            updatePlaybackStatusOverlay();
         }
 
         const auto ranges = effectivePlaybackRanges();

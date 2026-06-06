@@ -49,6 +49,16 @@
 namespace {
 constexpr int kPersistentTrackAvatarSize = 160;
 
+enum PlayheadTrackItemRole {
+    PlayheadTrackIdRole = Qt::UserRole,
+    PlayheadTrackStreamIdRole,
+    PlayheadTrackSourceFrameRole,
+    PlayheadTrackXRole,
+    PlayheadTrackYRole,
+    PlayheadTrackBoxSizeRole,
+    PlayheadTrackAssignedSpeakerIdRole
+};
+
 using CachedFacestreamKeyframe = jcut::facedetections::FacestreamKeyframe;
 using CachedFacestreamTrack = jcut::facedetections::FacestreamTrack;
 
@@ -168,7 +178,7 @@ bool resolvePlayheadTrackSelection(const TimelineClip& clip,
         selectionOut);
 }
 
-bool selectTrackInList(QListWidget* list, int trackId)
+bool selectPlayheadTrackInList(QListWidget* list, int trackId)
 {
     if (!list || trackId < 0) {
         return false;
@@ -176,7 +186,7 @@ bool selectTrackInList(QListWidget* list, int trackId)
     for (int i = 0; i < list->count(); ++i) {
         QListWidgetItem* item = list->item(i);
         bool ok = false;
-        const int itemTrackId = item ? item->data(Qt::UserRole).toInt(&ok) : -1;
+        const int itemTrackId = item ? item->data(PlayheadTrackIdRole).toInt(&ok) : -1;
         if (!item || !ok || itemTrackId != trackId) {
             continue;
         }
@@ -738,6 +748,53 @@ QVector<int> SpeakersTab::resolvedAssignedTrackIdsForSpeaker(const TimelineClip&
                                                              const QString& speakerId) const
 {
     return trackIdentityResolutionCacheForClip(clip, streams).trackIdsByIdentity.value(speakerId.trimmed());
+}
+
+QVector<int> SpeakersTab::playheadAssignedTrackIdsForSpeaker(const TimelineClip& clip,
+                                                             const QJsonArray& streams,
+                                                             const QString& speakerId) const
+{
+    const QVector<int> assignedTrackIdList =
+        resolvedAssignedTrackIdsForSpeaker(clip, streams, speakerId);
+    if (assignedTrackIdList.isEmpty() || streams.isEmpty()) {
+        return {};
+    }
+
+    QSet<int> assignedTrackIds;
+    for (int trackId : assignedTrackIdList) {
+        assignedTrackIds.insert(trackId);
+    }
+
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+    const int64_t playheadTimelineFrame =
+        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
+    const int64_t playheadSourceFrame =
+        sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
+
+    QVector<int> activeTrackIds;
+    activeTrackIds.reserve(qMin(assignedTrackIds.size(), streams.size()));
+    for (const QJsonValue& value : streams) {
+        const QJsonObject streamObj = value.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        if (!assignedTrackIds.contains(trackId)) {
+            continue;
+        }
+        FacestreamResolvedSelection selection;
+        if (!resolvePlayheadTrackSelection(
+                clip,
+                streamObj,
+                renderSyncMarkers,
+                playheadTimelineFrame,
+                playheadSourceFrame,
+                &selection)) {
+            continue;
+        }
+        if (!activeTrackIds.contains(trackId)) {
+            activeTrackIds.push_back(trackId);
+        }
+    }
+    return activeTrackIds;
 }
 
 QString SpeakersTab::assignedFaceDetectionsPreviewTooltipHtml(const TimelineClip& clip,
@@ -1681,6 +1738,23 @@ QVector<CachedFacestreamTrack> buildCachedFacestreamTracks(const TimelineClip& c
 {
     QVector<CachedFacestreamTrack> tracks;
     tracks.reserve(streams.size());
+    QVector<int64_t> payloadFrames;
+    payloadFrames.reserve(streams.size() * 2);
+    for (const QJsonValue& streamValue : streams) {
+        const QJsonArray keyframes = streamValue.toObject().value(QStringLiteral("keyframes")).toArray();
+        for (const QJsonValue& keyframeValue : keyframes) {
+            const QJsonObject keyframeObj = keyframeValue.toObject();
+            if (keyframeObj.contains(QString(kTranscriptSpeakerTrackingFrameKey))) {
+                payloadFrames.push_back(
+                    keyframeObj.value(QString(kTranscriptSpeakerTrackingFrameKey))
+                        .toVariant()
+                        .toLongLong());
+            }
+        }
+    }
+    std::sort(payloadFrames.begin(), payloadFrames.end());
+    const bool payloadLooksLikeLegacyTimeline =
+        sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(clip, payloadFrames);
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject streamObj = streamValue.toObject();
         const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
@@ -1694,6 +1768,10 @@ QVector<CachedFacestreamTrack> buildCachedFacestreamTracks(const TimelineClip& c
                 streamObj.value(QStringLiteral("frame_domain")).toString(),
                 &frameDomain)) {
             continue;
+        }
+        if (frameDomain == FacestreamFrameDomain::SourceAbsolute &&
+            payloadLooksLikeLegacyTimeline) {
+            frameDomain = FacestreamFrameDomain::ClipTimeline30Fps;
         }
 
         CachedFacestreamTrack track;
@@ -2115,6 +2193,50 @@ bool SpeakersTab::deassignSelectedSpeakerAssignedTracks()
     return changed;
 }
 
+void SpeakersTab::clearPlayheadTrackAssignmentAt(const QPoint& pos)
+{
+    if (!m_widgets.speakerPlayheadFaceDetectionsList) {
+        return;
+    }
+
+    QListWidgetItem* item = m_widgets.speakerPlayheadFaceDetectionsList->itemAt(pos);
+    if (!item) {
+        return;
+    }
+
+    bool ok = false;
+    const int trackId = item->data(PlayheadTrackIdRole).toInt(&ok);
+    if (!ok || trackId < 0) {
+        return;
+    }
+
+    m_widgets.speakerPlayheadFaceDetectionsList->setCurrentItem(item);
+    item->setSelected(true);
+
+    const QString speakerId = item->data(PlayheadTrackAssignedSpeakerIdRole).toString().trimmed();
+    if (speakerId.isEmpty()) {
+        showPreviewFaceDetectionsClickStatus(
+            QStringLiteral("Track %1 has no current speaker mapping.").arg(trackId));
+        return;
+    }
+
+    selectSpeakerRowById(speakerId);
+    m_lastSelectedSpeakerIdHint = speakerId;
+
+    const bool removed = deassignTrackFromSpeaker(speakerId, trackId);
+    if (removed && m_speakerDeps.refreshPreview) {
+        m_speakerDeps.refreshPreview();
+    }
+    showPreviewFaceDetectionsClickStatus(
+        removed
+            ? QStringLiteral("Track %1 removed from %2.")
+                  .arg(trackId)
+                  .arg(speakerDisplayLabel(speakerId))
+            : QStringLiteral("Track %1 is not mapped to %2.")
+                  .arg(trackId)
+                  .arg(speakerDisplayLabel(speakerId)));
+}
+
 void SpeakersTab::showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos)
 {
     if (!m_widgets.selectedSpeakerFaceDetectionsList) {
@@ -2239,17 +2361,11 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
               m_speakerDeps.getRenderSyncMarkers
                   ? m_speakerDeps.getRenderSyncMarkers()
                   : QVector<RenderSyncMarker>{});
+    const int64_t transcriptFrame = transcriptFrameForClipSourceFrame(*clip, mediaSourceFrame);
     const qreal sourceFps = resolvedSourceFps(*clip);
-    const int64_t transcriptFrame = sourceFrame >= 0
-        ? qMax<int64_t>(
-              0,
-              static_cast<int64_t>(std::floor(
-                  (static_cast<qreal>(mediaSourceFrame) / qMax<qreal>(1.0, sourceFps)) *
-                  static_cast<qreal>(kTimelineFps))))
-        : currentSourceFrameForClip(*clip);
     logTiming(QStringLiteral("mapped_source_frame"));
     const bool selectedPlayheadTrack =
-        selectTrackInList(m_widgets.speakerPlayheadFaceDetectionsList, trackId);
+        selectPlayheadTrackInList(m_widgets.speakerPlayheadFaceDetectionsList, trackId);
     if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
         m_speakerDeps.setPreviewAssignedFaceTrackIds(QSet<int>{trackId});
     }
@@ -2262,13 +2378,22 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
                   ? QStringLiteral("selected_playhead_track")
                   : QStringLiteral("highlighted_preview_track"));
 
+    const QString selectedSpeaker = selectedSpeakerId().trimmed();
     QString speakerResolutionDetail =
-        QStringLiteral("transcript exact frame %1 from media source frame %2 at %3 fps")
-            .arg(transcriptFrame)
-            .arg(mediaSourceFrame)
-            .arg(sourceFps, 0, 'f', 3);
-    QString speakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
+        selectedSpeaker.isEmpty()
+            ? QStringLiteral("media source frame %1 at %2 fps -> transcript frame %3")
+                  .arg(mediaSourceFrame)
+                  .arg(sourceFps, 0, 'f', 3)
+                  .arg(transcriptFrame)
+            : QStringLiteral("selected speaker; media source frame %1 at %2 fps -> transcript frame %3")
+                  .arg(mediaSourceFrame)
+                  .arg(sourceFps, 0, 'f', 3)
+                  .arg(transcriptFrame);
+    QString speakerId = selectedSpeaker;
     int64_t speakerSourceFrame = transcriptFrame;
+    if (speakerId.isEmpty()) {
+        speakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
+    }
     if (speakerId.isEmpty()) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
         int64_t resolvedGapFrame = transcriptFrame;
@@ -2292,8 +2417,8 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     if (assignmentAction == jcut::preview::FaceTrackClickAssignmentAction::SelectOnlyNoSpeaker) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
         report(QStringLiteral("Face box click selected: track %1 focused at media source frame %2. "
-                              "%3No assignment was saved because there is no transcript-active speaker "
-                              "(transcript frame %4 at %5 fps; gap hold=%6 transcript frame(s)).")
+                              "%3No assignment was saved because no speaker is selected and there is no transcript-active speaker "
+                              "(transcript frame %4 from media source frame at %5 fps; gap hold=%6 transcript frame(s)).")
                    .arg(trackId)
                    .arg(mediaSourceFrame)
                    .arg(framingTrackingApplied
@@ -2340,7 +2465,7 @@ bool SpeakersTab::handlePreviewFaceDetectionsBox(const QString& clipId,
     if (assigned) {
         QPointer<SpeakersTab> self(this);
         const QString statusMessage =
-            QStringLiteral("Face box click focused: track %1 replaced current track focus for %2 at media source frame %3 (%4). %5")
+            QStringLiteral("Face box click assigned: track %1 mapped to %2 at media source frame %3 (%4). %5")
                 .arg(trackId)
                 .arg(speakerDisplayLabel(speakerId))
                 .arg(mediaSourceFrame)
@@ -2422,17 +2547,14 @@ bool SpeakersTab::handlePreviewFaceDetectionsBoxFocusClear(const QString& clipId
               m_speakerDeps.getRenderSyncMarkers
                   ? m_speakerDeps.getRenderSyncMarkers()
                   : QVector<RenderSyncMarker>{});
-    const qreal sourceFps = resolvedSourceFps(*clip);
-    const int64_t transcriptFrame = sourceFrame >= 0
-        ? qMax<int64_t>(
-              0,
-              static_cast<int64_t>(std::floor(
-                  (static_cast<qreal>(mediaSourceFrame) / qMax<qreal>(1.0, sourceFps)) *
-                  static_cast<qreal>(kTimelineFps))))
-        : currentSourceFrameForClip(*clip);
+    const int64_t transcriptFrame = transcriptFrameForClipSourceFrame(*clip, mediaSourceFrame);
 
-    QString speakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
+    const QString selectedSpeaker = selectedSpeakerId().trimmed();
+    QString speakerId = selectedSpeaker;
     int64_t speakerSourceFrame = transcriptFrame;
+    if (speakerId.isEmpty()) {
+        speakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
+    }
     if (speakerId.isEmpty()) {
         const int gapHoldFrames = qBound(0, clip->speakerFramingGapHoldFrames, 240);
         int64_t resolvedGapFrame = transcriptFrame;
@@ -2440,9 +2562,6 @@ bool SpeakersTab::handlePreviewFaceDetectionsBoxFocusClear(const QString& clipId
         if (!speakerId.isEmpty()) {
             speakerSourceFrame = resolvedGapFrame;
         }
-    }
-    if (speakerId.isEmpty() && !selectedSpeakerId().trimmed().isEmpty()) {
-        speakerId = selectedSpeakerId().trimmed();
     }
     if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
         report(QStringLiteral("Face box right-click ignored: no current speaker focus for track %1 at media source frame %2.")
@@ -2608,27 +2727,28 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         QListWidgetItem* item = itemAvatar.isNull()
             ? new QListWidgetItem(QStringLiteral("%1\n%2").arg(streamId, assignedLabel))
             : new QListWidgetItem(QIcon(itemAvatar), QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
-        item->setData(Qt::UserRole, trackId);
-        item->setData(Qt::UserRole + 1, streamId);
-        item->setData(Qt::UserRole + 2, QVariant::fromValue<qlonglong>(selection.sourceFrame));
+        item->setData(PlayheadTrackIdRole, trackId);
+        item->setData(PlayheadTrackStreamIdRole, streamId);
+        item->setData(PlayheadTrackSourceFrameRole, QVariant::fromValue<qlonglong>(selection.sourceFrame));
         item->setData(
-            Qt::UserRole + 3,
+            PlayheadTrackXRole,
             qBound<qreal>(
                 0.0,
                 selection.keyframe.xNorm,
                 1.0));
         item->setData(
-            Qt::UserRole + 4,
+            PlayheadTrackYRole,
             qBound<qreal>(
                 0.0,
                 selection.keyframe.yNorm,
                 1.0));
         item->setData(
-            Qt::UserRole + 5,
+            PlayheadTrackBoxSizeRole,
             qBound<qreal>(
                 0.01,
                 selection.keyframe.boxSizeNorm,
                 1.0));
+        item->setData(PlayheadTrackAssignedSpeakerIdRole, assignedSpeakerId);
         item->setToolTip(
             QStringLiteral("Track %1 | Frame %2 | Source %3 | Current assignment: %4")
                 .arg(trackId)
@@ -2794,7 +2914,7 @@ bool SpeakersTab::openPlayheadTrackPickerForSpeaker(const QString& speakerId)
     for (int i = 0; i < m_widgets.speakerPlayheadFaceDetectionsList->count(); ++i) {
         QListWidgetItem* item = m_widgets.speakerPlayheadFaceDetectionsList->item(i);
         bool ok = false;
-        const int trackId = item ? item->data(Qt::UserRole).toInt(&ok) : -1;
+        const int trackId = item ? item->data(PlayheadTrackIdRole).toInt(&ok) : -1;
         if (!item || !ok || trackId < 0) {
             continue;
         }
@@ -2825,7 +2945,7 @@ bool SpeakersTab::openPlayheadTrackPickerForSpeaker(const QString& speakerId)
     list->setSpacing(10);
     for (QListWidgetItem* sourceItem : std::as_const(sourceItems)) {
         auto* copy = new QListWidgetItem(sourceItem->icon(), sourceItem->text());
-        for (int role = Qt::UserRole; role <= Qt::UserRole + 5; ++role) {
+        for (int role = PlayheadTrackIdRole; role <= PlayheadTrackAssignedSpeakerIdRole; ++role) {
             copy->setData(role, sourceItem->data(role));
         }
         copy->setToolTip(sourceItem->toolTip());
@@ -2866,17 +2986,17 @@ bool SpeakersTab::openPlayheadTrackPickerForSpeaker(const QString& speakerId)
             continue;
         }
         bool ok = false;
-        const int trackId = item->data(Qt::UserRole).toInt(&ok);
+        const int trackId = item->data(PlayheadTrackIdRole).toInt(&ok);
         if (!ok || trackId < 0) {
             continue;
         }
         anchors.push_back(makeTrackAssignmentAnchor(
             trackId,
-            item->data(Qt::UserRole + 1).toString().trimmed(),
-            item->data(Qt::UserRole + 2).toLongLong(),
-            item->data(Qt::UserRole + 3).toDouble(),
-            item->data(Qt::UserRole + 4).toDouble(),
-            item->data(Qt::UserRole + 5).toDouble()));
+            item->data(PlayheadTrackStreamIdRole).toString().trimmed(),
+            item->data(PlayheadTrackSourceFrameRole).toLongLong(),
+            item->data(PlayheadTrackXRole).toDouble(),
+            item->data(PlayheadTrackYRole).toDouble(),
+            item->data(PlayheadTrackBoxSizeRole).toDouble()));
     }
     if (anchors.isEmpty()) {
         QMessageBox::information(

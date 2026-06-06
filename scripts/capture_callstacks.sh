@@ -143,7 +143,9 @@ run_perf_record() {
   fi
 }
 
-if ! run_perf_record; then
+PERF_RECORD_STATUS=0
+run_perf_record || PERF_RECORD_STATUS=$?
+if [[ "${PERF_RECORD_STATUS}" -ne 0 && ! -s "${PERF_DATA}" ]]; then
   cat >&2 <<EOF
 error: perf recording failed
 
@@ -157,6 +159,12 @@ Try:
   scripts/capture_callstacks.sh --dwarf ...
 EOF
   exit 1
+fi
+if [[ "${PERF_RECORD_STATUS}" -ne 0 ]]; then
+  cat >&2 <<EOF
+warning: perf record exited with status ${PERF_RECORD_STATUS}, but ${PERF_DATA} was written.
+         Continuing to generate reports from the partial capture. This commonly happens when the profiled app crashes or aborts.
+EOF
 fi
 
 perf script -i "${PERF_DATA}" > "${PERF_SCRIPT}"
@@ -241,6 +249,7 @@ BEGIN {
   echo "event: ${PERF_EVENT}"
   echo "frequency_hz: ${FREQ}"
   echo "call_graph: ${CALL_GRAPH}"
+  echo "perf_record_status: ${PERF_RECORD_STATUS}"
   if [[ -n "${PID}" ]]; then
     echo "mode: attach"
     echo "pid: ${PID}"

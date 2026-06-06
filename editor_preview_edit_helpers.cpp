@@ -230,8 +230,12 @@ bool commitPreviewResize(TimelineClip& clip,
                          bool transcriptOverlaySelected) {
     if (transcriptOverlaySelected &&
         clipSupportsTranscriptOverlayPreviewEdits(clip)) {
-        clip.transcriptOverlay.boxWidth = qMax<qreal>(80.0, scaleX);
-        clip.transcriptOverlay.boxHeight = qMax<qreal>(40.0, scaleY);
+        clip.transcriptOverlay.boxWidth = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth,
+            scaleX);
+        clip.transcriptOverlay.boxHeight = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight,
+            scaleY);
         return true;
     }
     return stagePreviewResize(clip, keyframeTimelineFrame, scaleX, scaleY);

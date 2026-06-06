@@ -171,6 +171,9 @@ render_detail::OverlayImage renderPlaybackStatusOverlay(const QSize& imageSize, 
     if (!imageSize.isValid() || normalized.isEmpty()) {
         return {};
     }
+    const bool rubberBandGenerating =
+        normalized.contains(QStringLiteral("Rubber Band"), Qt::CaseInsensitive) ||
+        normalized.contains(QStringLiteral("Playback waiting"), Qt::CaseInsensitive);
 
     QImage image(qMax(1, imageSize.width()),
                  qMax(1, imageSize.height()),
@@ -183,37 +186,64 @@ render_detail::OverlayImage renderPlaybackStatusOverlay(const QSize& imageSize, 
 
     QFont font = painter.font();
     font.setBold(true);
-    setFontPixelSizeRobust(&font, qBound<qreal>(18.0, image.height() * 0.026, 34.0), painter.device());
+    setFontPixelSizeRobust(&font,
+                           rubberBandGenerating
+                               ? qBound<qreal>(24.0, image.height() * 0.034, 44.0)
+                               : qBound<qreal>(18.0, image.height() * 0.026, 34.0),
+                           painter.device());
     painter.setFont(font);
 
     const QFontMetrics metrics(font);
-    const int maxWidth = qMax(80, image.width() - 48);
-    const QString visibleText = metrics.elidedText(normalized, Qt::ElideRight, qMax(1, maxWidth - 44));
+    const int maxWidth = qMax(80, image.width() - (rubberBandGenerating ? 28 : 48));
+    const int horizontalPadding = rubberBandGenerating ? 68 : 44;
+    const QString visibleText =
+        metrics.elidedText(normalized, Qt::ElideRight, qMax(1, maxWidth - horizontalPadding));
     const bool showProgress = progress >= 0.0;
-    const int badgeWidth = qMin(maxWidth, qMax(metrics.horizontalAdvance(visibleText) + 44, showProgress ? 360 : 0));
-    const int badgeHeight = qMax(showProgress ? 62 : 42, metrics.height() + (showProgress ? 34 : 18));
+    const int badgeWidth = qMin(
+        maxWidth,
+        qMax(metrics.horizontalAdvance(visibleText) + horizontalPadding,
+             showProgress ? (rubberBandGenerating ? 560 : 360) : 0));
+    const int badgeHeight = qMax(rubberBandGenerating ? 88 : (showProgress ? 62 : 42),
+                                 metrics.height() + (showProgress ? (rubberBandGenerating ? 48 : 34) : 18));
     const QRectF badgeRect((image.width() - badgeWidth) * 0.5,
-                           qMax<qreal>(16.0, image.height() * 0.03),
+                           qMax<qreal>(rubberBandGenerating ? 24.0 : 16.0, image.height() * 0.03),
                            badgeWidth,
                            badgeHeight);
 
-    painter.setPen(QPen(QColor(255, 209, 102, 240), 2.0));
-    painter.setBrush(QColor(12, 16, 22, 226));
+    if (rubberBandGenerating) {
+        const QRectF scrimRect = badgeRect.adjusted(-12.0, -12.0, 12.0, 12.0);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0, 0, 0, 92));
+        painter.drawRoundedRect(scrimRect, 10.0, 10.0);
+    }
+
+    painter.setPen(QPen(rubberBandGenerating ? QColor(255, 116, 64, 255) : QColor(255, 209, 102, 240),
+                        rubberBandGenerating ? 3.0 : 2.0));
+    painter.setBrush(rubberBandGenerating ? QColor(31, 13, 8, 238) : QColor(12, 16, 22, 226));
     painter.drawRoundedRect(badgeRect, 8.0, 8.0);
-    painter.setPen(QColor(255, 244, 204, 255));
+    if (rubberBandGenerating) {
+        const QRectF accentRect(badgeRect.left(), badgeRect.top(), 10.0, badgeRect.height());
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(255, 116, 64, 255));
+        painter.drawRoundedRect(accentRect, 4.0, 4.0);
+    }
+    painter.setPen(rubberBandGenerating ? QColor(255, 250, 235, 255) : QColor(255, 244, 204, 255));
     painter.drawText(badgeRect.adjusted(16.0, 0.0, -16.0, 0.0),
                      Qt::AlignCenter,
                      visibleText);
     if (showProgress) {
-        const QRectF trackRect = badgeRect.adjusted(20.0, badgeRect.height() - 18.0, -20.0, -9.0);
+        const QRectF trackRect = badgeRect.adjusted(20.0,
+                                                    badgeRect.height() - (rubberBandGenerating ? 24.0 : 18.0),
+                                                    -20.0,
+                                                    rubberBandGenerating ? -10.0 : -9.0);
         const qreal normalizedProgress = qBound<qreal>(0.0, progress, 1.0);
         painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(255, 244, 204, 56));
-        painter.drawRoundedRect(trackRect, 3.0, 3.0);
+        painter.setBrush(rubberBandGenerating ? QColor(255, 246, 230, 72) : QColor(255, 244, 204, 56));
+        painter.drawRoundedRect(trackRect, rubberBandGenerating ? 5.0 : 3.0, rubberBandGenerating ? 5.0 : 3.0);
         QRectF fillRect = trackRect;
         fillRect.setWidth(qMax<qreal>(2.0, trackRect.width() * normalizedProgress));
-        painter.setBrush(QColor(255, 209, 102, 235));
-        painter.drawRoundedRect(fillRect, 3.0, 3.0);
+        painter.setBrush(rubberBandGenerating ? QColor(255, 116, 64, 255) : QColor(255, 209, 102, 235));
+        painter.drawRoundedRect(fillRect, rubberBandGenerating ? 5.0 : 3.0, rubberBandGenerating ? 5.0 : 3.0);
     }
     painter.end();
 
@@ -985,6 +1015,48 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
                 keyframe.scaleY = 1.0;
                 return transformWithTransientOverride(state, clipId, keyframe);
             }
+            const VulkanPreviewFacestreamOverlay* selectedFaceOverlay = nullptr;
+            for (const VulkanPreviewFacestreamOverlay& overlay : state->facedetectionsOverlays) {
+                if (overlay.clipId != clip.id ||
+                    overlay.trackId < 0 ||
+                    !state->selectedSpeakerAssignedFaceTrackIds.contains(overlay.trackId) ||
+                    !overlay.boxNorm.isValid() ||
+                    overlay.boxNorm.isEmpty()) {
+                    continue;
+                }
+                if (!selectedFaceOverlay ||
+                    overlay.confidence > selectedFaceOverlay->confidence ||
+                    (qFuzzyCompare(overlay.confidence, selectedFaceOverlay->confidence) &&
+                     overlay.boxNorm.height() > selectedFaceOverlay->boxNorm.height())) {
+                    selectedFaceOverlay = &overlay;
+                }
+            }
+            if (selectedFaceOverlay) {
+                const QPointF faceCenter(selectedFaceOverlay->boxNorm.center());
+                const qreal faceBoxSize = qMax<qreal>(
+                    selectedFaceOverlay->boxNorm.height(),
+                    selectedFaceOverlay->boxNorm.width());
+                TimelineClip::TransformKeyframe base;
+                base.frame = qMax<int64_t>(
+                    0,
+                    static_cast<int64_t>(std::floor(state->currentFramePosition)) - clip.startFrame);
+                base.translationX = clip.baseTranslationX;
+                base.translationY = clip.baseTranslationY;
+                base.rotation = clip.baseRotation;
+                base.scaleX = sanitizeScaleValue(clip.baseScaleX);
+                base.scaleY = sanitizeScaleValue(clip.baseScaleY);
+                return transformWithTransientOverride(
+                    state,
+                    clipId,
+                    composeClipTransforms(
+                        base,
+                        evaluateClipSpeakerFramingForFaceBoxAtPosition(
+                            clip,
+                            state->currentFramePosition,
+                            faceCenter,
+                            faceBoxSize,
+                            state->outputSize)));
+            }
             return transformWithTransientOverride(state, clipId, evaluateClipRenderTransformAtPosition(
                 clip,
                 state->currentFramePosition,
@@ -1724,10 +1796,18 @@ protected:
         }
 
         if (activeInfo.kind == PreviewOverlayKind::TranscriptOverlay) {
+            const QSizeF safeOutputSize = m_state->outputSize.isValid()
+                                            ? m_state->outputSize
+                                            : QSize(1080, 1920);
+            const qreal halfOutputWidth = qMax<qreal>(1.0, safeOutputSize.width() * 0.5);
+            const qreal halfOutputHeight = qMax<qreal>(1.0, safeOutputSize.height() * 0.5);
+            const QRectF originBounds = transient.dragOriginBounds.isValid()
+                                            ? transient.dragOriginBounds
+                                            : activeInfo.bounds;
             const qreal originWidth =
-                activeInfo.bounds.width() / qMax<qreal>(0.0001, previewScale.x());
+                originBounds.width() / qMax<qreal>(0.0001, previewScale.x());
             const qreal originHeight =
-                activeInfo.bounds.height() / qMax<qreal>(0.0001, previewScale.y());
+                originBounds.height() / qMax<qreal>(0.0001, previewScale.y());
             qreal width = originWidth;
             qreal height = originHeight;
             if (m_state->transient.dragMode == PreviewDragMode::ResizeX ||
@@ -1746,11 +1826,22 @@ protected:
             }
             m_state->transient.transcriptOverrideActive = true;
             m_state->transient.transcriptOverrideClipId = clipId;
-            m_state->transient.transcriptTranslationOverride = transient.dragOriginTranscriptTranslation;
-            if (m_state->transient.transcriptSizeOverride.width() <= 0.0 ||
-                m_state->transient.transcriptSizeOverride.height() <= 0.0) {
-                m_state->transient.transcriptSizeOverride = QSizeF(originWidth, originHeight);
+            QPointF translation = transient.dragOriginTranscriptTranslation;
+            if (m_state->transient.dragMode == PreviewDragMode::ResizeX ||
+                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
+                translation.setX(qBound<qreal>(
+                    -1.0,
+                    translation.x() + (((width - originWidth) * 0.5) / halfOutputWidth),
+                    1.0));
             }
+            if (m_state->transient.dragMode == PreviewDragMode::ResizeY ||
+                m_state->transient.dragMode == PreviewDragMode::ResizeBoth) {
+                translation.setY(qBound<qreal>(
+                    -1.0,
+                    translation.y() + (((height - originHeight) * 0.5) / halfOutputHeight),
+                    1.0));
+            }
+            m_state->transient.transcriptTranslationOverride = translation;
             m_state->transient.transcriptSizeOverride = QSizeF(width, height);
         } else {
             qreal scaleX = transient.dragOriginTransform.scaleX;
@@ -1854,6 +1945,14 @@ protected:
                             ? m_state->transient.transcriptSizeOverride
                             : QSizeF(activeInfo.bounds.width() / qMax<qreal>(0.0001, previewScale.x()),
                                      activeInfo.bounds.height() / qMax<qreal>(0.0001, previewScale.y()));
+                    if (m_moveRequested) {
+                        const QPointF translation =
+                            m_state->transient.transcriptOverrideActive &&
+                                    m_state->transient.transcriptOverrideClipId == clipId
+                                ? m_state->transient.transcriptTranslationOverride
+                                : m_state->transient.dragOriginTranscriptTranslation;
+                        m_moveRequested(clipId, translation.x(), translation.y(), true);
+                    }
                     const qreal width = size.width();
                     const qreal height = size.height();
                     m_resizeRequested(clipId, width, height, true);
@@ -3036,7 +3135,16 @@ void DirectVulkanPreviewRenderer::startNextFrame()
         };
         for (const TimelineClip& clip : state->clips) {
             const VulkanPreviewClipFrameStatus* status = frameStatusForClip(state, clip.id);
-            if (!status || !status->active || status->drawSuppressed) {
+            const bool statusDrawable = status && status->active && !status->drawSuppressed;
+            const int64_t clipStartSample = clipTimelineStartSamples(clip);
+            const int64_t clipEndSample = clipStartSample + frameToSamples(clip.durationFrames);
+            const bool audioOnlyTranscriptActive =
+                !clipVisualPlaybackEnabled(clip, state->tracks) &&
+                clipSupportsTranscriptOverlay(clip) &&
+                state->currentSample >= clipStartSample &&
+                state->currentSample < clipEndSample &&
+                trackVisualModeForClip(clip, state->tracks) != TrackVisualMode::Hidden;
+            if (!statusDrawable && !audioOnlyTranscriptActive) {
                 continue;
             }
             const TimelineClip effectiveClip = clipWithTransientTranscriptOverride(state, clip);
@@ -3048,7 +3156,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     clip,
                     effectiveClip,
                     state->currentSample,
-                    status);
+                    statusDrawable ? status : nullptr);
             if (!candidate.valid) {
                 continue;
             }
@@ -3254,6 +3362,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                  state->previewPanOffset);
         const QRectF compositeRect = viewTransform.targetRect();
         const QPointF previewScale = viewTransform.outputScale();
+        bool backgroundFilled = false;
         VkClearValue canvasClear{};
         canvasClear.color.float32[0] = static_cast<float>(std::clamp<double>(base.redF(), 0.0, 1.0));
         canvasClear.color.float32[1] = static_cast<float>(std::clamp<double>(base.greenF(), 0.0, 1.0));
@@ -3316,6 +3425,47 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->textureDraws;
                     ++stats->activeClipDraws;
+                }
+                if (!backgroundFilled &&
+                    render_detail::shouldDrawBlurredFillBackground(
+                        frameSize.isValid() ? frameSize : clip.sourceFrameSize,
+                        state->outputSize)) {
+                    const QSize backgroundSourceSize =
+                        frameSize.isValid() ? frameSize : clip.sourceFrameSize;
+                    const QRectF backgroundFitted =
+                        viewTransform.outputRectToScreen(
+                            QRectF(render_detail::coverRect(backgroundSourceSize, state->outputSize)));
+                    const PreviewClipGeometry backgroundGeometry =
+                        PreviewViewTransform::clipGeometry(
+                            backgroundFitted,
+                            QPointF(1.0, 1.0),
+                            QPointF(),
+                            0.0,
+                            QPointF(1.0, 1.0));
+                    VulkanPipeline::Push backgroundPush{};
+                    mvpForVulkanClipTransform(backgroundGeometry.clipToScreen,
+                                              backgroundGeometry.localRect,
+                                              swapSize,
+                                              backgroundPush.mvp);
+                    backgroundPush.opacity = static_cast<float>(
+                        std::clamp(static_cast<double>(status->grading.opacity), 0.0, 1.0));
+                    backgroundPush.brightness = -0.12f;
+                    backgroundPush.contrast = 1.0f;
+                    backgroundPush.saturation = 0.75f;
+                    VkRect2D backgroundScissor{};
+                    if (state->hideOutsideOutputWindow) {
+                        backgroundScissor = scissorFromQRect(compositeRect, swapSize);
+                    } else {
+                        backgroundScissor.offset = {0, 0};
+                        backgroundScissor.extent = {static_cast<uint32_t>(std::max(1, swapSize.width())),
+                                                    static_cast<uint32_t>(std::max(1, swapSize.height()))};
+                    }
+                    m_pipeline->bindAndDraw(cb,
+                                            viewport,
+                                            backgroundScissor,
+                                            handoffResult.descriptorSet,
+                                            backgroundPush);
+                    backgroundFilled = true;
                 }
                 VulkanPipeline::Push push{};
                 mvpForVulkanClipTransform(effectiveClipGeometry.clipToScreen,

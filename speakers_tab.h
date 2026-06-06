@@ -197,6 +197,13 @@ private slots:
     void onSpeakerFindMatchingTracksClicked();
 
 private:
+    enum SpeakerSectionItemRole {
+        SpeakerSectionSpeakerIdRole = Qt::UserRole,
+        SpeakerSectionStartFrameRole,
+        SpeakerSectionEndFrameRole,
+        SpeakerSectionTrackIdsRole
+    };
+
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
                                         bool clearDerivedCaches = true);
     bool saveLoadedTranscriptDocument();
@@ -223,6 +230,7 @@ private:
     void syncSpeakerListMode();
     bool selectSpeakerRowById(const QString& speakerId);
     bool selectSpeakerSectionRowAtFrame(const QString& speakerId, int64_t sourceFrame);
+    void focusSpeakerSectionTrackFromRow(int row);
     void refreshRawDetectionsPanel(const QJsonObject& continuityRoot);
     QPixmap faceStreamPreviewAvatar(const TimelineClip& clip,
                                     const QString& speakerId,
@@ -268,6 +276,9 @@ private:
     QHash<int, QString> resolvedIdentityByTrackId(const TimelineClip& clip,
                                                   const QJsonArray& streams) const;
     QVector<int> resolvedAssignedTrackIdsForSpeaker(const TimelineClip& clip,
+                                                    const QJsonArray& streams,
+                                                    const QString& speakerId) const;
+    QVector<int> playheadAssignedTrackIdsForSpeaker(const TimelineClip& clip,
                                                     const QJsonArray& streams,
                                                     const QString& speakerId) const;
     void showSpeakerAvatarHoverPreview(const QString& speakerId, const QPoint& globalPos);
@@ -316,6 +327,7 @@ private:
     bool deassignTrackFromSpeaker(const QString& speakerId, int trackId);
     bool deassignSelectedSpeakerAssignedTracks();
     void showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos);
+    void clearPlayheadTrackAssignmentAt(const QPoint& pos);
     bool assignTrackToSpeaker(const QString& speakerId,
                               int trackId,
                               const QString& streamId,

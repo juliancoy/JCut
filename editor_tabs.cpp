@@ -658,7 +658,15 @@ void EditorWindow::createSpeakersTab()
         if (!m_preview) {
             return;
         }
-        m_preview->setFaceDetectionsAssignmentInteractionEnabled(false);
+        bool speakersTabActive = false;
+        if (m_inspectorPane && m_inspectorPane->tabs()) {
+            QTabWidget* tabs = m_inspectorPane->tabs();
+            const int index = tabs->currentIndex();
+            speakersTabActive =
+                index >= 0 &&
+                tabs->tabText(index).compare(QStringLiteral("Speakers"), Qt::CaseInsensitive) == 0;
+        }
+        m_preview->setFaceDetectionsAssignmentInteractionEnabled(speakersTabActive);
     };
     if (m_inspectorPane && m_inspectorPane->tabs()) {
         connect(m_inspectorPane->tabs(), &QTabWidget::currentChanged, this,

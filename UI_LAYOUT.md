@@ -30,19 +30,22 @@ These prevent dragging the center pane to overlap/hide side panels.
 
 ### Inspector tab rail (`inspector_pane.cpp`)
 
-- Tab rail width is clamped to `120..260` in:
-  - `tabSizeHint()`
-  - drag-resize path (`mouseMoveEvent`)
+- Tab rail uses a hover-expanding dock pattern:
+  - Collapsed width: `48`
+  - Expanded width: `156`
+  - Collapsed state shows centered icons only.
+  - Hover state reveals icon + text labels.
 
-This prevents the tab rail from growing so wide it crowds the inspector content.
+This keeps the right sidebar compact during editing while preserving readable labels on hover.
 
 ## Verification Checklist
 
 1. Drag left and right splitter handles aggressively:
    - Side panes remain visible.
    - Center pane never consumes entire window.
-2. Drag Inspector tab rail resize edge:
-   - Width cannot exceed `260`.
+2. Hover Inspector tab rail:
+   - Default state shows icons only.
+   - Hover state reveals labels.
    - Inspector content remains visible.
 3. Restart editor:
    - Layout behavior remains consistent.

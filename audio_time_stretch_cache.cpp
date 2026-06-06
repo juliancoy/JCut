@@ -121,6 +121,60 @@ bool readAudioTimeStretchSidecar(const QString& sourcePath,
     return false;
 }
 
+bool readAudioTimeStretchSidecarMetadata(const QString& sourcePath,
+                                         int speedKey,
+                                         AudioTimeStretchSidecarMetadata* metadataOut)
+{
+    if (metadataOut) {
+        *metadataOut = AudioTimeStretchSidecarMetadata{};
+    }
+    const QFileInfo sourceInfo(sourcePath);
+    for (const QString& sidecarPath : candidateSidecarPaths(sourcePath, speedKey)) {
+        QFile file(sidecarPath);
+        if (!file.open(QIODevice::ReadOnly)) {
+            continue;
+        }
+
+        QDataStream stream(&file);
+        stream.setVersion(QDataStream::Qt_6_0);
+        quint32 magic = 0;
+        quint32 version = 0;
+        qint64 sourceSize = -1;
+        qint64 sourceMtimeMs = -1;
+        qint32 storedSpeedKey = 0;
+        qint32 sampleRate = 0;
+        qint32 channelCount = 0;
+        bool fullyDecoded = false;
+        stream >> magic;
+        stream >> version;
+        stream >> sourceSize;
+        stream >> sourceMtimeMs;
+        stream >> storedSpeedKey;
+        stream >> sampleRate;
+        stream >> channelCount;
+        stream >> fullyDecoded;
+        if (stream.status() != QDataStream::Ok ||
+            magic != kTimeStretchSidecarMagic ||
+            version != kTimeStretchSidecarVersion ||
+            storedSpeedKey != speedKey ||
+            sourceSize != sourceInfo.size() ||
+            sourceMtimeMs != sourceInfo.lastModified().toMSecsSinceEpoch() ||
+            sampleRate <= 0 ||
+            channelCount <= 0) {
+            continue;
+        }
+
+        if (metadataOut) {
+            metadataOut->sampleRate = sampleRate;
+            metadataOut->channelCount = channelCount;
+            metadataOut->fullyDecoded = fullyDecoded;
+            metadataOut->valid = true;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool writeAudioTimeStretchSidecar(const QString& sourcePath,
                                   int speedKey,
                                   const AudioTimeStretchCacheEntry& entry)

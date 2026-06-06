@@ -1710,6 +1710,45 @@ bool VulkanPreviewSurface::hasPlaybackLookaheadBuffered(int futureFrames) const
     return true;
 }
 
+bool VulkanPreviewSurface::currentPlaybackFrameReadyForStart() const
+{
+    for (const TimelineClip& clip : m_interaction.clips) {
+        if (clip.mediaType != ClipMediaType::Video ||
+            clip.sourceKind == MediaSourceKind::ImageSequence ||
+            clip.filePath.isEmpty()) {
+            continue;
+        }
+        if (!visualClipActiveAtSample(clip,
+                                      m_interaction.tracks,
+                                      m_interaction.currentSample,
+                                      m_interaction.currentFramePosition,
+                                      m_bypassGrading)) {
+            continue;
+        }
+
+        const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
+        if (m_playbackPipeline &&
+            !m_playbackPipeline->getPresentationFrame(clip.id, localFrame).isNull()) {
+            continue;
+        }
+
+        bool presentedExactFrame = false;
+        for (const VulkanPreviewClipFrameStatus& status : m_interaction.vulkanFrameStatuses) {
+            if (status.clipId != clip.id || !status.active || !status.hasFrame) {
+                continue;
+            }
+            if (status.exact || status.presentedSourceFrame == localFrame) {
+                presentedExactFrame = true;
+                break;
+            }
+        }
+        if (!presentedExactFrame) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs)
 {
     if (futureFrames <= 0) {
@@ -1738,13 +1777,15 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
     QElapsedTimer timer;
     timer.start();
     while (timer.elapsed() < timeoutMs) {
-        if (hasPlaybackLookaheadBuffered(cappedFutureFrames)) {
+        if (hasPlaybackLookaheadBuffered(cappedFutureFrames) ||
+            currentPlaybackFrameReadyForStart()) {
             return true;
         }
         QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
         QThread::msleep(8);
     }
-    return hasPlaybackLookaheadBuffered(cappedFutureFrames);
+    return hasPlaybackLookaheadBuffered(cappedFutureFrames) ||
+           currentPlaybackFrameReadyForStart();
 }
 
 QImage VulkanPreviewSurface::latestPresentedFrameImageForClip(const QString& clipId) const

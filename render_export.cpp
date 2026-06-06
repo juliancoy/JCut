@@ -196,6 +196,8 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
     }
     const QVector<TimelineClip> orderedClips = sortedVisualClips(request.clips, request.tracks);
+    const QVector<TimelineClip> transcriptOverlayClips =
+        sortedTranscriptOverlayClips(request.clips, request.tracks);
     QString gpuInitializationError;
 
     std::unique_ptr<OffscreenRenderer> activeRenderer;
@@ -429,7 +431,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
 
     QHash<QString, QVector<TranscriptSection>> transcriptCache;
     bool hasTranscriptOverlay = false;
-    for (const TimelineClip& clip : orderedClips) {
+    for (const TimelineClip& clip : transcriptOverlayClips) {
         if (clip.transcriptOverlay.enabled) {
             hasTranscriptOverlay = true;
             break;
@@ -849,7 +851,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 QElapsedTimer overlayTimer;
                 overlayTimer.start();
                 const OverlayImage overlay = renderTranscriptOverlay(
-                    rendered.size(), request, timelineFrame, orderedClips, transcriptCache);
+                    rendered.size(), request, timelineFrame, transcriptOverlayClips, transcriptCache);
                 if (!overlay.isNull()) {
                     QPainter painter(&rendered);
                     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);

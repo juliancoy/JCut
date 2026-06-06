@@ -120,12 +120,12 @@ void SpeakersTab::wire()
                     selectSpeakerRowById(speakerId);
                     m_sectionSelectionTiming.markStep(QStringLiteral("select_speaker_row_duration_ms"));
                     m_lastSelectedSpeakerIdHint = speakerId;
+                    focusSpeakerSectionTrackFromRow(row);
                     updateSpeakerTrackingStatusLabelFast();
                     m_sectionSelectionTiming.markStep(QStringLiteral("tracking_status_duration_ms"));
                     updateSelectedSpeakerPanelFast();
                     m_sectionSelectionTiming.markStep(QStringLiteral("fast_panel_duration_ms"));
                     if (timelineFrame >= 0 && m_deps.seekToTimelineFrame) {
-                        m_skipNextPlayheadTrackCandidateRefresh = true;
                         m_deps.seekToTimelineFrame(timelineFrame);
                         m_sectionSelectionTiming.markStep(QStringLiteral("seek_duration_ms"));
                     } else {
@@ -341,6 +341,11 @@ void SpeakersTab::wire()
         });
     }
     if (m_widgets.speakerPlayheadFaceDetectionsList) {
+        m_widgets.speakerPlayheadFaceDetectionsList->setContextMenuPolicy(Qt::CustomContextMenu);
+        connect(m_widgets.speakerPlayheadFaceDetectionsList,
+                &QWidget::customContextMenuRequested,
+                this,
+                &SpeakersTab::clearPlayheadTrackAssignmentAt);
         connect(m_widgets.speakerPlayheadFaceDetectionsList, &QListWidget::itemSelectionChanged, this, [this]() {
             const bool hasSpeaker = !selectedSpeakerId().trimmed().isEmpty();
             const bool hasSelection =

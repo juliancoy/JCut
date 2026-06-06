@@ -197,6 +197,11 @@ void PreviewWindow::drawCompositedPreviewOverlay(QPainter* painter,
                 drawTranscriptOverlay(painter, clip, compositeRect);
             }
         }
+        for (const TimelineClip& clip : activeAudioClips) {
+            if (clipShowsTranscriptOverlay(clip)) {
+                drawTranscriptOverlay(painter, clip, compositeRect);
+            }
+        }
     }
     if (m_showSpeakerTrackPoints ||
         m_showSpeakerTrackBoxes ||
@@ -670,6 +675,11 @@ void PreviewWindow::drawCompositedPreview(QPainter* painter, const QRect& safeRe
         drawAudioBadge(painter, compositeRect, activeAudioClips);
     }
     for (const TimelineClip& clip : activeClips) {
+        if (clipShowsTranscriptOverlay(clip)) {
+            drawTranscriptOverlay(painter, clip, compositeRect);
+        }
+    }
+    for (const TimelineClip& clip : activeAudioClips) {
         if (clipShowsTranscriptOverlay(clip)) {
             drawTranscriptOverlay(painter, clip, compositeRect);
         }

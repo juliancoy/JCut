@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 
 #include <algorithm>
+#include <limits>
 
 namespace jcut::preview_overlay {
 
@@ -106,6 +107,49 @@ void buildFacestreamTrackCandidateIndex(FacestreamOverlayCacheEntry& entry,
     }
     std::sort(entry.trackIndexSourceFrames.begin(), entry.trackIndexSourceFrames.end());
     entry.trackIndexTypicalFrameStep = facedetectionsTypicalFrameStep(entry.trackIndexSourceFrames);
+}
+
+int normalizeLegacyFacestreamTrackFrameDomains(FacestreamOverlayCacheEntry& entry,
+                                               const TimelineClip& clip)
+{
+    if (entry.tracks.isEmpty() ||
+        !facestreamLegacyTimelineFallbackAllowed(clip, FacestreamFrameDomain::SourceAbsolute)) {
+        return 0;
+    }
+
+    int64_t minDeclaredSourceFrame = std::numeric_limits<int64_t>::max();
+    int64_t maxDeclaredSourceFrame = std::numeric_limits<int64_t>::min();
+    int declaredSourceTrackCount = 0;
+    for (const FacestreamResolvedTrack& track : entry.tracks) {
+        if (track.frameDomain != FacestreamFrameDomain::SourceAbsolute ||
+            track.keyframes.isEmpty()) {
+            continue;
+        }
+        ++declaredSourceTrackCount;
+        for (const FacestreamResolvedKeyframe& keyframe : track.keyframes) {
+            minDeclaredSourceFrame = qMin(minDeclaredSourceFrame, keyframe.frame);
+            maxDeclaredSourceFrame = qMax(maxDeclaredSourceFrame, keyframe.frame);
+        }
+    }
+    if (declaredSourceTrackCount == 0 ||
+        minDeclaredSourceFrame == std::numeric_limits<int64_t>::max()) {
+        return 0;
+    }
+
+    if (!sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(
+            clip,
+            QVector<int64_t>{minDeclaredSourceFrame, maxDeclaredSourceFrame})) {
+        return 0;
+    }
+
+    int changed = 0;
+    for (FacestreamResolvedTrack& track : entry.tracks) {
+        if (track.frameDomain == FacestreamFrameDomain::SourceAbsolute) {
+            track.frameDomain = FacestreamFrameDomain::ClipTimeline30Fps;
+            ++changed;
+        }
+    }
+    return changed;
 }
 
 QVector<int> facestreamTrackCandidateIndicesFromCacheEntry(

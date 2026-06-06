@@ -106,6 +106,11 @@ struct TimelineClip {
     };
 
     struct TranscriptOverlaySettings {
+        static constexpr int kMinReadableCharsPerLine = 8;
+        static constexpr qreal kMinReadableBoxWidth = 160.0;
+        static constexpr qreal kMinReadableBoxHeight = 80.0;
+        static constexpr int kMinReadableFontPointSize = 12;
+
         bool enabled = false;
         bool showBackground = true;
         bool showShadow = true;
@@ -127,6 +132,13 @@ struct TimelineClip {
         bool bold = true;
         bool italic = false;
         QColor textColor = QColor(QStringLiteral("#ffffff"));
+
+        void normalizeReadableBounds() {
+            boxWidth = qMax<qreal>(kMinReadableBoxWidth, boxWidth);
+            boxHeight = qMax<qreal>(kMinReadableBoxHeight, boxHeight);
+            maxCharsPerLine = qMax(kMinReadableCharsPerLine, maxCharsPerLine);
+            fontPointSize = qMax(kMinReadableFontPointSize, fontPointSize);
+        }
     };
 
     struct OpacityKeyframe {

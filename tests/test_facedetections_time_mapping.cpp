@@ -31,6 +31,23 @@ private slots:
                  FacestreamFrameDomain::SourceAbsolute);
     }
 
+    void declaredSourceAbsoluteRangeCanBeRecognizedAsLegacyTimeline()
+    {
+        TimelineClip clip;
+        clip.startFrame = 0;
+        clip.durationFrames = 300;
+        clip.sourceInFrame = 0;
+        clip.sourceDurationFrames = 600;
+        clip.sourceFps = 60.0;
+
+        QVERIFY(sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(
+            clip,
+            QVector<int64_t>{24, 299}));
+        QVERIFY(!sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(
+            clip,
+            QVector<int64_t>{24, 599}));
+    }
+
     void typicalFrameStepUsesMedianDelta()
     {
         const QVector<int64_t> frames{0, 4, 8, 12, 24};

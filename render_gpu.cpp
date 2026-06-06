@@ -283,6 +283,7 @@ public:
         glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
+        bool backgroundFilled = false;
         for (const TimelineClip& clip : orderedClips) {
             if (timelineFrame < clip.startFrame || timelineFrame >= clip.startFrame + clip.durationFrames) {
                 continue;
@@ -498,6 +499,76 @@ public:
 
             QElapsedTimer compositeTimer;
             compositeTimer.start();
+            if (!backgroundFilled &&
+                frame.hasCpuImage() &&
+                shouldDrawBlurredFillBackground(frame.size(), m_outputSize)) {
+                QImage background = buildBlurredFillBackground(frame.cpuImage(), m_outputSize)
+                                        .convertToFormat(QImage::Format_RGBA8888);
+                if (!background.isNull()) {
+                    GLuint backgroundTextureId = 0;
+                    glGenTextures(1, &backgroundTextureId);
+                    glBindTexture(GL_TEXTURE_2D, backgroundTextureId);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                    glTexImage2D(GL_TEXTURE_2D,
+                                 0,
+                                 GL_RGBA8,
+                                 background.width(),
+                                 background.height(),
+                                 0,
+                                 GL_RGBA,
+                                 GL_UNSIGNED_BYTE,
+                                 background.constBits());
+
+                    QMatrix4x4 backgroundModel;
+                    backgroundModel.translate(m_outputSize.width() / 2.0f,
+                                              m_outputSize.height() / 2.0f);
+                    backgroundModel.scale(m_outputSize.width(), m_outputSize.height(), 1.0f);
+
+                    m_shaderProgram->bind();
+                    m_shaderProgram->setUniformValue("u_mvp", projection * backgroundModel);
+                    m_shaderProgram->setUniformValue("u_brightness", 0.0f);
+                    m_shaderProgram->setUniformValue("u_contrast", 1.0f);
+                    m_shaderProgram->setUniformValue("u_saturation", 1.0f);
+                    m_shaderProgram->setUniformValue("u_opacity", 1.0f);
+                    m_shaderProgram->setUniformValue("u_shadows", QVector3D(0.0f, 0.0f, 0.0f));
+                    m_shaderProgram->setUniformValue("u_midtones", QVector3D(0.0f, 0.0f, 0.0f));
+                    m_shaderProgram->setUniformValue("u_highlights", QVector3D(0.0f, 0.0f, 0.0f));
+                    m_shaderProgram->setUniformValue("u_feather_radius", 0.0f);
+                    m_shaderProgram->setUniformValue("u_feather_gamma", 1.0f);
+                    m_shaderProgram->setUniformValue("u_texel_size", QVector2D(0.0f, 0.0f));
+                    m_shaderProgram->setUniformValue("u_texture", 0);
+                    m_shaderProgram->setUniformValue("u_texture_uv", 1);
+                    m_shaderProgram->setUniformValue("u_curve_lut", 2);
+                    m_shaderProgram->setUniformValue("u_curve_enabled", 0.0f);
+                    m_shaderProgram->setUniformValue("u_texture_mode", 0.0f);
+                    m_shaderProgram->setUniformValue("u_unpremultiply_input", 0.0f);
+
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, backgroundTextureId);
+                    glActiveTexture(GL_TEXTURE1);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    glActiveTexture(GL_TEXTURE2);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    m_quadBuffer.bind();
+                    const int positionLoc = m_shaderProgram->attributeLocation("a_position");
+                    const int texCoordLoc = m_shaderProgram->attributeLocation("a_texCoord");
+                    m_shaderProgram->enableAttributeArray(positionLoc);
+                    m_shaderProgram->enableAttributeArray(texCoordLoc);
+                    m_shaderProgram->setAttributeBuffer(positionLoc, GL_FLOAT, 0, 2, 4 * sizeof(GLfloat));
+                    m_shaderProgram->setAttributeBuffer(texCoordLoc, GL_FLOAT, 2 * sizeof(GLfloat), 2, 4 * sizeof(GLfloat));
+                    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                    m_shaderProgram->disableAttributeArray(positionLoc);
+                    m_shaderProgram->disableAttributeArray(texCoordLoc);
+                    m_quadBuffer.release();
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(GL_TEXTURE_2D, 0);
+                    glDeleteTextures(1, &backgroundTextureId);
+                    backgroundFilled = true;
+                }
+            }
             const bool hasCorrections =
                 !effects.correctionPolygons.isEmpty() &&
                 m_correctionMaskShaderProgram &&
@@ -970,6 +1041,7 @@ QImage renderTimelineFrame(const RenderRequest& request,
     QPainter painter(&canvas);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    bool backgroundFilled = false;
 
     for (const TimelineClip& clip : orderedClips) {
         if (timelineFrame < clip.startFrame || timelineFrame >= clip.startFrame + clip.durationFrames) {
@@ -1047,6 +1119,13 @@ QImage renderTimelineFrame(const RenderRequest& request,
 
         QElapsedTimer compositeTimer;
         compositeTimer.start();
+        if (!backgroundFilled && shouldDrawBlurredFillBackground(graded.size(), request.outputSize)) {
+            const QImage background = buildBlurredFillBackground(graded, request.outputSize);
+            if (!background.isNull()) {
+                painter.drawImage(QPoint(0, 0), background);
+                backgroundFilled = true;
+            }
+        }
         painter.save();
         painter.translate(fitted.center().x() + transform.translationX,
                           fitted.center().y() + transform.translationY);

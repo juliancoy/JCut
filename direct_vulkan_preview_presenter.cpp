@@ -960,6 +960,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
     QJsonArray statusDetails;
     QJsonArray facedetectionsOverlays;
     QJsonArray rawDetectionOverlays;
+    QJsonArray selectedSpeakerAssignedFaceTrackIds;
+    QJsonArray visibleFaceTrackIds;
     const bool texturePipelineReady = m_active && m_window != nullptr;
     const bool windowValid = directVulkanPreviewWindowIsValid(m_window);
     if (m_state) {
@@ -1023,9 +1025,17 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
 
         for (const VulkanPreviewFacestreamOverlay& overlay : m_state->facedetectionsOverlays) {
             facedetectionsOverlays.append(overlayToJson(overlay));
+            if (overlay.trackId >= 0 && !visibleFaceTrackIds.contains(overlay.trackId)) {
+                visibleFaceTrackIds.append(overlay.trackId);
+            }
         }
         for (const VulkanPreviewFacestreamOverlay& overlay : m_state->rawDetectionOverlays) {
             rawDetectionOverlays.append(overlayToJson(overlay));
+        }
+        QList<int> selectedTrackIds = m_state->selectedSpeakerAssignedFaceTrackIds.values();
+        std::sort(selectedTrackIds.begin(), selectedTrackIds.end());
+        for (int trackId : selectedTrackIds) {
+            selectedSpeakerAssignedFaceTrackIds.append(trackId);
         }
     }
     const bool cpuUploadPath = false;
@@ -1094,6 +1104,8 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("decode_status_details"), statusDetails},
         {QStringLiteral("facedetections_overlay_boxes"), m_state ? m_state->facedetectionsOverlays.size() : 0},
         {QStringLiteral("facedetections_overlays"), facedetectionsOverlays},
+        {QStringLiteral("selected_speaker_assigned_face_track_ids"), selectedSpeakerAssignedFaceTrackIds},
+        {QStringLiteral("visible_face_track_ids"), visibleFaceTrackIds},
         {QStringLiteral("raw_detection_overlay_boxes"), m_state ? m_state->rawDetectionOverlays.size() : 0},
         {QStringLiteral("raw_detection_overlays"), rawDetectionOverlays},
         {QStringLiteral("timeline_texture_composition"), hasTimelineFrameGeometry && readyStatuses > 0},

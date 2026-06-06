@@ -511,9 +511,9 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
         clip.transcriptOverlay.maxLines = m_widgets.transcriptMaxLinesSpin
             ? m_widgets.transcriptMaxLinesSpin->value()
             : 2;
-        clip.transcriptOverlay.maxCharsPerLine = m_widgets.transcriptMaxCharsSpin
-            ? m_widgets.transcriptMaxCharsSpin->value()
-            : 28;
+        clip.transcriptOverlay.maxCharsPerLine = qMax(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableCharsPerLine,
+            m_widgets.transcriptMaxCharsSpin ? m_widgets.transcriptMaxCharsSpin->value() : 28);
         if (m_widgets.transcriptAutoScrollCheckBox) {
             clip.transcriptOverlay.autoScroll =
                 m_widgets.transcriptAutoScrollCheckBox->isChecked();
@@ -531,18 +531,18 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
             // Any direct position edit (including Center H/V) switches to explicit manual placement.
             clip.transcriptOverlay.useManualPlacement = true;
         }
-        clip.transcriptOverlay.boxWidth = m_widgets.transcriptOverlayWidthSpin
-            ? m_widgets.transcriptOverlayWidthSpin->value()
-            : 900.0;
-        clip.transcriptOverlay.boxHeight = m_widgets.transcriptOverlayHeightSpin
-            ? m_widgets.transcriptOverlayHeightSpin->value()
-            : 220.0;
+        clip.transcriptOverlay.boxWidth = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth,
+            m_widgets.transcriptOverlayWidthSpin ? m_widgets.transcriptOverlayWidthSpin->value() : 900.0);
+        clip.transcriptOverlay.boxHeight = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight,
+            m_widgets.transcriptOverlayHeightSpin ? m_widgets.transcriptOverlayHeightSpin->value() : 220.0);
         clip.transcriptOverlay.fontFamily = m_widgets.transcriptFontFamilyCombo
             ? m_widgets.transcriptFontFamilyCombo->currentFont().family()
             : kDefaultFontFamily;
-        clip.transcriptOverlay.fontPointSize = m_widgets.transcriptFontSizeSpin
-            ? m_widgets.transcriptFontSizeSpin->value()
-            : 42;
+        clip.transcriptOverlay.fontPointSize = qMax<qreal>(
+            TimelineClip::TranscriptOverlaySettings::kMinReadableFontPointSize,
+            m_widgets.transcriptFontSizeSpin ? m_widgets.transcriptFontSizeSpin->value() : 42);
         clip.transcriptOverlay.bold = m_widgets.transcriptBoldCheckBox &&
                                       m_widgets.transcriptBoldCheckBox->isChecked();
         clip.transcriptOverlay.italic = m_widgets.transcriptItalicCheckBox &&
@@ -1192,7 +1192,9 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
         m_widgets.transcriptMaxLinesSpin->setValue(clip.transcriptOverlay.maxLines);
     }
     if (m_widgets.transcriptMaxCharsSpin) {
-        m_widgets.transcriptMaxCharsSpin->setValue(clip.transcriptOverlay.maxCharsPerLine);
+        m_widgets.transcriptMaxCharsSpin->setValue(
+            qMax(TimelineClip::TranscriptOverlaySettings::kMinReadableCharsPerLine,
+                 clip.transcriptOverlay.maxCharsPerLine));
     }
     if (m_widgets.transcriptAutoScrollCheckBox) {
         m_widgets.transcriptAutoScrollCheckBox->setChecked(clip.transcriptOverlay.autoScroll);
@@ -1204,16 +1206,22 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
         m_widgets.transcriptOverlayYSpin->setValue(clip.transcriptOverlay.translationY);
     }
     if (m_widgets.transcriptOverlayWidthSpin) {
-        m_widgets.transcriptOverlayWidthSpin->setValue(static_cast<int>(clip.transcriptOverlay.boxWidth));
+        m_widgets.transcriptOverlayWidthSpin->setValue(
+            qMax(static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxWidth),
+                 static_cast<int>(clip.transcriptOverlay.boxWidth)));
     }
     if (m_widgets.transcriptOverlayHeightSpin) {
-        m_widgets.transcriptOverlayHeightSpin->setValue(static_cast<int>(clip.transcriptOverlay.boxHeight));
+        m_widgets.transcriptOverlayHeightSpin->setValue(
+            qMax(static_cast<int>(TimelineClip::TranscriptOverlaySettings::kMinReadableBoxHeight),
+                 static_cast<int>(clip.transcriptOverlay.boxHeight)));
     }
     if (m_widgets.transcriptFontFamilyCombo) {
         m_widgets.transcriptFontFamilyCombo->setCurrentFont(QFont(clip.transcriptOverlay.fontFamily));
     }
     if (m_widgets.transcriptFontSizeSpin) {
-        m_widgets.transcriptFontSizeSpin->setValue(clip.transcriptOverlay.fontPointSize);
+        m_widgets.transcriptFontSizeSpin->setValue(
+            qMax(TimelineClip::TranscriptOverlaySettings::kMinReadableFontPointSize,
+                 static_cast<int>(clip.transcriptOverlay.fontPointSize)));
     }
     if (m_widgets.transcriptBoldCheckBox) {
         m_widgets.transcriptBoldCheckBox->setChecked(clip.transcriptOverlay.bold);

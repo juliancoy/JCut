@@ -29,7 +29,7 @@ namespace render_detail {
 
 class OffscreenVulkanRendererPrivate {
 public:
-    static constexpr int kMaxLayerTextures = 8;
+    static constexpr int kMaxLayerTextures = 12;
     static constexpr int kFrameSlots = 3;
     struct FrameSlot {
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
@@ -2897,10 +2897,22 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         *readbackMs = 0;
     }
     QVector<OffscreenVulkanRendererPrivate::LayerInput> layers;
-    layers.reserve(orderedClips.size() + 1);
+    layers.reserve((orderedClips.size() * 2) + 1);
     bool hasTranscriptCandidate = false;
+    const QVector<TimelineClip> transcriptOverlayClips =
+        sortedTranscriptOverlayClips(request.clips, request.tracks);
+    for (const TimelineClip& clip : transcriptOverlayClips) {
+        if (timelineFrame >= clip.startFrame &&
+            timelineFrame < clip.startFrame + clip.durationFrames &&
+            (clip.mediaType == ClipMediaType::Audio || clip.hasAudio) &&
+            clip.transcriptOverlay.enabled) {
+            hasTranscriptCandidate = true;
+            break;
+        }
+    }
     int visualClipCandidates = 0;
     int visualLayersResolved = 0;
+    bool backgroundFilled = false;
     int decodePathMissingCount = 0;
     int decodeNullCount = 0;
     int decodeConvertFailCount = 0;
@@ -2911,9 +2923,6 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         }
         if (!clipVisualPlaybackEnabled(clip, request.tracks)) {
             continue;
-        }
-        if ((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled) {
-            hasTranscriptCandidate = true;
         }
         EffectiveVisualEffects effects =
             request.bypassGrading
@@ -3025,6 +3034,53 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
         for (int i = 0; i < 16; ++i) {
             layer.mvp[i] = mvpData[i];
         }
+        if (!backgroundFilled && shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
+            OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
+            backgroundLayer.sourceSize = request.outputSize;
+            backgroundLayer.opacity = qBound(0.0f, layer.opacity, 1.0f);
+            if (!layer.image.isNull()) {
+                backgroundLayer.image = buildBlurredFillBackground(layer.image, request.outputSize);
+                backgroundLayer.sourceSize = backgroundLayer.image.size();
+            }
+            QMatrix4x4 backgroundModel;
+            backgroundModel.translate(request.outputSize.width() / 2.0f,
+                                      request.outputSize.height() / 2.0f,
+                                      0.0f);
+            backgroundModel.scale(request.outputSize.width(),
+                                  request.outputSize.height(),
+                                  1.0f);
+            const QMatrix4x4 fullFrameBackgroundMvp =
+                projection * backgroundModel * shaderQuadToOpenGlQuad;
+            const float* fullFrameBackgroundMvpData = fullFrameBackgroundMvp.constData();
+            for (int i = 0; i < 16; ++i) {
+                backgroundLayer.mvp[i] = fullFrameBackgroundMvpData[i];
+            }
+            if (backgroundLayer.image.isNull()) {
+                backgroundLayer.frameHandle = frame;
+                backgroundLayer.sourceSize = sourceSize;
+                backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
+                backgroundLayer.brightness = -0.12f;
+                backgroundLayer.saturation = 0.75f;
+
+                const QRect covered = coverRect(sourceSize, request.outputSize);
+                QMatrix4x4 backgroundModel;
+                backgroundModel.translate(static_cast<float>(covered.center().x()),
+                                          static_cast<float>(covered.center().y()),
+                                          0.0f);
+                backgroundModel.scale(static_cast<float>(covered.width()),
+                                      static_cast<float>(covered.height()),
+                                      1.0f);
+                const QMatrix4x4 backgroundMvp = projection * backgroundModel * shaderQuadToOpenGlQuad;
+                const float* backgroundMvpData = backgroundMvp.constData();
+                for (int i = 0; i < 16; ++i) {
+                    backgroundLayer.mvp[i] = backgroundMvpData[i];
+                }
+            }
+            if (!backgroundLayer.image.isNull() || !backgroundLayer.frameHandle.isNull()) {
+                layers.push_back(backgroundLayer);
+                backgroundFilled = true;
+            }
+        }
         layers.push_back(layer);
         ++visualLayersResolved;
     }
@@ -3034,7 +3090,7 @@ QImage OffscreenVulkanRenderer::renderFrame(const RenderRequest& request,
                 request.outputSize,
                 request,
                 qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
-                orderedClips);
+                transcriptOverlayClips);
         transcriptLayerBounds = alphaBoundsForOverlayImage(transcriptLayer);
         OffscreenVulkanRendererPrivate::LayerInput overlay;
         overlay.overlayImage = transcriptLayer;

@@ -537,6 +537,8 @@ void EditorWindow::updateTransportLabels()
         m_audioNowPlayingLabel->setText(QStringLiteral("Re-timing audio"));
     } else if (m_playbackAudioWarmupPending) {
         m_audioNowPlayingLabel->setText(QStringLiteral("Loading re-timed audio"));
+    } else if (m_playbackVideoWarmupPending) {
+        m_audioNowPlayingLabel->setText(QStringLiteral("Buffering video"));
     } else {
         m_audioNowPlayingLabel->setText(activeAudio.isEmpty()
                                             ? QStringLiteral("Audio idle")

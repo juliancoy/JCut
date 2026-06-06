@@ -20,7 +20,7 @@
 
 namespace {
 constexpr qint64 kFacestreamOverlaySlowQueryWarnMs = 100;
-constexpr int64_t kFacestreamOverlayInteractiveWindowFrames = 45;
+constexpr int64_t kFacestreamOverlayInteractiveWindowFrames = 240;
 constexpr int64_t kMaxPreservedPlaybackOverlayDriftFrames = 60;
 
 QJsonObject overlayDriftDebug(const QVector<VulkanPreviewFacestreamOverlay>& overlays,
@@ -140,6 +140,21 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
         continuityRoot,
         QStringLiteral("streams_frame_domain"),
         &fallbackFrameDomain);
+    QVector<int64_t> payloadFrames;
+    payloadFrames.reserve(streams.size() * 2);
+    for (const QJsonValue& streamValue : streams) {
+        const QJsonArray keyframes = streamValue.toObject().value(QStringLiteral("keyframes")).toArray();
+        for (const QJsonValue& keyframeValue : keyframes) {
+            const QJsonObject keyframeObj = keyframeValue.toObject();
+            if (keyframeObj.contains(QStringLiteral("frame"))) {
+                payloadFrames.push_back(
+                    keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong());
+            }
+        }
+    }
+    std::sort(payloadFrames.begin(), payloadFrames.end());
+    const bool payloadLooksLikeLegacyTimeline =
+        sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(clip, payloadFrames);
     tracks.reserve(streams.size());
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject streamObj = streamValue.toObject();
@@ -201,6 +216,10 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
                           sortedFrames.isEmpty() ? static_cast<int64_t>(-1) : sortedFrames.constFirst(),
                           sortedFrames.isEmpty() ? static_cast<int64_t>(-1) : sortedFrames.constLast());
         }
+        if (track.frameDomain == FacestreamFrameDomain::SourceAbsolute &&
+            payloadLooksLikeLegacyTimeline) {
+            track.frameDomain = FacestreamFrameDomain::ClipTimeline30Fps;
+        }
         track.typicalFrameStep = facedetectionsTypicalFrameStep(sortedFrames);
         if (!track.keyframes.isEmpty()) {
             tracks.push_back(track);
@@ -210,6 +229,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::parseContin
 }
 
 QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::convertContinuityTrackModelsForClip(
+    const TimelineClip& clip,
     const QVector<jcut::facedetections::FacestreamTrack>& models,
     const QString& frameDomain,
     const QString& detectorMode) const
@@ -230,9 +250,10 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::convertCont
         if (track.source.isEmpty()) {
             track.source = detectorMode.trimmed().toLower();
         }
-        track.frameDomain = hasFrameDomain ? parsedFrameDomain : FacestreamFrameDomain::SourceAbsolute;
         track.typicalFrameStep = qMax<int64_t>(1, model.summary.typicalFrameStep);
         track.keyframes.reserve(model.keyframes.size());
+        QVector<int64_t> sortedFrames;
+        sortedFrames.reserve(model.keyframes.size());
         for (const jcut::facedetections::FacestreamKeyframe& modelKeyframe : model.keyframes) {
             FacestreamKeyframe keyframe;
             keyframe.frame = modelKeyframe.frame;
@@ -243,6 +264,18 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::convertCont
             keyframe.confidence = qBound<qreal>(0.0, modelKeyframe.confidence, 1.0);
             keyframe.source = track.source;
             track.keyframes.push_back(keyframe);
+            sortedFrames.push_back(keyframe.frame);
+        }
+        std::sort(sortedFrames.begin(), sortedFrames.end());
+        track.frameDomain = hasFrameDomain
+            ? parsedFrameDomain
+            : inferFacestreamFrameDomain(
+                  clip,
+                  sortedFrames.isEmpty() ? static_cast<int64_t>(-1) : sortedFrames.constFirst(),
+                  sortedFrames.isEmpty() ? static_cast<int64_t>(-1) : sortedFrames.constLast());
+        if (track.frameDomain == FacestreamFrameDomain::SourceAbsolute &&
+            sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(clip, sortedFrames)) {
+            track.frameDomain = FacestreamFrameDomain::ClipTimeline30Fps;
         }
         if (!track.keyframes.isEmpty()) {
             tracks.push_back(track);
@@ -343,6 +376,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
                 kFacestreamOverlayInteractiveWindowFrames,
                     transcriptRoot);
             entry.tracks += convertContinuityTrackModelsForClip(
+                clip,
                 trackModels,
                 continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString(
                     continuityRoot.value(QStringLiteral("streams_frame_domain")).toString()),
@@ -382,6 +416,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
                     kFacestreamOverlayInteractiveWindowFrames,
                         transcriptRoot);
                 entry.tracks += convertContinuityTrackModelsForClip(
+                    clip,
                     trackModels,
                     continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString(
                         continuityRoot.value(QStringLiteral("streams_frame_domain")).toString()),
@@ -422,8 +457,11 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
         queryDebug[QStringLiteral("raw_detection_typical_frame_step")] =
             static_cast<qint64>(entry.rawDetectionTypicalFrameStep);
     }
+    const int normalizedLegacyTrackCount =
+        jcut::preview_overlay::normalizeLegacyFacestreamTrackFrameDomains(entry, clip);
     jcut::preview_overlay::buildFacestreamTrackCandidateIndex(
         entry, clip, m_interaction.renderSyncMarkers);
+    queryDebug[QStringLiteral("legacy_timeline_domain_track_count")] = normalizedLegacyTrackCount;
     queryDebug[QStringLiteral("final_track_count")] = entry.tracks.size();
     queryDebug[QStringLiteral("track_index_source_frame_count")] = entry.trackIndexSourceFrames.size();
     queryDebug[QStringLiteral("track_index_typical_frame_step")] =
@@ -833,7 +871,8 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 static_cast<qint64>(localSourceFrame);
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_local_timeline_frame")] =
                 static_cast<qint64>(localTimelineFrame);
-            m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_track_candidates")] = tracks.size();
+            m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_track_candidates")] =
+                trackCandidateIndices.size();
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_indexed_track_candidates")] =
                 trackCandidateIndices.size();
             m_lastFacedetectionsQueryDebug[QStringLiteral("selected_clip_overlay_matches")] =
