@@ -1,5 +1,6 @@
 #pragma once
 
+#include "editor_shared.h"
 #include "preview_surface.h"
 
 #include <QColor>

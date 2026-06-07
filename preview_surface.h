@@ -1,8 +1,6 @@
 #pragma once
 
-#include "editor_shared.h"
 #include "loiacono/spectrum_settings_dialog.h"
-#include "timeline_widget.h"
 
 #include <QColor>
 #include <QImage>
@@ -12,10 +10,15 @@
 #include <QSize>
 #include <QString>
 #include <QVector>
+#include <QtGlobal>
 
 #include <functional>
 
 class QWidget;
+struct ExportRangeSegment;
+struct RenderSyncMarker;
+struct TimelineClip;
+struct TimelineTrack;
 
 class PreviewSurface {
 public:

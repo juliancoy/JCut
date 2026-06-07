@@ -226,60 +226,99 @@ struct OffscreenRenderFrame {
     bool hasVulkanFrame() const { return vulkanFrame.valid; }
 };
 
+struct OffscreenRenderContext {
+    const RenderRequest& request;
+    qreal timelineFrame = 0.0;
+    QHash<QString, editor::DecoderContext*>& decoders;
+    editor::AsyncDecoder* asyncDecoder = nullptr;
+    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache = nullptr;
+    const QVector<TimelineClip>& orderedClips;
+    QHash<QString, RenderClipStageStats>* clipStageStats = nullptr;
+    qint64* decodeMs = nullptr;
+    qint64* textureMs = nullptr;
+    qint64* compositeMs = nullptr;
+    qint64* readbackMs = nullptr;
+    QJsonArray* skippedClips = nullptr;
+    QJsonObject* skippedReasonCounts = nullptr;
+};
+
 class OffscreenRenderer {
 public:
     virtual ~OffscreenRenderer() = default;
 
     virtual bool initialize(const QSize& outputSize, QString* errorMessage) = 0;
-    virtual QImage renderFrame(const RenderRequest& request,
-                               qreal timelineFrame,
-                               QHash<QString, editor::DecoderContext*>& decoders,
-                               editor::AsyncDecoder* asyncDecoder,
-                               QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                               const QVector<TimelineClip>& orderedClips,
-                               QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                               qint64* decodeMs = nullptr,
-                               qint64* textureMs = nullptr,
-                               qint64* compositeMs = nullptr,
-                               qint64* readbackMs = nullptr,
-                               QJsonArray* skippedClips = nullptr,
-                               QJsonObject* skippedReasonCounts = nullptr)
+    virtual QImage renderFrame(const OffscreenRenderContext& context)
     {
         OffscreenRenderFrame output;
-        if (!renderFrameToOutput(request,
-                                 timelineFrame,
-                                 decoders,
-                                 asyncDecoder,
-                                 asyncFrameCache,
-                                 orderedClips,
-                                 &output,
-                                 true,
-                                 clipStageStats,
-                                 decodeMs,
-                                 textureMs,
-                                 compositeMs,
-                                 readbackMs,
-                                 skippedClips,
-                                 skippedReasonCounts)) {
+        if (!renderFrameToOutput(context, &output, true)) {
             return QImage();
         }
         return output.cpuImage;
     }
-    virtual bool renderFrameToOutput(const RenderRequest& request,
-                                     qreal timelineFrame,
-                                     QHash<QString, editor::DecoderContext*>& decoders,
-                                     editor::AsyncDecoder* asyncDecoder,
-                                     QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                                     const QVector<TimelineClip>& orderedClips,
+    virtual bool renderFrameToOutput(const OffscreenRenderContext& context,
                                      OffscreenRenderFrame* output,
-                                     bool readbackToCpuImage = false,
-                                     QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                                     qint64* decodeMs = nullptr,
-                                     qint64* textureMs = nullptr,
-                                     qint64* compositeMs = nullptr,
-                                     qint64* readbackMs = nullptr,
-                                     QJsonArray* skippedClips = nullptr,
-                                     QJsonObject* skippedReasonCounts = nullptr) = 0;
+                                     bool readbackToCpuImage = false) = 0;
+
+    QImage renderFrame(const RenderRequest& request,
+                       qreal timelineFrame,
+                       QHash<QString, editor::DecoderContext*>& decoders,
+                       editor::AsyncDecoder* asyncDecoder,
+                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                       const QVector<TimelineClip>& orderedClips,
+                       QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
+                       qint64* decodeMs = nullptr,
+                       qint64* textureMs = nullptr,
+                       qint64* compositeMs = nullptr,
+                       qint64* readbackMs = nullptr,
+                       QJsonArray* skippedClips = nullptr,
+                       QJsonObject* skippedReasonCounts = nullptr)
+    {
+        return renderFrame(OffscreenRenderContext{request,
+                                                  timelineFrame,
+                                                  decoders,
+                                                  asyncDecoder,
+                                                  asyncFrameCache,
+                                                  orderedClips,
+                                                  clipStageStats,
+                                                  decodeMs,
+                                                  textureMs,
+                                                  compositeMs,
+                                                  readbackMs,
+                                                  skippedClips,
+                                                  skippedReasonCounts});
+    }
+    bool renderFrameToOutput(const RenderRequest& request,
+                             qreal timelineFrame,
+                             QHash<QString, editor::DecoderContext*>& decoders,
+                             editor::AsyncDecoder* asyncDecoder,
+                             QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
+                             const QVector<TimelineClip>& orderedClips,
+                             OffscreenRenderFrame* output,
+                             bool readbackToCpuImage = false,
+                             QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
+                             qint64* decodeMs = nullptr,
+                             qint64* textureMs = nullptr,
+                             qint64* compositeMs = nullptr,
+                             qint64* readbackMs = nullptr,
+                             QJsonArray* skippedClips = nullptr,
+                             QJsonObject* skippedReasonCounts = nullptr)
+    {
+        return renderFrameToOutput(OffscreenRenderContext{request,
+                                                          timelineFrame,
+                                                          decoders,
+                                                          asyncDecoder,
+                                                          asyncFrameCache,
+                                                          orderedClips,
+                                                          clipStageStats,
+                                                          decodeMs,
+                                                          textureMs,
+                                                          compositeMs,
+                                                          readbackMs,
+                                                          skippedClips,
+                                                          skippedReasonCounts},
+                                   output,
+                                   readbackToCpuImage);
+    }
     virtual bool convertLastFrameToNv12(AVFrame* frame,
                                         qint64* nv12ConvertMs = nullptr,
                                         qint64* readbackMs = nullptr) = 0;
@@ -336,38 +375,17 @@ public:
 
 class OffscreenGpuRenderer : public OffscreenRenderer {
 public:
+    using OffscreenRenderer::renderFrame;
+    using OffscreenRenderer::renderFrameToOutput;
+
     OffscreenGpuRenderer();
     ~OffscreenGpuRenderer() override;
 
     bool initialize(const QSize& outputSize, QString* errorMessage) override;
-    QImage renderFrame(const RenderRequest& request,
-                       qreal timelineFrame,
-                       QHash<QString, editor::DecoderContext*>& decoders,
-                       editor::AsyncDecoder* asyncDecoder,
-                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                       const QVector<TimelineClip>& orderedClips,
-                       QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                       qint64* decodeMs = nullptr,
-                       qint64* textureMs = nullptr,
-                       qint64* compositeMs = nullptr,
-                       qint64* readbackMs = nullptr,
-                       QJsonArray* skippedClips = nullptr,
-                       QJsonObject* skippedReasonCounts = nullptr) override;
-    bool renderFrameToOutput(const RenderRequest& request,
-                             qreal timelineFrame,
-                             QHash<QString, editor::DecoderContext*>& decoders,
-                             editor::AsyncDecoder* asyncDecoder,
-                             QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                             const QVector<TimelineClip>& orderedClips,
+    QImage renderFrame(const OffscreenRenderContext& context) override;
+    bool renderFrameToOutput(const OffscreenRenderContext& context,
                              OffscreenRenderFrame* output,
-                             bool readbackToCpuImage = false,
-                             QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                             qint64* decodeMs = nullptr,
-                             qint64* textureMs = nullptr,
-                             qint64* compositeMs = nullptr,
-                             qint64* readbackMs = nullptr,
-                             QJsonArray* skippedClips = nullptr,
-                             QJsonObject* skippedReasonCounts = nullptr) override;
+                             bool readbackToCpuImage = false) override;
     bool convertLastFrameToNv12(AVFrame* frame,
                                 qint64* nv12ConvertMs = nullptr,
                                 qint64* readbackMs = nullptr) override;
@@ -384,38 +402,17 @@ private:
 
 class OffscreenVulkanRenderer : public OffscreenRenderer {
 public:
+    using OffscreenRenderer::renderFrame;
+    using OffscreenRenderer::renderFrameToOutput;
+
     OffscreenVulkanRenderer();
     ~OffscreenVulkanRenderer() override;
 
     bool initialize(const QSize& outputSize, QString* errorMessage) override;
-    QImage renderFrame(const RenderRequest& request,
-                       qreal timelineFrame,
-                       QHash<QString, editor::DecoderContext*>& decoders,
-                       editor::AsyncDecoder* asyncDecoder,
-                       QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                       const QVector<TimelineClip>& orderedClips,
-                       QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                       qint64* decodeMs = nullptr,
-                       qint64* textureMs = nullptr,
-                       qint64* compositeMs = nullptr,
-                       qint64* readbackMs = nullptr,
-                       QJsonArray* skippedClips = nullptr,
-                       QJsonObject* skippedReasonCounts = nullptr) override;
-    bool renderFrameToOutput(const RenderRequest& request,
-                             qreal timelineFrame,
-                             QHash<QString, editor::DecoderContext*>& decoders,
-                             editor::AsyncDecoder* asyncDecoder,
-                             QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                             const QVector<TimelineClip>& orderedClips,
+    QImage renderFrame(const OffscreenRenderContext& context) override;
+    bool renderFrameToOutput(const OffscreenRenderContext& context,
                              OffscreenRenderFrame* output,
-                             bool readbackToCpuImage = false,
-                             QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                             qint64* decodeMs = nullptr,
-                             qint64* textureMs = nullptr,
-                             qint64* compositeMs = nullptr,
-                             qint64* readbackMs = nullptr,
-                             QJsonArray* skippedClips = nullptr,
-                             QJsonObject* skippedReasonCounts = nullptr) override;
+                             bool readbackToCpuImage = false) override;
     bool convertLastFrameToNv12(AVFrame* frame,
                                 qint64* nv12ConvertMs = nullptr,
                                 qint64* readbackMs = nullptr) override;

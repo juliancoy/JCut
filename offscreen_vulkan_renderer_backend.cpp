@@ -2140,8 +2140,9 @@ public:
       QImage readbackRgba(reinterpret_cast<const uchar *>(m_stagingMapped),
                           m_outputSize.width(), m_outputSize.height(),
                           m_outputSize.width() * 4, QImage::Format_ARGB32);
-      out = readbackRgba.copy().convertToFormat(
-          QImage::Format_ARGB32_Premultiplied);
+      out = readbackRgba.copy()
+                .convertToFormat(QImage::Format_ARGB32_Premultiplied)
+                .mirrored();
     }
     m_colorImagePrimed = true;
     return out;
@@ -2935,14 +2936,22 @@ bool OffscreenVulkanRenderer::initialize(const QSize &outputSize,
 }
 
 QImage OffscreenVulkanRenderer::renderFrame(
-    const RenderRequest &request, qreal timelineFrame,
-    QHash<QString, editor::DecoderContext *> &decoders,
-    editor::AsyncDecoder *asyncDecoder,
-    QHash<RenderAsyncFrameKey, editor::FrameHandle> *asyncFrameCache,
-    const QVector<TimelineClip> &orderedClips,
-    QHash<QString, RenderClipStageStats> *clipStageStats, qint64 *decodeMs,
-    qint64 *textureMs, qint64 *compositeMs, qint64 *readbackMs,
-    QJsonArray *skippedClips, QJsonObject *skippedReasonCounts) {
+    const OffscreenRenderContext &context) {
+  const RenderRequest &request = context.request;
+  const qreal timelineFrame = context.timelineFrame;
+  QHash<QString, editor::DecoderContext *> &decoders = context.decoders;
+  editor::AsyncDecoder *asyncDecoder = context.asyncDecoder;
+  QHash<RenderAsyncFrameKey, editor::FrameHandle> *asyncFrameCache =
+      context.asyncFrameCache;
+  const QVector<TimelineClip> &orderedClips = context.orderedClips;
+  QHash<QString, RenderClipStageStats> *clipStageStats =
+      context.clipStageStats;
+  qint64 *decodeMs = context.decodeMs;
+  qint64 *textureMs = context.textureMs;
+  qint64 *compositeMs = context.compositeMs;
+  qint64 *readbackMs = context.readbackMs;
+  QJsonArray *skippedClips = context.skippedClips;
+  QJsonObject *skippedReasonCounts = context.skippedReasonCounts;
   Q_UNUSED(asyncDecoder);
   Q_UNUSED(clipStageStats);
   Q_UNUSED(skippedClips);
@@ -3226,24 +3235,15 @@ QImage OffscreenVulkanRenderer::renderFrame(
 }
 
 bool OffscreenVulkanRenderer::renderFrameToOutput(
-    const RenderRequest &request, qreal timelineFrame,
-    QHash<QString, editor::DecoderContext *> &decoders,
-    editor::AsyncDecoder *asyncDecoder,
-    QHash<RenderAsyncFrameKey, editor::FrameHandle> *asyncFrameCache,
-    const QVector<TimelineClip> &orderedClips, OffscreenRenderFrame *output,
-    bool readbackToCpuImage,
-    QHash<QString, RenderClipStageStats> *clipStageStats, qint64 *decodeMs,
-    qint64 *textureMs, qint64 *compositeMs, qint64 *readbackMs,
-    QJsonArray *skippedClips, QJsonObject *skippedReasonCounts) {
+    const OffscreenRenderContext &context, OffscreenRenderFrame *output,
+    bool readbackToCpuImage) {
   if (!output) {
     return false;
   }
   *output = OffscreenRenderFrame{};
-  output->cpuImage = renderFrame(request, timelineFrame, decoders, asyncDecoder,
-                                 asyncFrameCache, orderedClips, clipStageStats,
-                                 decodeMs, textureMs, compositeMs,
-                                 readbackToCpuImage ? readbackMs : nullptr,
-                                 skippedClips, skippedReasonCounts);
+  OffscreenRenderContext frameContext = context;
+  frameContext.readbackMs = readbackToCpuImage ? context.readbackMs : nullptr;
+  output->cpuImage = renderFrame(frameContext);
   QString error;
   if (!lastRenderedVulkanFrame(&output->vulkanFrame, &error)) {
     output->vulkanFrame.valid = false;

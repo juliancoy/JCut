@@ -895,58 +895,33 @@ bool OffscreenGpuRenderer::initialize(const QSize& outputSize, QString* errorMes
     return d->initialize(outputSize, errorMessage);
 }
 
-QImage OffscreenGpuRenderer::renderFrame(const RenderRequest& request,
-                                          qreal timelineFrame,
-                                          QHash<QString, editor::DecoderContext*>& decoders,
-                                          editor::AsyncDecoder* asyncDecoder,
-                                          QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                                          const QVector<TimelineClip>& orderedClips,
-                                          QHash<QString, RenderClipStageStats>* clipStageStats,
-                                          qint64* decodeMs,
-                                          qint64* textureMs,
-                                          qint64* compositeMs,
-                                          qint64* readbackMs,
-                                          QJsonArray* skippedClips,
-                                          QJsonObject* skippedReasonCounts) {
-    return d->renderFrame(request, timelineFrame, decoders, asyncDecoder, asyncFrameCache,
-                          orderedClips, clipStageStats, decodeMs, textureMs, compositeMs,
-                          readbackMs, skippedClips, skippedReasonCounts);
+QImage OffscreenGpuRenderer::renderFrame(const OffscreenRenderContext& context) {
+    return d->renderFrame(context.request,
+                          context.timelineFrame,
+                          context.decoders,
+                          context.asyncDecoder,
+                          context.asyncFrameCache,
+                          context.orderedClips,
+                          context.clipStageStats,
+                          context.decodeMs,
+                          context.textureMs,
+                          context.compositeMs,
+                          context.readbackMs,
+                          context.skippedClips,
+                          context.skippedReasonCounts);
 }
 
-bool OffscreenGpuRenderer::renderFrameToOutput(
-    const RenderRequest& request,
-    qreal timelineFrame,
-    QHash<QString, editor::DecoderContext*>& decoders,
-    editor::AsyncDecoder* asyncDecoder,
-    QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-    const QVector<TimelineClip>& orderedClips,
-    OffscreenRenderFrame* output,
-    bool readbackToCpuImage,
-    QHash<QString, RenderClipStageStats>* clipStageStats,
-    qint64* decodeMs,
-    qint64* textureMs,
-    qint64* compositeMs,
-    qint64* readbackMs,
-    QJsonArray* skippedClips,
-    QJsonObject* skippedReasonCounts)
+bool OffscreenGpuRenderer::renderFrameToOutput(const OffscreenRenderContext& context,
+                                               OffscreenRenderFrame* output,
+                                               bool readbackToCpuImage)
 {
     if (!output) {
         return false;
     }
     *output = OffscreenRenderFrame{};
-    output->cpuImage = renderFrame(request,
-                                   timelineFrame,
-                                   decoders,
-                                   asyncDecoder,
-                                   asyncFrameCache,
-                                   orderedClips,
-                                   clipStageStats,
-                                   decodeMs,
-                                   textureMs,
-                                   compositeMs,
-                                   readbackToCpuImage ? readbackMs : nullptr,
-                                   skippedClips,
-                                   skippedReasonCounts);
+    OffscreenRenderContext frameContext = context;
+    frameContext.readbackMs = readbackToCpuImage ? context.readbackMs : nullptr;
+    output->cpuImage = renderFrame(frameContext);
     return readbackToCpuImage ? !output->cpuImage.isNull() : true;
 }
 

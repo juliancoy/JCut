@@ -247,7 +247,7 @@ void TestVulkanSubtitleRender::testOffscreenVulkanSubtitleTextPixels()
             QStringLiteral("cpu_subtitle_overlay_%1.png").arg(artifactSuffix));
     QVERIFY2(cpuOverlay.copy().save(cpuArtifactPath),
              qPrintable(QStringLiteral("Failed to save %1").arg(cpuArtifactPath)));
-    const QImage expectedFrame = overlayCompositedOverBlack(overlay);
+    const QImage expectedFrame = overlayCompositedOverBlack(overlay).mirrored();
     const QString expectedArtifactPath =
         QDir(QStringLiteral(QT_TESTCASE_BUILDDIR)).filePath(
             QStringLiteral("expected_vulkan_subtitle_render_%1.png").arg(artifactSuffix));

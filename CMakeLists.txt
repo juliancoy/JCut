@@ -185,6 +185,8 @@ if(NOT DEFINED CPPMONETIZE_DEFAULT_SUPABASE_ANON_KEY)
         "Built-in Supabase anon key fallback for CPPMonetize.")
 endif()
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/CPPMonetize/CMakeLists.txt")
+    set(CPPMONETIZE_BUILD_TESTS OFF CACHE BOOL
+        "Build CPPMonetize tests when CPPMonetize is embedded in JCut." FORCE)
     add_subdirectory(external/CPPMonetize EXCLUDE_FROM_ALL)
 endif()
 
@@ -613,6 +615,7 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_runner.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_tuning.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_vulkan_harness.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_generation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp

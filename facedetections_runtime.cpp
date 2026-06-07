@@ -4,7 +4,6 @@
 #include "frame_handle.h"
 #include "json_io_utils.h"
 #include "render_internal.h"
-#include "speakers_tab_internal.h"
 #include "transcript_engine.h"
 
 #include <QApplication>
