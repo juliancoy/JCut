@@ -31,21 +31,19 @@ private slots:
                  FacestreamFrameDomain::SourceAbsolute);
     }
 
-    void declaredSourceAbsoluteRangeCanBeRecognizedAsLegacyTimeline()
+    void inferenceFallsBackToSourceRelativeNotTimelineClock()
     {
         TimelineClip clip;
         clip.startFrame = 0;
         clip.durationFrames = 300;
-        clip.sourceInFrame = 0;
+        clip.sourceInFrame = 1000;
         clip.sourceDurationFrames = 600;
-        clip.sourceFps = 60.0;
 
-        QVERIFY(sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(
-            clip,
-            QVector<int64_t>{24, 299}));
-        QVERIFY(!sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(
-            clip,
-            QVector<int64_t>{24, 599}));
+        QCOMPARE(inferFacestreamFrameDomain(clip, 0, 299),
+                 FacestreamFrameDomain::SourceRelative);
+        QVERIFY(isSourceMediaFacestreamFrameDomain(FacestreamFrameDomain::SourceRelative));
+        QVERIFY(isSourceMediaFacestreamFrameDomain(FacestreamFrameDomain::SourceAbsolute));
+        QVERIFY(!isSourceMediaFacestreamFrameDomain(FacestreamFrameDomain::ClipTimeline30Fps));
     }
 
     void typicalFrameStepUsesMedianDelta()

@@ -19,6 +19,20 @@
 
 namespace jcut::facedetections {
 namespace {
+
+QJsonArray stringListToJsonArray(const QStringList& values)
+{
+    QJsonArray array;
+    for (const QString& value : values) {
+        array.push_back(value);
+    }
+    return array;
+}
+
+bool nearlyEqual(qreal a, qreal b, qreal tolerance)
+{
+    return qAbs(a - b) <= tolerance;
+}
 constexpr qint64 kMaxInteractiveContinuityObjectBytes = 128ll * 1024ll * 1024ll;
 constexpr quint32 kIndexedTrackArtifactMagic = 0x4A465449; // JFTI
 constexpr quint32 kIndexedFrameArtifactMagic = 0x4A464649; // JFFI
@@ -194,7 +208,7 @@ bool frameIsInTranscriptDialogue(qint64 frame, const QJsonObject& transcriptRoot
 {
     const QJsonArray segments = transcriptRoot.value(QStringLiteral("segments")).toArray();
     if (segments.isEmpty()) {
-        return false;
+        return true;
     }
     const double t = static_cast<double>(frame) / static_cast<double>(kTimelineFps);
     for (const QJsonValue& segValue : segments) {
@@ -228,9 +242,9 @@ FacestreamTrack trackModelFromRawRecordWithSummary(const QJsonObject& trackObj,
         const qint64 frame = qMax<qint64>(
             0,
             det.value(QStringLiteral("frame")).toVariant().toLongLong());
-        if (onlyDialogue && !frameIsInTranscriptDialogue(frame, transcriptRoot)) {
-            continue;
-        }
+            if (onlyDialogue && !frameIsInTranscriptDialogue(frame, transcriptRoot)) {
+                continue;
+            }
         FacestreamKeyframe keyframe;
         keyframe.frame = frame;
         keyframe.sourceFrame = frame;
@@ -242,6 +256,22 @@ FacestreamTrack trackModelFromRawRecordWithSummary(const QJsonObject& trackObj,
             qBound(0.01, det.value(QStringLiteral("box")).toDouble(0.2), 1.0));
         keyframe.confidence = static_cast<float>(
             qBound(0.0, det.value(QStringLiteral("score")).toDouble(0.0), 1.0));
+        const qreal frameWidth = det.value(QStringLiteral("frame_width")).toDouble(0.0);
+        const qreal frameHeight = det.value(QStringLiteral("frame_height")).toDouble(0.0);
+        const QRectF exactTrackBox(det.value(QStringLiteral("track_box_x")).toDouble(-1.0),
+                                   det.value(QStringLiteral("track_box_y")).toDouble(-1.0),
+                                   det.value(QStringLiteral("track_box_w")).toDouble(0.0),
+                                   det.value(QStringLiteral("track_box_h")).toDouble(0.0));
+        if (frameWidth > 1.0 &&
+            frameHeight > 1.0 &&
+            exactTrackBox.isValid() &&
+            !exactTrackBox.isEmpty()) {
+            keyframe.boxNorm = QRectF(exactTrackBox.x() / frameWidth,
+                                      exactTrackBox.y() / frameHeight,
+                                      exactTrackBox.width() / frameWidth,
+                                      exactTrackBox.height() / frameHeight)
+                                   .intersected(QRectF(0.0, 0.0, 1.0, 1.0));
+        }
         track.keyframes.push_back(keyframe);
     }
     if (track.keyframes.isEmpty()) {
@@ -615,6 +645,13 @@ bool rebuildFrameArtifactIndex(const QString& path, FrameArtifactIndex* indexOut
         }
         index.entries.push_back(entry);
     }
+    std::sort(index.entries.begin(), index.entries.end(), [](const IndexedObjectEntry& a,
+                                                             const IndexedObjectEntry& b) {
+        if (a.frame == b.frame) {
+            return a.dataOffset < b.dataOffset;
+        }
+        return a.frame < b.frame;
+    });
 
     *indexOut = index;
     return true;
@@ -994,7 +1031,12 @@ QJsonArray rawFrameRecordsNearPath(const QString& path,
                 return {};
             }
             record.remove(QStringLiteral("type"));
-            frames.append(record);
+            const qint64 recordFrame = record.contains(QStringLiteral("frame"))
+                ? record.value(QStringLiteral("frame")).toVariant().toLongLong()
+                : -1;
+            if (recordFrame >= lowerFrame && recordFrame <= upperFrame) {
+                frames.append(record);
+            }
         }
     }
     return frames;
@@ -1164,6 +1206,12 @@ QVector<FacestreamFrameDetections> frameDetectionModelsNearFrameForRoot(
             return {};
         }
         record.remove(QStringLiteral("type"));
+        const qint64 recordFrame = record.contains(QStringLiteral("frame"))
+            ? record.value(QStringLiteral("frame")).toVariant().toLongLong()
+            : -1;
+        if (recordFrame < lowerFrame || recordFrame > upperFrame) {
+            continue;
+        }
         FacestreamFrameDetections model = frameDetectionModelFromRecord(record);
         if (model.frame >= 0) {
             models.push_back(model);
@@ -1191,7 +1239,7 @@ QJsonArray buildContinuityStreams(const QJsonArray& tracks,
         for (const QJsonValue& detValue : detections) {
             const QJsonObject det = detValue.toObject();
             const int64_t frame = qMax<int64_t>(0, det.value(QStringLiteral("frame")).toVariant().toLongLong());
-            if (onlyDialogue) {
+            if (onlyDialogue && !segments.isEmpty()) {
                 bool spoken = false;
                 const double t = static_cast<double>(frame) / static_cast<double>(kTimelineFps);
                 for (const QJsonValue& segValue : segments) {
@@ -1248,6 +1296,10 @@ QJsonArray buildContinuityStreams(const QJsonArray& tracks,
 QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
                                     const QJsonObject& transcriptRoot)
 {
+    if (continuityRoot.contains(QStringLiteral("streams"))) {
+        return continuityRoot.value(QStringLiteral("streams")).toArray();
+    }
+
     const QJsonArray storedStreams = continuityRoot.value(QStringLiteral("streams")).toArray();
     if (!storedStreams.isEmpty()) {
         return storedStreams;
@@ -1279,6 +1331,10 @@ QJsonArray continuityStreamsForRoot(const QJsonObject& continuityRoot,
 QJsonArray storedContinuityStreamsForRoot(const QJsonObject& continuityRoot,
                                           qint64 maxReferencedArtifactBytes)
 {
+    if (continuityRoot.contains(QStringLiteral("streams"))) {
+        return continuityRoot.value(QStringLiteral("streams")).toArray();
+    }
+
     const QJsonArray storedStreams = continuityRoot.value(QStringLiteral("streams")).toArray();
     if (!storedStreams.isEmpty()) {
         return storedStreams;
@@ -1308,6 +1364,15 @@ QJsonArray storedContinuityStreamsForRoot(const QJsonObject& continuityRoot,
 QJsonArray continuityTrackSummariesForRoot(const QJsonObject& continuityRoot,
                                            const QJsonObject& transcriptRoot)
 {
+    if (continuityRoot.contains(QStringLiteral("streams"))) {
+        QJsonArray summaries;
+        const QJsonArray storedStreams = continuityRoot.value(QStringLiteral("streams")).toArray();
+        for (const QJsonValue& value : storedStreams) {
+            summaries.push_back(streamSummaryObject(value.toObject()));
+        }
+        return summaries;
+    }
+
     const QJsonArray storedStreams = continuityRoot.value(QStringLiteral("streams")).toArray();
     if (!storedStreams.isEmpty()) {
         QJsonArray summaries;
@@ -1385,6 +1450,53 @@ QVector<FacestreamTrack> continuityTrackModelsNearFrameForRoot(
     int64_t extraWindowFrames,
     const QJsonObject& transcriptRoot)
 {
+    if (continuityRoot.contains(QStringLiteral("streams"))) {
+        Q_UNUSED(transcriptRoot);
+        const QJsonArray streams = continuityRoot.value(QStringLiteral("streams")).toArray();
+        QVector<FacestreamTrack> tracks;
+        tracks.reserve(streams.size());
+        const QString detectorMode =
+            continuityRoot.value(QStringLiteral("detector_mode")).toString().trimmed();
+        for (const QJsonValue& value : streams) {
+            const QJsonObject streamObj = value.toObject();
+            if (!trackSummaryMatchesFrame(streamSummaryObject(streamObj), frame, extraWindowFrames)) {
+                continue;
+            }
+            const QJsonArray singleStream{value};
+            const QJsonArray rawTracks = QJsonArray{};
+            const QJsonObject streamRoot = buildContinuityRoot(
+                continuityRoot.value(QStringLiteral("run_id")).toString(),
+                false,
+                continuityRoot.value(QStringLiteral("scan_start_frame")).toVariant().toLongLong(),
+                continuityRoot.value(QStringLiteral("scan_end_frame")).toVariant().toLongLong(),
+                singleStream,
+                rawTracks,
+                QJsonArray{},
+                detectorMode);
+            const QJsonArray materialized = continuityStreamsForRoot(streamRoot, QJsonObject{});
+            for (const QJsonValue& materializedValue : materialized) {
+                const QJsonObject materializedStream = materializedValue.toObject();
+                FacestreamTrack track;
+                track.summary = trackSummaryModelFromObject(streamSummaryObject(materializedStream));
+                for (const QJsonValue& keyframeValue : materializedStream.value(QStringLiteral("keyframes")).toArray()) {
+                    const QJsonObject keyframeObj = keyframeValue.toObject();
+                    FacestreamKeyframe keyframe;
+                    keyframe.frame = keyframeObj.value(QStringLiteral("frame")).toVariant().toLongLong();
+                    keyframe.sourceFrame = keyframe.frame;
+                    keyframe.x = static_cast<float>(qBound(0.0, keyframeObj.value(QStringLiteral("x")).toDouble(0.5), 1.0));
+                    keyframe.y = static_cast<float>(qBound(0.0, keyframeObj.value(QStringLiteral("y")).toDouble(0.5), 1.0));
+                    keyframe.box = static_cast<float>(qBound(0.01, keyframeObj.value(QStringLiteral("box_size")).toDouble(0.2), 1.0));
+                    keyframe.confidence = static_cast<float>(qBound(0.0, keyframeObj.value(QStringLiteral("confidence")).toDouble(0.0), 1.0));
+                    track.keyframes.push_back(keyframe);
+                }
+                if (!track.keyframes.isEmpty()) {
+                    tracks.push_back(track);
+                }
+            }
+        }
+        return tracks;
+    }
+
     const QString detectorMode =
         continuityRoot.value(QStringLiteral("detector_mode")).toString().trimmed();
     const bool onlyDialogue = continuityRoot.value(QStringLiteral("only_dialogue")).toBool(false);
@@ -1463,6 +1575,19 @@ QJsonArray continuityStreamsNearFrame(const QJsonObject& continuityRoot,
                                       int64_t extraWindowFrames,
                                       const QJsonObject& transcriptRoot)
 {
+    if (continuityRoot.contains(QStringLiteral("streams"))) {
+        Q_UNUSED(transcriptRoot);
+        QJsonArray filtered;
+        const QJsonArray storedStreams = continuityRoot.value(QStringLiteral("streams")).toArray();
+        for (const QJsonValue& value : storedStreams) {
+            const QJsonObject streamObj = value.toObject();
+            if (trackSummaryMatchesFrame(streamSummaryObject(streamObj), frame, extraWindowFrames)) {
+                filtered.push_back(streamObj);
+            }
+        }
+        return filtered;
+    }
+
     const QJsonArray storedStreams = continuityRoot.value(QStringLiteral("streams")).toArray();
     if (!storedStreams.isEmpty()) {
         QJsonArray filtered;
@@ -1750,6 +1875,116 @@ bool continuityRootHasStoredPayload(const QJsonObject& continuityRoot)
            !continuityRoot.value(QStringLiteral("run_id")).toString().trimmed().isEmpty();
 }
 
+QJsonObject artifactCompatibilityMetadataForClip(const TimelineClip& clip)
+{
+    QJsonObject metadata;
+    metadata[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_media_compat_v1");
+    metadata[QStringLiteral("media_path")] = QFileInfo(clip.filePath).absoluteFilePath();
+    const QFileInfo mediaInfo(clip.filePath);
+    metadata[QStringLiteral("media_file_exists")] = mediaInfo.exists() && mediaInfo.isFile();
+    if (mediaInfo.exists() && mediaInfo.isFile()) {
+        metadata[QStringLiteral("media_file_size_bytes")] = mediaInfo.size();
+        metadata[QStringLiteral("media_file_mtime_ms")] =
+            mediaInfo.lastModified().toMSecsSinceEpoch();
+    }
+    metadata[QStringLiteral("source_fps")] = clip.sourceFps;
+    metadata[QStringLiteral("source_duration_frames")] =
+        static_cast<qint64>(clip.sourceDurationFrames);
+    metadata[QStringLiteral("source_in_frame")] =
+        static_cast<qint64>(clip.sourceInFrame);
+    metadata[QStringLiteral("source_frame_width")] = clip.sourceFrameSize.width();
+    metadata[QStringLiteral("source_frame_height")] = clip.sourceFrameSize.height();
+    return metadata;
+}
+
+ArtifactCompatibilityResult validateArtifactCompatibilityForClip(
+    const QJsonObject& continuityRoot,
+    const TimelineClip& clip)
+{
+    ArtifactCompatibilityResult result;
+    const QJsonObject expected =
+        continuityRoot.value(QStringLiteral("media_compatibility")).toObject();
+    const QJsonObject current = artifactCompatibilityMetadataForClip(clip);
+    result.details[QStringLiteral("expected")] = expected;
+    result.details[QStringLiteral("current")] = current;
+
+    auto addWarning = [&](const QString& warning) {
+        if (!result.warnings.contains(warning)) {
+            result.warnings.push_back(warning);
+        }
+    };
+    auto addError = [&](const QString& error) {
+        if (!result.errors.contains(error)) {
+            result.errors.push_back(error);
+        }
+        result.compatible = false;
+    };
+
+    if (expected.isEmpty()) {
+        result.compatibilityClass = QStringLiteral("missing_metadata");
+        addWarning(QStringLiteral("FaceDetections artifact has no media compatibility metadata; regenerate to make stale-artifact failures explicit."));
+        result.details[QStringLiteral("compatible")] = result.compatible;
+        result.details[QStringLiteral("compatibility_class")] = result.compatibilityClass;
+        result.details[QStringLiteral("warnings")] = stringListToJsonArray(result.warnings);
+        result.details[QStringLiteral("errors")] = stringListToJsonArray(result.errors);
+        return result;
+    }
+
+    const QString expectedPath =
+        QFileInfo(expected.value(QStringLiteral("media_path")).toString().trimmed()).absoluteFilePath();
+    const QString currentPath =
+        current.value(QStringLiteral("media_path")).toString().trimmed();
+    if (!expectedPath.isEmpty() && !currentPath.isEmpty() && expectedPath != currentPath) {
+        addWarning(QStringLiteral("Media path differs from the path used when FaceDetections was generated."));
+    }
+
+    const qint64 expectedSize =
+        expected.value(QStringLiteral("media_file_size_bytes")).toVariant().toLongLong();
+    const qint64 currentSize =
+        current.value(QStringLiteral("media_file_size_bytes")).toVariant().toLongLong();
+    if (expectedSize > 0 && currentSize > 0 && expectedSize != currentSize) {
+        addError(QStringLiteral("Media file size differs from the file used when FaceDetections was generated."));
+    }
+
+    const int expectedWidth = expected.value(QStringLiteral("source_frame_width")).toInt(0);
+    const int currentWidth = current.value(QStringLiteral("source_frame_width")).toInt(0);
+    if (expectedWidth > 0 && currentWidth > 0 && expectedWidth != currentWidth) {
+        addError(QStringLiteral("Source frame width differs from the file used when FaceDetections was generated."));
+    }
+    const int expectedHeight = expected.value(QStringLiteral("source_frame_height")).toInt(0);
+    const int currentHeight = current.value(QStringLiteral("source_frame_height")).toInt(0);
+    if (expectedHeight > 0 && currentHeight > 0 && expectedHeight != currentHeight) {
+        addError(QStringLiteral("Source frame height differs from the file used when FaceDetections was generated."));
+    }
+
+    const qreal expectedFps = expected.value(QStringLiteral("source_fps")).toDouble(0.0);
+    const qreal currentFps = current.value(QStringLiteral("source_fps")).toDouble(0.0);
+    if (expectedFps > 0.0 && currentFps > 0.0 && !nearlyEqual(expectedFps, currentFps, 0.001)) {
+        addWarning(QStringLiteral("Source FPS metadata changed after FaceDetections generation; source-absolute tracks remain usable, but timeline-to-source mapping may now land on different displayed frames."));
+    }
+
+    const qint64 expectedDuration =
+        expected.value(QStringLiteral("source_duration_frames")).toVariant().toLongLong();
+    const qint64 currentDuration =
+        current.value(QStringLiteral("source_duration_frames")).toVariant().toLongLong();
+    if (expectedDuration > 0 && currentDuration > 0 && expectedDuration != currentDuration) {
+        addWarning(QStringLiteral("Source duration metadata changed after FaceDetections generation."));
+    }
+
+    if (!result.compatible) {
+        result.compatibilityClass = QStringLiteral("fatal_mismatch");
+    } else if (!result.warnings.isEmpty()) {
+        result.compatibilityClass = QStringLiteral("warning_mismatch");
+    } else {
+        result.compatibilityClass = QStringLiteral("ok");
+    }
+    result.details[QStringLiteral("compatible")] = result.compatible;
+    result.details[QStringLiteral("compatibility_class")] = result.compatibilityClass;
+    result.details[QStringLiteral("warnings")] = stringListToJsonArray(result.warnings);
+    result.details[QStringLiteral("errors")] = stringListToJsonArray(result.errors);
+    return result;
+}
+
 QJsonObject buildProcessedContinuityRoot(const QString& clipId,
                                          const QJsonObject& rawContinuityRoot,
                                          const QJsonObject& transcriptRoot,
@@ -1785,6 +2020,7 @@ QJsonObject buildProcessedContinuityRoot(const QString& clipId,
         QStringLiteral("raw_tracks_frame_domain"),
         QStringLiteral("raw_frames_frame_domain"),
         QStringLiteral("streams_frame_domain"),
+        QStringLiteral("media_compatibility"),
         QStringLiteral("imported_from_artifact_dir"),
         QStringLiteral("facedetections_part"),
         QStringLiteral("summary_json")
@@ -2084,6 +2320,13 @@ bool writeIndexedFrameArtifact(const QString& indexPath,
         }
         entries.push_back(entry);
     }
+    std::sort(entries.begin(), entries.end(), [](const IndexedObjectEntry& a,
+                                                 const IndexedObjectEntry& b) {
+        if (a.frame == b.frame) {
+            return a.dataOffset < b.dataOffset;
+        }
+        return a.frame < b.frame;
+    });
     if (!dataFile.flush()) {
         dataFile.close();
         QFile::remove(tempDataPath);

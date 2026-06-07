@@ -248,6 +248,14 @@ CropExtractionResult extractRepresentativeCrops(
                              streamId);
             continue;
         }
+        if (!isSourceMediaFacestreamFrameDomain(frameDomain)) {
+            recordDiagnostic(QStringLiteral("stream_skip"),
+                             QStringLiteral("unsupported timeline-derived frame_domain '%1'; FaceDetections identity crops require source media frames")
+                                 .arg(streamObj.value(QStringLiteral("frame_domain")).toString()),
+                             trackId,
+                             streamId);
+            continue;
+        }
         int64_t streamFrameMin = std::numeric_limits<int64_t>::max();
         int64_t streamFrameMax = -1;
         for (const QJsonValue& keyframeValue : keyframes) {
@@ -280,9 +288,7 @@ CropExtractionResult extractRepresentativeCrops(
             const int64_t sourceFrame = mapFacestreamFrameToSourceFrame(
                 request.clip, keyframeFrame, frameDomain, request.renderSyncMarkers);
             int64_t timelineFrame = keyframeFrame;
-            if (frameDomain == FacestreamFrameDomain::ClipTimeline30Fps) {
-                timelineFrame = request.clip.startFrame + keyframeFrame;
-            } else if (frameDomain == FacestreamFrameDomain::SourceAbsolute) {
+            if (frameDomain == FacestreamFrameDomain::SourceAbsolute) {
                 const int64_t localSourceFrame = qMax<int64_t>(0, sourceFrame - request.clip.sourceInFrame);
                 timelineFrame = request.clip.startFrame + localSourceFrame;
             }

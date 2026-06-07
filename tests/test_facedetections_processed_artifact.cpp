@@ -506,6 +506,195 @@ private slots:
         QCOMPARE(frames.at(0).detections.at(0).box.width(), 0.2);
         QCOMPARE(frames.at(0).detections.at(0).box.height(), 0.2);
     }
+
+    void indexedFrameDetectionReaderUsesFrameNumbersNotBinaryOrder()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString detectionsPath = QDir(tempDir.path()).filePath(QStringLiteral("detections.idx"));
+        const QString detectionsDataPath = QDir(tempDir.path()).filePath(QStringLiteral("detections.dat"));
+        QVERIFY(jcut::facedetections::writeIndexedFrameArtifact(
+            detectionsPath,
+            detectionsDataPath,
+            QStringLiteral("video.mp4"),
+            QStringLiteral("scrfd"),
+            QJsonArray{
+                QJsonObject{
+                    {QStringLiteral("frame"), 20},
+                    {QStringLiteral("detections"), QJsonArray{}}
+                },
+                QJsonObject{
+                    {QStringLiteral("frame"), 8},
+                    {QStringLiteral("frame_width"), 1920.0},
+                    {QStringLiteral("frame_height"), 1080.0},
+                    {QStringLiteral("detections"), QJsonArray{
+                         QJsonObject{
+                             {QStringLiteral("x"), 192.0},
+                             {QStringLiteral("y"), 108.0},
+                             {QStringLiteral("w"), 384.0},
+                             {QStringLiteral("h"), 216.0},
+                             {QStringLiteral("confidence"), 0.75},
+                             {QStringLiteral("track_id"), 12}
+                         }
+                    }}
+                }
+            }));
+
+        const QJsonObject continuityRoot{
+            {QStringLiteral("raw_frames_artifact_path"), detectionsPath},
+            {QStringLiteral("raw_frames_count"), 2},
+            {QStringLiteral("raw_frames_frame_domain"), QStringLiteral("source_absolute")}
+        };
+        const QVector<jcut::facedetections::FacestreamFrameDetections> frames =
+            jcut::facedetections::frameDetectionModelsNearFrameForRoot(continuityRoot, 8, 0);
+        QCOMPARE(frames.size(), 1);
+        QCOMPARE(frames.at(0).frame, 8);
+        QCOMPARE(frames.at(0).detections.size(), 1);
+        QCOMPARE(frames.at(0).detections.at(0).trackId, 12);
+    }
+
+    void typedTrackReaderPreservesExactHeadlessTrackBox()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString tracksPath = QDir(tempDir.path()).filePath(QStringLiteral("tracks.idx"));
+        const QString tracksDataPath = QDir(tempDir.path()).filePath(QStringLiteral("tracks.dat"));
+        QVERIFY(jcut::facedetections::writeIndexedTrackArtifact(
+            tracksPath,
+            tracksDataPath,
+            QStringLiteral("video.mp4"),
+            QStringLiteral("scrfd"),
+            QJsonArray{
+                QJsonObject{
+                    {QStringLiteral("track_id"), 12},
+                    {QStringLiteral("detections"), QJsonArray{
+                         QJsonObject{
+                             {QStringLiteral("frame"), 8},
+                             {QStringLiteral("x"), 0.20},
+                             {QStringLiteral("y"), 0.30},
+                             {QStringLiteral("box"), 0.20},
+                             {QStringLiteral("score"), 0.75},
+                             {QStringLiteral("frame_width"), 1920},
+                             {QStringLiteral("frame_height"), 1080},
+                             {QStringLiteral("track_box_x"), 300.0},
+                             {QStringLiteral("track_box_y"), 120.0},
+                             {QStringLiteral("track_box_w"), 180.0},
+                             {QStringLiteral("track_box_h"), 160.0}
+                         }
+                    }}
+                }
+            }));
+
+        const QJsonObject continuityRoot{
+            {QStringLiteral("raw_tracks_artifact_path"), tracksPath},
+            {QStringLiteral("raw_tracks_count"), 1},
+            {QStringLiteral("raw_tracks_frame_domain"), QStringLiteral("source_absolute")},
+            {QStringLiteral("detector_mode"), QStringLiteral("scrfd")}
+        };
+        const QVector<jcut::facedetections::FacestreamTrack> tracks =
+            jcut::facedetections::continuityTrackModelsNearFrameForRoot(continuityRoot, 8, 0);
+        QCOMPARE(tracks.size(), 1);
+        QCOMPARE(tracks.at(0).keyframes.size(), 1);
+        const QRectF exact = tracks.at(0).keyframes.at(0).boxNorm;
+        QVERIFY(exact.isValid());
+        QCOMPARE(exact.x(), 300.0 / 1920.0);
+        QCOMPARE(exact.y(), 120.0 / 1080.0);
+        QCOMPARE(exact.width(), 180.0 / 1920.0);
+        QCOMPARE(exact.height(), 160.0 / 1080.0);
+    }
+
+    void sourceFrameLookupDoesNotTranscriptFilterWhenNoTranscriptRootProvided()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString tracksPath = QDir(tempDir.path()).filePath(QStringLiteral("tracks.idx"));
+        const QString tracksDataPath = QDir(tempDir.path()).filePath(QStringLiteral("tracks.dat"));
+        QVERIFY(jcut::facedetections::writeIndexedTrackArtifact(
+            tracksPath,
+            tracksDataPath,
+            QStringLiteral("video.mp4"),
+            QStringLiteral("scrfd"),
+            QJsonArray{
+                QJsonObject{
+                    {QStringLiteral("track_id"), 21},
+                    {QStringLiteral("detections"), QJsonArray{
+                         rawTrackDetection(577542, 0.25, 0.35, 0.18, 0.95)
+                    }}
+                }
+            }));
+
+        const QJsonObject continuityRoot{
+            {QStringLiteral("raw_tracks_artifact_path"), tracksPath},
+            {QStringLiteral("raw_tracks_count"), 1},
+            {QStringLiteral("raw_tracks_frame_domain"), QStringLiteral("source_absolute")},
+            {QStringLiteral("only_dialogue"), true},
+            {QStringLiteral("detector_mode"), QStringLiteral("scrfd")}
+        };
+
+        const QVector<jcut::facedetections::FacestreamTrack> tracks =
+            jcut::facedetections::continuityTrackModelsNearFrameForRoot(
+                continuityRoot,
+                577542,
+                0,
+                QJsonObject{});
+        QCOMPARE(tracks.size(), 1);
+        QCOMPARE(tracks.at(0).trackId(), 21);
+
+        const QJsonArray streams =
+            jcut::facedetections::continuityStreamsNearFrame(
+                continuityRoot,
+                577542,
+                0,
+                QJsonObject{});
+        QCOMPARE(streams.size(), 1);
+        QCOMPARE(streams.at(0).toObject().value(QStringLiteral("track_id")).toInt(), 21);
+    }
+
+    void emptyStoredStreamsSuppressRawTrackFallback()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString tracksPath = QDir(tempDir.path()).filePath(QStringLiteral("tracks.idx"));
+        const QString tracksDataPath = QDir(tempDir.path()).filePath(QStringLiteral("tracks.dat"));
+        QVERIFY(jcut::facedetections::writeIndexedTrackArtifact(
+            tracksPath,
+            tracksDataPath,
+            QStringLiteral("video.mp4"),
+            QStringLiteral("scrfd"),
+            QJsonArray{
+                QJsonObject{
+                    {QStringLiteral("track_id"), 1},
+                    {QStringLiteral("detections"), QJsonArray{
+                         rawTrackDetection(42, 0.25, 0.35, 0.18, 0.95)
+                    }}
+                }
+            }));
+
+        const QJsonObject continuityRoot{
+            {QStringLiteral("streams"), QJsonArray{}},
+            {QStringLiteral("raw_tracks_artifact_path"), tracksPath},
+            {QStringLiteral("raw_tracks_count"), 1},
+            {QStringLiteral("raw_tracks_frame_domain"), QStringLiteral("source_absolute")},
+            {QStringLiteral("detector_mode"), QStringLiteral("scrfd")}
+        };
+
+        QVERIFY(jcut::facedetections::storedContinuityStreamsForRoot(continuityRoot).isEmpty());
+        QVERIFY(jcut::facedetections::continuityStreamsForRoot(continuityRoot, QJsonObject{}).isEmpty());
+        QVERIFY(jcut::facedetections::continuityStreamsNearFrame(
+                    continuityRoot,
+                    42,
+                    0,
+                    QJsonObject{}).isEmpty());
+        QVERIFY(jcut::facedetections::continuityTrackModelsNearFrameForRoot(
+                    continuityRoot,
+                    42,
+                    0,
+                    QJsonObject{}).isEmpty());
+    }
 };
 
 QTEST_MAIN(FacestreamProcessedArtifactTest)

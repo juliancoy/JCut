@@ -665,6 +665,8 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     continuityRoot[QStringLiteral("facedetections_part")] = facedetectionsPartPath;
     continuityRoot[QStringLiteral("summary_json")] = summaryPath;
     continuityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    continuityRoot[QStringLiteral("media_compatibility")] =
+        jcut::facedetections::artifactCompatibilityMetadataForClip(*selectedClip);
 
     const QString clipId = selectedClip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : selectedClip->id.trimmed();
     continuityRoot[QStringLiteral("clip_id")] = clipId;

@@ -22,6 +22,8 @@ void clearAllActiveTranscriptPaths();
 bool ensureEditableTranscriptForClipFile(const QString& filePath, QString* editablePathOut = nullptr);
 bool loadTranscriptJsonCached(const QString& transcriptPath, QJsonDocument* documentOut);
 std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(const QString& transcriptPath);
+std::shared_ptr<const TranscriptRuntimeDocument> cachedTranscriptRuntimeDocumentMemoryOnly(
+    const QString& transcriptPath);
 QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath);
 QPointF transcriptSpeakerLocationForSourceFrame(const QString& transcriptPath,
                                                 const QVector<TranscriptSection>& sections,
@@ -33,8 +35,17 @@ bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clip
                                                              qreal minConfidence,
                                                              QPointF* locationOut,
                                                              qreal* boxSizeOut);
+bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrameMemoryOnly(
+    const QString& clipFilePath,
+    const QString& speakerId,
+    int64_t sourceFrame,
+    qreal minConfidence,
+    QPointF* locationOut,
+    qreal* boxSizeOut);
 QString transcriptActiveSpeakerForClipFileAtSourceFrame(const QString& clipFilePath,
                                                         int64_t sourceFrame);
+QString transcriptActiveSpeakerForClipFileAtSourceFrameMemoryOnly(const QString& clipFilePath,
+                                                                  int64_t sourceFrame);
 bool transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clipFilePath,
                                                                    int64_t sourceFrame,
                                                                    qreal minConfidence,

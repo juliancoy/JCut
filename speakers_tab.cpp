@@ -5,6 +5,7 @@
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
 #include "facedetections_artifact_utils.h"
+#include "facedetections_debug.h"
 #include "decoder_context.h"
 #include "editor_shared_transcript.h"
 #include "editor_shared_keyframes.h"
@@ -22,7 +23,9 @@
 #include <QCheckBox>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
@@ -75,6 +78,81 @@ struct ContinuityCoverageSummary {
     int rawTrackCount = 0;
     bool hasRawTrackCoverage = false;
 };
+
+QJsonArray objectKeysJson(const QJsonObject& object)
+{
+    QJsonArray keys;
+    for (const QString& key : object.keys()) {
+        keys.push_back(key);
+    }
+    return keys;
+}
+
+QJsonObject fileStatusJson(const QString& path)
+{
+    QJsonObject status;
+    status[QStringLiteral("path")] = path.trimmed();
+    if (path.trimmed().isEmpty()) {
+        status[QStringLiteral("exists")] = false;
+        status[QStringLiteral("empty_path")] = true;
+        return status;
+    }
+    const QFileInfo info(path);
+    status[QStringLiteral("exists")] = info.exists();
+    status[QStringLiteral("is_file")] = info.isFile();
+    status[QStringLiteral("size_bytes")] = info.exists() ? info.size() : -1;
+    status[QStringLiteral("mtime_ms")] =
+        info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    return status;
+}
+
+QJsonObject continuityRootDeleteSummaryJson(const QJsonObject& root,
+                                            const QJsonObject& transcriptRoot)
+{
+    const QJsonArray storedStreams = jcut::facedetections::storedContinuityStreamsForRoot(root);
+    const QJsonArray derivedStreams =
+        jcut::facedetections::continuityStreamsForRoot(root, transcriptRoot);
+    QJsonObject summary;
+    summary[QStringLiteral("root_keys")] = objectKeysJson(root);
+    summary[QStringLiteral("root_empty")] = root.isEmpty();
+    summary[QStringLiteral("streams_key_present")] = root.contains(QStringLiteral("streams"));
+    summary[QStringLiteral("streams_authoritative")] = root.contains(QStringLiteral("streams"));
+    summary[QStringLiteral("stored_stream_count")] = storedStreams.size();
+    summary[QStringLiteral("derived_stream_count")] = derivedStreams.size();
+    summary[QStringLiteral("raw_fallback_suppressed_by_streams_key")] =
+        root.contains(QStringLiteral("streams")) && storedStreams.isEmpty();
+    summary[QStringLiteral("has_tracks")] =
+        jcut::facedetections::continuityRootHasTracks(root, transcriptRoot);
+    summary[QStringLiteral("has_stored_payload")] =
+        jcut::facedetections::continuityRootHasStoredPayload(root);
+    summary[QStringLiteral("raw_tracks_inline_count")] =
+        root.value(QStringLiteral("raw_tracks")).toArray().size();
+    summary[QStringLiteral("raw_frames_inline_count")] =
+        root.value(QStringLiteral("raw_frames")).toArray().size();
+    summary[QStringLiteral("raw_tracks_count_manifest")] =
+        root.value(QStringLiteral("raw_tracks_count")).toInt(-1);
+    summary[QStringLiteral("raw_frames_count_manifest")] =
+        root.value(QStringLiteral("raw_frames_count")).toInt(-1);
+    summary[QStringLiteral("streams_frame_domain")] =
+        root.value(QStringLiteral("streams_frame_domain")).toString().trimmed();
+    summary[QStringLiteral("raw_tracks_frame_domain")] =
+        root.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
+    summary[QStringLiteral("raw_frames_frame_domain")] =
+        root.value(QStringLiteral("raw_frames_frame_domain")).toString().trimmed();
+    summary[QStringLiteral("raw_tracks_artifact_path")] =
+        root.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
+    summary[QStringLiteral("raw_frames_artifact_path")] =
+        root.value(QStringLiteral("raw_frames_artifact_path")).toString().trimmed();
+    summary[QStringLiteral("processed_artifact_path")] =
+        root.value(QStringLiteral("processed_artifact_path")).toString().trimmed();
+    summary[QStringLiteral("source_raw_artifact_path")] =
+        root.value(QStringLiteral("source_raw_artifact_path")).toString().trimmed();
+    summary[QStringLiteral("imported_from_artifact_dir")] =
+        root.value(QStringLiteral("imported_from_artifact_dir")).toString().trimmed();
+    summary[QStringLiteral("facedetections_part")] =
+        root.value(QStringLiteral("facedetections_part")).toString().trimmed();
+    return summary;
+}
 
 int64_t transcriptJsonFrameForSeconds(double seconds, bool roundUp)
 {
@@ -941,11 +1019,20 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
             dialogFn(message);
         }
     };
-    auto fail = [&maybeShow](const QString& code,
-                             const QString& message,
-                             auto dialogFn,
-                             const QJsonObject& details = QJsonObject{}) -> editor::ActionResult {
+    auto fail = [this, &maybeShow](const QString& code,
+                                   const QString& message,
+                                   auto dialogFn,
+                                   const QJsonObject& details = QJsonObject{}) -> editor::ActionResult {
         maybeShow(dialogFn, message);
+        if (!details.isEmpty()) {
+            QJsonObject snapshot = details;
+            snapshot[QStringLiteral("status")] = QStringLiteral("delete_failed");
+            snapshot[QStringLiteral("failure_code")] = code;
+            snapshot[QStringLiteral("failure_message")] = message;
+            m_lastFaceDetectionsDebugSnapshot = snapshot;
+            jcut::facedetections::debugLogJson(
+                QStringLiteral("FACEDETECTIONS DELETE FAILURE"), snapshot);
+        }
         return editor::ActionResult::failure(code, message, details);
     };
 
@@ -962,20 +1049,27 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
     }
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
     if (!clip) {
-        return editor::ActionResult::failure(
+        return fail(
             QStringLiteral("no_selected_clip"),
-            QStringLiteral("No clip is selected."));
+            QStringLiteral("No clip is selected."),
+            [](const QString&) {});
     }
 
     editor::TranscriptEngine engine;
+    const QString transcriptPath = m_transcriptSession.transcriptPath();
+    const QString facedetectionsArtifactPath = engine.facedetectionsArtifactPath(transcriptPath);
+    const QString processedArtifactPath = engine.facedetectionsProcessedArtifactPath(transcriptPath);
+    const qint64 artifactRevisionBefore =
+        facedetectionsArtifactRevisionMsForTranscript(transcriptPath);
     QJsonObject artifactRoot;
-    engine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+    const bool loadedArtifact = engine.loadFacestreamArtifact(transcriptPath, &artifactRoot);
     QJsonObject continuityByClip = continuityFacestreamsByClipObject(artifactRoot);
     const QString clipId = clip->id.trimmed();
     const QJsonObject continuityRoot = continuityByClip.value(clipId).toObject();
+    const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     const QJsonArray streams = jcut::facedetections::continuityStreamsForRoot(
         continuityRoot,
-        m_transcriptSession.rootObject());
+        transcriptRoot);
     const bool hasStoredPayload =
         jcut::facedetections::continuityRootHasStoredPayload(continuityRoot);
     QString facedetectionsPartPath = continuityRoot.value(QStringLiteral("facedetections_part")).toString().trimmed();
@@ -988,6 +1082,42 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
         }
     }
 
+    QJsonObject processedArtifactRootBefore;
+    const bool processedArtifactLoadedBefore =
+        engine.loadFacestreamProcessedArtifact(transcriptPath, &processedArtifactRootBefore);
+    const QJsonObject processedContinuityRootBefore =
+        processedArtifactLoadedBefore
+            ? continuityRootForClip(processedArtifactRootBefore, clipId)
+            : QJsonObject{};
+
+    QJsonObject details;
+    details[QStringLiteral("status")] = QStringLiteral("delete_facedetections_begin");
+    details[QStringLiteral("clip_id")] = clipId;
+    details[QStringLiteral("transcript_path")] = transcriptPath;
+    details[QStringLiteral("artifact_loaded")] = loadedArtifact;
+    details[QStringLiteral("artifact_revision_before_ms")] = artifactRevisionBefore;
+    details[QStringLiteral("raw_artifact_path")] = facedetectionsArtifactPath;
+    details[QStringLiteral("processed_artifact_path")] = processedArtifactPath;
+    details[QStringLiteral("raw_artifact_file")] = fileStatusJson(facedetectionsArtifactPath);
+    details[QStringLiteral("processed_artifact_file")] = fileStatusJson(processedArtifactPath);
+    details[QStringLiteral("raw_by_clip_count_before")] = continuityByClip.size();
+    details[QStringLiteral("raw_clip_present_before")] = continuityByClip.contains(clipId);
+    details[QStringLiteral("processed_artifact_loaded_before")] = processedArtifactLoadedBefore;
+    details[QStringLiteral("processed_clip_present_before")] =
+        processedArtifactLoadedBefore &&
+        continuityFacestreamsByClipObject(processedArtifactRootBefore).contains(clipId);
+    details[QStringLiteral("delete_facedetections_part_requested")] = false;
+    details[QStringLiteral("facedetections_part_path")] = facedetectionsPartPath;
+    details[QStringLiteral("continuity_root_before")] =
+        continuityRootDeleteSummaryJson(continuityRoot, transcriptRoot);
+    details[QStringLiteral("processed_continuity_root_before")] =
+        continuityRootDeleteSummaryJson(processedContinuityRootBefore, transcriptRoot);
+    details[QStringLiteral("raw_tracks_file")] = fileStatusJson(
+        continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed());
+    details[QStringLiteral("raw_frames_file")] = fileStatusJson(
+        continuityRoot.value(QStringLiteral("raw_frames_artifact_path")).toString().trimmed());
+    details[QStringLiteral("facedetections_part_file")] = fileStatusJson(facedetectionsPartPath);
+
     if (streams.isEmpty() && !hasStoredPayload) {
         return fail(
             QStringLiteral("no_facedetections_paths"),
@@ -997,20 +1127,19 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
                     nullptr,
                     QStringLiteral("Delete FaceDetections"),
                     message);
-            });
+            },
+            details);
     }
 
     bool deleteFacestreamPart = false;
     if (confirmDialog) {
         QStringList affectedPaths;
-        const QString facedetectionsArtifactPath = engine.facedetectionsArtifactPath(m_transcriptSession.transcriptPath());
         if (!facedetectionsArtifactPath.trimmed().isEmpty()) {
             affectedPaths.push_back(facedetectionsArtifactPath);
         }
-        const QString processedArtifactPath = engine.facedetectionsProcessedArtifactPath(m_transcriptSession.transcriptPath());
         QJsonObject processedArtifactRoot;
         const bool hasProcessedClipPayload =
-            engine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &processedArtifactRoot) &&
+            engine.loadFacestreamProcessedArtifact(transcriptPath, &processedArtifactRoot) &&
             jcut::facedetections::continuityRootHasStoredPayload(
                 continuityRootForClip(processedArtifactRoot, clipId));
         if (hasProcessedClipPayload && !processedArtifactPath.trimmed().isEmpty()) {
@@ -1069,16 +1198,25 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
         QObject::connect(deleteButton, &QPushButton::clicked, &confirmationDialog, &QDialog::accept);
 
         if (confirmationDialog.exec() != QDialog::Accepted) {
+            details[QStringLiteral("status")] = QStringLiteral("delete_canceled");
+            m_lastFaceDetectionsDebugSnapshot = details;
+            jcut::facedetections::debugLogJson(
+                QStringLiteral("FACEDETECTIONS DELETE CANCELED"), details);
             return editor::ActionResult::failure(
                 QStringLiteral("canceled"),
-                QStringLiteral("Delete FaceDetections was canceled."));
+                QStringLiteral("Delete FaceDetections was canceled."),
+                details);
         }
         deleteFacestreamPart = deletePartCheckbox && deletePartCheckbox->isChecked();
     }
+    details[QStringLiteral("delete_facedetections_part_requested")] = deleteFacestreamPart;
 
     continuityByClip.remove(clipId);
     setContinuityFacestreamsByClipObject(&artifactRoot, continuityByClip);
-    const bool savedArtifact = engine.saveFacestreamArtifact(m_transcriptSession.transcriptPath(), artifactRoot);
+    const bool savedArtifact = engine.saveFacestreamArtifact(transcriptPath, artifactRoot);
+    details[QStringLiteral("raw_artifact_saved")] = savedArtifact;
+    details[QStringLiteral("raw_by_clip_count_after")] = continuityByClip.size();
+    details[QStringLiteral("raw_clip_present_after")] = continuityByClip.contains(clipId);
     if (!savedArtifact) {
         return fail(
             QStringLiteral("save_failed"),
@@ -1088,21 +1226,33 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
                     nullptr,
                     QStringLiteral("Delete FaceDetections"),
                     message);
-            });
+            },
+            details);
     }
 
     QJsonObject processedArtifactRoot;
-    if (engine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &processedArtifactRoot)) {
+    bool processedArtifactSaved = false;
+    bool processedClipPresentAfter = false;
+    const bool processedArtifactLoadedAfterLoad =
+        engine.loadFacestreamProcessedArtifact(transcriptPath, &processedArtifactRoot);
+    details[QStringLiteral("processed_artifact_loaded_for_delete")] = processedArtifactLoadedAfterLoad;
+    if (processedArtifactLoadedAfterLoad) {
         QJsonObject processedByClip = continuityFacestreamsByClipObject(processedArtifactRoot);
         if (processedByClip.contains(clipId)) {
             processedByClip.remove(clipId);
             setContinuityFacestreamsByClipObject(&processedArtifactRoot, processedByClip);
-            engine.saveFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), processedArtifactRoot);
+            processedArtifactSaved =
+                engine.saveFacestreamProcessedArtifact(transcriptPath, processedArtifactRoot);
         }
+        processedClipPresentAfter = processedByClip.contains(clipId);
     }
+    details[QStringLiteral("processed_artifact_saved")] = processedArtifactSaved;
+    details[QStringLiteral("processed_clip_present_after")] = processedClipPresentAfter;
 
     if (deleteFacestreamPart && !facedetectionsPartPath.isEmpty() && QFileInfo::exists(facedetectionsPartPath)) {
         if (!QFile::remove(facedetectionsPartPath)) {
+            details[QStringLiteral("facedetections_part_removed")] = false;
+            details[QStringLiteral("facedetections_part_file_after")] = fileStatusJson(facedetectionsPartPath);
             return fail(
                 QStringLiteral("delete_checkpoint_failed"),
                 QStringLiteral("FaceDetections entries were removed, but deleting facedetections.part failed:\n%1")
@@ -1112,9 +1262,21 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
                         nullptr,
                         QStringLiteral("Delete FaceDetections"),
                         message);
-                });
+                },
+                details);
         }
+        details[QStringLiteral("facedetections_part_removed")] = true;
+    } else {
+        details[QStringLiteral("facedetections_part_removed")] = false;
     }
+    details[QStringLiteral("facedetections_part_file_after")] = fileStatusJson(facedetectionsPartPath);
+    details[QStringLiteral("raw_artifact_file_after")] = fileStatusJson(facedetectionsArtifactPath);
+    details[QStringLiteral("processed_artifact_file_after")] = fileStatusJson(processedArtifactPath);
+    details[QStringLiteral("artifact_revision_after_ms")] =
+        facedetectionsArtifactRevisionMsForTranscript(transcriptPath);
+    details[QStringLiteral("remaining_sidecars_note")] =
+        QStringLiteral("External debug artifacts are intentionally left on disk unless the checkbox deletes facedetections.part; visible tracks after deletion usually mean a preview/panel fallback is reading one of these paths or stale cache.");
+    details[QStringLiteral("status")] = QStringLiteral("delete_facedetections_completed");
 
     emit transcriptDocumentChanged();
     if (m_deps.scheduleSaveState) {
@@ -1123,8 +1285,12 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
     if (m_deps.pushHistorySnapshot) {
         m_deps.pushHistorySnapshot();
     }
+    clearFaceDetectionsDerivedCaches();
     refresh();
-    return editor::ActionResult::success();
+    m_lastFaceDetectionsDebugSnapshot = details;
+    jcut::facedetections::debugLogJson(
+        QStringLiteral("FACEDETECTIONS DELETE COMPLETED"), details);
+    return editor::ActionResult::success(details);
 }
 
 bool SpeakersTab::deleteFaceDetectionsForSelectedClip(bool confirmDialog, QString* errorOut)

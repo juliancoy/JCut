@@ -2,7 +2,9 @@
 #include "speakers_tab_internal.h"
 
 #include "decoder_context.h"
+#include "editor_shared_keyframes_cache.h"
 #include "facedetections_artifact_utils.h"
+#include "facedetections_debug.h"
 #include "facedetections_runtime.h"
 #include "facedetections_time_mapping.h"
 #include "preview_face_track_click_policy.h"
@@ -48,6 +50,15 @@
 
 namespace {
 constexpr int kPersistentTrackAvatarSize = 160;
+
+QJsonArray objectKeysJson(const QJsonObject& object)
+{
+    QJsonArray keys;
+    for (const QString& key : object.keys()) {
+        keys.push_back(key);
+    }
+    return keys;
+}
 
 enum PlayheadTrackItemRole {
     PlayheadTrackIdRole = Qt::UserRole,
@@ -411,25 +422,99 @@ QJsonArray SpeakersTab::continuityStreamsForClip(const TimelineClip& clip) const
     const QString cacheKey = m_transcriptSession.transcriptPath() + QLatin1Char('\n') + clip.id.trimmed();
     const auto cached = m_continuityStreamsCache.constFind(cacheKey);
     if (cached != m_continuityStreamsCache.cend()) {
+        jcut::facedetections::debugLogJson(
+            QStringLiteral("FACESTREAM TRACK STREAMS CACHE"),
+            QJsonObject{
+                {QStringLiteral("status"), QStringLiteral("cache_hit")},
+                {QStringLiteral("clip_id"), clip.id},
+                {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()},
+                {QStringLiteral("stream_count"), cached.value().size()}
+            });
         return cached.value();
     }
 
     QJsonArray streams;
     editor::TranscriptEngine transcriptEngine;
     QJsonObject artifactRoot;
-    if (transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot) ||
-        transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
+    QString artifactSource;
+    const bool loadedProcessed =
+        transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+    if (loadedProcessed) {
+        artifactSource = QStringLiteral("processed");
+    }
+    const bool loadedRaw =
+        !loadedProcessed &&
+        transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+    if (loadedRaw) {
+        artifactSource = QStringLiteral("raw");
+    }
+    if (loadedProcessed || loadedRaw) {
         const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
+        const jcut::facedetections::ArtifactCompatibilityResult compatibility =
+            jcut::facedetections::validateArtifactCompatibilityForClip(continuityRoot, clip);
+        const bool streamsKeyPresent = continuityRoot.contains(QStringLiteral("streams"));
+        if (!compatibility.compatible) {
+            jcut::facedetections::debugLogJson(
+                QStringLiteral("FACESTREAM TRACK STREAMS LOAD"),
+                QJsonObject{
+                    {QStringLiteral("status"), QStringLiteral("artifact_incompatible")},
+                    {QStringLiteral("clip_id"), clip.id},
+                    {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()},
+                    {QStringLiteral("artifact_source"), artifactSource},
+                    {QStringLiteral("compatibility"), compatibility.details}
+                });
+            m_continuityStreamsCache.insert(cacheKey, streams);
+            return streams;
+        }
         streams = jcut::facedetections::storedContinuityStreamsForRoot(continuityRoot);
-        if (streams.isEmpty() && continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed().isEmpty()) {
+        const bool rawFallbackAllowed =
+            streams.isEmpty() &&
+            !streamsKeyPresent &&
+            continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed().isEmpty();
+        if (rawFallbackAllowed) {
             streams = jcut::facedetections::continuityStreamsForRoot(
                 continuityRoot,
                 m_transcriptSession.rootObject());
         }
+        jcut::facedetections::debugLogJson(
+            QStringLiteral("FACESTREAM TRACK STREAMS LOAD"),
+            QJsonObject{
+                {QStringLiteral("status"), QStringLiteral("artifact_loaded")},
+                {QStringLiteral("clip_id"), clip.id},
+                {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()},
+                {QStringLiteral("artifact_source"), artifactSource},
+                {QStringLiteral("continuity_root_found"), !continuityRoot.isEmpty()},
+                {QStringLiteral("continuity_root_keys"), objectKeysJson(continuityRoot)},
+                {QStringLiteral("streams_key_present"), streamsKeyPresent},
+                {QStringLiteral("streams_authoritative"), streamsKeyPresent},
+                {QStringLiteral("compatibility"), compatibility.details},
+                {QStringLiteral("raw_fallback_allowed"), rawFallbackAllowed},
+                {QStringLiteral("stream_count"), streams.size()},
+                {QStringLiteral("raw_tracks_inline_count"),
+                 continuityRoot.value(QStringLiteral("raw_tracks")).toArray().size()},
+                {QStringLiteral("raw_tracks_artifact_path"),
+                 continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed()},
+                {QStringLiteral("processed_artifact_path"),
+                 continuityRoot.value(QStringLiteral("processed_artifact_path")).toString().trimmed()},
+                {QStringLiteral("source_raw_artifact_path"),
+                 continuityRoot.value(QStringLiteral("source_raw_artifact_path")).toString().trimmed()},
+                {QStringLiteral("streams_frame_domain"),
+                 continuityRoot.value(QStringLiteral("streams_frame_domain")).toString().trimmed()},
+                {QStringLiteral("raw_tracks_frame_domain"),
+                 continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed()}
+            });
         if (!streams.isEmpty()) {
             m_continuityStreamsCache.insert(cacheKey, streams);
             return streams;
         }
+    } else {
+        jcut::facedetections::debugLogJson(
+            QStringLiteral("FACESTREAM TRACK STREAMS LOAD"),
+            QJsonObject{
+                {QStringLiteral("status"), QStringLiteral("artifact_missing")},
+                {QStringLiteral("clip_id"), clip.id},
+                {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()}
+            });
     }
     m_continuityStreamsCache.insert(cacheKey, streams);
     return streams;
@@ -1042,6 +1127,8 @@ void SpeakersTab::refreshFaceDetectionsPathsPanel()
         continuityRoot.value(QStringLiteral("raw_frames_artifact_path")).toString().trimmed();
     const bool hasExternalRawTracks = !externalRawTracksPath.isEmpty();
     const bool hasExternalRawFrames = !externalRawFramesPath.isEmpty();
+    const bool streamsKeyPresent = continuityRoot.contains(QStringLiteral("streams"));
+    const bool streamsAuthoritative = streamsKeyPresent;
     if (m_widgets.speakerDetectionsAvailableCheckBox) {
         QSignalBlocker block(m_widgets.speakerDetectionsAvailableCheckBox);
         m_widgets.speakerDetectionsAvailableCheckBox->setChecked(
@@ -1053,10 +1140,45 @@ void SpeakersTab::refreshFaceDetectionsPathsPanel()
             hasExternalRawTracks || !continuityRoot.value(QStringLiteral("raw_tracks")).toArray().isEmpty());
     }
 
+    const jcut::facedetections::ArtifactCompatibilityResult compatibility =
+        jcut::facedetections::validateArtifactCompatibilityForClip(continuityRoot, *clip);
+    if (!compatibility.compatible) {
+        m_lastFaceDetectionsDebugSnapshot = QJsonObject{
+            {QStringLiteral("status"), QStringLiteral("artifact_incompatible")},
+            {QStringLiteral("clip_id"), clip->id},
+            {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()},
+            {QStringLiteral("artifact_revision_ms"), artifactRevisionMs},
+            {QStringLiteral("refresh_signature"), refreshSignature},
+            {QStringLiteral("artifact_loaded"), loadedArtifact},
+            {QStringLiteral("continuity_root_found"), !continuityRoot.isEmpty()},
+            {QStringLiteral("compatibility"), compatibility.details},
+            {QStringLiteral("raw_tracks_artifact_path"), externalRawTracksPath},
+            {QStringLiteral("raw_frames_artifact_path"), externalRawFramesPath},
+            {QStringLiteral("processed_artifact_path"),
+             continuityRoot.value(QStringLiteral("processed_artifact_path")).toString().trimmed()},
+            {QStringLiteral("source_raw_artifact_path"),
+             continuityRoot.value(QStringLiteral("source_raw_artifact_path")).toString().trimmed()}
+        };
+        if (m_widgets.speakerFaceDetectionsDetailsEdit) {
+            m_widgets.speakerFaceDetectionsDetailsEdit->setPlainText(
+                QStringLiteral("FaceDetections artifact incompatible with the selected clip.\n\n%1\n\nRegenerate FaceDetections for this clip.")
+                    .arg(QString::fromUtf8(
+                        QJsonDocument(compatibility.details).toJson(QJsonDocument::Indented))));
+        }
+        if (m_widgets.speakerRawDetectionDetailsEdit) {
+            m_widgets.speakerRawDetectionDetailsEdit->setPlainText(
+                QStringLiteral("Raw FaceDetections hidden because the artifact is incompatible with the selected clip."));
+        }
+        m_faceStreamPanelRefreshSignature = refreshSignature;
+        updateSpeakerTrackingStatusLabel();
+        return;
+    }
+
     const QJsonObject transcriptRoot = m_transcriptSession.rootObject();
     QJsonArray streams;
     QJsonArray streamSummaries;
     const QJsonArray rawTracks = continuityRoot.value(QStringLiteral("raw_tracks")).toArray();
+    const QJsonArray clipEmbeddedStreams = continuityStreamsForClip(*clip);
     streams = jcut::facedetections::storedContinuityStreamsForRoot(continuityRoot);
     if (!streams.isEmpty()) {
         for (const QJsonValue& value : streams) {
@@ -1253,6 +1375,15 @@ void SpeakersTab::refreshFaceDetectionsPathsPanel()
          jcut::facedetections::continuityRootHasTracks(continuityRoot, transcriptRoot)},
         {QStringLiteral("continuity_root_has_stored_payload"),
          jcut::facedetections::continuityRootHasStoredPayload(continuityRoot)},
+        {QStringLiteral("compatibility"), compatibility.details},
+        {QStringLiteral("continuity_root_keys"), objectKeysJson(continuityRoot)},
+        {QStringLiteral("streams_key_present"), streamsKeyPresent},
+        {QStringLiteral("streams_authoritative"), streamsAuthoritative},
+        {QStringLiteral("raw_fallback_suppressed_by_streams_key"),
+         streamsKeyPresent && streams.isEmpty() && (hasExternalRawTracks || !rawTracks.isEmpty())},
+        {QStringLiteral("clip_embedded_stream_count"), clipEmbeddedStreams.size()},
+        {QStringLiteral("clip_embedded_streams_possible_fallback"),
+         streamsKeyPresent && streams.isEmpty() && !clipEmbeddedStreams.isEmpty()},
         {QStringLiteral("panel_mode"), panelMode},
         {QStringLiteral("stored_stream_count"), streams.size()},
         {QStringLiteral("summary_count"), streamSummaries.size()},
@@ -1410,6 +1541,7 @@ void SpeakersTab::refreshRawDetectionsPanel(const QJsonObject& continuityRoot)
 
 void SpeakersTab::clearFaceDetectionsDerivedCaches()
 {
+    clearAssignedContinuityStreamsCache();
     m_avatarCache.clear();
     m_playheadTrackAvatarCache.clear();
     m_avatarHoverTooltipHtmlCache.clear();
@@ -1738,23 +1870,6 @@ QVector<CachedFacestreamTrack> buildCachedFacestreamTracks(const TimelineClip& c
 {
     QVector<CachedFacestreamTrack> tracks;
     tracks.reserve(streams.size());
-    QVector<int64_t> payloadFrames;
-    payloadFrames.reserve(streams.size() * 2);
-    for (const QJsonValue& streamValue : streams) {
-        const QJsonArray keyframes = streamValue.toObject().value(QStringLiteral("keyframes")).toArray();
-        for (const QJsonValue& keyframeValue : keyframes) {
-            const QJsonObject keyframeObj = keyframeValue.toObject();
-            if (keyframeObj.contains(QString(kTranscriptSpeakerTrackingFrameKey))) {
-                payloadFrames.push_back(
-                    keyframeObj.value(QString(kTranscriptSpeakerTrackingFrameKey))
-                        .toVariant()
-                        .toLongLong());
-            }
-        }
-    }
-    std::sort(payloadFrames.begin(), payloadFrames.end());
-    const bool payloadLooksLikeLegacyTimeline =
-        sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(clip, payloadFrames);
     for (const QJsonValue& streamValue : streams) {
         const QJsonObject streamObj = streamValue.toObject();
         const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
@@ -1768,10 +1883,6 @@ QVector<CachedFacestreamTrack> buildCachedFacestreamTracks(const TimelineClip& c
                 streamObj.value(QStringLiteral("frame_domain")).toString(),
                 &frameDomain)) {
             continue;
-        }
-        if (frameDomain == FacestreamFrameDomain::SourceAbsolute &&
-            payloadLooksLikeLegacyTimeline) {
-            frameDomain = FacestreamFrameDomain::ClipTimeline30Fps;
         }
 
         CachedFacestreamTrack track;
@@ -2654,26 +2765,81 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         return;
     }
     QJsonArray streams = continuityStreamsForClip(clip);
+    QJsonObject candidateDebug{
+        {QStringLiteral("status"), QStringLiteral("begin")},
+        {QStringLiteral("clip_id"), clip.id},
+        {QStringLiteral("speaker_id"), speakerId},
+        {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()},
+        {QStringLiteral("initial_stream_count"), streams.size()}
+    };
     if (streams.isEmpty()) {
         editor::TranscriptEngine transcriptEngine;
         QJsonObject artifactRoot;
-        if (transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot) ||
-            transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot)) {
+        QString fallbackArtifactSource;
+        const bool loadedRaw =
+            transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+        if (loadedRaw) {
+            fallbackArtifactSource = QStringLiteral("raw");
+        }
+        const bool loadedProcessed =
+            !loadedRaw &&
+            transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+        if (loadedProcessed) {
+            fallbackArtifactSource = QStringLiteral("processed");
+        }
+        if (loadedRaw || loadedProcessed) {
             const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
+            const jcut::facedetections::ArtifactCompatibilityResult compatibility =
+                jcut::facedetections::validateArtifactCompatibilityForClip(continuityRoot, clip);
+            candidateDebug[QStringLiteral("fallback_compatibility")] = compatibility.details;
+            if (!compatibility.compatible) {
+                candidateDebug[QStringLiteral("status")] = QStringLiteral("artifact_incompatible");
+                candidateDebug[QStringLiteral("elapsed_ms")] = refreshTimer.elapsed();
+                jcut::facedetections::debugLogJson(
+                    QStringLiteral("FACESTREAM PLAYHEAD CANDIDATES"), candidateDebug);
+                auto* item = new QListWidgetItem(QStringLiteral("FaceDetections artifact incompatible"));
+                item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+                item->setToolTip(QString::fromUtf8(
+                    QJsonDocument(compatibility.details).toJson(QJsonDocument::Indented)));
+                item->setSizeHint(QSize(220, 48));
+                m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
+                finalizeRefreshTiming();
+                return;
+            }
             const QVector<RenderSyncMarker> renderSyncMarkers =
                 m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
             const int64_t playheadTimelineFrame =
                 m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
             const int64_t playheadSourceFrame =
                 sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
+            candidateDebug[QStringLiteral("fallback_artifact_source")] = fallbackArtifactSource;
+            candidateDebug[QStringLiteral("fallback_continuity_root_found")] = !continuityRoot.isEmpty();
+            candidateDebug[QStringLiteral("fallback_continuity_root_keys")] = objectKeysJson(continuityRoot);
+            candidateDebug[QStringLiteral("fallback_streams_key_present")] =
+                continuityRoot.contains(QStringLiteral("streams"));
+            candidateDebug[QStringLiteral("fallback_playhead_timeline_frame")] =
+                static_cast<qint64>(playheadTimelineFrame);
+            candidateDebug[QStringLiteral("fallback_playhead_source_frame")] =
+                static_cast<qint64>(playheadSourceFrame);
+            candidateDebug[QStringLiteral("fallback_raw_tracks_artifact_path")] =
+                continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
+            candidateDebug[QStringLiteral("fallback_raw_tracks_frame_domain")] =
+                continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
             streams = jcut::facedetections::continuityStreamsNearFrame(
                 continuityRoot,
                 playheadSourceFrame,
                 0,
-                m_transcriptSession.rootObject());
+                QJsonObject{});
+            candidateDebug[QStringLiteral("fallback_near_frame_stream_count")] = streams.size();
+        } else {
+            candidateDebug[QStringLiteral("fallback_artifact_source")] = QStringLiteral("missing");
         }
     }
     if (streams.isEmpty()) {
+        candidateDebug[QStringLiteral("status")] = QStringLiteral("no_streams");
+        candidateDebug[QStringLiteral("elapsed_ms")] = refreshTimer.elapsed();
+        jcut::facedetections::debugLogJson(
+            QStringLiteral("FACESTREAM PLAYHEAD CANDIDATES"), candidateDebug);
         auto* item = new QListWidgetItem(QStringLiteral("No Continuity Tracks"));
         item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
         item->setSizeHint(QSize(140, 40));
@@ -2688,6 +2854,11 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
     const int64_t playheadSourceFrame =
         sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
+    candidateDebug[QStringLiteral("playhead_timeline_frame")] =
+        static_cast<qint64>(playheadTimelineFrame);
+    candidateDebug[QStringLiteral("playhead_source_frame")] =
+        static_cast<qint64>(playheadSourceFrame);
+    candidateDebug[QStringLiteral("resolved_stream_count")] = streams.size();
     const QHash<int, QString> assignedIdentityByTrackId = resolvedIdentityByTrackId(clip, streams);
     for (const QJsonValue& value : streams) {
         const QJsonObject streamObj = value.toObject();
@@ -2769,6 +2940,11 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         item->setSizeHint(QSize(150, 40));
         m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
     }
+    candidateDebug[QStringLiteral("status")] = QStringLiteral("completed");
+    candidateDebug[QStringLiteral("candidate_count")] = m_lastPlayheadTrackCandidateCount;
+    candidateDebug[QStringLiteral("elapsed_ms")] = refreshTimer.elapsed();
+    jcut::facedetections::debugLogJson(
+        QStringLiteral("FACESTREAM PLAYHEAD CANDIDATES"), candidateDebug);
     finalizeRefreshTiming();
 }
 

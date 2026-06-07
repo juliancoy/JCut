@@ -937,6 +937,21 @@ std::shared_ptr<const TranscriptRuntimeDocument> loadTranscriptRuntimeDocument(c
     return runtimeDocument;
 }
 
+std::shared_ptr<const TranscriptRuntimeDocument> cachedTranscriptRuntimeDocumentMemoryOnly(
+    const QString& transcriptPath)
+{
+    const QString trimmedPath = transcriptPath.trimmed();
+    if (trimmedPath.isEmpty()) {
+        return {};
+    }
+    QMutexLocker locker(&transcriptRuntimeCacheMutex());
+    const auto it = transcriptRuntimeCacheByPath().constFind(trimmedPath);
+    if (it == transcriptRuntimeCacheByPath().cend()) {
+        return {};
+    }
+    return it->document;
+}
+
 QVector<TranscriptSection> loadTranscriptSections(const QString& transcriptPath) {
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
         loadTranscriptRuntimeDocument(transcriptPath);
@@ -1047,6 +1062,49 @@ bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(const QString& clip
         runtime, sourceFrame, minConfidence, locationOut, boxSizeOut);
 }
 
+bool transcriptSpeakerTrackingSampleForClipFileAtSourceFrameMemoryOnly(
+    const QString& clipFilePath,
+    const QString& speakerId,
+    int64_t sourceFrame,
+    qreal minConfidence,
+    QPointF* locationOut,
+    qreal* boxSizeOut)
+{
+    if (locationOut) {
+        *locationOut = QPointF();
+    }
+    if (boxSizeOut) {
+        *boxSizeOut = -1.0;
+    }
+    const QString normalizedSpeakerId = speakerId.trimmed();
+    if (clipFilePath.isEmpty() || normalizedSpeakerId.isEmpty() || sourceFrame < 0) {
+        return false;
+    }
+    const QString transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+    if (transcriptPath.isEmpty()) {
+        return false;
+    }
+
+    SpeakerProfileRuntime runtime;
+    bool found = false;
+    {
+        QMutexLocker locker(&speakerProfileCacheMutex());
+        const auto entryIt = speakerProfileCacheByPath().constFind(transcriptPath);
+        if (entryIt != speakerProfileCacheByPath().constEnd()) {
+            const auto profileIt = entryIt->profilesBySpeaker.constFind(normalizedSpeakerId);
+            if (profileIt != entryIt->profilesBySpeaker.constEnd()) {
+                runtime = profileIt.value();
+                found = true;
+            }
+        }
+    }
+    if (!found) {
+        return false;
+    }
+    return evaluateSpeakerTrackingSample(
+        runtime, sourceFrame, minConfidence, locationOut, boxSizeOut);
+}
+
 QString transcriptActiveSpeakerForClipFileAtSourceFrame(const QString& clipFilePath,
                                                         int64_t sourceFrame)
 {
@@ -1059,6 +1117,24 @@ QString transcriptActiveSpeakerForClipFileAtSourceFrame(const QString& clipFileP
     }
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
         loadTranscriptRuntimeDocument(transcriptPath);
+    if (!runtimeDocument) {
+        return QString();
+    }
+    return activeSpeakerForSourceFrame(runtimeDocument->sections, sourceFrame).trimmed();
+}
+
+QString transcriptActiveSpeakerForClipFileAtSourceFrameMemoryOnly(const QString& clipFilePath,
+                                                                  int64_t sourceFrame)
+{
+    if (clipFilePath.isEmpty() || sourceFrame < 0) {
+        return QString();
+    }
+    const QString transcriptPath = activeTranscriptPathForClipFile(clipFilePath);
+    if (transcriptPath.isEmpty()) {
+        return QString();
+    }
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        cachedTranscriptRuntimeDocumentMemoryOnly(transcriptPath);
     if (!runtimeDocument) {
         return QString();
     }

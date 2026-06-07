@@ -159,6 +159,17 @@ int nextTrackId(const QVector<ContinuityTrack>& tracks)
     return maxId + 1;
 }
 
+void insertExactTrackBox(QJsonObject* object, const QRectF& box)
+{
+    if (!object || !box.isValid() || box.isEmpty()) {
+        return;
+    }
+    object->insert(QStringLiteral("track_box_x"), box.x());
+    object->insert(QStringLiteral("track_box_y"), box.y());
+    object->insert(QStringLiteral("track_box_w"), box.width());
+    object->insert(QStringLiteral("track_box_h"), box.height());
+}
+
 void updateMatchedTrack(ContinuityTrack* track,
                         const Detection& detection,
                         const QRectF& predictedBox,
@@ -207,7 +218,9 @@ void updateMatchedTrack(ContinuityTrack* track,
     track->state = track->hits >= tuning.tentativeTrackHitCount
         ? ContinuityTrackState::Confirmed
         : ContinuityTrackState::Tentative;
-    track->detections.append(compactTrackDetectionJson(detection, frameNumber, frameSize));
+    QJsonObject detectionRow = compactTrackDetectionJson(detection, frameNumber, frameSize);
+    insertExactTrackBox(&detectionRow, track->box);
+    track->detections.append(detectionRow);
 }
 
 void markMissedTrack(ContinuityTrack* track,
@@ -267,19 +280,23 @@ QJsonObject compactTrackDetectionJson(const Detection& detection,
                                       int frameNumber,
                                       const QSize& frameSize)
 {
-    const double x = qBound(0.0, detection.box.center().x() / qMax(1, frameSize.width()), 1.0);
-    const double y = qBound(0.0, detection.box.center().y() / qMax(1, frameSize.height()), 1.0);
+    const int safeWidth = qMax(1, frameSize.width());
+    const int safeHeight = qMax(1, frameSize.height());
+    const double x = qBound(0.0, detection.box.center().x() / safeWidth, 1.0);
+    const double y = qBound(0.0, detection.box.center().y() / safeHeight, 1.0);
     const double box = qBound(
         0.01,
         qMax(detection.box.width(), detection.box.height()) /
-            static_cast<double>(qMax(1, qMin(frameSize.width(), frameSize.height()))),
+            static_cast<double>(qMax(1, qMin(safeWidth, safeHeight))),
         1.0);
     return QJsonObject{
         {QStringLiteral("frame"), frameNumber},
         {QStringLiteral("x"), x},
         {QStringLiteral("y"), y},
         {QStringLiteral("box"), box},
-        {QStringLiteral("score"), detection.confidence}
+        {QStringLiteral("score"), detection.confidence},
+        {QStringLiteral("frame_width"), safeWidth},
+        {QStringLiteral("frame_height"), safeHeight}
     };
 }
 
@@ -393,7 +410,9 @@ void updateContinuityTracks(QVector<ContinuityTrack>* tracks,
         track.state = tuning.tentativeTrackHitCount <= 1
             ? ContinuityTrackState::Confirmed
             : ContinuityTrackState::Tentative;
-        track.detections.append(compactTrackDetectionJson(detection, frameNumber, frameSize));
+        QJsonObject detectionRow = compactTrackDetectionJson(detection, frameNumber, frameSize);
+        insertExactTrackBox(&detectionRow, track.box);
+        track.detections.append(detectionRow);
         tracks->push_back(track);
     }
 

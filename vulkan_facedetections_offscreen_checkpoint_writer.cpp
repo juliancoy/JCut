@@ -22,7 +22,7 @@ bool AsyncFaceStreamWriter::open(const QString &path, QString *error) {
     return false;
   }
   QFile probe(path);
-  if (!probe.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+  if (!probe.open(QIODevice::WriteOnly | QIODevice::Append)) {
     if (error) {
       *error = QStringLiteral(
                    "Failed to open streaming facedetections checkpoint: %1")
@@ -148,7 +148,7 @@ void AsyncFaceStreamWriter::failLocked(const QString &error) {
 
 void AsyncFaceStreamWriter::run() {
   QFile file(m_path);
-  if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
+  if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
     {
       std::lock_guard<std::mutex> lock(m_mutex);
       failLocked(QStringLiteral("Async checkpoint writer failed to open %1")

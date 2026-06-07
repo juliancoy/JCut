@@ -23,6 +23,9 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     const QPointF& locationNorm,
     qreal boxSizeNorm,
     const QSize& outputSize = QSize());
+void warmClipSpeakerFramingContinuityRuntime(const TimelineClip& clip);
+void warmClipsSpeakerFramingContinuityRuntime(const QVector<TimelineClip>& clips);
+void prepareClipSpeakerFramingContinuityRuntimeBlocking(const TimelineClip& clip);
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtFrame(const TimelineClip& clip,
                                                                         int64_t timelineFrame);
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingTargetAtPosition(const TimelineClip& clip,

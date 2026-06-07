@@ -965,6 +965,7 @@ void TestTranscriptLogic::testSpeakerFramingRuntimeSpeakerDescendsFromTranscript
     clip.speakerFramingTargetKeyframes.push_back(
         TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
+    prepareClipSpeakerFramingContinuityRuntimeBlocking(clip);
 
     QCOMPARE(transcriptActiveSpeakerForClipFileAtSourceFrame(clipPath, 15), QStringLiteral("S1"));
     const TimelineClip::TransformKeyframe transform =
@@ -1026,6 +1027,7 @@ void TestTranscriptLogic::testSpeakerFramingGapHoldPersistsTranscriptSpeaker() {
     clip.speakerFramingTargetKeyframes.push_back(
         TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
+    prepareClipSpeakerFramingContinuityRuntimeBlocking(clip);
 
     QCOMPARE(transcriptActiveSpeakerForClipFileAtSourceFrame(clipPath, 45), QString());
     TimelineClip::TransformKeyframe transform =
@@ -1034,6 +1036,7 @@ void TestTranscriptLogic::testSpeakerFramingGapHoldPersistsTranscriptSpeaker() {
 
     clip.speakerFramingGapHoldFrames = 20;
     normalizeClipTransformKeyframes(clip);
+    prepareClipSpeakerFramingContinuityRuntimeBlocking(clip);
     transform = evaluateClipSpeakerFramingAtFrame(clip, 45, QSize(1000, 1000));
     QVERIFY(std::abs(transform.translationX) > 0.001);
 }
@@ -1120,6 +1123,7 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
     QJsonObject processedRoot;
     processedRoot[QStringLiteral("continuity_facedetections_by_clip")] = byClip;
     QVERIFY(engine.saveFacestreamProcessedArtifact(transcriptPath, processedRoot));
+    prepareClipSpeakerFramingContinuityRuntimeBlocking(clip);
 
     TimelineClip unsmoothed = clip;
     unsmoothed.speakerFramingCenterSmoothingFrames = 0;

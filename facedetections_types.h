@@ -31,6 +31,7 @@ struct FacestreamTrackSummary {
 struct FacestreamKeyframe {
     qint64 frame = -1;
     qint64 sourceFrame = -1;
+    QRectF boxNorm;
     float x = 0.5f;
     float y = 0.5f;
     float box = 0.2f;

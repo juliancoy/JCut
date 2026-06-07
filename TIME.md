@@ -14,9 +14,8 @@ This document maps the temporal domains in JCut, the conversion paths between th
 
 ## Facestream Frame-Domain Classes (Time-Relative)
 - `FacestreamFrameDomain::ClipTimeline30Fps`
-  - `keyframe.frame` is clip-local timeline frame at 30 fps.
-  - Source mapping: `clip.startFrame + keyframe.frame` -> `sourceFrameForClipAtTimelinePosition(...)`.
-  - Lookup basis while previewing: current clip-local timeline frame.
+  - Historical/manual facestream domain only. It is not valid for generated FaceDetections artifacts.
+  - FaceDetections readers must reject or ignore this domain instead of remapping through `kTimelineFps`.
 - `FacestreamFrameDomain::SourceRelative`
   - `keyframe.frame` is source frame relative to `clip.sourceInFrame` (local source offset).
   - Source mapping: `clip.sourceInFrame + keyframe.frame`.
@@ -30,11 +29,11 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Inference entry point: `inferFacestreamFrameDomain(...)`.
 - Preferred classification order:
   - `SourceAbsolute` when keyframe frame range falls inside clip source absolute range (`clip.sourceInFrame .. clip.sourceInFrame + clip.sourceDurationFrames`, tolerant bounds).
-  - `ClipTimeline30Fps` when keyframe frame range fits clip timeline duration (`0 .. clip.durationFrames`, tolerant bounds).
   - Else fallback to `SourceRelative`.
 - Important implication:
   - A wrong domain classification creates deterministic time drift even if box geometry is correct.
   - Once a facestream keyframe is mapped to source-frame space, decoder/avatar paths must use that source frame directly. Re-scaling the mapped source frame through `kTimelineFps` is invalid.
+  - Generated FaceDetections artifacts must declare and consume only source media domains (`source_absolute` or `source_relative`).
 
 ## Core Conversion Paths
 - Timeline sample -> timeline frame:

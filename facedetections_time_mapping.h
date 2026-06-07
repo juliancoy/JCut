@@ -57,6 +57,8 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
                                                int64_t keyframeMin,
                                                int64_t keyframeMax);
 
+bool isSourceMediaFacestreamFrameDomain(FacestreamFrameDomain domain);
+
 FacestreamSourceScanRange facedetectionsSourceAbsoluteScanRangeForClip(const TimelineClip& clip);
 
 int64_t facedetectionsLookupFrameForDomain(FacestreamFrameDomain domain,
@@ -68,12 +70,6 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
                                        int64_t facedetectionsFrame,
                                        FacestreamFrameDomain domain,
                                        const QVector<RenderSyncMarker>& markers);
-
-bool facestreamLegacyTimelineFallbackAllowed(const TimelineClip& clip,
-                                             FacestreamFrameDomain declaredDomain);
-
-bool sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(const TimelineClip& clip,
-                                                        const QVector<int64_t>& sortedFrames);
 
 int64_t facedetectionsTypicalFrameStep(const QVector<int64_t>& sortedFrames);
 

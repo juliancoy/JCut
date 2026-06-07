@@ -149,9 +149,7 @@ void EditorWindow::advanceFrame()
                                           QStringLiteral("source_unavailable"),
                                           clockDecision.reason);
             ++m_audioClockStallTicks;
-            if (m_preview) {
-                m_preview->setCurrentPlaybackSample(clockDecision.sample);
-            }
+            setCurrentPlaybackSample(clockDecision.sample, false, true);
             return;
         case PlaybackClockAction::UseAudioSample:
             editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,

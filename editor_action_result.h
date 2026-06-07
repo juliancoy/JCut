@@ -15,6 +15,10 @@ struct ActionResult {
         return ActionResult{true, QString(), QString(), QJsonObject{}};
     }
 
+    static ActionResult success(const QJsonObject& details) {
+        return ActionResult{true, QString(), QString(), details};
+    }
+
     static ActionResult failure(const QString& code,
                                 const QString& message,
                                 const QJsonObject& details = QJsonObject{}) {

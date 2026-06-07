@@ -1,6 +1,7 @@
 #include "facestream_overlay_snapshot.h"
 
 #include <QElapsedTimer>
+#include <QJsonArray>
 
 #include <algorithm>
 #include <limits>
@@ -86,6 +87,9 @@ void buildFacestreamTrackCandidateIndex(FacestreamOverlayCacheEntry& entry,
 
     for (int trackIndex = 0; trackIndex < entry.tracks.size(); ++trackIndex) {
         const FacestreamResolvedTrack& track = entry.tracks.at(trackIndex);
+        if (!isSourceMediaFacestreamFrameDomain(track.frameDomain)) {
+            continue;
+        }
         for (const FacestreamResolvedKeyframe& keyframe : track.keyframes) {
             const int64_t sourceFrame = mapFacestreamFrameToSourceFrame(
                 clip, keyframe.frame, track.frameDomain, renderSyncMarkers);
@@ -107,49 +111,6 @@ void buildFacestreamTrackCandidateIndex(FacestreamOverlayCacheEntry& entry,
     }
     std::sort(entry.trackIndexSourceFrames.begin(), entry.trackIndexSourceFrames.end());
     entry.trackIndexTypicalFrameStep = facedetectionsTypicalFrameStep(entry.trackIndexSourceFrames);
-}
-
-int normalizeLegacyFacestreamTrackFrameDomains(FacestreamOverlayCacheEntry& entry,
-                                               const TimelineClip& clip)
-{
-    if (entry.tracks.isEmpty() ||
-        !facestreamLegacyTimelineFallbackAllowed(clip, FacestreamFrameDomain::SourceAbsolute)) {
-        return 0;
-    }
-
-    int64_t minDeclaredSourceFrame = std::numeric_limits<int64_t>::max();
-    int64_t maxDeclaredSourceFrame = std::numeric_limits<int64_t>::min();
-    int declaredSourceTrackCount = 0;
-    for (const FacestreamResolvedTrack& track : entry.tracks) {
-        if (track.frameDomain != FacestreamFrameDomain::SourceAbsolute ||
-            track.keyframes.isEmpty()) {
-            continue;
-        }
-        ++declaredSourceTrackCount;
-        for (const FacestreamResolvedKeyframe& keyframe : track.keyframes) {
-            minDeclaredSourceFrame = qMin(minDeclaredSourceFrame, keyframe.frame);
-            maxDeclaredSourceFrame = qMax(maxDeclaredSourceFrame, keyframe.frame);
-        }
-    }
-    if (declaredSourceTrackCount == 0 ||
-        minDeclaredSourceFrame == std::numeric_limits<int64_t>::max()) {
-        return 0;
-    }
-
-    if (!sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(
-            clip,
-            QVector<int64_t>{minDeclaredSourceFrame, maxDeclaredSourceFrame})) {
-        return 0;
-    }
-
-    int changed = 0;
-    for (FacestreamResolvedTrack& track : entry.tracks) {
-        if (track.frameDomain == FacestreamFrameDomain::SourceAbsolute) {
-            track.frameDomain = FacestreamFrameDomain::ClipTimeline30Fps;
-            ++changed;
-        }
-    }
-    return changed;
 }
 
 QVector<int> facestreamTrackCandidateIndicesFromCacheEntry(
@@ -235,12 +196,20 @@ FacestreamOverlaySnapshot buildFacestreamOverlaySnapshot(
         }
 
         int selectedClipOverlayCount = 0;
+        QJsonArray selectedClipCandidateTrackIds;
+        QJsonArray selectedClipOverlayTrackIds;
         if (needsTrackOverlays) {
             for (int trackIndex : trackCandidateIndices) {
                 if (trackIndex < 0 || trackIndex >= tracks.size()) {
                     continue;
                 }
                 const FacestreamResolvedTrack& track = tracks.at(trackIndex);
+                if (!isSourceMediaFacestreamFrameDomain(track.frameDomain)) {
+                    continue;
+                }
+                if (clip.id == request.selectedClipId) {
+                    selectedClipCandidateTrackIds.push_back(track.trackId);
+                }
                 if (track.keyframes.isEmpty()) {
                     continue;
                 }
@@ -271,6 +240,9 @@ FacestreamOverlaySnapshot buildFacestreamOverlaySnapshot(
                 overlay.confidence = selection.keyframe.confidence;
                 snapshot.overlays.push_back(overlay);
                 ++selectedClipOverlayCount;
+                if (clip.id == request.selectedClipId) {
+                    selectedClipOverlayTrackIds.push_back(track.trackId);
+                }
             }
         }
 
@@ -292,7 +264,9 @@ FacestreamOverlaySnapshot buildFacestreamOverlaySnapshot(
                 {QStringLiteral("selected_clip_local_timeline_frame"),
                  static_cast<qint64>(requestClip.localTimelineFrame)},
                 {QStringLiteral("selected_clip_track_candidates"), trackCandidateIndices.size()},
+                {QStringLiteral("selected_clip_candidate_track_ids"), selectedClipCandidateTrackIds},
                 {QStringLiteral("selected_clip_overlay_matches"), selectedClipOverlayCount},
+                {QStringLiteral("selected_clip_overlay_track_ids"), selectedClipOverlayTrackIds},
                 {QStringLiteral("selected_clip_raw_detection_matches"), snapshot.rawDetectionMatchCount},
                 {QStringLiteral("show_speaker_track_boxes"), request.showSpeakerTrackBoxes},
                 {QStringLiteral("show_raw_detections"), request.showRawDetections},

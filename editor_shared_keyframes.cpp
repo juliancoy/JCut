@@ -8,16 +8,22 @@
 #include "transcript_engine.h"
 #include "transform_skip_aware_timing.h"
 
+#include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFileInfo>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QSet>
 #include <QStringList>
+#include <QThread>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QtGlobal>
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 qreal sanitizeScaleValue(qreal value);
 
@@ -36,6 +42,126 @@ struct RobustScalarSample {
     int64_t frame = 0;
     qreal confidence = 1.0;
 };
+
+bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
+                                             const QString& speakerId,
+                                             qreal timelineFramePosition,
+                                             qreal mediaSourceFramePosition,
+                                             QPointF* locationOut,
+                                             qreal* boxSizeOut);
+bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
+                                        qreal timelineFramePosition,
+                                        qreal mediaSourceFramePosition,
+                                        QPointF* locationOut,
+                                        qreal* boxSizeOut);
+
+bool currentThreadIsGuiThread()
+{
+    QCoreApplication* app = QCoreApplication::instance();
+    return app && QThread::currentThread() == app->thread();
+}
+
+bool& speakerFramingRuntimeBuildAllowed()
+{
+    static thread_local bool allowed = false;
+    return allowed;
+}
+
+class ScopedSpeakerFramingRuntimeBuild {
+public:
+    ScopedSpeakerFramingRuntimeBuild()
+        : previous_(speakerFramingRuntimeBuildAllowed())
+    {
+        speakerFramingRuntimeBuildAllowed() = true;
+    }
+
+    ~ScopedSpeakerFramingRuntimeBuild()
+    {
+        speakerFramingRuntimeBuildAllowed() = previous_;
+    }
+
+private:
+    bool previous_ = false;
+};
+
+QMutex& continuityWarmPendingMutex()
+{
+    static QMutex mutex;
+    return mutex;
+}
+
+QSet<QString>& continuityWarmPendingKeys()
+{
+    static QSet<QString> keys;
+    return keys;
+}
+
+void enqueueContinuityWarmJob(const QString& cacheKey, std::function<void()> job)
+{
+    if (cacheKey.trimmed().isEmpty()) {
+        return;
+    }
+    {
+        QMutexLocker locker(&continuityWarmPendingMutex());
+        QSet<QString>& pending = continuityWarmPendingKeys();
+        if (pending.contains(cacheKey)) {
+            return;
+        }
+        pending.insert(cacheKey);
+    }
+    (void)QtConcurrent::run([cacheKey, job = std::move(job)]() {
+        job();
+        QMutexLocker locker(&continuityWarmPendingMutex());
+        continuityWarmPendingKeys().remove(cacheKey);
+    });
+}
+
+void warmAssignedContinuityForSpeaker(const TimelineClip& clip, const QString& speakerId)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (clip.id.trimmed().isEmpty() || clip.filePath.trimmed().isEmpty() || trimmedSpeakerId.isEmpty()) {
+        return;
+    }
+    const QString cacheKey = assignedContinuityCacheKey(clip.filePath, clip.id, trimmedSpeakerId);
+    AssignedContinuityStreamsPtr cachedStreams;
+    if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
+        return;
+    }
+    QPointF ignoredLocation;
+    qreal ignoredBoxSize = -1.0;
+    const qreal timelineFrame =
+        static_cast<qreal>(qMax<int64_t>(0, clip.startFrame));
+    const qreal sourceFrame =
+        sourceFramePositionForClipAtTimelinePosition(clip, timelineFrame, {});
+    (void)assignedContinuityTrackSampleForSpeaker(
+        clip, trimmedSpeakerId, timelineFrame, sourceFrame, &ignoredLocation, &ignoredBoxSize);
+}
+
+void warmManualContinuityForClip(const TimelineClip& clip)
+{
+    const int manualTrackId = clip.speakerFramingManualTrackId;
+    const QString manualStreamId = clip.speakerFramingManualStreamId.trimmed();
+    if (clip.id.trimmed().isEmpty() ||
+        clip.filePath.trimmed().isEmpty() ||
+        (manualTrackId < 0 && manualStreamId.isEmpty())) {
+        return;
+    }
+    const QString manualKey =
+        QStringLiteral("manual:%1:%2").arg(manualTrackId).arg(manualStreamId);
+    const QString cacheKey = assignedContinuityCacheKey(clip.filePath, clip.id, manualKey);
+    AssignedContinuityStreamsPtr cachedStreams;
+    if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
+        return;
+    }
+    QPointF ignoredLocation;
+    qreal ignoredBoxSize = -1.0;
+    const qreal timelineFrame =
+        static_cast<qreal>(qMax<int64_t>(0, clip.startFrame));
+    const qreal sourceFrame =
+        sourceFramePositionForClipAtTimelinePosition(clip, timelineFrame, {});
+    (void)manualContinuityTrackSampleForClip(
+        clip, timelineFrame, sourceFrame, &ignoredLocation, &ignoredBoxSize);
+}
 
 void appendReferencedArtifactPath(QStringList* paths, const QJsonObject& root, const QString& key)
 {
@@ -234,23 +360,7 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         }
         return localMediaSourceFrame;
     };
-    qreal lookupFramePosition = lookupPositionForDomain(domain);
-    if (facestreamLegacyTimelineFallbackAllowed(clip, domain) && lastValidFrame >= 0) {
-        const qreal timelineLookupFramePosition =
-            lookupPositionForDomain(FacestreamFrameDomain::ClipTimeline30Fps);
-        const qreal firstFrame = static_cast<qreal>(firstValidIt->frame);
-        const qreal lastFrame = static_cast<qreal>(lastValidFrame);
-        const qreal edgeHold = static_cast<qreal>(edgeHoldFrames);
-        const bool declaredSourceLookupMissesAfterTrack =
-            lookupFramePosition > lastFrame + edgeHold;
-        const bool timelineLookupIsInTrackRange =
-            timelineLookupFramePosition >= firstFrame - edgeHold &&
-            timelineLookupFramePosition <= lastFrame + edgeHold;
-        if (declaredSourceLookupMissesAfterTrack && timelineLookupIsInTrackRange) {
-            domain = FacestreamFrameDomain::ClipTimeline30Fps;
-            lookupFramePosition = timelineLookupFramePosition;
-        }
-    }
+    const qreal lookupFramePosition = lookupPositionForDomain(domain);
     const int64_t lookupFrame = qMax<int64_t>(
         0,
         static_cast<int64_t>(std::floor(lookupFramePosition)));
@@ -403,20 +513,50 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     if (clip.id.trimmed().isEmpty() || speakerId.trimmed().isEmpty()) {
         return false;
     }
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    const QString cacheKey = assignedContinuityCacheKey(clip.filePath, clip.id, trimmedSpeakerId);
+    if (currentThreadIsGuiThread() && !speakerFramingRuntimeBuildAllowed()) {
+        AssignedContinuityStreamsPtr cachedStreams;
+        if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
+            const auto& streams =
+                cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
+            for (const jcut::facedetections::FacestreamTrack& stream : streams) {
+                if (streamSampleAtFrame(clip,
+                                        stream,
+                                        timelineFramePosition,
+                                        mediaSourceFramePosition,
+                                        clip.speakerFramingCenterSmoothingFrames,
+                                        clip.speakerFramingZoomSmoothingFrames,
+                                        clip.speakerFramingSmoothingMode,
+                                        clip.speakerFramingCenterSmoothingStrength,
+                                        clip.speakerFramingZoomSmoothingStrength,
+                                        clip.speakerFramingGapHoldFrames,
+                                        locationOut,
+                                        boxSizeOut)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
     const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
     if (transcriptPath.trimmed().isEmpty()) {
         return false;
     }
-    const QString trimmedSpeakerId = speakerId.trimmed();
     editor::TranscriptEngine engine;
     const QString rawArtifactPath = engine.facedetectionsArtifactPath(transcriptPath);
     const QString processedPath = engine.facedetectionsProcessedArtifactPath(transcriptPath);
-    const QString cacheKey = assignedContinuityCacheKey(transcriptPath, clip.id, trimmedSpeakerId);
+    QStringList referencedPaths;
+    appendReferencedArtifactPath(&referencedPaths, QJsonObject{{QStringLiteral("path"), rawArtifactPath}}, QStringLiteral("path"));
 
-    QVector<jcut::facedetections::FacestreamTrack> cachedStreams;
-    if (cachedAssignedContinuityStreams(
+    AssignedContinuityStreamsPtr cachedStreams;
+    if (cachedAssignedContinuityStreamsPtr(
             cacheKey, transcriptPath, processedPath, &cachedStreams)) {
-        for (const jcut::facedetections::FacestreamTrack& stream : cachedStreams) {
+        const auto& streams =
+            cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
+        for (const jcut::facedetections::FacestreamTrack& stream : streams) {
             if (streamSampleAtFrame(clip,
                                     stream,
                                     timelineFramePosition,
@@ -437,6 +577,8 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
 
     QJsonDocument transcriptDoc;
     if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+        storeAssignedContinuityStreams(
+            cacheKey, transcriptPath, processedPath, referencedPaths, {});
         return false;
     }
     const QJsonObject transcriptRoot = transcriptDoc.object();
@@ -459,12 +601,12 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
         }
     }
     if (assignedTrackIds.isEmpty() && assignedStreamIds.isEmpty()) {
+        storeAssignedContinuityStreams(
+            cacheKey, transcriptPath, processedPath, referencedPaths, {});
         return false;
     }
 
     QJsonObject continuityRoot;
-    QStringList referencedPaths;
-    appendReferencedArtifactPath(&referencedPaths, QJsonObject{{QStringLiteral("path"), rawArtifactPath}}, QStringLiteral("path"));
 
     if (QFileInfo(rawArtifactPath).size() <= kMaxSynchronousContinuityArtifactBytes) {
         QJsonObject rawRoot;
@@ -481,6 +623,8 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
         }
         QJsonObject processedRoot;
         if (!engine.loadFacestreamProcessedArtifact(transcriptPath, &processedRoot)) {
+            storeAssignedContinuityStreams(
+                cacheKey, transcriptPath, processedPath, referencedPaths, {});
             return false;
         }
         continuityRoot = continuityRootForClip(processedRoot, clip.id);
@@ -529,6 +673,35 @@ bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
     if (clip.id.trimmed().isEmpty() || (manualTrackId < 0 && manualStreamId.isEmpty())) {
         return false;
     }
+    const QString manualKey =
+        QStringLiteral("manual:%1:%2").arg(manualTrackId).arg(manualStreamId);
+    const QString cacheKey = assignedContinuityCacheKey(clip.filePath, clip.id, manualKey);
+    if (currentThreadIsGuiThread() && !speakerFramingRuntimeBuildAllowed()) {
+        AssignedContinuityStreamsPtr cachedStreams;
+        if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
+            const auto& streams =
+                cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
+            for (const jcut::facedetections::FacestreamTrack& stream : streams) {
+                if (streamSampleAtFrame(clip,
+                                        stream,
+                                        timelineFramePosition,
+                                        mediaSourceFramePosition,
+                                        clip.speakerFramingCenterSmoothingFrames,
+                                        clip.speakerFramingZoomSmoothingFrames,
+                                        clip.speakerFramingSmoothingMode,
+                                        clip.speakerFramingCenterSmoothingStrength,
+                                        clip.speakerFramingZoomSmoothingStrength,
+                                        clip.speakerFramingGapHoldFrames,
+                                        locationOut,
+                                        boxSizeOut)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return false;
+    }
+
     const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
     if (transcriptPath.trimmed().isEmpty()) {
         return false;
@@ -536,14 +709,13 @@ bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
     editor::TranscriptEngine engine;
     const QString rawArtifactPath = engine.facedetectionsArtifactPath(transcriptPath);
     const QString processedPath = engine.facedetectionsProcessedArtifactPath(transcriptPath);
-    const QString manualKey =
-        QStringLiteral("manual:%1:%2").arg(manualTrackId).arg(manualStreamId);
-    const QString cacheKey = assignedContinuityCacheKey(transcriptPath, clip.id, manualKey);
 
-    QVector<jcut::facedetections::FacestreamTrack> cachedStreams;
-    if (cachedAssignedContinuityStreams(
+    AssignedContinuityStreamsPtr cachedStreams;
+    if (cachedAssignedContinuityStreamsPtr(
             cacheKey, transcriptPath, processedPath, &cachedStreams)) {
-        for (const jcut::facedetections::FacestreamTrack& stream : cachedStreams) {
+        const auto& streams =
+            cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
+        for (const jcut::facedetections::FacestreamTrack& stream : streams) {
             if (streamSampleAtFrame(clip,
                                     stream,
                                     timelineFramePosition,
@@ -581,6 +753,8 @@ bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
         }
         QJsonObject processedRoot;
         if (!engine.loadFacestreamProcessedArtifact(transcriptPath, &processedRoot)) {
+            storeAssignedContinuityStreams(
+                cacheKey, transcriptPath, processedPath, referencedPaths, {});
             return false;
         }
         continuityRoot = continuityRootForClip(processedRoot, clip.id);
@@ -1374,6 +1548,114 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     return state;
 }
 
+void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
+{
+    ScopedSpeakerFramingRuntimeBuild allowBuild;
+    if (!clipHasVisuals(clip) ||
+        !clip.speakerFramingEnabled ||
+        !clip.speakerFramingKeyframes.isEmpty() ||
+        clip.id.trimmed().isEmpty() ||
+        clip.filePath.trimmed().isEmpty()) {
+        return;
+    }
+
+    warmManualContinuityForClip(clip);
+
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
+    if (transcriptPath.trimmed().isEmpty()) {
+        return;
+    }
+    const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
+        loadTranscriptRuntimeDocument(transcriptPath);
+    QSet<QString> speakerIds;
+    if (runtimeDocument) {
+        for (const TranscriptSection& section : runtimeDocument->sections) {
+            for (const TranscriptWord& word : section.words) {
+                const QString speakerId = word.speaker.trimmed();
+                if (!speakerId.isEmpty()) {
+                    speakerIds.insert(speakerId);
+                }
+            }
+        }
+    }
+    editor::TranscriptEngine engine;
+    QJsonDocument transcriptDoc;
+    if (!engine.loadTranscriptJson(transcriptPath, &transcriptDoc)) {
+        for (const QString& speakerId : std::as_const(speakerIds)) {
+            QPointF ignoredLocation;
+            qreal ignoredBoxSize = -1.0;
+            (void)transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+                clip.filePath,
+                speakerId,
+                0,
+                clip.speakerFramingMinConfidence,
+                &ignoredLocation,
+                &ignoredBoxSize);
+        }
+        return;
+    }
+    const QJsonArray identityMap =
+        jcut::speakertrack::assignmentMapForClip(transcriptDoc.object(), clip.id);
+    for (const QJsonValue& value : identityMap) {
+        const QString speakerId =
+            value.toObject().value(QStringLiteral("identity_id")).toString().trimmed();
+        if (!speakerId.isEmpty()) {
+            speakerIds.insert(speakerId);
+        }
+    }
+    for (const QString& speakerId : std::as_const(speakerIds)) {
+        QPointF ignoredLocation;
+        qreal ignoredBoxSize = -1.0;
+        (void)transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+            clip.filePath,
+            speakerId,
+            0,
+            clip.speakerFramingMinConfidence,
+            &ignoredLocation,
+            &ignoredBoxSize);
+    }
+    for (const QString& speakerId : std::as_const(speakerIds)) {
+        warmAssignedContinuityForSpeaker(clip, speakerId);
+    }
+}
+
+QString speakerFramingWarmKeyForClip(const TimelineClip& clip)
+{
+    return QStringLiteral("speaker-framing-runtime:%1:%2:%3:%4:%5:%6")
+        .arg(clip.filePath.trimmed())
+        .arg(clip.id.trimmed())
+        .arg(clip.speakerFramingManualTrackId)
+        .arg(clip.speakerFramingManualStreamId.trimmed())
+        .arg(clip.speakerFramingEnabled)
+        .arg(clip.speakerFramingKeyframes.size());
+}
+
+void warmClipSpeakerFramingContinuityRuntime(const TimelineClip& clip)
+{
+    if (!clipHasVisuals(clip) ||
+        !clip.speakerFramingEnabled ||
+        !clip.speakerFramingKeyframes.isEmpty() ||
+        clip.id.trimmed().isEmpty() ||
+        clip.filePath.trimmed().isEmpty()) {
+        return;
+    }
+    enqueueContinuityWarmJob(speakerFramingWarmKeyForClip(clip), [clip]() {
+        warmClipSpeakerFramingContinuityRuntimeSync(clip);
+    });
+}
+
+void warmClipsSpeakerFramingContinuityRuntime(const QVector<TimelineClip>& clips)
+{
+    for (const TimelineClip& clip : clips) {
+        warmClipSpeakerFramingContinuityRuntime(clip);
+    }
+}
+
+void prepareClipSpeakerFramingContinuityRuntimeBlocking(const TimelineClip& clip)
+{
+    warmClipSpeakerFramingContinuityRuntimeSync(clip);
+}
+
 TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const TimelineClip& clip,
                                                                   int64_t timelineFrame,
                                                                   const QSize& outputSize) {
@@ -1406,14 +1688,35 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
                 static_cast<qreal>(kTimelineFps))));
         const int speakerGapHoldFrames =
             qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
-        QString activeSpeaker =
-            transcriptActiveSpeakerForClipFileAtSourceFrame(clip.filePath, transcriptFrame);
+        auto activeSpeakerAtFrame = [&](int64_t frame) {
+            return currentThreadIsGuiThread()
+                ? transcriptActiveSpeakerForClipFileAtSourceFrameMemoryOnly(clip.filePath, frame)
+                : transcriptActiveSpeakerForClipFileAtSourceFrame(clip.filePath, frame);
+        };
+        auto speakerTrackingSample = [&](const QString& speakerId,
+                                         QPointF* locationOut,
+                                         qreal* boxSizeOut) {
+            return currentThreadIsGuiThread()
+                ? transcriptSpeakerTrackingSampleForClipFileAtSourceFrameMemoryOnly(
+                      clip.filePath,
+                      speakerId,
+                      transcriptFrame,
+                      clip.speakerFramingMinConfidence,
+                      locationOut,
+                      boxSizeOut)
+                : transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+                      clip.filePath,
+                      speakerId,
+                      transcriptFrame,
+                      clip.speakerFramingMinConfidence,
+                      locationOut,
+                      boxSizeOut);
+        };
+        QString activeSpeaker = activeSpeakerAtFrame(transcriptFrame);
         for (int offset = 1; activeSpeaker.isEmpty() && offset <= speakerGapHoldFrames; ++offset) {
-            activeSpeaker = transcriptActiveSpeakerForClipFileAtSourceFrame(
-                clip.filePath, qMax<int64_t>(0, transcriptFrame - offset));
+            activeSpeaker = activeSpeakerAtFrame(qMax<int64_t>(0, transcriptFrame - offset));
             if (activeSpeaker.isEmpty()) {
-                activeSpeaker = transcriptActiveSpeakerForClipFileAtSourceFrame(
-                    clip.filePath, transcriptFrame + offset);
+                activeSpeaker = activeSpeakerAtFrame(transcriptFrame + offset);
             }
         }
         QPointF location;
@@ -1425,15 +1728,9 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
                 clip, activeSpeaker, timelineFrame, mediaSourceFrame, &location, &boxSize);
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
-            hasSample = transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
-                clip.filePath,
-                activeSpeaker,
-                transcriptFrame,
-                clip.speakerFramingMinConfidence,
-                &location,
-                &boxSize);
+            hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
         }
-        if (!hasSample && activeSpeaker.isEmpty()) {
+        if (!hasSample && activeSpeaker.isEmpty() && !currentThreadIsGuiThread()) {
             QString profileSpeaker;
             hasSample = transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(
                 clip.filePath,
@@ -1506,14 +1803,35 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                 static_cast<qreal>(kTimelineFps))));
         const int speakerGapHoldFrames =
             qBound(0, clip.speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames);
-        QString activeSpeaker =
-            transcriptActiveSpeakerForClipFileAtSourceFrame(clip.filePath, transcriptFrame);
+        auto activeSpeakerAtFrame = [&](int64_t frame) {
+            return currentThreadIsGuiThread()
+                ? transcriptActiveSpeakerForClipFileAtSourceFrameMemoryOnly(clip.filePath, frame)
+                : transcriptActiveSpeakerForClipFileAtSourceFrame(clip.filePath, frame);
+        };
+        auto speakerTrackingSample = [&](const QString& speakerId,
+                                         QPointF* locationOut,
+                                         qreal* boxSizeOut) {
+            return currentThreadIsGuiThread()
+                ? transcriptSpeakerTrackingSampleForClipFileAtSourceFrameMemoryOnly(
+                      clip.filePath,
+                      speakerId,
+                      transcriptFrame,
+                      clip.speakerFramingMinConfidence,
+                      locationOut,
+                      boxSizeOut)
+                : transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
+                      clip.filePath,
+                      speakerId,
+                      transcriptFrame,
+                      clip.speakerFramingMinConfidence,
+                      locationOut,
+                      boxSizeOut);
+        };
+        QString activeSpeaker = activeSpeakerAtFrame(transcriptFrame);
         for (int offset = 1; activeSpeaker.isEmpty() && offset <= speakerGapHoldFrames; ++offset) {
-            activeSpeaker = transcriptActiveSpeakerForClipFileAtSourceFrame(
-                clip.filePath, qMax<int64_t>(0, transcriptFrame - offset));
+            activeSpeaker = activeSpeakerAtFrame(qMax<int64_t>(0, transcriptFrame - offset));
             if (activeSpeaker.isEmpty()) {
-                activeSpeaker = transcriptActiveSpeakerForClipFileAtSourceFrame(
-                    clip.filePath, transcriptFrame + offset);
+                activeSpeaker = activeSpeakerAtFrame(transcriptFrame + offset);
             }
         }
         QPointF location;
@@ -1526,15 +1844,9 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
                 clip, activeSpeaker, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
-            hasSample = transcriptSpeakerTrackingSampleForClipFileAtSourceFrame(
-                clip.filePath,
-                activeSpeaker,
-                transcriptFrame,
-                clip.speakerFramingMinConfidence,
-                &location,
-                &boxSize);
+            hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
         }
-        if (!hasSample && activeSpeaker.isEmpty()) {
+        if (!hasSample && activeSpeaker.isEmpty() && !currentThreadIsGuiThread()) {
             QString profileSpeaker;
             hasSample = transcriptActiveSpeakerTrackingSampleForClipFileAtSourceFrame(
                 clip.filePath,

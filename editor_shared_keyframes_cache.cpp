@@ -13,7 +13,7 @@ constexpr int kAssignedContinuityCacheMaxEntries = 16;
 struct AssignedContinuityStreamsCacheEntry {
     QString revision;
     QStringList referencedPaths;
-    QVector<jcut::facedetections::FacestreamTrack> streams;
+    AssignedContinuityStreamsPtr streams;
 };
 
 QString fileRevisionToken(const QString& path)
@@ -83,6 +83,21 @@ bool cachedAssignedContinuityStreams(const QString& cacheKey,
                                      const QString& processedPath,
                                      QVector<jcut::facedetections::FacestreamTrack>* streamsOut)
 {
+    AssignedContinuityStreamsPtr streams;
+    if (!cachedAssignedContinuityStreamsPtr(cacheKey, transcriptPath, processedPath, &streams)) {
+        return false;
+    }
+    if (streamsOut) {
+        *streamsOut = streams ? *streams : QVector<jcut::facedetections::FacestreamTrack>{};
+    }
+    return true;
+}
+
+bool cachedAssignedContinuityStreamsPtr(const QString& cacheKey,
+                                        const QString& transcriptPath,
+                                        const QString& processedPath,
+                                        AssignedContinuityStreamsPtr* streamsOut)
+{
     QMutexLocker locker(&assignedContinuityCacheMutex());
     auto& cache = assignedContinuityCache();
     const auto it = cache.constFind(cacheKey);
@@ -102,6 +117,21 @@ bool cachedAssignedContinuityStreams(const QString& cacheKey,
     return true;
 }
 
+bool cachedAssignedContinuityStreamsMemoryOnly(const QString& cacheKey,
+                                               AssignedContinuityStreamsPtr* streamsOut)
+{
+    QMutexLocker locker(&assignedContinuityCacheMutex());
+    const auto& cache = assignedContinuityCache();
+    const auto it = cache.constFind(cacheKey);
+    if (it == cache.constEnd()) {
+        return false;
+    }
+    if (streamsOut) {
+        *streamsOut = it.value().streams;
+    }
+    return true;
+}
+
 void storeAssignedContinuityStreams(const QString& cacheKey,
                                     const QString& transcriptPath,
                                     const QString& processedPath,
@@ -112,7 +142,7 @@ void storeAssignedContinuityStreams(const QString& cacheKey,
     entry.referencedPaths = referencedPaths;
     entry.revision = assignedContinuityRevision(
         transcriptPath, processedPath, referencedPaths);
-    entry.streams = streams;
+    entry.streams = AssignedContinuityStreamsPtr::create(streams);
 
     QMutexLocker locker(&assignedContinuityCacheMutex());
     auto& cache = assignedContinuityCache();
@@ -125,4 +155,11 @@ void storeAssignedContinuityStreams(const QString& cacheKey,
         const QString oldest = insertionOrder.takeFirst();
         cache.remove(oldest);
     }
+}
+
+void clearAssignedContinuityStreamsCache()
+{
+    QMutexLocker locker(&assignedContinuityCacheMutex());
+    assignedContinuityCache().clear();
+    assignedContinuityCacheInsertionOrder().clear();
 }

@@ -14,6 +14,7 @@
 #include <QRect>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
 #include <memory>
 
@@ -37,6 +38,19 @@ struct VulkanRenderResult {
     bool hasCpuImage() const { return frame.hasCpuImage(); }
     bool hasVulkanFrame() const { return frame.hasVulkanFrame(); }
 };
+
+struct ArtifactCompatibilityResult {
+    bool compatible = true;
+    QString compatibilityClass = QStringLiteral("ok");
+    QStringList errors;
+    QStringList warnings;
+    QJsonObject details;
+};
+
+QJsonObject artifactCompatibilityMetadataForClip(const TimelineClip& clip);
+ArtifactCompatibilityResult validateArtifactCompatibilityForClip(
+    const QJsonObject& continuityRoot,
+    const TimelineClip& clip);
 
 struct VulkanFrameProvider {
     std::unique_ptr<render_detail::OffscreenVulkanRenderer> renderer;

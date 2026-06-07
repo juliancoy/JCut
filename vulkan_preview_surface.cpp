@@ -372,6 +372,7 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
     m_interaction.clips = clips;
     m_interaction.clipCount = clips.size();
+    warmClipsSpeakerFramingContinuityRuntime(m_interaction.clips);
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
             directVulkanPlaybackClips(m_interaction.clips, m_interaction.tracks, m_useProxyMedia));

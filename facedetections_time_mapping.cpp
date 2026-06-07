@@ -37,23 +37,21 @@ FacestreamFrameDomain inferFacestreamFrameDomain(const TimelineClip& clip,
     const int64_t sourceStart = qMax<int64_t>(0, clip.sourceInFrame);
     const int64_t sourceEnd =
         sourceStart + qMax<int64_t>(0, clip.sourceDurationFrames);
-    const int64_t clipTimelineEnd = qMax<int64_t>(0, clip.durationFrames);
     const bool likelySourceAbsolute =
         keyframeMax >= 0 &&
         keyframeMin >= qMax<int64_t>(0, sourceStart - 2) &&
         keyframeMax <= (sourceEnd + 2);
-    const bool likelyClipTimeline =
-        keyframeMax >= 0 &&
-        keyframeMin >= 0 &&
-        keyframeMax <= (clipTimelineEnd + 2);
 
     if (likelySourceAbsolute) {
         return FacestreamFrameDomain::SourceAbsolute;
     }
-    if (likelyClipTimeline) {
-        return FacestreamFrameDomain::ClipTimeline30Fps;
-    }
     return FacestreamFrameDomain::SourceRelative;
+}
+
+bool isSourceMediaFacestreamFrameDomain(FacestreamFrameDomain domain)
+{
+    return domain == FacestreamFrameDomain::SourceAbsolute ||
+           domain == FacestreamFrameDomain::SourceRelative;
 }
 
 FacestreamSourceScanRange facedetectionsSourceAbsoluteScanRangeForClip(const TimelineClip& clip)
@@ -104,32 +102,6 @@ int64_t mapFacestreamFrameToSourceFrame(const TimelineClip& clip,
         return safeFrame;
     }
     return qMax<int64_t>(0, clip.sourceInFrame + safeFrame);
-}
-
-bool facestreamLegacyTimelineFallbackAllowed(const TimelineClip& clip,
-                                             FacestreamFrameDomain declaredDomain)
-{
-    return declaredDomain == FacestreamFrameDomain::SourceAbsolute &&
-           resolvedSourceFps(clip) > static_cast<qreal>(kTimelineFps) + 0.5 &&
-           clip.durationFrames > 0 &&
-           clip.sourceDurationFrames > clip.durationFrames + 2;
-}
-
-bool sourceAbsoluteFacestreamRangeLooksLikeClipTimeline(const TimelineClip& clip,
-                                                        const QVector<int64_t>& sortedFrames)
-{
-    if (!facestreamLegacyTimelineFallbackAllowed(clip, FacestreamFrameDomain::SourceAbsolute) ||
-        sortedFrames.isEmpty()) {
-        return false;
-    }
-
-    const int64_t timelineEnd = qMax<int64_t>(0, clip.durationFrames - 1);
-    const int64_t sourceEnd =
-        qMax<int64_t>(0, clip.sourceInFrame) + qMax<int64_t>(0, clip.sourceDurationFrames - 1);
-    return sortedFrames.constFirst() >= 0 &&
-           sortedFrames.constLast() <= timelineEnd + 2 &&
-           sortedFrames.constLast() >= qMax<int64_t>(0, (timelineEnd * 9) / 10) &&
-           sourceEnd > timelineEnd + 2;
 }
 
 int64_t facedetectionsTypicalFrameStep(const QVector<int64_t>& sortedFrames)

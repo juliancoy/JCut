@@ -8,6 +8,60 @@
 #include <QFileInfo>
 
 #include <algorithm>
+#include <limits>
+
+namespace {
+
+constexpr quint32 kFaceDetectionsCheckpointMagic = 0x4A465342; // JFSB
+constexpr quint32 kLegacyFaceDetectionsJsonMagic = 0x4A465352; // JFSR
+constexpr quint32 kFaceDetectionsCheckpointVersion = 1;
+
+QString checkpointMagicString(quint32 magic) {
+  return QStringLiteral("0x%1").arg(magic, 8, 16, QChar('0'));
+}
+
+QString legacyCheckpointError(const QString &path, qint64 offset) {
+  return QStringLiteral(
+             "Incompatible facedetections checkpoint format in %1 at byte %2: "
+             "found legacy JFSR binary-JSON records. Legacy checkpoint replay "
+             "is intentionally unsupported; delete facedetections.part and "
+             "facedetections.part.resume_index.json, then regenerate the "
+             "artifacts.")
+      .arg(path)
+      .arg(offset);
+}
+
+bool readCheckpointMagic(const QString &path, quint32 *magic, QString *error) {
+  if (magic) {
+    *magic = 0;
+  }
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    if (error) {
+      *error = QStringLiteral("Failed to open facedetections checkpoint: %1")
+                   .arg(path);
+    }
+    return false;
+  }
+  QDataStream stream(&file);
+  stream.setVersion(QDataStream::Qt_6_0);
+  quint32 value = 0;
+  stream >> value;
+  if (stream.status() != QDataStream::Ok) {
+    if (error) {
+      *error = QStringLiteral("Failed to read facedetections checkpoint header: "
+                              "%1")
+                   .arg(path);
+    }
+    return false;
+  }
+  if (magic) {
+    *magic = value;
+  }
+  return true;
+}
+
+} // namespace
 
 QString faceDetectionsResumeIndexPath(const QString &faceStreamPath) {
   return faceStreamPath + QStringLiteral(".resume_index.json");
@@ -248,6 +302,31 @@ bool loadFaceDetectionsResumeIndex(
           QStringLiteral("Resume index is newer than facedetections.part.");
     return false;
   }
+  if (partInfo.size() > 0) {
+    quint32 partMagic = 0;
+    QString magicError;
+    if (!readCheckpointMagic(faceStreamPath, &partMagic, &magicError)) {
+      if (error)
+        *error = magicError;
+      return false;
+    }
+    if (partMagic == kLegacyFaceDetectionsJsonMagic) {
+      if (error)
+        *error = legacyCheckpointError(faceStreamPath, 0);
+      return false;
+    }
+    if (partMagic != kFaceDetectionsCheckpointMagic) {
+      if (error) {
+        *error = QStringLiteral(
+                     "Resume index points to an invalid facedetections.part "
+                     "header in %1: expected JFSB/%2, found %3.")
+                     .arg(faceStreamPath)
+                     .arg(checkpointMagicString(kFaceDetectionsCheckpointMagic))
+                     .arg(checkpointMagicString(partMagic));
+      }
+      return false;
+    }
+  }
   state->completedFrames = completedFrameRangesFromJson(
       root.value(QStringLiteral("completed_ranges")).toArray());
   for (auto it = state->completedFrames.begin();
@@ -330,6 +409,7 @@ bool loadFaceDetectionsResume(const QString &path, const QString &videoPath,
   QDataStream stream(&file);
   stream.setVersion(QDataStream::Qt_6_0);
   while (!stream.atEnd()) {
+    const qint64 recordOffset = file.pos();
     quint32 magic = 0;
     quint32 version = 0;
     quint32 compressedSize = 0;
@@ -339,10 +419,37 @@ bool loadFaceDetectionsResume(const QString &path, const QString &videoPath,
     if (stream.status() != QDataStream::Ok) {
       break;
     }
-    if (magic != 0x4A465342 || version != 1) {
+    if (magic == kLegacyFaceDetectionsJsonMagic) {
       if (error) {
-        *error =
-            QStringLiteral("Invalid facedetections checkpoint record header.");
+        *error = legacyCheckpointError(path, recordOffset);
+      }
+      return false;
+    }
+    if (magic != kFaceDetectionsCheckpointMagic ||
+        version != kFaceDetectionsCheckpointVersion) {
+      if (error) {
+        *error = QStringLiteral(
+                     "Invalid facedetections checkpoint record header in %1 at "
+                     "byte %2: expected JFSB/%3 version %4, found %5 version "
+                     "%6.")
+                     .arg(path)
+                     .arg(recordOffset)
+                     .arg(checkpointMagicString(kFaceDetectionsCheckpointMagic))
+                     .arg(kFaceDetectionsCheckpointVersion)
+                     .arg(checkpointMagicString(magic))
+                     .arg(version);
+      }
+      return false;
+    }
+    if (compressedSize >
+        static_cast<quint32>(std::numeric_limits<int>::max())) {
+      if (error) {
+        *error = QStringLiteral(
+                     "Facedetections checkpoint record in %1 at byte %2 is too "
+                     "large: compressed_size=%3.")
+                     .arg(path)
+                     .arg(recordOffset)
+                     .arg(compressedSize);
       }
       return false;
     }
@@ -353,8 +460,13 @@ bool loadFaceDetectionsResume(const QString &path, const QString &videoPath,
           compressed.data(), static_cast<int>(compressedSize));
       if (bytesRead != static_cast<int>(compressedSize)) {
         if (error) {
-          *error =
-              QStringLiteral("Truncated facedetections checkpoint record.");
+          *error = QStringLiteral(
+                       "Truncated facedetections checkpoint record in %1 at "
+                       "byte %2: expected %3 payload bytes, read %4.")
+                       .arg(path)
+                       .arg(recordOffset)
+                       .arg(compressedSize)
+                       .arg(bytesRead);
         }
         return false;
       }

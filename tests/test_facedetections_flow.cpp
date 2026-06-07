@@ -2,7 +2,10 @@
 #include "facedetections_tracking.h"
 #include "speaker_flow_debug.h"
 #include "transcript_engine.h"
+#include "vulkan_facedetections_offscreen_artifact_io.h"
+#include "vulkan_facedetections_offscreen_resume_state.h"
 
+#include <QDataStream>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonDocument>
@@ -57,12 +60,152 @@ QJsonObject transcriptRootWithProfiles()
     };
 }
 
+bool appendLegacyJsonRecord(const QString& path, const QJsonObject& object)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        return false;
+    }
+    const QByteArray compressed =
+        qCompress(QJsonDocument(object).toJson(QJsonDocument::Compact), 6);
+    QDataStream stream(&file);
+    stream.setVersion(QDataStream::Qt_6_0);
+    stream << quint32(0x4A465352);
+    stream << quint32(1);
+    stream << quint32(compressed.size());
+    if (!compressed.isEmpty() && file.write(compressed) != compressed.size()) {
+        return false;
+    }
+    return stream.status() == QDataStream::Ok && file.flush();
+}
+
 } // namespace
 
 class FacestreamFlowTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void resumeIndexRejectsLegacyCheckpointPayload()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString checkpointPath =
+            QDir(tempDir.path()).filePath(QStringLiteral("facedetections.part"));
+        const QString indexPath = faceDetectionsResumeIndexPath(checkpointPath);
+        const QString videoPath = QStringLiteral("video.mp4");
+        const QString backend = QStringLiteral("scrfd_2.5g_ncnn_vulkan_zero_copy_v1");
+
+        QVERIFY(appendLegacyJsonRecord(
+            checkpointPath,
+            QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("meta")},
+                {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_part_v1")},
+                {QStringLiteral("video"), videoPath},
+                {QStringLiteral("backend"), backend}
+            }));
+
+        FaceDetectionsResumeState savedState;
+        savedState.completedFrames.insert(0);
+        savedState.processed = 1;
+        QVector<Track> runtimeTracks;
+        QString error;
+        QVERIFY(saveFaceDetectionsResumeIndex(indexPath,
+                                             checkpointPath,
+                                             videoPath,
+                                             backend,
+                                             0,
+                                             0,
+                                             savedState,
+                                             runtimeTracks,
+                                             &error));
+
+        FaceDetectionsResumeState loadedFromIndex;
+        error.clear();
+        QVERIFY(!loadFaceDetectionsResumeIndex(indexPath,
+                                               checkpointPath,
+                                               videoPath,
+                                               backend,
+                                               0,
+                                               0,
+                                               &loadedFromIndex,
+                                               &error));
+        QVERIFY2(error.contains(QStringLiteral("legacy JFSR binary-JSON records")),
+                 qPrintable(error));
+
+        FaceDetectionsResumeState loadedFromPayload;
+        error.clear();
+        QVERIFY(!loadFaceDetectionsResume(checkpointPath,
+                                          videoPath,
+                                          backend,
+                                          0,
+                                          0,
+                                          &loadedFromPayload,
+                                          &error));
+        QVERIFY2(error.contains(QStringLiteral("legacy JFSR binary-JSON records")),
+                 qPrintable(error));
+    }
+
+    void currentCheckpointPayloadLoadsThroughResumeReplay()
+    {
+        QTemporaryDir tempDir;
+        QVERIFY(tempDir.isValid());
+
+        const QString checkpointPath =
+            QDir(tempDir.path()).filePath(QStringLiteral("facedetections.part"));
+        const QString videoPath = QStringLiteral("video.mp4");
+        const QString backend = QStringLiteral("scrfd_2.5g_ncnn_vulkan_zero_copy_v1");
+
+        QFile file(checkpointPath);
+        QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Append));
+        QVERIFY(appendBinaryCborRecord(
+            &file,
+            QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("meta")},
+                {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_part_v1")},
+                {QStringLiteral("video"), videoPath},
+                {QStringLiteral("backend"), backend}
+            }));
+        QVERIFY(appendBinaryCborRecord(
+            &file,
+            QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("frame")},
+                {QStringLiteral("schema"), QStringLiteral("jcut_facedetections_frame_v1")},
+                {QStringLiteral("video"), videoPath},
+                {QStringLiteral("backend"), backend},
+                {QStringLiteral("frame"), 7},
+                {QStringLiteral("detections"), 1},
+                {QStringLiteral("tracks"), 1},
+                {QStringLiteral("detection_boxes"), QJsonArray{
+                     QJsonObject{
+                         {QStringLiteral("x"), 10.0},
+                         {QStringLiteral("y"), 20.0},
+                         {QStringLiteral("w"), 30.0},
+                         {QStringLiteral("h"), 30.0},
+                         {QStringLiteral("frame_width"), 1920},
+                         {QStringLiteral("frame_height"), 1080}
+                     }
+                 }},
+                {QStringLiteral("track_detections"), QJsonArray{}}
+            }));
+        file.close();
+
+        FaceDetectionsResumeState loaded;
+        QString error;
+        QVERIFY2(loadFaceDetectionsResume(checkpointPath,
+                                          videoPath,
+                                          backend,
+                                          0,
+                                          10,
+                                          &loaded,
+                                          &error),
+                 qPrintable(error));
+        QCOMPARE(loaded.completedFrames.size(), 1);
+        QVERIFY(loaded.completedFrames.contains(7));
+        QCOMPARE(loaded.rawDetectionFrames.size(), 1);
+        QCOMPARE(loaded.frameRows.size(), 1);
+    }
+
     void continuityTrackingToIdentityAssignmentFlow()
     {
         const QJsonArray rawDetectionFrames{

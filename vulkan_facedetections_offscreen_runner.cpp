@@ -996,8 +996,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     }
   } else {
     faceStreamFile.setFileName(faceStreamPath);
-    if (!faceStreamFile.open(QIODevice::WriteOnly | QIODevice::Append |
-                             QIODevice::Text)) {
+    if (!faceStreamFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
       std::cerr << "Failed to open streaming facedetections checkpoint: "
                 << faceStreamPath.toStdString() << "\n";
       return 2;
