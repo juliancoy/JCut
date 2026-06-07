@@ -23,6 +23,52 @@ constexpr qint64 kFacestreamOverlaySlowQueryWarnMs = 100;
 constexpr int64_t kFacestreamOverlayInteractiveWindowFrames = 240;
 constexpr int64_t kMaxPreservedPlaybackOverlayDriftFrames = 60;
 
+struct FacestreamOverlayCacheIdentity {
+    QString clipPath;
+    QString transcriptPath;
+    qint64 transcriptModifiedMs = 0;
+    qint64 artifactRevisionMs = -1;
+    quint64 renderSyncSignature = 0;
+    int64_t bucket = 0;
+    int64_t querySourceFrame = 0;
+    QString signature;
+    QString cacheKey;
+    bool transcriptExists = false;
+};
+
+quint64 renderSyncMarkerOverlaySignature(const QVector<RenderSyncMarker>& markers);
+
+FacestreamOverlayCacheIdentity facestreamOverlayCacheIdentity(
+    const TimelineClip& clip,
+    int64_t sourceFrame,
+    const QString& sourceFilter,
+    const QVector<RenderSyncMarker>& renderSyncMarkers)
+{
+    FacestreamOverlayCacheIdentity identity;
+    identity.bucket = qMax<int64_t>(0, sourceFrame) / kFacestreamOverlayInteractiveWindowFrames;
+    identity.querySourceFrame = identity.bucket * kFacestreamOverlayInteractiveWindowFrames;
+    identity.clipPath = QFileInfo(clip.filePath).absoluteFilePath();
+    identity.transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+    const QFileInfo transcriptInfo(identity.transcriptPath);
+    identity.transcriptExists = transcriptInfo.exists() && transcriptInfo.isFile();
+    identity.transcriptPath = transcriptInfo.absoluteFilePath();
+    identity.transcriptModifiedMs =
+        identity.transcriptExists ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0;
+    identity.artifactRevisionMs =
+        facedetectionsArtifactRevisionMsForTranscript(identity.transcriptPath);
+    identity.renderSyncSignature = renderSyncMarkerOverlaySignature(renderSyncMarkers);
+    identity.signature = QStringLiteral("%1|%2|%3|%4|%5|bucket:%6|sync:%7")
+                             .arg(clip.id)
+                             .arg(identity.transcriptPath)
+                             .arg(identity.transcriptModifiedMs)
+                             .arg(identity.artifactRevisionMs)
+                             .arg(sourceFilter)
+                             .arg(identity.bucket)
+                             .arg(identity.renderSyncSignature);
+    identity.cacheKey = identity.clipPath + QLatin1Char('|') + identity.signature;
+    return identity;
+}
+
 QJsonObject overlayDriftDebug(const QVector<VulkanPreviewFacestreamOverlay>& overlays,
                               const QVector<VulkanPreviewFacestreamOverlay>& rawDetections,
                               int64_t requestedSourceFrame)
@@ -290,35 +336,22 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
 {
     QElapsedTimer queryTimer;
     queryTimer.start();
-    const int64_t cacheBucket = qMax<int64_t>(0, sourceFrame) / kFacestreamOverlayInteractiveWindowFrames;
-    const int64_t cacheQuerySourceFrame = cacheBucket * kFacestreamOverlayInteractiveWindowFrames;
-    const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-    const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-    const QFileInfo transcriptInfo(transcriptPath);
-    const qint64 artifactRevisionMs =
-        facedetectionsArtifactRevisionMsForTranscript(transcriptInfo.absoluteFilePath());
-    const quint64 renderSyncSignature =
-        renderSyncMarkerOverlaySignature(m_interaction.renderSyncMarkers);
-    const QString signature = QStringLiteral("%1|%2|%3|%4|%5|sync:%6")
-                                  .arg(clip.id)
-                                  .arg(transcriptInfo.absoluteFilePath())
-                                  .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0)
-                                  .arg(artifactRevisionMs)
-                                  .arg(QStringLiteral("%1|bucket:%2").arg(m_facedetectionsOverlaySource).arg(cacheBucket))
-                                  .arg(renderSyncSignature);
-    FacestreamOverlayCacheEntry& entry = m_facedetectionsOverlayCache[clipPath];
-    if (entry.signature == signature) {
+    const QString sourceFilter = normalizedFacestreamOverlaySource(m_facedetectionsOverlaySource);
+    const FacestreamOverlayCacheIdentity cacheIdentity =
+        facestreamOverlayCacheIdentity(clip, sourceFrame, sourceFilter, m_interaction.renderSyncMarkers);
+    FacestreamOverlayCacheEntry& entry = m_facedetectionsOverlayCache[cacheIdentity.cacheKey];
+    if (entry.signature == cacheIdentity.signature) {
         return entry.tracks;
     }
 
     entry = FacestreamOverlayCacheEntry{};
-    entry.signature = signature;
-    if (!transcriptInfo.exists() || !transcriptInfo.isFile()) {
+    entry.signature = cacheIdentity.signature;
+    if (!cacheIdentity.transcriptExists) {
         if (clip.id == m_interaction.selectedClipId) {
             m_lastFacedetectionsQueryDebug = QJsonObject{
                 {QStringLiteral("status"), QStringLiteral("missing_transcript")},
                 {QStringLiteral("clip_id"), clip.id},
-                {QStringLiteral("transcript_path"), transcriptPath},
+                {QStringLiteral("transcript_path"), cacheIdentity.transcriptPath},
                 {QStringLiteral("requested_source_frame"), static_cast<qint64>(sourceFrame)}
             };
         }
@@ -330,7 +363,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     bool transcriptLoaded = false;
     auto transcriptRootForDemand = [&]() -> QJsonObject {
         if (!transcriptLoaded) {
-            engine.loadTranscriptJson(transcriptPath, &transcriptDoc);
+            engine.loadTranscriptJson(cacheIdentity.transcriptPath, &transcriptDoc);
             transcriptLoaded = true;
         }
         return transcriptDoc.object();
@@ -338,22 +371,23 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
     QJsonObject queryDebug{
         {QStringLiteral("status"), QStringLiteral("ok")},
         {QStringLiteral("clip_id"), clip.id},
-        {QStringLiteral("transcript_path"), transcriptPath},
+        {QStringLiteral("transcript_path"), cacheIdentity.transcriptPath},
         {QStringLiteral("requested_source_frame"), static_cast<qint64>(sourceFrame)},
-        {QStringLiteral("cache_bucket"), static_cast<qint64>(cacheBucket)},
-        {QStringLiteral("cache_query_source_frame"), static_cast<qint64>(cacheQuerySourceFrame)},
+        {QStringLiteral("cache_bucket"), static_cast<qint64>(cacheIdentity.bucket)},
+        {QStringLiteral("cache_query_source_frame"), static_cast<qint64>(cacheIdentity.querySourceFrame)},
         {QStringLiteral("cache_window_frames"), static_cast<qint64>(kFacestreamOverlayInteractiveWindowFrames)},
-        {QStringLiteral("artifact_revision_ms"), static_cast<qint64>(artifactRevisionMs)},
-        {QStringLiteral("signature"), signature}
+        {QStringLiteral("artifact_revision_ms"), static_cast<qint64>(cacheIdentity.artifactRevisionMs)},
+        {QStringLiteral("signature"), cacheIdentity.signature},
+        {QStringLiteral("cache_key"), cacheIdentity.cacheKey}
     };
     const QString artifactRootCacheKey = QStringLiteral("%1|%2|%3")
-                                             .arg(transcriptInfo.absoluteFilePath())
-                                             .arg(transcriptInfo.exists() ? transcriptInfo.lastModified().toMSecsSinceEpoch() : 0)
-                                             .arg(artifactRevisionMs);
+                                             .arg(cacheIdentity.transcriptPath)
+                                             .arg(cacheIdentity.transcriptModifiedMs)
+                                             .arg(cacheIdentity.artifactRevisionMs);
     QJsonObject processedArtifactRoot =
         m_facedetectionsProcessedArtifactRootCache.value(artifactRootCacheKey);
     if (processedArtifactRoot.isEmpty() &&
-        engine.loadFacestreamProcessedArtifact(transcriptPath, &processedArtifactRoot)) {
+        engine.loadFacestreamProcessedArtifact(cacheIdentity.transcriptPath, &processedArtifactRoot)) {
         m_facedetectionsProcessedArtifactRootCache.insert(artifactRootCacheKey, processedArtifactRoot);
     }
     if (!processedArtifactRoot.isEmpty()) {
@@ -372,7 +406,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
             const QVector<jcut::facedetections::FacestreamTrack> trackModels =
                 jcut::facedetections::continuityTrackModelsNearFrameForRoot(
                 continuityRoot,
-                cacheQuerySourceFrame,
+                cacheIdentity.querySourceFrame,
                 kFacestreamOverlayInteractiveWindowFrames,
                     transcriptRoot);
             entry.tracks += convertContinuityTrackModelsForClip(
@@ -388,7 +422,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
         queryDebug[QStringLiteral("processed_parsed_track_count")] = entry.tracks.size();
     }
     QJsonObject artifactRoot = m_facedetectionsArtifactRootCache.value(artifactRootCacheKey);
-    if (artifactRoot.isEmpty() && engine.loadFacestreamArtifact(transcriptPath, &artifactRoot)) {
+    if (artifactRoot.isEmpty() && engine.loadFacestreamArtifact(cacheIdentity.transcriptPath, &artifactRoot)) {
         m_facedetectionsArtifactRootCache.insert(artifactRootCacheKey, artifactRoot);
     }
     if (!artifactRoot.isEmpty()) {
@@ -412,7 +446,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
                 const QVector<jcut::facedetections::FacestreamTrack> trackModels =
                     jcut::facedetections::continuityTrackModelsNearFrameForRoot(
                     continuityRoot,
-                    cacheQuerySourceFrame,
+                    cacheIdentity.querySourceFrame,
                     kFacestreamOverlayInteractiveWindowFrames,
                         transcriptRoot);
                 entry.tracks += convertContinuityTrackModelsForClip(
@@ -436,7 +470,7 @@ QVector<VulkanPreviewSurface::FacestreamTrack> VulkanPreviewSurface::loadFacestr
             const QVector<jcut::facedetections::FacestreamFrameDetections> rawFrameModels =
                 jcut::facedetections::frameDetectionModelsNearFrameForRoot(
                     rawDetectionContinuityRoot,
-                    cacheQuerySourceFrame,
+                    cacheIdentity.querySourceFrame,
                     kFacestreamOverlayInteractiveWindowFrames);
             entry.rawDetections += convertRawDetectionModelsForClip(clip, rawFrameModels, rawFrameDomain);
         }
@@ -517,8 +551,10 @@ QVector<VulkanPreviewFacestreamOverlay> VulkanPreviewSurface::rawDetectionsForCl
     int64_t sourceFrame)
 {
     loadFacestreamTracksForClip(clip, sourceFrame);
-    const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-    const auto entryIt = m_facedetectionsOverlayCache.constFind(clipPath);
+    const QString sourceFilter = normalizedFacestreamOverlaySource(m_facedetectionsOverlaySource);
+    const FacestreamOverlayCacheIdentity cacheIdentity =
+        facestreamOverlayCacheIdentity(clip, sourceFrame, sourceFilter, m_interaction.renderSyncMarkers);
+    const auto entryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
     if (entryIt == m_facedetectionsOverlayCache.constEnd()) {
         return {};
     }
@@ -608,8 +644,10 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 continue;
             }
             const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-            const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-            const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(clipPath);
+            const FacestreamOverlayCacheIdentity cacheIdentity =
+                facestreamOverlayCacheIdentity(
+                    clip, localFrame, sourceFilter, m_interaction.renderSyncMarkers);
+            const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
             if (cachedEntryIt == m_facedetectionsOverlayCache.constEnd()) {
                 playbackSuppressedColdLookup = true;
                 if (clip.id == m_interaction.selectedClipId) {
@@ -654,7 +692,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             requestClip.renderSyncMarkers = m_interaction.renderSyncMarkers;
             requestClip.cacheEntry = cachedEntryIt.value();
             requestClips.push_back(requestClip);
-            keyParts << QStringLiteral("%1:%2:%3").arg(clip.id).arg(localFrame).arg(cachedEntryIt.value().signature);
+            keyParts << QStringLiteral("%1:%2:%3").arg(clip.id).arg(localFrame).arg(cacheIdentity.cacheKey);
         }
 
         const QString requestKey = keyParts.join(QLatin1Char('|'));
@@ -741,8 +779,9 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 break;
             }
         }
-        const QString clipPath = QFileInfo(clip.filePath).absoluteFilePath();
-        const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(clipPath);
+        const FacestreamOverlayCacheIdentity cacheIdentity =
+            facestreamOverlayCacheIdentity(clip, localFrame, sourceFilter, m_interaction.renderSyncMarkers);
+        const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
         const bool useCachedPlaybackOverlay =
             m_interaction.playing && cachedEntryIt != m_facedetectionsOverlayCache.constEnd();
         QVector<FacestreamTrack> tracks;
@@ -788,7 +827,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
             }
         } else {
             tracks = loadFacestreamTracksForClip(clip, localFrame);
-            const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(clipPath);
+            const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
             if (loadedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
                 overlayCacheEntry = &loadedEntryIt.value();
             }
