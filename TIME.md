@@ -220,10 +220,10 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Code: `transcript_tab.cpp`, `editor.cpp`
   - Tests: `tests/test_transcript_tab_follow.cpp`
 - Speaker framing temporal interpolation and fallback behavior:
-  - Code: `editor_shared_transcript.cpp`, `opengl_preview_window_transcript.cpp`, `direct_vulkan_preview_backend.cpp`, `render_decode.cpp`
+  - Code: `editor_shared_transcript.cpp`, `opengl_preview_window_transcript.cpp`, `direct_vulkan_preview_window.cpp`, `direct_vulkan_preview_geometry.cpp`, `render_decode.cpp`
   - Tests: `tests/test_transcript_logic.cpp` speaker-tracking cases
 - Shared preview/render transcript overlay layout path:
-  - Code: `editor_shared_transcript.cpp`, `opengl_preview_window_transcript.cpp`, `direct_vulkan_preview_backend.cpp`, `render_decode.cpp`
+  - Code: `editor_shared_transcript.cpp`, `opengl_preview_window_transcript.cpp`, `direct_vulkan_preview_window.cpp`, `direct_vulkan_preview_interaction.cpp`, `render_decode.cpp`
   - Tests: `tests/test_transcript_logic.cpp::testTranscriptOverlayLayoutHelperMatchesSectionLayout`
 - Transform skip-aware timing progression:
   - Code: `transform_skip_aware_timing.cpp`

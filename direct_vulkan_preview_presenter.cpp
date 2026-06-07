@@ -1,5 +1,7 @@
 #include "direct_vulkan_preview_presenter.h"
 #include "direct_vulkan_preview_backend.h"
+#include "direct_vulkan_preview_config.h"
+#include "direct_vulkan_preview_geometry.h"
 #include "direct_vulkan_preview_audio.h"
 #include "preview_speaker_profiles.h"
 #include "preview_view_transform.h"
@@ -33,32 +35,6 @@ struct OverlayGeometry {
     QTransform clipToScreen;
     QRectF localRect;
 };
-
-const TimelineClip* selectedClipForTargetBox(const PreviewInteractionState* state)
-{
-    if (!state) {
-        return nullptr;
-    }
-    const QString selectedId = state->selectedClipId.trimmed();
-    if (!selectedId.isEmpty()) {
-        for (const TimelineClip& clip : state->clips) {
-            const TimelineClip::TransformKeyframe targetState =
-                evaluateClipSpeakerFramingTargetAtFrame(clip, state->currentFrame);
-            if (clip.id == selectedId &&
-                qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
-                return &clip;
-            }
-        }
-    }
-    for (const TimelineClip& clip : state->clips) {
-        const TimelineClip::TransformKeyframe targetState =
-            evaluateClipSpeakerFramingTargetAtFrame(clip, state->currentFrame);
-        if (qBound<qreal>(-1.0, targetState.scaleX, 1.0) > 0.0) {
-            return &clip;
-        }
-    }
-    return nullptr;
-}
 
 QSize sourceSizeForClipId(const PreviewInteractionState* state, const QString& clipId)
 {
@@ -103,7 +79,7 @@ QHash<QString, OverlayGeometry> activeClipGeometryById(const PreviewInteractionS
     const PreviewViewTransform viewTransform(
         logicalSurfaceRect,
         state->outputSize,
-        36.0,
+        jcut::direct_vulkan_preview::vulkanPreviewCanvasMarginPx(),
         state->previewZoom,
         state->previewPanOffset);
     const QPointF previewScale = viewTransform.outputScale();
@@ -252,7 +228,7 @@ private:
         if (!painter || !m_state) {
             return;
         }
-        const TimelineClip* selectedClip = selectedClipForTargetBox(m_state);
+        const TimelineClip* selectedClip = jcut::direct_vulkan_preview::selectedClipForTargetBox(m_state);
         if (!selectedClip) {
             return;
         }
@@ -265,7 +241,7 @@ private:
         const PreviewViewTransform viewTransform(
             logicalSurfaceRect,
             m_state->outputSize,
-            36.0,
+            jcut::direct_vulkan_preview::vulkanPreviewCanvasMarginPx(),
             m_state->previewZoom,
             m_state->previewPanOffset);
         const QRectF compositeRect = viewTransform.targetRect();
@@ -492,7 +468,7 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
     m_windowContainer->setMouseTracking(true);
     m_windowContainer->setMinimumSize(160, 120);
     m_windowContainer->setToolTip(QStringLiteral("Direct Vulkan preview presenter (%1).")
-                                      .arg(directVulkanPreviewVisiblePathLabel()));
+                                      .arg(jcut::direct_vulkan_preview::vulkanPreviewVisiblePathLabel()));
 
     m_overlayWidget = new DirectVulkanPreviewOverlayWidget(m_state, m_placeholder.get());
     m_overlayWidget->setGeometry(m_placeholder->rect());
@@ -506,7 +482,7 @@ DirectVulkanPreviewPresenter::DirectVulkanPreviewPresenter(PreviewInteractionSta
         "background:#1a2430; color:#dbe7f1; border:0; padding:2px 8px;"
         "font:600 11px 'DejaVu Sans Mono';"));
     m_statusLabel->setText(QStringLiteral("Vulkan preview initializing"));
-    m_statusLabel->setVisible(directVulkanPreviewDebugChromeEnabled());
+    m_statusLabel->setVisible(jcut::direct_vulkan_preview::vulkanPreviewDebugChromeEnabled());
     m_statusLabel->raise();
 
     m_audioInfoPanel = new QWidget(m_placeholder.get());
@@ -689,11 +665,11 @@ void DirectVulkanPreviewPresenter::requestUpdate()
             m_stack->setCurrentWidget(m_windowContainer);
         }
     }
-    if (directVulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
+    if (jcut::direct_vulkan_preview::vulkanPreviewDirectSwapchainVisible() && m_windowContainer) {
         m_windowContainer->raise();
     }
     if (m_window) {
-        if (directVulkanPreviewDirectSwapchainVisible()) {
+        if (jcut::direct_vulkan_preview::vulkanPreviewDirectSwapchainVisible()) {
             directVulkanPreviewWindowRaise(m_window);
         }
         directVulkanPreviewWindowSchedulePreviewUpdate(m_window);
@@ -747,7 +723,7 @@ void DirectVulkanPreviewPresenter::updateDiagnosticChrome()
         m_state &&
         !m_state->vulkanFrameStatuses.isEmpty();
     const bool showOverlayLabel = !m_failureReason.trimmed().isEmpty() || waitingForDecode;
-    if (!directVulkanPreviewDebugChromeEnabled() && !showOverlayLabel) {
+    if (!jcut::direct_vulkan_preview::vulkanPreviewDebugChromeEnabled() && !showOverlayLabel) {
         m_placeholder->setStyleSheet(QStringLiteral("background:#05080d; border:0;"));
         if (m_statusLabel) {
             m_statusLabel->hide();
@@ -897,7 +873,7 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         const PreviewViewTransform viewTransform(
             deviceSurfaceRect,
             m_state->outputSize,
-            36.0,
+            jcut::direct_vulkan_preview::vulkanPreviewCanvasMarginPx(),
             m_state->previewZoom,
             m_state->previewPanOffset);
         const QPointF previewScale = viewTransform.outputScale();
@@ -1053,9 +1029,9 @@ QJsonObject DirectVulkanPreviewPresenter::profilingSnapshot() const
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
         {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
-        {QStringLiteral("visible_path"), directVulkanPreviewVisiblePathLabel()},
+        {QStringLiteral("visible_path"), jcut::direct_vulkan_preview::vulkanPreviewVisiblePathLabel()},
         {QStringLiteral("preview_cursor"), directVulkanPreviewWindowCursorShape(m_window)},
-        {QStringLiteral("optimal_present_requested"), directVulkanPreviewOptimalPresentEnabled()},
+        {QStringLiteral("optimal_present_requested"), jcut::direct_vulkan_preview::vulkanPreviewOptimalPresentEnabled()},
         {QStringLiteral("readback_mirror_enabled"), false},
         {QStringLiteral("swapchain_readback_enabled"), false},
         {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
@@ -1228,7 +1204,7 @@ QJsonObject DirectVulkanPreviewPresenter::pipelineHealthSnapshot() const
         {QStringLiteral("backend"), QStringLiteral("vulkan")},
         {QStringLiteral("presenter"), QStringLiteral("qvulkanwindow_direct_swapchain")},
         {QStringLiteral("composition_path"), QStringLiteral("direct_swapchain_frame_status_composition")},
-        {QStringLiteral("visible_path"), directVulkanPreviewVisiblePathLabel()},
+        {QStringLiteral("visible_path"), jcut::direct_vulkan_preview::vulkanPreviewVisiblePathLabel()},
         {QStringLiteral("swapchain_present"), m_active && m_window != nullptr},
         {QStringLiteral("qvulkanwindow_valid"), directVulkanPreviewWindowIsValid(m_window)},
         {QStringLiteral("native_window_visible"), directVulkanPreviewWindowIsVisible(m_window)},

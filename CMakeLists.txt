@@ -600,9 +600,23 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_save_controller.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transcript_document_session.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_artifact_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_benchmark.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_checkpoint_writer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_control_panel.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_detection_filters.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_opencv_dnn.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_options.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_preview_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_progress.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_resume_state.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_runner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_tuning.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_vulkan_harness.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpu_render_fallback.cpp

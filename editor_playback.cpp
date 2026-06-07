@@ -1138,12 +1138,12 @@ void EditorWindow::updatePlaybackStatusOverlay()
             progress = m_audioEngine ? m_audioEngine->timeStretchGenerationProgress() : -1.0;
             const int generationPercent = progress >= 0.0 ? qRound(progress * 100.0) : 0;
             text = progress >= 0.0
-                ? QStringLiteral("Playback waiting: loading audio with Rubber Band tempo shift (%1%) %2%")
+                ? QStringLiteral("Audio being generated: Rubber Band tempo shift (%1%) %2%")
                       .arg(percent)
                       .arg(generationPercent)
-                : QStringLiteral("Playback waiting: loading audio with Rubber Band tempo shift (%1%)").arg(percent);
+                : QStringLiteral("Audio being generated: Rubber Band tempo shift (%1%)").arg(percent);
         } else if (m_playbackAudioWarmupPending) {
-            text = QStringLiteral("Playback waiting: loading re-timed audio (%1%)").arg(percent);
+            text = QStringLiteral("Loading re-timed audio (%1%)").arg(percent);
         } else if (!audioReady && m_lastPlaybackStopReason == QStringLiteral("audio_not_ready")) {
             text = QStringLiteral("Playback waiting: loading precomputed %1% audio").arg(percent);
         }

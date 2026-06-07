@@ -11,11 +11,6 @@ class QVulkanInstance;
 struct QVulkanExtension;
 template <typename T> class QVulkanInfoVector;
 
-bool directVulkanPreviewDebugChromeEnabled();
-bool directVulkanPreviewOptimalPresentEnabled();
-bool directVulkanPreviewDirectSwapchainVisible();
-QString directVulkanPreviewVisiblePathLabel();
-
 QWidget* createDirectVulkanPreviewHostWidget(PreviewInteractionState* state,
                                              std::function<void()> updateCallback,
                                              QWidget* parent);

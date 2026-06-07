@@ -169,7 +169,9 @@ Overlay text uses a dedicated Vulkan glyph-atlas renderer. CPU work is limited t
 - `vulkan_preview_surface_profiling.cpp`
   - REST/perf fields separating video zero-copy status from overlay preparation status
 
-- `direct_vulkan_preview_backend.cpp`
+- `direct_vulkan_preview_window.cpp`
+- `direct_vulkan_preview_geometry.cpp`
+- `direct_vulkan_preview_interaction.cpp`
   - Vulkan clip draw
   - overlay primitive draw
   - direct-path fallback/error reporting
