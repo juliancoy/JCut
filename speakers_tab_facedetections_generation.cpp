@@ -19,6 +19,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHBoxLayout>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLabel>
 #include <QMessageBox>
@@ -98,6 +99,67 @@ QJsonObject existingFaceDetectionsRequest(const QString& requestPath)
     return request;
 }
 
+QJsonObject existingFaceDetectionsLaunchControl(const QString& artifactDir)
+{
+    QJsonObject control;
+    readJsonObject(QDir(artifactDir).absoluteFilePath(QStringLiteral("launch_control.json")),
+                   &control,
+                   nullptr);
+    return control;
+}
+
+QString normalizedFaceDetectionsLaunchMode(const QJsonObject& launchControl)
+{
+    const QString mode =
+        launchControl.value(QStringLiteral("mode")).toString(QStringLiteral("auto")).trimmed().toLower();
+    if (mode == QStringLiteral("fixed") ||
+        mode == QStringLiteral("benchmark") ||
+        mode == QStringLiteral("auto")) {
+        return mode;
+    }
+    return QStringLiteral("auto");
+}
+
+QString normalizedFaceDetectionsLaunchProfile(const QJsonObject& launchControl)
+{
+    const QString profile =
+        launchControl.value(QStringLiteral("launch_profile"))
+            .toString(QStringLiteral("interactive"))
+            .trimmed()
+            .toLower();
+    if (profile == QStringLiteral("interactive") ||
+        profile == QStringLiteral("throughput")) {
+        return profile;
+    }
+    return QStringLiteral("interactive");
+}
+
+bool launchControlBool(const QJsonObject& launchControl,
+                       const QString& key,
+                       bool fallback)
+{
+    if (!launchControl.contains(key)) {
+        return fallback;
+    }
+    const QJsonValue value = launchControl.value(key);
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    if (value.isDouble()) {
+        return value.toInt() != 0;
+    }
+    const QString text = value.toString().trimmed().toLower();
+    if (text == QStringLiteral("true") || text == QStringLiteral("1") ||
+        text == QStringLiteral("yes") || text == QStringLiteral("on")) {
+        return true;
+    }
+    if (text == QStringLiteral("false") || text == QStringLiteral("0") ||
+        text == QStringLiteral("no") || text == QStringLiteral("off")) {
+        return false;
+    }
+    return fallback;
+}
+
 QString facedetectionsOffscreenExecutablePath()
 {
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -121,6 +183,188 @@ struct FaceDetectionsProcessResult {
     QString standardOutput;
     QString standardError;
 };
+
+struct FaceDetectionsLaunchTopology {
+    int detectorWorkers = 2;
+    int detectorPipelineSlots = 2;
+    QJsonObject benchmarkResult;
+};
+
+FaceDetectionsProcessResult runProcessWithEventLoop(const QString& program,
+                                                    const QStringList& args,
+                                                    QProcess::ProcessChannelMode channelMode)
+{
+    FaceDetectionsProcessResult result;
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(args);
+    process.setWorkingDirectory(QFileInfo(program).absolutePath());
+    process.setProcessChannelMode(channelMode);
+
+    QEventLoop loop;
+    QObject::connect(&process, &QProcess::readyReadStandardOutput, &loop, [&]() {
+        result.standardOutput += QString::fromLocal8Bit(process.readAllStandardOutput());
+    });
+    QObject::connect(&process, &QProcess::readyReadStandardError, &loop, [&]() {
+        result.standardError += QString::fromLocal8Bit(process.readAllStandardError());
+    });
+    QObject::connect(&process,
+                     qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
+                     &loop,
+                     [&](int exitCode, QProcess::ExitStatus exitStatus) {
+        result.exitCode = exitCode;
+        result.exitStatus = exitStatus;
+        loop.quit();
+    });
+    QObject::connect(&process, &QProcess::errorOccurred, &loop, [&]() {
+        if (!result.standardError.endsWith(QLatin1Char('\n')) &&
+            !result.standardError.isEmpty()) {
+            result.standardError += QLatin1Char('\n');
+        }
+        result.standardError += QStringLiteral("[process-error] %1\n").arg(process.errorString());
+        if (process.state() == QProcess::NotRunning) {
+            loop.quit();
+        }
+    });
+
+    process.start();
+    result.started = process.waitForStarted(5000);
+    if (!result.started) {
+        result.standardError += process.errorString();
+        return result;
+    }
+
+    if (process.state() != QProcess::NotRunning) {
+        loop.exec();
+    } else {
+        result.exitCode = process.exitCode();
+        result.exitStatus = process.exitStatus();
+    }
+    result.standardOutput += QString::fromLocal8Bit(process.readAllStandardOutput());
+    result.standardError += QString::fromLocal8Bit(process.readAllStandardError());
+    return result;
+}
+
+QString benchmarkSlotCsv(const QJsonObject& launchControl)
+{
+    const QJsonArray configured = launchControl.value(QStringLiteral("benchmark_pipeline_slots")).toArray();
+    QStringList parts;
+    for (const QJsonValue& value : configured) {
+        bool ok = false;
+        const int slotValue = value.toVariant().toInt(&ok);
+        if (ok && slotValue >= 1 && slotValue <= 10 && !parts.contains(QString::number(slotValue))) {
+            parts.append(QString::number(slotValue));
+        }
+    }
+    if (parts.isEmpty()) {
+        parts = QStringList{QStringLiteral("1"), QStringLiteral("2"), QStringLiteral("4"), QStringLiteral("8")};
+    }
+    return parts.join(QLatin1Char(','));
+}
+
+void setArgumentValue(QStringList* args, const QString& optionName, const QString& value)
+{
+    if (!args) {
+        return;
+    }
+    const int optionIndex = args->indexOf(optionName);
+    if (optionIndex >= 0 && optionIndex + 1 < args->size()) {
+        (*args)[optionIndex + 1] = value;
+        return;
+    }
+    args->append(optionName);
+    args->append(value);
+}
+
+bool parsePipelineBenchmarkOutput(const QString& output,
+                                  QJsonObject* benchmarkOut,
+                                  QString* errorOut)
+{
+    const int prefixIndex = output.indexOf(QStringLiteral("pipeline_benchmark "));
+    const int objectStart = prefixIndex >= 0
+        ? output.indexOf(QLatin1Char('{'), prefixIndex)
+        : output.indexOf(QLatin1Char('{'));
+    const int objectEnd = output.lastIndexOf(QLatin1Char('}'));
+    if (objectStart < 0 || objectEnd <= objectStart) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("benchmark output did not contain a JSON result");
+        }
+        return false;
+    }
+    QString parseError;
+    QJsonObject parsed;
+    if (!jcut::jsonio::parseObjectBytes(output.mid(objectStart, objectEnd - objectStart + 1).toUtf8(),
+                                        &parsed,
+                                        &parseError)) {
+        if (errorOut) {
+            *errorOut = parseError;
+        }
+        return false;
+    }
+    if (benchmarkOut) {
+        *benchmarkOut = parsed;
+    }
+    return true;
+}
+
+bool chooseBenchmarkedFaceDetectionsTopology(const QString& generatorProgram,
+                                             const QStringList& baseArgs,
+                                             const QJsonObject& launchControl,
+                                             FaceDetectionsLaunchTopology* topology,
+                                             QString* errorOut)
+{
+    if (!topology) {
+        return false;
+    }
+    int benchmarkFrames =
+        std::clamp(launchControl.value(QStringLiteral("benchmark_frames")).toInt(480), 60, 5000);
+    const int requestedMaxFramesIndex = baseArgs.indexOf(QStringLiteral("--max-frames"));
+    if (requestedMaxFramesIndex >= 0 && requestedMaxFramesIndex + 1 < baseArgs.size()) {
+        bool ok = false;
+        const int requestedMaxFrames = baseArgs.at(requestedMaxFramesIndex + 1).toInt(&ok);
+        if (ok && requestedMaxFrames > 0) {
+            benchmarkFrames = std::min(benchmarkFrames, requestedMaxFrames);
+        }
+    }
+    QStringList benchmarkArgs = baseArgs;
+    benchmarkArgs << QStringLiteral("--benchmark-pipeline-slots")
+                  << benchmarkSlotCsv(launchControl);
+    setArgumentValue(&benchmarkArgs, QStringLiteral("--max-frames"), QString::number(benchmarkFrames));
+
+    const FaceDetectionsProcessResult benchmarkProcess =
+        runProcessWithEventLoop(generatorProgram, benchmarkArgs, QProcess::MergedChannels);
+    if (!benchmarkProcess.started) {
+        if (errorOut) {
+            *errorOut = benchmarkProcess.standardError;
+        }
+        return false;
+    }
+    const QString output = benchmarkProcess.standardOutput + benchmarkProcess.standardError;
+    if (benchmarkProcess.exitStatus != QProcess::NormalExit || benchmarkProcess.exitCode != 0) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("benchmark process failed with exit code %1:\n%2")
+                            .arg(benchmarkProcess.exitCode)
+                            .arg(output.trimmed());
+        }
+        return false;
+    }
+    QJsonObject benchmark;
+    if (!parsePipelineBenchmarkOutput(output, &benchmark, errorOut)) {
+        return false;
+    }
+    const int bestWorkers = benchmark.value(QStringLiteral("best_detector_workers")).toInt(-1);
+    const int bestSlots = benchmark.value(QStringLiteral("best_detector_pipeline_slots")).toInt(-1);
+    if (bestWorkers < 1 || bestSlots < 1) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("benchmark did not identify a valid worker/slot topology");
+        }
+        return false;
+    }
+    topology->detectorWorkers = std::clamp(bestWorkers, 1, 10);
+    topology->detectorPipelineSlots = std::clamp(bestSlots, 1, 10);
+    topology->benchmarkResult = benchmark;
+    return true;
+}
 
 class ScopedAudioBackgroundDecodeSuppression {
 public:
@@ -148,6 +392,27 @@ private:
     bool m_active = false;
 };
 
+class ScopedBoolReset {
+public:
+    explicit ScopedBoolReset(bool* value)
+        : m_value(value)
+    {
+    }
+
+    ~ScopedBoolReset()
+    {
+        if (m_value) {
+            *m_value = false;
+        }
+    }
+
+    ScopedBoolReset(const ScopedBoolReset&) = delete;
+    ScopedBoolReset& operator=(const ScopedBoolReset&) = delete;
+
+private:
+    bool* m_value = nullptr;
+};
+
 FaceDetectionsProcessResult runFaceDetectionsGeneratorProcess(QWidget* parent,
                                                      const QString& program,
                                                      const QStringList& args,
@@ -161,62 +426,11 @@ FaceDetectionsProcessResult runFaceDetectionsGeneratorProcess(QWidget* parent,
     process.setProcessChannelMode(QProcess::SeparateChannels);
 
     if (uiAutomationEnabled()) {
-        process.start();
-        result.started = process.waitForStarted(5000);
-        if (!result.started) {
-            result.standardError += process.errorString();
-            return result;
-        }
-        process.waitForFinished(-1);
-        result.exitCode = process.exitCode();
-        result.exitStatus = process.exitStatus();
-        result.standardOutput += QString::fromLocal8Bit(process.readAllStandardOutput());
-        result.standardError += QString::fromLocal8Bit(process.readAllStandardError());
-        return result;
+        return runProcessWithEventLoop(program, args, QProcess::SeparateChannels);
     }
 
     if (livePreview) {
-        QEventLoop loop;
-        QObject::connect(&process, &QProcess::readyReadStandardOutput, &loop, [&]() {
-            result.standardOutput += QString::fromLocal8Bit(process.readAllStandardOutput());
-        });
-        QObject::connect(&process, &QProcess::readyReadStandardError, &loop, [&]() {
-            result.standardError += QString::fromLocal8Bit(process.readAllStandardError());
-        });
-        QObject::connect(&process,
-                         qOverload<int, QProcess::ExitStatus>(&QProcess::finished),
-                         &loop,
-                         [&](int exitCode, QProcess::ExitStatus exitStatus) {
-            result.exitCode = exitCode;
-            result.exitStatus = exitStatus;
-            loop.quit();
-        });
-        QObject::connect(&process, &QProcess::errorOccurred, &loop, [&]() {
-            if (!result.standardError.endsWith(QLatin1Char('\n'))) {
-                result.standardError += QLatin1Char('\n');
-            }
-            result.standardError += QStringLiteral("[process-error] %1\n").arg(process.errorString());
-            if (process.state() == QProcess::NotRunning) {
-                loop.quit();
-            }
-        });
-
-        process.start();
-        result.started = process.waitForStarted(5000);
-        if (!result.started) {
-            result.standardError += process.errorString();
-            return result;
-        }
-
-        if (process.state() != QProcess::NotRunning) {
-            loop.exec();
-        } else {
-            result.exitCode = process.exitCode();
-            result.exitStatus = process.exitStatus();
-        }
-        result.standardOutput += QString::fromLocal8Bit(process.readAllStandardOutput());
-        result.standardError += QString::fromLocal8Bit(process.readAllStandardError());
-        return result;
+        return runProcessWithEventLoop(program, args, QProcess::SeparateChannels);
     }
 
     QDialog progressDialog(parent);
@@ -316,6 +530,15 @@ FaceDetectionsProcessResult runFaceDetectionsGeneratorProcess(QWidget* parent,
 
 void SpeakersTab::onSpeakerRunAutoTrackClicked()
 {
+    if (m_faceDetectionsGenerationInProgress) {
+        showAutomationAwareWarning(
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
+            QStringLiteral("FaceDetections generation is already running for this editor instance."));
+        return;
+    }
+    m_faceDetectionsGenerationInProgress = true;
+    ScopedBoolReset resetGenerationInProgress(&m_faceDetectionsGenerationInProgress);
+
     if (!activeCutMutable() || !m_transcriptSession.hasObjectDocument()) {
         return;
     }
@@ -349,6 +572,25 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const int64_t sourceEndFrameExclusive = scanRange.endFrameExclusive;
     const int64_t maxFrames = scanRange.frameCount;
 
+    const QString clipId = selectedClip->id.trimmed().isEmpty()
+        ? QStringLiteral("unknown_clip")
+        : selectedClip->id.trimmed();
+    const QString artifactDir = facedetectionsClipSidecarDir(selectedClip->filePath, clipId);
+    QDir().mkpath(artifactDir);
+    QJsonObject launchControl = existingFaceDetectionsLaunchControl(artifactDir);
+    const bool explicitLaunchControl = !launchControl.isEmpty();
+    const QString initialLaunchMode = normalizedFaceDetectionsLaunchMode(launchControl);
+    const QString initialLaunchProfile = normalizedFaceDetectionsLaunchProfile(launchControl);
+    const bool initialThroughputProfile = initialLaunchProfile == QStringLiteral("throughput");
+    const bool initialLivePreview =
+        launchControlBool(launchControl, QStringLiteral("live_preview"), true);
+    const int preflightDetectorWorkersDefault = std::clamp(
+        launchControl.contains(QStringLiteral("detector_workers"))
+            ? launchControl.value(QStringLiteral("detector_workers")).toInt(2)
+            : 2,
+        1,
+        10);
+
     const FaceDetectionsPreflightDialogResult preflight =
         runFaceDetectionsPreflightDialog(
             &detectorSettings,
@@ -360,12 +602,14 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 QStringLiteral("This flow runs raw face detection, then forms identity-agnostic continuity tracks, then imports those artefacts for the selected clip.\n\n"
                                "Detector: SCRFD ncnn Vulkan only. CPU detector fallback is not used."),
                 QStringLiteral("Input defaults to source media. Enable proxy input explicitly if you want detection and continuity generation to scan the proxy instead. "
+                               "Artifact frame numbers are source-media absolute frames and do not depend on the current timeline FPS or playback clock. "
+                               "Launch topology is selected by the saved benchmark unless you change the manual worker count here, which intentionally switches this clip to fixed topology. "
                                "Artifact: facedetections.part + tracks.idx/tracks.dat + detections.idx/detections.dat + continuity_facedetections.bin. Interrupted runs resume only when the input path still matches the checkpointed run."),
                 QStringLiteral("Proceed"),
                 QStringLiteral("Cancel"),
                 QSize(760, 420),
                 true,
-                true,
+                initialLivePreview,
                 false,
                 true,
                 false,
@@ -377,10 +621,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 detectorSettings.useProxySource,
                 QStringLiteral("Use proxy media as FaceDetections input"),
                 true,
-                2,
+                preflightDetectorWorkersDefault,
                 1,
                 10,
-                QStringLiteral("Detector workers")
+                QStringLiteral("Manual detector workers")
             });
     if (!preflight.accepted) {
         return;
@@ -414,12 +658,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             QStringLiteral("Cannot create a detection/continuity debug run because the active transcript path is unavailable."));
         return;
     }
-
-    const QString clipId = selectedClip->id.trimmed().isEmpty()
-        ? QStringLiteral("unknown_clip")
-        : selectedClip->id.trimmed();
-    const QString artifactDir = facedetectionsClipSidecarDir(selectedClip->filePath, clipId);
-    QDir().mkpath(artifactDir);
 
     const QDir initialRunDir(debugRun.runDir);
     const QString initialRequestPath = initialRunDir.absoluteFilePath(
@@ -463,8 +701,70 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         return;
     }
 
-    const int detectorWorkers = std::clamp(preflight.detectorWorkers, 1, 10);
-    const int detectorPipelineSlots = detectorWorkers;
+    QString launchMode = initialLaunchMode;
+    if (!explicitLaunchControl) {
+        launchControl[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_launch_control_v1");
+        launchControl[QStringLiteral("mode")] = launchMode;
+        launchControl[QStringLiteral("launch_profile")] = QStringLiteral("interactive");
+        launchControl[QStringLiteral("live_preview")] = true;
+        launchControl[QStringLiteral("control_window")] = true;
+        launchControl[QStringLiteral("progress_output")] = true;
+        launchControl[QStringLiteral("benchmark_frames")] = 480;
+        launchControl[QStringLiteral("runtime_mutable")] = false;
+        launchControl[QStringLiteral("apply_scope")] = QStringLiteral("next_generator_launch");
+        launchControl[QStringLiteral("editor_restart_required")] = false;
+        launchControl[QStringLiteral("generator_relaunch_required")] = true;
+        launchControl[QStringLiteral("requires_generator_relaunch")] = true;
+        launchControl[QStringLiteral("auto_default")] = true;
+    }
+    bool preflightLaunchControlChanged = false;
+    if (preflight.detectorWorkers != preflightDetectorWorkersDefault) {
+        preflightLaunchControlChanged = true;
+        launchMode = QStringLiteral("fixed");
+        launchControl[QStringLiteral("mode")] = launchMode;
+        launchControl[QStringLiteral("detector_workers")] = preflight.detectorWorkers;
+        launchControl[QStringLiteral("detector_pipeline_slots")] = preflight.detectorWorkers;
+        launchControl[QStringLiteral("updated_at_utc")] =
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        launchControl[QStringLiteral("apply_scope")] = QStringLiteral("next_generator_launch");
+        launchControl[QStringLiteral("editor_restart_required")] = false;
+        launchControl[QStringLiteral("generator_relaunch_required")] = true;
+        launchControl[QStringLiteral("requires_generator_relaunch")] = true;
+        launchControl[QStringLiteral("note")] =
+            QStringLiteral("Manual detector worker count changed in FaceDetections preflight; this clip is now fixed-topology for future generator launches.");
+        QString launchControlWriteError;
+        if (!jcut::jsonio::writeJsonFile(QDir(artifactDir).absoluteFilePath(QStringLiteral("launch_control.json")),
+                                         launchControl,
+                                         true,
+                                         &launchControlWriteError)) {
+            qWarning().noquote()
+                << "Failed to persist FaceDetections preflight launch control:"
+                << launchControlWriteError;
+        }
+    }
+    const QString launchProfile = normalizedFaceDetectionsLaunchProfile(launchControl);
+    const bool throughputProfile = launchProfile == QStringLiteral("throughput");
+    const bool launchLivePreview =
+        throughputProfile
+            ? launchControlBool(launchControl, QStringLiteral("live_preview"), true)
+            : preflight.livePreview;
+    const bool launchControlWindow =
+        launchControlBool(launchControl, QStringLiteral("control_window"), !throughputProfile);
+    const bool launchProgressOutput =
+        launchControlBool(launchControl, QStringLiteral("progress_output"), !throughputProfile);
+    FaceDetectionsLaunchTopology launchTopology;
+    launchTopology.detectorWorkers = std::clamp(
+        launchControl.contains(QStringLiteral("detector_workers"))
+            ? launchControl.value(QStringLiteral("detector_workers")).toInt(preflight.detectorWorkers)
+            : preflight.detectorWorkers,
+        1,
+        10);
+    launchTopology.detectorPipelineSlots = std::clamp(
+        launchControl.contains(QStringLiteral("detector_pipeline_slots"))
+            ? launchControl.value(QStringLiteral("detector_pipeline_slots")).toInt(launchTopology.detectorWorkers)
+            : launchTopology.detectorWorkers,
+        1,
+        10);
 
     QStringList args{
         mediaPath,
@@ -481,9 +781,9 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         QStringLiteral("--scrfd-target-size"), QString::number(qMax(320, detectorSettings.scrfdTargetSize)),
         QStringLiteral("--start-frame"), QString::number(startFrame),
         QStringLiteral("--quiet"),
-        QStringLiteral("--progress"),
-        QStringLiteral("--detector-workers"), QString::number(detectorWorkers),
-        QStringLiteral("--detector-pipeline-slots"), QString::number(detectorPipelineSlots),
+        launchProgressOutput ? QStringLiteral("--progress") : QStringLiteral("--no-progress"),
+        QStringLiteral("--detector-workers"), QString::number(launchTopology.detectorWorkers),
+        QStringLiteral("--detector-pipeline-slots"), QString::number(launchTopology.detectorPipelineSlots),
         QStringLiteral("--out-dir"), artifactDir
     };
     args << (detectorSettings.primaryFaceOnly
@@ -496,8 +796,10 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 ? QStringLiteral("--scrfd-tiling")
                 : QStringLiteral("--no-scrfd-tiling"));
     args << QStringLiteral("--require-zero-copy");
-    args << QStringLiteral("--control-window");
-    args << (preflight.livePreview
+    args << (launchControlWindow
+                ? QStringLiteral("--control-window")
+                : QStringLiteral("--no-control-window"));
+    args << (launchLivePreview
                 ? QStringLiteral("--preview-window")
                 : QStringLiteral("--no-preview-window"));
     args << QStringLiteral("--no-preview-files");
@@ -539,8 +841,16 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
             detectorSettings,
             QStringLiteral("scrfd-ncnn-vulkan"),
             detectorSettings.scrfdTargetSize);
-    request[QStringLiteral("detector_workers")] = detectorWorkers;
-    request[QStringLiteral("detector_pipeline_slots")] = detectorPipelineSlots;
+    request[QStringLiteral("detector_workers")] = launchTopology.detectorWorkers;
+    request[QStringLiteral("detector_pipeline_slots")] = launchTopology.detectorPipelineSlots;
+    request[QStringLiteral("detector_launch_profile")] = launchProfile;
+    request[QStringLiteral("detector_launch_live_preview")] = launchLivePreview;
+    request[QStringLiteral("detector_launch_control_window")] = launchControlWindow;
+    request[QStringLiteral("detector_launch_progress_output")] = launchProgressOutput;
+    request[QStringLiteral("detector_launch_control_path")] =
+        QDir(artifactDir).absoluteFilePath(QStringLiteral("launch_control.json"));
+    request[QStringLiteral("detector_launch_control_applied")] =
+        explicitLaunchControl || preflightLaunchControlChanged;
     request[QStringLiteral("artifact_out_dir")] = artifactDir;
     request[QStringLiteral("facedetections_part")] = facedetectionsPartPath;
     request[QStringLiteral("detections_bin")] = detectionsPath;
@@ -549,11 +859,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     request[QStringLiteral("summary_json")] = summaryPath;
     request[QStringLiteral("clip_json")] = preflight.applyClipGrading ? clipJsonPath : QString();
     request[QStringLiteral("apply_clip_grading")] = preflight.applyClipGrading;
-    request[QStringLiteral("arguments")] = args.join(QLatin1Char(' '));
-    QString requestWriteError;
-    if (!jcut::jsonio::writeJsonFile(requestPath, request, true, &requestWriteError)) {
-        qWarning().noquote() << "Failed to write detection/continuity request file:" << requestWriteError;
-    }
 
     const QString generatorProgram = facedetectionsOffscreenExecutablePath();
     if (!QFileInfo::exists(generatorProgram)) {
@@ -563,6 +868,61 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 .arg(generatorProgram));
         return;
     }
+    if (launchMode == QStringLiteral("benchmark") || launchMode == QStringLiteral("auto")) {
+        QString benchmarkError;
+        if (!chooseBenchmarkedFaceDetectionsTopology(generatorProgram,
+                                                     args,
+                                                     launchControl,
+                                                     &launchTopology,
+                                                     &benchmarkError)) {
+            showAutomationAwareWarning(
+                QStringLiteral("JCut DNN Detection + Continuity Generator"),
+                QStringLiteral("FaceDetections launch benchmark failed.\n\n%1")
+                    .arg(benchmarkError.trimmed().isEmpty()
+                             ? QStringLiteral("No benchmark result was produced.")
+                             : benchmarkError.trimmed()));
+            return;
+        }
+        setArgumentValue(&args, QStringLiteral("--detector-workers"),
+                         QString::number(launchTopology.detectorWorkers));
+        setArgumentValue(&args, QStringLiteral("--detector-pipeline-slots"),
+                         QString::number(launchTopology.detectorPipelineSlots));
+        launchControl[QStringLiteral("detector_workers")] = launchTopology.detectorWorkers;
+        launchControl[QStringLiteral("detector_pipeline_slots")] = launchTopology.detectorPipelineSlots;
+        launchControl[QStringLiteral("mode")] = launchMode;
+        launchControl[QStringLiteral("last_benchmark")] = launchTopology.benchmarkResult;
+        launchControl[QStringLiteral("last_benchmark_at_utc")] =
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        launchControl[QStringLiteral("updated_at_utc")] =
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+        launchControl[QStringLiteral("runtime_mutable")] = false;
+        launchControl[QStringLiteral("apply_scope")] = QStringLiteral("next_generator_launch");
+        launchControl[QStringLiteral("editor_restart_required")] = false;
+        launchControl[QStringLiteral("generator_relaunch_required")] = true;
+        launchControl[QStringLiteral("requires_generator_relaunch")] = true;
+        QString benchmarkControlWriteError;
+        if (!jcut::jsonio::writeJsonFile(QDir(artifactDir).absoluteFilePath(QStringLiteral("launch_control.json")),
+                                         launchControl,
+                                         true,
+                                         &benchmarkControlWriteError)) {
+            qWarning().noquote()
+                << "Failed to persist FaceDetections benchmark launch control:"
+                << benchmarkControlWriteError;
+        }
+    }
+
+    request[QStringLiteral("detector_workers")] = launchTopology.detectorWorkers;
+    request[QStringLiteral("detector_pipeline_slots")] = launchTopology.detectorPipelineSlots;
+    request[QStringLiteral("detector_launch_mode")] = launchMode;
+    if (!launchTopology.benchmarkResult.isEmpty()) {
+        request[QStringLiteral("detector_launch_benchmark")] = launchTopology.benchmarkResult;
+    }
+    request[QStringLiteral("arguments")] = args.join(QLatin1Char(' '));
+    QString requestWriteError;
+    if (!jcut::jsonio::writeJsonFile(requestPath, request, true, &requestWriteError)) {
+        qWarning().noquote() << "Failed to write detection/continuity request file:" << requestWriteError;
+    }
+
     const FaceDetectionsProcessResult processResult =
         [&]() {
             ScopedAudioBackgroundDecodeSuppression suppressAudioDecode(

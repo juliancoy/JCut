@@ -1,7 +1,10 @@
 #include "control_server_worker.h"
 
 #include "control_server_ui_utils.h"
+#include "detector_settings.h"
 #include "editor.h"
+#include "facedetections_artifact_utils.h"
+#include "json_io_utils.h"
 
 #include <QAbstractButton>
 #include <QAction>
@@ -13,12 +16,15 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QEventLoop>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QLabel>
 #include <QListWidget>
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QDir>
+#include <QJsonArray>
 #include <QScreen>
 #include <QSlider>
 #include <QSpinBox>
@@ -33,6 +39,50 @@
 
 namespace control_server {
 namespace {
+constexpr int kFaceDetectionsControlMinWorkers = 1;
+constexpr int kFaceDetectionsControlMaxWorkers = 10;
+constexpr int kFaceDetectionsControlDefaultBenchmarkFrames = 480;
+
+QString normalizedFaceDetectionsLaunchProfile(const QJsonObject& control)
+{
+    const QString profile =
+        control.value(QStringLiteral("launch_profile"))
+            .toString(QStringLiteral("interactive"))
+            .trimmed()
+            .toLower();
+    if (profile == QStringLiteral("throughput") ||
+        profile == QStringLiteral("interactive")) {
+        return profile;
+    }
+    return QStringLiteral("interactive");
+}
+
+bool boolControlValue(const QJsonObject& control,
+                      const QString& key,
+                      bool fallback)
+{
+    if (!control.contains(key)) {
+        return fallback;
+    }
+    const QJsonValue value = control.value(key);
+    if (value.isBool()) {
+        return value.toBool();
+    }
+    if (value.isDouble()) {
+        return value.toInt() != 0;
+    }
+    const QString text = value.toString().trimmed().toLower();
+    if (text == QStringLiteral("true") || text == QStringLiteral("1") ||
+        text == QStringLiteral("yes") || text == QStringLiteral("on")) {
+        return true;
+    }
+    if (text == QStringLiteral("false") || text == QStringLiteral("0") ||
+        text == QStringLiteral("no") || text == QStringLiteral("off")) {
+        return false;
+    }
+    return fallback;
+}
+
 bool offscreenPlatformActive()
 {
     return QGuiApplication::platformName().compare(QStringLiteral("offscreen"), Qt::CaseInsensitive) == 0;
@@ -322,9 +372,435 @@ QJsonObject syntheticSpeakerFaceDetectionsContextMenu(const QTableWidget* table)
     };
 }
 
+QString sourceMediaPathForControlClip(const QJsonObject& clip)
+{
+    return clip.value(QStringLiteral("filePath")).toString().trimmed();
+}
+
+QString facedetectionsControlPathForClip(const QJsonObject& clip)
+{
+    const QString filePath = sourceMediaPathForControlClip(clip);
+    const QString clipId = clip.value(QStringLiteral("id")).toString().trimmed();
+    if (filePath.isEmpty() || clipId.isEmpty()) {
+        return {};
+    }
+    const QString sidecarDir = facedetectionsClipSidecarDir(filePath, clipId);
+    return QDir(sidecarDir).absoluteFilePath(QStringLiteral("launch_control.json"));
+}
+
+QJsonObject readFaceDetectionsLaunchControl(const QString& path)
+{
+    QJsonObject object;
+    if (!path.trimmed().isEmpty()) {
+        jcut::jsonio::readJsonFile(path, &object, nullptr);
+    }
+    return object;
+}
+
+QJsonObject readJsonObjectOrEmpty(const QString& path)
+{
+    QJsonObject object;
+    if (!path.trimmed().isEmpty()) {
+        jcut::jsonio::readJsonFile(path, &object, nullptr);
+    }
+    return object;
+}
+
+QJsonObject stateObjectFromCallbackResult(const QJsonObject& callbackResult)
+{
+    const QJsonObject nestedState = callbackResult.value(QStringLiteral("state")).toObject();
+    if (!nestedState.isEmpty() &&
+        callbackResult.value(QStringLiteral("timeline")).toArray().isEmpty()) {
+        return nestedState;
+    }
+    return callbackResult;
+}
+
+QJsonArray normalizedBenchmarkSlots(const QJsonObject& control)
+{
+    QJsonArray benchmarkSlots;
+    const QJsonArray configuredSlots =
+        control.value(QStringLiteral("benchmark_pipeline_slots")).toArray();
+    for (const QJsonValue& value : configuredSlots) {
+        bool ok = false;
+        const int slotValue = value.toVariant().toInt(&ok);
+        if (ok && slotValue >= kFaceDetectionsControlMinWorkers &&
+            slotValue <= kFaceDetectionsControlMaxWorkers &&
+            !benchmarkSlots.contains(slotValue)) {
+            benchmarkSlots.append(slotValue);
+        }
+    }
+    if (benchmarkSlots.isEmpty()) {
+        benchmarkSlots.append(1);
+        benchmarkSlots.append(2);
+        benchmarkSlots.append(4);
+        benchmarkSlots.append(8);
+    }
+    return benchmarkSlots;
+}
+
+QJsonObject selectedFaceDetectionsControlSnapshot(const QJsonObject& stateObj)
+{
+    const QJsonObject selectedResolution = resolveSelectedClipState(stateObj);
+    const QJsonObject selectedClip = selectedResolution.value(QStringLiteral("selectedClip")).toObject();
+    const QString selectedClipId = selectedResolution.value(QStringLiteral("selectedClipId")).toString().trimmed();
+    const QString mediaPath = sourceMediaPathForControlClip(selectedClip);
+    const QString controlPath = facedetectionsControlPathForClip(selectedClip);
+    const QJsonObject control = readFaceDetectionsLaunchControl(controlPath);
+
+    const int detectorWorkers =
+        qBound(kFaceDetectionsControlMinWorkers,
+               control.value(QStringLiteral("detector_workers")).toInt(2),
+               kFaceDetectionsControlMaxWorkers);
+    const int detectorPipelineSlots =
+        qBound(kFaceDetectionsControlMinWorkers,
+               control.value(QStringLiteral("detector_pipeline_slots")).toInt(detectorWorkers),
+               kFaceDetectionsControlMaxWorkers);
+    const QString launchProfile = normalizedFaceDetectionsLaunchProfile(control);
+    const bool throughputProfile = launchProfile == QStringLiteral("throughput");
+    const bool livePreview = boolControlValue(control, QStringLiteral("live_preview"), true);
+    const bool controlWindow = boolControlValue(control, QStringLiteral("control_window"), !throughputProfile);
+    const bool progressOutput = boolControlValue(control, QStringLiteral("progress_output"), !throughputProfile);
+
+    QJsonObject response;
+    response[QStringLiteral("ok")] = !selectedClip.isEmpty();
+    response[QStringLiteral("selectedClipId")] = selectedClipId;
+    response[QStringLiteral("clip_resolution_source")] =
+        selectedResolution.value(QStringLiteral("selectedClipResolutionSource")).toString();
+    response[QStringLiteral("media_path")] = mediaPath;
+    response[QStringLiteral("artifact_dir")] =
+        !selectedClip.isEmpty() ? facedetectionsClipSidecarDir(mediaPath, selectedClipId) : QString();
+    response[QStringLiteral("control_path")] = controlPath;
+    response[QStringLiteral("control_exists")] = QFileInfo::exists(controlPath);
+    const QString detectorSettingsPath =
+        !mediaPath.isEmpty()
+            ? jcut::facedetections::detectorSettingsPathForVideo(mediaPath)
+            : QString();
+    const QJsonObject detectorSettings = readJsonObjectOrEmpty(detectorSettingsPath);
+    const QJsonObject previewDebug =
+        detectorSettings.value(QStringLiteral("preview_debug")).toObject();
+    const bool previewPresentationEnabled =
+        previewDebug.value(QStringLiteral("presentation_enabled")).toBool(true);
+    response[QStringLiteral("detector_settings_path")] = detectorSettingsPath;
+    response[QStringLiteral("detector_settings_exists")] =
+        QFileInfo::exists(detectorSettingsPath);
+    response[QStringLiteral("preview_presentation_enabled")] =
+        previewPresentationEnabled;
+    response[QStringLiteral("detector_workers")] = detectorWorkers;
+    response[QStringLiteral("detector_pipeline_slots")] = detectorPipelineSlots;
+    response[QStringLiteral("mode")] =
+        control.value(QStringLiteral("mode")).toString(QStringLiteral("auto"));
+    response[QStringLiteral("launch_profile")] = launchProfile;
+    response[QStringLiteral("live_preview")] = livePreview;
+    response[QStringLiteral("control_window")] = controlWindow;
+    response[QStringLiteral("progress_output")] = progressOutput;
+    response[QStringLiteral("benchmark_pipeline_slots")] = normalizedBenchmarkSlots(control);
+    response[QStringLiteral("benchmark_frames")] =
+        qBound(60,
+               control.value(QStringLiteral("benchmark_frames"))
+                   .toInt(kFaceDetectionsControlDefaultBenchmarkFrames),
+               5000);
+    response[QStringLiteral("runtime_mutable")] = true;
+    response[QStringLiteral("launch_topology_runtime_mutable")] = false;
+    response[QStringLiteral("runtime_mutable_fields")] =
+        QJsonArray{QStringLiteral("preview_presentation_enabled")};
+    response[QStringLiteral("apply_scope")] = QStringLiteral("next_generator_launch");
+    response[QStringLiteral("editor_restart_required")] = false;
+    response[QStringLiteral("generator_relaunch_required")] = true;
+    response[QStringLiteral("requires_generator_relaunch")] = true;
+    response[QStringLiteral("requires_restart")] = true;
+    response[QStringLiteral("reason")] =
+        QStringLiteral("Detector worker and pipeline slot counts are launch-time topology. REST updates are saved in the selected clip sidecar and apply only to the next FaceDetections generator launch; they do not mutate an already-running generator.");
+    response[QStringLiteral("control")] = control;
+    return response;
+}
+
+bool readBoundedIntField(const QJsonObject& object,
+                         const QString& key,
+                         int minValue,
+                         int maxValue,
+                         int defaultValue,
+                         int* valueOut,
+                         QString* errorOut)
+{
+    if (!valueOut) {
+        return false;
+    }
+    if (!object.contains(key)) {
+        *valueOut = qBound(minValue, defaultValue, maxValue);
+        return true;
+    }
+    bool ok = false;
+    const int value = object.value(key).toVariant().toInt(&ok);
+    if (!ok || value < minValue || value > maxValue) {
+        if (errorOut) {
+            *errorOut = QStringLiteral("%1 must be an integer in [%2, %3]")
+                            .arg(key)
+                            .arg(minValue)
+                            .arg(maxValue);
+        }
+        return false;
+    }
+    *valueOut = value;
+    return true;
+}
+
 } // namespace
 
 bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& request) {
+    if ((request.method == QStringLiteral("GET") || request.method == QStringLiteral("POST")) &&
+        request.url.path() == QStringLiteral("/facedetections/generator-control")) {
+        QString error;
+        const QJsonObject body = request.method == QStringLiteral("POST")
+            ? parseJsonObject(request.body, &error)
+            : QJsonObject{};
+        if (!error.isEmpty()) {
+            writeError(socket, 400, error);
+            return true;
+        }
+
+        QJsonObject response;
+        const int timeoutMs = qMax(m_uiInvokeTimeoutMs, 5000);
+        if (!invokeOnUiThread(m_window, timeoutMs, &response, [this, body, isPost = request.method == QStringLiteral("POST")]() {
+                QJsonObject stateObj;
+                if (m_stateSnapshotCallback) {
+                    stateObj = stateObjectFromCallbackResult(m_stateSnapshotCallback());
+                }
+                QJsonObject snapshot = selectedFaceDetectionsControlSnapshot(stateObj);
+                if (!snapshot.value(QStringLiteral("ok")).toBool(false)) {
+                    snapshot[QStringLiteral("error")] = QStringLiteral("no selected clip");
+                    return snapshot;
+                }
+                if (!isPost) {
+                    return snapshot;
+                }
+
+                if (!body.contains(QStringLiteral("detector_workers")) &&
+                    !body.contains(QStringLiteral("detector_pipeline_slots")) &&
+                    !body.contains(QStringLiteral("mode")) &&
+                    !body.contains(QStringLiteral("launch_profile")) &&
+                    !body.contains(QStringLiteral("live_preview")) &&
+                    !body.contains(QStringLiteral("control_window")) &&
+                    !body.contains(QStringLiteral("progress_output")) &&
+                    !body.contains(QStringLiteral("preview_presentation_enabled")) &&
+                    !body.contains(QStringLiteral("benchmark_pipeline_slots")) &&
+                    !body.contains(QStringLiteral("benchmark_frames"))) {
+                    snapshot[QStringLiteral("ok")] = false;
+                    snapshot[QStringLiteral("error")] = QStringLiteral(
+                        "POST body must include detector_workers, detector_pipeline_slots, mode, launch_profile, live_preview, control_window, progress_output, preview_presentation_enabled, benchmark_pipeline_slots, or benchmark_frames");
+                    return snapshot;
+                }
+                QString validationError;
+                int requestedWorkers = snapshot.value(QStringLiteral("detector_workers")).toInt(2);
+                if (!readBoundedIntField(body,
+                                         QStringLiteral("detector_workers"),
+                                         kFaceDetectionsControlMinWorkers,
+                                         kFaceDetectionsControlMaxWorkers,
+                                         requestedWorkers,
+                                         &requestedWorkers,
+                                         &validationError)) {
+                    snapshot[QStringLiteral("ok")] = false;
+                    snapshot[QStringLiteral("error")] = validationError;
+                    return snapshot;
+                }
+                int requestedSlots = requestedWorkers;
+                if (!readBoundedIntField(body,
+                                         QStringLiteral("detector_pipeline_slots"),
+                                         kFaceDetectionsControlMinWorkers,
+                                         kFaceDetectionsControlMaxWorkers,
+                                         requestedWorkers,
+                                         &requestedSlots,
+                                         &validationError)) {
+                    snapshot[QStringLiteral("ok")] = false;
+                    snapshot[QStringLiteral("error")] = validationError;
+                    return snapshot;
+                }
+
+                const QString controlPath = snapshot.value(QStringLiteral("control_path")).toString();
+                QJsonObject control = snapshot.value(QStringLiteral("control")).toObject();
+                QString requestedMode =
+                    body.value(QStringLiteral("mode"))
+                        .toString(control.value(QStringLiteral("mode")).toString())
+                        .trimmed()
+                        .toLower();
+                if (requestedMode.isEmpty()) {
+                    requestedMode =
+                        (body.contains(QStringLiteral("detector_workers")) ||
+                         body.contains(QStringLiteral("detector_pipeline_slots")))
+                            ? QStringLiteral("fixed")
+                            : QStringLiteral("auto");
+                }
+                if (requestedMode != QStringLiteral("auto") &&
+                    requestedMode != QStringLiteral("fixed") &&
+                    requestedMode != QStringLiteral("benchmark")) {
+                    snapshot[QStringLiteral("ok")] = false;
+                    snapshot[QStringLiteral("error")] =
+                        QStringLiteral("mode must be 'auto', 'fixed', or 'benchmark'");
+                    return snapshot;
+                }
+                control[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_launch_control_v1");
+                control[QStringLiteral("mode")] = requestedMode;
+                control[QStringLiteral("detector_workers")] = requestedWorkers;
+                control[QStringLiteral("detector_pipeline_slots")] = requestedSlots;
+                QString requestedLaunchProfile =
+                    body.value(QStringLiteral("launch_profile"))
+                        .toString(control.value(QStringLiteral("launch_profile"))
+                                      .toString(QStringLiteral("interactive")))
+                        .trimmed()
+                        .toLower();
+                if (requestedLaunchProfile.isEmpty()) {
+                    requestedLaunchProfile = QStringLiteral("interactive");
+                }
+                if (requestedLaunchProfile != QStringLiteral("interactive") &&
+                    requestedLaunchProfile != QStringLiteral("throughput")) {
+                    snapshot[QStringLiteral("ok")] = false;
+                    snapshot[QStringLiteral("error")] =
+                        QStringLiteral("launch_profile must be 'interactive' or 'throughput'");
+                    return snapshot;
+                }
+                const bool launchProfileChanged =
+                    requestedLaunchProfile !=
+                    control.value(QStringLiteral("launch_profile"))
+                        .toString(QStringLiteral("interactive"))
+                        .trimmed()
+                        .toLower();
+                control[QStringLiteral("launch_profile")] = requestedLaunchProfile;
+                const bool throughputProfile = requestedLaunchProfile == QStringLiteral("throughput");
+                if (body.contains(QStringLiteral("live_preview"))) {
+                    control[QStringLiteral("live_preview")] =
+                        boolControlValue(body, QStringLiteral("live_preview"), true);
+                } else if (launchProfileChanged || !control.contains(QStringLiteral("live_preview"))) {
+                    control[QStringLiteral("live_preview")] = true;
+                }
+                if (body.contains(QStringLiteral("control_window"))) {
+                    control[QStringLiteral("control_window")] =
+                        boolControlValue(body, QStringLiteral("control_window"), !throughputProfile);
+                } else if (launchProfileChanged || !control.contains(QStringLiteral("control_window"))) {
+                    control[QStringLiteral("control_window")] = !throughputProfile;
+                }
+                if (body.contains(QStringLiteral("progress_output"))) {
+                    control[QStringLiteral("progress_output")] =
+                        boolControlValue(body, QStringLiteral("progress_output"), !throughputProfile);
+                } else if (launchProfileChanged || !control.contains(QStringLiteral("progress_output"))) {
+                    control[QStringLiteral("progress_output")] = !throughputProfile;
+                }
+                if (body.contains(QStringLiteral("benchmark_pipeline_slots"))) {
+                    QJsonArray benchmarkSlots;
+                    const QJsonArray requestedBenchmarkSlots =
+                        body.value(QStringLiteral("benchmark_pipeline_slots")).toArray();
+                    for (const QJsonValue& value : requestedBenchmarkSlots) {
+                        bool ok = false;
+                        const int slotValue = value.toVariant().toInt(&ok);
+                        if (!ok || slotValue < kFaceDetectionsControlMinWorkers ||
+                            slotValue > kFaceDetectionsControlMaxWorkers) {
+                            snapshot[QStringLiteral("ok")] = false;
+                            snapshot[QStringLiteral("error")] =
+                                QStringLiteral("benchmark_pipeline_slots values must be integers in [%1, %2]")
+                                    .arg(kFaceDetectionsControlMinWorkers)
+                                    .arg(kFaceDetectionsControlMaxWorkers);
+                            return snapshot;
+                        }
+                        if (!benchmarkSlots.contains(slotValue)) {
+                            benchmarkSlots.append(slotValue);
+                        }
+                    }
+                    if (benchmarkSlots.isEmpty()) {
+                        snapshot[QStringLiteral("ok")] = false;
+                        snapshot[QStringLiteral("error")] =
+                            QStringLiteral("benchmark_pipeline_slots cannot be empty");
+                        return snapshot;
+                    }
+                    control[QStringLiteral("benchmark_pipeline_slots")] = benchmarkSlots;
+                }
+                if (body.contains(QStringLiteral("benchmark_frames"))) {
+                    bool ok = false;
+                    const int benchmarkFrames =
+                        body.value(QStringLiteral("benchmark_frames")).toVariant().toInt(&ok);
+                    if (!ok || benchmarkFrames < 60 || benchmarkFrames > 5000) {
+                        snapshot[QStringLiteral("ok")] = false;
+                        snapshot[QStringLiteral("error")] =
+                            QStringLiteral("benchmark_frames must be an integer in [60, 5000]");
+                        return snapshot;
+                    }
+                    control[QStringLiteral("benchmark_frames")] = benchmarkFrames;
+                }
+                bool previewRuntimeSettingChanged = false;
+                if (body.contains(QStringLiteral("preview_presentation_enabled"))) {
+                    const bool previewPresentationEnabled =
+                        boolControlValue(body,
+                                         QStringLiteral("preview_presentation_enabled"),
+                                         snapshot.value(QStringLiteral("preview_presentation_enabled"))
+                                             .toBool(true));
+                    const QString detectorSettingsPath =
+                        snapshot.value(QStringLiteral("detector_settings_path")).toString();
+                    if (detectorSettingsPath.trimmed().isEmpty()) {
+                        snapshot[QStringLiteral("ok")] = false;
+                        snapshot[QStringLiteral("error")] =
+                            QStringLiteral("selected clip has no detector settings path");
+                        return snapshot;
+                    }
+                    QJsonObject detectorSettings = readJsonObjectOrEmpty(detectorSettingsPath);
+                    QJsonObject previewDebug =
+                        detectorSettings.value(QStringLiteral("preview_debug")).toObject();
+                    previewDebug[QStringLiteral("presentation_enabled")] =
+                        previewPresentationEnabled;
+                    detectorSettings[QStringLiteral("preview_debug")] = previewDebug;
+                    QString detectorSettingsWriteError;
+                    if (!jcut::jsonio::writeJsonFile(detectorSettingsPath,
+                                                     detectorSettings,
+                                                     true,
+                                                     &detectorSettingsWriteError)) {
+                        snapshot[QStringLiteral("ok")] = false;
+                        snapshot[QStringLiteral("error")] =
+                            detectorSettingsWriteError.trimmed().isEmpty()
+                                ? QStringLiteral("failed to write detector settings")
+                                : detectorSettingsWriteError;
+                        return snapshot;
+                    }
+                    previewRuntimeSettingChanged = true;
+                    control[QStringLiteral("preview_presentation_enabled")] =
+                        previewPresentationEnabled;
+                }
+                control[QStringLiteral("updated_at_utc")] =
+                    QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+                control[QStringLiteral("runtime_mutable")] = false;
+                control[QStringLiteral("apply_scope")] = QStringLiteral("next_generator_launch");
+                control[QStringLiteral("editor_restart_required")] = false;
+                control[QStringLiteral("generator_relaunch_required")] = true;
+                control[QStringLiteral("requires_generator_relaunch")] = true;
+                control[QStringLiteral("requires_restart")] = true;
+                control[QStringLiteral("note")] =
+                    QStringLiteral("Applied to future FaceDetections generator launches for this clip. Running generators keep their launch-time topology.");
+
+                QString writeError;
+                if (!jcut::jsonio::writeJsonFile(controlPath, control, true, &writeError)) {
+                    snapshot[QStringLiteral("ok")] = false;
+                    snapshot[QStringLiteral("error")] =
+                        writeError.trimmed().isEmpty()
+                            ? QStringLiteral("failed to write FaceDetections launch control")
+                            : writeError;
+                    return snapshot;
+                }
+
+                QJsonObject updated = selectedFaceDetectionsControlSnapshot(stateObj);
+                updated[QStringLiteral("applied")] = true;
+                updated[QStringLiteral("changed_running_process")] = false;
+                updated[QStringLiteral("changed_runtime_settings_file")] =
+                    previewRuntimeSettingChanged;
+                updated[QStringLiteral("running_generator_reload_required")] = false;
+                updated[QStringLiteral("apply_scope")] = QStringLiteral("next_generator_launch");
+                updated[QStringLiteral("editor_restart_required")] = false;
+                updated[QStringLiteral("generator_relaunch_required")] = true;
+                return updated;
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out updating FaceDetections generator control"));
+            return true;
+        }
+
+        writeJson(socket, response.value(QStringLiteral("ok")).toBool() ? 200 : 400, response);
+        return true;
+    }
+
     if (request.method == QStringLiteral("POST") &&
         request.url.path() == QStringLiteral("/facedetections/delete-selected")) {
         QString error;
@@ -347,7 +823,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
 
                 QJsonObject stateObj;
                 if (m_stateSnapshotCallback) {
-                    stateObj = m_stateSnapshotCallback().value(QStringLiteral("state")).toObject();
+                    stateObj = stateObjectFromCallbackResult(m_stateSnapshotCallback());
                 }
                 const QJsonObject selectedResolution = resolveSelectedClipState(stateObj);
                 const QString selectedClipId =
@@ -574,7 +1050,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                     if (text.startsWith(QStringLiteral("Face Stabilize"), Qt::CaseInsensitive)) {
                         QJsonObject stateObj;
                         if (m_stateSnapshotCallback) {
-                            stateObj = m_stateSnapshotCallback().value(QStringLiteral("state")).toObject();
+                            stateObj = stateObjectFromCallbackResult(m_stateSnapshotCallback());
                         }
                         const QJsonObject selectedClip =
                             resolveSelectedClipState(stateObj).value(QStringLiteral("selectedClip")).toObject();
@@ -1401,7 +1877,7 @@ bool ControlServerWorker::handleUiRoutes(QTcpSocket* socket, const Request& requ
                         if (text.startsWith(QStringLiteral("Face Stabilize"), Qt::CaseInsensitive)) {
                             QJsonObject stateObj;
                             if (m_stateSnapshotCallback) {
-                                stateObj = m_stateSnapshotCallback().value(QStringLiteral("state")).toObject();
+                                stateObj = stateObjectFromCallbackResult(m_stateSnapshotCallback());
                             }
                             const QJsonObject selectedClip =
                                 resolveSelectedClipState(stateObj).value(QStringLiteral("selectedClip")).toObject();

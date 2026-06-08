@@ -47,6 +47,15 @@ struct ScrfdOutputBinding {
     std::vector<const char*> bboxBlobCandidates;
 };
 
+#if JCUT_HAVE_NCNN
+struct ResolvedScrfdOutputBinding {
+    int featStride = 0;
+    int scoreBlobIndex = -1;
+    int bboxBlobIndex = -1;
+    ncnn::Mat anchors;
+};
+#endif
+
 double intersectionArea(const FaceObject& a, const FaceObject& b)
 {
     const QRectF inter = a.rect.intersected(b.rect);
@@ -170,6 +179,27 @@ int matchingNcnnDeviceIndex(VkPhysicalDevice physicalDevice)
     return ncnn::get_default_gpu_index();
 }
 
+int resolveFirstAvailableBlobIndex(const std::vector<int>& indexes,
+                                   const std::vector<const char*>& names,
+                                   const std::vector<const char*>& candidates)
+{
+    for (const char* candidate : candidates) {
+        for (size_t i = 0; i < names.size() && i < indexes.size(); ++i) {
+            if (QString::fromLatin1(names[i]) == QString::fromLatin1(candidate)) {
+                return indexes[i];
+            }
+        }
+    }
+    return -1;
+}
+
+int resolveFirstAvailableInputBlobIndex(const ncnn::Net& net)
+{
+    static const std::array<const char*, 3> candidates{{"input.1", "input", "data"}};
+    return resolveFirstAvailableBlobIndex(net.input_indexes(), net.input_names(),
+                                          std::vector<const char*>(candidates.begin(), candidates.end()));
+}
+
 ncnn::Mat generateAnchors(int baseSize, const ncnn::Mat& ratios, const ncnn::Mat& scales)
 {
     const int numRatio = ratios.w;
@@ -247,6 +277,8 @@ struct VulkanScrfdNcnnFaceDetector::Impl {
     std::unique_ptr<ncnn::VulkanDevice> vkdev;
     ncnn::Net net;
     ncnn::VkBufferMemory inputMemory{};
+    int inputBlobIndex = -1;
+    std::array<ResolvedScrfdOutputBinding, 3> resolvedOutputBindings{};
 #endif
     VulkanDeviceContext context;
     bool initialized = false;
@@ -254,6 +286,54 @@ struct VulkanScrfdNcnnFaceDetector::Impl {
     QString modelVariant = QStringLiteral("500m");
     NcnnInferenceStats lastStats;
 };
+
+#if JCUT_HAVE_NCNN
+bool resolveScrfdNetworkBindings(const ncnn::Net& net,
+                                 const QString& modelVariant,
+                                 int* inputBlobIndexOut,
+                                 std::array<ResolvedScrfdOutputBinding, 3>* outputBindingsOut,
+                                 QString* errorMessage)
+{
+    if (!inputBlobIndexOut || !outputBindingsOut) {
+        setError(errorMessage, QStringLiteral("SCRFD detector implementation is unavailable"));
+        return false;
+    }
+    *inputBlobIndexOut = resolveFirstAvailableInputBlobIndex(net);
+    if (*inputBlobIndexOut < 0) {
+        setError(errorMessage,
+                 QStringLiteral("SCRFD model does not expose a supported input blob (tried input.1/input/data)"));
+        return false;
+    }
+
+    ncnn::Mat ratios(1);
+    ratios[0] = 1.0f;
+    ncnn::Mat scales(2);
+    scales[0] = 1.0f;
+    scales[1] = 2.0f;
+
+    const auto bindings = scrfdOutputBindingsForVariant(modelVariant);
+    for (size_t i = 0; i < bindings.size(); ++i) {
+        const ScrfdOutputBinding& binding = bindings[i];
+        ResolvedScrfdOutputBinding resolved;
+        resolved.featStride = binding.featStride;
+        resolved.scoreBlobIndex =
+            resolveFirstAvailableBlobIndex(net.output_indexes(), net.output_names(),
+                                           binding.scoreBlobCandidates);
+        resolved.bboxBlobIndex =
+            resolveFirstAvailableBlobIndex(net.output_indexes(), net.output_names(),
+                                           binding.bboxBlobCandidates);
+        if (resolved.scoreBlobIndex < 0 || resolved.bboxBlobIndex < 0) {
+            setError(errorMessage,
+                     QStringLiteral("SCRFD model does not expose supported output blobs for stride %1")
+                         .arg(binding.featStride));
+            return false;
+        }
+        resolved.anchors = generateAnchors(binding.baseSize, ratios, scales);
+        (*outputBindingsOut)[i] = resolved;
+    }
+    return true;
+}
+#endif
 
 VulkanScrfdNcnnFaceDetector::VulkanScrfdNcnnFaceDetector()
     : m_impl(new Impl)
@@ -311,6 +391,13 @@ bool VulkanScrfdNcnnFaceDetector::initialize(const QString& paramPath,
         m_impl->modelVariant = QStringLiteral("34g");
     } else {
         m_impl->modelVariant = QStringLiteral("500m");
+    }
+    if (!resolveScrfdNetworkBindings(m_impl->net, m_impl->modelVariant,
+                                     &m_impl->inputBlobIndex,
+                                     &m_impl->resolvedOutputBindings,
+                                     errorMessage)) {
+        release();
+        return false;
     }
     m_impl->initialized = true;
     m_impl->zeroCopyInput = false;
@@ -389,6 +476,13 @@ bool VulkanScrfdNcnnFaceDetector::initialize(const VulkanDeviceContext& context,
     } else {
         m_impl->modelVariant = QStringLiteral("500m");
     }
+    if (!resolveScrfdNetworkBindings(m_impl->net, m_impl->modelVariant,
+                                     &m_impl->inputBlobIndex,
+                                     &m_impl->resolvedOutputBindings,
+                                     errorMessage)) {
+        release();
+        return false;
+    }
     m_impl->context = context;
     m_impl->initialized = true;
     m_impl->zeroCopyInput = true;
@@ -402,6 +496,8 @@ void VulkanScrfdNcnnFaceDetector::release()
     m_impl->net.clear();
     m_impl->vkdev.reset();
     m_impl->inputMemory = {};
+    m_impl->inputBlobIndex = -1;
+    m_impl->resolvedOutputBindings = {};
 #endif
     m_impl->context = {};
     m_impl->initialized = false;
@@ -474,36 +570,30 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromBgr(const cv::Mat&
     inputPad.substract_mean_normalize(meanVals, normVals);
 
     ncnn::Extractor ex = m_impl->net.create_extractor();
-    if (!bindScrfdInput(ex, inputPad, errorMessage)) {
+    if (m_impl->inputBlobIndex < 0 || ex.input(m_impl->inputBlobIndex, inputPad) != 0) {
+        setError(errorMessage,
+                 QStringLiteral("SCRFD model does not expose a supported input blob (tried input.1/input/data)"));
         return out;
     }
 
     std::vector<FaceObject> proposals;
-    auto extractLevel = [&](const ScrfdOutputBinding& binding, double* stageMs) -> bool {
+    auto extractLevel = [&](const ResolvedScrfdOutputBinding& binding, double* stageMs) -> bool {
         QElapsedTimer stageTimer;
         stageTimer.start();
         ncnn::Mat scoreBlob;
         ncnn::Mat bboxBlob;
-        QString resolvedScoreName;
-        QString resolvedBboxName;
-        if (!extractFirstAvailableBlob(ex, binding.scoreBlobCandidates, &scoreBlob, &resolvedScoreName) ||
-            !extractFirstAvailableBlob(ex, binding.bboxBlobCandidates, &bboxBlob, &resolvedBboxName)) {
+        if (binding.scoreBlobIndex < 0 || binding.bboxBlobIndex < 0 ||
+            ex.extract(binding.scoreBlobIndex, scoreBlob) != 0 ||
+            ex.extract(binding.bboxBlobIndex, bboxBlob) != 0) {
             setError(errorMessage,
                      QStringLiteral("SCRFD model does not expose supported output blobs for stride %1")
                          .arg(binding.featStride));
             return false;
         }
-        ncnn::Mat ratios(1);
-        ratios[0] = 1.0f;
-        ncnn::Mat scales(2);
-        scales[0] = 1.0f;
-        scales[1] = 2.0f;
-        const ncnn::Mat anchors = generateAnchors(binding.baseSize, ratios, scales);
-        generateProposals(anchors, binding.featStride, scoreBlob, bboxBlob, threshold, &proposals);
+        generateProposals(binding.anchors, binding.featStride, scoreBlob, bboxBlob, threshold, &proposals);
         return true;
     };
-    const auto bindings = scrfdOutputBindingsForVariant(m_impl->modelVariant);
-    for (const ScrfdOutputBinding& binding : bindings) {
+    for (const ResolvedScrfdOutputBinding& binding : m_impl->resolvedOutputBindings) {
         if (!extractLevel(binding, nullptr)) {
             return out;
         }
@@ -582,33 +672,28 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
     ex.set_light_mode(false);
     QElapsedTimer inputTimer;
     inputTimer.start();
-    if (!bindScrfdInput(ex, gpuInput, errorMessage)) {
+    if (m_impl->inputBlobIndex < 0 || ex.input(m_impl->inputBlobIndex, gpuInput) != 0) {
+        setError(errorMessage,
+                 QStringLiteral("SCRFD model does not expose a supported input blob (tried input.1/input/data)"));
         return out;
     }
     m_impl->lastStats.inputMs = static_cast<double>(inputTimer.nsecsElapsed()) / 1'000'000.0;
 
     std::vector<FaceObject> proposals;
-    auto extractLevel = [&](const ScrfdOutputBinding& binding, double* stageMs) -> bool {
+    auto extractLevel = [&](const ResolvedScrfdOutputBinding& binding, double* stageMs) -> bool {
         QElapsedTimer stageTimer;
         stageTimer.start();
         ncnn::Mat scoreBlob;
         ncnn::Mat bboxBlob;
-        QString resolvedScoreName;
-        QString resolvedBboxName;
-        if (!extractFirstAvailableBlob(ex, binding.scoreBlobCandidates, &scoreBlob, &resolvedScoreName) ||
-            !extractFirstAvailableBlob(ex, binding.bboxBlobCandidates, &bboxBlob, &resolvedBboxName)) {
+        if (binding.scoreBlobIndex < 0 || binding.bboxBlobIndex < 0 ||
+            ex.extract(binding.scoreBlobIndex, scoreBlob) != 0 ||
+            ex.extract(binding.bboxBlobIndex, bboxBlob) != 0) {
             setError(errorMessage,
                      QStringLiteral("SCRFD model does not expose supported output blobs for stride %1")
                          .arg(binding.featStride));
             return false;
         }
-        ncnn::Mat ratios(1);
-        ratios[0] = 1.0f;
-        ncnn::Mat scales(2);
-        scales[0] = 1.0f;
-        scales[1] = 2.0f;
-        const ncnn::Mat anchors = generateAnchors(binding.baseSize, ratios, scales);
-        generateProposals(anchors, binding.featStride, scoreBlob, bboxBlob, threshold, &proposals);
+        generateProposals(binding.anchors, binding.featStride, scoreBlob, bboxBlob, threshold, &proposals);
         if (stageMs) {
             *stageMs = static_cast<double>(stageTimer.nsecsElapsed()) / 1'000'000.0;
         }
@@ -616,8 +701,7 @@ QVector<ScrfdDetection> VulkanScrfdNcnnFaceDetector::inferFromTensor(const Vulka
     };
     QElapsedTimer extractTimer;
     extractTimer.start();
-    const auto bindings = scrfdOutputBindingsForVariant(m_impl->modelVariant);
-    for (const ScrfdOutputBinding& binding : bindings) {
+    for (const ResolvedScrfdOutputBinding& binding : m_impl->resolvedOutputBindings) {
         double* stageMs = nullptr;
         if (binding.featStride == 8) {
             stageMs = &m_impl->lastStats.extractLevel8Ms;

@@ -49,6 +49,7 @@ QJsonObject runtimeTuningToJson(const RuntimeTuning &tuning,
 
 QJsonObject previewDebugSettingsToJson(const PreviewDebugSettings &settings) {
   return {
+      {QStringLiteral("presentation_enabled"), settings.presentationEnabled},
       {QStringLiteral("follow_latest"), settings.followLatest},
       {QStringLiteral("show_detections"), settings.showDetections},
       {QStringLiteral("show_tracks"), settings.showTracks},
@@ -68,6 +69,9 @@ void applyPreviewDebugSettingsObject(const QJsonObject &object,
   if (!settings) {
     return;
   }
+  settings->presentationEnabled =
+      object.value(QStringLiteral("presentation_enabled"))
+          .toBool(settings->presentationEnabled);
   settings->followLatest = object.value(QStringLiteral("follow_latest"))
                                .toBool(settings->followLatest);
   settings->showDetections = object.value(QStringLiteral("show_detections"))

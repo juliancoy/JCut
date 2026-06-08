@@ -610,7 +610,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
           const QVector<Track> &previewTracks,
           const QVector<Detection> &previewDetections,
           const QString &titlePrefix) -> bool {
-    if (!livePreviewWindow) {
+    if (!livePreviewWindow || !previewDebugSettings.presentationEnabled) {
       return false;
     }
     livePreviewWindow->setWindowTitle(
@@ -630,7 +630,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       [&](int frameNumber, const QVector<Track> &previewTracks,
           const QVector<Detection> &previewDetections,
           const QString &titlePrefix) -> bool {
-    if (!livePreviewWindow) {
+    if (!livePreviewWindow || !previewDebugSettings.presentationEnabled) {
       return false;
     }
     QElapsedTimer previewTimer;
@@ -653,7 +653,8 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     return presented;
   };
   auto opportunisticLivePreviewDue = [&](int frameNumber) {
-    return livePreviewWindow && !runtimePaused &&
+    return livePreviewWindow && previewDebugSettings.presentationEnabled &&
+           !runtimePaused &&
            (frameNumber % effectivePreviewStride) == 0;
   };
   std::deque<LivePreviewSample> livePreviewQueue;
@@ -664,6 +665,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   auto enqueueLivePreviewSample =
       [&](int frameNumber, const QVector<Track> &tracks,
           const QVector<Detection> &detections, const QString &titlePrefix) {
+        if (!previewDebugSettings.presentationEnabled) {
+          livePreviewQueue.clear();
+          return;
+        }
         if (!opportunisticLivePreviewDue(frameNumber)) {
           return;
         }
@@ -677,6 +682,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
         ++livePreviewQueued;
       };
   auto drainLivePreviewQueue = [&](bool force = false) {
+    if (!previewDebugSettings.presentationEnabled) {
+      livePreviewQueue.clear();
+      return;
+    }
     if (!livePreviewWindow || livePreviewQueue.empty() || runtimePaused) {
       return;
     }
@@ -2164,6 +2173,11 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
           options.startFrame, finalFrame,
           qMax(options.startFrame, latestProcessedFrame));
       livePreviewWindow->setProcessingPaused(runtimePaused);
+      if (!previewDebugSettings.presentationEnabled) {
+        livePreviewWindow->setStatusText(QStringLiteral(
+            "Preview presentation disabled from runtime REST control; "
+            "detection continues."));
+      }
       syncDetectorPreviewPanel(&detectorControls, livePreviewWindow.get(),
                                options.startFrame,
                                qMax(options.startFrame, latestProcessedFrame));

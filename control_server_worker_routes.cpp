@@ -284,11 +284,13 @@ bool ControlServerWorker::handleRoot(QTcpSocket* socket, const Request& request)
         <div class="endpoint"><strong>GET /playback</strong> - Current playback policy configuration</div>
         <div class="endpoint"><strong>GET /audio</strong> - Audio loading, buffering, and mixer state</div>
         <div class="endpoint"><strong>GET /paradigms</strong> - Architecture organizational paradigms and file positioning</div>
+        <div class="endpoint"><strong>GET /facedetections/generator-control</strong> - Selected clip FaceDetections launch control</div>
 
         <h2>Controls:</h2>
         <div class="endpoint"><strong>POST /playhead</strong> - Set playhead position</div>
         <div class="endpoint"><strong>POST /ui</strong> - Mutate UI widgets/tables by id or selector</div>
         <div class="endpoint"><strong>POST /ui/context-action</strong> - Right-click a widget and trigger a nested context-menu path</div>
+        <div class="endpoint"><strong>POST /facedetections/generator-control</strong> - Set selected clip FaceDetections launch profile/workers and runtime preview presentation</div>
         <div class="endpoint"><strong>POST /facedetections/delete-selected</strong> - Delete FaceDetections for the currently selected clip</div>
         <div class="endpoint"><strong>POST /menu</strong> - Trigger an active popup menu action by text or submenu path</div>
         <div class="endpoint"><strong>POST /profile/reset</strong> - Reset profiling stats</div>

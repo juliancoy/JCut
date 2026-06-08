@@ -1148,7 +1148,7 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
         detectorWorkersSpin->setRange(minWorkers, maxWorkers);
         detectorWorkersSpin->setValue(std::clamp(options.detectorWorkers, minWorkers, maxWorkers));
         detectorWorkersSpin->setToolTip(QStringLiteral(
-            "Number of independent detector workers. Higher values can improve throughput on some GPUs, but too many workers can reduce performance through GPU/context contention."));
+            "Manual launch topology override. Changing this value switches the selected clip to fixed worker/slot counts for the next FaceDetections generator launch. Use benchmark mode unless you have measured a better topology."));
         auto* workersForm = new QFormLayout;
         workersForm->addRow(options.detectorWorkersLabel.trimmed().isEmpty()
                                 ? QStringLiteral("Detector workers")
@@ -1156,75 +1156,6 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
                             detectorWorkersSpin);
         layout->addLayout(workersForm);
     }
-
-    auto* audioRetimingGroupLabel = new QLabel(QStringLiteral("Audio retiming sidecars"), &preflightDialog);
-    audioRetimingGroupLabel->setStyleSheet(QStringLiteral("font-weight: 600; margin-top: 6px;"));
-    layout->addWidget(audioRetimingGroupLabel);
-
-    auto* audioRetimingForm = new QFormLayout;
-    auto* rubberBandEngineCombo = new QComboBox(&preflightDialog);
-    rubberBandEngineCombo->addItem(QStringLiteral("R3 Finer - highest quality"),
-                                   QStringLiteral("finer"));
-    rubberBandEngineCombo->addItem(QStringLiteral("R2 Faster - interactive/precompute"),
-                                   QStringLiteral("faster"));
-    rubberBandEngineCombo->setCurrentIndex(
-        rubberBandEngineCombo->findData(editor::rubberBandEnginePreferenceToString(
-            editor::rubberBandEnginePreference())));
-    if (rubberBandEngineCombo->currentIndex() < 0) {
-        rubberBandEngineCombo->setCurrentIndex(0);
-    }
-    rubberBandEngineCombo->setToolTip(QStringLiteral(
-        "Rubber Band engine for generated time-stretch sidecars. R3/Finer is highest quality; R2/Faster can be faster and can use Rubber Band's offline threading."));
-    audioRetimingForm->addRow(QStringLiteral("Rubber Band engine"), rubberBandEngineCombo);
-
-    auto* rubberBandThreadingCombo = new QComboBox(&preflightDialog);
-    rubberBandThreadingCombo->addItem(QStringLiteral("Always use threaded mode when available"),
-                                      QStringLiteral("always"));
-    rubberBandThreadingCombo->addItem(QStringLiteral("Auto"),
-                                      QStringLiteral("auto"));
-    rubberBandThreadingCombo->addItem(QStringLiteral("Never"),
-                                      QStringLiteral("never"));
-    rubberBandThreadingCombo->setCurrentIndex(
-        rubberBandThreadingCombo->findData(editor::rubberBandThreadingPreferenceToString(
-            editor::rubberBandThreadingPreference())));
-    if (rubberBandThreadingCombo->currentIndex() < 0) {
-        rubberBandThreadingCombo->setCurrentIndex(0);
-    }
-    rubberBandThreadingCombo->setToolTip(QStringLiteral(
-        "Controls Rubber Band's own threading option. Current R3/Finer builds are effectively single-threaded; R2/Faster can benefit in offline processing."));
-    audioRetimingForm->addRow(QStringLiteral("Threading"), rubberBandThreadingCombo);
-
-    auto* rubberBandWindowCombo = new QComboBox(&preflightDialog);
-    rubberBandWindowCombo->addItem(QStringLiteral("Standard"), QStringLiteral("standard"));
-    rubberBandWindowCombo->addItem(QStringLiteral("Short"), QStringLiteral("short"));
-    rubberBandWindowCombo->addItem(QStringLiteral("Long"), QStringLiteral("long"));
-    rubberBandWindowCombo->setCurrentIndex(
-        rubberBandWindowCombo->findData(editor::rubberBandWindowPreferenceToString(
-            editor::rubberBandWindowPreference())));
-    if (rubberBandWindowCombo->currentIndex() < 0) {
-        rubberBandWindowCombo->setCurrentIndex(0);
-    }
-    audioRetimingForm->addRow(QStringLiteral("Window"), rubberBandWindowCombo);
-
-    auto* rubberBandPitchCombo = new QComboBox(&preflightDialog);
-    rubberBandPitchCombo->addItem(QStringLiteral("High speed"), QStringLiteral("high_speed"));
-    rubberBandPitchCombo->addItem(QStringLiteral("High quality"), QStringLiteral("high_quality"));
-    rubberBandPitchCombo->addItem(QStringLiteral("High consistency"), QStringLiteral("high_consistency"));
-    rubberBandPitchCombo->setCurrentIndex(
-        rubberBandPitchCombo->findData(editor::rubberBandPitchPreferenceToString(
-            editor::rubberBandPitchPreference())));
-    if (rubberBandPitchCombo->currentIndex() < 0) {
-        rubberBandPitchCombo->setCurrentIndex(0);
-    }
-    audioRetimingForm->addRow(QStringLiteral("Pitch mode"), rubberBandPitchCombo);
-
-    auto* rubberBandChannelsTogetherCheckbox =
-        new QCheckBox(QStringLiteral("Process stereo channels together"), &preflightDialog);
-    rubberBandChannelsTogetherCheckbox->setChecked(editor::rubberBandChannelsTogether());
-    rubberBandChannelsTogetherCheckbox->setToolTip(QStringLiteral(
-        "Keeps channel phase relationships stable. Disable only for unusual material where independent channel processing is desired."));
-    audioRetimingForm->addRow(QString(), rubberBandChannelsTogetherCheckbox);
-    layout->addLayout(audioRetimingForm);
 
     DetectorSettingsPanel detectorPanel =
         createDetectorSettingsPanel(settings,
@@ -1264,30 +1195,6 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
         useProxySourceCheckbox ? useProxySourceCheckbox->isChecked() : options.useProxySourceChecked;
     result.detectorWorkers =
         detectorWorkersSpin ? detectorWorkersSpin->value() : result.detectorWorkers;
-    editor::RubberBandEnginePreference enginePreference = editor::RubberBandEnginePreference::Finer;
-    if (editor::parseRubberBandEnginePreference(
-            rubberBandEngineCombo->currentData().toString(), &enginePreference)) {
-        editor::setRubberBandEnginePreference(enginePreference);
-    }
-    editor::RubberBandThreadingPreference threadingPreference =
-        editor::RubberBandThreadingPreference::Always;
-    if (editor::parseRubberBandThreadingPreference(
-            rubberBandThreadingCombo->currentData().toString(), &threadingPreference)) {
-        editor::setRubberBandThreadingPreference(threadingPreference);
-    }
-    editor::RubberBandWindowPreference windowPreference =
-        editor::RubberBandWindowPreference::Standard;
-    if (editor::parseRubberBandWindowPreference(
-            rubberBandWindowCombo->currentData().toString(), &windowPreference)) {
-        editor::setRubberBandWindowPreference(windowPreference);
-    }
-    editor::RubberBandPitchPreference pitchPreference =
-        editor::RubberBandPitchPreference::HighSpeed;
-    if (editor::parseRubberBandPitchPreference(
-            rubberBandPitchCombo->currentData().toString(), &pitchPreference)) {
-        editor::setRubberBandPitchPreference(pitchPreference);
-    }
-    editor::setRubberBandChannelsTogether(rubberBandChannelsTogetherCheckbox->isChecked());
     settings->useProxySource = result.useProxySource;
     if (QFileInfo::exists(settingsPath) ||
         !detectorRuntimeSettingsEqual(*settings, immutableDefaultDetectorSettings())) {
@@ -1298,6 +1205,121 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
                                         &result.saveError);
     }
     return result;
+}
+
+bool runRubberBandPreflightDialog(QWidget* parent)
+{
+    if (uiAutomationEnabled()) {
+        return true;
+    }
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QStringLiteral("Rubber Band Audio Retiming"));
+    dialog.setWindowFlag(Qt::Window, true);
+    dialog.resize(520, 260);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    auto* detailLabel = new QLabel(
+        QStringLiteral("Configure Rubber Band settings used when generating pitch-preserving audio time-stretch sidecars."),
+        &dialog);
+    detailLabel->setWordWrap(true);
+    detailLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
+    layout->addWidget(detailLabel);
+
+    auto* form = new QFormLayout;
+    auto* engineCombo = new QComboBox(&dialog);
+    engineCombo->addItem(QStringLiteral("R3 Finer - highest quality"), QStringLiteral("finer"));
+    engineCombo->addItem(QStringLiteral("R2 Faster - interactive/precompute"), QStringLiteral("faster"));
+    engineCombo->setCurrentIndex(engineCombo->findData(
+        editor::rubberBandEnginePreferenceToString(editor::rubberBandEnginePreference())));
+    if (engineCombo->currentIndex() < 0) {
+        engineCombo->setCurrentIndex(0);
+    }
+    form->addRow(QStringLiteral("Rubber Band engine"), engineCombo);
+
+    auto* threadingCombo = new QComboBox(&dialog);
+    threadingCombo->addItem(QStringLiteral("Always use threaded mode when available"),
+                            QStringLiteral("always"));
+    threadingCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
+    threadingCombo->addItem(QStringLiteral("Never"), QStringLiteral("never"));
+    threadingCombo->setCurrentIndex(threadingCombo->findData(
+        editor::rubberBandThreadingPreferenceToString(editor::rubberBandThreadingPreference())));
+    if (threadingCombo->currentIndex() < 0) {
+        threadingCombo->setCurrentIndex(0);
+    }
+    form->addRow(QStringLiteral("Threading"), threadingCombo);
+
+    auto* windowCombo = new QComboBox(&dialog);
+    windowCombo->addItem(QStringLiteral("Standard"), QStringLiteral("standard"));
+    windowCombo->addItem(QStringLiteral("Short"), QStringLiteral("short"));
+    windowCombo->addItem(QStringLiteral("Long"), QStringLiteral("long"));
+    windowCombo->setCurrentIndex(windowCombo->findData(
+        editor::rubberBandWindowPreferenceToString(editor::rubberBandWindowPreference())));
+    if (windowCombo->currentIndex() < 0) {
+        windowCombo->setCurrentIndex(0);
+    }
+    form->addRow(QStringLiteral("Window"), windowCombo);
+
+    auto* pitchCombo = new QComboBox(&dialog);
+    pitchCombo->addItem(QStringLiteral("High speed"), QStringLiteral("high_speed"));
+    pitchCombo->addItem(QStringLiteral("High quality"), QStringLiteral("high_quality"));
+    pitchCombo->addItem(QStringLiteral("High consistency"), QStringLiteral("high_consistency"));
+    pitchCombo->setCurrentIndex(pitchCombo->findData(
+        editor::rubberBandPitchPreferenceToString(editor::rubberBandPitchPreference())));
+    if (pitchCombo->currentIndex() < 0) {
+        pitchCombo->setCurrentIndex(0);
+    }
+    form->addRow(QStringLiteral("Pitch mode"), pitchCombo);
+
+    auto* channelsTogetherCheckbox =
+        new QCheckBox(QStringLiteral("Process stereo channels together"), &dialog);
+    channelsTogetherCheckbox->setChecked(editor::rubberBandChannelsTogether());
+    form->addRow(QString(), channelsTogetherCheckbox);
+    layout->addLayout(form);
+
+    auto* buttons = new QHBoxLayout;
+    buttons->addStretch(1);
+    auto* cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
+    auto* applyButton = new QPushButton(QStringLiteral("Apply"), &dialog);
+    buttons->addWidget(cancelButton);
+    buttons->addWidget(applyButton);
+    layout->addLayout(buttons);
+
+    QObject::connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+    QObject::connect(applyButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+
+    editor::RubberBandEnginePreference enginePreference = editor::RubberBandEnginePreference::Finer;
+    if (editor::parseRubberBandEnginePreference(engineCombo->currentData().toString(),
+                                                &enginePreference)) {
+        editor::setRubberBandEnginePreference(enginePreference);
+    }
+    editor::RubberBandThreadingPreference threadingPreference =
+        editor::RubberBandThreadingPreference::Always;
+    if (editor::parseRubberBandThreadingPreference(threadingCombo->currentData().toString(),
+                                                   &threadingPreference)) {
+        editor::setRubberBandThreadingPreference(threadingPreference);
+    }
+    editor::RubberBandWindowPreference windowPreference =
+        editor::RubberBandWindowPreference::Standard;
+    if (editor::parseRubberBandWindowPreference(windowCombo->currentData().toString(),
+                                                &windowPreference)) {
+        editor::setRubberBandWindowPreference(windowPreference);
+    }
+    editor::RubberBandPitchPreference pitchPreference =
+        editor::RubberBandPitchPreference::HighSpeed;
+    if (editor::parseRubberBandPitchPreference(pitchCombo->currentData().toString(),
+                                               &pitchPreference)) {
+        editor::setRubberBandPitchPreference(pitchPreference);
+    }
+    editor::setRubberBandChannelsTogether(channelsTogetherCheckbox->isChecked());
+    return true;
 }
 
 } // namespace jcut::facedetections

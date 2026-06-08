@@ -60,6 +60,25 @@ QJsonObject transcriptRootWithProfiles()
     };
 }
 
+QString readRepoSourceFile(const QString& relativePath)
+{
+    const QStringList roots{
+        QFileInfo(QStringLiteral(__FILE__)).absoluteDir().absoluteFilePath(QStringLiteral("..")),
+        QDir::currentPath(),
+        QDir::current().absoluteFilePath(QStringLiteral("..")),
+        QCoreApplication::applicationDirPath(),
+        QDir(QCoreApplication::applicationDirPath()).absoluteFilePath(QStringLiteral(".."))
+    };
+    for (const QString& root : roots) {
+        QFile file(QDir(root).absoluteFilePath(relativePath));
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            continue;
+        }
+        return QString::fromUtf8(file.readAll());
+    }
+    return {};
+}
+
 } // namespace
 
 class FacestreamFlowTest : public QObject {
@@ -101,6 +120,11 @@ private slots:
             QByteArrayLiteral("/tmp/old"),
             QByteArrayLiteral("--benchmark-pipeline-slots"),
             QByteArrayLiteral("1,2,4,8"),
+            QByteArrayLiteral("--preview-window"),
+            QByteArrayLiteral("--control-window"),
+            QByteArrayLiteral("--progress"),
+            QByteArrayLiteral("--no-control-window"),
+            QByteArrayLiteral("--no-progress"),
             QByteArrayLiteral("--max-frames"),
             QByteArrayLiteral("32")
         };
@@ -115,9 +139,75 @@ private slots:
         QVERIFY(!args.contains(QStringLiteral("--detector-pipeline-slots")));
         QVERIFY(!args.contains(QStringLiteral("--out-dir")));
         QVERIFY(!args.contains(QStringLiteral("--benchmark-pipeline-slots")));
+        QVERIFY(!args.contains(QStringLiteral("--preview-window")));
+        QVERIFY(!args.contains(QStringLiteral("--control-window")));
+        QVERIFY(!args.contains(QStringLiteral("--progress")));
+        QVERIFY(!args.contains(QStringLiteral("--no-control-window")));
+        QVERIFY(!args.contains(QStringLiteral("--no-progress")));
         QVERIFY(args.contains(QStringLiteral("video.mp4")));
         QVERIFY(args.contains(QStringLiteral("--max-frames")));
         QVERIFY(args.contains(QStringLiteral("32")));
+    }
+
+    void launchControlRestStatesNextGeneratorLaunchOnly()
+    {
+        const QString source = readRepoSourceFile(QStringLiteral("control_server_worker_routes_ui.cpp"));
+        QVERIFY2(!source.isEmpty(), "control_server_worker_routes_ui.cpp must be readable");
+        QVERIFY2(source.contains(QStringLiteral("\"next_generator_launch\"")),
+                 "FaceDetections launch-control REST must identify next-launch scope");
+        QVERIFY2(source.contains(QStringLiteral("\"editor_restart_required\"")),
+                 "FaceDetections launch-control REST must distinguish editor restart from generator relaunch");
+        QVERIFY2(source.contains(QStringLiteral("\"generator_relaunch_required\"")),
+                 "FaceDetections launch-control REST must explicitly report generator relaunch requirement");
+        QVERIFY2(source.contains(QStringLiteral("\"launch_profile\"")),
+                 "FaceDetections launch-control REST must expose interactive/throughput profile");
+        QVERIFY2(source.contains(QStringLiteral("\"control_window\"")),
+                 "FaceDetections launch-control REST must expose generator control-window setting");
+        QVERIFY2(source.contains(QStringLiteral("\"progress_output\"")),
+                 "FaceDetections launch-control REST must expose generator progress-output setting");
+        QVERIFY2(source.contains(QStringLiteral("\"preview_presentation_enabled\"")),
+                 "FaceDetections launch-control REST must expose runtime preview presentation control");
+        QVERIFY2(source.contains(QStringLiteral("\"runtime_mutable_fields\"")),
+                 "FaceDetections launch-control REST must report runtime-mutable fields");
+        QVERIFY2(source.contains(QStringLiteral("\"changed_running_process\"")),
+                 "FaceDetections launch-control REST must report that running generators were not mutated");
+        QVERIFY2(source.contains(QStringLiteral("they do not mutate an already-running generator")),
+                 "FaceDetections launch-control REST must explain launch-time topology");
+    }
+
+    void generationRequestDeclaresSourceDomainAndLaunchScope()
+    {
+        const QString source = readRepoSourceFile(QStringLiteral("speakers_tab_facedetections_generation.cpp"));
+        QVERIFY2(!source.isEmpty(), "speakers_tab_facedetections_generation.cpp must be readable");
+        QVERIFY2(source.contains(QStringLiteral("FacestreamFrameDomain::SourceAbsolute")),
+                 "FaceDetections request metadata must stay in source-absolute frame domain");
+        QVERIFY2(source.contains(QStringLiteral("do not depend on the current timeline FPS or playback clock")),
+                 "FaceDetections preflight must warn that artifacts are source-media-domain");
+        QVERIFY2(source.contains(QStringLiteral("\"next_generator_launch\"")),
+                 "FaceDetections launch-control sidecars must use next-generator-launch scope");
+        QVERIFY2(source.contains(QStringLiteral("\"requires_generator_relaunch\"")),
+                 "FaceDetections launch-control sidecars must record generator relaunch requirement");
+        QVERIFY2(source.contains(QStringLiteral("--no-control-window")),
+                 "FaceDetections launch must be able to disable generator control windows");
+        QVERIFY2(source.contains(QStringLiteral("--no-progress")),
+                 "FaceDetections launch must be able to disable progress output");
+        QVERIFY2(source.contains(QStringLiteral("QStringLiteral(\"live_preview\"), true")),
+                 "FaceDetections throughput launch profile must keep preview enabled by default");
+    }
+
+    void generatorRuntimePreviewPresentationCanBeDisabled()
+    {
+        const QString tuning = readRepoSourceFile(QStringLiteral("vulkan_facedetections_offscreen_tuning.cpp"));
+        QVERIFY2(!tuning.isEmpty(), "vulkan_facedetections_offscreen_tuning.cpp must be readable");
+        QVERIFY2(tuning.contains(QStringLiteral("\"presentation_enabled\"")),
+                 "preview runtime settings must serialize presentation_enabled");
+
+        const QString runner = readRepoSourceFile(QStringLiteral("vulkan_facedetections_offscreen_runner.cpp"));
+        QVERIFY2(!runner.isEmpty(), "vulkan_facedetections_offscreen_runner.cpp must be readable");
+        QVERIFY2(runner.contains(QStringLiteral("previewDebugSettings.presentationEnabled")),
+                 "generator must consult runtime preview presentation setting");
+        QVERIFY2(runner.contains(QStringLiteral("Preview presentation disabled from runtime REST control")),
+                 "preview window must explain runtime-disabled presentation");
     }
 
     void currentCheckpointPayloadLoadsThroughResumeReplay()

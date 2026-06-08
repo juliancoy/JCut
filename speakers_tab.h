@@ -394,6 +394,7 @@ private:
     QString m_lastSelectionSeekClipId;
     bool m_skipNextPlayheadTrackCandidateRefresh = false;
     bool m_refreshingFaceDetectionsPathsPanel = false;
+    bool m_faceDetectionsGenerationInProgress = false;
     bool m_faceStreamPanelRefreshQueued = false;
     bool m_assignmentHistorySnapshotQueued = false;
     bool m_selectedSpeakerPanelRefreshQueued = false;

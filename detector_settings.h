@@ -192,5 +192,6 @@ FaceDetectionsPreflightDialogResult runFaceDetectionsPreflightDialog(
     const QString& settingsPath,
     const FaceDetectionsPreflightDialogOptions& options,
     QWidget* parent = nullptr);
+bool runRubberBandPreflightDialog(QWidget* parent = nullptr);
 
 } // namespace jcut::facedetections

@@ -22,6 +22,14 @@ QStringList benchmarkBaseArgs(int argc, char **argv) {
       }
       continue;
     }
+    if (arg == QStringLiteral("--preview-window") ||
+        arg == QStringLiteral("--no-preview-window") ||
+        arg == QStringLiteral("--control-window") ||
+        arg == QStringLiteral("--no-control-window") ||
+        arg == QStringLiteral("--progress") ||
+        arg == QStringLiteral("--no-progress")) {
+      continue;
+    }
     if (arg == QStringLiteral("--out-dir") ||
         arg == QStringLiteral("--detector-pipeline-slots") ||
         arg == QStringLiteral("--detector-workers")) {
@@ -124,7 +132,7 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
   QJsonArray runs;
   int bestSlots = -1;
   double bestProcessedFps = -1.0;
-  bool allOk = true;
+  bool anyOk = false;
 
   for (int slotCount : options.benchmarkPipelineSlotValues) {
     const QString runDir =
@@ -161,7 +169,6 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
     const int exitCode = process.exitCode();
     const QProcess::ExitStatus exitStatus = process.exitStatus();
     if (exitStatus != QProcess::NormalExit || exitCode != 0) {
-      allOk = false;
       std::cerr << "Pipeline benchmark child failed for slots=" << slotCount
                 << " exit_code=" << exitCode << " status="
                 << (exitStatus == QProcess::NormalExit ? "normal" : "crashed")
@@ -174,7 +181,6 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
     const QString summaryPath =
         QDir(runDir).filePath(QStringLiteral("summary.json"));
     if (!jcut::jsonio::readJsonFile(summaryPath, &summary, &readError)) {
-      allOk = false;
       std::cerr << "Pipeline benchmark could not read summary for slots="
                 << slotCount << ": " << readError.toStdString() << "\n";
     }
@@ -185,6 +191,7 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
         row.value(QStringLiteral("processed_fps")).toDouble(0.0);
     if (row.value(QStringLiteral("ok")).toBool(false) &&
         processedFps > bestProcessedFps) {
+      anyOk = true;
       bestProcessedFps = processedFps;
       bestSlots = slotCount;
     }
@@ -217,5 +224,10 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
   writeJson(resultPath, result);
   std::cout << "pipeline_benchmark "
             << jcut::jsonio::serializeCompact(result).constData() << "\n";
-  return allOk ? 0 : 2;
+  if (!anyOk) {
+    std::cerr << "Pipeline benchmark failed: no candidate slot count completed "
+                 "successfully.\n";
+    return 2;
+  }
+  return 0;
 }

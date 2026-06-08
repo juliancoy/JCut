@@ -78,11 +78,13 @@
     "mediaGalleryPath": "",
     "mediaRoot": "/home/julian/Documents/JCut",
     "outputFormat": "mp4",
+    "outputFps": 30,
     "outputHeight": 1920,
     "outputWidth": 1080,
     "playbackAudioWarpMode": "disabled",
     "playbackAudioWarpModeExplicit": true,
     "playbackClockSource": "timeline",
+    "playbackClockSourceExplicit": true,
     "playbackLoopEnabled": false,
     "playbackSpeed": 1,
     "playing": false,
@@ -114,7 +116,7 @@
     "rubberBandWindow": "standard",
     "selectedClip": {
         "audioEnabled": true,
-        "audioSourceLastVerifiedMs": 1780278948436,
+        "audioSourceLastVerifiedMs": 1780883781088,
         "audioSourceMode": "embedded",
         "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
         "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
@@ -489,6 +491,8 @@
         "speakerFramingEnabled": false,
         "speakerFramingEnabledKeyframes": [],
         "speakerFramingGapHoldFrames": 0,
+        "speakerFramingManualStreamId": "",
+        "speakerFramingManualTrackId": -1,
         "speakerFramingMinConfidence": 0.08,
         "speakerFramingSmoothingMode": 0,
         "speakerFramingTargetKeyframes": [],
@@ -580,7 +584,7 @@
     "timeline": [
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780278948416,
+            "audioSourceLastVerifiedMs": 1780883781072,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/life_c.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/life_c.png",
@@ -953,6 +957,8 @@
             "speakerFramingEnabled": false,
             "speakerFramingEnabledKeyframes": [],
             "speakerFramingGapHoldFrames": 0,
+            "speakerFramingManualStreamId": "",
+            "speakerFramingManualTrackId": -1,
             "speakerFramingMinConfidence": 0.08,
             "speakerFramingSmoothingMode": 0,
             "speakerFramingTargetKeyframes": [],
@@ -1016,7 +1022,7 @@
         },
         {
             "audioEnabled": false,
-            "audioSourceLastVerifiedMs": 1780278948646,
+            "audioSourceLastVerifiedMs": 1780883781103,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "",
             "audioSourcePath": "",
@@ -1389,6 +1395,8 @@
             "speakerFramingEnabled": false,
             "speakerFramingEnabledKeyframes": [],
             "speakerFramingGapHoldFrames": 0,
+            "speakerFramingManualStreamId": "",
+            "speakerFramingManualTrackId": -1,
             "speakerFramingMinConfidence": 0.08,
             "speakerFramingSmoothingMode": 0,
             "speakerFramingTargetKeyframes": [],
@@ -1507,7 +1515,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780278948416,
+            "audioSourceLastVerifiedMs": 1780883781072,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/gradient_a.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/gradient_a.png",
@@ -1880,6 +1888,8 @@
             "speakerFramingEnabled": false,
             "speakerFramingEnabledKeyframes": [],
             "speakerFramingGapHoldFrames": 0,
+            "speakerFramingManualStreamId": "",
+            "speakerFramingManualTrackId": -1,
             "speakerFramingMinConfidence": 0.08,
             "speakerFramingSmoothingMode": 0,
             "speakerFramingTargetKeyframes": [],
@@ -1943,7 +1953,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780278948416,
+            "audioSourceLastVerifiedMs": 1780883781072,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/fractal_b.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/fractal_b.png",
@@ -2316,6 +2326,8 @@
             "speakerFramingEnabled": false,
             "speakerFramingEnabledKeyframes": [],
             "speakerFramingGapHoldFrames": 0,
+            "speakerFramingManualStreamId": "",
+            "speakerFramingManualTrackId": -1,
             "speakerFramingMinConfidence": 0.08,
             "speakerFramingSmoothingMode": 0,
             "speakerFramingTargetKeyframes": [],
@@ -2379,7 +2391,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780278948436,
+            "audioSourceLastVerifiedMs": 1780883781088,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
@@ -2754,6 +2766,8 @@
             "speakerFramingEnabled": false,
             "speakerFramingEnabledKeyframes": [],
             "speakerFramingGapHoldFrames": 0,
+            "speakerFramingManualStreamId": "",
+            "speakerFramingManualTrackId": -1,
             "speakerFramingMinConfidence": 0.08,
             "speakerFramingSmoothingMode": 0,
             "speakerFramingTargetKeyframes": [],
@@ -2826,6 +2840,7 @@
         }
     ],
     "timelineAudioEnvelopeGranularity": 64,
+    "timelineFps": 30,
     "timelineVerticalScroll": 0,
     "timelineZoom": 0.7935,
     "tracks": [
@@ -2848,7 +2863,7 @@
             "visualMode": "enabled"
         }
     ],
-    "transcriptActiveCutPath": "",
+    "transcriptActiveCutPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source_editable.json",
     "transcriptColumnHidden": [
         false,
         false,
@@ -2860,6 +2875,6 @@
     "transcriptPostpendMs": 180,
     "transcriptPrependMs": 60,
     "transcriptShowExcludedLines": false,
-    "transcriptSpeakerFilterValue": "",
+    "transcriptSpeakerFilterValue": "__all__",
     "transcriptUnifiedEditColors": false
 }

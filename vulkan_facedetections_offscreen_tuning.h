@@ -38,6 +38,7 @@ struct RuntimeTuning {
 };
 
 struct PreviewDebugSettings {
+  bool presentationEnabled = true;
   bool followLatest = true;
   bool showDetections = true;
   bool showTracks = true;
