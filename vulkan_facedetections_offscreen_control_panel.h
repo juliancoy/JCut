@@ -148,6 +148,10 @@ struct DetectorLiveTelemetrySnapshot {
   quint64 handoffBufferAllocs = 0;
   quint64 handoffBufferFrees = 0;
   quint64 handoffPipelineCreates = 0;
+  quint64 handoffCudaSyncCalls = 0;
+  double handoffCudaSyncMs = 0.0;
+  quint64 handoffCudaSemaphoreSignals = 0;
+  double handoffCudaSemaphoreSignalMs = 0.0;
   quint64 preprocDescriptorAllocs = 0;
   quint64 preprocDescriptorFrees = 0;
   quint64 inferDescriptorAllocs = 0;

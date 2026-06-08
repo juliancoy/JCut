@@ -90,14 +90,12 @@ bool shouldAvoidTransientUiThreadDecoder()
     return app && QThread::currentThread() == app->thread();
 }
 
-QString persistentTrackAvatarFilePath(const QString& transcriptPath,
+QString persistentTrackAvatarFilePath(const QString& mediaPath,
                                       const QString& clipId,
                                       int trackId)
 {
-    const QFileInfo info(transcriptPath);
-    const QString rootDir = info.dir().filePath(info.completeBaseName() + QStringLiteral("_track_memory"));
-    return QDir(rootDir)
-        .filePath(QStringLiteral("%1/track_%2_avatar.png").arg(clipId.trimmed()).arg(trackId));
+    return QDir(trackMemoryClipSidecarDir(mediaPath, clipId))
+        .filePath(QStringLiteral("track_%1_avatar.png").arg(trackId));
 }
 
 bool resolvePlayheadTrackSelection(const TimelineClip& clip,
@@ -576,7 +574,7 @@ void SpeakersTab::ensurePersistentTrackAvatarMemory(const TimelineClip& clip,
         entry.trackId = trackId;
         entry.streamId =
             streamObj.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId));
-        entry.avatarPath = persistentTrackAvatarFilePath(m_transcriptSession.transcriptPath(), clip.id, trackId);
+        entry.avatarPath = persistentTrackAvatarFilePath(clip.filePath, clip.id, trackId);
         entry.representativeKeyframe = representative;
         pending.push_back(entry);
     }

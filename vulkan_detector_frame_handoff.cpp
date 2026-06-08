@@ -75,6 +75,57 @@ void destroyCudaExternalMemory(void*& memory, quint64& devicePtr, void* context)
     memory = nullptr;
     devicePtr = 0;
 }
+
+void destroyCudaExternalSemaphore(void*& semaphore, void* context)
+{
+    if (!semaphore) {
+        return;
+    }
+    CUcontext previous = nullptr;
+    if (context) {
+        cuCtxPushCurrent(reinterpret_cast<CUcontext>(context));
+    }
+    cuDestroyExternalSemaphore(reinterpret_cast<CUexternalSemaphore>(semaphore));
+    if (context) {
+        cuCtxPopCurrent(&previous);
+    }
+    semaphore = nullptr;
+}
+
+CUresult synchronizeCudaStream(CUstream stream, FrameHandoffResourceStats* stats)
+{
+    QElapsedTimer timer;
+    if (stats) {
+        timer.start();
+    }
+    const CUresult result = cuStreamSynchronize(stream);
+    if (stats) {
+        ++stats->cudaStreamSynchronizeCalls;
+        stats->cudaStreamSynchronizeMs +=
+            static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+    }
+    return result;
+}
+
+CUresult signalCudaExternalSemaphore(CUexternalSemaphore semaphore,
+                                     CUstream stream,
+                                     FrameHandoffResourceStats* stats)
+{
+    CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS params{};
+    QElapsedTimer timer;
+    if (stats) {
+        timer.start();
+    }
+    CUexternalSemaphore semaphores[] = {semaphore};
+    const CUresult result =
+        cuSignalExternalSemaphoresAsync(semaphores, &params, 1, stream);
+    if (stats) {
+        ++stats->cudaExternalSemaphoreSignals;
+        stats->cudaExternalSemaphoreSignalMs +=
+            static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
+    }
+    return result;
+}
 #endif
 
 } // namespace
@@ -143,8 +194,10 @@ void VulkanDetectorFrameHandoff::release()
 #if JCUT_HAS_CUDA_DRIVER
         destroyCudaExternalMemory(m_cudaExternalMemory, m_cudaExternalDevicePtr, m_cudaImportContext);
         destroyCudaExternalMemory(m_cudaExternalUvMemory, m_cudaExternalUvDevicePtr, m_cudaImportContext);
+        destroyCudaExternalSemaphore(m_cudaExternalReadySemaphore, m_cudaSemaphoreImportContext);
 #endif
         m_cudaImportContext = nullptr;
+        m_cudaSemaphoreImportContext = nullptr;
         destroyBuffer(m_cudaExportBuffer, m_cudaExportMemory, &m_resourceStats.stagingBufferFrees);
         destroyBuffer(m_cudaExportUvBuffer, m_cudaExportUvMemory, &m_resourceStats.stagingBufferFrees);
         m_cudaExportSize = 0;
@@ -172,6 +225,7 @@ void VulkanDetectorFrameHandoff::release()
             ++m_resourceStats.imageMemoryFrees;
         }
         destroyBuffer(m_stagingBuffer, m_stagingMemory, &m_resourceStats.stagingBufferFrees);
+        if (m_cudaReadySemaphore != VK_NULL_HANDLE) vkDestroySemaphore(m_context.device, m_cudaReadySemaphore, nullptr);
         if (m_fence != VK_NULL_HANDLE) vkDestroyFence(m_context.device, m_fence, nullptr);
         if (m_commandPool != VK_NULL_HANDLE) vkDestroyCommandPool(m_context.device, m_commandPool, nullptr);
     }
@@ -198,9 +252,12 @@ void VulkanDetectorFrameHandoff::release()
     m_cudaExportUvSize = 0;
     m_cudaExternalMemory = nullptr;
     m_cudaExternalUvMemory = nullptr;
+    m_cudaExternalReadySemaphore = nullptr;
     m_cudaExternalDevicePtr = 0;
     m_cudaExternalUvDevicePtr = 0;
     m_cudaImportContext = nullptr;
+    m_cudaSemaphoreImportContext = nullptr;
+    m_cudaReadySemaphore = VK_NULL_HANDLE;
     m_nv12DescriptorSetLayout = VK_NULL_HANDLE;
     m_nv12DescriptorPool = VK_NULL_HANDLE;
     m_nv12PipelineLayout = VK_NULL_HANDLE;
@@ -522,6 +579,115 @@ bool VulkanDetectorFrameHandoff::ensureNv12ConversionResources(QString* errorMes
     return createNv12ConversionPipeline(errorMessage);
 }
 
+bool VulkanDetectorFrameHandoff::ensureCudaReadySemaphore(void* cudaContext, QString* errorMessage)
+{
+#if !JCUT_HAS_CUDA_DRIVER
+    Q_UNUSED(cudaContext)
+    if (errorMessage) *errorMessage = QStringLiteral("CUDA driver interop is not compiled in (JCUT_HAS_CUDA_DRIVER=0)");
+    return false;
+#else
+    if (!cudaContext) {
+        if (errorMessage) *errorMessage = QStringLiteral("missing CUDA context for external semaphore handoff");
+        return false;
+    }
+    PFN_vkGetSemaphoreFdKHR vkGetSemaphoreFdKHR =
+        reinterpret_cast<PFN_vkGetSemaphoreFdKHR>(
+            vkGetDeviceProcAddr(m_context.device, "vkGetSemaphoreFdKHR"));
+    if (!vkGetSemaphoreFdKHR) {
+        if (errorMessage) *errorMessage = QStringLiteral("vkGetSemaphoreFdKHR unavailable for CUDA/Vulkan semaphore handoff");
+        return false;
+    }
+    if (m_cudaReadySemaphore == VK_NULL_HANDLE) {
+        VkExportSemaphoreCreateInfo exportInfo{};
+        exportInfo.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+        exportInfo.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+        VkSemaphoreCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+        createInfo.pNext = &exportInfo;
+        if (vkCreateSemaphore(m_context.device, &createInfo, nullptr, &m_cudaReadySemaphore) != VK_SUCCESS) {
+            if (errorMessage) *errorMessage = QStringLiteral("failed to create exportable CUDA/Vulkan semaphore");
+            return false;
+        }
+    }
+    if (m_cudaExternalReadySemaphore && m_cudaSemaphoreImportContext == cudaContext) {
+        return true;
+    }
+    if (m_cudaExternalReadySemaphore) {
+        destroyCudaExternalSemaphore(m_cudaExternalReadySemaphore, m_cudaSemaphoreImportContext);
+        m_cudaSemaphoreImportContext = nullptr;
+    }
+    VkSemaphoreGetFdInfoKHR fdInfo{};
+    fdInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+    fdInfo.semaphore = m_cudaReadySemaphore;
+    fdInfo.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD_BIT;
+    int fd = -1;
+    if (vkGetSemaphoreFdKHR(m_context.device, &fdInfo, &fd) != VK_SUCCESS || fd < 0) {
+        if (errorMessage) *errorMessage = QStringLiteral("failed to export Vulkan semaphore FD for CUDA import");
+        return false;
+    }
+    CUcontext previous = nullptr;
+    if (cuCtxPushCurrent(reinterpret_cast<CUcontext>(cudaContext)) != CUDA_SUCCESS) {
+        close(fd);
+        if (errorMessage) *errorMessage = QStringLiteral("failed to activate CUDA context for semaphore import");
+        return false;
+    }
+    auto pop = qScopeGuard([&]() { cuCtxPopCurrent(&previous); });
+    CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC desc{};
+    desc.type = CU_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_FD;
+    desc.handle.fd = fd;
+    CUexternalSemaphore semaphore = nullptr;
+    if (cuImportExternalSemaphore(&semaphore, &desc) != CUDA_SUCCESS) {
+        close(fd);
+        if (errorMessage) *errorMessage = QStringLiteral("cuImportExternalSemaphore failed for CUDA/Vulkan handoff");
+        return false;
+    }
+    m_cudaExternalReadySemaphore = semaphore;
+    m_cudaSemaphoreImportContext = cudaContext;
+    return true;
+#endif
+}
+
+bool VulkanDetectorFrameHandoff::signalCudaReadySemaphore(void* cudaStream, QString* errorMessage)
+{
+#if !JCUT_HAS_CUDA_DRIVER
+    Q_UNUSED(cudaStream)
+    if (errorMessage) *errorMessage = QStringLiteral("CUDA driver interop is not compiled in (JCUT_HAS_CUDA_DRIVER=0)");
+    return false;
+#else
+    if (!m_cudaExternalReadySemaphore) {
+        if (errorMessage) *errorMessage = QStringLiteral("CUDA/Vulkan semaphore handoff is not initialized");
+        return false;
+    }
+    if (signalCudaExternalSemaphore(
+            reinterpret_cast<CUexternalSemaphore>(m_cudaExternalReadySemaphore),
+            reinterpret_cast<CUstream>(cudaStream),
+            &m_resourceStats) != CUDA_SUCCESS) {
+        if (errorMessage) *errorMessage = QStringLiteral("CUDA failed to signal Vulkan handoff semaphore");
+        return false;
+    }
+    return true;
+#endif
+}
+
+bool VulkanDetectorFrameHandoff::submitCommandBufferWaitingOnCuda(VkPipelineStageFlags waitStage,
+                                                                  QString* errorMessage)
+{
+    VkSubmitInfo submit{};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    if (m_cudaReadySemaphore != VK_NULL_HANDLE) {
+        submit.waitSemaphoreCount = 1;
+        submit.pWaitSemaphores = &m_cudaReadySemaphore;
+        submit.pWaitDstStageMask = &waitStage;
+    }
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &m_commandBuffer;
+    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
+        if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit/wait failed for CUDA/Vulkan handoff");
+        return false;
+    }
+    return true;
+}
+
 bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
                                                            int height,
                                                            int yPitch,
@@ -661,12 +827,7 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
         if (errorMessage) *errorMessage = QStringLiteral("vkEndCommandBuffer failed for NV12 conversion");
         return false;
     }
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &m_commandBuffer;
-    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit/wait failed for NV12 conversion");
+    if (!submitCommandBufferWaitingOnCuda(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, errorMessage)) {
         return false;
     }
     m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1085,7 +1246,7 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         uvCopy.Height = static_cast<size_t>((size.height() + 1) / 2);
         if (cuMemcpy2DAsync(&yCopy, cudaDevice->stream) != CUDA_SUCCESS ||
             cuMemcpy2DAsync(&uvCopy, cudaDevice->stream) != CUDA_SUCCESS ||
-            cuStreamSynchronize(cudaDevice->stream) != CUDA_SUCCESS) {
+            synchronizeCudaStream(cudaDevice->stream, &m_resourceStats) != CUDA_SUCCESS) {
             if (errorMessage) *errorMessage = QStringLiteral("CUDA NV12 device copy into Vulkan-export buffers failed");
             return false;
         }
@@ -1101,7 +1262,7 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         copy.WidthInBytes = widthBytes;
         copy.Height = static_cast<size_t>(size.height());
         if (cuMemcpy2DAsync(&copy, cudaDevice->stream) != CUDA_SUCCESS ||
-            cuStreamSynchronize(cudaDevice->stream) != CUDA_SUCCESS) {
+            synchronizeCudaStream(cudaDevice->stream, &m_resourceStats) != CUDA_SUCCESS) {
             if (errorMessage) *errorMessage = QStringLiteral("CUDA device copy into Vulkan-export buffer failed");
             return false;
         }
@@ -1456,6 +1617,9 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
                                         QStringLiteral("uv"))) {
         return false;
     }
+    if (!ensureCudaReadySemaphore(cudaContext, errorMessage)) {
+        return false;
+    }
 
     QElapsedTimer timer;
     timer.start();
@@ -1484,9 +1648,11 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         uvCopy.Height = static_cast<size_t>((size.height() + 1) / 2);
 
         if (cuMemcpy2DAsync(&yCopy, cudaDevice->stream) != CUDA_SUCCESS ||
-            cuMemcpy2DAsync(&uvCopy, cudaDevice->stream) != CUDA_SUCCESS ||
-            cuStreamSynchronize(cudaDevice->stream) != CUDA_SUCCESS) {
+            cuMemcpy2DAsync(&uvCopy, cudaDevice->stream) != CUDA_SUCCESS) {
             if (errorMessage) *errorMessage = QStringLiteral("CUDA NV12 device copy into Vulkan-export buffers failed");
+            return false;
+        }
+        if (!signalCudaReadySemaphore(cudaDevice->stream, errorMessage)) {
             return false;
         }
         if (!convertNv12BuffersToImage(size.width(), size.height(), hw->linesize[0], uvPitch, errorMessage)) {
@@ -1508,9 +1674,11 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     copy.dstPitch = widthBytes;
     copy.WidthInBytes = widthBytes;
     copy.Height = static_cast<size_t>(size.height());
-    if (cuMemcpy2DAsync(&copy, cudaDevice->stream) != CUDA_SUCCESS ||
-        cuStreamSynchronize(cudaDevice->stream) != CUDA_SUCCESS) {
+    if (cuMemcpy2DAsync(&copy, cudaDevice->stream) != CUDA_SUCCESS) {
         if (errorMessage) *errorMessage = QStringLiteral("CUDA device copy into Vulkan-export buffer failed");
+        return false;
+    }
+    if (!signalCudaReadySemaphore(cudaDevice->stream, errorMessage)) {
         return false;
     }
 
@@ -1558,12 +1726,7 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         if (errorMessage) *errorMessage = QStringLiteral("vkEndCommandBuffer failed for hardware-direct");
         return false;
     }
-    VkSubmitInfo submit{};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &m_commandBuffer;
-    if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit/wait failed for hardware-direct");
+    if (!submitCommandBufferWaitingOnCuda(VK_PIPELINE_STAGE_TRANSFER_BIT, errorMessage)) {
         return false;
     }
     m_imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2068,6 +2231,14 @@ HardwareInteropProbeResult VulkanDetectorFrameHandoff::probeHardwareInterop(cons
 #ifdef Q_OS_LINUX
     if (!hasExt(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
         result.reason = QStringLiteral("missing VK_KHR_external_memory_fd");
+        return result;
+    }
+    if (!hasExt(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME)) {
+        result.reason = QStringLiteral("missing VK_KHR_external_semaphore");
+        return result;
+    }
+    if (!hasExt(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME)) {
+        result.reason = QStringLiteral("missing VK_KHR_external_semaphore_fd");
         return result;
     }
 #endif

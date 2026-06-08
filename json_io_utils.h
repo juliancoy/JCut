@@ -322,42 +322,6 @@ inline bool readBinaryJsonObject(const QString& path,
     return true;
 }
 
-inline bool appendBinaryCborRecord(QFile* file,
-                                   const QJsonObject& object,
-                                   quint32 magic = 0x4A465342,
-                                   quint32 version = 1,
-                                   QString* errorOut = nullptr)
-{
-    if (!file || !file->isOpen()) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Binary record file handle is not open.");
-        }
-        return false;
-    }
-    const QByteArray compressed = qCompress(serializeCbor(object), 6);
-    QDataStream stream(file);
-    stream.setVersion(QDataStream::Qt_6_0);
-    stream << magic;
-    stream << version;
-    stream << quint32(compressed.size());
-    if (!compressed.isEmpty()) {
-        const qint64 written = file->write(compressed);
-        if (written != compressed.size()) {
-            if (errorOut) {
-                *errorOut = QStringLiteral("Failed to append binary CBOR record.");
-            }
-            return false;
-        }
-    }
-    if (stream.status() != QDataStream::Ok || !file->flush()) {
-        if (errorOut) {
-            *errorOut = QStringLiteral("Failed to finalize binary CBOR record append.");
-        }
-        return false;
-    }
-    return true;
-}
-
 inline bool parseCborRecordPayload(const QByteArray& payload, QJsonObject* objectOut, QString* errorOut = nullptr)
 {
     return parseCborObjectBytes(payload, objectOut, errorOut);

@@ -174,7 +174,7 @@ Owns artifact and checkpoint output primitives.
 
 - `writeJson(...)`
 - `writeBinaryJsonObject(...)`
-- `appendBinaryCborRecord(...)`
+- typed FaceDetections checkpoint record append/read helpers
 - final summary writing helper
 - raw detections/tracks/continuity artifact assembly helpers that currently live at the end of the runner
 

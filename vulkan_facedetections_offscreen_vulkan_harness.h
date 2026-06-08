@@ -19,7 +19,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <future>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include <fcntl.h>
@@ -159,13 +161,21 @@ struct PreparedDecoderDetectionSlot {
   bool decoderVulkanUploadFallback = false;
   bool active = false;
   bool detectionRunning = false;
-  std::future<PreparedDecoderDetectionResult> detectionFuture;
+  bool detectionResultReady = false;
+  PreparedDecoderDetectionResult detectionResult;
+  std::mutex detectionMutex;
+  std::condition_variable detectionCv;
 };
 
 constexpr int kMaxDecoderDirectPipelineSlots = 10;
 
 struct DecoderDetectorWorker {
   bool busy = false;
+  int queuedSlotIndex = -1;
+  bool stop = false;
+  std::thread thread;
+  std::mutex mutex;
+  std::condition_variable cv;
 };
 
 VkDeviceSize scrfdTensorBytesForSourceSize(const QSize &sourceSize,

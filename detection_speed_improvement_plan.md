@@ -179,9 +179,9 @@ This keeps the implementation simple at each step and avoids adding concurrency 
 - The controls window reports checkpoint writer backlog.
 - `summary.json` records checkpoint writer queue capacity, max backlog, backpressure, queued records, written records, and average writer-thread write time.
 - Detector worker count is an explicit benchmark setting. Multi-worker decoder-direct runs use independent detector worker objects and asynchronous prepared GPU inference, with results consumed in source-frame order.
-- `--benchmark-pipeline-slots [CSV]` runs isolated child benchmarks for pipeline depths, defaults to `1,4,8`, and writes `pipeline_benchmark_summary.json`.
-- Pipeline benchmark child runs force preview/control/progress off and use fresh per-slot output directories so checkpoint resume files cannot contaminate comparisons.
-- The benchmark summary records processed FPS, wall time, stage timing, writer timing/backpressure, zero-copy status, and detector-worker fallback status for each run.
+- `--benchmark-pipeline-slots [CSV]` runs isolated child benchmarks for detector concurrency values, defaults to `1,2,4,8`, and writes `pipeline_benchmark_summary.json`.
+- Pipeline benchmark child runs force preview/control/progress off, set detector workers equal to pipeline slots, and use fresh per-run output directories so checkpoint resume files cannot contaminate comparisons.
+- The benchmark summary records processed FPS, wall time, stage timing, writer timing/backpressure, zero-copy status, detector-worker fallback status, and the best detector worker/slot count for each run.
 
 ## Explicit Completion Boundary
 

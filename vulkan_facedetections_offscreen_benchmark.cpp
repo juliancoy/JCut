@@ -23,7 +23,8 @@ QStringList benchmarkBaseArgs(int argc, char **argv) {
       continue;
     }
     if (arg == QStringLiteral("--out-dir") ||
-        arg == QStringLiteral("--detector-pipeline-slots")) {
+        arg == QStringLiteral("--detector-pipeline-slots") ||
+        arg == QStringLiteral("--detector-workers")) {
       if (i + 1 < argc) {
         ++i;
       }
@@ -46,6 +47,7 @@ QJsonObject benchmarkSummaryRow(int slotCount, int exitCode,
       wallSec > 0.0 ? static_cast<double>(processedFrames) / wallSec : 0.0;
   return QJsonObject{
       {QStringLiteral("detector_pipeline_slots"), slotCount},
+      {QStringLiteral("detector_workers"), slotCount},
       {QStringLiteral("exit_code"), exitCode},
       {QStringLiteral("exit_status"), exitStatus == QProcess::NormalExit
                                           ? QStringLiteral("normal")
@@ -137,6 +139,8 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
 
     QStringList childArgs = baseArgs;
     childArgs << QStringLiteral("--out-dir") << runDir
+              << QStringLiteral("--detector-workers")
+              << QString::number(slotCount)
               << QStringLiteral("--detector-pipeline-slots")
               << QString::number(slotCount)
               << QStringLiteral("--no-preview-window")
@@ -199,11 +203,13 @@ int runPipelineSlotBenchmark(int argc, char **argv, const Options &options) {
       {QStringLiteral("benchmark_root"), benchmarkRoot},
       {QStringLiteral("slots_tested"), slotsTested},
       {QStringLiteral("best_detector_pipeline_slots"), bestSlots},
+      {QStringLiteral("best_detector_workers"), bestSlots},
       {QStringLiteral("best_processed_fps"), bestProcessedFps},
       {QStringLiteral("runs"), runs},
       {QStringLiteral("note"),
        QStringLiteral("Benchmark child runs force preview/control/progress off "
-                      "and isolate output directories so resumable checkpoint "
+                      "and set detector workers equal to pipeline slots. "
+                      "Each run uses an isolated output directory so resumable checkpoint "
                       "files do not contaminate comparisons.")}};
   const QString resultPath =
       QDir(benchmarkRoot)

@@ -69,7 +69,7 @@ struct Options {
   bool asyncCheckpointWriter = true;
   int checkpointWriterQueueCapacity = 256;
   bool benchmarkPipelineSlots = false;
-  QVector<int> benchmarkPipelineSlotValues{1, 4, 8};
+  QVector<int> benchmarkPipelineSlotValues{1, 2, 4, 8};
   editor::DecodePreference decodePreference =
       editor::DecodePreference::HardwareZeroCopy;
 };

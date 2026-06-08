@@ -34,6 +34,60 @@ inline qint64 facedetectionsArtifactRevisionMsForTranscript(const QString& trans
     return revisionMs;
 }
 
+inline QString facedetectionsSidecarToken(const QString& raw)
+{
+    QString token = raw.trimmed();
+    if (token.isEmpty()) {
+        return QStringLiteral("unknown");
+    }
+    for (QChar& ch : token) {
+        const bool ok =
+            (ch >= QLatin1Char('a') && ch <= QLatin1Char('z')) ||
+            (ch >= QLatin1Char('A') && ch <= QLatin1Char('Z')) ||
+            (ch >= QLatin1Char('0') && ch <= QLatin1Char('9')) ||
+            ch == QLatin1Char('.') ||
+            ch == QLatin1Char('_') ||
+            ch == QLatin1Char('-');
+        if (!ok) {
+            ch = QLatin1Char('_');
+        }
+    }
+    while (token.contains(QStringLiteral("__"))) {
+        token.replace(QStringLiteral("__"), QStringLiteral("_"));
+    }
+    token = token.left(96);
+    return token.isEmpty() ? QStringLiteral("unknown") : token;
+}
+
+inline QString mediaSidecarRootPath(const QString& mediaPath)
+{
+    const QFileInfo info(mediaPath);
+    const QString stem = facedetectionsSidecarToken(info.completeBaseName());
+    return info.dir().filePath(stem + QStringLiteral(".jcut"));
+}
+
+inline QString facedetectionsClipSidecarDir(const QString& mediaPath,
+                                            const QString& clipId)
+{
+    return QDir(mediaSidecarRootPath(mediaPath))
+        .filePath(QStringLiteral("facedetections/%1")
+                      .arg(facedetectionsSidecarToken(
+                          clipId.trimmed().isEmpty()
+                              ? QStringLiteral("unknown_clip")
+                              : clipId)));
+}
+
+inline QString trackMemoryClipSidecarDir(const QString& mediaPath,
+                                         const QString& clipId)
+{
+    return QDir(mediaSidecarRootPath(mediaPath))
+        .filePath(QStringLiteral("track_memory/%1")
+                      .arg(facedetectionsSidecarToken(
+                          clipId.trimmed().isEmpty()
+                              ? QStringLiteral("unknown_clip")
+                              : clipId)));
+}
+
 inline QString continuityFacestreamsByClipKey()
 {
     return QStringLiteral("continuity_facedetections_by_clip");

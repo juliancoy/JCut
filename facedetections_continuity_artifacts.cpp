@@ -1863,6 +1863,7 @@ bool continuityRootHasStoredPayload(const QJsonObject& continuityRoot)
         QStringLiteral("continuity_artifact_path"),
         QStringLiteral("summary_json"),
         QStringLiteral("processed_artifact_path"),
+        QStringLiteral("media_sidecar_dir"),
         QStringLiteral("imported_from_artifact_dir")
     };
     for (const QString& key : kPathLikeKeys) {
@@ -2021,6 +2022,7 @@ QJsonObject buildProcessedContinuityRoot(const QString& clipId,
         QStringLiteral("raw_frames_frame_domain"),
         QStringLiteral("streams_frame_domain"),
         QStringLiteral("media_compatibility"),
+        QStringLiteral("media_sidecar_dir"),
         QStringLiteral("imported_from_artifact_dir"),
         QStringLiteral("facedetections_part"),
         QStringLiteral("summary_json")

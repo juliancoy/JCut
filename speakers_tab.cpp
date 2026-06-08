@@ -1081,6 +1081,25 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
                 QDir(importedArtifactDir).absoluteFilePath(QStringLiteral("facedetections.part"));
         }
     }
+    QStringList generatedArtifactDirs;
+    auto appendGeneratedArtifactDir = [&generatedArtifactDirs](const QString& path) {
+        const QString trimmed = path.trimmed();
+        if (trimmed.isEmpty()) {
+            return;
+        }
+        const QFileInfo info(trimmed);
+        const QString dirPath = info.isDir() ? info.absoluteFilePath() : info.dir().absolutePath();
+        if (!dirPath.trimmed().isEmpty()) {
+            generatedArtifactDirs.push_back(dirPath);
+        }
+    };
+    appendGeneratedArtifactDir(continuityRoot.value(QStringLiteral("media_sidecar_dir")).toString());
+    appendGeneratedArtifactDir(continuityRoot.value(QStringLiteral("imported_from_artifact_dir")).toString());
+    appendGeneratedArtifactDir(continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString());
+    appendGeneratedArtifactDir(continuityRoot.value(QStringLiteral("raw_frames_artifact_path")).toString());
+    appendGeneratedArtifactDir(continuityRoot.value(QStringLiteral("continuity_artifact_path")).toString());
+    appendGeneratedArtifactDir(facedetectionsPartPath);
+    generatedArtifactDirs.removeDuplicates();
 
     QJsonObject processedArtifactRootBefore;
     const bool processedArtifactLoadedBefore =
@@ -1108,6 +1127,7 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
         continuityFacestreamsByClipObject(processedArtifactRootBefore).contains(clipId);
     details[QStringLiteral("delete_facedetections_part_requested")] = false;
     details[QStringLiteral("facedetections_part_path")] = facedetectionsPartPath;
+    details[QStringLiteral("generated_artifact_dirs")] = QJsonArray::fromStringList(generatedArtifactDirs);
     details[QStringLiteral("continuity_root_before")] =
         continuityRootDeleteSummaryJson(continuityRoot, transcriptRoot);
     details[QStringLiteral("processed_continuity_root_before")] =
@@ -1145,6 +1165,9 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
         if (hasProcessedClipPayload && !processedArtifactPath.trimmed().isEmpty()) {
             affectedPaths.push_back(processedArtifactPath);
         }
+        for (const QString& dirPath : generatedArtifactDirs) {
+            affectedPaths.push_back(dirPath);
+        }
         affectedPaths.removeDuplicates();
 
         QDialog confirmationDialog;
@@ -1166,25 +1189,11 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
             confirmationMessage += QLatin1Char('\n');
         }
         confirmationMessage += QStringLiteral(
-            "By default, debug-run artifacts such as facedetections.part, tracks.idx/tracks.dat, detections.idx/detections.dat, continuity_facedetections.bin, and summary.json are not deleted by this action.\n\nThis cannot be undone.");
+            "Generated FaceDetections files for this clip, including facedetections.part, tracks.idx/tracks.dat, detections.idx/detections.dat, continuity_facedetections.bin, and summary.json, will be deleted with the clip sidecar directory.\n\nThis cannot be undone.");
 
         auto* label = new QLabel(confirmationMessage, &confirmationDialog);
         label->setWordWrap(true);
         layout->addWidget(label);
-
-        QCheckBox* deletePartCheckbox = nullptr;
-        if (!facedetectionsPartPath.isEmpty()) {
-            deletePartCheckbox = new QCheckBox(
-                QStringLiteral("Also delete facedetections.part checkpoint"), &confirmationDialog);
-            deletePartCheckbox->setToolTip(facedetectionsPartPath);
-            layout->addWidget(deletePartCheckbox);
-
-            auto* partPathLabel = new QLabel(
-                QStringLiteral("Checkpoint: %1").arg(facedetectionsPartPath), &confirmationDialog);
-            partPathLabel->setWordWrap(true);
-            partPathLabel->setStyleSheet(QStringLiteral("color: #8fa3b8; font-size: 11px;"));
-            layout->addWidget(partPathLabel);
-        }
 
         auto* buttons = new QHBoxLayout;
         buttons->addStretch(1);
@@ -1207,7 +1216,7 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
                 QStringLiteral("Delete FaceDetections was canceled."),
                 details);
         }
-        deleteFacestreamPart = deletePartCheckbox && deletePartCheckbox->isChecked();
+        deleteFacestreamPart = true;
     }
     details[QStringLiteral("delete_facedetections_part_requested")] = deleteFacestreamPart;
 
@@ -1249,6 +1258,33 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
     details[QStringLiteral("processed_artifact_saved")] = processedArtifactSaved;
     details[QStringLiteral("processed_clip_present_after")] = processedClipPresentAfter;
 
+    QJsonArray removedArtifactDirs;
+    QJsonArray failedArtifactDirs;
+    for (const QString& dirPath : generatedArtifactDirs) {
+        if (dirPath.trimmed().isEmpty() || !QFileInfo::exists(dirPath)) {
+            continue;
+        }
+        if (QDir(dirPath).removeRecursively()) {
+            removedArtifactDirs.append(dirPath);
+        } else {
+            failedArtifactDirs.append(dirPath);
+        }
+    }
+    details[QStringLiteral("generated_artifact_dirs_removed")] = removedArtifactDirs;
+    details[QStringLiteral("generated_artifact_dirs_remove_failed")] = failedArtifactDirs;
+    if (!failedArtifactDirs.isEmpty()) {
+        return fail(
+            QStringLiteral("delete_generated_artifacts_failed"),
+            QStringLiteral("FaceDetections entries were removed, but deleting generated artifact directories failed."),
+            [](const QString& message) {
+                QMessageBox::warning(
+                    nullptr,
+                    QStringLiteral("Delete FaceDetections"),
+                    message);
+            },
+            details);
+    }
+
     if (deleteFacestreamPart && !facedetectionsPartPath.isEmpty() && QFileInfo::exists(facedetectionsPartPath)) {
         if (!QFile::remove(facedetectionsPartPath)) {
             details[QStringLiteral("facedetections_part_removed")] = false;
@@ -1275,7 +1311,7 @@ editor::ActionResult SpeakersTab::deleteFaceDetectionsForSelectedClipResult(bool
     details[QStringLiteral("artifact_revision_after_ms")] =
         facedetectionsArtifactRevisionMsForTranscript(transcriptPath);
     details[QStringLiteral("remaining_sidecars_note")] =
-        QStringLiteral("External debug artifacts are intentionally left on disk unless the checkbox deletes facedetections.part; visible tracks after deletion usually mean a preview/panel fallback is reading one of these paths or stale cache.");
+        QStringLiteral("Generated clip-side FaceDetections artifact directories were removed. Remaining visible tracks after deletion indicate stale runtime cache or a non-canonical fallback.");
     details[QStringLiteral("status")] = QStringLiteral("delete_facedetections_completed");
 
     emit transcriptDocumentChanged();
@@ -1383,6 +1419,32 @@ void SpeakersTab::onSpeakerViewFaceDetectionsClicked()
     if (!summaryPath.isEmpty()) {
         text += QStringLiteral("summary.json: %1\n").arg(summaryPath);
     }
+    QString mediaSidecarDir = continuityRoot.value(QStringLiteral("media_sidecar_dir")).toString().trimmed();
+    if (mediaSidecarDir.isEmpty() && !clip->filePath.trimmed().isEmpty()) {
+        mediaSidecarDir = facedetectionsClipSidecarDir(clip->filePath, clip->id);
+    }
+    if (!mediaSidecarDir.isEmpty()) {
+        text += QStringLiteral("\nClip sidecar artifact dir: %1\n").arg(mediaSidecarDir);
+        const QStringList artifactFiles{
+            QStringLiteral("facedetections.part"),
+            QStringLiteral("tracks.idx"),
+            QStringLiteral("tracks.dat"),
+            QStringLiteral("detections.idx"),
+            QStringLiteral("detections.dat"),
+            QStringLiteral("continuity_facedetections.bin"),
+            QStringLiteral("summary.json")
+        };
+        for (const QString& fileName : artifactFiles) {
+            const QString path = QDir(mediaSidecarDir).absoluteFilePath(fileName);
+            const QFileInfo info(path);
+            text += QStringLiteral("- %1: %2")
+                        .arg(fileName, info.exists() ? path : QStringLiteral("missing"));
+            if (info.exists()) {
+                text += QStringLiteral(" (%1 bytes)").arg(info.size());
+            }
+            text += QLatin1Char('\n');
+        }
+    }
     const QString identitySidecarPath = transcriptEngine.identityArtifactPath(m_transcriptSession.transcriptPath());
     if (!identitySidecarPath.isEmpty()) {
         const QFileInfo identityInfo(identitySidecarPath);
@@ -1403,7 +1465,7 @@ void SpeakersTab::onSpeakerViewFaceDetectionsClicked()
         const QString runDir = QDir(debugRoot).absoluteFilePath(latestRun);
         const QString artifactDir = QDir(runDir).absoluteFilePath(QStringLiteral("facedetections_artifact"));
         text += QStringLiteral("\nLatest debug run: %1\n").arg(runDir);
-        text += QStringLiteral("Latest artifact dir: %1\n").arg(artifactDir);
+        text += QStringLiteral("Latest debug artifact dir: %1\n").arg(artifactDir);
         const QStringList artifactFiles{
             QStringLiteral("facedetections.part"),
             QStringLiteral("tracks.idx"),

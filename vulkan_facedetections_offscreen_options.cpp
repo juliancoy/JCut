@@ -59,7 +59,7 @@ void usage(const char *argv0) {
       << " [--allow-cpu-upload-fallback]"
       << " [--detector-pipeline-slots N] (1-10)"
       << " [--detector-workers N] (1-10)"
-      << " [--benchmark-pipeline-slots [CSV]]"
+      << " [--benchmark-pipeline-slots [CSV]] (default 1,2,4,8)"
       << " [--checkpoint-writer-queue N]"
       << " [--async-checkpoint-writer] [--sync-checkpoint-writer]"
       << " [--progress] [--no-progress]" << " [--verbose] [--log-interval N]"

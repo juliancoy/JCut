@@ -9,7 +9,7 @@ class TestDirectVulkanHandoffPipelineContract : public QObject {
 private slots:
   void directPreviewUsesExtractedPipelineBeforeRenderPass();
   void directPreviewRecordsTextureUploadsBeforeRenderPass();
-  void directPreviewDoesNotUseSubmitBasedHandoffApis();
+  void directPreviewUsesSubmitBasedGpuHandoffApis();
   void directPreviewUsesPerClipHandoffDescriptors();
   void directPreviewRequiresHardwarePayloadsFromCache();
   void handoffPipelineRejectsCpuOnlyFrames();
@@ -102,18 +102,25 @@ void TestDirectVulkanHandoffPipelineContract::
 }
 
 void TestDirectVulkanHandoffPipelineContract::
-    directPreviewDoesNotUseSubmitBasedHandoffApis() {
-  const QString source =
+    directPreviewUsesSubmitBasedGpuHandoffApis() {
+  const QString previewSource =
       readSourceFile(QStringLiteral("direct_vulkan_preview_window.cpp"));
-  QVERIFY2(!source.isEmpty(),
+  const QString pipelineSource =
+      readSourceFile(QStringLiteral("direct_vulkan_frame_handoff_pipeline.cpp"));
+  QVERIFY2(!previewSource.isEmpty(),
            "direct_vulkan_preview_window.cpp must be readable");
+  QVERIFY2(!pipelineSource.isEmpty(),
+           "direct_vulkan_frame_handoff_pipeline.cpp must be readable");
 
-  QVERIFY2(!source.contains(QStringLiteral("m_frameHandoff->uploadFrame(")),
-           "direct preview must not call the submit-based uploadFrame API");
   QVERIFY2(
-      !source.contains(QStringLiteral("m_frameHandoff->importOffscreenFrame(")),
-      "direct preview must not call the submit-based importOffscreenFrame API");
-  QVERIFY2(!source.contains(QStringLiteral(
+      pipelineSource.contains(QStringLiteral("m_handoff->uploadFrame(")),
+      "direct preview handoff must use the owned uploadFrame submit path so "
+      "CUDA/Vulkan semaphore waits can be attached to the handoff submit");
+  QVERIFY2(
+      pipelineSource.contains(QStringLiteral("m_handoff->importOffscreenFrame(")),
+      "direct preview external Vulkan handoff must use the owned import submit "
+      "path rather than recording into Qt's caller-owned submit");
+  QVERIFY2(!previewSource.contains(QStringLiteral(
                "uploadImageTexture(cb, status->frame.cpuImage()")),
            "direct preview must not implicitly fall back to CPU frame upload");
 }

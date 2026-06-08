@@ -76,8 +76,9 @@ directly, then emit `transcriptDocumentChanged()`, schedule project state save,
 push history if appropriate, and refresh affected views.
 
 ### FaceDetections Artifacts
-FaceDetections continuity data is stored as transcript sidecars, not inside
-`state.json` or history snapshots.
+FaceDetections continuity metadata is stored as transcript sidecars, not inside
+`state.json` or history snapshots. Dense generated artifacts are stored in a
+media-adjacent clip sidecar directory.
 
 Primary helpers are in `facedetections_runtime.cpp` and `TranscriptEngine`:
 
@@ -88,6 +89,19 @@ Primary helpers are in `facedetections_runtime.cpp` and `TranscriptEngine`:
 The raw artifact stores generated continuity roots by clip id. The processed
 artifact stores derived `streams` by clip id. Readers use the canonical
 FaceDetections sidecars; transcript-side continuity payloads are not supported.
+
+Large generated files such as `facedetections.part`, `tracks.idx/tracks.dat`,
+`detections.idx/detections.dat`, `continuity_facedetections.bin`, and
+`summary.json` live under:
+
+`<media_dir>/<media_stem>.jcut/facedetections/<clip_id>/`
+
+Persistent continuity-track avatar crops live under the same media sidecar root:
+
+`<media_dir>/<media_stem>.jcut/track_memory/<clip_id>/`
+
+`debug/speaker_flow` is only for request/index diagnostics and must not be the
+runtime storage contract for clip FaceDetections artifacts.
 
 ## Runtime State
 
@@ -270,16 +284,19 @@ Generation/processing flow:
    offscreen renderer where applicable.
 3. Detections/tracks are converted into continuity roots with frame, normalized
    location, box size, confidence, detector mode, and scan range metadata.
-4. Raw continuity roots are saved to the raw FaceDetections artifact by clip id.
-5. Processed continuity roots are derived and saved to the processed artifact by
+4. Dense generated artifacts are written to the media-adjacent clip sidecar
+   directory.
+5. Raw continuity roots are saved to the raw FaceDetections artifact by clip id,
+   referencing the media-adjacent artifacts.
+6. Processed continuity roots are derived and saved to the processed artifact by
    clip id.
-6. Speaker assignment metadata in the transcript may reference stream/track
+7. Speaker assignment metadata in the transcript may reference stream/track
    identities.
-7. UI refresh reads streams through `continuityStreamsForRoot()` so it can use
+8. UI refresh reads streams through `continuityStreamsForRoot()` so it can use
    processed streams, raw-derived streams, or legacy transcript fallback.
 
 Deletion removes the clip entry from both raw and processed artifacts and also
-removes legacy transcript-side continuity fallback if present.
+removes the clip's media-adjacent generated artifact directory.
 
 ## Current Guardrails
 

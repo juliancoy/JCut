@@ -72,7 +72,6 @@
 #include <deque>
 #include <fcntl.h>
 #include <functional>
-#include <future>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -969,6 +968,13 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   renderReadbackMsTotal = resume.renderReadbackMsTotal;
   decoderUploadMsTotal = resume.decoderUploadMsTotal;
   vulkanDetectMsTotal = resume.vulkanDetectMsTotal;
+  ncnnInputMsTotal = resume.ncnnInputMsTotal;
+  ncnnExtractMsTotal = resume.ncnnExtractMsTotal;
+  ncnnExtractLevel8MsTotal = resume.ncnnExtractLevel8MsTotal;
+  ncnnExtractLevel16MsTotal = resume.ncnnExtractLevel16MsTotal;
+  ncnnExtractLevel32MsTotal = resume.ncnnExtractLevel32MsTotal;
+  ncnnPostMsTotal = resume.ncnnPostMsTotal;
+  ncnnTotalMsTotal = resume.ncnnTotalMsTotal;
   frameRows = resume.frameRows;
   rawDetectionFrames = resume.rawDetectionFrames;
   trackDetectionsByFrame = resume.trackDetectionsByFrame;
@@ -1004,16 +1010,37 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   }
   int faceStreamRecordsSubmitted = 0;
   int faceStreamRecordsWrittenSync = 0;
-  auto appendFaceStreamRecord = [&](const QJsonObject &object,
-                                    QString *error) -> bool {
+  auto appendFaceStreamMeta = [&](const FaceStreamMetaRecord &record,
+                                  QString *error) -> bool {
     if (faceStreamWriter) {
-      if (!faceStreamWriter->enqueue(object, error)) {
+      if (!faceStreamWriter->enqueueMeta(record, error)) {
         return false;
       }
       ++faceStreamRecordsSubmitted;
       return true;
     }
-    if (!appendBinaryCborRecord(&faceStreamFile, object)) {
+    if (!appendFaceStreamMetaRecord(&faceStreamFile, record)) {
+      if (error) {
+        *error = QStringLiteral(
+                     "Failed to append streaming facedetections checkpoint: %1")
+                     .arg(faceStreamPath);
+      }
+      return false;
+    }
+    ++faceStreamRecordsSubmitted;
+    ++faceStreamRecordsWrittenSync;
+    return true;
+  };
+  auto appendFaceStreamFrame = [&](const FaceStreamFrameRecord &record,
+                                   QString *error) -> bool {
+    if (faceStreamWriter) {
+      if (!faceStreamWriter->enqueueFrame(record, error)) {
+        return false;
+      }
+      ++faceStreamRecordsSubmitted;
+      return true;
+    }
+    if (!appendFaceStreamFrameRecord(&faceStreamFile, record)) {
       if (error) {
         *error = QStringLiteral(
                      "Failed to append streaming facedetections checkpoint: %1")
@@ -1027,18 +1054,14 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   };
   if (!faceStreamExists) {
     QString writerError;
-    if (!appendFaceStreamRecord(
-            QJsonObject{{QStringLiteral("type"), QStringLiteral("meta")},
-                        {QStringLiteral("schema"),
-                         QStringLiteral("jcut_facedetections_part_v1")},
-                        {QStringLiteral("video"), options.videoPath},
-                        {QStringLiteral("backend"), backend},
-                        {QStringLiteral("start_frame"), options.startFrame},
-                        {QStringLiteral("end_frame"), finalFrame},
-                        {QStringLiteral("stride"), tuning.stride},
-                        {QStringLiteral("created_utc_ms"),
-                         QDateTime::currentDateTimeUtc().toMSecsSinceEpoch()}},
-            &writerError)) {
+    FaceStreamMetaRecord metaRecord;
+    metaRecord.video = options.videoPath;
+    metaRecord.backend = backend;
+    metaRecord.startFrame = options.startFrame;
+    metaRecord.endFrame = finalFrame;
+    metaRecord.stride = tuning.stride;
+    metaRecord.createdUtcMs = QDateTime::currentDateTimeUtc().toMSecsSinceEpoch();
+    if (!appendFaceStreamMeta(metaRecord, &writerError)) {
       std::cerr << writerError.toStdString() << "\n";
       return 2;
     }
@@ -1055,6 +1078,8 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       wallStart - std::chrono::seconds(1);
   std::chrono::steady_clock::time_point lastLiveTelemetryAt =
       wallStart - std::chrono::seconds(3);
+  std::chrono::steady_clock::time_point lastUiPumpAt =
+      wallStart - std::chrono::seconds(1);
   AdaptiveEtaTracker etaTracker;
   DetectorStageTimingTotals stageTimings;
   DetectorStageTimingTotals lastLiveTelemetryStageTimings;
@@ -1206,6 +1231,13 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       liveTelemetry.handoffBufferFrees += handoffStats.stagingBufferFrees;
       liveTelemetry.handoffPipelineCreates +=
           handoffStats.computePipelineCreations;
+      liveTelemetry.handoffCudaSyncCalls +=
+          handoffStats.cudaStreamSynchronizeCalls;
+      liveTelemetry.handoffCudaSyncMs += handoffStats.cudaStreamSynchronizeMs;
+      liveTelemetry.handoffCudaSemaphoreSignals +=
+          handoffStats.cudaExternalSemaphoreSignals;
+      liveTelemetry.handoffCudaSemaphoreSignalMs +=
+          handoffStats.cudaExternalSemaphoreSignalMs;
       const auto preprocessorStats =
           decoderDirectSlots[slotIndex].preprocessor.resourceStats();
       liveTelemetry.preprocDescriptorAllocs +=
@@ -1302,6 +1334,14 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       resourceTelemetry.handoffBufferFrees += handoffStats.stagingBufferFrees;
       resourceTelemetry.handoffPipelineCreates +=
           handoffStats.computePipelineCreations;
+      resourceTelemetry.handoffCudaSyncCalls +=
+          handoffStats.cudaStreamSynchronizeCalls;
+      resourceTelemetry.handoffCudaSyncMs +=
+          handoffStats.cudaStreamSynchronizeMs;
+      resourceTelemetry.handoffCudaSemaphoreSignals +=
+          handoffStats.cudaExternalSemaphoreSignals;
+      resourceTelemetry.handoffCudaSemaphoreSignalMs +=
+          handoffStats.cudaExternalSemaphoreSignalMs;
       const auto preprocessorStats =
           decoderDirectSlots[slotIndex].preprocessor.resourceStats();
       resourceTelemetry.preprocDescriptorAllocs +=
@@ -1376,6 +1416,13 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
         << " handoff_buf_allocs=" << resourceTelemetry.handoffBufferAllocs
         << " handoff_buf_frees=" << resourceTelemetry.handoffBufferFrees
         << " handoff_pipe_creates=" << resourceTelemetry.handoffPipelineCreates
+        << " handoff_cuda_sync_calls="
+        << resourceTelemetry.handoffCudaSyncCalls
+        << " handoff_cuda_sync_ms=" << resourceTelemetry.handoffCudaSyncMs
+        << " handoff_cuda_semaphore_signals="
+        << resourceTelemetry.handoffCudaSemaphoreSignals
+        << " handoff_cuda_semaphore_signal_ms="
+        << resourceTelemetry.handoffCudaSemaphoreSignalMs
         << " pre_desc_allocs=" << resourceTelemetry.preprocDescriptorAllocs
         << " pre_desc_frees=" << resourceTelemetry.preprocDescriptorFrees
         << " infer_desc_allocs=" << resourceTelemetry.inferDescriptorAllocs
@@ -1441,14 +1488,35 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
         ncnnTotalMsTotal += ncnnStats.totalMs;
         const QString detectorId = backend;
         const bool qimageMaterialized = options.materializedGenerateFacestream;
-        const QJsonObject rawDetectionFrame = buildRawDetectionFrameRecord(
-            frameNumber, detectorId, detectionFrameSize, detections);
-        rawDetectionFrames.append(rawDetectionFrame);
-        rawDetectionFrameIndexByFrame.insert(frameNumber,
-                                             rawDetectionFrames.size() - 1);
-        const QJsonArray trackDetections =
-            jcut::facedetections::frameTrackDetections(tracks, frameNumber);
-        trackDetectionsByFrame.insert(frameNumber, trackDetections);
+        QJsonArray detectionRows;
+        if (!resume.fullPayloadDeferred) {
+          for (const Detection &detection : detections) {
+            detectionRows.append(jcut::facedetections::compactDetectionJson(
+                detection, detectionFrameSize));
+          }
+          rawDetectionFrames.append(QJsonObject{
+              {QStringLiteral("frame"), frameNumber},
+              {QStringLiteral("detector"), detectorId},
+              {QStringLiteral("frame_width"), detectionFrameSize.width()},
+              {QStringLiteral("frame_height"), detectionFrameSize.height()},
+              {QStringLiteral("detection_count"), detections.size()},
+              {QStringLiteral("detections"), detectionRows}});
+          rawDetectionFrameIndexByFrame.insert(frameNumber,
+                                               rawDetectionFrames.size() - 1);
+        }
+        const QVector<jcut::facedetections::FrameTrackDetection>
+            trackDetectionRecords =
+                jcut::facedetections::frameTrackDetectionRecords(tracks,
+                                                                 frameNumber);
+        QJsonArray trackDetections;
+        if (!resume.fullPayloadDeferred) {
+          for (const auto &trackDetection : trackDetectionRecords) {
+            trackDetections.append(
+                jcut::facedetections::frameTrackDetectionToJson(
+                    trackDetection));
+          }
+          trackDetectionsByFrame.insert(frameNumber, trackDetections);
+        }
         latestProcessedFrame = qMax(latestProcessedFrame, frameNumber);
         const bool decoderDirectHandoff =
             !appVulkanFrame && hardwareDirectHandoff;
@@ -1456,7 +1524,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
             {QStringLiteral("frame"), frameNumber},
             {QStringLiteral("detector"), detectorId},
             {QStringLiteral("detections"), detections.size()},
-            {QStringLiteral("tracks"), trackDetections.size()},
+            {QStringLiteral("tracks"), trackDetectionRecords.size()},
             {QStringLiteral("app_vulkan_frame_path"), appVulkanFrame},
             {QStringLiteral("app_render_decode_ms"), renderStats.decodeMs},
             {QStringLiteral("app_render_texture_ms"), renderStats.textureMs},
@@ -1481,36 +1549,48 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
             {QStringLiteral("hardware_direct_attempt_reason"),
              hardwareDirectAttemptReason},
             {QStringLiteral("qimage_materialized"), qimageMaterialized}};
-        frameRows.append(frameRow);
-        QJsonObject streamRow = frameRow;
-        streamRow.insert(QStringLiteral("type"), QStringLiteral("frame"));
-        streamRow.insert(QStringLiteral("schema"),
-                         QStringLiteral("jcut_facedetections_frame_v1"));
-        streamRow.insert(QStringLiteral("video"), options.videoPath);
-        streamRow.insert(QStringLiteral("backend"), backend);
-        streamRow.insert(QStringLiteral("decoder_direct_handoff"),
-                         decoderDirectHandoff);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_supported"),
-                         handoffProbe.supported);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_failed"),
-                         !handoffProbe.path.isEmpty() &&
-                             !handoffProbe.supported);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_path"),
-                         handoffProbe.path);
-        streamRow.insert(QStringLiteral("hardware_interop_probe_reason"),
-                         handoffProbe.reason);
-        streamRow.insert(QStringLiteral("hardware_frame"),
-                         appVulkanFrame || hardwareDirectHandoff);
-        streamRow.insert(QStringLiteral("cpu_frame"),
-                         qimageMaterialized || decoderVulkanUploadFallback);
-        streamRow.insert(
-            QStringLiteral("detection_boxes"),
-            rawDetectionFrame.value(QStringLiteral("detections")).toArray());
-        streamRow.insert(QStringLiteral("track_detections"), trackDetections);
+        if (!resume.fullPayloadDeferred) {
+          frameRows.append(frameRow);
+        }
+        FaceStreamFrameRecord streamRecord;
+        streamRecord.video = options.videoPath;
+        streamRecord.backend = backend;
+        streamRecord.detector = detectorId;
+        streamRecord.frame = frameNumber;
+        streamRecord.frameSize = detectionFrameSize;
+        streamRecord.detections = detections;
+        streamRecord.trackDetections = trackDetectionRecords;
+        streamRecord.appVulkanFramePath = appVulkanFrame;
+        streamRecord.decoderDirectHandoff = decoderDirectHandoff;
+        streamRecord.decoderVulkanUploadFallback = decoderVulkanUploadFallback;
+        streamRecord.hardwareDirectHandoff = hardwareDirectHandoff;
+        streamRecord.hardwareDirectAttemptReason = hardwareDirectAttemptReason;
+        streamRecord.hardwareInteropProbeSupported = handoffProbe.supported;
+        streamRecord.hardwareInteropProbeFailed =
+            !handoffProbe.path.isEmpty() && !handoffProbe.supported;
+        streamRecord.hardwareInteropProbePath = handoffProbe.path;
+        streamRecord.hardwareInteropProbeReason = handoffProbe.reason;
+        streamRecord.hardwareFrame = appVulkanFrame || hardwareDirectHandoff;
+        streamRecord.cpuFrame =
+            qimageMaterialized || decoderVulkanUploadFallback;
+        streamRecord.qimageMaterialized = qimageMaterialized;
+        streamRecord.appRenderDecodeMs = renderStats.decodeMs;
+        streamRecord.appRenderTextureMs = renderStats.textureMs;
+        streamRecord.appRenderCompositeMs = renderStats.compositeMs;
+        streamRecord.appRenderReadbackMs = renderStats.readbackMs;
+        streamRecord.vulkanZeroCopyDetectionMs = vulkanDetectMs;
+        streamRecord.decoderVulkanUploadMs = decoderUploadMs;
+        streamRecord.ncnnInputMs = ncnnStats.inputMs;
+        streamRecord.ncnnExtractMs = ncnnStats.extractMs;
+        streamRecord.ncnnExtractLevel8Ms = ncnnStats.extractLevel8Ms;
+        streamRecord.ncnnExtractLevel16Ms = ncnnStats.extractLevel16Ms;
+        streamRecord.ncnnExtractLevel32Ms = ncnnStats.extractLevel32Ms;
+        streamRecord.ncnnPostMs = ncnnStats.postMs;
+        streamRecord.ncnnTotalMs = ncnnStats.totalMs;
         QElapsedTimer checkpointTimer;
         checkpointTimer.start();
         QString checkpointError;
-        if (!appendFaceStreamRecord(streamRow, &checkpointError)) {
+        if (!appendFaceStreamFrame(streamRecord, &checkpointError)) {
           std::cerr << checkpointError.toStdString() << "\n";
           return false;
         }
@@ -1752,19 +1832,79 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     result.ok = localError.isEmpty() || !result.detections.isEmpty();
     return result;
   };
+  struct DecoderDetectorWorkerJoiner {
+    std::vector<std::unique_ptr<DecoderDetectorWorker>> *workers = nullptr;
+
+    ~DecoderDetectorWorkerJoiner() { stop(); }
+
+    void stop() {
+      if (!workers) {
+        return;
+      }
+      for (const auto &worker : *workers) {
+        if (!worker) {
+          continue;
+        }
+        {
+          std::lock_guard<std::mutex> lock(worker->mutex);
+          worker->stop = true;
+        }
+        worker->cv.notify_one();
+      }
+      for (const auto &worker : *workers) {
+        if (worker && worker->thread.joinable()) {
+          worker->thread.join();
+        }
+      }
+      workers = nullptr;
+    }
+  };
+  DecoderDetectorWorkerJoiner decoderDetectorWorkerJoiner{
+      &decoderDetectorWorkers};
+  for (int workerIndex = 0; workerIndex < detectorWorkersActive; ++workerIndex) {
+    DecoderDetectorWorker *worker = decoderDetectorWorkers[workerIndex].get();
+    worker->thread = std::thread([&, worker]() {
+      for (;;) {
+        int slotIndex = -1;
+        {
+          std::unique_lock<std::mutex> lock(worker->mutex);
+          worker->cv.wait(lock, [&]() {
+            return worker->stop || worker->queuedSlotIndex >= 0;
+          });
+          if (worker->stop && worker->queuedSlotIndex < 0) {
+            return;
+          }
+          slotIndex = worker->queuedSlotIndex;
+          worker->queuedSlotIndex = -1;
+        }
+        PreparedDecoderDetectionResult result =
+            runPreparedDecoderDetection(slotIndex);
+        PreparedDecoderDetectionSlot &slot = decoderDirectSlots[slotIndex];
+        {
+          std::lock_guard<std::mutex> lock(slot.detectionMutex);
+          slot.detectionResult = std::move(result);
+          slot.detectionResultReady = true;
+        }
+        slot.detectionCv.notify_one();
+      }
+    });
+  }
   auto startPreparedDecoderDetection = [&](int slotIndex) {
     PreparedDecoderDetectionSlot &slot = decoderDirectSlots[slotIndex];
     slot.detectionRunning = true;
-    decoderDetectorWorkers[slot.workerIndex]->busy = true;
-    if (detectorWorkersActive > 1) {
-      slot.detectionFuture = std::async(std::launch::async, [&, slotIndex]() {
-        return runPreparedDecoderDetection(slotIndex);
-      });
-    } else {
-      std::promise<PreparedDecoderDetectionResult> promise;
-      promise.set_value(runPreparedDecoderDetection(slotIndex));
-      slot.detectionFuture = promise.get_future();
+    {
+      std::lock_guard<std::mutex> lock(slot.detectionMutex);
+      slot.detectionResult = PreparedDecoderDetectionResult();
+      slot.detectionResultReady = false;
     }
+    decoderDetectorWorkers[slot.workerIndex]->busy = true;
+    DecoderDetectorWorker *worker =
+        decoderDetectorWorkers[slot.workerIndex].get();
+    {
+      std::lock_guard<std::mutex> lock(worker->mutex);
+      worker->queuedSlotIndex = slotIndex;
+    }
+    worker->cv.notify_one();
   };
   auto finalizePreparedDecoderSlot = [&](int slotIndex) -> bool {
     PreparedDecoderDetectionSlot &slot = decoderDirectSlots[slotIndex];
@@ -1774,7 +1914,15 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     if (!slot.detectionRunning) {
       startPreparedDecoderDetection(slotIndex);
     }
-    PreparedDecoderDetectionResult result = slot.detectionFuture.get();
+    PreparedDecoderDetectionResult result;
+    {
+      std::unique_lock<std::mutex> lock(slot.detectionMutex);
+      slot.detectionCv.wait(lock,
+                            [&]() { return slot.detectionResultReady; });
+      result = std::move(slot.detectionResult);
+      slot.detectionResult = PreparedDecoderDetectionResult();
+      slot.detectionResultReady = false;
+    }
     slot.detectionRunning = false;
     if (slot.workerIndex >= 0 &&
         slot.workerIndex < static_cast<int>(decoderDetectorWorkers.size())) {
@@ -1996,6 +2144,34 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     pendingDecoderDirectSlots.pop_front();
     return finalizePreparedDecoderSlot(slotIndex);
   };
+  auto pumpRuntimeUi = [&](bool force = false) {
+    if (!livePreviewWindow && !detectorControls.window) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const double sinceLastSec =
+        std::chrono::duration<double>(now - lastUiPumpAt).count();
+    if (!force && sinceLastSec < 0.05) {
+      return;
+    }
+    lastUiPumpAt = now;
+    appPtr->processEvents(QEventLoop::AllEvents, 1);
+    if (detectorControls.window && !detectorControls.window->isVisible()) {
+      detectorControls.window = nullptr;
+    }
+    if (livePreviewWindow) {
+      livePreviewWindow->setTimelineRange(
+          options.startFrame, finalFrame,
+          qMax(options.startFrame, latestProcessedFrame));
+      livePreviewWindow->setProcessingPaused(runtimePaused);
+      syncDetectorPreviewPanel(&detectorControls, livePreviewWindow.get(),
+                               options.startFrame,
+                               qMax(options.startFrame, latestProcessedFrame));
+      livePreviewWindow->pumpEvents();
+      runtimePaused = livePreviewWindow->processingPausedRequested();
+      drainLivePreviewQueue();
+    }
+  };
 
   for (int frameOffset = resumeStartOffset; frameOffset < totalFrames;
        ++frameOffset) {
@@ -2065,24 +2241,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       }
       continue;
     }
-    if (livePreviewWindow || detectorControls.window) {
-      appPtr->processEvents();
-      if (detectorControls.window && !detectorControls.window->isVisible()) {
-        detectorControls.window = nullptr;
-      }
-      if (livePreviewWindow) {
-        livePreviewWindow->setTimelineRange(
-            options.startFrame, finalFrame,
-            qMax(options.startFrame, latestProcessedFrame));
-        livePreviewWindow->setProcessingPaused(runtimePaused);
-        syncDetectorPreviewPanel(
-            &detectorControls, livePreviewWindow.get(), options.startFrame,
-            qMax(options.startFrame, latestProcessedFrame));
-        livePreviewWindow->pumpEvents();
-        runtimePaused = livePreviewWindow->processingPausedRequested();
-        drainLivePreviewQueue();
-      }
-    }
+    pumpRuntimeUi();
     while (runtimePaused) {
       if (livePreviewWindow) {
         setPreviewStatusText(
@@ -2818,6 +2977,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   quint64 handoffBufferAllocs = 0;
   quint64 handoffBufferFrees = 0;
   quint64 handoffPipelineCreates = 0;
+  quint64 handoffCudaSyncCalls = 0;
+  double handoffCudaSyncMs = 0.0;
+  quint64 handoffCudaSemaphoreSignals = 0;
+  double handoffCudaSemaphoreSignalMs = 0.0;
   quint64 preprocDescriptorAllocs = 0;
   quint64 preprocDescriptorFrees = 0;
   quint64 inferDescriptorAllocs = 0;
@@ -2835,6 +2998,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     handoffBufferAllocs += handoffStats.stagingBufferAllocations;
     handoffBufferFrees += handoffStats.stagingBufferFrees;
     handoffPipelineCreates += handoffStats.computePipelineCreations;
+    handoffCudaSyncCalls += handoffStats.cudaStreamSynchronizeCalls;
+    handoffCudaSyncMs += handoffStats.cudaStreamSynchronizeMs;
+    handoffCudaSemaphoreSignals += handoffStats.cudaExternalSemaphoreSignals;
+    handoffCudaSemaphoreSignalMs += handoffStats.cudaExternalSemaphoreSignalMs;
     const auto preprocessorStats =
         decoderDirectSlots[slotIndex].preprocessor.resourceStats();
     preprocDescriptorAllocs +=
@@ -3035,6 +3202,23 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
        static_cast<double>(handoffBufferFrees)},
       {QStringLiteral("resource_handoff_pipeline_creations"),
        static_cast<double>(handoffPipelineCreates)},
+      {QStringLiteral("resource_handoff_cuda_stream_synchronize_calls"),
+       static_cast<double>(handoffCudaSyncCalls)},
+      {QStringLiteral("resource_handoff_cuda_stream_synchronize_ms"),
+       handoffCudaSyncMs},
+      {QStringLiteral("resource_handoff_avg_cuda_stream_synchronize_ms"),
+       handoffCudaSyncCalls > 0
+           ? handoffCudaSyncMs / static_cast<double>(handoffCudaSyncCalls)
+           : 0.0},
+      {QStringLiteral("resource_handoff_cuda_external_semaphore_signals"),
+       static_cast<double>(handoffCudaSemaphoreSignals)},
+      {QStringLiteral("resource_handoff_cuda_external_semaphore_signal_ms"),
+       handoffCudaSemaphoreSignalMs},
+      {QStringLiteral("resource_handoff_avg_cuda_external_semaphore_signal_ms"),
+       handoffCudaSemaphoreSignals > 0
+           ? handoffCudaSemaphoreSignalMs /
+                 static_cast<double>(handoffCudaSemaphoreSignals)
+           : 0.0},
       {QStringLiteral("resource_preprocess_descriptor_allocations"),
        static_cast<double>(preprocDescriptorAllocs)},
       {QStringLiteral("resource_preprocess_descriptor_frees"),

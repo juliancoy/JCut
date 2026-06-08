@@ -30,13 +30,8 @@ private slots:
         track.firstFrame = 0;
         track.lastFrame = 0;
         track.hits = 1;
-        track.detections.append(QJsonObject{
-            {QStringLiteral("frame"), 0},
-            {QStringLiteral("x"), 0.3},
-            {QStringLiteral("y"), 0.3},
-            {QStringLiteral("box"), 0.4},
-            {QStringLiteral("score"), 0.9}
-        });
+        track.detections.append(jcut::facedetections::TrackDetection{
+            0, 0.3, 0.3, 0.4, 0.9f, 100, 100});
         tracks.push_back(track);
 
         const QVector<jcut::facedetections::Detection> detections{

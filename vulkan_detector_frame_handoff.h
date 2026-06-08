@@ -37,6 +37,10 @@ struct FrameHandoffResourceStats {
     quint64 importedMemoryAllocations = 0;
     quint64 importedMemoryFrees = 0;
     quint64 computePipelineCreations = 0;
+    quint64 cudaStreamSynchronizeCalls = 0;
+    double cudaStreamSynchronizeMs = 0.0;
+    quint64 cudaExternalSemaphoreSignals = 0;
+    double cudaExternalSemaphoreSignalMs = 0.0;
 };
 
 class VulkanDetectorFrameHandoff final {
@@ -108,6 +112,10 @@ private:
                                 VkDeviceSize& size,
                                 QString* errorMessage);
     bool ensureNv12ConversionResources(QString* errorMessage);
+    bool ensureCudaReadySemaphore(void* cudaContext, QString* errorMessage);
+    bool signalCudaReadySemaphore(void* cudaStream, QString* errorMessage);
+    bool submitCommandBufferWaitingOnCuda(VkPipelineStageFlags waitStage,
+                                          QString* errorMessage);
     bool convertNv12BuffersToImage(int width,
                                    int height,
                                    int yPitch,
@@ -167,9 +175,12 @@ private:
     VkDeviceSize m_cudaExportUvSize = 0;
     void* m_cudaExternalMemory = nullptr;
     void* m_cudaExternalUvMemory = nullptr;
+    void* m_cudaExternalReadySemaphore = nullptr;
     quint64 m_cudaExternalDevicePtr = 0;
     quint64 m_cudaExternalUvDevicePtr = 0;
     void* m_cudaImportContext = nullptr;
+    void* m_cudaSemaphoreImportContext = nullptr;
+    VkSemaphore m_cudaReadySemaphore = VK_NULL_HANDLE;
 
     VkDescriptorSetLayout m_nv12DescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool m_nv12DescriptorPool = VK_NULL_HANDLE;

@@ -15,11 +15,32 @@ struct Detection {
     float confidence = 0.0f;
 };
 
+struct TrackDetection {
+    int frame = -1;
+    double x = 0.0;
+    double y = 0.0;
+    double box = 0.0;
+    float score = 0.0f;
+    int frameWidth = 0;
+    int frameHeight = 0;
+};
+
 enum class ContinuityTrackState {
     Tentative,
     Confirmed,
     Lost,
     Removed
+};
+
+struct FrameTrackDetection {
+    int trackId = -1;
+    TrackDetection detection;
+    QRectF trackBox;
+    ContinuityTrackState trackState = ContinuityTrackState::Tentative;
+    int firstFrame = -1;
+    int lastFrame = -1;
+    int hits = 0;
+    int misses = 0;
 };
 
 struct ContinuityTrack {
@@ -33,7 +54,7 @@ struct ContinuityTrack {
     int hits = 0;
     int misses = 0;
     ContinuityTrackState state = ContinuityTrackState::Tentative;
-    QJsonArray detections;
+    QVector<TrackDetection> detections;
 };
 
 struct ContinuityTrackingTuning {
@@ -58,6 +79,12 @@ QJsonObject compactDetectionJson(const Detection& detection, const QSize& frameS
 QJsonObject compactTrackDetectionJson(const Detection& detection,
                                       int frameNumber,
                                       const QSize& frameSize);
+TrackDetection compactTrackDetectionRecord(const Detection& detection,
+                                           int frameNumber,
+                                           const QSize& frameSize);
+QJsonObject trackDetectionToJson(const TrackDetection& detection);
+TrackDetection trackDetectionFromJson(const QJsonObject& object);
+QJsonObject frameTrackDetectionToJson(const FrameTrackDetection& detection);
 
 void updateContinuityTracks(QVector<ContinuityTrack>* tracks,
                             const QVector<Detection>& detections,
@@ -66,6 +93,8 @@ void updateContinuityTracks(QVector<ContinuityTrack>* tracks,
                             const ContinuityTrackingTuning& tuning);
 
 QJsonArray frameTrackDetections(const QVector<ContinuityTrack>& tracks, int frameNumber);
+QVector<FrameTrackDetection> frameTrackDetectionRecords(const QVector<ContinuityTrack>& tracks,
+                                                        int frameNumber);
 
 QJsonArray buildContinuityTrackRows(const QVector<ContinuityTrack>& tracks);
 

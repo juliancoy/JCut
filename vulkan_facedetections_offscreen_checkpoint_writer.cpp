@@ -36,7 +36,17 @@ bool AsyncFaceStreamWriter::open(const QString &path, QString *error) {
   return true;
 }
 
-bool AsyncFaceStreamWriter::enqueue(const QJsonObject &object, QString *error) {
+bool AsyncFaceStreamWriter::enqueueMeta(const FaceStreamMetaRecord &record,
+                                        QString *error) {
+  return enqueueRecord(record, error);
+}
+
+bool AsyncFaceStreamWriter::enqueueFrame(const FaceStreamFrameRecord &record,
+                                         QString *error) {
+  return enqueueRecord(record, error);
+}
+
+bool AsyncFaceStreamWriter::enqueueRecord(Record record, QString *error) {
   std::unique_lock<std::mutex> lock(m_mutex);
   if (m_stopping || m_failed) {
     if (error) {
@@ -71,7 +81,7 @@ bool AsyncFaceStreamWriter::enqueue(const QJsonObject &object, QString *error) {
     }
     return false;
   }
-  m_queue.push_back(object);
+  m_queue.push_back(std::move(record));
   ++m_recordsQueued;
   m_maxBacklog = std::max(m_maxBacklog, static_cast<int>(m_queue.size()));
   m_notEmpty.notify_one();
@@ -158,7 +168,7 @@ void AsyncFaceStreamWriter::run() {
     return;
   }
   while (true) {
-    QJsonObject object;
+    Record record;
     {
       std::unique_lock<std::mutex> lock(m_mutex);
       m_notEmpty.wait(
@@ -166,13 +176,18 @@ void AsyncFaceStreamWriter::run() {
       if ((m_stopping || m_failed) && m_queue.empty()) {
         break;
       }
-      object = m_queue.front();
+      record = std::move(m_queue.front());
       m_queue.pop_front();
       m_notFull.notify_one();
     }
     QElapsedTimer timer;
     timer.start();
-    const bool ok = appendBinaryCborRecord(&file, object);
+    const bool ok =
+        std::holds_alternative<FaceStreamMetaRecord>(record)
+            ? appendFaceStreamMetaRecord(
+                  &file, std::get<FaceStreamMetaRecord>(record))
+            : appendFaceStreamFrameRecord(
+                  &file, std::get<FaceStreamFrameRecord>(record));
     const double writeMs =
         static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
     {

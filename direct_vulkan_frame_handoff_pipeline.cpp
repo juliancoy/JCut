@@ -42,6 +42,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
     VulkanResources* resources,
     DirectVulkanPreviewStats* stats)
 {
+    Q_UNUSED(commandBuffer);
     Result result;
     if (!resources || !resources->isReady()) {
         if (stats) {
@@ -67,7 +68,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         }
         return result;
     }
-    if (!isInitialized() || commandBuffer == VK_NULL_HANDLE) {
+    if (!isInitialized()) {
         if (stats) {
             stats->lastHandoffMode = QStringLiteral("handoff_pipeline_unavailable");
             stats->lastHandoffError = m_lastError.isEmpty()
@@ -99,9 +100,9 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         offscreenFrame.readySemaphoreFd = status.externalReadySemaphoreFd;
         offscreenFrame.size = status.frameSize;
         offscreenFrame.valid = status.hasFrame;
-        ok = m_handoff->recordImportedFrameCopy(commandBuffer, offscreenFrame, &error);
+        ok = m_handoff->importOffscreenFrame(offscreenFrame, &error);
     } else {
-        ok = m_handoff->recordHardwareFrameUpload(commandBuffer, status.frame, &uploadMs, &error);
+        ok = m_handoff->uploadFrame(status.frame, false, &uploadMs, &error);
     }
 
     if (!ok) {

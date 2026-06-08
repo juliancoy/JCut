@@ -190,6 +190,7 @@ set_tests_properties(test_facedetections_processed_artifact PROPERTIES
 target_sources(test_facedetections_flow
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../speaker_flow_debug.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_facedetections_offscreen_benchmark.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_facedetections_offscreen_artifact_io.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_facedetections_offscreen_resume_state.cpp
 )

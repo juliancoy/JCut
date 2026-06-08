@@ -119,6 +119,8 @@ bool VulkanHarnessContext::initialize(QString *error) {
     enableIfAvailable(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
 #ifdef Q_OS_LINUX
     enableIfAvailable(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    enableIfAvailable(VK_KHR_EXTERNAL_SEMAPHORE_EXTENSION_NAME);
+    enableIfAvailable(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME);
 #endif
     enableIfAvailable(VK_KHR_DESCRIPTOR_UPDATE_TEMPLATE_EXTENSION_NAME);
     enableIfAvailable(VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME);

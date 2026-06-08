@@ -35,7 +35,8 @@ QString liveNcnnBreakdownText(const DetectorLiveTelemetrySnapshot &snapshot) {
   return QStringLiteral(
              "upload %1 ms | input %2 | ext %3 | l8 %4 | l16 %5 | l32 %6 | "
              "post %7 | total %8 | handoff ds %9/%10 img %11/%12 imp %13/%14 "
-             "buf %15/%16 pipe %17 | pre ds %18/%19 inf %20/%21 pipe %22")
+             "buf %15/%16 pipe %17 cuda sync %18 ms/%19 sem %20 ms/%21 | "
+             "pre ds %22/%23 inf %24/%25 pipe %26")
       .arg(snapshot.avgDecoderUploadMs, 0, 'f', 2)
       .arg(snapshot.avgNcnnInputMs, 0, 'f', 2)
       .arg(snapshot.avgNcnnExtractMs, 0, 'f', 2)
@@ -53,6 +54,10 @@ QString liveNcnnBreakdownText(const DetectorLiveTelemetrySnapshot &snapshot) {
       .arg(snapshot.handoffBufferAllocs)
       .arg(snapshot.handoffBufferFrees)
       .arg(snapshot.handoffPipelineCreates)
+      .arg(snapshot.handoffCudaSyncMs, 0, 'f', 2)
+      .arg(snapshot.handoffCudaSyncCalls)
+      .arg(snapshot.handoffCudaSemaphoreSignalMs, 0, 'f', 2)
+      .arg(snapshot.handoffCudaSemaphoreSignals)
       .arg(snapshot.preprocDescriptorAllocs)
       .arg(snapshot.preprocDescriptorFrees)
       .arg(snapshot.inferDescriptorAllocs)

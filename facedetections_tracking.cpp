@@ -159,17 +159,6 @@ int nextTrackId(const QVector<ContinuityTrack>& tracks)
     return maxId + 1;
 }
 
-void insertExactTrackBox(QJsonObject* object, const QRectF& box)
-{
-    if (!object || !box.isValid() || box.isEmpty()) {
-        return;
-    }
-    object->insert(QStringLiteral("track_box_x"), box.x());
-    object->insert(QStringLiteral("track_box_y"), box.y());
-    object->insert(QStringLiteral("track_box_w"), box.width());
-    object->insert(QStringLiteral("track_box_h"), box.height());
-}
-
 void updateMatchedTrack(ContinuityTrack* track,
                         const Detection& detection,
                         const QRectF& predictedBox,
@@ -218,9 +207,8 @@ void updateMatchedTrack(ContinuityTrack* track,
     track->state = track->hits >= tuning.tentativeTrackHitCount
         ? ContinuityTrackState::Confirmed
         : ContinuityTrackState::Tentative;
-    QJsonObject detectionRow = compactTrackDetectionJson(detection, frameNumber, frameSize);
-    insertExactTrackBox(&detectionRow, track->box);
-    track->detections.append(detectionRow);
+    track->detections.append(
+        compactTrackDetectionRecord(detection, frameNumber, frameSize));
 }
 
 void markMissedTrack(ContinuityTrack* track,
@@ -280,6 +268,14 @@ QJsonObject compactTrackDetectionJson(const Detection& detection,
                                       int frameNumber,
                                       const QSize& frameSize)
 {
+    return trackDetectionToJson(
+        compactTrackDetectionRecord(detection, frameNumber, frameSize));
+}
+
+TrackDetection compactTrackDetectionRecord(const Detection& detection,
+                                           int frameNumber,
+                                           const QSize& frameSize)
+{
     const int safeWidth = qMax(1, frameSize.width());
     const int safeHeight = qMax(1, frameSize.height());
     const double x = qBound(0.0, detection.box.center().x() / safeWidth, 1.0);
@@ -289,16 +285,60 @@ QJsonObject compactTrackDetectionJson(const Detection& detection,
         qMax(detection.box.width(), detection.box.height()) /
             static_cast<double>(qMax(1, qMin(safeWidth, safeHeight))),
         1.0);
+    TrackDetection record;
+    record.frame = frameNumber;
+    record.x = x;
+    record.y = y;
+    record.box = box;
+    record.score = detection.confidence;
+    record.frameWidth = safeWidth;
+    record.frameHeight = safeHeight;
+    return record;
+}
+
+QJsonObject trackDetectionToJson(const TrackDetection& detection)
+{
     return QJsonObject{
-        {QStringLiteral("frame"), frameNumber},
-        {QStringLiteral("x"), x},
-        {QStringLiteral("y"), y},
-        {QStringLiteral("box"), box},
-        {QStringLiteral("score"), detection.confidence},
-        {QStringLiteral("frame_width"), safeWidth},
-        {QStringLiteral("frame_height"), safeHeight}
+        {QStringLiteral("frame"), detection.frame},
+        {QStringLiteral("x"), detection.x},
+        {QStringLiteral("y"), detection.y},
+        {QStringLiteral("box"), detection.box},
+        {QStringLiteral("score"), detection.score},
+        {QStringLiteral("frame_width"), detection.frameWidth},
+        {QStringLiteral("frame_height"), detection.frameHeight}
     };
 }
+
+TrackDetection trackDetectionFromJson(const QJsonObject& object)
+{
+    TrackDetection detection;
+    detection.frame = object.value(QStringLiteral("frame")).toInt(-1);
+    detection.x = object.value(QStringLiteral("x")).toDouble();
+    detection.y = object.value(QStringLiteral("y")).toDouble();
+    detection.box = object.value(QStringLiteral("box")).toDouble();
+    detection.score =
+        static_cast<float>(object.value(QStringLiteral("score")).toDouble());
+    detection.frameWidth = object.value(QStringLiteral("frame_width")).toInt();
+    detection.frameHeight = object.value(QStringLiteral("frame_height")).toInt();
+    return detection;
+}
+
+QJsonObject frameTrackDetectionToJson(const FrameTrackDetection& detection)
+{
+    QJsonObject row = trackDetectionToJson(detection.detection);
+    row.insert(QStringLiteral("track_id"), detection.trackId);
+    row.insert(QStringLiteral("track_box_x"), detection.trackBox.x());
+    row.insert(QStringLiteral("track_box_y"), detection.trackBox.y());
+    row.insert(QStringLiteral("track_box_w"), detection.trackBox.width());
+    row.insert(QStringLiteral("track_box_h"), detection.trackBox.height());
+    row.insert(QStringLiteral("track_state"), trackStateString(detection.trackState));
+    row.insert(QStringLiteral("first_frame"), detection.firstFrame);
+    row.insert(QStringLiteral("last_frame"), detection.lastFrame);
+    row.insert(QStringLiteral("hits"), detection.hits);
+    row.insert(QStringLiteral("misses"), detection.misses);
+    return row;
+}
+
 
 void updateContinuityTracks(QVector<ContinuityTrack>* tracks,
                             const QVector<Detection>& detections,
@@ -410,36 +450,45 @@ void updateContinuityTracks(QVector<ContinuityTrack>* tracks,
         track.state = tuning.tentativeTrackHitCount <= 1
             ? ContinuityTrackState::Confirmed
             : ContinuityTrackState::Tentative;
-        QJsonObject detectionRow = compactTrackDetectionJson(detection, frameNumber, frameSize);
-        insertExactTrackBox(&detectionRow, track.box);
-        track.detections.append(detectionRow);
+        track.detections.append(
+            compactTrackDetectionRecord(detection, frameNumber, frameSize));
         tracks->push_back(track);
     }
 
     pruneRemovedTracks(tracks);
 }
 
-QJsonArray frameTrackDetections(const QVector<ContinuityTrack>& tracks, int frameNumber)
+QVector<FrameTrackDetection> frameTrackDetectionRecords(const QVector<ContinuityTrack>& tracks,
+                                                        int frameNumber)
 {
-    QJsonArray rows;
+    QVector<FrameTrackDetection> rows;
     for (const ContinuityTrack& track : tracks) {
         if (track.lastFrame != frameNumber ||
             track.detections.isEmpty() ||
             track.state == ContinuityTrackState::Removed) {
             continue;
         }
-        QJsonObject row = track.detections.last().toObject();
-        row.insert(QStringLiteral("track_id"), track.id);
-        row.insert(QStringLiteral("track_box_x"), track.box.x());
-        row.insert(QStringLiteral("track_box_y"), track.box.y());
-        row.insert(QStringLiteral("track_box_w"), track.box.width());
-        row.insert(QStringLiteral("track_box_h"), track.box.height());
-        row.insert(QStringLiteral("track_state"), trackStateString(track.state));
-        row.insert(QStringLiteral("first_frame"), track.firstFrame);
-        row.insert(QStringLiteral("last_frame"), track.lastFrame);
-        row.insert(QStringLiteral("hits"), track.hits);
-        row.insert(QStringLiteral("misses"), track.misses);
+        FrameTrackDetection row;
+        row.trackId = track.id;
+        row.detection = track.detections.last();
+        row.trackBox = track.box;
+        row.trackState = track.state;
+        row.firstFrame = track.firstFrame;
+        row.lastFrame = track.lastFrame;
+        row.hits = track.hits;
+        row.misses = track.misses;
         rows.append(row);
+    }
+    return rows;
+}
+
+QJsonArray frameTrackDetections(const QVector<ContinuityTrack>& tracks, int frameNumber)
+{
+    QJsonArray rows;
+    const QVector<FrameTrackDetection> records =
+        frameTrackDetectionRecords(tracks, frameNumber);
+    for (const FrameTrackDetection& record : records) {
+        rows.append(frameTrackDetectionToJson(record));
     }
     return rows;
 }
@@ -453,6 +502,10 @@ QJsonArray buildContinuityTrackRows(const QVector<ContinuityTrack>& tracks)
             track.state == ContinuityTrackState::Removed) {
             continue;
         }
+        QJsonArray detectionRows;
+        for (const TrackDetection& detection : track.detections) {
+            detectionRows.append(trackDetectionToJson(detection));
+        }
         rows.append(QJsonObject{
             {QStringLiteral("track_id"), track.id},
             {QStringLiteral("first_frame"), track.firstFrame},
@@ -461,7 +514,7 @@ QJsonArray buildContinuityTrackRows(const QVector<ContinuityTrack>& tracks)
             {QStringLiteral("hits"), track.hits},
             {QStringLiteral("misses"), track.misses},
             {QStringLiteral("state"), trackStateString(track.state)},
-            {QStringLiteral("detections"), track.detections}
+            {QStringLiteral("detections"), detectionRows}
         });
     }
     return rows;

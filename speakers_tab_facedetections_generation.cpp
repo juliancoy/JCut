@@ -415,6 +415,12 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         return;
     }
 
+    const QString clipId = selectedClip->id.trimmed().isEmpty()
+        ? QStringLiteral("unknown_clip")
+        : selectedClip->id.trimmed();
+    const QString artifactDir = facedetectionsClipSidecarDir(selectedClip->filePath, clipId);
+    QDir().mkpath(artifactDir);
+
     const QDir initialRunDir(debugRun.runDir);
     const QString initialRequestPath = initialRunDir.absoluteFilePath(
         QStringLiteral("%1_facedetections_request.json").arg(debugRun.videoStem));
@@ -424,7 +430,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const bool initialRunMediaMismatch =
         !previousMediaPath.isEmpty() &&
         QFileInfo(previousMediaPath).absoluteFilePath() != currentMediaPath;
-    const QDir initialArtifactDir(initialRunDir.absoluteFilePath(QStringLiteral("facedetections_artifact")));
+    const QDir initialArtifactDir(artifactDir);
     const bool initialRunHasCheckpoint =
         QFileInfo::exists(initialArtifactDir.filePath(QStringLiteral("facedetections.part")));
     const bool initialRunHasCompletedOutputs =
@@ -439,9 +445,6 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     if (shouldForceFreshRun) {
         debugRun = speaker_flow_debug::createNewRunFrom(debugRun);
     }
-    const QString artifactDir = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("facedetections_artifact"));
-    QDir().mkpath(artifactDir);
-
     const QString requestPath = QDir(debugRun.runDir).absoluteFilePath(
         QStringLiteral("%1_facedetections_request.json").arg(debugRun.videoStem));
     const QString outputPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("continuity_facedetections.bin"));
@@ -662,13 +665,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
     continuityRoot[QStringLiteral("run_id")] = debugRun.runId;
     continuityRoot[QStringLiteral("imported_from_artifact_dir")] = artifactDir;
+    continuityRoot[QStringLiteral("media_sidecar_dir")] = artifactDir;
     continuityRoot[QStringLiteral("facedetections_part")] = facedetectionsPartPath;
     continuityRoot[QStringLiteral("summary_json")] = summaryPath;
     continuityRoot[QStringLiteral("updated_at_utc")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     continuityRoot[QStringLiteral("media_compatibility")] =
         jcut::facedetections::artifactCompatibilityMetadataForClip(*selectedClip);
 
-    const QString clipId = selectedClip->id.trimmed().isEmpty() ? QStringLiteral("unknown_clip") : selectedClip->id.trimmed();
     continuityRoot[QStringLiteral("clip_id")] = clipId;
     continuityRoot[QStringLiteral("processed_artifact_path")] =
         editor::TranscriptEngine().facedetectionsProcessedArtifactPath(m_transcriptSession.transcriptPath());
