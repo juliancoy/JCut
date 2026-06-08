@@ -210,6 +210,18 @@ private slots:
                  "preview window must explain runtime-disabled presentation");
     }
 
+    void detectorPipelineSlotsAreCappedToWorkers()
+    {
+        const QString runner = readRepoSourceFile(QStringLiteral("vulkan_facedetections_offscreen_runner.cpp"));
+        QVERIFY2(!runner.isEmpty(), "vulkan_facedetections_offscreen_runner.cpp must be readable");
+        QVERIFY2(runner.contains(QStringLiteral("qMin(requestedDecoderDirectPipelineSlots, detectorWorkersActive)")),
+                 "active decoder-direct slots must not exceed active detector workers");
+        QVERIFY2(runner.contains(QStringLiteral("\"decoder_direct_pipeline_slots_capped_by_workers\"")),
+                 "summary must report when requested slots were capped by worker count");
+        QVERIFY2(runner.contains(QStringLiteral("idle detector/model instances are prewarmed")),
+                 "summary note must document that needless model duplication is avoided");
+    }
+
     void currentCheckpointPayloadLoadsThroughResumeReplay()
     {
         QTemporaryDir tempDir;

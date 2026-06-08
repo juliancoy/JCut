@@ -55,6 +55,12 @@ QJsonObject benchmarkSummaryRow(int slotCount, int exitCode,
       wallSec > 0.0 ? static_cast<double>(processedFrames) / wallSec : 0.0;
   return QJsonObject{
       {QStringLiteral("detector_pipeline_slots"), slotCount},
+      {QStringLiteral("detector_pipeline_slots_active"),
+       summary.value(QStringLiteral("decoder_direct_pipeline_slots"))
+           .toInt(slotCount)},
+      {QStringLiteral("detector_pipeline_slots_capped_by_workers"),
+       summary.value(QStringLiteral("decoder_direct_pipeline_slots_capped_by_workers"))
+           .toBool(false)},
       {QStringLiteral("detector_workers"), slotCount},
       {QStringLiteral("exit_code"), exitCode},
       {QStringLiteral("exit_status"), exitStatus == QProcess::NormalExit

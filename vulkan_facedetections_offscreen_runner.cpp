@@ -507,10 +507,12 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   jcut::vulkan_detector::VulkanZeroCopyFaceDetector zeroCopyDetector;
   jcut::vulkan_detector::VulkanRes10NcnnFaceDetector res10Detector;
   jcut::vulkan_detector::VulkanScrfdNcnnFaceDetector scrfdDetector;
-  const int decoderDirectPipelineSlots = std::clamp(
-      options.detectorPipelineSlots, 1, kMaxDecoderDirectPipelineSlots);
   const int detectorWorkersActive =
       std::clamp(options.detectorWorkers, 1, kMaxDecoderDirectPipelineSlots);
+  const int requestedDecoderDirectPipelineSlots = std::clamp(
+      options.detectorPipelineSlots, 1, kMaxDecoderDirectPipelineSlots);
+  const int decoderDirectPipelineSlots =
+      qMin(requestedDecoderDirectPipelineSlots, detectorWorkersActive);
   std::vector<std::unique_ptr<DecoderDetectorWorker>> decoderDetectorWorkers;
   decoderDetectorWorkers.reserve(detectorWorkersActive);
   for (int i = 0; i < detectorWorkersActive; ++i) {
@@ -3070,15 +3072,19 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       {QStringLiteral("processed_frames"), processed},
       {QStringLiteral("decoder_direct_pipeline_slots"),
        decoderDirectPipelineSlots},
+      {QStringLiteral("decoder_direct_pipeline_slots_requested"),
+       requestedDecoderDirectPipelineSlots},
+      {QStringLiteral("decoder_direct_pipeline_slots_capped_by_workers"),
+       requestedDecoderDirectPipelineSlots != decoderDirectPipelineSlots},
       {QStringLiteral("detector_workers_requested"), options.detectorWorkers},
       {QStringLiteral("detector_workers_active"), detectorWorkersActive},
       {QStringLiteral("detector_workers_note"),
        detectorWorkersActive > 1
            ? QStringLiteral(
-                 "Independent detector workers active; each prepared slot owns "
-                 "an independent Vulkan device/queue and detector instance. "
-                 "Worker permits bound concurrency while results are consumed "
-                 "in frame order.")
+                 "Independent detector workers active. Active decoder-direct "
+                 "pipeline slots are capped to active workers so no extra "
+                 "idle detector/model instances are prewarmed; worker permits "
+                 "bound concurrency while results are consumed in frame order.")
            : QStringLiteral("Single detector worker active.")},
       {QStringLiteral("async_checkpoint_writer_enabled"),
        static_cast<bool>(faceStreamWriter)},

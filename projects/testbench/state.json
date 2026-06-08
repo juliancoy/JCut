@@ -116,7 +116,7 @@
     "rubberBandWindow": "standard",
     "selectedClip": {
         "audioEnabled": true,
-        "audioSourceLastVerifiedMs": 1780883781088,
+        "audioSourceLastVerifiedMs": 1780886941733,
         "audioSourceMode": "embedded",
         "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
         "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
@@ -584,7 +584,7 @@
     "timeline": [
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780883781072,
+            "audioSourceLastVerifiedMs": 1780886941714,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/life_c.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/life_c.png",
@@ -1022,7 +1022,7 @@
         },
         {
             "audioEnabled": false,
-            "audioSourceLastVerifiedMs": 1780883781103,
+            "audioSourceLastVerifiedMs": 1780886941733,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "",
             "audioSourcePath": "",
@@ -1515,7 +1515,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780883781072,
+            "audioSourceLastVerifiedMs": 1780886941715,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/gradient_a.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/gradient_a.png",
@@ -1953,7 +1953,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780883781072,
+            "audioSourceLastVerifiedMs": 1780886941715,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/images/fractal_b.png",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/images/fractal_b.png",
@@ -2391,7 +2391,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1780883781088,
+            "audioSourceLastVerifiedMs": 1780886941733,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
             "audioSourcePath": "/home/julian/Documents/JCut/testbench_assets/video/pseudorandom_source.mp4",
