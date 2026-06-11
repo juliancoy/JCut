@@ -6,6 +6,7 @@
 #include "facedetections_time_mapping.h"
 #include "facestream_overlay_snapshot.h"
 #include "debug_controls.h"
+#include "frame_handle.h"
 #include "playback_stage_metrics.h"
 
 #include <QJsonObject>
@@ -240,6 +241,7 @@ private:
     int m_frameStatusMissingCount = 0;
     int m_frameStatusHardwareCount = 0;
     int m_frameStatusCpuCount = 0;
+    QHash<QString, editor::FrameHandle> m_lastPresentedFrameByClip;
     int64_t m_lastVisibleRequestFrame = -1;
     QString m_lastVisibleRequestClipId;
     QString m_lastVisibleRequestDecision;

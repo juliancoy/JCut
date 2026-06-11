@@ -55,3 +55,10 @@ bool loadFaceDetectionsResume(const QString &path, const QString &videoPath,
                               const QString &backend, int startFrame,
                               int endFrame, FaceDetectionsResumeState *state,
                               QString *error);
+bool repairFaceDetectionsResumeCheckpoint(const QString &path,
+                                          const QString &videoPath,
+                                          const QString &backend,
+                                          int startFrame,
+                                          int endFrame,
+                                          FaceDetectionsResumeState *state,
+                                          QString *message);

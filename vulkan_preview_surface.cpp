@@ -168,10 +168,6 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
     m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
     m_configuredPlaybackTuning = m_playbackTuning;
     m_previousDecodePreference = editor::debugDecodePreference();
-    if (m_previousDecodePreference != editor::DecodePreference::HardwareZeroCopy) {
-        editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
-        m_forcedPreviewDecodePreference = true;
-    }
     m_presenter = std::make_unique<DirectVulkanPreviewPresenter>(&m_interaction, parent);
     if (!m_presenter->isActive()) {
         m_failureReason = m_presenter->failureReason();
@@ -372,6 +368,7 @@ void VulkanPreviewSurface::setTimelineClips(const QVector<TimelineClip>& clips)
 {
     m_interaction.clips = clips;
     m_interaction.clipCount = clips.size();
+    m_lastPresentedFrameByClip.clear();
     warmClipsSpeakerFramingContinuityRuntime(m_interaction.clips);
     if (m_playbackPipeline) {
         m_playbackPipeline->setTimelineClips(
@@ -422,6 +419,7 @@ void VulkanPreviewSurface::setUseProxyMedia(bool useProxyMedia)
         return;
     }
     m_useProxyMedia = useProxyMedia;
+    m_lastPresentedFrameByClip.clear();
     if (m_cache) {
         m_cache->setLookaheadFrames(effectivePlaybackLookaheadFrames());
         for (const QString& clipId : std::as_const(m_registeredClips)) {
@@ -912,11 +910,6 @@ void VulkanPreviewSurface::ensureFramePipeline()
         return;
     }
 
-    if (editor::debugDecodePreference() != editor::DecodePreference::HardwareZeroCopy) {
-        editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
-        m_forcedPreviewDecodePreference = true;
-    }
-
     m_decoder = std::make_unique<editor::AsyncDecoder>();
     if (!m_decoder->initialize()) {
         return;
@@ -1148,7 +1141,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-        constexpr bool requireDirectVulkanPayload = true;
+        constexpr bool requireDirectVulkanPayload = false;
         const bool displayableCached = m_cache->hasDisplayableFrameForPreview(
             clip.id,
             localFrame,
@@ -1346,7 +1339,14 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
         const int64_t maxStaleFrameDelta =
             editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
+        const int64_t maxHeldFrameDelta = m_interaction.playing
+            ? qMax<int64_t>(maxStaleFrameDelta,
+                            static_cast<int64_t>(std::ceil(resolvedSourceFps(clip) * 2.0)))
+            : -1;
         const bool usePlaybackPipeline = m_interaction.playing && m_playbackPipeline;
+        const FrameHandle heldFrame = usePlaybackPipeline
+            ? m_lastPresentedFrameByClip.value(clip.id)
+            : FrameHandle();
         const editor::PreviewFrameSelectionResult frameSelection = editor::selectPreviewFrame(
             editor::PreviewFrameSelectionRequest{
                 clip.id,
@@ -1357,21 +1357,27 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
                 m_interaction.playing,
                 false,
                 false,
-                usePlaybackPipeline ? maxStaleFrameDelta : -1,
+                usePlaybackPipeline ? maxHeldFrameDelta : -1,
             },
             m_cache.get(),
             m_playbackPipeline.get(),
-            FrameHandle(),
+            heldFrame,
             [](const FrameHandle& frame) {
                 return !frame.isNull() &&
+                       !frame.hasCpuImage() &&
                        !frame.hasHardwareFrame() &&
                        !frame.hasGpuTexture();
             });
         const FrameHandle exactFrame = frameSelection.exactFrame;
         FrameHandle selectedFrame = frameSelection.frame;
+        const int64_t selectedStaleFrameDelta =
+            frameSelection.selectedHeld ? maxHeldFrameDelta : maxStaleFrameDelta;
         const bool selectedTooStale =
             m_interaction.playing &&
-            editor::previewFrameIsTooStaleForPlayback(selectedFrame, localFrame, maxStaleFrameDelta);
+            editor::previewFrameIsTooStaleForPlayback(selectedFrame, localFrame, selectedStaleFrameDelta);
+        if (selectedTooStale) {
+            selectedFrame = FrameHandle();
+        }
 
         VulkanPreviewClipFrameStatus status;
         status.clipId = clip.id;
@@ -1450,6 +1456,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
         if (status.hasFrame) {
             status.frame = selectedFrame;
             status.presentedSourceFrame = selectedFrame.frameNumber();
+            m_lastPresentedFrameByClip.insert(clip.id, selectedFrame);
             status.frameSize = selectedFrame.size();
             status.hardwareFrame = selectedHasHardwareFrame;
             status.gpuTexture = selectedHasGpuTexture;
@@ -1472,7 +1479,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             if (!m_cache) {
                 status.missingReason = QStringLiteral("cache_unavailable");
             } else if (frameSelection.rejectedStale) {
-                status.missingReason = QStringLiteral("non_hardware_payload_rejected");
+                status.missingReason = QStringLiteral("unsupported_payload_rejected");
             } else if (selectedFrame.isNull()) {
                 status.missingReason = QStringLiteral("no_decoded_frame_for_active_clip");
             } else if (!selectedHasHardwareFrame && !selectedHasGpuTexture && !selectedHasCpuFrame) {
@@ -1785,8 +1792,12 @@ bool VulkanPreviewSurface::warmPlaybackLookahead(int futureFrames, int timeoutMs
         QCoreApplication::processEvents(QEventLoop::AllEvents, 8);
         QThread::msleep(8);
     }
-    return hasPlaybackLookaheadBuffered(cappedFutureFrames) ||
-           currentPlaybackFrameReadyForStart();
+    const bool ready = hasPlaybackLookaheadBuffered(cappedFutureFrames) ||
+                       currentPlaybackFrameReadyForStart();
+    if (!ready) {
+        m_playbackPipeline->setPlaybackActive(false);
+    }
+    return ready;
 }
 
 QImage VulkanPreviewSurface::latestPresentedFrameImageForClip(const QString& clipId) const

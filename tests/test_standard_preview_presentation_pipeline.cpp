@@ -78,6 +78,7 @@ private slots:
     void pendingVisibleRequestDeduplicatesCallbacks();
     void strictPayloadRequirementRejectsCpuFrames();
     void selectionUsesBoundedPriorHardwareFrameDuringPlayback();
+    void staleApproximateSelectionFallsBackToHeldFrame();
     void stalePlaybackFramePredicateBoundsApproximatePresentation();
 };
 
@@ -216,6 +217,47 @@ void TestStandardPreviewPresentationPipeline::selectionUsesBoundedPriorHardwareF
     QCOMPARE(selection.selection, QStringLiteral("latest"));
 }
 
+void TestStandardPreviewPresentationPipeline::staleApproximateSelectionFallsBackToHeldFrame()
+{
+    AsyncDecoder decoder;
+    MemoryBudget budget;
+    TimelineCache cache(&decoder, &budget);
+    cache.setPlaybackState(TimelineCache::PlaybackState::Playing);
+    const TimelineClip clip = makeClip(QStringLiteral("clip-held"), QStringLiteral("/tmp/held.mp4"));
+    cache.registerClip(clip);
+
+    const FrameHandle staleCachedFrame = makeHardwareFrame(100, clip.filePath);
+    const FrameHandle heldFrame = makeHardwareFrame(108, clip.filePath);
+    QVERIFY(!staleCachedFrame.isNull());
+    QVERIFY(!heldFrame.isNull());
+    decoder.frameReady(staleCachedFrame);
+
+    const PreviewFrameSelectionResult selection = selectPreviewFrame(
+        PreviewFrameSelectionRequest{
+            clip.id,
+            110,
+            true,
+            false,
+            false,
+            true,
+            false,
+            false,
+            8,
+        },
+        &cache,
+        nullptr,
+        heldFrame,
+        [](const FrameHandle& frame) {
+            return !frame.isNull() && frame.frameNumber() < 106;
+        });
+
+    QVERIFY(!selection.frame.isNull());
+    QCOMPARE(selection.frame.frameNumber(), static_cast<int64_t>(108));
+    QVERIFY(selection.selectedHeld);
+    QVERIFY(selection.rejectedStale);
+    QCOMPARE(selection.selection, QStringLiteral("held"));
+}
+
 void TestStandardPreviewPresentationPipeline::stalePlaybackFramePredicateBoundsApproximatePresentation()
 {
     const QString path = QStringLiteral("/tmp/stale.mp4");
@@ -225,6 +267,7 @@ void TestStandardPreviewPresentationPipeline::stalePlaybackFramePredicateBoundsA
     QVERIFY(!staleFrame.isNull());
 
     const int64_t maxDelta = previewMaxPlaybackStaleFrameDelta(60.0);
+    QCOMPARE(maxDelta, static_cast<int64_t>(5));
     QVERIFY(!previewFrameIsTooStaleForPlayback(nearFrame, 100 + maxDelta, maxDelta));
     QVERIFY(previewFrameIsTooStaleForPlayback(staleFrame, 101 + maxDelta, maxDelta));
 }

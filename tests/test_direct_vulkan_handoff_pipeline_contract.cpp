@@ -120,9 +120,10 @@ void TestDirectVulkanHandoffPipelineContract::
       pipelineSource.contains(QStringLiteral("m_handoff->importOffscreenFrame(")),
       "direct preview external Vulkan handoff must use the owned import submit "
       "path rather than recording into Qt's caller-owned submit");
-  QVERIFY2(!previewSource.contains(QStringLiteral(
-               "uploadImageTexture(cb, status->frame.cpuImage()")),
-           "direct preview must not implicitly fall back to CPU frame upload");
+  QVERIFY2(
+      pipelineSource.contains(QStringLiteral("uploadFrame(status.frame, true")),
+      "direct preview must allow VulkanDetectorFrameHandoff's CPU upload "
+      "fallback when hardware direct handoff is unavailable");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -215,11 +216,12 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(!source.isEmpty(), "vulkan_preview_surface.cpp must be readable");
 
   QVERIFY2(source.contains(QStringLiteral(
-               "constexpr bool requireDirectVulkanPayload = true;")),
-           "direct Vulkan preview must request strict hardware/GPU payloads");
+               "constexpr bool requireDirectVulkanPayload = false;")),
+           "direct Vulkan preview must accept CPU-uploadable visible frames "
+           "when hardware direct payloads fail");
   QVERIFY2(
       source.contains(QStringLiteral("requireDirectVulkanPayload);")),
-      "strict payload requirement must be passed into visible frame requests");
+      "visible frame payload policy must be passed into frame requests");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -230,14 +232,12 @@ void TestDirectVulkanHandoffPipelineContract::
            "direct_vulkan_frame_handoff_pipeline.cpp must be readable");
 
   QVERIFY2(
-      source.contains(QStringLiteral(
-          "!status.externalVulkanFrame && !status.frame.hasHardwareFrame()")),
-      "handoff pipeline must reject frames that are not external Vulkan or "
-      "hardware frames");
-  QVERIFY2(source.contains(QStringLiteral("CPU upload fallback is disabled")),
-           "handoff pipeline must report CPU fallback rejection explicitly");
-  QVERIFY2(!source.contains(QStringLiteral("status.frame.cpuImage()")),
-           "handoff pipeline must not consume CPU image payloads");
+      source.contains(QStringLiteral("!status.frame.hasCpuImage()")),
+      "handoff pipeline must accept CPU-uploadable frames as a fallback");
+  QVERIFY2(source.contains(QStringLiteral("QStringLiteral(\"cpu_upload\")")),
+           "handoff pipeline must report CPU upload fallback explicitly");
+  QVERIFY2(source.contains(QStringLiteral("uploadFrame(status.frame, true")),
+           "handoff pipeline must enable CPU image upload fallback");
 }
 
 void TestDirectVulkanHandoffPipelineContract::
@@ -439,6 +439,10 @@ void TestDirectVulkanHandoffPipelineContract::
                    QStringLiteral("requestFramesForCurrentPosition()")),
            "startup warmup must schedule PlaybackFramePipeline directly "
            "because playback state is not active yet");
+  QVERIFY2(warmupBody.contains(
+               QStringLiteral("m_playbackPipeline->setPlaybackActive(false)")),
+           "failed startup warmup must unwind PlaybackFramePipeline active "
+           "state before returning to the editor");
   QVERIFY2(!surface.contains(QStringLiteral("m_cache->startPrefetching()")) &&
                !surface.contains(
                    QStringLiteral("TimelineCache::PlaybackState::Playing")),
@@ -468,6 +472,20 @@ void TestDirectVulkanHandoffPipelineContract::
           "kind == DecodeRequestKind::Visible ? 100 : qMax(10, 60 - offset)")),
       "prefetch priority must be materially lower than current visible "
       "priority");
+
+  const QString playbackDebugControls =
+      readSourceFile(QStringLiteral("debug_controls.cpp"));
+  QVERIFY2(!playbackDebugControls.isEmpty(), "debug_controls.cpp must be readable");
+  QVERIFY2(playbackDebugControls.contains(
+               QStringLiteral("kDefaultCancelBeforeMinFrameAdvance = 6")) &&
+               playbackDebugControls.contains(
+                   QStringLiteral("kDefaultCancelBeforeMinIntervalMs = 45")),
+           "playback cancel-before throttling must not run at display-frame "
+           "cadence");
+  QVERIFY2(playbackDebugControls.contains(
+               QStringLiteral("defaults.decodePreference = DecodePreference::Hardware;")),
+           "direct Vulkan preview must default to materialized hardware decode "
+           "rather than fragile hardware-zero-copy interop");
 
   const QString decoder = readSourceFile(QStringLiteral("async_decoder.cpp"));
   QVERIFY2(!decoder.isEmpty(), "async_decoder.cpp must be readable");
@@ -539,7 +557,7 @@ void TestDirectVulkanHandoffPipelineContract::
   const QString selectionHeader =
       readSourceFile(QStringLiteral("preview_frame_selection.h"));
   QVERIFY2(selectionHeader.contains(
-               QStringLiteral("kPreviewMaxPlaybackStaleSeconds = 0.20")) &&
+               QStringLiteral("kPreviewMaxPlaybackStaleSeconds = 0.067")) &&
                selectionHeader.contains(
                    QStringLiteral("previewMaxPlaybackStaleFrameDelta")) &&
                selectionHeader.contains(
@@ -586,6 +604,21 @@ void TestDirectVulkanHandoffPipelineContract::
   QVERIFY2(debugControls.contains(QStringLiteral("temporal_debug_overlay")),
            "temporal debug overlay must be controllable through the existing "
            "/debug options");
+
+  const QString editorSource = readSourceFile(QStringLiteral("editor.cpp"));
+  QVERIFY2(!editorSource.contains(QStringLiteral(
+               "debugDecodePreference = editor::DecodePreference::HardwareZeroCopy")),
+           "loading a Vulkan project must honor debugDecodeMode instead of "
+           "forcing hardware-zero-copy");
+  const QString inspectorTabs =
+      readSourceFile(QStringLiteral("inspector_pane_secondary_tabs.cpp"));
+  QVERIFY2(!inspectorTabs.contains(QStringLiteral("GPU Zero-Copy")) &&
+               !inspectorTabs.contains(QStringLiteral("hardware_zero_copy")),
+           "interactive decode controls must not expose hardware-zero-copy");
+  QVERIFY2(debugControls.contains(
+               QStringLiteral("*preferenceOut = DecodePreference::Hardware;")),
+           "legacy hardware-zero-copy state must be normalized to hardware "
+           "decode instead of restoring the black-frame path");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

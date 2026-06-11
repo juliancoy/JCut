@@ -18,6 +18,10 @@
 #define JCUT_HAS_CUDA_DRIVER 0
 #endif
 
+#if !defined(JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY)
+#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 0
+#endif
+
 extern "C" {
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
@@ -58,23 +62,30 @@ VkShaderModule createShaderModule(VkDevice device, const QByteArray& spirv)
 }
 
 #if JCUT_HAS_CUDA_DRIVER
-void destroyCudaExternalMemory(void*& memory, quint64& devicePtr, void* context)
-{
-    if (!memory) {
+    void destroyCudaExternalMemory(void*& memory, quint64& devicePtr, void* context)
+    {
+        if (!memory) {
+            devicePtr = 0;
+            return;
+        }
+#if JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY
+        memory = nullptr;
         devicePtr = 0;
+        Q_UNUSED(context);
         return;
-    }
-    CUcontext previous = nullptr;
-    if (context) {
-        cuCtxPushCurrent(reinterpret_cast<CUcontext>(context));
-    }
-    cuDestroyExternalMemory(reinterpret_cast<CUexternalMemory>(memory));
+#else
+        CUcontext previous = nullptr;
+        if (context) {
+            cuCtxPushCurrent(reinterpret_cast<CUcontext>(context));
+        }
+        cuDestroyExternalMemory(reinterpret_cast<CUexternalMemory>(memory));
     if (context) {
         cuCtxPopCurrent(&previous);
+        }
+        memory = nullptr;
+        devicePtr = 0;
+#endif
     }
-    memory = nullptr;
-    devicePtr = 0;
-}
 
 void destroyCudaExternalSemaphore(void*& semaphore, void* context)
 {

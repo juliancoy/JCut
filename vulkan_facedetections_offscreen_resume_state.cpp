@@ -5,6 +5,7 @@
 
 #include <QDataStream>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
 
@@ -18,6 +19,26 @@ constexpr quint32 kFaceDetectionsCheckpointVersion = 2;
 
 QString checkpointMagicString(quint32 magic) {
   return QStringLiteral("0x%1").arg(magic, 8, 16, QChar('0'));
+}
+
+QString checkpointRepairTimestamp() {
+  return QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd_HHmmss_zzz"));
+}
+
+QString uniqueSiblingPath(const QString &path, const QString &suffix) {
+  const QFileInfo info(path);
+  const QDir dir = info.dir();
+  const QString base = info.fileName() + suffix;
+  QString candidate = dir.absoluteFilePath(base);
+  for (int i = 1; QFileInfo::exists(candidate); ++i) {
+    candidate = dir.absoluteFilePath(QStringLiteral("%1.%2").arg(base).arg(i));
+  }
+  return candidate;
+}
+
+bool writeRepairReport(const QString &reportPath, const QJsonObject &report,
+                       QString *error) {
+  return jcut::jsonio::writeJsonFile(reportPath, report, true, error);
 }
 
 bool readCheckpointMagic(const QString &path, quint32 *magic, QString *error) {
@@ -196,6 +217,95 @@ QVector<Track> continuityTracksFromResumeJson(const QJsonArray &rows) {
     }
   }
   return tracks;
+}
+
+void applyFaceStreamFrameRecord(const FaceStreamFrameRecord &frame,
+                                const QString &backend,
+                                int startFrame,
+                                int endFrame,
+                                FaceDetectionsResumeState *state) {
+  if (!state || frame.frame < 0) {
+    return;
+  }
+  const int frameNumber = frame.frame;
+  if (frameNumber < startFrame || frameNumber > endFrame ||
+      state->completedFrames.contains(frameNumber)) {
+    return;
+  }
+  state->completedFrames.insert(frameNumber);
+  ++state->processed;
+  const int detectionCount = frame.detections.size();
+  state->totalDetections += detectionCount;
+  if (frame.appVulkanFramePath)
+    ++state->appVulkanFramePathFrames;
+  if (frame.decoderDirectHandoff)
+    ++state->decoderDirectHandoffFrames;
+  if (frame.decoderVulkanUploadFallback)
+    ++state->decoderVulkanUploadFallbackFrames;
+  if (frame.hardwareDirectHandoff)
+    ++state->hardwareDirectHandoffFrames;
+  if (frame.hardwareInteropProbeSupported)
+    ++state->hardwareInteropProbeSupportedFrames;
+  if (frame.hardwareInteropProbeFailed)
+    ++state->hardwareInteropProbeFailedFrames;
+  if (frame.hardwareFrame)
+    ++state->hardwareFrames;
+  if (frame.cpuFrame)
+    ++state->cpuFrames;
+  state->renderDecodeMsTotal += frame.appRenderDecodeMs;
+  state->renderCompositeMsTotal += frame.appRenderCompositeMs;
+  state->renderReadbackMsTotal += frame.appRenderReadbackMs;
+  state->decoderUploadMsTotal += frame.decoderVulkanUploadMs;
+  state->vulkanDetectMsTotal += frame.vulkanZeroCopyDetectionMs;
+  state->ncnnInputMsTotal += frame.ncnnInputMs;
+  state->ncnnExtractMsTotal += frame.ncnnExtractMs;
+  state->ncnnExtractLevel8MsTotal += frame.ncnnExtractLevel8Ms;
+  state->ncnnExtractLevel16MsTotal += frame.ncnnExtractLevel16Ms;
+  state->ncnnExtractLevel32MsTotal += frame.ncnnExtractLevel32Ms;
+  state->ncnnPostMsTotal += frame.ncnnPostMs;
+  state->ncnnTotalMsTotal += frame.ncnnTotalMs;
+
+  state->frameRows.append(QJsonObject{
+      {QStringLiteral("frame"), frameNumber},
+      {QStringLiteral("detector"), frame.detector.isEmpty() ? backend
+                                                            : frame.detector},
+      {QStringLiteral("detections"), detectionCount},
+      {QStringLiteral("tracks"), frame.trackDetections.size()},
+      {QStringLiteral("app_vulkan_frame_path"), frame.appVulkanFramePath},
+      {QStringLiteral("app_render_decode_ms"), frame.appRenderDecodeMs},
+      {QStringLiteral("app_render_texture_ms"), frame.appRenderTextureMs},
+      {QStringLiteral("app_render_composite_ms"), frame.appRenderCompositeMs},
+      {QStringLiteral("app_render_readback_ms"), frame.appRenderReadbackMs},
+      {QStringLiteral("vulkan_zero_copy_detection_ms"),
+       frame.vulkanZeroCopyDetectionMs},
+      {QStringLiteral("decoder_vulkan_upload_ms"),
+       frame.decoderVulkanUploadMs},
+      {QStringLiteral("decoder_vulkan_upload_fallback"),
+       frame.decoderVulkanUploadFallback},
+      {QStringLiteral("hardware_direct_handoff"),
+       frame.hardwareDirectHandoff},
+      {QStringLiteral("hardware_direct_attempt_reason"),
+       frame.hardwareDirectAttemptReason},
+      {QStringLiteral("qimage_materialized"), frame.qimageMaterialized}});
+  QJsonArray detectionBoxes;
+  for (const auto &detection : frame.detections) {
+    detectionBoxes.append(
+        jcut::facedetections::compactDetectionJson(detection, frame.frameSize));
+  }
+  state->rawDetectionFrames.append(QJsonObject{
+      {QStringLiteral("frame"), frameNumber},
+      {QStringLiteral("detector"), frame.detector.isEmpty() ? backend
+                                                            : frame.detector},
+      {QStringLiteral("frame_width"), frame.frameSize.width()},
+      {QStringLiteral("frame_height"), frame.frameSize.height()},
+      {QStringLiteral("detection_count"), detectionCount},
+      {QStringLiteral("detections"), detectionBoxes}});
+  QJsonArray trackDetections;
+  for (const auto &trackDetection : frame.trackDetections) {
+    trackDetections.append(
+        jcut::facedetections::frameTrackDetectionToJson(trackDetection));
+  }
+  state->trackDetectionsByFrame.insert(frameNumber, trackDetections);
 }
 
 bool saveFaceDetectionsResumeIndex(
@@ -428,88 +538,141 @@ bool loadFaceDetectionsResume(const QString &path, const QString &videoPath,
     if (sawMeta && (frame.video != videoPath || frame.backend != backend)) {
       continue;
     }
-    const int frameNumber = frame.frame;
-    if (frameNumber < startFrame || frameNumber > endFrame ||
-        state->completedFrames.contains(frameNumber)) {
+    applyFaceStreamFrameRecord(frame, backend, startFrame, endFrame, state);
+  }
+  return true;
+}
+
+bool repairFaceDetectionsResumeCheckpoint(const QString &path,
+                                          const QString &videoPath,
+                                          const QString &backend,
+                                          int startFrame,
+                                          int endFrame,
+                                          FaceDetectionsResumeState *state,
+                                          QString *message) {
+  if (!state || !QFileInfo::exists(path)) {
+    return true;
+  }
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly)) {
+    if (message) {
+      *message = QStringLiteral(
+                     "Failed to open facedetections checkpoint for repair: %1")
+                     .arg(path);
+    }
+    return false;
+  }
+  FaceDetectionsResumeState repaired;
+  bool sawMeta = false;
+  qint64 lastGoodOffset = file.pos();
+  QString recordError;
+  while (!file.atEnd()) {
+    const qint64 recordOffset = file.pos();
+    FaceStreamMetaRecord meta;
+    FaceStreamFrameRecord frame;
+    recordError.clear();
+    if (!readFaceStreamRecord(&file, &meta, &frame, &recordError)) {
+      break;
+    }
+    if (!meta.video.isEmpty() || !meta.backend.isEmpty()) {
+      sawMeta = true;
+      if (meta.video != videoPath || meta.backend != backend) {
+        if (message) {
+          *message = QStringLiteral("Existing facedetections checkpoint is for a "
+                                    "different video/backend.");
+        }
+        return false;
+      }
+      lastGoodOffset = file.pos();
       continue;
     }
-    state->completedFrames.insert(frameNumber);
-    ++state->processed;
-    const int detectionCount = frame.detections.size();
-    state->totalDetections += detectionCount;
-    if (frame.appVulkanFramePath)
-      ++state->appVulkanFramePathFrames;
-    if (frame.decoderDirectHandoff)
-      ++state->decoderDirectHandoffFrames;
-    if (frame.decoderVulkanUploadFallback)
-      ++state->decoderVulkanUploadFallbackFrames;
-    if (frame.hardwareDirectHandoff)
-      ++state->hardwareDirectHandoffFrames;
-    if (frame.hardwareInteropProbeSupported)
-      ++state->hardwareInteropProbeSupportedFrames;
-    if (frame.hardwareInteropProbeFailed)
-      ++state->hardwareInteropProbeFailedFrames;
-    if (frame.hardwareFrame)
-      ++state->hardwareFrames;
-    if (frame.cpuFrame)
-      ++state->cpuFrames;
-    state->renderDecodeMsTotal += frame.appRenderDecodeMs;
-    state->renderCompositeMsTotal += frame.appRenderCompositeMs;
-    state->renderReadbackMsTotal += frame.appRenderReadbackMs;
-    state->decoderUploadMsTotal += frame.decoderVulkanUploadMs;
-    state->vulkanDetectMsTotal += frame.vulkanZeroCopyDetectionMs;
-    state->ncnnInputMsTotal += frame.ncnnInputMs;
-    state->ncnnExtractMsTotal += frame.ncnnExtractMs;
-    state->ncnnExtractLevel8MsTotal += frame.ncnnExtractLevel8Ms;
-    state->ncnnExtractLevel16MsTotal += frame.ncnnExtractLevel16Ms;
-    state->ncnnExtractLevel32MsTotal += frame.ncnnExtractLevel32Ms;
-    state->ncnnPostMsTotal += frame.ncnnPostMs;
-    state->ncnnTotalMsTotal += frame.ncnnTotalMs;
-
-    state->frameRows.append(QJsonObject{
-        {QStringLiteral("frame"), frameNumber},
-        {QStringLiteral("detector"), frame.detector.isEmpty() ? backend
-                                                              : frame.detector},
-        {QStringLiteral("detections"), detectionCount},
-        {QStringLiteral("tracks"), frame.trackDetections.size()},
-        {QStringLiteral("app_vulkan_frame_path"), frame.appVulkanFramePath},
-        {QStringLiteral("app_render_decode_ms"), frame.appRenderDecodeMs},
-        {QStringLiteral("app_render_texture_ms"), frame.appRenderTextureMs},
-        {QStringLiteral("app_render_composite_ms"), frame.appRenderCompositeMs},
-        {QStringLiteral("app_render_readback_ms"), frame.appRenderReadbackMs},
-        {QStringLiteral("vulkan_zero_copy_detection_ms"),
-         frame.vulkanZeroCopyDetectionMs},
-        {QStringLiteral("decoder_vulkan_upload_ms"),
-         frame.decoderVulkanUploadMs},
-        {QStringLiteral("decoder_vulkan_upload_fallback"),
-         frame.decoderVulkanUploadFallback},
-        {QStringLiteral("hardware_direct_handoff"),
-         frame.hardwareDirectHandoff},
-        {QStringLiteral("hardware_direct_attempt_reason"),
-         frame.hardwareDirectAttemptReason},
-        {QStringLiteral("qimage_materialized"),
-         frame.qimageMaterialized}});
-    QJsonArray detectionBoxes;
-    for (const auto &detection : frame.detections) {
-      detectionBoxes.append(
-          jcut::facedetections::compactDetectionJson(detection,
-                                                     frame.frameSize));
+    if (frame.frame >= 0 &&
+        (!sawMeta || (frame.video == videoPath && frame.backend == backend))) {
+      applyFaceStreamFrameRecord(frame, backend, startFrame, endFrame,
+                                 &repaired);
     }
-    state->rawDetectionFrames.append(QJsonObject{
-        {QStringLiteral("frame"), frameNumber},
-        {QStringLiteral("detector"), frame.detector.isEmpty() ? backend
-                                                              : frame.detector},
-        {QStringLiteral("frame_width"), frame.frameSize.width()},
-        {QStringLiteral("frame_height"), frame.frameSize.height()},
-        {QStringLiteral("detection_count"), detectionCount},
-        {QStringLiteral("detections"), detectionBoxes}});
-    QJsonArray trackDetections;
-    for (const auto &trackDetection : frame.trackDetections) {
-      trackDetections.append(
-          jcut::facedetections::frameTrackDetectionToJson(trackDetection));
+    lastGoodOffset = file.pos();
+    Q_UNUSED(recordOffset);
+  }
+  const bool foundCorruption = !recordError.isEmpty();
+  const qint64 originalSize = QFileInfo(path).size();
+  file.close();
+  if (foundCorruption && lastGoodOffset < originalSize) {
+    const QString timestamp = checkpointRepairTimestamp();
+    const QString backupPath =
+        uniqueSiblingPath(path, QStringLiteral(".corrupt_%1.bak").arg(timestamp));
+    const QString repairReportPath =
+        uniqueSiblingPath(path, QStringLiteral(".repair_%1.json").arg(timestamp));
+    QString backupError;
+    bool copiedBackup = QFile::copy(path, backupPath);
+    if (!copiedBackup) {
+      backupError =
+          QStringLiteral("Failed to copy corrupt checkpoint backup to %1")
+              .arg(backupPath);
     }
-    state->trackDetectionsByFrame.insert(
-        frameNumber, trackDetections);
+    QString reportError;
+    const QJsonObject repairReport{
+        {QStringLiteral("schema"),
+         QStringLiteral("jcut_facedetections_checkpoint_repair_v1")},
+        {QStringLiteral("repaired_at_utc"),
+         QDateTime::currentDateTimeUtc().toString(Qt::ISODate)},
+        {QStringLiteral("checkpoint_path"), path},
+        {QStringLiteral("backup_path"), copiedBackup ? backupPath : QString()},
+        {QStringLiteral("backup_created"), copiedBackup},
+        {QStringLiteral("backup_error"), backupError},
+        {QStringLiteral("original_size_bytes"), originalSize},
+        {QStringLiteral("valid_prefix_bytes"), lastGoodOffset},
+        {QStringLiteral("discarded_from_byte"), lastGoodOffset},
+        {QStringLiteral("discarded_bytes"), originalSize - lastGoodOffset},
+        {QStringLiteral("processed_frames_recovered"), repaired.processed},
+        {QStringLiteral("total_detections_recovered"), repaired.totalDetections},
+        {QStringLiteral("video"), videoPath},
+        {QStringLiteral("backend"), backend},
+        {QStringLiteral("record_error"), recordError}};
+    if (!writeRepairReport(repairReportPath, repairReport, &reportError)) {
+      if (message) {
+        *message = QStringLiteral(
+                       "Failed to write facedetections checkpoint repair report "
+                       "before truncating corrupt checkpoint: %1")
+                       .arg(reportError);
+      }
+      return false;
+    }
+    if (!copiedBackup) {
+      if (message) {
+        *message =
+            QStringLiteral("Refusing to discard corrupt facedetections checkpoint "
+                           "tail because backup creation failed: %1")
+                .arg(backupError);
+      }
+      return false;
+    }
+    QFile writable(path);
+    if (!writable.open(QIODevice::ReadWrite) || !writable.resize(lastGoodOffset)) {
+      if (message) {
+        *message =
+            QStringLiteral("Failed to truncate corrupt facedetections checkpoint "
+                           "at byte %1: %2")
+                .arg(lastGoodOffset)
+                .arg(path);
+      }
+      return false;
+    }
+  }
+  repaired.loadedFromCompactIndex = false;
+  repaired.fullPayloadDeferred = false;
+  *state = repaired;
+  if (message) {
+    if (foundCorruption) {
+      *message = QStringLiteral(
+                     "Recovered facedetections checkpoint through byte %1; "
+                     "discarded corrupt tail from byte %2. %3")
+                     .arg(lastGoodOffset)
+                     .arg(lastGoodOffset)
+                     .arg(recordError);
+    } else {
+      *message = QStringLiteral("Validated facedetections checkpoint payload.");
+    }
   }
   return true;
 }

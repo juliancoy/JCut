@@ -22,7 +22,7 @@
 namespace {
 constexpr qint64 kFacestreamOverlaySlowQueryWarnMs = 100;
 constexpr int64_t kFacestreamOverlayInteractiveWindowFrames = 240;
-constexpr int64_t kMaxPreservedPlaybackOverlayDriftFrames = 60;
+constexpr int64_t kMaxPreservedPlaybackOverlayDriftFrames = 2;
 
 struct FacestreamOverlayCacheIdentity {
     QString clipPath;
@@ -654,6 +654,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                  << QString::number(m_showRawDetections)
                  << QString::number(m_interaction.faceStreamAssignmentInteractionEnabled);
         bool playbackSuppressedColdLookup = false;
+        int64_t playbackSuppressedColdLookupSourceFrame = -1;
         for (const TimelineClip& clip : m_interaction.clips) {
             if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
                 continue;
@@ -674,34 +675,36 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 cachedEntryIt == m_facedetectionsOverlayCache.constEnd() ? nullptr : &cachedEntryIt.value();
             if (!overlayCacheEntry) {
                 loadFacestreamTracksForClip(clip, localFrame);
-                const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
-                if (loadedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
-                    overlayCacheEntry = &loadedEntryIt.value();
-                }
-            }
-            if (!overlayCacheEntry) {
-                playbackSuppressedColdLookup = true;
-                if (clip.id == m_interaction.selectedClipId) {
-                    QJsonObject drift = overlayDriftDebug(previousOverlays, previousRawDetections, localFrame);
-                    m_lastFacedetectionsQueryDebug = QJsonObject{
-                        {QStringLiteral("status"), QStringLiteral("playback_cold_overlay_lookup_failed_preserving_previous")},
-                        {QStringLiteral("clip_id"), clip.id},
-                        {QStringLiteral("playback_active"), true},
-                        {QStringLiteral("previous_overlay_count"), previousOverlays.size()},
-                        {QStringLiteral("previous_raw_detection_count"), previousRawDetections.size()},
-                        {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
-                        {QStringLiteral("preserve_previous_overlay_drift_limit_frames"),
-                         static_cast<qint64>(kMaxPreservedPlaybackOverlayDriftFrames)},
-                        {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
-                        {QStringLiteral("show_raw_detections"), m_showRawDetections},
-                        {QStringLiteral("assignment_interaction_enabled"),
-                         m_interaction.faceStreamAssignmentInteractionEnabled}
-                    };
-                    for (auto it = drift.constBegin(); it != drift.constEnd(); ++it) {
-                        m_lastFacedetectionsQueryDebug.insert(it.key(), it.value());
+                const auto loadedEntryIt =
+                    m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
+                overlayCacheEntry = loadedEntryIt == m_facedetectionsOverlayCache.constEnd()
+                    ? nullptr
+                    : &loadedEntryIt.value();
+                if (!overlayCacheEntry) {
+                    playbackSuppressedColdLookup = true;
+                    playbackSuppressedColdLookupSourceFrame = localFrame;
+                    if (clip.id == m_interaction.selectedClipId) {
+                        QJsonObject drift = overlayDriftDebug(previousOverlays, previousRawDetections, localFrame);
+                        m_lastFacedetectionsQueryDebug = QJsonObject{
+                            {QStringLiteral("status"), QStringLiteral("playback_cold_overlay_lookup_failed_preserving_previous")},
+                            {QStringLiteral("clip_id"), clip.id},
+                            {QStringLiteral("playback_active"), true},
+                            {QStringLiteral("previous_overlay_count"), previousOverlays.size()},
+                            {QStringLiteral("previous_raw_detection_count"), previousRawDetections.size()},
+                            {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
+                            {QStringLiteral("preserve_previous_overlay_drift_limit_frames"),
+                             static_cast<qint64>(kMaxPreservedPlaybackOverlayDriftFrames)},
+                            {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
+                            {QStringLiteral("show_raw_detections"), m_showRawDetections},
+                            {QStringLiteral("assignment_interaction_enabled"),
+                             m_interaction.faceStreamAssignmentInteractionEnabled}
+                        };
+                        for (auto it = drift.constBegin(); it != drift.constEnd(); ++it) {
+                            m_lastFacedetectionsQueryDebug.insert(it.key(), it.value());
+                        }
                     }
+                    continue;
                 }
-                continue;
             }
 
             QSize clipFrameSize;
@@ -763,9 +766,7 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 const bool preservePrevious = previousPlaybackOverlayIsCloseEnough(
                     previousOverlays,
                     previousRawDetections,
-                    m_interaction.vulkanFrameStatuses.isEmpty()
-                        ? -1
-                        : m_interaction.vulkanFrameStatuses.constFirst().requestedSourceFrame);
+                    playbackSuppressedColdLookupSourceFrame);
                 if (preservePrevious) {
                     m_interaction.facedetectionsOverlays = previousOverlays;
                     m_interaction.rawDetectionOverlays = previousRawDetections;
@@ -810,7 +811,6 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         return;
     }
 
-    bool playbackSuppressedColdLookup = false;
     for (const TimelineClip& clip : m_interaction.clips) {
         if (clip.mediaType != ClipMediaType::Video || clip.filePath.isEmpty()) {
             continue;
@@ -838,61 +838,13 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         const FacestreamOverlayCacheIdentity cacheIdentity =
             facestreamOverlayCacheIdentity(clip, localFrame, sourceFilter, m_interaction.renderSyncMarkers);
         const auto cachedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
-        QVector<FacestreamTrack> tracks;
+        QVector<FacestreamTrack> tracks = loadFacestreamTracksForClip(clip, localFrame);
         const FacestreamOverlayCacheEntry* overlayCacheEntry = nullptr;
-        if (m_interaction.playing) {
-            if (cachedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
-                overlayCacheEntry = &cachedEntryIt.value();
-            } else {
-                loadFacestreamTracksForClip(clip, localFrame);
-                const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
-                if (loadedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
-                    overlayCacheEntry = &loadedEntryIt.value();
-                }
-            }
-            if (overlayCacheEntry) {
-                tracks = overlayCacheEntry->tracks;
-                if (clip.id == m_interaction.selectedClipId) {
-                    m_lastFacedetectionsQueryDebug = QJsonObject{
-                        {QStringLiteral("status"), QStringLiteral("playback_loaded_overlay")},
-                        {QStringLiteral("clip_id"), clip.id},
-                        {QStringLiteral("playback_active"), true},
-                        {QStringLiteral("cached_track_count"), tracks.size()},
-                        {QStringLiteral("cached_track_index_source_frame_count"),
-                         overlayCacheEntry->trackIndexSourceFrames.size()},
-                        {QStringLiteral("cached_raw_detection_frame_count"),
-                         overlayCacheEntry->rawDetectionSourceFrames.size()},
-                        {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
-                        {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
-                        {QStringLiteral("show_raw_detections"), m_showRawDetections},
-                        {QStringLiteral("assignment_interaction_enabled"),
-                         m_interaction.faceStreamAssignmentInteractionEnabled}
-                    };
-                }
-            } else {
-                playbackSuppressedColdLookup = true;
-                if (clip.id == m_interaction.selectedClipId) {
-                    m_lastFacedetectionsQueryDebug = QJsonObject{
-                        {QStringLiteral("status"), QStringLiteral("playback_cold_overlay_lookup_failed_preserving_previous")},
-                        {QStringLiteral("clip_id"), clip.id},
-                        {QStringLiteral("playback_active"), true},
-                        {QStringLiteral("previous_overlay_count"), previousOverlays.size()},
-                        {QStringLiteral("previous_raw_detection_count"), previousRawDetections.size()},
-                        {QStringLiteral("requested_source_frame"), static_cast<qint64>(localFrame)},
-                        {QStringLiteral("show_speaker_track_boxes"), m_showSpeakerTrackBoxes},
-                        {QStringLiteral("show_raw_detections"), m_showRawDetections},
-                        {QStringLiteral("assignment_interaction_enabled"),
-                         m_interaction.faceStreamAssignmentInteractionEnabled}
-                    };
-                }
-                continue;
-            }
-        } else {
-            tracks = loadFacestreamTracksForClip(clip, localFrame);
-            const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
-            if (loadedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
-                overlayCacheEntry = &loadedEntryIt.value();
-            }
+        const auto loadedEntryIt = m_facedetectionsOverlayCache.constFind(cacheIdentity.cacheKey);
+        if (loadedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
+            overlayCacheEntry = &loadedEntryIt.value();
+        } else if (cachedEntryIt != m_facedetectionsOverlayCache.constEnd()) {
+            overlayCacheEntry = &cachedEntryIt.value();
         }
         // Keep raw detections visible when explicitly enabled, even while the
         // Speakers tab turns on assignment interaction. The UI exposes these as
@@ -900,10 +852,8 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
         // makes the checkbox appear broken.
         const bool showRawDetectionsForPreview = m_showRawDetections;
         if (showRawDetectionsForPreview) {
-            const QVector<VulkanPreviewFacestreamOverlay> clipDetections = m_interaction.playing
-                ? (overlayCacheEntry ? rawDetectionsFromCacheEntry(*overlayCacheEntry, localFrame)
-                                     : QVector<VulkanPreviewFacestreamOverlay>{})
-                : rawDetectionsForClipFrame(clip, localFrame);
+            const QVector<VulkanPreviewFacestreamOverlay> clipDetections =
+                rawDetectionsForClipFrame(clip, localFrame);
             for (const VulkanPreviewFacestreamOverlay& detection : clipDetections) {
                 if (detection.boxNorm.isValid() && !detection.boxNorm.isEmpty()) {
                     rawDetections.push_back(detection);
@@ -1002,17 +952,6 @@ void VulkanPreviewSurface::refreshFacestreamOverlays()
                 QStringLiteral("FACESTREAM OVERLAY SELECT"),
                 m_lastFacedetectionsQueryDebug);
         }
-    }
-    if (m_interaction.playing && playbackSuppressedColdLookup && overlays.isEmpty() && rawDetections.isEmpty()) {
-        m_interaction.facedetectionsOverlays = previousOverlays;
-        m_interaction.rawDetectionOverlays = previousRawDetections;
-        editor::accumulatePlaybackStageMetric(&m_overlayPrepStageMetric,
-                                      1,
-                                      1,
-                                      0,
-                                      QStringLiteral("overlay_preserved"),
-                                      QStringLiteral("previous_overlay_reused"));
-        return;
     }
     m_interaction.facedetectionsOverlays = overlays;
     m_interaction.rawDetectionOverlays = rawDetections;

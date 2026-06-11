@@ -353,7 +353,6 @@ QWidget *InspectorPane::buildPreferencesTab()
     m_outputDecodeModeCombo = new QComboBox(page);
     m_outputDecodeModeCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
     m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Upload"), QStringLiteral("hardware"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Zero-Copy"), QStringLiteral("hardware_zero_copy"));
     m_outputDecodeModeCombo->addItem(QStringLiteral("CPU Software"), QStringLiteral("software"));
     const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
     const int decodeModeIndex = m_outputDecodeModeCombo->findData(decodeMode);

@@ -35,6 +35,7 @@ struct PlaybackClockDecision {
     bool resetTimerContinuity = false;
 };
 
+int64_t audioMasterClockSampleToTimelineSample(int64_t audioClockSample);
 PlaybackClockDecision evaluatePlaybackClock(const PlaybackClockInput& input);
 
 }  // namespace editor

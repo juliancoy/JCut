@@ -8,6 +8,11 @@
 
 namespace editor {
 
+int64_t audioMasterClockSampleToTimelineSample(int64_t audioClockSample)
+{
+    return qMax<int64_t>(0, audioClockSample);
+}
+
 PlaybackClockDecision evaluatePlaybackClock(const PlaybackClockInput& input)
 {
     PlaybackClockDecision decision;

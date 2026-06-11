@@ -9,6 +9,7 @@
 #include "decoder_context.h"
 #include "editor_shared_transcript.h"
 #include "editor_shared_keyframes.h"
+#include "json_io_utils.h"
 #include "speaker_flow_debug.h"
 #include "transcript_engine.h"
 
@@ -23,6 +24,7 @@
 #include <QCheckBox>
 #include <QApplication>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -43,6 +45,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSet>
 #include <QSignalBlocker>
 #include <memory>
@@ -63,6 +66,16 @@
 #include <cmath>
 #include <limits>
 
+#if defined(Q_OS_UNIX)
+#include <cerrno>
+#include <csignal>
+#endif
+
+#if defined(Q_OS_WIN)
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 namespace {
 
 bool uiAutomationEnabled()
@@ -77,6 +90,26 @@ struct ContinuityCoverageSummary {
     qint64 maxRawTrackFrame = -1;
     int rawTrackCount = 0;
     bool hasRawTrackCoverage = false;
+};
+
+struct FaceDetectionsGeneratorStatus {
+    QString artifactDir;
+    QString state;
+    QString statusText;
+    QString tooltipText;
+    QString stdoutLogPath;
+    QString stderrLogPath;
+    qint64 pid = -1;
+    qint64 frame = -1;
+    qint64 processed = -1;
+    qint64 totalFrames = -1;
+    double processedFps = -1.0;
+    int exitCode = -1;
+    bool hasStatus = false;
+    bool running = false;
+    bool completed = false;
+    bool failed = false;
+    bool stale = false;
 };
 
 QJsonArray objectKeysJson(const QJsonObject& object)
@@ -103,6 +136,220 @@ QJsonObject fileStatusJson(const QString& path)
     status[QStringLiteral("size_bytes")] = info.exists() ? info.size() : -1;
     status[QStringLiteral("mtime_ms")] =
         info.exists() ? info.lastModified().toMSecsSinceEpoch() : -1;
+    return status;
+}
+
+bool processExistsPortable(qint64 pid)
+{
+    if (pid <= 0) {
+        return false;
+    }
+#if defined(Q_OS_UNIX)
+    if (::kill(static_cast<pid_t>(pid), 0) == 0) {
+        return true;
+    }
+    return errno == EPERM;
+#elif defined(Q_OS_WIN)
+    HANDLE handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                FALSE,
+                                static_cast<DWORD>(pid));
+    if (!handle) {
+        return false;
+    }
+    DWORD exitCode = 0;
+    const bool running =
+        GetExitCodeProcess(handle, &exitCode) && exitCode == STILL_ACTIVE;
+    CloseHandle(handle);
+    return running;
+#else
+    Q_UNUSED(pid);
+    return false;
+#endif
+}
+
+QString readSmallTextFile(const QString& path, qint64 maxBytes = 65536)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return {};
+    }
+    if (file.size() > maxBytes) {
+        file.seek(file.size() - maxBytes);
+    }
+    return QString::fromLocal8Bit(file.readAll());
+}
+
+qint64 pidFromGeneratorPidFile(const QString& path)
+{
+    bool ok = false;
+    const qint64 pid = readSmallTextFile(path, 4096).trimmed().toLongLong(&ok);
+    return ok ? pid : -1;
+}
+
+void parseFaceDetectionsTelemetry(const QString& text,
+                                  qint64* frameOut,
+                                  qint64* processedOut,
+                                  double* fpsOut)
+{
+    static const QRegularExpression telemetryRe(
+        QStringLiteral("telemetry\\s+frame=(\\d+).*?processed=(\\d+).*?processed_fps=([0-9]+(?:\\.[0-9]+)?)"));
+    QRegularExpressionMatchIterator it = telemetryRe.globalMatch(text);
+    QRegularExpressionMatch last;
+    while (it.hasNext()) {
+        last = it.next();
+    }
+    if (!last.hasMatch()) {
+        return;
+    }
+    bool okFrame = false;
+    bool okProcessed = false;
+    bool okFps = false;
+    const qint64 frame = last.captured(1).toLongLong(&okFrame);
+    const qint64 processed = last.captured(2).toLongLong(&okProcessed);
+    const double fps = last.captured(3).toDouble(&okFps);
+    if (okFrame && frameOut) {
+        *frameOut = frame;
+    }
+    if (okProcessed && processedOut) {
+        *processedOut = processed;
+    }
+    if (okFps && fpsOut) {
+        *fpsOut = fps;
+    }
+}
+
+QString percentText(qint64 value, qint64 total)
+{
+    if (value < 0 || total <= 0) {
+        return {};
+    }
+    return QString::number((static_cast<double>(value) * 100.0) /
+                               static_cast<double>(total),
+                           'f',
+                           1) +
+           QLatin1Char('%');
+}
+
+FaceDetectionsGeneratorStatus generatorStatusForArtifactDir(const QString& artifactDir,
+                                                            qint64 totalFrames)
+{
+    FaceDetectionsGeneratorStatus status;
+    status.artifactDir = artifactDir.trimmed();
+    status.totalFrames = totalFrames;
+    if (status.artifactDir.isEmpty()) {
+        return status;
+    }
+
+    const QDir dir(status.artifactDir);
+    const QString statusPath = dir.absoluteFilePath(QStringLiteral("generator.status.json"));
+    const QString pidPath = dir.absoluteFilePath(QStringLiteral("generator.pid"));
+    const QString exitPath = dir.absoluteFilePath(QStringLiteral("generator.exit"));
+    const QString stdoutPath = dir.absoluteFilePath(QStringLiteral("generator.stdout.log"));
+    const QString stderrPath = dir.absoluteFilePath(QStringLiteral("generator.stderr.log"));
+    const QString checkpointPath = dir.absoluteFilePath(QStringLiteral("facedetections.part"));
+    const QStringList finalPaths{
+        dir.absoluteFilePath(QStringLiteral("continuity_facedetections.bin")),
+        dir.absoluteFilePath(QStringLiteral("detections.idx")),
+        dir.absoluteFilePath(QStringLiteral("tracks.idx")),
+        dir.absoluteFilePath(QStringLiteral("summary.json")),
+    };
+
+    bool allFinalOutputsExist = true;
+    for (const QString& path : finalPaths) {
+        allFinalOutputsExist = allFinalOutputsExist && QFileInfo::exists(path);
+    }
+
+    QJsonObject statusJson;
+    if (jcut::jsonio::readJsonFile(statusPath, &statusJson, nullptr)) {
+        status.hasStatus = true;
+        status.state = statusJson.value(QStringLiteral("state")).toString().trimmed();
+        status.pid = statusJson.value(QStringLiteral("pid")).toVariant().toLongLong();
+        status.stdoutLogPath = statusJson.value(QStringLiteral("stdout_log")).toString(stdoutPath);
+        status.stderrLogPath = statusJson.value(QStringLiteral("stderr_log")).toString(stderrPath);
+        status.exitCode = statusJson.value(QStringLiteral("exit_code")).toInt(-1);
+    } else {
+        status.stdoutLogPath = stdoutPath;
+        status.stderrLogPath = stderrPath;
+    }
+    if (status.pid <= 0) {
+        status.pid = pidFromGeneratorPidFile(pidPath);
+    }
+
+    const QString stdoutTail = readSmallTextFile(status.stdoutLogPath);
+    parseFaceDetectionsTelemetry(stdoutTail,
+                                 &status.frame,
+                                 &status.processed,
+                                 &status.processedFps);
+
+    const QFileInfo stdoutInfo(status.stdoutLogPath);
+    const QFileInfo checkpointInfo(checkpointPath);
+    const qint64 stdoutAgeMs = stdoutInfo.exists()
+        ? stdoutInfo.lastModified().msecsTo(QDateTime::currentDateTime())
+        : std::numeric_limits<qint64>::max();
+    const qint64 checkpointAgeMs = checkpointInfo.exists()
+        ? checkpointInfo.lastModified().msecsTo(QDateTime::currentDateTime())
+        : std::numeric_limits<qint64>::max();
+    const bool hasFreshGeneratorActivity =
+        qMin(stdoutAgeMs, checkpointAgeMs) < 5 * 60 * 1000;
+
+    if (QFileInfo::exists(exitPath)) {
+        bool ok = false;
+        const int exitCode = readSmallTextFile(exitPath, 4096).trimmed().toInt(&ok);
+        status.exitCode = ok ? exitCode : status.exitCode;
+        status.completed = status.exitCode == 0 && allFinalOutputsExist;
+        status.failed = !status.completed;
+    } else if (status.pid > 0 && processExistsPortable(status.pid)) {
+        status.running = true;
+    } else if (!status.state.isEmpty() &&
+               status.state.compare(QStringLiteral("running"), Qt::CaseInsensitive) == 0) {
+        status.running = hasFreshGeneratorActivity;
+        status.stale = !status.running;
+    } else if (!allFinalOutputsExist && hasFreshGeneratorActivity) {
+        status.running = true;
+    } else if (allFinalOutputsExist) {
+        status.completed = true;
+    }
+
+    QStringList detailParts;
+    if (status.pid > 0) {
+        detailParts.append(QStringLiteral("PID %1").arg(status.pid));
+    } else if (status.running) {
+        detailParts.append(QStringLiteral("PID unavailable"));
+    }
+    if (status.processed >= 0) {
+        QString progress = QStringLiteral("processed %1").arg(status.processed);
+        const QString pct = percentText(status.processed, status.totalFrames);
+        if (!pct.isEmpty()) {
+            progress += QStringLiteral("/%1 (%2)").arg(status.totalFrames).arg(pct);
+        }
+        detailParts.append(progress);
+    } else if (status.frame >= 0) {
+        detailParts.append(QStringLiteral("frame %1").arg(status.frame));
+    }
+    if (status.processedFps >= 0.0) {
+        detailParts.append(QStringLiteral("%1 fps").arg(status.processedFps, 0, 'f', 1));
+    }
+
+    if (status.running) {
+        status.statusText = QStringLiteral("FaceDetections generator is running headless");
+    } else if (status.completed) {
+        status.statusText = QStringLiteral("FaceDetections generator completed");
+    } else if (status.failed) {
+        status.statusText =
+            QStringLiteral("FaceDetections generator stopped before usable final artifacts were imported");
+    } else if (status.stale) {
+        status.statusText =
+            QStringLiteral("FaceDetections generator status is stale; no live process or recent log update was found");
+    }
+    if (!status.statusText.isEmpty() && !detailParts.isEmpty()) {
+        status.statusText += QStringLiteral(" | %1").arg(detailParts.join(QStringLiteral(" | ")));
+    }
+    status.tooltipText =
+        QStringLiteral("Artifact dir: %1\nstdout: %2\nstderr: %3\nexit: %4")
+            .arg(status.artifactDir,
+                 status.stdoutLogPath,
+                 status.stderrLogPath,
+                 exitPath);
     return status;
 }
 
@@ -2041,6 +2288,21 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         selectedClip
             ? continuityCoverageSummaryForClip(m_transcriptSession.transcriptPath(), selectedClip->id)
             : ContinuityCoverageSummary{};
+    FaceDetectionsGeneratorStatus generatorStatus;
+    if (selectedClip) {
+        const FacestreamSourceScanRange scanRange =
+            facedetectionsSourceAbsoluteScanRangeForClip(*selectedClip);
+        const QString clipId = selectedClip->id.trimmed().isEmpty()
+            ? QStringLiteral("unknown_clip")
+            : selectedClip->id.trimmed();
+        generatorStatus = generatorStatusForArtifactDir(
+            facedetectionsClipSidecarDir(selectedClip->filePath, clipId),
+            scanRange.valid ? scanRange.frameCount : -1);
+    }
+    if (m_widgets.speakerRunAutoTrackButton && generatorStatus.running) {
+        m_widgets.speakerRunAutoTrackButton->setEnabled(false);
+        m_widgets.speakerRunAutoTrackButton->setText(QStringLiteral("Generator Running"));
+    }
 
     m_widgets.speakerTrackingStatusLabel->setToolTip(QString());
 
@@ -2060,6 +2322,11 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         return;
     }
     if (speakerId.isEmpty()) {
+        if (generatorStatus.running || generatorStatus.failed || generatorStatus.stale) {
+            m_widgets.speakerTrackingStatusLabel->setText(generatorStatus.statusText);
+            m_widgets.speakerTrackingStatusLabel->setToolTip(generatorStatus.tooltipText);
+            return;
+        }
         if (!hasContinuityArtifact) {
             m_widgets.speakerTrackingStatusLabel->setText(
                 QStringLiteral("Continuity tracks have not been generated for this clip yet."));
@@ -2196,11 +2463,21 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
 
     if (!hasContinuityArtifact) {
+        if (generatorStatus.running || generatorStatus.failed || generatorStatus.stale) {
+            m_widgets.speakerTrackingStatusLabel->setText(generatorStatus.statusText);
+            m_widgets.speakerTrackingStatusLabel->setToolTip(generatorStatus.tooltipText);
+            return;
+        }
         m_widgets.speakerTrackingStatusLabel->setText(
             QStringLiteral("Continuity tracks have not been generated for this clip yet. Use Generate Continuity Tracks to create them."));
         return;
     }
     if (!hasContinuityTracks) {
+        if (generatorStatus.running || generatorStatus.failed || generatorStatus.stale) {
+            m_widgets.speakerTrackingStatusLabel->setText(generatorStatus.statusText);
+            m_widgets.speakerTrackingStatusLabel->setToolTip(generatorStatus.tooltipText);
+            return;
+        }
         m_widgets.speakerTrackingStatusLabel->setText(
             QStringLiteral("Continuity artifact exists, but no processed continuity tracks are available for this clip."));
         return;
@@ -2259,6 +2536,10 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     }
     if (!coverage.importedArtifactDir.isEmpty()) {
         status += QStringLiteral("\nImported from: %1").arg(coverage.importedArtifactDir);
+    }
+    if (generatorStatus.running || generatorStatus.failed || generatorStatus.stale) {
+        status += QStringLiteral("\n%1").arg(generatorStatus.statusText);
+        tooltip += QStringLiteral("\n\n%1").arg(generatorStatus.tooltipText);
     }
     m_widgets.speakerTrackingStatusLabel->setText(status);
     m_widgets.speakerTrackingStatusLabel->setToolTip(tooltip);

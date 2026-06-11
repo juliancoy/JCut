@@ -2281,7 +2281,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                !status->frame.hasHardwareFrame()) {
                         stats->lastHandoffMode = QStringLiteral("vulkan_handoff_required");
                         stats->lastHandoffError = QStringLiteral(
-                            "Direct Vulkan preview requires a hardware/external frame. CPU upload fallback is disabled.");
+                            "Direct Vulkan preview did not receive a drawable hardware, external, or CPU-uploaded frame.");
                     } else if (!canDrawTexture) {
                         stats->lastHandoffMode = QStringLiteral("texture_pipeline_unavailable");
                         stats->lastHandoffError = QStringLiteral("Vulkan texture pipeline or descriptor set is unavailable.");

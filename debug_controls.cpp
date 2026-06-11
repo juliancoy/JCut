@@ -26,8 +26,8 @@ constexpr int kDefaultDecoderLaneCount = 0; // 0 => auto lane count
 constexpr int kDefaultSupersedeSlackFrames = 12;
 constexpr int kDefaultVisibleDecodeKeepWindow = 16;
 constexpr int kDefaultObsoleteVisibleFrameSlack = 4;
-constexpr int kDefaultCancelBeforeMinFrameAdvance = 2;
-constexpr qint64 kDefaultCancelBeforeMinIntervalMs = 16;
+constexpr int kDefaultCancelBeforeMinFrameAdvance = 6;
+constexpr qint64 kDefaultCancelBeforeMinIntervalMs = 45;
 constexpr int kDefaultMaxPresentationPastFrameDelta = 4;
 constexpr int kDefaultMaxPresentationFutureFrameDelta = 0;
 constexpr int kDefaultFileVideoPlaybackWindowAhead = 12;
@@ -146,7 +146,7 @@ bool parseDebugLogLevel(const QString& text, DebugLogLevel* levelOut) {
 QString decodePreferenceToString(DecodePreference preference) {
     switch (preference) {
     case DecodePreference::Auto: return QStringLiteral("auto");
-    case DecodePreference::HardwareZeroCopy: return QStringLiteral("hardware_zero_copy");
+    case DecodePreference::HardwareZeroCopy: return QStringLiteral("hardware");
     case DecodePreference::Hardware: return QStringLiteral("hardware");
     case DecodePreference::Software: return QStringLiteral("software");
     }
@@ -166,7 +166,7 @@ bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut)
         normalized == QStringLiteral("zero_copy") ||
         normalized == QStringLiteral("zerocopy") ||
         normalized == QStringLiteral("cuda_gl")) {
-        *preferenceOut = DecodePreference::HardwareZeroCopy;
+        *preferenceOut = DecodePreference::Hardware;
         return true;
     }
     if (normalized == QStringLiteral("hardware") ||
@@ -728,12 +728,8 @@ RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
     const bool headlessOffscreen =
         qEnvironmentVariable("QT_QPA_PLATFORM") == QStringLiteral("offscreen");
     if (!headlessOffscreen) {
-        if (hasVaapiRenderNode) {
-            defaults.decodePreference = DecodePreference::HardwareZeroCopy;
-        } else if (hasNvidiaDriver) {
-            // Prefer the hardware zero-copy path on NVIDIA as well.
-            // Runtime already falls back when interop cannot be sustained.
-            defaults.decodePreference = DecodePreference::HardwareZeroCopy;
+        if (hasVaapiRenderNode || hasNvidiaDriver) {
+            defaults.decodePreference = DecodePreference::Hardware;
         }
     }
 #elif defined(Q_OS_MACOS) || defined(Q_OS_WIN)

@@ -8,6 +8,7 @@ BUILD_TOOL=1
 DRY_RUN=0
 NO_BACKUP=0
 CLIP_ID=""
+ARTIFACT_DIR=""
 TRANSCRIPTS=()
 
 usage() {
@@ -19,6 +20,8 @@ Options:
   --dry-run       Print planned artifact changes without writing.
   --no-backup     Replace artifacts without creating .bak files.
   --clip <id>     Migrate only one clip id.
+  --artifact-dir <dir>
+                  Import one completed detached generator artifact directory.
   --no-build      Do not build the migration tool first.
   -h, --help      Show this help.
 
@@ -40,6 +43,11 @@ while [[ $# -gt 0 ]]; do
     --clip)
       [[ $# -ge 2 ]] || { echo "error: --clip requires a value" >&2; exit 2; }
       CLIP_ID="$2"
+      shift 2
+      ;;
+    --artifact-dir)
+      [[ $# -ge 2 ]] || { echo "error: --artifact-dir requires a value" >&2; exit 2; }
+      ARTIFACT_DIR="$2"
       shift 2
       ;;
     --no-build)
@@ -92,6 +100,9 @@ for transcript in "${TRANSCRIPTS[@]}"; do
   fi
   if [[ -n "${CLIP_ID}" ]]; then
     args+=(--clip "${CLIP_ID}")
+  fi
+  if [[ -n "${ARTIFACT_DIR}" ]]; then
+    args+=(--artifact-dir "${ARTIFACT_DIR}")
   fi
   "${TOOL}" "${args[@]}" "${transcript}"
 done

@@ -167,7 +167,19 @@ QJsonObject EditorWindow::profilingSnapshot() const
     }
 
     if (m_audioEngine) {
-        snapshot[QStringLiteral("audio")] = m_audioEngine->profilingSnapshot();
+        QJsonObject audio = m_audioEngine->profilingSnapshot();
+        const int64_t projectedAudioSample =
+            playbackSampleForAudioClockSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        audio[QStringLiteral("projected_audio_clock_absolute_sample")] =
+            static_cast<qint64>(projectedAudioSample);
+        audio[QStringLiteral("projected_audio_clock_absolute_frame")] =
+            static_cast<qint64>(std::floor(samplesToFramePosition(projectedAudioSample)));
+        audio[QStringLiteral("audio_video_drift_samples")] =
+            static_cast<qint64>(m_absolutePlaybackSample - projectedAudioSample);
+        audio[QStringLiteral("audio_video_drift_frames")] =
+            static_cast<qint64>(std::floor(samplesToFramePosition(m_absolutePlaybackSample)) -
+                                std::floor(samplesToFramePosition(projectedAudioSample)));
+        snapshot[QStringLiteral("audio")] = audio;
     }
 
     snapshot[QStringLiteral("startup")] = startupProfileSnapshot();
@@ -227,6 +239,19 @@ QJsonObject EditorWindow::audioDebugSnapshot() const
         static_cast<qint64>(m_absolutePlaybackSample);
     audio[QStringLiteral("filtered_playback_sample")] =
         static_cast<qint64>(m_filteredPlaybackSample);
+    if (m_audioEngine) {
+        const int64_t projectedAudioSample =
+            playbackSampleForAudioClockSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        audio[QStringLiteral("projected_audio_clock_absolute_sample")] =
+            static_cast<qint64>(projectedAudioSample);
+        audio[QStringLiteral("projected_audio_clock_absolute_frame")] =
+            static_cast<qint64>(std::floor(samplesToFramePosition(projectedAudioSample)));
+        audio[QStringLiteral("audio_video_drift_samples")] =
+            static_cast<qint64>(m_absolutePlaybackSample - projectedAudioSample);
+        audio[QStringLiteral("audio_video_drift_frames")] =
+            static_cast<qint64>(std::floor(samplesToFramePosition(m_absolutePlaybackSample)) -
+                                std::floor(samplesToFramePosition(projectedAudioSample)));
+    }
     audio[QStringLiteral("last_playback_stop_reason")] = m_lastPlaybackStopReason;
     return audio;
 }

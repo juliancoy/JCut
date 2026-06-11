@@ -25,6 +25,10 @@ extern "C" {
 #include <unistd.h>
 #include <vulkan/vulkan.h>
 
+#if !defined(JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY)
+#define JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY 0
+#endif
+
 namespace render_detail {
 
 class OffscreenVulkanRendererPrivate {
@@ -1263,6 +1267,11 @@ public:
     for (FrameSlot &slot : m_frameSlots) {
 #if JCUT_HAS_CUDA_DRIVER
       if (slot.cudaExternalMemory) {
+#if JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY
+        slot.cudaExternalMemory = nullptr;
+        slot.cudaExternalDevicePtr = 0;
+        slot.cudaImportContext = nullptr;
+#else
         CUcontext previous = nullptr;
         if (slot.cudaImportContext) {
           cuCtxPushCurrent(slot.cudaImportContext);
@@ -1274,6 +1283,7 @@ public:
         slot.cudaExternalMemory = nullptr;
         slot.cudaExternalDevicePtr = 0;
         slot.cudaImportContext = nullptr;
+#endif
       }
 #endif
       if (slot.stagingMapped && slot.stagingMemory != VK_NULL_HANDLE) {

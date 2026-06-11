@@ -1020,9 +1020,6 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
         root.value(QStringLiteral("debugDecodeMode"))
             .toString(editor::decodePreferenceToString(editor::debugDecodePreference()));
     editor::parseDecodePreference(debugDecodeModeText, &debugDecodePreference);
-    if (renderBackendPreference == QStringLiteral("vulkan")) {
-        debugDecodePreference = editor::DecodePreference::HardwareZeroCopy;
-    }
     editor::setDebugDecodePreference(debugDecodePreference);
     editor::H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode =
         editor::debugH26xSoftwareThreadingMode();

@@ -176,6 +176,10 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Stalls trigger fallback to timer path; repeated transitions can present jitter if decode/audio is under pressure.
   - A clock derived from future queued/submitted position instead of effective audible position will make visual playheads lead the heard audio.
   - A blocked pitch-preserving audio segment is not an audio-clock stall to ride through; playback must gate until the needed retimed segment is available.
+- Playback-rate stress exposes stale-overlay mistakes.
+  - At 300% playback, overlays and captions may be visually less smooth if rendering drops work, but they must still sample the same canonical playhead/source frame as audio and video.
+  - Reusing an old FaceDetections overlay is allowed only as a short presentation hold while a matching source-frame cache result is being prepared.
+  - A preserved overlay must be close to the requested media source frame; it must not become a separate visual clock.
 
 ## Practical Source-of-Truth Rules
 - Primary runtime playhead truth: `absolutePlaybackSample`.
@@ -187,6 +191,8 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Live subtitle overlay truth: the presented media source frame when a frame has already been selected for display; this prevents subtitles from visually leading late video.
 - Speech keep/remove truth: `TranscriptEngine::transcriptWordExportRanges(...)` from active transcript path.
 - Overlay/speaker timing truth: transcript/source frame mapping, not render-order table position.
+- FaceDetections playback overlay truth: requested media source frame from the canonical playhead. Previous overlay reuse is a bounded display hold, not continuity evidence, and must be cleared when drift exceeds the small source-frame tolerance.
+- Preview stale-frame tolerance: playback presentation may hold an approximate video frame only within the shared 4-source-frame ceiling; anything older must be dropped rather than displayed as current video.
 - Debug truth: logs and REST fields that cross domains must name the domain explicitly (`timeline_sample`, `timeline_frame`, `media_source_frame`, `transcript_frame`, `retimed_cache_sample`) instead of using ambiguous `source_frame` labels.
 
 ## Temporal Invariants
@@ -201,6 +207,7 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Invariant 7: In pitch-preserving `time_stretch` playback, video must not follow an audio clock that is blocked on a missing or out-of-range retimed segment.
 - Invariant 8: Any code path that stores or advances "current frame" during playback must derive it from `absolutePlaybackSample` or the valid audio-master sample used to update `absolutePlaybackSample`; independent advancement is a timing bug.
 - Invariant 9: Retimed audio cache selection must prove coverage for the requested mix range before returning a segment.
+- Invariant 10: Playback FaceDetections overlays must be selected from source-frame-indexed cache data for the current requested media source frame. If cache preparation lags, previous overlays may be held only within the explicit source-frame drift tolerance and must otherwise be cleared instead of shown stale.
 
 ## Verification Matrix
 - Playhead clock policy and warp normalization:

@@ -14,6 +14,7 @@ private slots:
     void testAudioMasterClockPolicy();
     void testPitchPreservingAudioGatePolicy();
     void testPlaybackClockCoordinator();
+    void testAudioMasterClockSampleStaysAbsoluteAcrossSpeechRanges();
     void testAudioMasterSameFrameCarriesCanonicalSample();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
 };
@@ -183,6 +184,26 @@ void TestPlaybackPolicy::testPlaybackClockCoordinator() {
     input.audioSample = frameToSamples(121);
     decision = editor::evaluatePlaybackClock(input);
     QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
+}
+
+void TestPlaybackPolicy::testAudioMasterClockSampleStaysAbsoluteAcrossSpeechRanges() {
+    const QVector<ExportRangeSegment> ranges{
+        ExportRangeSegment{100, 109},
+        ExportRangeSegment{200, 209},
+    };
+
+    const int64_t audibleAbsoluteSample = frameToSamples(205);
+    QCOMPARE(editor::audioMasterClockSampleToTimelineSample(audibleAbsoluteSample),
+             audibleAbsoluteSample);
+
+    const int64_t skippedGapSample = frameToSamples(150);
+    bool atOrPastEnd = false;
+    QCOMPARE(playableSampleAtOrAfter(
+                 editor::audioMasterClockSampleToTimelineSample(skippedGapSample),
+                 ranges,
+                 &atOrPastEnd),
+             frameToSamples(200));
+    QVERIFY(!atOrPastEnd);
 }
 
 void TestPlaybackPolicy::testAudioMasterSameFrameCarriesCanonicalSample() {

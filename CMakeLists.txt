@@ -682,6 +682,7 @@ target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE
     JCUT_HAVE_NCNN=${JCUT_HAVE_NCNN}
     JCUT_HAVE_OPENCV=0
     JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE=${JCUT_NCNN_CAN_WRAP_VULKAN_DEVICE}
+    JCUT_SKIP_CUDA_EXTERNAL_MEMORY_DESTROY=1
 )
 set_target_properties(jcut_vulkan_facedetections_offscreen PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"

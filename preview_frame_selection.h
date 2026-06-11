@@ -16,7 +16,7 @@ class PlaybackFramePipeline;
 class TimelineCache;
 
 inline constexpr int64_t kPreviewMaxHeldPresentationFrameDelta = 8;
-inline constexpr qreal kPreviewMaxPlaybackStaleSeconds = 0.20;
+inline constexpr qreal kPreviewMaxPlaybackStaleSeconds = 0.067;
 
 inline int64_t previewMaxPlaybackStaleFrameDelta(qreal sourceFps)
 {
@@ -24,7 +24,7 @@ inline int64_t previewMaxPlaybackStaleFrameDelta(qreal sourceFps)
     return qBound<int64_t>(
         static_cast<int64_t>(4),
         static_cast<int64_t>(std::ceil(fps * kPreviewMaxPlaybackStaleSeconds)),
-        static_cast<int64_t>(12));
+        kPreviewMaxHeldPresentationFrameDelta);
 }
 
 inline bool previewFrameIsTooStaleForPlayback(const FrameHandle& frame,

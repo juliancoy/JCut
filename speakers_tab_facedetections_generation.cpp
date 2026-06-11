@@ -21,6 +21,7 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLabel>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -28,9 +29,21 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollBar>
+#include <QThread>
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <limits>
+
+#if defined(Q_OS_UNIX)
+#include <cerrno>
+#include <csignal>
+#endif
+
+#if defined(Q_OS_WIN)
+#define NOMINMAX
+#include <windows.h>
+#endif
 
 using namespace jcut::facedetections;
 
@@ -183,6 +196,327 @@ struct FaceDetectionsProcessResult {
     QString standardOutput;
     QString standardError;
 };
+
+void writeDetachedGeneratorStatus(const QString& root,
+                                  const QString& state,
+                                  qint64 pid,
+                                  int exitCode,
+                                  const QString& program,
+                                  const QStringList& args,
+                                  const QString& note = QString())
+{
+    if (root.trimmed().isEmpty()) {
+        return;
+    }
+    QDir().mkpath(root);
+    const QDir dir(root);
+    QJsonObject status;
+    const QString statusPath = dir.absoluteFilePath(QStringLiteral("generator.status.json"));
+    readJsonObject(statusPath, &status, nullptr);
+    status[QStringLiteral("schema")] = QStringLiteral("jcut_facedetections_generator_status_v1");
+    status[QStringLiteral("state")] = state;
+    status[QStringLiteral("updated_at_utc")] =
+        QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    status[QStringLiteral("artifact_dir")] = root;
+    status[QStringLiteral("program")] = program;
+    status[QStringLiteral("arguments")] = args.join(QLatin1Char(' '));
+    status[QStringLiteral("stdout_log")] =
+        dir.absoluteFilePath(QStringLiteral("generator.stdout.log"));
+    status[QStringLiteral("stderr_log")] =
+        dir.absoluteFilePath(QStringLiteral("generator.stderr.log"));
+    status[QStringLiteral("exit_file")] =
+        dir.absoluteFilePath(QStringLiteral("generator.exit"));
+    if (!status.contains(QStringLiteral("started_at_utc")) ||
+        state == QStringLiteral("running")) {
+        status[QStringLiteral("started_at_utc")] =
+            QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    }
+    if (pid > 0) {
+        status[QStringLiteral("pid")] = static_cast<qint64>(pid);
+    } else {
+        status[QStringLiteral("pid")] = QJsonValue(QJsonValue::Null);
+    }
+    if (exitCode >= 0) {
+        status[QStringLiteral("exit_code")] = exitCode;
+    } else {
+        status.remove(QStringLiteral("exit_code"));
+    }
+    if (!note.trimmed().isEmpty()) {
+        status[QStringLiteral("note")] = note.trimmed();
+    }
+    QString error;
+    if (!jcut::jsonio::writeJsonFile(statusPath, status, true, &error)) {
+        qWarning().noquote() << "Failed to write FaceDetections generator status:" << error;
+    }
+}
+
+QString argumentValue(const QStringList& args, const QString& optionName)
+{
+    const int index = args.indexOf(optionName);
+    if (index >= 0 && index + 1 < args.size()) {
+        return args.at(index + 1);
+    }
+    return {};
+}
+
+QString durableProcessRoot(const QStringList& args)
+{
+    const QString outDir = argumentValue(args, QStringLiteral("--out-dir")).trimmed();
+    if (!outDir.isEmpty()) {
+        return outDir;
+    }
+    return QDir::temp().absoluteFilePath(QStringLiteral("jcut_facedetections_detached"));
+}
+
+bool requiredDetachedGeneratorArtifactsExist(const QString& root)
+{
+    if (root.trimmed().isEmpty()) {
+        return false;
+    }
+    const QDir dir(root);
+    const QStringList required{
+        dir.absoluteFilePath(QStringLiteral("continuity_facedetections.bin")),
+        dir.absoluteFilePath(QStringLiteral("detections.idx")),
+        dir.absoluteFilePath(QStringLiteral("tracks.idx")),
+        dir.absoluteFilePath(QStringLiteral("summary.json")),
+    };
+    for (const QString& path : required) {
+        if (!QFileInfo::exists(path)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+qint64 readGeneratorPidFile(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) {
+        return -1;
+    }
+    bool ok = false;
+    const qint64 pid = QString::fromUtf8(file.readAll()).trimmed().toLongLong(&ok);
+    return ok ? pid : -1;
+}
+
+bool processExists(qint64 pid)
+{
+    if (pid <= 0) {
+        return false;
+    }
+#if defined(Q_OS_UNIX)
+    if (::kill(static_cast<pid_t>(pid), 0) == 0) {
+        return true;
+    }
+    return errno == EPERM;
+#elif defined(Q_OS_WIN)
+    HANDLE handle = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                                FALSE,
+                                static_cast<DWORD>(pid));
+    if (!handle) {
+        return false;
+    }
+    DWORD exitCode = 0;
+    const bool running =
+        GetExitCodeProcess(handle, &exitCode) && exitCode == STILL_ACTIVE;
+    CloseHandle(handle);
+    return running;
+#else
+    Q_UNUSED(pid);
+    return false;
+#endif
+}
+
+bool faceDetectionsGeneratorAlreadyRunning(const QString& artifactDir, QString* messageOut)
+{
+    const QDir dir(artifactDir);
+    const QString statusPath = dir.absoluteFilePath(QStringLiteral("generator.status.json"));
+    const QString pidPath = dir.absoluteFilePath(QStringLiteral("generator.pid"));
+    const QString exitPath = dir.absoluteFilePath(QStringLiteral("generator.exit"));
+    QJsonObject status;
+    readJsonObject(statusPath, &status, nullptr);
+    qint64 pid = status.value(QStringLiteral("pid")).toVariant().toLongLong();
+    if (pid <= 0) {
+        pid = readGeneratorPidFile(pidPath);
+    }
+    if (pid > 0 && processExists(pid) && !QFileInfo::exists(exitPath)) {
+        if (messageOut) {
+            *messageOut =
+                QStringLiteral("FaceDetections generation is already running for this clip.\n\nPID: %1\nArtifact directory: %2")
+                    .arg(pid)
+                    .arg(artifactDir);
+        }
+        return true;
+    }
+    const QFileInfo partInfo(dir.absoluteFilePath(QStringLiteral("facedetections.part")));
+    const QFileInfo stdoutInfo(dir.absoluteFilePath(QStringLiteral("generator.stdout.log")));
+    const qint64 partAgeMs = partInfo.exists()
+        ? partInfo.lastModified().msecsTo(QDateTime::currentDateTime())
+        : std::numeric_limits<qint64>::max();
+    const qint64 stdoutAgeMs = stdoutInfo.exists()
+        ? stdoutInfo.lastModified().msecsTo(QDateTime::currentDateTime())
+        : std::numeric_limits<qint64>::max();
+    if (!QFileInfo::exists(exitPath) && qMin(partAgeMs, stdoutAgeMs) < 5 * 60 * 1000) {
+        if (messageOut) {
+            *messageOut =
+                QStringLiteral("FaceDetections generation appears active for this clip, but no reliable PID is available yet.\n\nArtifact directory: %1")
+                    .arg(artifactDir);
+        }
+        return true;
+    }
+    return false;
+}
+
+FaceDetectionsProcessResult runDetachedDurableProcess(const QString& program,
+                                                      const QStringList& args)
+{
+    FaceDetectionsProcessResult result;
+    const QString root = durableProcessRoot(args);
+    QDir().mkpath(root);
+    const QDir dir(root);
+    const QString pidPath = dir.absoluteFilePath(QStringLiteral("generator.pid"));
+    const QString exitPath = dir.absoluteFilePath(QStringLiteral("generator.exit"));
+    const QString stdoutPath = dir.absoluteFilePath(QStringLiteral("generator.stdout.log"));
+    const QString stderrPath = dir.absoluteFilePath(QStringLiteral("generator.stderr.log"));
+
+    QFile::remove(pidPath);
+    QFile::remove(exitPath);
+    QFile::remove(stdoutPath);
+    QFile::remove(stderrPath);
+
+    QProcess launcher;
+    qint64 pid = -1;
+    launcher.setProgram(program);
+    launcher.setArguments(args);
+    launcher.setWorkingDirectory(QFileInfo(program).absolutePath());
+    launcher.setStandardOutputFile(stdoutPath, QIODevice::Truncate);
+    launcher.setStandardErrorFile(stderrPath, QIODevice::Truncate);
+    result.started = launcher.startDetached(&pid);
+    if (!result.started) {
+        result.started = false;
+        result.standardError = launcher.errorString().trimmed().isEmpty()
+            ? QStringLiteral("Failed to start detached FaceDetections generator.")
+            : launcher.errorString();
+        return result;
+    }
+    writeDetachedGeneratorStatus(root,
+                                 QStringLiteral("running"),
+                                 pid,
+                                 -1,
+                                 program,
+                                 args,
+                                 pid > 0
+                                     ? QString()
+                                     : QStringLiteral("Detached process started, but Qt did not return a process id."));
+    if (pid > 0) {
+        QFile pidFile(pidPath);
+        if (pidFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            pidFile.write(QByteArray::number(pid));
+            pidFile.write("\n");
+        }
+    } else {
+        QFile pidFile(pidPath);
+        if (pidFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            pidFile.write("unavailable\n");
+        }
+    }
+
+    qint64 stdoutOffset = 0;
+    qint64 stderrOffset = 0;
+    qint64 lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+    auto appendNewBytes = [](const QString& path, qint64* offset, QString* out) -> bool {
+        QFile file(path);
+        if (!offset || !out || !file.open(QIODevice::ReadOnly)) {
+            return false;
+        }
+        if (*offset > file.size()) {
+            *offset = 0;
+        }
+        file.seek(*offset);
+        const QByteArray bytes = file.readAll();
+        *offset = file.pos();
+        if (!bytes.isEmpty()) {
+            *out += QString::fromLocal8Bit(bytes);
+            return true;
+        }
+        return false;
+    };
+
+    while (true) {
+        const bool stdoutChanged = appendNewBytes(stdoutPath, &stdoutOffset, &result.standardOutput);
+        const bool stderrChanged = appendNewBytes(stderrPath, &stderrOffset, &result.standardError);
+        if (stdoutChanged || stderrChanged) {
+            lastActivityMs = QDateTime::currentMSecsSinceEpoch();
+        }
+        if (QFileInfo::exists(exitPath)) {
+            QFile exitFile(exitPath);
+            if (exitFile.open(QIODevice::ReadOnly)) {
+                bool ok = false;
+                const int code = QString::fromUtf8(exitFile.readAll()).trimmed().toInt(&ok);
+                result.exitCode = ok ? code : -1;
+            } else {
+                result.exitCode = -1;
+            }
+            result.exitStatus = QProcess::NormalExit;
+            break;
+        }
+        if (pid > 0 && !processExists(pid)) {
+            result.exitStatus = QProcess::NormalExit;
+            if (requiredDetachedGeneratorArtifactsExist(root)) {
+                result.exitCode = 0;
+                QFile exitFile(exitPath);
+                if (exitFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    exitFile.write("0\n");
+                }
+                result.standardOutput += QStringLiteral(
+                    "\nDetached FaceDetections generator finished final artifacts without writing generator.exit; recovered as successful completion.\n");
+            } else {
+                result.exitCode = -1;
+                result.standardError += QStringLiteral(
+                    "\nDetached FaceDetections generator exited without writing generator.exit.\n");
+            }
+            break;
+        }
+        if (pid <= 0 &&
+            QDateTime::currentMSecsSinceEpoch() - lastActivityMs > 30 * 60 * 1000) {
+            result.exitStatus = QProcess::NormalExit;
+            if (requiredDetachedGeneratorArtifactsExist(root)) {
+                result.exitCode = 0;
+                QFile exitFile(exitPath);
+                if (exitFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                    exitFile.write("0\n");
+                }
+                result.standardOutput += QStringLiteral(
+                    "\nDetached FaceDetections generator finished final artifacts without a PID or generator.exit; recovered as successful completion.\n");
+            } else {
+                result.exitCode = -1;
+                result.standardError += QStringLiteral(
+                    "\nDetached FaceDetections generator did not provide a PID, did not write generator.exit, and has not updated logs for 30 minutes.\n");
+            }
+            break;
+        }
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        if (QThread::currentThread()->isInterruptionRequested()) {
+            result.canceled = true;
+            result.exitCode = -1;
+            result.exitStatus = QProcess::NormalExit;
+            break;
+        }
+        QThread::msleep(100);
+    }
+    appendNewBytes(stdoutPath, &stdoutOffset, &result.standardOutput);
+    appendNewBytes(stderrPath, &stderrOffset, &result.standardError);
+    writeDetachedGeneratorStatus(root,
+                                 result.exitCode == 0 ? QStringLiteral("completed")
+                                                      : (result.canceled ? QStringLiteral("canceled")
+                                                                         : QStringLiteral("failed")),
+                                 pid,
+                                 result.exitCode,
+                                 program,
+                                 args,
+                                 result.standardError.trimmed());
+    return result;
+}
 
 struct FaceDetectionsLaunchTopology {
     int detectorWorkers = 2;
@@ -430,7 +764,7 @@ FaceDetectionsProcessResult runFaceDetectionsGeneratorProcess(QWidget* parent,
     }
 
     if (livePreview) {
-        return runProcessWithEventLoop(program, args, QProcess::SeparateChannels);
+        return runDetachedDurableProcess(program, args);
     }
 
     QDialog progressDialog(parent);
@@ -577,6 +911,13 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
         : selectedClip->id.trimmed();
     const QString artifactDir = facedetectionsClipSidecarDir(selectedClip->filePath, clipId);
     QDir().mkpath(artifactDir);
+    QString runningGeneratorMessage;
+    if (faceDetectionsGeneratorAlreadyRunning(artifactDir, &runningGeneratorMessage)) {
+        showAutomationAwareWarning(
+            QStringLiteral("JCut DNN Detection + Continuity Generator"),
+            runningGeneratorMessage);
+        return;
+    }
     QJsonObject launchControl = existingFaceDetectionsLaunchControl(artifactDir);
     const bool explicitLaunchControl = !launchControl.isEmpty();
     const QString initialLaunchMode = normalizedFaceDetectionsLaunchMode(launchControl);
@@ -690,15 +1031,22 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     const QString tracksPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("tracks.idx"));
     const QString summaryPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("summary.json"));
     const QString facedetectionsPartPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("facedetections.part"));
+    const QString facedetectionsResumeIndexPath =
+        QDir(artifactDir).absoluteFilePath(QStringLiteral("facedetections.part.resume_index.json"));
     const QString clipJsonPath = QDir(artifactDir).absoluteFilePath(QStringLiteral("clip_input.json"));
     const QString indexPath = QDir(debugRun.runDir).absoluteFilePath(QStringLiteral("index.json"));
 
-    if (preflight.restartFromScratch && QFileInfo::exists(facedetectionsPartPath) && !QFile::remove(facedetectionsPartPath)) {
-        showAutomationAwareWarning(
-            QStringLiteral("JCut DNN Detection + Continuity Generator"),
-            QStringLiteral("Failed to delete restart checkpoint before launch.\n\n%1")
-                .arg(facedetectionsPartPath));
-        return;
+    if (preflight.restartFromScratch) {
+        const QStringList restartCheckpointPaths{facedetectionsPartPath, facedetectionsResumeIndexPath};
+        for (const QString& checkpointPath : restartCheckpointPaths) {
+            if (QFileInfo::exists(checkpointPath) && !QFile::remove(checkpointPath)) {
+                showAutomationAwareWarning(
+                    QStringLiteral("JCut DNN Detection + Continuity Generator"),
+                    QStringLiteral("Failed to delete restart checkpoint before launch.\n\n%1")
+                        .arg(checkpointPath));
+                return;
+            }
+        }
     }
 
     QString launchMode = initialLaunchMode;
@@ -744,14 +1092,17 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     }
     const QString launchProfile = normalizedFaceDetectionsLaunchProfile(launchControl);
     const bool throughputProfile = launchProfile == QStringLiteral("throughput");
+    const bool durableGeneratorLaunch = true;
     const bool launchLivePreview =
         throughputProfile
-            ? launchControlBool(launchControl, QStringLiteral("live_preview"), true)
+            ? launchControlBool(launchControl, QStringLiteral("live_preview"), false)
             : preflight.livePreview;
     const bool launchControlWindow =
         launchControlBool(launchControl, QStringLiteral("control_window"), !throughputProfile);
     const bool launchProgressOutput =
-        launchControlBool(launchControl, QStringLiteral("progress_output"), !throughputProfile);
+        durableGeneratorLaunch
+            ? false
+            : launchControlBool(launchControl, QStringLiteral("progress_output"), !throughputProfile);
     FaceDetectionsLaunchTopology launchTopology;
     launchTopology.detectorWorkers = std::clamp(
         launchControl.contains(QStringLiteral("detector_workers"))
@@ -847,6 +1198,7 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     request[QStringLiteral("detector_launch_live_preview")] = launchLivePreview;
     request[QStringLiteral("detector_launch_control_window")] = launchControlWindow;
     request[QStringLiteral("detector_launch_progress_output")] = launchProgressOutput;
+    request[QStringLiteral("detector_durable_detached_launch")] = durableGeneratorLaunch;
     request[QStringLiteral("detector_launch_control_path")] =
         QDir(artifactDir).absoluteFilePath(QStringLiteral("launch_control.json"));
     request[QStringLiteral("detector_launch_control_applied")] =
@@ -956,6 +1308,28 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
                 .arg(processResult.exitCode)
                 .arg(processResult.standardError.trimmed().isEmpty()
                          ? processResult.standardOutput.trimmed()
+                         : processResult.standardError.trimmed());
+        speaker_flow_debug::persistIndex(
+            indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),
+            m_transcriptSession.transcriptPath(), QStringLiteral("stage_6_facedetections"), QStringLiteral("error"),
+            message, {requestPath, facedetectionsPartPath, detectionsPath, tracksPath, outputPath, summaryPath});
+        showAutomationAwareWarning(QStringLiteral("JCut DNN Detection + Continuity Generator"), message);
+        return;
+    }
+
+    const QStringList requiredGeneratorOutputs{outputPath, detectionsPath, tracksPath, summaryPath};
+    QStringList missingGeneratorOutputs;
+    for (const QString& path : requiredGeneratorOutputs) {
+        if (!QFileInfo::exists(path)) {
+            missingGeneratorOutputs.append(path);
+        }
+    }
+    if (!missingGeneratorOutputs.isEmpty()) {
+        const QString message =
+            QStringLiteral("JCut DNN Detection + Continuity Generator exited without producing required final artifacts.\n\nMissing:\n%1\n\nGenerator stderr:\n%2")
+                .arg(missingGeneratorOutputs.join(QLatin1Char('\n')),
+                     processResult.standardError.trimmed().isEmpty()
+                         ? QStringLiteral("(empty)")
                          : processResult.standardError.trimmed());
         speaker_flow_debug::persistIndex(
             indexPath, debugRun.runId, debugRun.clipToken, QFileInfo(selectedClip->filePath).fileName(),

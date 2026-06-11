@@ -347,6 +347,62 @@ QVector<ClipMigration> discoverMigrations(const QString& transcriptPath,
     return migrations;
 }
 
+QString runIdForExplicitArtifactDir(const QFileInfo& artifactDirInfo)
+{
+    const QDir artifactDir(artifactDirInfo.absoluteFilePath());
+    const QFileInfo statusInfo(artifactDir.filePath(QStringLiteral("generator.status.json")));
+    if (statusInfo.exists() && statusInfo.isFile()) {
+        QJsonObject status;
+        QString error;
+        if (jcut::jsonio::readJsonFile(statusInfo.absoluteFilePath(), &status, &error)) {
+            const QString started = status.value(QStringLiteral("started_at_utc")).toString();
+            if (!started.trimmed().isEmpty()) {
+                return started;
+            }
+        }
+    }
+    return artifactDirInfo.fileName();
+}
+
+QVector<ClipMigration> explicitArtifactMigration(const QString& artifactDirPath,
+                                                 const QString& requestedClipId)
+{
+    QVector<ClipMigration> migrations;
+    const QFileInfo artifactDirInfo(artifactDirPath);
+    if (!artifactDirInfo.exists() || !artifactDirInfo.isDir()) {
+        return migrations;
+    }
+
+    const QDir artifactDir(artifactDirInfo.absoluteFilePath());
+    const QFileInfo tracks(artifactDir.filePath(QStringLiteral("tracks.idx")));
+    if (!tracks.exists() || !tracks.isFile()) {
+        return migrations;
+    }
+
+    ClipMigration migration;
+    migration.clipId = requestedClipId.trimmed().isEmpty()
+        ? artifactDirInfo.fileName()
+        : requestedClipId.trimmed();
+    migration.runId = runIdForExplicitArtifactDir(artifactDirInfo);
+    migration.artifactDir = artifactDirInfo.absoluteFilePath();
+    migration.sourceTracksPath = tracks.absoluteFilePath();
+    migration.tracksPath = tracks.absoluteFilePath();
+
+    const QFileInfo detections(artifactDir.filePath(QStringLiteral("detections.idx")));
+    if (detections.exists() && detections.isFile()) {
+        migration.sourceDetectionsPath = detections.absoluteFilePath();
+        migration.detectionsPath = detections.absoluteFilePath();
+    }
+
+    const QFileInfo continuity(
+        artifactDir.filePath(QStringLiteral("continuity_facedetections.bin")));
+    if (continuity.exists() && continuity.isFile()) {
+        migration.continuityPath = continuity.absoluteFilePath();
+    }
+    migrations.push_back(migration);
+    return migrations;
+}
+
 QJsonObject continuityRootForMigration(const ClipMigration& migration)
 {
     QJsonObject root;
@@ -408,6 +464,10 @@ int main(int argc, char** argv)
         QStringList{QStringLiteral("clip")},
         QStringLiteral("Migrate only one clip id."),
         QStringLiteral("clip_id"));
+    const QCommandLineOption artifactDirOption(
+        QStringLiteral("artifact-dir"),
+        QStringLiteral("Import one completed detached generator artifact directory explicitly."),
+        QStringLiteral("dir"));
     const QCommandLineOption dryRunOption(
         QStringLiteral("dry-run"),
         QStringLiteral("Print planned changes without writing sidecars."));
@@ -415,6 +475,7 @@ int main(int argc, char** argv)
         QStringLiteral("no-backup"),
         QStringLiteral("Replace existing sidecars without creating .bak files."));
     parser.addOption(clipOption);
+    parser.addOption(artifactDirOption);
     parser.addOption(dryRunOption);
     parser.addOption(noBackupOption);
     parser.process(app);
@@ -430,11 +491,17 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    const QVector<ClipMigration> migrations =
-        discoverMigrations(transcriptPath, parser.value(clipOption));
+    const QString artifactDirPath = parser.value(artifactDirOption).trimmed();
+    const QVector<ClipMigration> migrations = artifactDirPath.isEmpty()
+        ? discoverMigrations(transcriptPath, parser.value(clipOption))
+        : explicitArtifactMigration(artifactDirPath, parser.value(clipOption));
     if (migrations.isEmpty()) {
         err() << "No generated FaceDetections artifacts found for "
-              << transcriptPath << "\n";
+              << transcriptPath;
+        if (!artifactDirPath.isEmpty()) {
+            err() << " in " << artifactDirPath;
+        }
+        err() << "\n";
         return 3;
     }
 

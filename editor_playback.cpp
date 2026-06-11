@@ -307,19 +307,7 @@ int64_t EditorWindow::absolutePlaybackSampleForFilteredSample(int64_t filteredSa
 
 int64_t EditorWindow::playbackSampleForAudioClockSample(int64_t audioClockSample) const
 {
-    if (!speechFilterPlaybackEnabled()) {
-        return qMax<int64_t>(0, audioClockSample);
-    }
-
-    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        return qMax<int64_t>(0, audioClockSample);
-    }
-
-    const int64_t anchorAbsolute = qMax<int64_t>(0, m_playbackAudioClockAnchorAbsoluteSample);
-    const int64_t anchorFiltered = filteredPlaybackSampleForAbsoluteSample(anchorAbsolute);
-    const int64_t elapsedPlaybackSamples = qMax<int64_t>(0, audioClockSample - anchorAbsolute);
-    return absolutePlaybackSampleForFilteredSample(anchorFiltered + elapsedPlaybackSamples);
+    return editor::audioMasterClockSampleToTimelineSample(audioClockSample);
 }
 
 QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
@@ -1294,14 +1282,14 @@ void EditorWindow::setPlaybackActive(bool playing)
         }
         if (m_preview) {
             m_preview->setExportRanges(ranges);
+            m_preview->setPlaybackState(true);
         }
+        m_fastPlaybackActive.store(true);
         advanceFrame();
         if (!m_startupReadinessFirstPlaybackTick.exchange(true)) {
             startupReadinessMark(QStringLiteral("playback.first_tick"));
         }
         m_playbackTimer.start();
-        m_fastPlaybackActive.store(true);
-        m_preview->setPlaybackState(true);
     } else {
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = 0;

@@ -849,6 +849,23 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   const QString faceStreamPath =
       QDir(options.outputDir).filePath(QStringLiteral("facedetections.part"));
   const QString resumeIndexPath = faceDetectionsResumeIndexPath(faceStreamPath);
+  auto finalArtifactsExist = [&]() {
+    const QDir outputDir(options.outputDir);
+    return QFileInfo::exists(
+               outputDir.filePath(QStringLiteral("detections.idx"))) &&
+           QFileInfo::exists(outputDir.filePath(QStringLiteral("tracks.idx"))) &&
+           QFileInfo::exists(outputDir.filePath(
+               QStringLiteral("continuity_facedetections.bin"))) &&
+           QFileInfo::exists(outputDir.filePath(QStringLiteral("summary.json")));
+  };
+  if (finalArtifactsExist()) {
+    if (options.verbose) {
+      std::cout << "facedetections_final_artifacts_exist=\""
+                << QDir(options.outputDir).absolutePath().toStdString()
+                << "\"; skipping detector run.\n";
+    }
+    return 0;
+  }
   FaceDetectionsResumeState resume;
   QString resumeError;
   QElapsedTimer resumeLoadTimer;
@@ -865,21 +882,47 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     if (!loadFaceDetectionsResume(faceStreamPath, options.videoPath, backend,
                                   options.startFrame, finalFrame, &resume,
                                   &resumeError)) {
-      const QString stalePath = faceStreamPath + QStringLiteral(".stale");
-      QFile::remove(stalePath);
-      QFile::rename(faceStreamPath, stalePath);
-      QFile::remove(resumeIndexPath);
-      if (options.verbose && !resumeError.isEmpty()) {
-        std::cerr << "Ignoring previous facedetections checkpoint: "
-                  << resumeError.toStdString() << "\n";
+      QString repairMessage;
+      if (repairFaceDetectionsResumeCheckpoint(
+              faceStreamPath, options.videoPath, backend, options.startFrame,
+              finalFrame, &resume, &repairMessage)) {
+        QFile::remove(resumeIndexPath);
+        if (options.verbose && !repairMessage.isEmpty()) {
+          std::cerr << repairMessage.toStdString() << "\n";
+        }
+      } else {
+        const QString stalePath = faceStreamPath + QStringLiteral(".stale");
+        QFile::remove(stalePath);
+        QFile::rename(faceStreamPath, stalePath);
+        QFile::remove(resumeIndexPath);
+        if (options.verbose && !resumeError.isEmpty()) {
+          std::cerr << "Ignoring previous facedetections checkpoint: "
+                    << resumeError.toStdString() << "\n";
+        }
+        resume = FaceDetectionsResumeState{};
       }
-      resume = FaceDetectionsResumeState{};
     }
   } else if (options.verbose) {
     std::cout << "resumed_facedetections_index=\""
               << resumeIndexPath.toStdString()
               << "\" completed_frames=" << resume.completedFrames.size()
               << " load_ms=" << resumeLoadTimer.elapsed() << "\n";
+  }
+  if (resume.loadedFromCompactIndex && !finalArtifactsExist()) {
+    QString repairMessage;
+    FaceDetectionsResumeState repairedResume;
+    if (repairFaceDetectionsResumeCheckpoint(
+            faceStreamPath, options.videoPath, backend, options.startFrame,
+            finalFrame, &repairedResume, &repairMessage)) {
+      if (options.verbose && !repairMessage.isEmpty()) {
+        std::cerr << repairMessage.toStdString() << "\n";
+      }
+      resume = repairedResume;
+      QFile::remove(resumeIndexPath);
+    } else if (options.verbose && !repairMessage.isEmpty()) {
+      std::cerr << "Failed to repair facedetections checkpoint: "
+                << repairMessage.toStdString() << "\n";
+    }
   }
   int resumeStartOffset = 0;
   while (

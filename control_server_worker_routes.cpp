@@ -1297,6 +1297,77 @@ bool ControlServerWorker::handleThrottleRoutes(QTcpSocket* socket, const Request
 }
 
 bool ControlServerWorker::handlePlaybackRoutes(QTcpSocket* socket, const Request& request) {
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback/sync")) {
+        QJsonObject sync;
+        if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &sync, [this]() {
+                if (!m_audioSnapshotCallback || !m_pipelineSnapshotCallback) {
+                    return QJsonObject{
+                        {QStringLiteral("ok"), false},
+                        {QStringLiteral("error"), QStringLiteral("playback sync callbacks unavailable")}
+                    };
+                }
+                const QJsonObject audio = m_audioSnapshotCallback();
+                const QJsonObject preview = m_pipelineSnapshotCallback(false);
+                QJsonObject activeDecode;
+                const QJsonArray statuses =
+                    preview.value(QStringLiteral("decode_status_details")).toArray();
+                if (!statuses.isEmpty()) {
+                    activeDecode = statuses.at(0).toObject();
+                }
+                return QJsonObject{
+                    {QStringLiteral("ok"), true},
+                    {QStringLiteral("playback_active"),
+                     audio.value(QStringLiteral("editor_playback_active")).toBool()},
+                    {QStringLiteral("editor_current_frame"),
+                     audio.value(QStringLiteral("editor_current_frame")).toInteger()},
+                    {QStringLiteral("absolute_playback_sample"),
+                     audio.value(QStringLiteral("absolute_playback_sample")).toInteger()},
+                    {QStringLiteral("projected_audio_clock_absolute_frame"),
+                     audio.value(QStringLiteral("projected_audio_clock_absolute_frame")).toInteger()},
+                    {QStringLiteral("projected_audio_clock_absolute_sample"),
+                     audio.value(QStringLiteral("projected_audio_clock_absolute_sample")).toInteger()},
+                    {QStringLiteral("audio_video_drift_frames"),
+                     audio.value(QStringLiteral("audio_video_drift_frames")).toInteger()},
+                    {QStringLiteral("audio_video_drift_samples"),
+                     audio.value(QStringLiteral("audio_video_drift_samples")).toInteger()},
+                    {QStringLiteral("audio_playback_blocked"),
+                     audio.value(QStringLiteral("audio_playback_blocked")).toBool()},
+                    {QStringLiteral("pitch_preserving_audio_blocked"),
+                     audio.value(QStringLiteral("pitch_preserving_audio_blocked")).toBool()},
+                    {QStringLiteral("time_stretch_cache_miss_count"),
+                     audio.value(QStringLiteral("time_stretch_cache_miss_count")).toInteger()},
+                    {QStringLiteral("playback_rate"),
+                     audio.value(QStringLiteral("playback_rate")).toDouble()},
+                    {QStringLiteral("playback_warp_mode"),
+                     audio.value(QStringLiteral("playback_warp_mode")).toString()},
+                    {QStringLiteral("active_requested_source_frame"),
+                     preview.value(QStringLiteral("active_requested_source_frame")).toInteger(-1)},
+                    {QStringLiteral("active_presented_source_frame"),
+                     preview.value(QStringLiteral("active_presented_source_frame")).toInteger(-1)},
+                    {QStringLiteral("active_frame_exact"),
+                     preview.value(QStringLiteral("active_frame_exact")).toBool()},
+                    {QStringLiteral("active_frame_up_to_date"),
+                     preview.value(QStringLiteral("active_frame_up_to_date")).toBool()},
+                    {QStringLiteral("active_frame_selection"),
+                     preview.value(QStringLiteral("active_frame_selection")).toString()},
+                    {QStringLiteral("active_frame_not_up_to_date_failure"),
+                     preview.value(QStringLiteral("active_frame_not_up_to_date_failure")).toBool()},
+                    {QStringLiteral("active_frame_stale_rejected"),
+                     preview.value(QStringLiteral("active_frame_stale_rejected")).toBool()},
+                    {QStringLiteral("active_decode"), activeDecode},
+                    {QStringLiteral("playback_smoothness"),
+                     preview.value(QStringLiteral("playback_smoothness")).toObject()},
+                    {QStringLiteral("visible_decode_diagnostics"),
+                     preview.value(QStringLiteral("visible_decode_diagnostics")).toObject()}
+                };
+            })) {
+            writeError(socket, 503, QStringLiteral("timed out waiting for playback sync snapshot"));
+            return true;
+        }
+        writeJson(socket, sync.value(QStringLiteral("ok")).toBool() ? 200 : 500, sync);
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/playback/diagnostics")) {
         const QUrlQuery query(request.url);
         const bool verbose =

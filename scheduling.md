@@ -122,9 +122,9 @@ Rules:
 Visible playback stale-frame tolerance:
 
 - Source of truth: `previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h`.
-- Time budget: 0.20 seconds of source media.
-- Clamp: minimum 4 source frames, maximum 12 source frames.
-- Examples: 30 fps source allows 6 source frames; 60 fps source allows 12 source frames.
+- Time budget: 0.067 seconds of source media.
+- Clamp: minimum 4 source frames, maximum 4 source frames.
+- Examples: 30 fps and 60 fps sources both allow at most 4 source frames.
 - This is a presentation correctness limit, not a decode retention limit. It prevents unbounded
   stale hardware frames from being presented as current video while still allowing normal short
   decode jitter.

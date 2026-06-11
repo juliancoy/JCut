@@ -141,6 +141,16 @@ PreviewFrameSelectionResult selectPreviewFrame(
         result.frame = FrameHandle();
         result.selection = QStringLiteral("stale");
         result.rejectedStale = true;
+        result.selectedPresentation = false;
+        result.selectedExact = false;
+        result.selectedApproximate = false;
+        result.selectedHeld = false;
+        if (heldFrameMatches(heldFrame, request.frameNumber, request.maxHeldFrameDelta) &&
+            !stalePredicate(heldFrame)) {
+            result.frame = heldFrame;
+            result.selectedHeld = true;
+            result.selection = QStringLiteral("held");
+        }
     }
 
     return result;
