@@ -1,0 +1,458 @@
+[STARTUP][WARN] Preferred zero-copy decode path requires Linux GPU interop (CUDA or VAAPI render node); falling back to hardware CPU-upload or software decode.
+[STARTUP] Building explorer pane...
+[STARTUP] Explorer pane built in 67 ms
+[STARTUP] Building editor pane...
+[icons] transport resource(s) missing (8); using built-in fallback glyphs
+[vulkan-preview] requested instance extensions=VK_KHR_surface
+[vulkan-preview] requested device extensions=VK_KHR_external_memory,VK_KHR_external_semaphore,VK_KHR_bind_memory2
+[render-backend-selection] requested=vulkan effective=vulkan reason="Using direct Vulkan swapchain preview presenter (explicit mode)."
+[update-storm] request #1
+    2   jcut                                0x0000000100d19dc0 _ZN10EditorPaneC2EP7QWidget + 808
+    3   jcut                                0x0000000100ced8dc _ZN6editor12EditorWindow15buildEditorPaneEv + 36
+    4   jcut                                0x0000000100d3ee44 _ZN6editor12EditorWindow15setupMainLayoutER13QElapsedTimer + 1916
+    5   jcut                                0x0000000100b87364 _ZN6editor12EditorWindowC2Et + 2156
+    6   jcut                                0x0000000100ba5208 main + 8716
+    7   dyld                                0x000000018fe89d54 start + 7184
+[STARTUP] Editor pane built in 125 ms
+ControlServer listening on http://127.0.0.1:40130
+[ControlServer] Initialized on port 40130
+[STARTUP] ControlServer started in 393 ms
+AsyncDecoder: shared hw device created for type 6 ( "videotoolbox" )
+AsyncDecoder: shared hw device unavailable for type 2 ( "cuda" ) — decoders requiring this type will fall back
+AsyncDecoder: shared hw device unavailable for type 3 ( "vaapi" ) — decoders requiring this type will fall back
+AsyncDecoder initialized with 8 workers
+[vulkan-preview] direct presenter device=Apple M1 vendor=0x106b type=1
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+[update-storm] request #2
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #3
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #4
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #5
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #6
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #7
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #8
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #9
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #10
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #11
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #12
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #13
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #14
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #15
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #16
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #17
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #18
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #19
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #20
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #21
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #22
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #23
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #24
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #25
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #26
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #27
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #28
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #29
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #30
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #31
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #32
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #33
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #34
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #35
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #36
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #37
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #38
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #39
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212
+[update-storm] request #40
+    2   QtWidgets                           0x000000010239ca30 _ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent + 336
+    3   QtWidgets                           0x000000010239dab0 _ZN12QApplication6notifyEP7QObjectP6QEvent + 468
+    4   QtCore                              0x0000000106f83488 _ZN16QCoreApplication20sendSpontaneousEventEP7QObjectP6QEvent + 172
+    5   QtGui                               0x0000000106053bcc _ZN22QGuiApplicationPrivate18processExposeEventEPN29QWindowSystemInterfacePrivate11ExposeEventE + 464
+    6   QtGui                               0x00000001060bb190 _ZN19QWindowSystemHelperIN22QWindowSystemInterface19SynchronousDeliveryEE11handleEventIN29QWindowSystemInterfacePrivate11ExposeEventEJP7QWindow7QRegionEEEbDpT0_ + 308
+    7   QtGui                               0x00000001060b6b4c _ZN22QWindowSystemInterface17handleExposeEventINS_19SynchronousDeliveryEEEbP7QWindowRK7QRegion + 76
+    8   libqcocoa.dylib                     0x0000000106cb04a0 _ZN12QCocoaWindow17handleExposeEventERK7QRegion + 600
+    9   libqcocoa.dylib                     0x0000000106cc7554 _ZZ33-[QNSView(Drawing) displayLayer:]ENK3$_3clEv + 604
+    10  libqcocoa.dylib                     0x0000000106cc6f70 -[QNSView(Drawing) displayLayer:] + 1144
+    11  QuartzCore                          0x0000000199fc9f24 -[CALayer display] + 212

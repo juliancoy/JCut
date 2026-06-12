@@ -1,0 +1,29 @@
+[STARTUP][WARN] Preferred zero-copy decode path requires Linux GPU interop (CUDA or VAAPI render node); falling back to hardware CPU-upload or software decode.
+[STARTUP] Building explorer pane...
+[STARTUP] Explorer pane built in 81 ms
+[STARTUP] Building editor pane...
+[icons] transport resource(s) missing (8); using built-in fallback glyphs
+[vulkan-preview] requested instance extensions=VK_KHR_surface
+[vulkan-preview] requested device extensions=VK_KHR_external_memory,VK_KHR_external_semaphore,VK_KHR_bind_memory2
+[render-backend-selection] requested=vulkan effective=vulkan reason="Using direct Vulkan swapchain preview presenter (explicit mode)."
+[update-storm] request #1
+    2   jcut                                0x00000001026f5b40 _ZN10EditorPaneC2EP7QWidget + 808
+    3   jcut                                0x00000001026c98a8 _ZN6editor12EditorWindow15buildEditorPaneEv + 36
+    4   jcut                                0x000000010271abc4 _ZN6editor12EditorWindow15setupMainLayoutER13QElapsedTimer + 1916
+    5   jcut                                0x0000000102563368 _ZN6editor12EditorWindowC2Et + 2160
+    6   jcut                                0x000000010258120c main + 8716
+    7   dyld                                0x000000018fe89d54 start + 7184
+[STARTUP] Editor pane built in 127 ms
+ControlServer listening on http://127.0.0.1:40130
+[ControlServer] Initialized on port 40130
+[STARTUP] ControlServer started in 407 ms
+AsyncDecoder: shared hw device created for type 6 ( "videotoolbox" )
+AsyncDecoder: shared hw device unavailable for type 2 ( "cuda" ) — decoders requiring this type will fall back
+AsyncDecoder: shared hw device unavailable for type 3 ( "vaapi" ) — decoders requiring this type will fall back
+AsyncDecoder initialized with 8 workers
+[vulkan-preview] direct presenter device=Apple M1 vendor=0x106b type=1
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.

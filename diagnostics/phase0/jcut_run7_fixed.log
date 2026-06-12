@@ -1,0 +1,26 @@
+[STARTUP][WARN] Preferred zero-copy decode path requires Linux GPU interop (CUDA or VAAPI render node); falling back to hardware CPU-upload or software decode.
+[STARTUP] Building explorer pane...
+[STARTUP] Explorer pane built in 65 ms
+[STARTUP] Building editor pane...
+[icons] transport resource(s) missing (8); using built-in fallback glyphs
+[vulkan-preview] requested instance extensions=VK_KHR_surface
+[vulkan-preview] requested device extensions=VK_KHR_external_memory,VK_KHR_external_semaphore,VK_KHR_bind_memory2
+[render-backend-selection] requested=vulkan effective=vulkan reason="Using direct Vulkan swapchain preview presenter (explicit mode)."
+[STARTUP] Editor pane built in 106 ms
+ControlServer listening on http://127.0.0.1:40130
+[ControlServer] Initialized on port 40130
+[STARTUP] ControlServer started in 365 ms
+
+RtApiCore::probeDeviceOpen: the device (130) does not support the requested channel count.
+
+RtAudio openStream failed: "RtApiCore::probeDeviceOpen: the device (130) does not support the requested channel count."
+AsyncDecoder: shared hw device created for type 6 ( "videotoolbox" )
+AsyncDecoder: shared hw device unavailable for type 2 ( "cuda" ) — decoders requiring this type will fall back
+AsyncDecoder: shared hw device unavailable for type 3 ( "vaapi" ) — decoders requiring this type will fall back
+AsyncDecoder initialized with 8 workers
+[vulkan-preview] direct presenter device=Apple M1 vendor=0x106b type=1
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.
+vkDebug: VK_ERROR_FEATURE_NOT_PRESENT: Metal does not support disabling primitive restart.

@@ -1,0 +1,13 @@
+[STARTUP][WARN] Preferred zero-copy decode path requires Linux GPU interop (CUDA or VAAPI render node); falling back to hardware CPU-upload or software decode.
+[STARTUP] Building explorer pane...
+qt.qpa.fonts: Populating font family aliases took 57 ms. Replace uses of missing font family "Sans Serif" with one that exists to avoid this cost. 
+[STARTUP] Explorer pane built in 143 ms
+[STARTUP] Building editor pane...
+[icons] transport resource(s) missing (8); using built-in fallback glyphs
+[render-backend-fallback] requested=vulkan effective=offscreen-placeholder reason="Offscreen Qt platform does not safely support the interactive preview widget stack; using a non-GL placeholder preview surface."
+[STARTUP] Editor pane built in 9 ms
+ControlServer listening on http://127.0.0.1:40130
+[ControlServer] Initialized on port 40130
+[STARTUP] ControlServer started in 304 ms
+This plugin does not support propagateSizeHints()
+[AUTOSAVE] Backup saved: "/Users/natan/Documents/JCut/build/jcut.app/Contents/MacOS/projects/default/state_backup_2026-06-11_22-27-00.json"
