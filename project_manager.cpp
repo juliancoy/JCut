@@ -88,15 +88,41 @@ QString ProjectManager::normalizedExistingDirPath(const QString &path) const
 
 QString ProjectManager::defaultRootDirPath() const
 {
-    const QString appDir = normalizedExistingDirPath(applicationDirPath());
+    QString appDir = normalizedExistingDirPath(applicationDirPath());
     if (appDir.isEmpty()) {
         return QDir::currentPath();
+    }
+
+    // On macOS the executable lives inside the bundle
+    // (<build>/jcut.app/Contents/MacOS); walk up out of the bundle so the
+    // build-dir rule below sees <build>, not the bundle internals.
+    // Otherwise the editor silently creates its projects root inside the
+    // .app and never finds the repository's projects/.
+    {
+        QDir walker(appDir);
+        for (int i = 0; i < 3; ++i) {
+            const QString name = walker.dirName();
+            const bool bundleComponent =
+                name.compare(QStringLiteral("MacOS"), Qt::CaseInsensitive) == 0 ||
+                name.compare(QStringLiteral("Contents"), Qt::CaseInsensitive) == 0 ||
+                name.endsWith(QStringLiteral(".app"), Qt::CaseInsensitive);
+            if (!bundleComponent || !walker.cdUp()) {
+                break;
+            }
+        }
+        const QString unbundled = normalizedExistingDirPath(walker.absolutePath());
+        if (!unbundled.isEmpty()) {
+            appDir = unbundled;
+        }
     }
 
     const QFileInfo appDirInfo(appDir);
     const QString baseName = appDirInfo.fileName().trimmed().toLower();
     if (baseName == QStringLiteral("build") || baseName.startsWith(QStringLiteral("build-"))) {
-        const QString parentDir = normalizedExistingDirPath(appDirInfo.dir().absoluteFilePath(QStringLiteral("..")));
+        // Parent of the build directory is the repository root. (The old
+        // expression appended an extra ".." and landed one level above the
+        // repo; it never ran in practice because a config file existed.)
+        const QString parentDir = normalizedExistingDirPath(appDirInfo.dir().absolutePath());
         if (!parentDir.isEmpty()) {
             return parentDir;
         }
