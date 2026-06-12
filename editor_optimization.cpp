@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QScopeGuard>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -321,6 +322,8 @@ QJsonObject EditorWindow::runStartupOptimizationPass()
 
     for (int i = 0; i < candidates.size(); ++i) {
         const OptimizationCandidate& candidate = candidates.at(i);
+        fprintf(stderr, "[opt-pass] candidate %d/%d '%s' begin\n",
+                i + 1, int(candidates.size()), qPrintable(candidate.name));
         applyOptimizedProfile(candidate.profile);
         m_preview->resetProfilingStats();
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
@@ -331,9 +334,14 @@ QJsonObject EditorWindow::runStartupOptimizationPass()
             candidate.profile.playbackStartLookaheadFrames,
             candidate.profile.playbackStartLookaheadTimeoutMs);
         const qint64 elapsedMs = timer.elapsed();
+        fprintf(stderr, "[opt-pass] candidate '%s' warmed=%d elapsed_ms=%lld\n",
+                qPrintable(candidate.name), warmed ? 1 : 0,
+                static_cast<long long>(elapsedMs));
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
 
         const QJsonObject snapshot = m_preview->profilingSnapshot();
+        fprintf(stderr, "[opt-pass] candidate '%s' snapshot done\n",
+                qPrintable(candidate.name));
         const QJsonObject cache = snapshot.value(QStringLiteral("cache")).toObject();
         const QJsonObject decoder = snapshot.value(QStringLiteral("decoder")).toObject();
         const int totalCachedFrames = cache.value(QStringLiteral("total_cached_frames")).toInt(0);
@@ -398,6 +406,23 @@ QJsonObject EditorWindow::runStartupOptimizationPass()
 
 QJsonObject EditorWindow::ensureOptimizedProfile()
 {
+    // The optimization pass below spins a nested event loop (processEvents
+    // inside warmPlaybackLookahead). Any ensure scheduled while the pass is
+    // running would be delivered INTO that nested loop and recurse into a
+    // second pass, which re-arms again before the first ever finishes — a
+    // first-run livelock (no cached profile on disk yet). Refuse re-entry.
+    if (m_optimizedProfileEnsureRunning) {
+        return QJsonObject{
+            {QStringLiteral("ok"), false},
+            {QStringLiteral("busy"), true},
+            {QStringLiteral("reason"), QStringLiteral("optimization_pass_already_running")}
+        };
+    }
+    m_optimizedProfileEnsureRunning = true;
+    const auto ensureRunningReset = qScopeGuard([this]() {
+        m_optimizedProfileEnsureRunning = false;
+    });
+
     m_optimizedProfileEnsureScheduled = false;
     m_optimizedProfileLoaded = false;
     m_optimizedProfileGeneratedThisRun = false;

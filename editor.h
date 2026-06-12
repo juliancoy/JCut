@@ -764,6 +764,7 @@ private:
     bool m_optimizedProfileLoaded = false;
     bool m_optimizedProfileGeneratedThisRun = false;
     bool m_optimizedProfileEnsureScheduled = false;
+    bool m_optimizedProfileEnsureRunning = false;
     QJsonArray m_runtimePatchLog;
     qint64 m_runtimePatchSequence = 0;
     QString m_deferredHistoryLoadProjectId;
