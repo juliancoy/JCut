@@ -58,6 +58,16 @@ QString framePayloadForDiagnostics(const FrameHandle& frame) {
     return QStringLiteral("unknown");
 }
 
+int64_t pendingFrameFromKey(const QString& key, const QString& clipId) {
+    const QString prefix = clipId + QLatin1Char(':');
+    if (!key.startsWith(prefix)) {
+        return std::numeric_limits<int64_t>::max();
+    }
+    bool ok = false;
+    const int64_t frame = key.mid(prefix.size()).toLongLong(&ok);
+    return ok ? frame : std::numeric_limits<int64_t>::max();
+}
+
 bool pruneObsoletePendingFrameRequests(QSet<QString>* requests,
                                        const QHash<QString, int64_t>& activeLocalFrames,
                                        int64_t maxAheadFrame,
@@ -587,8 +597,23 @@ void PlaybackFramePipeline::schedulePlaybackWindow(const ClipInfo& info,
                             debugMaxPresentationPastFrameDelta() +
                             latencyRetentionFrames +
                             4);
-    const int64_t decoderKeepFromFrame =
-        qMax<int64_t>(0, canonicalFrame - obsoleteVisibleFrameSlack);
+    int64_t decoderKeepFromFrame =
+        qMax<int64_t>(0, canonicalFrame - effectiveKeepWindow);
+    {
+        QMutexLocker pendingLock(&m_pendingMutex);
+        int64_t earliestPendingFrame = std::numeric_limits<int64_t>::max();
+        for (const QString& key : m_pendingVisibleRequests) {
+            earliestPendingFrame = qMin(earliestPendingFrame,
+                                        pendingFrameFromKey(key, info.clip.id));
+        }
+        for (const QString& key : m_pendingPrefetchRequests) {
+            earliestPendingFrame = qMin(earliestPendingFrame,
+                                        pendingFrameFromKey(key, info.clip.id));
+        }
+        if (earliestPendingFrame != std::numeric_limits<int64_t>::max()) {
+            decoderKeepFromFrame = qMin(decoderKeepFromFrame, earliestPendingFrame);
+        }
+    }
     cancelDecoderBeforeThrottled(info.playbackPath,
                                  decoderKeepFromFrame,
                                  QDateTime::currentMSecsSinceEpoch());

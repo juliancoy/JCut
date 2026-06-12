@@ -393,15 +393,21 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
             const qint64 now = nowMs();
             const qint64 heartbeatMs = m_lastMainThreadHeartbeatMs.load();
             const qint64 playheadMs = m_lastPlayheadAdvanceMs.load();
+            const qint64 playheadAgeMs = playheadMs > 0 ? now - playheadMs : -1;
+            const bool playbackTimerActive = m_fastPlaybackActive.load();
+            const bool playbackStalled = playbackTimerActive &&
+                                         playheadAgeMs > 500;
             return QJsonObject{
                 {QStringLiteral("ok"), true},
                 {QStringLiteral("pid"), static_cast<qint64>(QCoreApplication::applicationPid())},
                 {QStringLiteral("current_frame"), m_fastCurrentFrame.load()},
-                {QStringLiteral("playback_active"), m_fastPlaybackActive.load()},
+                {QStringLiteral("playback_active"), playbackTimerActive && !playbackStalled},
+                {QStringLiteral("playback_timer_active"), playbackTimerActive},
+                {QStringLiteral("playback_stalled"), playbackStalled},
                 {QStringLiteral("main_thread_heartbeat_ms"), heartbeatMs},
                 {QStringLiteral("main_thread_heartbeat_age_ms"), heartbeatMs > 0 ? now - heartbeatMs : -1},
                 {QStringLiteral("last_playhead_advance_ms"), playheadMs},
-                {QStringLiteral("last_playhead_advance_age_ms"), playheadMs > 0 ? now - playheadMs : -1},
+                {QStringLiteral("last_playhead_advance_age_ms"), playheadAgeMs},
                 {QStringLiteral("startup_readiness"), startupReadinessSnapshot()}};
         },
         [this]() {

@@ -60,6 +60,44 @@ bool restVulkanDiagnosticsModeEnabled()
            value == QStringLiteral("on");
 }
 
+QString resolveStatePath(const QString& path, const QString& rootPath)
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty() || !QFileInfo(trimmed).isRelative()) {
+        return path;
+    }
+    const QString basePath = rootPath.trimmed().isEmpty() ? QDir::currentPath() : rootPath;
+    return QFileInfo(QDir(basePath).filePath(trimmed)).absoluteFilePath();
+}
+
+void resolveClipStatePaths(TimelineClip* clip, const QString& rootPath)
+{
+    if (!clip) {
+        return;
+    }
+    clip->filePath = resolveStatePath(clip->filePath, rootPath);
+    clip->proxyPath = resolveStatePath(clip->proxyPath, rootPath);
+    clip->audioSourcePath = resolveStatePath(clip->audioSourcePath, rootPath);
+    clip->audioSourceOriginalPath = resolveStatePath(clip->audioSourceOriginalPath, rootPath);
+}
+
+QJsonObject resolveClipStateObjectPaths(QJsonObject obj, const QString& rootPath)
+{
+    const QStringList pathKeys = {
+        QStringLiteral("filePath"),
+        QStringLiteral("proxyPath"),
+        QStringLiteral("audioSourcePath"),
+        QStringLiteral("audioSourceOriginalPath"),
+    };
+    for (const QString& key : pathKeys) {
+        const QString path = obj.value(key).toString();
+        if (!path.isEmpty()) {
+            obj[key] = resolveStatePath(path, rootPath);
+        }
+    }
+    return obj;
+}
+
 }
 
 bool EditorWindow::syncSpeakersPlayheadForAutomation()
@@ -912,6 +950,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     if (rootPath.isEmpty()) {
         rootPath = root.value(QStringLiteral("explorerRoot")).toString(defaultRootPath);
     }
+    if (!rootPath.isEmpty() && QFileInfo(rootPath).isRelative() && !defaultRootPath.isEmpty()) {
+        rootPath = QDir(defaultRootPath).filePath(rootPath);
+    }
     if (rootPath.isEmpty() || !QDir(rootPath).exists()) {
         rootPath = QDir::currentPath();
     }
@@ -1252,7 +1293,8 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     for (const QJsonValue &value : clips)
     {
         if (!value.isObject()) continue;
-        TimelineClip clip = clipFromJson(value.toObject());
+        TimelineClip clip = clipFromJson(resolveClipStateObjectPaths(value.toObject(), rootPath));
+        resolveClipStatePaths(&clip, rootPath);
         if (clip.trackIndex < 0) clip.trackIndex = loadedClips.size();
         if (!clip.filePath.isEmpty() || clip.mediaType == ClipMediaType::Title)
             loadedClips.push_back(clip);

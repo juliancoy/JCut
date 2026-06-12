@@ -1,6 +1,8 @@
 #include "editor_shared_media.h"
 #include "debug_controls.h"
 
+#include <QFile>
+
 bool zeroCopyInteropEnvironmentDetected()
 {
 #if defined(Q_OS_LINUX)
@@ -16,7 +18,6 @@ bool zeroCopyInteropEnvironmentDetected()
 #include <QDir>
 #include <QDirIterator>
 #include <QElapsedTimer>
-#include <QFile>
 #include <QFileInfo>
 #include <QHash>
 #include <QImage>

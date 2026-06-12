@@ -71,6 +71,37 @@ bool sanitizeHistoryEntriesInPlace(QJsonArray* entries)
     return changed;
 }
 
+QString relativeStatePath(const QString& path, const QString& rootPath)
+{
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty() || QFileInfo(trimmed).isRelative() || rootPath.trimmed().isEmpty()) {
+        return path;
+    }
+
+    const QDir rootDir(rootPath);
+    if (!rootDir.exists()) {
+        return path;
+    }
+
+    const QString relative = rootDir.relativeFilePath(QFileInfo(trimmed).absoluteFilePath());
+    if (relative.isEmpty() ||
+        relative == QStringLiteral(".") ||
+        relative.startsWith(QStringLiteral("../")) ||
+        relative == QStringLiteral("..")) {
+        return path;
+    }
+    return QDir::cleanPath(relative);
+}
+
+TimelineClip clipWithRelativeStatePaths(TimelineClip clip, const QString& rootPath)
+{
+    clip.filePath = relativeStatePath(clip.filePath, rootPath);
+    clip.proxyPath = relativeStatePath(clip.proxyPath, rootPath);
+    clip.audioSourcePath = relativeStatePath(clip.audioSourcePath, rootPath);
+    clip.audioSourceOriginalPath = relativeStatePath(clip.audioSourceOriginalPath, rootPath);
+    return clip;
+}
+
 } // namespace
 
 void EditorWindow::scheduleDeferredHistoryLoad(const QString& projectId)
@@ -603,7 +634,7 @@ QJsonObject EditorWindow::buildStateJson() const
     {
         for (const TimelineClip &clip : m_timeline->clips())
         {
-            QJsonObject clipObj = clipToJson(clip);
+            QJsonObject clipObj = clipToJson(clipWithRelativeStatePaths(clip, mediaRoot));
             // Keep project state lightweight: dense facial tracking keyframes live in transcript facedetections sidecars.
             clipObj.remove(QStringLiteral("speakerFramingKeyframes"));
             timeline.push_back(clipObj);

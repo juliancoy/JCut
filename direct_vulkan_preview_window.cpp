@@ -2204,7 +2204,8 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                 decoderReadbackCandidate.size = handoffResult.size;
                 decoderReadbackCandidate.format = handoffResult.format;
             }
-            if (canDrawTexture && sampledFrameReady) {
+            const bool statusHasDrawableFrame = status && status->hasFrame;
+            if (canDrawTexture && sampledFrameReady && statusHasDrawableFrame) {
                 if (DirectVulkanPreviewStats* stats = m_owner->stats()) {
                     ++stats->textureDraws;
                     ++stats->activeClipDraws;
@@ -2315,6 +2316,11 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                     ++stats->explicitFailureDraws;
                     if (handoffAttempted && !sampledFrameReady) {
                         stats->lastHandoffMode = QStringLiteral("attempted_not_sampled");
+                    } else if (sampledFrameReady && !statusHasDrawableFrame) {
+                        stats->lastHandoffMode = QStringLiteral("stale_sampled_resource_rejected");
+                        stats->lastHandoffError = status && !status->missingReason.isEmpty()
+                            ? status->missingReason
+                            : QStringLiteral("Retained Vulkan sampled image ignored because the active frame has no drawable payload.");
                     } else if (!status) {
                         stats->lastHandoffMode = QStringLiteral("decode_status_missing");
                         stats->lastHandoffError = QStringLiteral("No Vulkan decode status exists for the active clip.");

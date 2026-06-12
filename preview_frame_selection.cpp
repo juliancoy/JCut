@@ -15,6 +15,49 @@ bool heldFrameMatches(const FrameHandle& heldFrame, int64_t frameNumber, int64_t
            std::llabs(heldFrame.frameNumber() - frameNumber) <= maxDelta;
 }
 
+bool heldFrameIsBetterThanSelection(const FrameHandle& heldFrame,
+                                    const FrameHandle& selectedFrame,
+                                    int64_t frameNumber)
+{
+    if (heldFrame.isNull()) {
+        return false;
+    }
+    if (selectedFrame.isNull()) {
+        return true;
+    }
+    if (selectedFrame.frameNumber() < 0 || heldFrame.frameNumber() < 0) {
+        return false;
+    }
+    return std::llabs(heldFrame.frameNumber() - frameNumber) <
+           std::llabs(selectedFrame.frameNumber() - frameNumber);
+}
+
+void selectHeldFrame(PreviewFrameSelectionResult* result, const FrameHandle& heldFrame)
+{
+    if (!result) {
+        return;
+    }
+    result->frame = heldFrame;
+    result->selectedPresentation = false;
+    result->selectedExact = false;
+    result->selectedApproximate = false;
+    result->selectedHeld = true;
+    result->selection = QStringLiteral("held");
+}
+
+void selectPlaybackFallbackFrame(PreviewFrameSelectionResult* result, const FrameHandle& frame)
+{
+    if (!result) {
+        return;
+    }
+    result->frame = frame;
+    result->selectedPresentation = false;
+    result->selectedExact = false;
+    result->selectedApproximate = true;
+    result->selectedHeld = true;
+    result->selection = QStringLiteral("playback_fallback");
+}
+
 void markCacheSelection(PreviewFrameSelectionResult* result,
                         bool playing,
                         const FrameHandle& exactFrame)
@@ -114,10 +157,12 @@ PreviewFrameSelectionResult selectPreviewFrame(
     if (request.usePlaybackPipeline && playbackPipeline && result.frame.isNull()) {
         result.frame = !result.exactFrame.isNull()
                            ? result.exactFrame
-                           : (request.playing
-                                  ? FrameHandle()
-                                  : playbackPipeline->getBestFrame(request.clipId, request.frameNumber));
-        markCacheSelection(&result, false, result.exactFrame);
+                           : playbackPipeline->getBestFrame(request.clipId, request.frameNumber);
+        if (request.playing && result.exactFrame.isNull() && !result.frame.isNull()) {
+            selectPlaybackFallbackFrame(&result, result.frame);
+        } else {
+            markCacheSelection(&result, false, result.exactFrame);
+        }
     }
 
     if (request.usePlaybackPipeline && result.frame.isNull() && cache) {
@@ -130,11 +175,12 @@ PreviewFrameSelectionResult selectPreviewFrame(
         markCacheSelection(&result, request.playing, cacheExact);
     }
 
-    if (request.usePlaybackPipeline && result.frame.isNull() &&
-        heldFrameMatches(heldFrame, request.frameNumber, request.maxHeldFrameDelta)) {
-        result.frame = heldFrame;
-        result.selectedHeld = true;
-        result.selection = QStringLiteral("held");
+    if (request.usePlaybackPipeline &&
+        !result.selectedPresentation &&
+        !result.selectedExact &&
+        heldFrameMatches(heldFrame, request.frameNumber, request.maxHeldFrameDelta) &&
+        heldFrameIsBetterThanSelection(heldFrame, result.frame, request.frameNumber)) {
+        selectHeldFrame(&result, heldFrame);
     }
 
     if (stalePredicate && stalePredicate(result.frame)) {
@@ -147,9 +193,7 @@ PreviewFrameSelectionResult selectPreviewFrame(
         result.selectedHeld = false;
         if (heldFrameMatches(heldFrame, request.frameNumber, request.maxHeldFrameDelta) &&
             !stalePredicate(heldFrame)) {
-            result.frame = heldFrame;
-            result.selectedHeld = true;
-            result.selection = QStringLiteral("held");
+            selectHeldFrame(&result, heldFrame);
         }
     }
 

@@ -484,8 +484,15 @@ void TestDirectVulkanHandoffPipelineContract::
            "cadence");
   QVERIFY2(playbackDebugControls.contains(
                QStringLiteral("defaults.decodePreference = DecodePreference::Hardware;")),
-           "direct Vulkan preview must default to materialized hardware decode "
-           "rather than fragile hardware-zero-copy interop");
+           "project defaults should stay on portable hardware decode; the "
+           "direct Vulkan surface applies its own zero-copy preview override");
+
+  const QString vulkanSurface =
+      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
+  QVERIFY2(vulkanSurface.contains(QStringLiteral("DecodePreference::HardwareZeroCopy")) &&
+               vulkanSurface.contains(QStringLiteral("m_forcedPreviewDecodePreference = true")),
+           "direct Vulkan preview must force zero-copy handles for playback "
+           "instead of materializing every frame as a CPU image");
 
   const QString decoder = readSourceFile(QStringLiteral("async_decoder.cpp"));
   QVERIFY2(!decoder.isEmpty(), "async_decoder.cpp must be readable");
@@ -573,8 +580,6 @@ void TestDirectVulkanHandoffPipelineContract::
            "preview decode retention must be driven by the editor playback "
            "speed source of truth");
 
-  const QString vulkanSurface =
-      readSourceFile(QStringLiteral("vulkan_preview_surface.cpp"));
   QVERIFY2(vulkanSurface.contains(
                QStringLiteral("m_cache->setPlaybackSpeed(m_playbackSpeed)")),
            "Vulkan preview cache must receive the current playback speed");
@@ -616,9 +621,9 @@ void TestDirectVulkanHandoffPipelineContract::
                !inspectorTabs.contains(QStringLiteral("hardware_zero_copy")),
            "interactive decode controls must not expose hardware-zero-copy");
   QVERIFY2(debugControls.contains(
-               QStringLiteral("*preferenceOut = DecodePreference::Hardware;")),
-           "legacy hardware-zero-copy state must be normalized to hardware "
-           "decode instead of restoring the black-frame path");
+               QStringLiteral("*preferenceOut = DecodePreference::HardwareZeroCopy;")),
+           "explicit hardware-zero-copy state must survive parsing so direct "
+           "Vulkan playback can request hardware frame handles");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

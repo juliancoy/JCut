@@ -42,6 +42,8 @@ bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& 
     }
     const bool playbackActive = fastSnapshot.value(QStringLiteral("playback_active")).toBool(false);
     const qint64 fastCurrentFrame = fastSnapshot.value(QStringLiteral("current_frame")).toInteger(0);
+    const bool statePlaying = snapshot.value(QStringLiteral("playing")).toBool(false);
+    const qint64 stateCurrentFrame = snapshot.value(QStringLiteral("currentFrame")).toInteger(0);
     const QJsonArray timeline = snapshot.value(QStringLiteral("timeline")).toArray();
     const QString selectedClipId = snapshot.value(QStringLiteral("selectedClipId")).toString().trimmed();
     if ((playbackActive || fastCurrentFrame > 0) && timeline.isEmpty()) {
@@ -49,6 +51,14 @@ bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& 
     }
     if (!timeline.isEmpty() && selectedClipId.isEmpty() && playbackActive) {
         return false;
+    }
+    if (playbackActive) {
+        if (!statePlaying) {
+            return false;
+        }
+        if (qAbs(stateCurrentFrame - fastCurrentFrame) > 2) {
+            return false;
+        }
     }
     return true;
 }
@@ -490,7 +500,8 @@ bool ControlServerWorker::handlePlayhead(QTcpSocket* socket, const Request& requ
 
 bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& request) {
     const auto ensureUsableStateSnapshot = [this](QString* errorOut) {
-        if (stateSnapshotLooksCoherent(m_lastStateSnapshot, fastSnapshot())) {
+        const QJsonObject fast = fastSnapshot();
+        if (stateSnapshotLooksCoherent(m_lastStateSnapshot, fast)) {
             return true;
         }
         QString refreshError;
@@ -503,7 +514,8 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
                 ? QStringLiteral("state snapshot unavailable; cache warming")
                 : refreshError;
         }
-        return !m_lastStateSnapshot.isEmpty();
+        return !fast.value(QStringLiteral("playback_active")).toBool(false) &&
+               !m_lastStateSnapshot.isEmpty();
     };
 
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/state")) {
@@ -533,10 +545,10 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
         m_lastStateSnapshotMs = QDateTime::currentMSecsSinceEpoch();
 
         ++m_stateSnapshotServedCachedCount;
-        writeJson(socket, 200, QJsonObject{
-            {QStringLiteral("ok"), true},
-            {QStringLiteral("state"), state}
-        });
+        QJsonObject response = state;
+        response[QStringLiteral("ok")] = true;
+        response[QStringLiteral("state")] = state;
+        writeJson(socket, 200, response);
         return true;
     }
 

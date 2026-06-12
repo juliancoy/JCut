@@ -79,6 +79,7 @@ private slots:
     void strictPayloadRequirementRejectsCpuFrames();
     void selectionUsesBoundedPriorHardwareFrameDuringPlayback();
     void staleApproximateSelectionFallsBackToHeldFrame();
+    void heldFrameBeatsOlderApproximatePlaybackFallback();
     void stalePlaybackFramePredicateBoundsApproximatePresentation();
 };
 
@@ -255,6 +256,44 @@ void TestStandardPreviewPresentationPipeline::staleApproximateSelectionFallsBack
     QCOMPARE(selection.frame.frameNumber(), static_cast<int64_t>(108));
     QVERIFY(selection.selectedHeld);
     QVERIFY(selection.rejectedStale);
+    QCOMPARE(selection.selection, QStringLiteral("held"));
+}
+
+void TestStandardPreviewPresentationPipeline::heldFrameBeatsOlderApproximatePlaybackFallback()
+{
+    AsyncDecoder decoder;
+    MemoryBudget budget;
+    TimelineCache cache(&decoder, &budget);
+    cache.setPlaybackState(TimelineCache::PlaybackState::Playing);
+    const TimelineClip clip = makeClip(QStringLiteral("clip-held-priority"), QStringLiteral("/tmp/held-priority.mp4"));
+    cache.registerClip(clip);
+
+    const FrameHandle olderCachedFrame = makeHardwareFrame(100, clip.filePath);
+    const FrameHandle heldFrame = makeHardwareFrame(118, clip.filePath);
+    QVERIFY(!olderCachedFrame.isNull());
+    QVERIFY(!heldFrame.isNull());
+    decoder.frameReady(olderCachedFrame);
+
+    const PreviewFrameSelectionResult selection = selectPreviewFrame(
+        PreviewFrameSelectionRequest{
+            clip.id,
+            120,
+            true,
+            true,
+            false,
+            true,
+            false,
+            false,
+            8,
+        },
+        &cache,
+        nullptr,
+        heldFrame,
+        rejectCpuOnlyPayload);
+
+    QVERIFY(!selection.frame.isNull());
+    QCOMPARE(selection.frame.frameNumber(), static_cast<int64_t>(118));
+    QVERIFY(selection.selectedHeld);
     QCOMPARE(selection.selection, QStringLiteral("held"));
 }
 

@@ -52,6 +52,8 @@ bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& 
     }
     const bool playbackActive = fastSnapshot.value(QStringLiteral("playback_active")).toBool(false);
     const qint64 fastCurrentFrame = fastSnapshot.value(QStringLiteral("current_frame")).toInteger(0);
+    const bool statePlaying = snapshot.value(QStringLiteral("playing")).toBool(false);
+    const qint64 stateCurrentFrame = snapshot.value(QStringLiteral("currentFrame")).toInteger(0);
     const QJsonArray timeline = snapshot.value(QStringLiteral("timeline")).toArray();
     const QString selectedClipId = snapshot.value(QStringLiteral("selectedClipId")).toString().trimmed();
     if ((playbackActive || fastCurrentFrame > 0) && timeline.isEmpty()) {
@@ -59,6 +61,14 @@ bool stateSnapshotLooksCoherent(const QJsonObject& snapshot, const QJsonObject& 
     }
     if (!timeline.isEmpty() && selectedClipId.isEmpty() && playbackActive) {
         return false;
+    }
+    if (playbackActive) {
+        if (!statePlaying) {
+            return false;
+        }
+        if (qAbs(stateCurrentFrame - fastCurrentFrame) > 2) {
+            return false;
+        }
     }
     return true;
 }

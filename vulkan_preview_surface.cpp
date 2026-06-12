@@ -168,6 +168,10 @@ VulkanPreviewSurface::VulkanPreviewSurface(QWidget* parent)
     m_playbackTuning.proxyLookaheadFrames = kDefaultVulkanPreviewProxyLookaheadFrames;
     m_configuredPlaybackTuning = m_playbackTuning;
     m_previousDecodePreference = editor::debugDecodePreference();
+    if (m_previousDecodePreference == editor::DecodePreference::Hardware) {
+        editor::setDebugDecodePreference(editor::DecodePreference::HardwareZeroCopy);
+        m_forcedPreviewDecodePreference = true;
+    }
     m_presenter = std::make_unique<DirectVulkanPreviewPresenter>(&m_interaction, parent);
     if (!m_presenter->isActive()) {
         m_failureReason = m_presenter->failureReason();
@@ -1341,7 +1345,7 @@ void VulkanPreviewSurface::refreshVulkanFrameStatuses()
             editor::previewMaxPlaybackStaleFrameDelta(resolvedSourceFps(clip));
         const int64_t maxHeldFrameDelta = m_interaction.playing
             ? qMax<int64_t>(maxStaleFrameDelta,
-                            static_cast<int64_t>(std::ceil(resolvedSourceFps(clip) * 2.0)))
+                            static_cast<int64_t>(std::ceil(resolvedSourceFps(clip) * 4.0)))
             : -1;
         const bool usePlaybackPipeline = m_interaction.playing && m_playbackPipeline;
         const FrameHandle heldFrame = usePlaybackPipeline

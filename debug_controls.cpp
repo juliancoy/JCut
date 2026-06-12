@@ -146,7 +146,7 @@ bool parseDebugLogLevel(const QString& text, DebugLogLevel* levelOut) {
 QString decodePreferenceToString(DecodePreference preference) {
     switch (preference) {
     case DecodePreference::Auto: return QStringLiteral("auto");
-    case DecodePreference::HardwareZeroCopy: return QStringLiteral("hardware");
+    case DecodePreference::HardwareZeroCopy: return QStringLiteral("hardware_zero_copy");
     case DecodePreference::Hardware: return QStringLiteral("hardware");
     case DecodePreference::Software: return QStringLiteral("software");
     }
@@ -166,7 +166,7 @@ bool parseDecodePreference(const QString& text, DecodePreference* preferenceOut)
         normalized == QStringLiteral("zero_copy") ||
         normalized == QStringLiteral("zerocopy") ||
         normalized == QStringLiteral("cuda_gl")) {
-        *preferenceOut = DecodePreference::Hardware;
+        *preferenceOut = DecodePreference::HardwareZeroCopy;
         return true;
     }
     if (normalized == QStringLiteral("hardware") ||
