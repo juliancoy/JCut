@@ -167,6 +167,8 @@ def resolve_editor_path(asan: bool) -> Path:
     build_dir = REPO_ROOT / ("build-asan" if asan else "build")
     for candidate in (
         build_dir / "jcut",
+        # macOS bundle layout (MACOSX_BUNDLE TRUE in CMakeLists).
+        build_dir / "jcut.app" / "Contents" / "MacOS" / "jcut",
         build_dir / "editor",
         build_dir / "bin" / "editor",
         build_dir / "bin" / "jcut",
