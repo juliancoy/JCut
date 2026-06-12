@@ -197,6 +197,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/CPPMonetize/CMakeLists.txt")
     set(CPPMONETIZE_BUILD_TESTS OFF CACHE BOOL
         "Build CPPMonetize tests when CPPMonetize is embedded in JCut." FORCE)
     add_subdirectory(external/CPPMonetize EXCLUDE_FROM_ALL)
+    if(EDITOR_BUILD_TESTS AND TARGET cppmonetize_tests AND TARGET cppmonetize_oauth_tests)
+        # The subproject registers these tests via include(CTest)/BUILD_TESTING
+        # (it ignores CPPMONETIZE_BUILD_TESTS), but the directory is added
+        # EXCLUDE_FROM_ALL, so ctest listed binaries that were never built
+        # ("Not Run"). Build them with the rest of the suite; both are
+        # millisecond network-free unit tests.
+        set_target_properties(cppmonetize_tests cppmonetize_oauth_tests
+            PROPERTIES EXCLUDE_FROM_ALL FALSE)
+    endif()
 endif()
 
 set(JCUT_HAVE_NCNN 0)
