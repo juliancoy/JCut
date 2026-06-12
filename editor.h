@@ -283,7 +283,8 @@ private:
     bool shouldUseAudioMasterClock() const;
     qreal effectiveAudioWarpRate() const;
     bool needsPitchPreservingPlaybackAudio() const;
-    void reconcileActivePlaybackAudioState();
+    void updateAudioDriftRetime(bool reset = false);
+    void reconcileActivePlaybackAudioState(bool alignRunningAudioToPlayhead = false);
     void requestPlaybackAudioWarmup(bool startWhenReady);
     void updatePlaybackStatusOverlay();
     void updatePlaybackTimerInterval();
@@ -659,6 +660,7 @@ private:
     bool m_retimingAudioForPlayback = false;
     bool m_startPlaybackAfterAudioWarmup = false;
     int m_playbackAudioWarmupRequestId = 0;
+    qreal m_audioDriftRetimeMultiplier = 1.0;
     double m_timelineAdvanceCarrySamples = 0.0;
     int64_t m_lastTimelineAdvanceTickMs = 0;
     QTimer m_transcriptClickSeekTimer;

@@ -667,21 +667,11 @@ bool shouldUseAudioMasterClock(PlaybackClockSource source,
                                PlaybackAudioWarpMode mode,
                                qreal playbackSpeed,
                                bool hasPlayableAudio) {
-    if (!hasPlayableAudio) {
-        return false;
-    }
-    const PlaybackAudioWarpMode effectiveMode =
-        normalizedPlaybackAudioWarpMode(playbackSpeed, mode);
-    const bool speedIsUnity = qAbs(normalizedPlaybackSpeed(playbackSpeed) - 1.0) < 0.0001;
-    switch (source) {
-    case PlaybackClockSource::Audio:
-        return speedIsUnity || effectiveMode != PlaybackAudioWarpMode::Disabled;
-    case PlaybackClockSource::Timeline:
-        return effectiveMode == PlaybackAudioWarpMode::TimeStretch;
-    case PlaybackClockSource::Auto:
-    default:
-        return speedIsUnity || effectiveMode != PlaybackAudioWarpMode::Disabled;
-    }
+    (void)source;
+    (void)mode;
+    (void)playbackSpeed;
+    (void)hasPlayableAudio;
+    return false;
 }
 
 bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,

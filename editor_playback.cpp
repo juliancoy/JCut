@@ -61,14 +61,16 @@ void EditorWindow::advanceFrame()
                 << QStringLiteral("[PLAYBACK WARN] pitch-preserving playback held: %1")
                        .arg(reason);
         }
-        requestPlaybackAudioWarmup(true);
+        requestPlaybackAudioWarmup(false);
     };
     const bool audioBlocked =
         pitchPreservingAudioRequired && m_audioEngine && m_audioEngine->playbackAudioBlocked();
     const bool audioReady =
         !pitchPreservingAudioRequired ||
         (m_audioEngine && m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame()));
-    if (shouldHoldForPitchPreservingAudio(m_playbackAudioWarpMode,
+    const bool audioMasterEnabled = shouldUseAudioMasterClock();
+    if (audioMasterEnabled &&
+        shouldHoldForPitchPreservingAudio(m_playbackAudioWarpMode,
                                           m_playbackSpeed,
                                           m_audioEngine && m_audioEngine->hasPlayableAudio(),
                                           audioBlocked,
@@ -79,7 +81,6 @@ void EditorWindow::advanceFrame()
         return;
     }
 
-    const bool audioMasterEnabled = shouldUseAudioMasterClock();
     const bool audioClockAvailable = m_audioEngine && m_audioEngine->audioClockAvailable();
     const bool hasPlayableAudio = m_audioEngine && m_audioEngine->hasPlayableAudio();
     if (audioMasterEnabled && audioClockAvailable && hasPlayableAudio) {
@@ -123,19 +124,20 @@ void EditorWindow::advanceFrame()
             audioSample = rangedSample;
         }
 
-        const PlaybackClockDecision clockDecision = evaluatePlaybackClock(PlaybackClockInput{
-            pitchPreservingAudioRequired,
-            audioMasterEnabled,
-            audioClockAvailable,
-            hasPlayableAudio,
-            audioBlocked,
-            audioReady,
-            audioSample,
-            m_timeline->currentFrame(),
-            m_timeline->totalFrames(),
-            m_audioClockStallTicks + 1,
-            m_audioClockStallThresholdTicks,
-        });
+        PlaybackClockInput clockInput;
+        clockInput.pitchPreservingAudioRequired = pitchPreservingAudioRequired;
+        clockInput.audioMasterEnabled = audioMasterEnabled;
+        clockInput.audioClockAvailable = audioClockAvailable;
+        clockInput.hasPlayableAudio = hasPlayableAudio;
+        clockInput.audioBlocked = audioBlocked;
+        clockInput.audioReady = audioReady;
+        clockInput.transportSample = m_absolutePlaybackSample;
+        clockInput.audioSample = audioSample;
+        clockInput.currentFrame = m_timeline->currentFrame();
+        clockInput.totalFrames = m_timeline->totalFrames();
+        clockInput.audioClockStallTicks = m_audioClockStallTicks + 1;
+        clockInput.audioClockStallThresholdTicks = m_audioClockStallThresholdTicks;
+        const PlaybackClockDecision clockDecision = evaluatePlaybackClock(clockInput);
 
         switch (clockDecision.action) {
         case PlaybackClockAction::HoldForPitchPreservingAudio:
@@ -164,6 +166,21 @@ void EditorWindow::advanceFrame()
                 m_preview->preparePlaybackAdvanceSample(clockDecision.sample);
             }
             setCurrentPlaybackSample(clockDecision.sample, false, true);
+            updateAudioDriftRetime(true);
+            return;
+        case PlaybackClockAction::UseTransportSample:
+            editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
+                                          0,
+                                          1,
+                                          0,
+                                          QStringLiteral("monotonic_transport"),
+                                          clockDecision.reason);
+            if (m_preview) {
+                m_preview->setCurrentPlaybackSample(clockDecision.sample);
+                m_preview->preparePlaybackAdvanceSample(clockDecision.sample);
+            }
+            setCurrentPlaybackSample(clockDecision.sample, false, true);
+            updateAudioDriftRetime();
             return;
         case PlaybackClockAction::UseTimelineTimer:
             editor::accumulatePlaybackStageMetric(&m_playbackClockStageMetric,
@@ -204,10 +221,10 @@ void EditorWindow::advanceFrame()
                                   0,
                                   1,
                                   0,
-                                  QStringLiteral("timeline_timer"),
+                                  QStringLiteral("monotonic_transport"),
                                   forceTimelineTimerFallback
                                       ? QStringLiteral("forced_timeline_fallback")
-                                      : QStringLiteral("timeline_timer"));
+                                      : QStringLiteral("monotonic_transport"));
     if (forceTimelineTimerFallback) {
         // Preserve temporal continuity when abandoning audio clock for this tick.
         m_lastTimelineAdvanceTickMs = tickNowMs;
@@ -257,6 +274,7 @@ void EditorWindow::advanceFrame()
         m_preview->preparePlaybackAdvance(nextFrame);
     }
     setCurrentPlaybackSample(nextSample, false, true);
+    updateAudioDriftRetime();
     if (reachedEnd) {
         stopPlaybackWithReason(QStringLiteral("range_end"));
     }
@@ -307,7 +325,18 @@ int64_t EditorWindow::absolutePlaybackSampleForFilteredSample(int64_t filteredSa
 
 int64_t EditorWindow::playbackSampleForAudioClockSample(int64_t audioClockSample) const
 {
-    return editor::audioMasterClockSampleToTimelineSample(audioClockSample);
+    const int64_t clampedAudioSample =
+        editor::audioMasterClockSampleToTimelineSample(audioClockSample);
+    const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
+    if (ranges.isEmpty()) {
+        return clampedAudioSample;
+    }
+
+    const int64_t anchorAbsoluteSample = qMax<int64_t>(0, m_playbackAudioClockAnchorAbsoluteSample);
+    const int64_t anchorFilteredSample = filteredPlaybackSampleForAbsoluteSample(anchorAbsoluteSample);
+    const int64_t audibleElapsedSamples =
+        qMax<int64_t>(0, clampedAudioSample - anchorAbsoluteSample);
+    return absolutePlaybackSampleForFilteredSample(anchorFilteredSample + audibleElapsedSamples);
 }
 
 QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
@@ -897,15 +926,24 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
         }
     }
 
+    const bool activePlaybackReconfigured =
+        playbackActive() && (speedChanged || clockChanged || warpChanged);
+    if (activePlaybackReconfigured && m_timeline) {
+        m_timelineAdvanceCarrySamples = 0.0;
+        m_lastTimelineAdvanceTickMs = nowMs();
+        m_playbackAudioClockAnchorAbsoluteSample = frameToSamples(m_timeline->currentFrame());
+    }
+
     if (m_audioEngine) {
         m_audioEngine->setPlaybackWarpMode(normalizedWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
         m_audioEngine->setTranscriptNormalizeEnabled(
             m_previewAudioDynamics.transcriptNormalizeEnabled);
         m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
     }
     updatePlaybackTimerInterval();
-    reconcileActivePlaybackAudioState();
+    reconcileActivePlaybackAudioState(activePlaybackReconfigured);
     updateTransportLabels();
     if (!m_loadingState) {
         scheduleSaveState();
@@ -958,15 +996,49 @@ void EditorWindow::setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode)
 
 bool EditorWindow::shouldUseAudioMasterClock() const
 {
-    return ::shouldUseAudioMasterClock(m_playbackClockSource,
-                                       m_playbackAudioWarpMode,
-                                       m_playbackSpeed,
-                                       m_audioEngine && m_audioEngine->hasPlayableAudio());
+    return false;
 }
 
 qreal EditorWindow::effectiveAudioWarpRate() const
 {
     return effectivePlaybackAudioWarpRate(m_playbackSpeed, m_playbackAudioWarpMode);
+}
+
+void EditorWindow::updateAudioDriftRetime(bool reset)
+{
+    if (!m_audioEngine) {
+        m_audioDriftRetimeMultiplier = 1.0;
+        return;
+    }
+
+    qreal nextMultiplier = 1.0;
+    if (!reset &&
+        playbackActive() &&
+        !shouldUseAudioMasterClock() &&
+        m_audioEngine->playbackStarted() &&
+        m_audioEngine->audioClockAvailable() &&
+        m_audioEngine->hasPlayableAudio()) {
+        const int64_t audioSample = playbackSampleForAudioClockSample(
+            qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        nextMultiplier = editor::evaluatePlaybackDriftRetimeMultiplier(
+            editor::PlaybackDriftRetimeInput{
+                true,
+                m_absolutePlaybackSample - audioSample,
+                m_audioDriftRetimeMultiplier,
+            });
+    } else {
+        nextMultiplier = editor::evaluatePlaybackDriftRetimeMultiplier(
+            editor::PlaybackDriftRetimeInput{
+                false,
+                0,
+                m_audioDriftRetimeMultiplier,
+            });
+    }
+
+    if (qAbs(nextMultiplier - m_audioDriftRetimeMultiplier) >= 0.0001) {
+        m_audioDriftRetimeMultiplier = nextMultiplier;
+        m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
+    }
 }
 
 bool EditorWindow::needsPitchPreservingPlaybackAudio() const
@@ -977,7 +1049,7 @@ bool EditorWindow::needsPitchPreservingPlaybackAudio() const
                                                    m_audioEngine->hasPlayableAudio());
 }
 
-void EditorWindow::reconcileActivePlaybackAudioState()
+void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPlayhead)
 {
     if (!playbackActive() || !m_audioEngine || !m_timeline) {
         return;
@@ -993,14 +1065,41 @@ void EditorWindow::reconcileActivePlaybackAudioState()
     if (shouldRunAudio) {
         m_audioEngine->setPlaybackWarpMode(runtimeWarpMode);
         m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+        m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
         m_audioEngine->setTranscriptNormalizeEnabled(
             m_previewAudioDynamics.transcriptNormalizeEnabled);
         m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
-        if (!audioStarted) {
+        if (audioStarted && alignRunningAudioToPlayhead) {
+            const int64_t currentFrame = m_timeline->currentFrame();
+            const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
+            if (needsPitchPreservingAudio &&
+                !m_audioEngine->playbackAudioReadyForFrame(currentFrame)) {
+                m_audioEngine->stop();
+                updateAudioDriftRetime(true);
+                requestPlaybackAudioWarmup(false);
+                return;
+            }
+            if (!needsPitchPreservingAudio &&
+                !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
+                                               effectiveAudioWarpRate(),
+                                               needsPitchPreservingAudio) &&
+                !m_audioEngine->warmPlaybackAudio(
+                    currentFrame,
+                    qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
+                if (shouldUseAudioMasterClock()) {
+                    stopPlaybackWithReason(QStringLiteral("audio_not_ready"));
+                    return;
+                }
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] continuing timeline-clock playback without warmed audio at frame %1")
+                           .arg(currentFrame);
+            }
+            m_audioEngine->seek(currentFrame);
+        } else if (!audioStarted) {
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
                 !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
-                requestPlaybackAudioWarmup(true);
+                requestPlaybackAudioWarmup(false);
                 return;
             }
             if (!needsPitchPreservingAudio &&
@@ -1021,6 +1120,7 @@ void EditorWindow::reconcileActivePlaybackAudioState()
             m_audioEngine->start(m_timeline->currentFrame());
         }
     } else if (audioStarted) {
+        updateAudioDriftRetime(true);
         m_audioEngine->stop();
     }
 }
@@ -1041,7 +1141,7 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
         return;
     }
 
-    if (playbackActive()) {
+    if (playbackActive() && shouldUseAudioMasterClock()) {
         m_lastPlaybackStopReason = QStringLiteral("audio_warmup");
         setPlaybackActive(false);
     }
@@ -1098,6 +1198,8 @@ void EditorWindow::requestPlaybackAudioWarmup(bool startWhenReady)
 
                 if (shouldStart) {
                     setPlaybackActive(true);
+                } else if (playbackActive()) {
+                    reconcileActivePlaybackAudioState(true);
                 }
             });
     watcher->setFuture(QtConcurrent::run([audioEngine, frame, timeoutMs]() {
@@ -1201,9 +1303,34 @@ void EditorWindow::setPlaybackActive(bool playing)
 
     if (playing) {
         m_lastPlaybackStopReason = QStringLiteral("none");
+        m_audioDriftRetimeMultiplier = 1.0;
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = nowMs();
-        m_playbackAudioClockAnchorAbsoluteSample = frameToSamples(m_timeline->currentFrame());
+        const auto ranges = effectivePlaybackRanges();
+        int64_t playbackStartSample = m_absolutePlaybackSample;
+        if (!ranges.isEmpty()) {
+            bool reachedEnd = false;
+            playbackStartSample = playableSampleAtOrAfter(playbackStartSample, ranges, &reachedEnd);
+            if (reachedEnd && m_playbackLoopEnabled) {
+                playbackStartSample = frameToSamples(ranges.constFirst().startFrame);
+            }
+        }
+        playbackStartSample =
+            qBound<int64_t>(0, playbackStartSample, frameToSamples(m_timeline->totalFrames()));
+        const int64_t playbackStartFrame = qBound<int64_t>(
+            0,
+            static_cast<int64_t>(std::floor(samplesToFramePosition(playbackStartSample))),
+            m_timeline->totalFrames());
+        m_absolutePlaybackSample = playbackStartSample;
+        m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(playbackStartSample);
+        m_playbackAudioClockAnchorAbsoluteSample = playbackStartSample;
+        if (m_timeline->currentFrame() != playbackStartFrame) {
+            m_timeline->setCurrentFrame(playbackStartFrame);
+            m_fastCurrentFrame.store(playbackStartFrame);
+        }
+        if (m_preview) {
+            m_preview->setCurrentPlaybackSample(playbackStartSample);
+        }
         if (m_preview) {
             m_playbackVideoWarmupPending = true;
             updateTransportLabels();
@@ -1224,7 +1351,6 @@ void EditorWindow::setPlaybackActive(bool playing)
             updatePlaybackStatusOverlay();
         }
 
-        const auto ranges = effectivePlaybackRanges();
         if (m_audioEngine) {
             m_audioEngine->setExportRanges(ranges);
             m_audioEngine->setTranscriptNormalizeRanges(
@@ -1236,6 +1362,7 @@ void EditorWindow::setPlaybackActive(bool playing)
             m_audioEngine->setPlaybackWarpMode(
                 normalizedPlaybackAudioWarpMode(m_playbackSpeed, m_playbackAudioWarpMode));
             m_audioEngine->setPlaybackRate(effectiveAudioWarpRate());
+            m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
             m_audioEngine->setTranscriptNormalizeEnabled(
                 m_previewAudioDynamics.transcriptNormalizeEnabled);
             m_audioEngine->setAudioDynamicsSettings(m_previewAudioDynamics);
@@ -1247,37 +1374,43 @@ void EditorWindow::setPlaybackActive(bool playing)
             runtimeWarpMode != PlaybackAudioWarpMode::Disabled;
         if (m_audioEngine && m_audioEngine->hasPlayableAudio() && canRunAudioAtRequestedSpeed) {
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
+            bool audioReadyToStart = true;
             if (needsPitchPreservingAudio &&
-                !m_audioEngine->playbackAudioReadyForFrame(m_timeline->currentFrame())) {
-                requestPlaybackAudioWarmup(true);
-                return;
+                !m_audioEngine->playbackAudioReadyForFrame(playbackStartFrame)) {
+                audioReadyToStart = false;
+                requestPlaybackAudioWarmup(false);
+                qWarning().noquote()
+                    << QStringLiteral("[PLAYBACK WARN] continuing transport playback while re-timed audio warms at frame %1")
+                           .arg(playbackStartFrame);
             }
-            if (!needsPitchPreservingAudio &&
+            if (audioReadyToStart && !needsPitchPreservingAudio &&
                 !shouldSkipBlockingAudioWarmup(runtimeWarpMode,
                                                effectiveAudioWarpRate(),
                                                needsPitchPreservingAudio) &&
                 !m_audioEngine->warmPlaybackAudio(
-                    m_timeline->currentFrame(),
+                    playbackStartFrame,
                     qMax(5000, m_playbackStartLookaheadTimeoutMs))) {
                 qWarning().noquote()
                     << QStringLiteral("[PLAYBACK WARN] startup gated: waiting for audio at frame %1 timed out")
-                           .arg(m_timeline->currentFrame());
+                           .arg(playbackStartFrame);
                 if (shouldUseAudioMasterClock()) {
                     updateTransportLabels();
                     return;
                 }
                 qWarning().noquote()
                     << QStringLiteral("[PLAYBACK WARN] continuing timeline-clock playback without warmed audio at frame %1")
-                           .arg(m_timeline->currentFrame());
+                           .arg(playbackStartFrame);
             }
-            m_audioEngine->start(m_timeline->currentFrame());
-            if (!m_startupReadinessAudioStarted.exchange(true)) {
-                startupReadinessMark(QStringLiteral("audio.start.invoked"),
-                                     QJsonObject{{QStringLiteral("frame"),
-                                                  static_cast<qint64>(m_timeline->currentFrame())},
-                                                 {QStringLiteral("warp_mode"),
-                                                  playbackAudioWarpModeToString(runtimeWarpMode)},
-                                                 {QStringLiteral("speed"), m_playbackSpeed}});
+            if (audioReadyToStart) {
+                m_audioEngine->start(playbackStartFrame);
+                if (!m_startupReadinessAudioStarted.exchange(true)) {
+                    startupReadinessMark(QStringLiteral("audio.start.invoked"),
+                                         QJsonObject{{QStringLiteral("frame"),
+                                                      static_cast<qint64>(playbackStartFrame)},
+                                                     {QStringLiteral("warp_mode"),
+                                                      playbackAudioWarpModeToString(runtimeWarpMode)},
+                                                     {QStringLiteral("speed"), m_playbackSpeed}});
+                }
             }
         }
         if (m_preview) {
@@ -1295,6 +1428,7 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_lastTimelineAdvanceTickMs = 0;
         logPlaybackTransitionPhase(QStringLiteral("state_reset"));
         if (m_audioEngine) {
+            updateAudioDriftRetime(true);
             m_audioEngine->stop();
         }
         logPlaybackTransitionPhase(QStringLiteral("audio_stop"));

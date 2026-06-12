@@ -65,6 +65,8 @@ public:
 
   void setPlaybackRate(qreal rate);
 
+  void setPlaybackDriftRetimeRate(qreal rate);
+
   void setTranscriptNormalizeEnabled(bool enabled);
 
   void setTranscriptNormalizeRanges(const QVector<ExportRangeSegment> &ranges);
@@ -434,6 +436,7 @@ private:
   qint64 m_timeStretchPrecomputeRequestCount = 0;
   QString m_lastTimeStretchCacheMissPath;
   std::atomic<qreal> m_playbackRate{1.0};
+  std::atomic<qreal> m_playbackDriftRetimeRate{1.0};
   std::atomic<int> m_playbackWarpMode{
       static_cast<int>(PlaybackAudioWarpMode::Disabled)};
 

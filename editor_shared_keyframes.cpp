@@ -443,7 +443,19 @@ bool streamSampleAtFrame(const TimelineClip& clip,
         if (zoomWindowFrames > 1) {
             zoomSamples.push_back({std::log(sample.boxSizeNorm), lookupFrame, sample.confidence});
         }
-        for (const jcut::facedetections::FacestreamKeyframe& keyframe : stream.keyframes) {
+        const int64_t sampleStartFrame = qMin(centerStartFrame, zoomStartFrame);
+        const int64_t sampleEndFrame = qMax(centerEndFrame, zoomEndFrame);
+        const auto sampleStartIt = std::lower_bound(
+            firstValidIt,
+            stream.keyframes.constEnd(),
+            static_cast<qreal>(sampleStartFrame),
+            [](const jcut::facedetections::FacestreamKeyframe& point, qreal frame) {
+                return point.frame < frame;
+            });
+        for (auto sampleIt = sampleStartIt;
+             sampleIt != stream.keyframes.constEnd() && sampleIt->frame <= sampleEndFrame;
+             ++sampleIt) {
+            const jcut::facedetections::FacestreamKeyframe& keyframe = *sampleIt;
             if (keyframe.frame < 0 || keyframe.frame == lookupFrame || keyframe.box <= 0.0) {
                 continue;
             }
@@ -1559,10 +1571,9 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
         return;
     }
 
-    warmManualContinuityForClip(clip);
-
     const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
     if (transcriptPath.trimmed().isEmpty()) {
+        warmManualContinuityForClip(clip);
         return;
     }
     const std::shared_ptr<const TranscriptRuntimeDocument> runtimeDocument =
@@ -1592,6 +1603,7 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
                 &ignoredLocation,
                 &ignoredBoxSize);
         }
+        warmManualContinuityForClip(clip);
         return;
     }
     const QJsonArray identityMap =
@@ -1617,6 +1629,7 @@ void warmClipSpeakerFramingContinuityRuntimeSync(const TimelineClip& clip)
     for (const QString& speakerId : std::as_const(speakerIds)) {
         warmAssignedContinuityForSpeaker(clip, speakerId);
     }
+    warmManualContinuityForClip(clip);
 }
 
 QString speakerFramingWarmKeyForClip(const TimelineClip& clip)

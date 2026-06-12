@@ -8,7 +8,7 @@
 #include <QMutexLocker>
 
 namespace {
-constexpr int kAssignedContinuityCacheMaxEntries = 16;
+constexpr int kAssignedContinuityCacheMaxEntries = 128;
 
 struct AssignedContinuityStreamsCacheEntry {
     QString revision;

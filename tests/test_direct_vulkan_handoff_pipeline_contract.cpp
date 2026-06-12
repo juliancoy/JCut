@@ -22,6 +22,7 @@ private slots:
   void noProxyHardwarePathIsPrimaryAndHoldsLateFrames();
   void overlayWorkerKeepsNewestCoalescedRequest();
   void facestreamTrackBoxesAreNotBaselinePlaybackWork();
+  void playbackFacestreamOverlaysDoNotColdLoadOnPresentationPath();
   void rendererConsumesLatchedPreviewSnapshot();
   void vulkanTextShaderUsesVulkanFramebufferYConvention();
 };
@@ -776,8 +777,9 @@ void TestDirectVulkanHandoffPipelineContract::
            "playback startup must gate on the exact retimed audio needed at "
            "the current frame");
   QVERIFY2(
-      playback.contains(QStringLiteral("requestPlaybackAudioWarmup(true)")),
-      "missing retimed audio must enter an explicit warmup/generation path");
+      playback.contains(QStringLiteral("requestPlaybackAudioWarmup(false)")),
+      "missing retimed audio must enter a background warmup/generation path "
+      "without stopping transport playback");
   QVERIFY2(
       playback.contains(QStringLiteral("Audio being generated")),
       "preview overlay must make retimed audio generation visible to the user");
@@ -921,6 +923,57 @@ void TestDirectVulkanHandoffPipelineContract::
                "!m_showRawDetections")),
            "FaceDetections overlay prep must be skipped entirely when boxes, "
            "raw detections, and assignment interaction are disabled");
+}
+
+void TestDirectVulkanHandoffPipelineContract::
+    playbackFacestreamOverlaysDoNotColdLoadOnPresentationPath() {
+  const QString source =
+      readSourceFile(QStringLiteral("vulkan_preview_surface_facedetections.cpp"));
+  QVERIFY2(!source.isEmpty(),
+           "vulkan_preview_surface_facedetections.cpp must be readable");
+
+  const int playbackStart =
+      source.indexOf(QStringLiteral("if (m_interaction.playing)"));
+  const int playbackReturn = source.indexOf(
+      QStringLiteral("        return;\n    }\n\n"), playbackStart);
+  const int pausedStart = source.indexOf(
+      QStringLiteral("    for (const TimelineClip& clip : m_interaction.clips)"),
+      playbackReturn);
+  QVERIFY2(playbackStart >= 0 && playbackReturn > playbackStart &&
+               pausedStart > playbackStart,
+           "facestream overlay playback and paused branches must be visible "
+           "for source inspection");
+
+  const QString playbackBranch =
+      source.mid(playbackStart, pausedStart - playbackStart);
+  QVERIFY2(!playbackBranch.contains(QStringLiteral("loadFacestreamTracksForClip(")),
+           "active playback must not synchronously hydrate cold facetrack "
+           "buckets on the presentation path");
+  QVERIFY2(playbackBranch.contains(QStringLiteral(
+               "playback_cold_overlay_cache_missing_single_warmup")),
+           "active playback cold facetrack misses must be reported as cache "
+           "misses and preserve/clear overlays without blocking");
+  QVERIFY2(playbackBranch.contains(QStringLiteral(
+               "requestFacestreamOverlaySnapshotAsync")),
+           "active playback may only prepare overlay primitives from already "
+           "loaded facetrack buckets on the async overlay worker");
+  QVERIFY2(playbackBranch.contains(QStringLiteral(
+               "queueFacestreamOverlayCacheWarmup")),
+           "active playback may schedule one cold facetrack cache warmup so "
+           "face tracks can recover after an immediate playback start");
+  QVERIFY2(playbackBranch.contains(QStringLiteral(
+               "reusedPlaybackCacheEntry")),
+           "active playback should reuse compatible loaded facetrack cache "
+           "entries instead of blocking on a bucket-specific cold load");
+  QVERIFY2(playbackBranch.contains(QStringLiteral(
+               "previousPlaybackOverlayIsCloseEnough")),
+           "active playback must preserve nearby previous overlays rather "
+           "than blocking for a current-frame facetrack lookup");
+  QVERIFY2(source.contains(QStringLiteral(
+               "kMaxPreservedPlaybackOverlayDriftFrames =\n"
+               "    kFacestreamOverlayInteractiveWindowFrames * 2")),
+           "active playback overlay preservation must cover the prepared "
+           "cache bucket window rather than only a couple of frames");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

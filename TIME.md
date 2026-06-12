@@ -89,19 +89,26 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - `absolutePlaybackSample` is the canonical state stored by `EditorWindow`.
   - Every playback consumer must derive its local domain from that sample instead of advancing its own independent notion of now.
   - Derived domains include timeline frame, media source frame, transcript frame, retimed audio cache sample, speaker label timing, overlay timing, and follow/highlight timing.
-- Audio-master path:
-  - `EditorWindow::advanceFrame()` uses `AudioEngine::currentSample()` when `shouldUseAudioMasterClock(...)` is true.
-  - `AudioEngine::currentSample()` is the effective audible output position in 48 kHz timeline-sample space, not the tail of already queued audio.
+- Monotonic transport-clock path:
+  - `EditorWindow::advanceFrame()` advances the canonical playhead from elapsed monotonic time (`QElapsedTimer`/`nowMs()`), playback speed, and the prior `absolutePlaybackSample`.
+  - The computed transport sample is the default runtime clock for `auto` and `timeline` playback modes.
+  - Audio, video, captions, FaceDetections overlays, transcript follow/highlight, speaker labels, and transforms must derive their local domains from that transport sample.
+  - Source clocks and media PTS are feedback/readiness signals used to detect drift, starvation, latency, and cache misses; they are not separate runtime clocks.
+- Audio feedback path:
+  - `AudioEngine::currentSample()` / `playbackClockSample()` reports the effective audible output position in 48 kHz timeline-sample space, not the tail of already queued audio.
   - Practical definition: derive from queued end position minus still-buffered frames and output-stream latency.
-  - Implication: visual playhead follows the sample reaching the output device as closely as backend timing permits; this is the best available A/V lock when audio is healthy.
-- Timeline-timer path:
-  - `advanceFrame()` increments by elapsed wall-clock * playback speed.
-  - Implication: fallback only when audio is intentionally not the master or no playable audio exists.
-  - It is invalid to use timer fallback to ride through a blocked pitch-preserving audio segment, because that creates a second runtime clock.
+  - Implication: audio timing is used to diagnose/reconcile output latency and blocked retimed audio, but it does not become the default app-wide clock.
+  - When audio is following the monotonic transport clock, bounded drift is reconciled by a smoothed audio drift-retime multiplier rather than by repeated hard seeks.
+  - The drift-retime multiplier is separate from the user playback speed and base warp mode, so correction does not redefine the canonical transport rate.
+- Transport-only playback path:
+  - `PlaybackClockSource::audio` is a compatibility/debug preference for audio reconciliation, not permission for audio-clock-driven playhead advancement.
+  - `PlaybackClockSource::auto`, `PlaybackClockSource::audio`, and `PlaybackClockSource::timeline` all use the monotonic transport clock for canonical playhead advancement.
+  - Audio starvation, retimed-cache generation, decode latency, and source-clock regressions must affect audio output/readiness only; they must not stop, rewind, or replace the transport clock.
 - Clock policy controls:
   - `PlaybackClockSource`: `auto|audio|timeline`.
   - `PlaybackAudioWarpMode`: `disabled|varispeed|time_stretch`.
   - Normalization can force `disabled -> varispeed` at non-1.0 speed.
+  - Active clock-source, speed, or warp-mode changes reset transport timer continuity and seek already-running audio back to the canonical playhead.
 - Pitch-preserving time-stretch audio:
   - In `time_stretch` mode at any non-1.0 playback speed, `AudioEngine` reads from pitch-preserved retimed cache entries when available.
   - Sidecar files are used for exact integer 200% and 300% speeds. Other speeds, including 125% and 150%, use generated in-memory segmented cache entries keyed by rounded speed-per-mille.
@@ -109,16 +116,16 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Timeline sample -> source sample still uses `sourceSampleForClipAtTimelineSample(...)` with render-sync markers and clip playback rate.
   - The retimed buffer index is derived from that mapped source sample by dividing by the global time-stretch speed.
   - Retimed cache entries may be segmented. Segment lookup must choose an entry that covers the entire mix chunk in normalized retimed sample space; using a stale earlier segment creates `input_out_of_range` stalls.
-  - If the retimed buffer is not ready, the fallback is explicit: playback enters audio warmup/blocked state and increments `time_stretch_cache_miss_count`; it must not silently fall back to pitch-shifted varispeed audio.
-  - While blocked, the audio clock is not a valid master clock for video. `EditorWindow::advanceFrame()` must call `requestPlaybackAudioWarmup(true)` and hold or snap back to the last effective audible timeline sample instead of letting video follow a stuck or rewound audio cursor.
+  - If the retimed buffer is not ready, the fallback is explicit: audio enters warmup/blocked state and increments `time_stretch_cache_miss_count`; it must not silently fall back to pitch-shifted varispeed audio.
+  - While blocked, the audio clock is not a valid master clock for video. `EditorWindow::advanceFrame()` keeps advancing from the transport clock and calls `requestPlaybackAudioWarmup(false)` so retimed audio can rejoin when ready.
 
 ## Multi-Stream Audio Readiness
-- The mixer composites every audio clip that overlaps a timeline sample; clips on all tracks sum into one output mix, and the audio master clock is defined over that mix in timeline-sample space. Adding streams does not add clocks.
+- The mixer composites every audio clip that overlaps a timeline sample; clips on all tracks sum into one output mix in timeline-sample space. Adding streams does not add clocks.
 - Per-clip readiness is independent. A clip is **starved** when its audio cache (decoded window or retimed time-stretch segment) does not cover the requested mix range.
   - A starved clip contributes silence for the chunk and triggers background decode/precompute; it must not stall clips that are ready.
-  - Blocking the chunk — and with it the audio master clock — is allowed only when no active clip can contribute.
+  - Blocking the chunk is allowed only when no active clip can contribute; it blocks audio emission for that chunk, not canonical transport advancement.
 - Frame-emission rule: a mix frame may be emitted while clips are starved only if at least one active clip contributed in-range audio at that frame. A frame whose active clips are all starved blocks the chunk instead of emitting silence over content that merely is not decoded yet.
-  - With a single audio stream this reduces to the original blocking behavior: the only clip starving blocks playback (warmup), preserving the pitch-preserving gate above.
+  - With a single audio stream this reduces to the original audio-readiness behavior: the only clip starving blocks audio emission and triggers warmup, while transport playback continues.
   - Source of truth: `mixPrepareMustBlock(...)`, `mixFrameMustBlock(...)`, and `spliceSecondaryTapWithinClip(...)` in `audio_mix_readiness.h`.
 - Degradation is never silent: `/profile` exposes `last_mix_starved_clip_count`, `last_mix_starved_clip_path`, and cumulative `mix_degraded_chunk_count`. A persistent nonzero starved count under steady playback is a decode-throughput defect, not acceptable steady state.
 
@@ -192,8 +199,8 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - Any consumer bypassing marker-adjusted mapping can desync from playback.
 - Speech-filtered playback is sparse-time traversal.
   - UI or transform systems assuming continuous timeline time can feel “fast” or “jumping” unless they use filtered/effective duration paths.
-- Audio clock stability governs perceived sync quality in playback.
-  - Stalls trigger fallback to timer path; repeated transitions can present jitter if decode/audio is under pressure.
+- Transport clock stability governs perceived sync quality in playback.
+  - Audio stalls are readiness/feedback failures, not permission for audio to become a separate clock.
   - With multiple audio streams, readiness is per clip: a starved stream degrades to silence for the chunk and recovers when its cache catches up; it does not stall the transport (see Multi-Stream Audio Readiness).
   - A clock derived from future queued/submitted position instead of effective audible position will make visual playheads lead the heard audio.
   - A blocked pitch-preserving audio segment is not an audio-clock stall to ride through; playback must gate until the needed retimed segment is available.
@@ -205,7 +212,8 @@ This document maps the temporal domains in JCut, the conversion paths between th
 ## Practical Source-of-Truth Rules
 - Primary runtime playhead truth: `absolutePlaybackSample`.
 - Derived domain rule: timeline frame, source frame/sample, transcript frame, retimed cache sample, speaker labels, captions, and overlays must all be derived from the active playhead sample through the canonical conversion helpers.
-- Audio-master clock truth: effective audible output position, not future queued/submitted position.
+- Transport-clock truth: elapsed monotonic time reconciled to `absolutePlaybackSample`.
+- Audio feedback truth: effective audible output position, not future queued/submitted position.
 - Pitch-preserving audio readiness truth: `AudioEngine::playbackAudioReadyForFrame(...)` and `AudioEngine::playbackAudioBlocked()` gate playback start/continuation at non-1.0 `time_stretch` speeds.
 - Timer fallback truth: allowed only when audio is not the selected/effective master or there is no playable audio; invalid when pitch-preserving audio is required but blocked or not ready.
 - Transcript truth at a playhead instant: marker-aware `sourceSample/sourceFrame` derived from that sample.
@@ -226,11 +234,11 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - During live Vulkan presentation, the preview overlay must prefer the presented media-source-frame mapping (`transcriptFrameForClipSourceFrame(...)`) over the audio-clock playhead when a presented frame is available.
 - Invariant 5: Active transcript cut path (`activeTranscriptPathForClipFile(...)`) is the transcript source of truth for runtime consumers.
 - Invariant 6: Skip-aware transform interpolation must use either active global kept ranges (`setTransformSkipAwareTimelineRanges(...)`) or active transcript speech ranges; stale range state is invalid.
-- Invariant 7: In pitch-preserving `time_stretch` playback, video must not follow an audio clock that is blocked on a missing or out-of-range retimed segment.
-- Invariant 8: Any code path that stores or advances "current frame" during playback must derive it from `absolutePlaybackSample` or the valid audio-master sample used to update `absolutePlaybackSample`; independent advancement is a timing bug.
+- Invariant 7: In pitch-preserving `time_stretch` playback, video must not follow any audio clock; missing or out-of-range retimed segments are audio readiness problems, not playback clock changes.
+- Invariant 8: Any code path that stores or advances "current frame" during playback must derive it from `absolutePlaybackSample`; independent advancement is a timing bug.
 - Invariant 9: Retimed audio cache selection must prove coverage for the requested mix range before returning a segment.
 - Invariant 10: Playback FaceDetections overlays must be selected from source-frame-indexed cache data for the current requested media source frame. If cache preparation lags, previous overlays may be held only within the explicit source-frame drift tolerance and must otherwise be cleared instead of shown stale.
-- Invariant 11: Audio mix readiness is per clip. A starved clip degrades to silence for the chunk and schedules background decode; it must not block clips that are ready. The mix chunk — and the audio master clock — may block only when active clips exist and none can contribute (`mixPrepareMustBlock(...)` / `mixFrameMustBlock(...)` in `audio_mix_readiness.h`).
+- Invariant 11: Audio mix readiness is per clip. A starved clip degrades to silence for the chunk and schedules background decode; it must not block clips that are ready. The mix chunk may block only when active clips exist and none can contribute (`mixPrepareMustBlock(...)` / `mixFrameMustBlock(...)` in `audio_mix_readiness.h`), and that blockage must not block the canonical transport clock.
 - Invariant 12: A speech-range splice crossfade may pull secondary-tap audio only from clips whose timeline extent contains the secondary timeline sample. A clip is silent at any gain outside its own extent.
 
 ## Verification Matrix
@@ -265,15 +273,15 @@ This document maps the temporal domains in JCut, the conversion paths between th
 ## Failure Playbook
 - Chief playbook issue:
   - Do not treat symptoms as independent clocks. A/V/caption drift is usually a violation of the single-clock contract, not a caption offset problem.
-  - First establish the authoritative `absolutePlaybackSample`, the audio-master sample if enabled, and whether pitch-preserving audio is blocked.
+  - First establish the authoritative `absolutePlaybackSample`, the elapsed monotonic transport time, the audio feedback sample, and whether pitch-preserving audio is blocked.
   - Only then inspect derived domains such as media source frame, transcript frame, or retimed cache sample.
 - Symptom: clicking a transcript word seeks correctly, but follow highlight drifts during playback.
   - Check: ensure follow path is consuming source frame from `transcriptFrameForClipAtTimelineSample(...)`.
   - Probe: `/profile?live=1&force=1` (`absolute_playback_sample`, playhead ages), then verify selected clip transcript path and marker set.
 - Symptom: captions match video but not audible audio.
-  - Check: this is a clock-source split. Compare `absolute_playback_sample`, `preview.current_sample`, and `audio.current_sample`.
-  - Check: if non-1.0 `time_stretch` is active and `audio_playback_blocked` or `pitch_preserving_audio_blocked` is true, video/captions must be held until the retimed segment is ready.
-  - Check: timer fallback during this condition is invalid.
+  - Check: this is usually follower-audio drift or audio readiness, not permission to change the master clock. Compare `absolute_playback_sample`, `preview.current_sample`, and `audio.current_sample`.
+  - Check: if non-1.0 `time_stretch` is active and `audio_playback_blocked` or `pitch_preserving_audio_blocked` is true, video/captions must continue from the transport clock while audio warmup catches up.
+  - Check: stopping transport or switching to an audio source clock during this condition is invalid.
 - Symptom: preview transcript overlay timing differs from export render.
   - Check: both preview and render must use transcript-frame mapping from timeline sample/frame plus render-sync markers.
   - Probe: compare preview clip/time against a rendered frame at same timeline frame.

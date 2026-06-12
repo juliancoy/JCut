@@ -146,6 +146,11 @@ void AudioEngine::setPlaybackRate(qreal rate) {
   }
 }
 
+void AudioEngine::setPlaybackDriftRetimeRate(qreal rate) {
+  m_playbackDriftRetimeRate.store(qBound<qreal>(0.98, rate, 1.02),
+                                  std::memory_order_release);
+}
+
 void AudioEngine::setTranscriptNormalizeEnabled(bool enabled) {
   m_transcriptNormalizeEnabled.store(enabled, std::memory_order_release);
 }
@@ -604,6 +609,10 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   const int64_t currentSampleValue = currentSample();
   const qreal playbackRate =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
+  const qreal driftRetimeRate =
+      qBound<qreal>(0.98,
+                    m_playbackDriftRetimeRate.load(std::memory_order_acquire),
+                    1.02);
   snapshot[QStringLiteral("initialized")] = m_initialized;
   snapshot[QStringLiteral("running")] =
       m_running.load(std::memory_order_acquire);
@@ -656,6 +665,9 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   snapshot[QStringLiteral("channel_count")] = m_channelCount;
   snapshot[QStringLiteral("period_frames")] = m_periodFrames;
   snapshot[QStringLiteral("playback_rate")] = playbackRate;
+  snapshot[QStringLiteral("playback_drift_retime_rate")] = driftRetimeRate;
+  snapshot[QStringLiteral("effective_playback_timeline_rate")] =
+      playbackRate * driftRetimeRate;
   snapshot[QStringLiteral("playback_warp_mode")] =
       playbackAudioWarpModeToString(static_cast<PlaybackAudioWarpMode>(
           m_playbackWarpMode.load(std::memory_order_acquire)));
@@ -1263,10 +1275,14 @@ int AudioEngine::rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
         read / static_cast<size_t>(engine->m_channelCount));
     const qreal playbackRate = qBound<qreal>(
         0.1, engine->m_playbackRate.load(std::memory_order_acquire), 3.0);
+    const qreal driftRetimeRate = qBound<qreal>(
+        0.98,
+        engine->m_playbackDriftRetimeRate.load(std::memory_order_acquire),
+        1.02);
     const int64_t timelineAdvance =
         qMax<int64_t>(1, static_cast<int64_t>(std::llround(
                              static_cast<long double>(readFrames) *
-                             static_cast<long double>(playbackRate))));
+                             static_cast<long double>(playbackRate * driftRetimeRate))));
     engine->m_audioClockSample.fetch_add(timelineAdvance,
                                          std::memory_order_release);
   }
@@ -3270,6 +3286,7 @@ void AudioEngine::mixLoop() {
     MixContext context;
     int64_t chunkStartSample = 0;
     qreal playbackRate = 1.0;
+    qreal driftRetimeRate = 1.0;
     {
       std::lock_guard<std::mutex> lock(m_stateMutex);
       if (!m_playing) {
@@ -3280,8 +3297,11 @@ void AudioEngine::mixLoop() {
       context.renderSyncMarkers = m_renderSyncMarkers;
       playbackRate = qBound<qreal>(
           0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
+      driftRetimeRate = qBound<qreal>(
+          0.98, m_playbackDriftRetimeRate.load(std::memory_order_acquire),
+          1.02);
       const qreal chunkTimelineDuration =
-          playbackRate * static_cast<qreal>(m_periodFrames);
+          playbackRate * driftRetimeRate * static_cast<qreal>(m_periodFrames);
       const int64_t timelineStep = qMax<int64_t>(
           1, static_cast<int64_t>(std::llround(chunkTimelineDuration)));
       chunkStartSample = nextPlayableSampleAtOrAfter(m_timelineSampleCursor,
@@ -3306,7 +3326,7 @@ void AudioEngine::mixLoop() {
     m_ringBuffer.write(pcmBuffer.constData(),
                        static_cast<size_t>(pcmBuffer.size()));
     const qreal chunkTimelineDuration =
-        playbackRate * static_cast<qreal>(m_periodFrames);
+        playbackRate * driftRetimeRate * static_cast<qreal>(m_periodFrames);
     const int64_t timelineStep = qMax<int64_t>(
         1, static_cast<int64_t>(std::llround(chunkTimelineDuration)));
     m_ringBufferEndSample.store(chunkStartSample + timelineStep,

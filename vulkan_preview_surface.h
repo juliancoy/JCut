@@ -175,6 +175,9 @@ private:
         bool showRawDetections,
         bool assignmentInteractionEnabled);
     void applyFacestreamOverlaySnapshot(const FacestreamOverlaySnapshot& snapshot);
+    void queueFacestreamOverlayCacheWarmup(const TimelineClip& clip,
+                                           int64_t sourceFrame,
+                                           const QString& cacheKey);
     QVector<FacestreamTrack> loadFacestreamTracksForClip(const TimelineClip& clip,
                                                          int64_t sourceFrame);
     QVector<VulkanPreviewFacestreamOverlay> rawDetectionsForClipFrame(const TimelineClip& clip,
@@ -207,6 +210,7 @@ private:
     QSet<QString> m_registeredClips;
     QHash<QString, QString> m_registeredClipRegistrationKeys;
     QHash<QString, FacestreamOverlayCacheEntry> m_facedetectionsOverlayCache;
+    QSet<QString> m_pendingFacestreamOverlayCacheWarmups;
     QHash<QString, QJsonObject> m_facedetectionsArtifactRootCache;
     QHash<QString, QJsonObject> m_facedetectionsProcessedArtifactRootCache;
     PreviewInteractionState m_interaction;
