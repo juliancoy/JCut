@@ -30,7 +30,8 @@ find_package(CURL REQUIRED)
 find_package(OpenGL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent OpenGLWidgets Test)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent OpenGLWidgets Test
+             OPTIONAL_COMPONENTS CorePrivate GuiPrivate)
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_library(CUDA_DRIVER_LIBRARY cuda)
 
@@ -46,6 +47,12 @@ function(jcut_fix_qt_private_target target_name)
 
     set(_fixed_qt_private_includes "")
     foreach(_include_dir IN LISTS _qt_private_includes)
+        # Generator expressions (Qt >= 6.7 private targets) resolve at build
+        # time; pass them through untouched.
+        if(_include_dir MATCHES "\\$<")
+            list(APPEND _fixed_qt_private_includes "${_include_dir}")
+            continue()
+        endif()
         if(EXISTS "${_include_dir}")
             list(APPEND _fixed_qt_private_includes "${_include_dir}")
             continue()
@@ -154,8 +161,10 @@ function(jcut_force_bundled_ffmpeg_runtime target_name)
     set_target_properties("${target_name}" PROPERTIES
         BUILD_RPATH "${EDITOR_FFMPEG_PREFIX}/lib"
     )
-    target_link_options("${target_name}" PRIVATE
-        "LINKER:--disable-new-dtags")
+    if(NOT APPLE)
+        target_link_options("${target_name}" PRIVATE
+            "LINKER:--disable-new-dtags")
+    endif()
 endfunction()
 
 set(MOTIVE3D_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../motive3d")
@@ -543,6 +552,10 @@ add_executable(project_roundtrip_cli
     ${CMAKE_CURRENT_SOURCE_DIR}/project_roundtrip_cli.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/project_manager.cpp
 )
+target_include_directories(project_roundtrip_cli
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
 target_link_libraries(project_roundtrip_cli
     PRIVATE
         Qt6::Core
@@ -579,10 +592,15 @@ target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
     Vulkan::Vulkan
 )
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
-        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
-    target_link_options(jcut_vulkan_zero_copy_video_preprocess PRIVATE
-        "LINKER:--no-as-needed")
+    if(APPLE)
+        target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+            "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.dylib")
+    else()
+        target_link_libraries(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+            "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
+        target_link_options(jcut_vulkan_zero_copy_video_preprocess PRIVATE
+            "LINKER:--no-as-needed")
+    endif()
 endif()
 target_compile_definitions(jcut_vulkan_zero_copy_video_preprocess PRIVATE
     JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
@@ -670,10 +688,15 @@ if(TARGET ncnn)
     target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE ncnn)
 endif()
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
-    target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
-        "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
-    target_link_options(jcut_vulkan_facedetections_offscreen PRIVATE
-        "LINKER:--no-as-needed")
+    if(APPLE)
+        target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
+            "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.dylib")
+    else()
+        target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
+            "${EDITOR_FFMPEG_PREFIX}/lib/libswresample.so")
+        target_link_options(jcut_vulkan_facedetections_offscreen PRIVATE
+            "LINKER:--no-as-needed")
+    endif()
 endif()
 target_compile_definitions(jcut_vulkan_facedetections_offscreen PRIVATE
     JCUT_FACESTREAM_OFFSCREEN_STANDALONE=1

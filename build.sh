@@ -3,6 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "${SCRIPT_DIR}" rev-parse --show-toplevel)"
+UNAME_S="$(uname -s)"
+
+build_jobs() {
+    if command -v nproc >/dev/null 2>&1; then
+        nproc
+    else
+        sysctl -n hw.ncpu
+    fi
+}
 FFMPEG_SUBMODULE_PATH="ffmpeg"
 FFMPEG_SRC_DIR="${SCRIPT_DIR}/ffmpeg"
 FFMPEG_BUILD_DIR="${SCRIPT_DIR}/ffmpeg-build"
@@ -92,7 +101,7 @@ ensure_nvcodec_installed() {
         echo "Bootstrapping nv-codec-headers into ${FFMPEG_INSTALL_DIR}..."
     fi
 
-    make -C "${NVCODEC_SRC_DIR}" -j"$(nproc)"
+    make -C "${NVCODEC_SRC_DIR}" -j"$(build_jobs)"
     make -C "${NVCODEC_SRC_DIR}" PREFIX="${FFMPEG_INSTALL_DIR}" install
     printf '%s\n' "${current_version}" > "${NVCODEC_VERSION_FILE}"
 
@@ -104,6 +113,12 @@ ensure_nvcodec_installed() {
 
 resolve_ffmpeg_profile() {
     if [[ "${FFMPEG_PROFILE}" != "auto" ]]; then
+        return 0
+    fi
+
+    if [[ "${UNAME_S}" == "Darwin" ]]; then
+        # No NVDEC/CUDA on macOS; keep native (NEON) asm enabled.
+        FFMPEG_PROFILE="safe"
         return 0
     fi
 
@@ -215,7 +230,7 @@ ensure_ffmpeg_installed() {
     mkdir -p "${FFMPEG_BUILD_DIR}" "${FFMPEG_INSTALL_DIR}"
     if [[ -f "${FFMPEG_BUILD_DIR}/Makefile" ]]; then
         local expected_include="include ${FFMPEG_SRC_DIR}/Makefile"
-        if ! rg -Fq "${expected_include}" "${FFMPEG_BUILD_DIR}/Makefile"; then
+        if ! grep -Fq "${expected_include}" "${FFMPEG_BUILD_DIR}/Makefile"; then
             echo "FFmpeg build directory references a different source tree; cleaning ${FFMPEG_BUILD_DIR}..."
             rm -rf "${FFMPEG_BUILD_DIR}"
             mkdir -p "${FFMPEG_BUILD_DIR}"
@@ -265,7 +280,7 @@ ensure_ffmpeg_installed() {
         exit 1
     fi
 
-    if ! env PKG_CONFIG_PATH="${ffmpeg_configure_pkg_config_path}" make -j"$(nproc)"; then
+    if ! env PKG_CONFIG_PATH="${ffmpeg_configure_pkg_config_path}" make -j"$(build_jobs)"; then
         if [[ "${FFMPEG_PROFILE}" == "nvidia" ]]; then
             cat >&2 <<'EOF'
 FFmpeg build failed in NVIDIA profile.
@@ -350,6 +365,12 @@ EOF
 }
 
 ensure_qt_private_headers() {
+    if [[ "${UNAME_S}" == "Darwin" ]]; then
+        # Homebrew Qt ships private headers; Qt6::GuiPrivate/CorePrivate
+        # resolve natively and the CMake fix-up function no-ops.
+        return 0
+    fi
+
     local required_header="/usr/include/x86_64-linux-gnu/qt6/QtGui/6.4.2/QtGui/private/qrhi_p.h"
     local local_required_header="${QT_PRIVATE_DEV_DIR}${required_header}"
     if [[ -f "${required_header}" || -f "${local_required_header}" ]]; then
@@ -486,6 +507,11 @@ cmake_configure_args=(
     -DJCUT_USE_SYSTEM_FFMPEG=OFF
     -DWITH_VULKAN=ON
 )
+if [[ "${UNAME_S}" == "Darwin" ]]; then
+    cmake_configure_args+=(
+        -DCMAKE_PREFIX_PATH="$(brew --prefix)"
+    )
+fi
 if [[ "${ASAN}" == "ON" ]]; then
     cmake_configure_args+=(
         -DEDITOR_ASAN=ON
@@ -506,12 +532,18 @@ fi
 
 # Fix for snap library conflicts (snap's libpthread is incompatible with system glibc)
 # Preload system libpthread to avoid snap version being picked up
-export LD_PRELOAD="/lib/x86_64-linux-gnu/libpthread.so.0"
+if [[ "${UNAME_S}" == "Linux" ]]; then
+    export LD_PRELOAD="/lib/x86_64-linux-gnu/libpthread.so.0"
+fi
 
 if [[ "${RUN_EDITOR}" == "yes" ]]; then
     # Filter out --run from args passed to editor
     shift  # Remove --run from "$@"
-    exec "${BUILD_DIR}/jcut" "$@"
+    EDITOR_BIN="${BUILD_DIR}/jcut"
+    if [[ ! -x "${EDITOR_BIN}" && -x "${BUILD_DIR}/jcut.app/Contents/MacOS/jcut" ]]; then
+        EDITOR_BIN="${BUILD_DIR}/jcut.app/Contents/MacOS/jcut"
+    fi
+    exec "${EDITOR_BIN}" "$@"
 fi
 
 if [[ "${RUN_FACE_BENCH}" == "yes" ]]; then
