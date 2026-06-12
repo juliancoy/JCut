@@ -1,5 +1,9 @@
 # Control Server Endpoint Testing Summary
 
+> **Doc status (2026-06-11):** Historical. This summary records a Linux test box (FFmpeg 4.4
+> system libs vs 6.x build target, .so ABI mismatch). It does not describe the current macOS
+> checkout; kept for reference.
+
 ## Overview
 This document summarizes the analysis of the control_server.cpp endpoints and the decode pathway.
 

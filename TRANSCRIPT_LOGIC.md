@@ -1,5 +1,13 @@
 # Transcript / Speech Filter / Speaker Logic Review
 
+> **Doc status (2026-06-11):** Point-in-time review. Findings 1, 3, and 4 are **RESOLVED** in the
+> tree (active cut path unified via activeTranscriptPathForClipFile in transcript_engine.cpp,
+> render_decode.cpp, editor_shared_transcript.cpp; transcriptDocumentChanged handlers refresh
+> skip-aware ranges in editor_tabs.cpp:411,496,681; tests testSpeechFilterUsesActiveTranscriptCut
+> and testAllSkippedWordsYieldNoSpeechRanges exist in tests/test_transcript_logic.cpp). Finding 2
+> (duplicated prepend/postpend state between EditorWindow and TranscriptTab, m_transcriptPrependMs
+> in transcript_tab.cpp) remains **OPEN** — tracked in ambitious_plan.md Phase 5.
+
 ## Latest Follow-Sync Decisions (April 24, 2026)
 - Follow/highlight now uses **source timing only** in the transcript table; render-time columns were removed from the UI to avoid mixed timing semantics.
 - Playhead-to-source mapping for transcript follow now includes render-sync markers and only runs when playhead is within the selected clip span.
@@ -73,7 +81,7 @@ Primary files inspected:
 
 ## Findings (Priority Ordered)
 
-### 1. Active cut selection is not honored by Speech Filter/overlay/render consumers
+### 1. Active cut selection is not honored by Speech Filter/overlay/render consumers — RESOLVED (2026-06-11)
 Severity: High
 
 Observed behavior:
@@ -94,7 +102,7 @@ Recommendation:
 - Introduce one authoritative “active transcript path per clip” model and pass that to all transcript consumers (engine, preview, render, transform timing).
 - Remove hidden fallback to working path for runtime decisions once active cut is known.
 
-### 2. Loaded prepend/postpend values can desync between Editor and TranscriptTab
+### 2. Loaded prepend/postpend values can desync between Editor and TranscriptTab — OPEN
 Severity: High
 
 Observed behavior:
@@ -109,7 +117,7 @@ Recommendation:
 - Use a single source of truth for these parameters.
 - At minimum, after load, explicitly push values into `TranscriptTab` state (without relying on valueChanged signals).
 
-### 3. Transform skip-aware ranges are not refreshed on transcript document edits
+### 3. Transform skip-aware ranges are not refreshed on transcript document edits — RESOLVED (2026-06-11)
 Severity: Medium
 
 Observed behavior:
@@ -124,7 +132,7 @@ Impact:
 Recommendation:
 - In the `transcriptDocumentChanged` handler, recompute ranges and call `setTransformSkipAwareTimelineRanges(speechFilterPlaybackEnabled() ? ranges : {})`.
 
-### 4. “All words skipped” in a transcripted clip falls back to passthrough audio
+### 4. “All words skipped” in a transcripted clip falls back to passthrough audio — RESOLVED (2026-06-11)
 Severity: Medium
 
 Observed behavior:

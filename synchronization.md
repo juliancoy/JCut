@@ -1,5 +1,10 @@
 # Synchronization
 
+> **Doc status (2026-06-11):** This document specifies the **target professional architecture**.
+> Statements are the contract the implementation must satisfy. Known deviations in the present
+> implementation are marked inline as **Present state:** callouts. A code/doc disagreement with
+> no callout is a defect — fix the code or update this document, never ignore it.
+
 ## Purpose
 
 This document describes the synchronization path from decoded media frames to the direct Vulkan preview render. It complements `TIME.md` and `scheduling.md`:
@@ -23,6 +28,8 @@ At any visible update:
 5. `DirectVulkanPreviewPresenter` renders the selected status list into the swapchain.
 
 The direct Vulkan path must not silently fall back to OpenGL or CPU image upload. CPU readback is diagnostic-only and opt-in.
+
+The target architecture is Vulkan-only (decision D4). The OpenGL preview backend is present-state compatibility scheduled for removal once the parity gates in `OPENGL_DEPRECATION_AND_REMOVAL_PLAN.md` pass; it is not a permanent fallback or alternate backend.
 
 ## Professional Synchronization Requirements
 
@@ -367,7 +374,7 @@ Outputs:
 Synchronization rule:
 
 - Device loss is terminal for the direct presenter until the Vulkan path is reinitialized.
-- There is no implicit OpenGL fallback.
+- There is no implicit OpenGL fallback. Per D4 the target is Vulkan-only; the OpenGL preview backend exists only as present-state compatibility scheduled for removal (`OPENGL_DEPRECATION_AND_REMOVAL_PLAN.md`).
 
 ## Frame Lifecycle State Machine
 
@@ -643,11 +650,17 @@ These are operational targets for interactive playback. They are not correctness
 | Present interval during playback | Around display cadence; no repeated > 50 ms spikes | Render or UI thread stall |
 | Exact hit rate | > 0.90 after warmup at 1.0x; high but workload-dependent at 1.5x | Decode/cache scheduling cannot keep up |
 | Average frame lag | <= 1 source frame after warmup when exact frames are available; occasional approximate frames may lag within the stale tolerance | Decode/cache scheduling cannot keep up |
-| Approximate playback stale tolerance | 0.20 seconds of source media, clamped to 4-12 source frames | User-visible video/caption drift or black frames from over-rejection |
+| Approximate playback stale tolerance | Runtime-tunable policy (UI + REST, per D7); default is the shared source-rate-aware tolerance of ~67 ms of source media, clamped to 4-8 source frames (30 fps -> 4, 60 fps -> 5). Source of truth: `previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h` | User-visible video/caption drift or black frames from over-rejection |
 | Visible decode retention | 24 frame minimum, 96 frame baseline, 240 frame maximum | Decode cancellation is too aggressive or too permissive |
 | Visible pending age | < 2 frame intervals for current request | Decode worker or queue pressure |
 | Audio underrun samples | 0 during steady playback | Audio path problem, not video render |
 | Overlay worker prep | < 16 ms typical or worker-coalesced | Overlay artifact path too expensive |
+
+> **Present state (2026-06-11):** Stale-tolerance tunability is not yet implemented; the value is a
+> hardcoded constant (`previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h:21-28`,
+> `kPreviewMaxPlaybackStaleSeconds=0.067`, `kPreviewMaxHeldPresentationFrameDelta=8`). The other
+> policies in this table are likewise hardcoded constants; only `visibleBacklogLimit` is REST-tunable
+> (`preview_visible_backlog_limit`).
 
 Diagnostics must make these measurable from a running instance through REST or logs.
 
@@ -668,6 +681,11 @@ Diagnostics must make these measurable from a running instance through REST or l
 | Overlay snapshots are keyed and stale worker results are dropped | `test_direct_vulkan_handoff_pipeline_contract::overlayWorkerKeepsNewestCoalescedRequest` |
 
 New synchronization changes should either map to an existing test row or add a new row. Untested synchronization behavior is temporary and must be called out explicitly.
+
+> **Present state (2026-06-11):** CI currently gates only 16 of the 41 registered tests, runs no
+> tests on macOS (now a first-class target platform via MoltenVK), and likely fails to configure
+> (`find_package(Vulkan REQUIRED)` with no Vulkan SDK installed in any job). Target test tiering is
+> defined in `ambitious_plan.md` Phase 4.
 
 ## Diagnostics
 
@@ -728,8 +746,13 @@ Interpretation:
   means decode latency or observed frame lag has exceeded the bounded retention window.
 - `preview.active_frame_stale_rejected=true` means the renderer refused to present an approximate
   hardware frame outside the source-rate-aware stale tolerance and is waiting for a current enough
-  decoded payload. The stale tolerance is 0.20 seconds of source media, clamped to 4-12 source
-  frames; for a 60 fps source this is 12 frames.
+  decoded payload. The stale tolerance is a runtime-tunable policy (UI + REST, per D7) whose
+  default is the shared source-rate-aware tolerance of ~67 ms of source media, clamped to 4-8
+  source frames (30 fps -> 4, 60 fps -> 5). Source of truth:
+  `previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h`.
+  > **Present state (2026-06-11):** Tunability is not yet implemented; the value is the hardcoded
+  > constant in `preview_frame_selection.h:21-28` (`kPreviewMaxPlaybackStaleSeconds=0.067`,
+  > `kPreviewMaxHeldPresentationFrameDelta=8`).
 - `preview.last_visible_request_displayable_cached=true` with
   `preview.last_visible_request_exact_cached=false` means the current frame can be approximated for
   presentation, but exact visible decode must still be scheduled.
@@ -748,8 +771,13 @@ Interpretation:
 - Invariant 6a: Speaker/title metadata lookup is bounded during playback. Current-speaker labels reuse active source-frame ranges, FaceDetections boxes use indexed source-frame candidates, and profile snapshots do not expand full speaker candidate debug while playing.
 - Invariant 7: During playback, the active frame is up to date only when the presented source frame
   equals the requested source frame. Approximate presentation is a fallback, not a healthy state.
-- Invariant 7: Presented source frame is the visual timing truth after a frame is drawn.
+- Invariant 7b: Presented source frame is the visual timing truth after a frame is drawn.
 - Invariant 8: No implicit OpenGL fallback, no implicit CPU upload fallback, no silent readback path.
+  > **Present state (2026-06-11):** The `cpu_upload` visible decode path is presently reachable
+  > (`vulkan_preview_surface.cpp:1469`), and `vulkan_visible_cpu_upload_fallback_enabled` is
+  > hardcoded `true` (`vulkan_preview_surface_profiling.cpp:87,292`). Making strict payload the
+  > default is open work (`ambitious_plan.md` Phase 1); the cause of the relaxation is under
+  > investigation.
 - Invariant 9: The presenter consumes `VulkanPreviewClipFrameStatus`; it does not perform decode/cache selection itself.
 - Invariant 10: No cache mutex is held while invoking callbacks, dispatching decode work, or recording Vulkan commands.
 - Invariant 11: GPU resources referenced by descriptors remain alive until the frame using them is no longer in flight.

@@ -1,5 +1,10 @@
 # TIME.md
 
+> **Doc status (2026-06-11):** This document specifies the **target professional architecture**.
+> Statements are the contract the implementation must satisfy. Known deviations in the present
+> implementation are marked inline as **Present state:** callouts. A code/doc disagreement with
+> no callout is a defect — fix the code or update this document, never ignore it.
+
 ## Purpose
 This document maps the temporal domains in JCut, the conversion paths between them, and the practical implications for playback, transcript sync, speech filtering, overlays, and transforms.
 
@@ -192,7 +197,8 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Speech keep/remove truth: `TranscriptEngine::transcriptWordExportRanges(...)` from active transcript path.
 - Overlay/speaker timing truth: transcript/source frame mapping, not render-order table position.
 - FaceDetections playback overlay truth: requested media source frame from the canonical playhead. Previous overlay reuse is a bounded display hold, not continuity evidence, and must be cleared when drift exceeds the small source-frame tolerance.
-- Preview stale-frame tolerance: playback presentation may hold an approximate video frame only within the shared 4-source-frame ceiling; anything older must be dropped rather than displayed as current video.
+- Preview stale-frame tolerance: playback presentation may hold an approximate video frame only within the shared source-rate-aware tolerance: ~67 ms of source media, clamped to 4–8 source frames (30 fps → 4, 60 fps → 5, ceiling 8). Source of truth: `previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h:21-28` = `qBound(4, ceil(sourceFps × 0.067 s), 8)`, with `kPreviewMaxPlaybackStaleSeconds = 0.067` and `kPreviewMaxHeldPresentationFrameDelta = 8`. Anything older must be dropped rather than displayed as current video. Per D7, this is the professional default and the tolerance is tunable via UI and REST, with tuning visible in diagnostics; it must never auto-widen to mask starvation.
+  - **Present state (2026-06-11):** the tolerance is a hardcoded constant (`preview_frame_selection.h:21-28`); no UI or REST tuning is exposed yet — of the preview policies, only `visibleBacklogLimit` is REST-tunable (`preview_visible_backlog_limit`).
 - Debug truth: logs and REST fields that cross domains must name the domain explicitly (`timeline_sample`, `timeline_frame`, `media_source_frame`, `transcript_frame`, `retimed_cache_sample`) instead of using ambiguous `source_frame` labels.
 
 ## Temporal Invariants

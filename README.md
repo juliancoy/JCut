@@ -15,7 +15,7 @@ JCut is a Qt6/C++20 non-linear editor for turning long-form panel video into ver
 
 ## Prerequisites
 
-- Linux (primary tested environment)
+- Linux (primary tested environment) or macOS (target platform via MoltenVK; `build.sh` macOS support is in progress, see `ambitious_plan.md` Phase 0)
 - CMake 3.24+
 - C++20 compiler
 - Qt6 development packages:
@@ -26,7 +26,8 @@ JCut is a Qt6/C++20 non-linear editor for turning long-form panel video into ver
   - Concurrent
   - OpenGLWidgets
   - Test
-- OpenGL development headers
+- Vulkan SDK (headers and loader; the build requires it via `find_package(Vulkan REQUIRED)`; MoltenVK on macOS)
+- OpenGL development headers (present-state: required by the OpenGL compatibility preview backend, which is scheduled for removal)
 - `pkg-config`
 - `git` (submodules are required)
 - `meson` and `ninja` for the vendored Rubber Band audio time-stretch backend
@@ -42,6 +43,8 @@ git submodule update --init --recursive
 ## Build
 
 The canonical build entrypoint is `build.sh`. It bootstraps pinned FFmpeg libs into `ffmpeg-install/`, builds the vendored Rubber Band audio time-stretch library into `.deps/rubberband-install/` when Meson is available, and builds the editor.
+
+`build.sh` presently targets Linux. macOS (MoltenVK) is a target platform; `build.sh` macOS support is in progress per `ambitious_plan.md` Phase 0.
 
 ```bash
 ./build.sh
@@ -118,7 +121,7 @@ Preview output is useful for inspection but slower because it requires GPU readb
 
 - `editor*.cpp/.h`: main editor window and UI orchestration
 - `timeline_*`: timeline widget, model, layout, input, cache
-- `preview_*`: OpenGL preview rendering and interaction
+- `preview_*`: preview rendering and interaction. The preview is the direct-Vulkan path (`DirectVulkanPreview*` / `VulkanPreviewSurface`); the OpenGL backend is present-state compatibility scheduled for removal once the parity gates in `OPENGL_DEPRECATION_AND_REMOVAL_PLAN.md` pass
 - `render_*`: offline export and render pipeline
 - `decoder_*`, `async_decoder*`: media decoding pipeline
 - `control_server*`: local HTTP control server

@@ -1,5 +1,11 @@
 # OpenGL Deprecation and Removal Plan
 
+> **Doc status (2026-06-11):** Owner decision D4 (ambitious_plan.md): the target architecture is
+> **Vulkan-only**; OpenGL removal is confirmed as the committed direction, executed via this
+> plan's exit gates (now including MoltenVK parity on macOS). Present state: all
+> opengl_preview_window*.cpp files are still compiled and preview_surface_factory.cpp still
+> constructs the OpenGL PreviewWindow as the runtime fallback.
+
 ## Goal
 
 Make Vulkan the normal preview/render path and keep OpenGL only as a temporary compatibility fallback until Vulkan has full behavior parity, test coverage, and operational reliability.

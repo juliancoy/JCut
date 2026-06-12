@@ -1,8 +1,14 @@
 # JCut Dataflow
 
+> **Doc status (2026-06-11):** This document specifies the **target professional architecture**.
+> Statements are the contract the implementation must satisfy. Known deviations in the present
+> implementation are marked inline as **Present state:** callouts. A code/doc disagreement with
+> no callout is a defect — fix the code or update this document, never ignore it.
+
 ## Purpose
-This document describes the current dataflow in JCut. It is a working
-architecture note, not a target-state plan.
+This document describes the dataflow in JCut. Per the doc status above, it is
+the dataflow contract: statements are the target the implementation must
+satisfy, with present-state deviations called out inline.
 
 JCut currently uses a pragmatic Qt-centered dataflow:
 
@@ -207,6 +213,12 @@ Use these as code review checks for any new or modified `refresh()` path:
 5. Expensive repeated refresh triggers should be collapsed with a timer or other
    debounce when they originate from playhead movement, worker bursts, or
    selection churn.
+
+The rule is read-vs-write, not "no file I/O in `refresh()`": `refresh()` may
+**read** documents needed for display (invariant 1), but must never **write**
+`state.json`, `history.json`, transcript JSON, or FaceDetections artifacts
+(invariant 2). Paraphrases elsewhere that ban all file I/O are imprecise; the
+write prohibition is the invariant.
 
 ## Edit Flow
 

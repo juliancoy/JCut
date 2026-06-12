@@ -1,5 +1,12 @@
 # Overlay GPU Implementation Plan
 
+> **Doc status (2026-06-11):** Overlay-GPU plan; largely implemented. One acceptance criterion
+> conflicts with the present code: this plan requires vulkan_visible_cpu_upload_fallback_enabled
+> = false, but vulkan_preview_surface_profiling.cpp:87,292 hardcode it true and the cpu_upload
+> visible decode path is reachable (vulkan_preview_surface.cpp:1469). Whether strictness was
+> deliberately relaxed or regressed is under investigation (ambitious_plan.md Phase 0, decision
+> D6). Until resolved, treat the strict criterion as the target, not the present state.
+
 ## Current Finding
 
 The visible video frame path is already enforcing the correct direct Vulkan contract:

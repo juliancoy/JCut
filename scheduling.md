@@ -1,5 +1,10 @@
 # Scheduling
 
+> **Doc status (2026-06-11):** This document specifies the **target professional architecture**.
+> Statements are the contract the implementation must satisfy. Known deviations in the present
+> implementation are marked inline as **Present state:** callouts. A code/doc disagreement with
+> no callout is a defect — fix the code or update this document, never ignore it.
+
 ## Purpose
 
 This document defines how JCut runtime scheduling should work for playback, visible decode, prefetch, audio readiness, and overlay preparation. It is the companion to `TIME.md`: `TIME.md` defines temporal domains and conversion truth; this file defines which work is scheduled, prioritized, blocked, or dropped.
@@ -78,7 +83,7 @@ Rules:
 - Near-future visible frames should have high priority.
 - Far prefetch work must never starve current visible work.
 - Pending visible requests should be coalesced by clip id and media source frame.
-- A small bounded visible backlog is valid; a backlog of one is only safe if decode latency is always below frame cadence.
+- A small bounded visible backlog is valid; a backlog of one is only safe if decode latency is always below frame cadence. The bound is `playbackTuning().visibleBacklogLimit`, REST-patchable as `preview_visible_backlog_limit`.
 - Completed visible frames may be late, but a late hardware frame should still be cached if it can help nearest-frame presentation.
 - Strict Vulkan preview requests must reject CPU-image payloads in the direct Vulkan path.
 
@@ -122,15 +127,21 @@ Rules:
 Visible playback stale-frame tolerance:
 
 - Source of truth: `previewMaxPlaybackStaleFrameDelta()` in `preview_frame_selection.h`.
-- Time budget: 0.067 seconds of source media.
-- Clamp: minimum 4 source frames, maximum 4 source frames.
-- Examples: 30 fps and 60 fps sources both allow at most 4 source frames.
+- Time budget: 0.067 seconds of source media (`kPreviewMaxPlaybackStaleSeconds`).
+- Clamp: minimum 4 source frames, maximum 8 source frames (`kPreviewMaxHeldPresentationFrameDelta = 8`).
+- Examples: a 30 fps source allows at most 4 source frames; a 60 fps source allows at most 5.
 - This is a presentation correctness limit, not a decode retention limit. It prevents unbounded
   stale hardware frames from being presented as current video while still allowing normal short
   decode jitter.
 - If `active_frame_stale_rejected=true` frequently fires inside this tolerance, the next fix is
   decode scheduling/throughput or playback gating. Do not increase this limit to hide decode
   starvation without also documenting the measured user-visible drift.
+- Target (D7): this tolerance is a policy with professional defaults that work well on all
+  systems, tunable via UI and REST. The effective value, and whether it is the default or a
+  tuned value, must be visible in diagnostics. Nothing may auto-widen it to mask starvation.
+
+  > **Present state (2026-06-11):** hardcoded constants in `preview_frame_selection.h:21-28`;
+  > not yet tunable via UI or REST.
 
 Visible decode retention policy:
 
@@ -143,6 +154,15 @@ Visible decode retention policy:
 - This is a decode cancellation window, not permission to present stale frames. It keeps useful
   decode work alive long enough to survive jitter while the stale-frame tolerance still decides
   whether an approximate frame may be displayed.
+- Target (D7): the retention policy bounds are professional defaults, tunable via UI and REST,
+  with the effective values and default-versus-tuned status visible in diagnostics. Nothing may
+  auto-widen the policy to mask starvation.
+
+  > **Present state (2026-06-11):** the 24/96/240 bounds are hardcoded constants in
+  > `timeline_cache.cpp:34-36` (policy logic in `effectiveVisibleDecodeKeepWindow()` at
+  > `timeline_cache.cpp:858-870`); a source-text contract test pins the 96/240 bounds at
+  > `test_direct_vulkan_handoff_pipeline_contract.cpp:511-513` (the 24 minimum is not asserted).
+  > Not yet tunable.
 
 Expected diagnostic signals:
 
@@ -220,7 +240,9 @@ Rules:
   A bounded approximate frame may still be drawn to avoid a black flash, but it is not a healthy
   playback state.
 - Presentation diagnostics must report exact/approx/missing state and frame lag.
-- The presenter must not request OpenGL fallback.
+- The presenter must not request OpenGL fallback. The target architecture is Vulkan-only (D4);
+  the OpenGL preview backend is present-state compatibility scheduled for removal once the
+  parity gates in `OPENGL_DEPRECATION_AND_REMOVAL_PLAN.md` pass. It is not a permanent fallback.
 - The presenter must not create CPU upload fallback for normal direct Vulkan preview.
 - Text and overlays should be prepared as typed draw inputs and rendered through Vulkan passes.
 
@@ -253,6 +275,15 @@ Rules:
 - Invariant 9: A non-exact active frame during playback is a current-frame failure, even when an approximate fallback is displayed.
 - Invariant 10: Pitch-preserving sidecar-only audio has no implicit runtime fallback.
 - Invariant 11: Direct Vulkan preview has no implicit OpenGL or CPU-image upload fallback.
+
+  > **Present state (2026-06-11):** the CPU-upload visible path is presently reachable —
+  > `vulkan_preview_surface.cpp:1469` sets `decodePath="cpu_upload"`, and
+  > `vulkan_preview_surface_profiling.cpp:87,292` hardcode
+  > `vulkan_visible_cpu_upload_fallback_enabled=true`. The target (mirroring
+  > `synchronization.md` Invariant 8) requires CPU upload to be an explicit logged opt-in;
+  > making strict hardware payloads the default is open work. Per D4 the OpenGL backend is
+  > present-state compatibility scheduled for removal once the parity gates in
+  > `OPENGL_DEPRECATION_AND_REMOVAL_PLAN.md` pass.
 - Invariant 12: Overlay workers do not own clocks and do not block playback.
 - Invariant 13: REST/perf diagnostics must expose enough state to distinguish audio gate, decode starvation, overlay lag, and presentation failure.
 

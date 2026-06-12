@@ -1,5 +1,10 @@
 # Render Path
 
+> **Doc status (2026-06-11):** This document specifies the **target professional architecture**.
+> Statements are the contract the implementation must satisfy. Known deviations in the present
+> implementation are marked inline as **Present state:** callouts. A code/doc disagreement with
+> no callout is a defect — fix the code or update this document, never ignore it.
+
 ## Purpose
 
 This document describes the professional render pathway for J-Cut preview and export.
@@ -47,7 +52,13 @@ belong to the components named in `synchronization.md`.
 
 CPU readback and CPU image upload are diagnostic or compatibility paths only. The
 direct Vulkan visible path requires hardware frames or external GPU texture payloads
-unless a caller explicitly opts into a non-direct path.
+unless a caller explicitly opts into a non-direct path; the opt-in must be explicit
+and logged (`synchronization.md` Invariant 8 / `scheduling.md` Invariant 11).
+
+> **Present state (2026-06-11):** the CPU-upload visible path is reachable without an
+> explicit opt-in: `vulkan_preview_surface.cpp:1469` sets `decodePath="cpu_upload"`,
+> and `vulkan_preview_surface_profiling.cpp:87,292` hardcode
+> `vulkan_visible_cpu_upload_fallback_enabled=true`.
 
 ## Export Path
 
@@ -106,7 +117,11 @@ mutation boundaries, failure behavior, and regression tests.
 - Decoder cancellation or queue rejection: deliver a null frame through the owning
   component's queued callback path.
 - GPU presenter failure: report the direct Vulkan failure explicitly; do not silently
-  fall back to OpenGL.
+  fall back to OpenGL. The target architecture is Vulkan-only (D4); OpenGL is not a
+  permanent fallback.
+  - **Present state (2026-06-11):** an OpenGL preview backend still exists as
+    compatibility and is scheduled for removal once the parity gates in
+    `OPENGL_DEPRECATION_AND_REMOVAL_PLAN.md` pass.
 
 ## Diagnostics
 
@@ -123,3 +138,6 @@ running instance:
 
 These diagnostics are part of the render contract. A change that improves local
 appearance but hides one of these facts is incomplete.
+
+Performance targets (present-interval spikes, exact-hit health) live in
+`synchronization.md` §Performance Targets.
