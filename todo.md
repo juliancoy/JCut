@@ -67,3 +67,10 @@ cmake --build build --target jcut test_facedetections_processed_artifact -j4
 ctest --test-dir build --output-on-failure -R "test_facedetections_processed_artifact|test_facedetections_artifacts|test_transcript_logic|test_transcript_tab_follow"
 git diff --check
 ```
+
+---
+
+> Historical note (2026-06-11): the TODO.md path previously held the "Vulkan Preview Black
+> Output" debugging evidence and ladder. That content is preserved in substance in
+> ambitious_plan.md Appendix A6 (and verbatim in git history at 414b765) and drives the plan's
+> Phase 0 diagnosis.
