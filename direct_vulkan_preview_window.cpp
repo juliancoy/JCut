@@ -1,3 +1,4 @@
+#include <execinfo.h>
 #include "direct_vulkan_preview_backend.h"
 #include "direct_vulkan_preview_presenter.h"
 #include "direct_vulkan_preview_config.h"
@@ -188,6 +189,24 @@ public:
         if (m_stats) {
             ++m_stats->previewUpdateRequests;
         }
+        // Diagnostic: JCUT_DEBUG_UPDATE_STORM=1 dumps who keeps re-arming
+        // preview updates (first 40 requests). Off by default.
+        if (qEnvironmentVariableIsSet("JCUT_DEBUG_UPDATE_STORM")) {
+            static int dumped = 0;
+            if (dumped < 40) {
+                ++dumped;
+                void* frames[16];
+                const int n = ::backtrace(frames, 16);
+                char** syms = ::backtrace_symbols(frames, n);
+                fprintf(stderr, "[update-storm] request #%d\n", dumped);
+                if (syms) {
+                    for (int i = 2; i < n && i < 12; ++i) {
+                        fprintf(stderr, "    %s\n", syms[i]);
+                    }
+                    free(syms);
+                }
+            }
+        }
         requestUpdate();
     }
 
@@ -201,13 +220,25 @@ protected:
     {
         QVulkanWindow::exposeEvent(event);
         if (!isExposed()) {
+            m_scheduledWhileExposed = false;
             return;
         }
         if (!isValid()) {
             markFailure(QStringLiteral("QVulkanWindow exposed but invalid; Vulkan surface or swapchain creation failed."));
         } else if (m_active) {
             *m_active = true;
-            requestUpdate();
+            // Schedule a render only on the not-exposed -> exposed
+            // transition or when the surface size changed. On macOS every
+            // vkQueuePresentKHR re-dirties the CAMetalLayer, AppKit asks the
+            // layer to display, and Qt synthesizes another ExposeEvent —
+            // unconditionally scheduling here turns each presented frame
+            // into the trigger for the next one (idle present storm that
+            // starves the UI thread and the control-server bridge).
+            if (!m_scheduledWhileExposed || size() != m_lastExposeScheduledSize) {
+                m_scheduledWhileExposed = true;
+                m_lastExposeScheduledSize = size();
+                schedulePreviewUpdate();
+            }
         }
     }
 
@@ -223,7 +254,7 @@ protected:
             this, event->position(), PreviewSurfaceCoordinateSpace::DeviceSurface);
         if (m_state->viewMode == PreviewSurface::ViewMode::Audio) {
             if (applyAudioPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
-                requestUpdate();
+                schedulePreviewUpdate();
                 event->accept();
                 return;
             }
@@ -235,7 +266,7 @@ protected:
             return;
         }
         if (applyVideoPreviewWheelZoom(m_state, surfaceRect, surfacePosition, event->angleDelta().y())) {
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -262,7 +293,7 @@ protected:
                     m_faceStreamBoxFocusClearRequested,
                     m_faceStreamBoxClickStatus)) {
                 m_state->transient.faceDetectionsRightClickHandled = true;
-                requestUpdate();
+                schedulePreviewUpdate();
                 event->accept();
                 return;
             }
@@ -317,7 +348,7 @@ protected:
                     m_correctionPointRequested(hitClipId, normalized.x(), normalized.y());
                 }
             }
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -353,7 +384,7 @@ protected:
                         m_selectionRequested(hitClipId);
                     }
                 }
-                requestUpdate();
+                schedulePreviewUpdate();
                 event->accept();
                 return;
             }
@@ -362,12 +393,12 @@ protected:
         if (m_faceStreamBoxRequested &&
             dispatchFaceDetectionsBoxAtPosition(
                 m_state, infos, surfacePosition, m_faceStreamBoxRequested, m_faceStreamBoxClickStatus)) {
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
         if (m_state->faceStreamAssignmentInteractionEnabled) {
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -431,7 +462,7 @@ protected:
                     m_selectionRequested(hitClipId);
                 }
             }
-            requestUpdate();
+            schedulePreviewUpdate();
             updatePreviewCursor(surfacePosition);
             event->accept();
             return;
@@ -454,7 +485,7 @@ protected:
         if (!(event->buttons() & Qt::LeftButton) || m_state->transient.dragMode == PreviewDragMode::None ||
             m_state->selectedClipId.isEmpty()) {
             updatePreviewCursor(surfacePosition);
-            requestUpdate();
+            schedulePreviewUpdate();
             QVulkanWindow::mouseMoveEvent(event);
             return;
         }
@@ -518,7 +549,7 @@ protected:
                 m_state->transient.transformOverrideClipId = clipId;
                 m_state->transient.transformOverride = overrideTransform;
             }
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -526,7 +557,7 @@ protected:
         if (m_state->transient.speakerPickDragActive &&
             (event->buttons() & Qt::LeftButton)) {
             m_state->transient.speakerPickCurrentPos = surfacePosition;
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -629,7 +660,7 @@ protected:
             m_state->transient.transformOverrideClipId = clipId;
             m_state->transient.transformOverride = overrideTransform;
         }
-        requestUpdate();
+        schedulePreviewUpdate();
         event->accept();
     }
 
@@ -705,7 +736,7 @@ protected:
             m_state->transient.dragOriginBounds = QRectF();
             m_state->transient.dragOriginTranscriptTranslation = QPointF();
             clearVulkanDragOverrides(m_state);
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -750,7 +781,7 @@ protected:
             m_state->transient.speakerPickClipId.clear();
             m_state->transient.speakerPickStartPos = QPointF();
             m_state->transient.speakerPickCurrentPos = QPointF();
-            requestUpdate();
+            schedulePreviewUpdate();
             event->accept();
             return;
         }
@@ -765,7 +796,7 @@ protected:
             const QPointF cursorPos = PreviewViewTransform::pointForWindowPoint(
                 this, mapFromGlobal(QCursor::pos()), PreviewSurfaceCoordinateSpace::DeviceSurface);
             updatePreviewCursor(cursorPos);
-            requestUpdate();
+            schedulePreviewUpdate();
         }
         QVulkanWindow::keyPressEvent(event);
     }
@@ -776,7 +807,7 @@ protected:
             const QPointF cursorPos = PreviewViewTransform::pointForWindowPoint(
                 this, mapFromGlobal(QCursor::pos()), PreviewSurfaceCoordinateSpace::DeviceSurface);
             updatePreviewCursor(cursorPos);
-            requestUpdate();
+            schedulePreviewUpdate();
         }
         QVulkanWindow::keyReleaseEvent(event);
     }
@@ -785,6 +816,20 @@ protected:
     {
         if (!event) {
             return QVulkanWindow::event(event);
+        }
+
+        if (event->type() == QEvent::UpdateRequest) {
+            // Render on demand: the macOS platform layer (display link /
+            // Metal layer) delivers continuous UpdateRequests for this
+            // window even when nothing scheduled one, which saturates the
+            // UI thread with idle presents and starves the control-server
+            // bridge. Only render when the app latched a request via
+            // schedulePreviewUpdate() or during active playback, where the
+            // renderer re-arms itself per presented frame.
+            const bool playing = m_state && m_state->playing;
+            if (!m_updatePending && !playing) {
+                return true;
+            }
         }
 
         if (event->type() == QEvent::Leave) {
@@ -796,7 +841,7 @@ protected:
                 m_state->transient.hoveredFaceDetectionsId.clear();
                 if (!m_state->transient.speakerPickDragActive) {
                     unsetCursor();
-                    requestUpdate();
+                    schedulePreviewUpdate();
                 }
             }
             return QVulkanWindow::event(event);
@@ -824,7 +869,7 @@ protected:
                     surfacePosition,
                     m_faceStreamBoxFocusClearRequested,
                     m_faceStreamBoxClickStatus)) {
-                requestUpdate();
+                schedulePreviewUpdate();
                 contextMenu->accept();
                 return true;
             }
@@ -840,7 +885,7 @@ protected:
                 if (m_selectionRequested) {
                     m_selectionRequested(hitClipId);
                 }
-                requestUpdate();
+                schedulePreviewUpdate();
             }
             QMenu menu;
             QAction* createKeyframeAction = menu.addAction(QStringLiteral("Create Keyframe Here"));
@@ -890,7 +935,7 @@ private:
 
         if (!m_state->facedetectionsOverlays.isEmpty()) {
             if (updateHoveredFaceDetectionsBox(m_state, infos, position)) {
-                requestUpdate();
+                schedulePreviewUpdate();
                 setCursor(Qt::PointingHandCursor);
                 return;
             }
@@ -900,7 +945,7 @@ private:
                 m_state->transient.hoveredFaceDetectionsTrackId = -1;
                 m_state->transient.hoveredFaceDetectionsClipId.clear();
                 m_state->transient.hoveredFaceDetectionsId.clear();
-                requestUpdate();
+                schedulePreviewUpdate();
             }
         }
 
@@ -1011,7 +1056,7 @@ public:
         if (m_stats) {
             ++m_stats->diagnosticReadbackRequests;
         }
-        requestUpdate();
+        schedulePreviewUpdate();
     }
     bool pipelineThumbnailReadbackPending() const
     {
@@ -1078,6 +1123,8 @@ private:
     bool m_pipelineThumbnailReadbackPending = false;
     qint64 m_lastPipelineThumbnailReadbackMs = 0;
     bool m_updatePending = false;
+    bool m_scheduledWhileExposed = false;
+    QSize m_lastExposeScheduledSize;
     qint64 m_updateRequestMs = 0;
     qint64 m_lastPresentMs = 0;
 };
