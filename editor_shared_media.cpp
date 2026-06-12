@@ -1,6 +1,17 @@
 #include "editor_shared_media.h"
 #include "debug_controls.h"
 
+bool zeroCopyInteropEnvironmentDetected()
+{
+#if defined(Q_OS_LINUX)
+    return QFile::exists(QStringLiteral("/proc/driver/nvidia/version")) ||
+           QFile::exists(QStringLiteral("/sys/module/nvidia")) ||
+           QFile::exists(QStringLiteral("/dev/dri/renderD128"));
+#else
+    return false;
+#endif
+}
+
 #include <QDateTime>
 #include <QDir>
 #include <QDirIterator>

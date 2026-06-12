@@ -1146,7 +1146,19 @@ void SpeakersTab::onSpeakerRunAutoTrackClicked()
     args << (detectorSettings.scrfdTiled
                 ? QStringLiteral("--scrfd-tiling")
                 : QStringLiteral("--no-scrfd-tiling"));
-    args << QStringLiteral("--require-zero-copy");
+    if (zeroCopyInteropEnvironmentDetected()) {
+        args << QStringLiteral("--require-zero-copy");
+    } else {
+        // No CUDA/VAAPI interop on this host (e.g. macOS): end-to-end
+        // zero-copy cannot be satisfied and --require-zero-copy would fail
+        // every run. Use the explicit CPU-upload compatibility opt-in and
+        // say so; the strict zero-copy assertion stays in force on capable
+        // hosts (synchronization.md Invariant 8 explicit-opt-in rule).
+        args << QStringLiteral("--allow-cpu-upload-fallback");
+        qWarning().noquote() << QStringLiteral(
+            "[facedetections] zero-copy interop unavailable on this host; "
+            "running generation with the explicit CPU-upload compatibility opt-in");
+    }
     args << (launchControlWindow
                 ? QStringLiteral("--control-window")
                 : QStringLiteral("--no-control-window"));

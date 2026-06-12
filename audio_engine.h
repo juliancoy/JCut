@@ -45,6 +45,8 @@ private:
 };
 
 class AudioEngine {
+  friend class TestAudioMixPolicy;
+
 public:
   AudioEngine() = default;
   ~AudioEngine();
@@ -405,6 +407,9 @@ private:
   std::atomic<qint64> m_lastMixFirstAudioFrameCount{0};
   std::atomic<qint64> m_lastMixFirstLocalSampleAtChunkStart{0};
   std::atomic<int> m_lastMixSilentReason{0};
+  std::atomic<int> m_lastMixStarvedClipCount{0};
+  std::atomic<qint64> m_mixDegradedChunkCount{0};
+  QString m_lastMixStarvedClipPath; // guarded by m_stateMutex
   std::atomic<qint64> m_lastTimeStretchCacheMissWarningMs{0};
   std::atomic<qint64> m_timeStretchCacheMissCount{0};
   std::atomic<int> m_lastTimeStretchCacheMissSpeed{0};

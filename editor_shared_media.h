@@ -35,6 +35,11 @@ void refreshClipAudioSource(TimelineClip& clip);
 QString playbackAudioPathForClip(const TimelineClip& clip);
 bool playbackUsesAlternateAudioSource(const TimelineClip& clip);
 QString interactivePreviewMediaPathForClip(const TimelineClip& clip);
+// True when this host has the Linux GPU interop (CUDA or VAAPI render node)
+// that the end-to-end zero-copy decode contract requires. Callers that
+// assert --require-zero-copy must consult this; on other hosts the explicit
+// CPU-upload compatibility opt-in is the honest mode.
+bool zeroCopyInteropEnvironmentDetected();
 bool isVariableFrameRate(const QString& path);
 bool isImageSequencePath(const QString& path);
 QStringList imageSequenceFramePaths(const QString& path);

@@ -1,5 +1,6 @@
 #include "audio_engine.h"
 
+#include "audio_mix_readiness.h"
 #include "debug_controls.h"
 #include "decoder_ffmpeg_utils.h"
 #include "ffmpeg_compat.h"
@@ -731,6 +732,10 @@ QJsonObject AudioEngine::profilingSnapshot() const {
           std::memory_order_acquire));
   snapshot[QStringLiteral("last_mix_silence_reason")] = silentReasonToString(
       m_lastMixSilentReason.load(std::memory_order_acquire));
+  snapshot[QStringLiteral("last_mix_starved_clip_count")] =
+      m_lastMixStarvedClipCount.load(std::memory_order_acquire);
+  snapshot[QStringLiteral("mix_degraded_chunk_count")] = static_cast<qint64>(
+      m_mixDegradedChunkCount.load(std::memory_order_acquire));
 
   std::lock_guard<std::mutex> lock(m_stateMutex);
   snapshot[QStringLiteral("decoded_audio_path_count")] =
@@ -757,6 +762,8 @@ QJsonObject AudioEngine::profilingSnapshot() const {
       static_cast<qint64>(m_activeDecodeFullDecode.size());
   snapshot[QStringLiteral("time_stretch_precompute_request_count")] =
       m_timeStretchPrecomputeRequestCount;
+  snapshot[QStringLiteral("last_mix_starved_clip_path")] =
+      m_lastMixStarvedClipPath;
   snapshot[QStringLiteral("last_time_stretch_cache_miss_path")] =
       m_lastTimeStretchCacheMissPath;
   const int lastTimeStretchMissSpeed =
@@ -2283,6 +2290,8 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     QVector<TranscriptNormalizeSegment> transcriptNormalizeSegments;
     qreal precomputedTimeStretchSpeed = 1.0;
     bool linearSourceMapping = false;
+    bool starvedThisChunk = false;
+    bool starvationEnqueued = false;
   };
   QVector<PreparedClipAudio> preparedClips;
   preparedClips.reserve(context.clips.size());
@@ -2340,6 +2349,7 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     m_lastMixTimeStretchSpeedPermille.store(qRound(timeStretchSpeed * 1000.0),
                                             std::memory_order_release);
     m_lastMixSilentReason.store(reason, std::memory_order_release);
+    m_lastMixStarvedClipCount.store(0, std::memory_order_release);
     m_pitchPreservingAudioBlocked.store(qAbs(timeStretchSpeed - 1.0) >= 0.0001,
                                         std::memory_order_release);
     m_audioPlaybackBlocked.store(true, std::memory_order_release);
@@ -2506,8 +2516,8 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
 
   const bool transcriptNormalizeEnabled =
       m_transcriptNormalizeEnabled.load(std::memory_order_acquire);
-  const bool blockedWaitingForPlayableAudio =
-      preparedClips.isEmpty() && (cacheMissCount > 0 || invalidAudioCount > 0);
+  const bool blockedWaitingForPlayableAudio = mixPrepareMustBlock(
+      preparedClips.size(), cacheMissCount, invalidAudioCount);
   if (blockedWaitingForPlayableAudio) {
     storeBlockedMixDebug(SilentReasonWaitingForPlayableAudio);
     return false;
@@ -2703,12 +2713,13 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     const int64_t timelineSamplePos = chunkStartSample + timelineOffset;
     const int outIndex = outFrame * m_channelCount;
     bool frameHadActiveClip = false;
+    bool frameHadReadyContribution = false;
     bool frameInputOutOfRange = false;
     bool frameSpeechGainZero = false;
     bool frameClipGainZero = false;
     bool frameSourceNonzero = false;
 
-    for (const PreparedClipAudio &prepared : preparedClips) {
+    for (PreparedClipAudio &prepared : preparedClips) {
       const TimelineClip &clip = *prepared.clip;
       const AudioClipCacheEntry &audio = prepared.audio;
       if (timelineSamplePos < prepared.clipStartSample ||
@@ -2725,7 +2736,11 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
       const int64_t localInFrame = inFrame - audio.sourceStartSample;
       if (localInFrame < 0 ||
           localInFrame >= (audio.samples.size() / m_channelCount)) {
+        // Starved clip: drop it for this chunk and decode in the background.
+        // Ready clips keep playing; the chunk blocks only if no active clip
+        // can contribute at this frame (checked after the clip loop).
         frameInputOutOfRange = true;
+        prepared.starvedThisChunk = true;
         m_lastMixOutOfRangeTimelineSample.store(timelineSamplePos,
                                                 std::memory_order_release);
         m_lastMixOutOfRangeSourceSample.store(sourceFrame,
@@ -2739,17 +2754,20 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
                 static_cast<int64_t>(audio.samples.size() /
                                      qMax(1, audio.channelCount)),
             std::memory_order_release);
-        if (pitchPreservingTimeStretchActive(
-                prepared.precomputedTimeStretchSpeed)) {
-          enqueueTimeStretchPrecomputeForPath(clipAudioPathForScheduling(clip),
-                                              sourceFrame);
-        } else {
-          enqueuePreviewDecodeForPath(clipAudioPathForScheduling(clip),
-                                      inFrame);
+        if (!prepared.starvationEnqueued) {
+          prepared.starvationEnqueued = true;
+          if (pitchPreservingTimeStretchActive(
+                  prepared.precomputedTimeStretchSpeed)) {
+            enqueueTimeStretchPrecomputeForPath(
+                clipAudioPathForScheduling(clip), sourceFrame);
+          } else {
+            enqueuePreviewDecodeForPath(clipAudioPathForScheduling(clip),
+                                        inFrame);
+          }
         }
-        storeBlockedMixDebug(SilentReasonInputOutOfRange);
-        return false;
+        continue;
       }
+      frameHadReadyContribution = true;
       const int inIndex = static_cast<int>(localInFrame * m_channelCount);
 
       float primarySpeechGain = 1.0f;
@@ -2792,7 +2810,10 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
         output[outIndex + 1] += audio.samples[inIndex + 1] * primaryGain;
       }
 
-      if (secondarySpeechGain > 0.0f && secondaryTimelineSample >= 0) {
+      if (secondarySpeechGain > 0.0f && secondaryTimelineSample >= 0 &&
+          spliceSecondaryTapWithinClip(secondaryTimelineSample,
+                                       prepared.clipStartSample,
+                                       prepared.clipEndSample)) {
         int64_t secondaryInFrame =
             sourceSampleAtTimelineSample(prepared, secondaryTimelineSample);
         secondaryInFrame = timeStretchCacheSampleForSourceSample(
@@ -2818,6 +2839,13 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
               audio.samples[secondaryInIndex + 1] * secondaryGain;
         }
       }
+    }
+    if (mixFrameMustBlock(frameHadActiveClip, frameHadReadyContribution,
+                          frameInputOutOfRange)) {
+      // Every active clip at this frame is starved: emitting silence here
+      // would skip content instead of waiting for it, so block the chunk.
+      storeBlockedMixDebug(SilentReasonInputOutOfRange);
+      return false;
     }
     if (frameHadActiveClip) {
       ++framesWithActiveClip;
@@ -3047,6 +3075,23 @@ bool AudioEngine::mixChunk(const MixContext &context, float *output, int frames,
     } else {
       silentReason = SilentReasonOutputBelowThreshold;
     }
+  }
+  int starvedClipCount = 0;
+  QString starvedClipPath;
+  for (const PreparedClipAudio &prepared : preparedClips) {
+    if (prepared.starvedThisChunk) {
+      ++starvedClipCount;
+      if (starvedClipPath.isEmpty()) {
+        starvedClipPath = clipAudioPathForScheduling(*prepared.clip);
+      }
+    }
+  }
+  m_lastMixStarvedClipCount.store(starvedClipCount,
+                                  std::memory_order_release);
+  if (starvedClipCount > 0) {
+    m_mixDegradedChunkCount.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(m_stateMutex);
+    m_lastMixStarvedClipPath = starvedClipPath;
   }
   int64_t firstClipStart = 0;
   int64_t firstClipEnd = 0;

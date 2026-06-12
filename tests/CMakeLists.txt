@@ -13,6 +13,7 @@ set(EDITOR_TEST_TARGETS
     test_standard_preview_presentation_pipeline
     test_audio_time_stretch
     test_audio_time_stretch_cache
+    test_audio_mix_policy
     test_transform_skip_aware_timing
     test_preview_geometry
     test_waveform_service
@@ -59,6 +60,11 @@ target_sources(test_no_proxy_hardware_playback_contract
         ${CMAKE_CURRENT_SOURCE_DIR}/../playback_frame_pipeline.cpp
 )
 
+target_sources(test_audio_mix_policy
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../audio_engine.cpp
+)
+
 target_sources(test_standard_preview_presentation_pipeline
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../playback_frame_pipeline.cpp
@@ -90,6 +96,7 @@ set_tests_properties(
     test_standard_preview_presentation_pipeline
     test_timeline_cache
     test_audio_time_stretch_cache
+    test_audio_mix_policy
     test_transcript_logic
     test_transform_skip_aware_timing
     test_direct_vulkan_handoff_pipeline_contract

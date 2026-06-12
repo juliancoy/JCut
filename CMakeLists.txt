@@ -143,6 +143,21 @@ if(JCUT_ENABLE_RUBBERBAND_TIME_STRETCH)
     endif()
 endif()
 
+# Imported targets get SYSTEM include treatment (-isystem), which the compiler
+# searches after every plain -I directory and in interface order — on macOS,
+# Qt's interface includes put /opt/homebrew/include ahead of the pinned FFmpeg
+# include dir, so a Homebrew FFmpeg of a different major version shadowed the
+# bundled headers while the bundled libraries were linked. Mixed struct
+# layouts silently corrupt AVCodecParameters/AVCodecContext field reads
+# (sample_rate read as 0, 0x0 frame sizes). Emit the pinned include dirs as
+# plain -I so they always win over any -isystem system prefix.
+if(TARGET PkgConfig::FFMPEG)
+    set_target_properties(PkgConfig::FFMPEG PROPERTIES IMPORTED_NO_SYSTEM TRUE)
+endif()
+if(TARGET PkgConfig::RUBBERBAND)
+    set_target_properties(PkgConfig::RUBBERBAND PROPERTIES IMPORTED_NO_SYSTEM TRUE)
+endif()
+
 if(NOT JCUT_USE_SYSTEM_FFMPEG)
     set(_expected_ffmpeg_libdir "${EDITOR_FFMPEG_PREFIX}/lib")
     list(FIND FFMPEG_LIBRARY_DIRS "${_expected_ffmpeg_libdir}" _ffmpeg_libdir_match)

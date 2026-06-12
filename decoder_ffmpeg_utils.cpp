@@ -4,9 +4,13 @@
 #include <QThread>
 
 extern "C" {
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
 #include <libavutil/error.h>
 #include <libavutil/log.h>
 #include <libavutil/pixdesc.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
 }
 
 #include <atomic>
@@ -44,11 +48,48 @@ QString avErrToString(int errnum) {
     return QString::fromUtf8(errbuf);
 }
 
+void enforceFfmpegHeaderRuntimeMatch()
+{
+    static std::atomic_bool checked{false};
+    bool expected = false;
+    if (!checked.compare_exchange_strong(expected, true)) {
+        return;
+    }
+
+    const struct {
+        const char* name;
+        unsigned builtAgainst;
+        unsigned runtime;
+    } libs[] = {
+        {"libavcodec", LIBAVCODEC_VERSION_INT, avcodec_version()},
+        {"libavformat", LIBAVFORMAT_VERSION_INT, avformat_version()},
+        {"libavutil", LIBAVUTIL_VERSION_INT, avutil_version()},
+        {"libswresample", LIBSWRESAMPLE_VERSION_INT, swresample_version()},
+        {"libswscale", LIBSWSCALE_VERSION_INT, swscale_version()},
+    };
+    for (const auto& lib : libs) {
+        if (AV_VERSION_MAJOR(lib.builtAgainst) != AV_VERSION_MAJOR(lib.runtime)) {
+            qFatal("FFmpeg header/runtime mismatch for %s: compiled against %u.%u.%u "
+                   "but loaded %u.%u.%u. Struct layouts differ across major versions, "
+                   "so decoded metadata reads are corrupted (e.g. sample_rate=0, 0x0 "
+                   "frames). A system FFmpeg's headers likely shadowed "
+                   "ffmpeg-install/include at compile time; fix the include order and "
+                   "rebuild.",
+                   lib.name,
+                   AV_VERSION_MAJOR(lib.builtAgainst), AV_VERSION_MINOR(lib.builtAgainst),
+                   AV_VERSION_MICRO(lib.builtAgainst),
+                   AV_VERSION_MAJOR(lib.runtime), AV_VERSION_MINOR(lib.runtime),
+                   AV_VERSION_MICRO(lib.runtime));
+        }
+    }
+}
+
 void installFfmpegLogFilter()
 {
     static std::atomic_bool installed{false};
     bool expected = false;
     if (installed.compare_exchange_strong(expected, true)) {
+        enforceFfmpegHeaderRuntimeMatch();
         // Keep production playback lean by avoiding verbose FFmpeg logging
         // unless decode diagnostics are explicitly enabled.
         av_log_set_level(debugDecodeEnabled() ? AV_LOG_WARNING : AV_LOG_ERROR);

@@ -1,6 +1,7 @@
 #include "waveform_service.h"
 
 #include "debug_controls.h"
+#include "decoder_ffmpeg_utils.h"
 #include "editor_shared.h"
 
 #include <QDateTime>
@@ -543,6 +544,8 @@ bool WaveformService::decodePyramidForPath(const QString& mediaPath,
     *sampleRateOut = 0;
     *totalSamplesOut = 0;
     levelsOut->clear();
+
+    installFfmpegLogFilter();
 
     AVFormatContext* formatCtx = nullptr;
     if (avformat_open_input(&formatCtx, mediaPath.toUtf8().constData(), nullptr, nullptr) < 0 || !formatCtx) {

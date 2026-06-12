@@ -112,6 +112,16 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - If the retimed buffer is not ready, the fallback is explicit: playback enters audio warmup/blocked state and increments `time_stretch_cache_miss_count`; it must not silently fall back to pitch-shifted varispeed audio.
   - While blocked, the audio clock is not a valid master clock for video. `EditorWindow::advanceFrame()` must call `requestPlaybackAudioWarmup(true)` and hold or snap back to the last effective audible timeline sample instead of letting video follow a stuck or rewound audio cursor.
 
+## Multi-Stream Audio Readiness
+- The mixer composites every audio clip that overlaps a timeline sample; clips on all tracks sum into one output mix, and the audio master clock is defined over that mix in timeline-sample space. Adding streams does not add clocks.
+- Per-clip readiness is independent. A clip is **starved** when its audio cache (decoded window or retimed time-stretch segment) does not cover the requested mix range.
+  - A starved clip contributes silence for the chunk and triggers background decode/precompute; it must not stall clips that are ready.
+  - Blocking the chunk — and with it the audio master clock — is allowed only when no active clip can contribute.
+- Frame-emission rule: a mix frame may be emitted while clips are starved only if at least one active clip contributed in-range audio at that frame. A frame whose active clips are all starved blocks the chunk instead of emitting silence over content that merely is not decoded yet.
+  - With a single audio stream this reduces to the original blocking behavior: the only clip starving blocks playback (warmup), preserving the pitch-preserving gate above.
+  - Source of truth: `mixPrepareMustBlock(...)`, `mixFrameMustBlock(...)`, and `spliceSecondaryTapWithinClip(...)` in `audio_mix_readiness.h`.
+- Degradation is never silent: `/profile` exposes `last_mix_starved_clip_count`, `last_mix_starved_clip_path`, and cumulative `mix_degraded_chunk_count`. A persistent nonzero starved count under steady playback is a decode-throughput defect, not acceptable steady state.
+
 ## Transcript / Speech Filter Paths
 - Source of transcript truth per clip:
   - `activeTranscriptPathForClipFile(...)`.
@@ -124,6 +134,11 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - `effectivePlaybackRanges()` -> `TranscriptEngine::transcriptWordExportRanges(...)`.
   - Non-skipped transcript words (+ prepend/postpend) become kept timeline ranges.
   - If speech filter enabled, playback stepping uses these sparse ranges.
+- Speech range composition for overlapping clips:
+  - Kept ranges are computed per clip from that clip's own transcript and cached per `clip.id` inside `transcriptWordExportRanges(...)`.
+  - The global effective ranges are the union of all per-clip kept ranges, plus passthrough of base-range spans not covered by any transcript-bearing clip.
+  - Traversal is global by design: there is one condensed timeline, and all clips skip and splice together. A clip without a transcript is never the source of kept ranges; it simply follows traversal.
+  - Splice boundary smoothing (speech-range edge fades and crossfades) is applied per output frame from the global ranges. The crossfade's secondary tap may pull audio only from clips whose timeline extent contains the secondary sample (`spliceSecondaryTapWithinClip(...)` in `audio_mix_readiness.h`); a clip has no audio at any gain outside its extent.
 - Filtered sample projection:
   - `filteredPlaybackSampleForAbsoluteSample(...)` maps absolute playhead to condensed filtered time.
 
@@ -179,6 +194,7 @@ This document maps the temporal domains in JCut, the conversion paths between th
   - UI or transform systems assuming continuous timeline time can feel “fast” or “jumping” unless they use filtered/effective duration paths.
 - Audio clock stability governs perceived sync quality in playback.
   - Stalls trigger fallback to timer path; repeated transitions can present jitter if decode/audio is under pressure.
+  - With multiple audio streams, readiness is per clip: a starved stream degrades to silence for the chunk and recovers when its cache catches up; it does not stall the transport (see Multi-Stream Audio Readiness).
   - A clock derived from future queued/submitted position instead of effective audible position will make visual playheads lead the heard audio.
   - A blocked pitch-preserving audio segment is not an audio-clock stall to ride through; playback must gate until the needed retimed segment is available.
 - Playback-rate stress exposes stale-overlay mistakes.
@@ -214,6 +230,8 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Invariant 8: Any code path that stores or advances "current frame" during playback must derive it from `absolutePlaybackSample` or the valid audio-master sample used to update `absolutePlaybackSample`; independent advancement is a timing bug.
 - Invariant 9: Retimed audio cache selection must prove coverage for the requested mix range before returning a segment.
 - Invariant 10: Playback FaceDetections overlays must be selected from source-frame-indexed cache data for the current requested media source frame. If cache preparation lags, previous overlays may be held only within the explicit source-frame drift tolerance and must otherwise be cleared instead of shown stale.
+- Invariant 11: Audio mix readiness is per clip. A starved clip degrades to silence for the chunk and schedules background decode; it must not block clips that are ready. The mix chunk — and the audio master clock — may block only when active clips exist and none can contribute (`mixPrepareMustBlock(...)` / `mixFrameMustBlock(...)` in `audio_mix_readiness.h`).
+- Invariant 12: A speech-range splice crossfade may pull secondary-tap audio only from clips whose timeline extent contains the secondary timeline sample. A clip is silent at any gain outside its own extent.
 
 ## Verification Matrix
 - Playhead clock policy and warp normalization:
@@ -222,6 +240,9 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Pitch-preserving time-stretch cache and playback gating:
   - Code: `audio_engine.h`, `editor_playback.cpp`
   - Tests: `tests/test_audio_time_stretch.cpp`, `tests/test_audio_time_stretch_cache.cpp`, `tests/test_playback_policy.cpp`
+- Multi-stream mix readiness, per-clip degradation, and splice tap bounds:
+  - Code: `audio_mix_readiness.h`, `audio_engine.cpp`
+  - Tests: `tests/test_audio_mix_policy.cpp`
 - Timeline sample -> source/transcript mapping:
   - Code: `editor_shared_render_sync.cpp`
   - Tests: `tests/test_transcript_logic.cpp::testTranscriptFrameMappingUsesSourceSeconds`
@@ -265,6 +286,10 @@ This document maps the temporal domains in JCut, the conversion paths between th
 - Symptom: transcript follow or overlay breaks only when render-sync markers exist.
   - Check: any bypass of marker-aware conversion helpers.
   - Probe: validate marker list and compare mapped source frame with/without markers for same timeline point.
+- Symptom: one audio clip drops out during playback while other clips keep playing.
+  - Check: this is per-clip starvation, not a clock problem; the master clock is healthy by design while at least one clip contributes.
+  - Probe: `/profile?live=1&force=1` fields `last_mix_starved_clip_count`, `last_mix_starved_clip_path`, `mix_degraded_chunk_count`, and the `last_mix_out_of_range_*` window for the starved path.
+  - Check: a starved count that stays nonzero under steady playback means decode/precompute cannot keep up for that path; inspect `pending_decode_path_count` and the time-stretch readiness fields rather than widening any tolerance.
 - Symptom: video playback looks glitched or bounces between a few frames at non-1.0 `time_stretch` speed.
   - Check: audio profile for `audio_playback_blocked`, `pitch_preserving_audio_blocked`, `last_mix_silence_reason=input_out_of_range`, and out-of-range retimed segment bounds.
   - Probe: `/profile?live=1&force=1` audio fields `last_mix_out_of_range_timeline_sample`, `last_mix_out_of_range_source_sample`, `last_mix_out_of_range_normalized_sample`, `last_mix_out_of_range_audio_start_sample`, and `last_mix_out_of_range_audio_end_sample`.

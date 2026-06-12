@@ -4,6 +4,7 @@
 
 #include <QCoreApplication>
 #include <QDataStream>
+#include <QElapsedTimer>
 #include <QDir>
 #include <QFileInfo>
 #include <QImage>

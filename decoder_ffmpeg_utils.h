@@ -18,6 +18,11 @@ struct VideoDecoderThreadingPolicy {
 
 QString avErrToString(int errnum);
 void installFfmpegLogFilter();
+// Aborts with a diagnostic if the FFmpeg headers this binary was compiled
+// against belong to a different major version than the libraries it loaded.
+// Struct layouts differ across majors, so a mismatch corrupts every direct
+// field read (sample_rate, width/height) instead of failing visibly.
+void enforceFfmpegHeaderRuntimeMatch();
 std::mutex& ffmpegDecodeMutex();
 AVPixelFormat get_hw_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
 AVPixelFormat get_alpha_compatible_format(AVCodecContext* ctx, const AVPixelFormat* pix_fmts);
