@@ -445,7 +445,27 @@ void EditorWindow::setupControlServer(quint16 controlPort, QElapsedTimer &ctorTi
         [this]() { return playbackConfigSnapshot(); },
         [this](const QJsonObject& patch) { return applyPlaybackConfigPatch(patch); },
         [this]() { return audioDebugSnapshot(); },
-        nullptr, // renderResultCallback (empty/default)
+        [this]() {
+            const QJsonObject active = m_liveRenderProfile;
+            const QJsonObject last = m_lastRenderProfile;
+            const QJsonObject current = m_renderInProgress ? active : last;
+            return QJsonObject{
+                {QStringLiteral("active"), m_renderInProgress},
+                {QStringLiteral("live"), active},
+                {QStringLiteral("last"), last},
+                {QStringLiteral("current"), current},
+                {QStringLiteral("usedGpu"), current.value(QStringLiteral("using_gpu")).toBool(false)},
+                {QStringLiteral("usedHardwareEncode"),
+                 current.value(QStringLiteral("using_hardware_encode")).toBool(false)},
+                {QStringLiteral("encoderLabel"), current.value(QStringLiteral("encoder_label")).toString()},
+                {QStringLiteral("status"), current.value(QStringLiteral("status")).toString()},
+                {QStringLiteral("outputPath"), current.value(QStringLiteral("output_path")).toString()},
+                {QStringLiteral("framesCompleted"),
+                 current.value(QStringLiteral("frames_completed")).toVariant().toLongLong()},
+                {QStringLiteral("totalFrames"),
+                 current.value(QStringLiteral("total_frames")).toVariant().toLongLong()}
+            };
+        },
         this);
     m_controlServer->start(controlPort);
     qDebug() << "[STARTUP] ControlServer started in" << ctorTimer.elapsed() << "ms";

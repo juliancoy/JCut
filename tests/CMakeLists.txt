@@ -154,6 +154,24 @@ add_test(NAME test_editor_core_excludes_vulkan_export_stub
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_archive_excludes_vulkan_export_stub.cmake
 )
 
+add_test(NAME test_contiguous_transcript_sections_state_persistence
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_contiguous_transcript_sections_state_persistence.cmake
+)
+
+add_test(NAME test_render_status_reports_live_progress
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_render_status_reports_live_progress.cmake
+)
+
+add_test(NAME test_export_audio_uses_rubberband
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_export_audio_uses_rubberband.cmake
+)
+
 add_executable(test_facedetections_processed_artifact
     ${CMAKE_CURRENT_SOURCE_DIR}/test_facedetections_processed_artifact.cpp
 )

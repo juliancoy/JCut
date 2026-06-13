@@ -5,6 +5,7 @@
 #include "../timeline_fps.h"
 
 #include <QFile>
+#include <QRegularExpression>
 #include <cmath>
 
 namespace {
@@ -124,10 +125,16 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
 
     QVERIFY2(source.contains(QStringLiteral("const qreal timelineFramePosition")),
              "export must derive a fractional timeline position from output PTS");
-    QVERIFY2(source.contains(QStringLiteral("activeRenderer->renderFrameToOutput(request,\n                                                      timelineFramePosition")),
+    static const QRegularExpression fractionalRenderCall(
+        QStringLiteral("activeRenderer->renderFrameToOutput\\s*\\(\\s*request\\s*,\\s*timelineFramePosition"));
+    QVERIFY2(fractionalRenderCall.match(source).hasMatch(),
              "Vulkan export must render the fractional timeline position, not the floored edit frame");
     QVERIFY2(!source.contains(QStringLiteral("renderTimelineFrameToOutput(request,")),
              "export must not contain the removed CPU render fallback path");
+    QVERIFY2(!source.contains(QStringLiteral("renderTranscriptOverlay(")),
+             "Vulkan export must not run a post-render CPU transcript overlay pass");
+    QVERIFY2(!source.contains(QStringLiteral("!hasTranscriptOverlay")),
+             "Transcript overlays must not disable direct Vulkan handoff or GPU color conversion");
 }
 
 QTEST_MAIN(TestRealtimeRenderContract)

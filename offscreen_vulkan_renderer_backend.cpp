@@ -32,6 +32,45 @@ extern "C" {
 
 namespace render_detail {
 
+QString speakerAtTranscriptSourceFrame(const QVector<TranscriptSection>& sections, int64_t sourceFrame)
+{
+  const auto firstPossibleSection = std::lower_bound(
+      sections.constBegin(),
+      sections.constEnd(),
+      sourceFrame,
+      [](const TranscriptSection& section, int64_t frame) {
+        return section.endFrame < frame;
+      });
+  for (auto it = firstPossibleSection; it != sections.constEnd(); ++it) {
+    const TranscriptSection& section = *it;
+    if (sourceFrame < section.startFrame) {
+      return QString();
+    }
+    if (sourceFrame > section.endFrame) {
+      continue;
+    }
+    int bestIndex = -1;
+    for (int i = 0; i < section.words.size(); ++i) {
+      const TranscriptWord& word = section.words.at(i);
+      if (sourceFrame >= word.startFrame && sourceFrame <= word.endFrame) {
+        bestIndex = i;
+        break;
+      }
+      if (sourceFrame > word.endFrame) {
+        bestIndex = i;
+      }
+    }
+    if (bestIndex < 0 && !section.words.isEmpty()) {
+      bestIndex = 0;
+    }
+    if (bestIndex >= 0 && bestIndex < section.words.size()) {
+      return section.words.at(bestIndex).speaker.trimmed();
+    }
+    return QString();
+  }
+  return QString();
+}
+
 class OffscreenVulkanRendererPrivate {
 public:
   static constexpr int kMaxLayerTextures = 12;
@@ -1593,6 +1632,26 @@ public:
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
   };
 
+  bool writeOverlayImageToStagingFlippedY(const OverlayImage &overlay,
+                                          VkDeviceSize stagingOffset) {
+    if (overlay.isNull() || !m_stagingMapped) {
+      return false;
+    }
+    const int rowBytes = overlay.width * 4;
+    const size_t bytes = static_cast<size_t>(rowBytes) * static_cast<size_t>(overlay.height);
+    if (overlay.rgbaPremultiplied.size() < static_cast<qsizetype>(bytes)) {
+      return false;
+    }
+    auto *dst = reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset;
+    const auto *src = reinterpret_cast<const uint8_t *>(overlay.rgbaPremultiplied.constData());
+    for (int y = 0; y < overlay.height; ++y) {
+      std::memcpy(dst + (static_cast<size_t>(y) * rowBytes),
+                  src + (static_cast<size_t>(overlay.height - 1 - y) * rowBytes),
+                  static_cast<size_t>(rowBytes));
+    }
+    return flushActiveStagingWrite(stagingOffset, static_cast<VkDeviceSize>(bytes));
+  }
+
   bool submitAndWait() {
     if (!submitActiveSlot()) {
       return false;
@@ -1853,13 +1912,7 @@ public:
           if (layer.overlayImage.width == m_outputSize.width() &&
               layer.overlayImage.height == m_outputSize.height() &&
               m_stagingMapped) {
-            const size_t bytes = static_cast<size_t>(
-                layer.overlayImage.rgbaPremultiplied.size());
-            std::memcpy(
-                reinterpret_cast<uint8_t *>(m_stagingMapped) + stagingOffset,
-                layer.overlayImage.rgbaPremultiplied.constData(), bytes);
-            if (!flushActiveStagingWrite(stagingOffset,
-                                         static_cast<VkDeviceSize>(bytes))) {
+            if (!writeOverlayImageToStagingFlippedY(layer.overlayImage, stagingOffset)) {
               return false;
             }
             transitionImageLayout(m_commandBuffer, slot.image,
@@ -1897,13 +1950,7 @@ public:
           const OverlayImage scaledOverlay =
               scaledOverlayImage(layer.overlayImage, m_outputSize);
           if (!scaledOverlay.isNull() && m_stagingMapped) {
-            const size_t bytes =
-                static_cast<size_t>(scaledOverlay.rgbaPremultiplied.size());
-            std::memcpy(reinterpret_cast<uint8_t *>(m_stagingMapped) +
-                            stagingOffset,
-                        scaledOverlay.rgbaPremultiplied.constData(), bytes);
-            if (!flushActiveStagingWrite(stagingOffset,
-                                         static_cast<VkDeviceSize>(bytes))) {
+            if (!writeOverlayImageToStagingFlippedY(scaledOverlay, stagingOffset)) {
               return false;
             }
             transitionImageLayout(m_commandBuffer, slot.image,
@@ -2831,6 +2878,67 @@ public:
         imageSize, request, timelineFrame, orderedClips, m_transcriptCache);
   }
 
+  OverlayImage buildSpeakerLabelOverlayImage(
+      const QSize &imageSize, const RenderRequest &request,
+      int64_t timelineFrame, const QVector<TimelineClip> &orderedClips) {
+    if (!request.showCurrentSpeakerName && !request.showCurrentSpeakerOrganization) {
+      return {};
+    }
+    SpeakerLabelOverlaySpec spec;
+    spec.showName = request.showCurrentSpeakerName;
+    spec.showOrganization = request.showCurrentSpeakerOrganization;
+    spec.nameTextScale = qBound<qreal>(0.25, request.currentSpeakerNameTextScale, 3.0);
+    spec.organizationTextScale =
+        qBound<qreal>(0.25, request.currentSpeakerOrganizationTextScale, 3.0);
+    spec.nameVerticalPosition =
+        qBound<qreal>(0.0, request.currentSpeakerNameVerticalPosition, 1.0);
+    spec.organizationVerticalPosition =
+        qBound<qreal>(0.0, request.currentSpeakerOrganizationVerticalPosition, 1.0);
+
+    for (const TimelineClip &clip : orderedClips) {
+      if (clip.filePath.trimmed().isEmpty() ||
+          timelineFrame < clip.startFrame ||
+          timelineFrame >= clip.startFrame + clip.durationFrames ||
+          (!clip.hasAudio && clip.mediaType != ClipMediaType::Audio)) {
+        continue;
+      }
+      const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+      if (transcriptPath.trimmed().isEmpty()) {
+        continue;
+      }
+      const int64_t sourceFrame = sourceFrameForClipAtTimelinePosition(
+          clip, static_cast<qreal>(timelineFrame), request.renderSyncMarkers);
+      QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
+      if (sections.isEmpty()) {
+        sections = loadTranscriptSections(transcriptPath);
+        m_transcriptCache.insert(transcriptPath, sections);
+      }
+      const QString speakerId = speakerAtTranscriptSourceFrame(sections, sourceFrame).trimmed();
+      if (speakerId.isEmpty()) {
+        continue;
+      }
+
+      QJsonDocument document;
+      SpeakerProfile profile;
+      profile.speakerId = speakerId;
+      profile.name = speakerId;
+      if (loadTranscriptJsonCached(transcriptPath, &document) && document.isObject()) {
+        const QJsonObject profiles = document.object().value(QStringLiteral("speaker_profiles")).toObject();
+        profile = speakerProfileFromJson(speakerId, profiles.value(speakerId).toObject());
+        if (profile.speakerId.isEmpty()) {
+          profile.speakerId = speakerId;
+        }
+        if (profile.name.trimmed().isEmpty()) {
+          profile.name = speakerId;
+        }
+      }
+      spec.name = profile.name.trimmed();
+      spec.organization = profile.organization.trimmed();
+      return overlayRenderBackend().renderSpeakerLabelOverlay(imageSize, spec);
+    }
+    return {};
+  }
+
 private:
   QSize m_outputSize;
   bool m_initialized = false;
@@ -3161,6 +3269,18 @@ QImage OffscreenVulkanRenderer::renderFrame(
     overlay.sourceSize = QSize(transcriptLayer.width, transcriptLayer.height);
     overlay.opacity = 1.0f;
     layers.push_back(overlay);
+  }
+  const OverlayImage speakerLabelLayer = d->buildSpeakerLabelOverlayImage(
+      request.outputSize,
+      request,
+      qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
+      orderedClips);
+  if (!speakerLabelLayer.isNull()) {
+    OffscreenVulkanRendererPrivate::LayerInput speakerOverlay;
+    speakerOverlay.overlayImage = speakerLabelLayer;
+    speakerOverlay.sourceSize = QSize(speakerLabelLayer.width, speakerLabelLayer.height);
+    speakerOverlay.opacity = 1.0f;
+    layers.push_back(speakerOverlay);
   }
   if (visualClipCandidates > 0 && visualLayersResolved == 0) {
     qWarning().noquote() << QStringLiteral(

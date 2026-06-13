@@ -454,6 +454,7 @@ private:
     QCheckBox *m_previewHideOutsideOutputCheckBox = nullptr;
     QCheckBox *m_previewShowSpeakerTrackPointsCheckBox = nullptr;
     QComboBox *m_previewVulkanPresenterCombo = nullptr;
+    QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
     QCheckBox *m_speakerShowFaceDetectionsBoxesCheckBox = nullptr;
     QCheckBox *m_speakerShowRawDetectionsCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;

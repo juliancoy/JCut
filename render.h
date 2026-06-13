@@ -59,6 +59,12 @@ struct RenderRequest {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;  // For debugging image write issues
+    bool showCurrentSpeakerName = false;
+    bool showCurrentSpeakerOrganization = false;
+    qreal currentSpeakerNameTextScale = 1.0;
+    qreal currentSpeakerOrganizationTextScale = 1.0;
+    qreal currentSpeakerNameVerticalPosition = 0.86;
+    qreal currentSpeakerOrganizationVerticalPosition = 0.93;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;

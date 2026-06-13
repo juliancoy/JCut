@@ -411,6 +411,27 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
         : static_cast<double>(kTimelineFps);
     request.useProxyMedia = m_renderUseProxiesCheckBox &&
                             m_renderUseProxiesCheckBox->isChecked();
+    request.showCurrentSpeakerName = m_speakerShowCurrentSpeakerNameCheckBox &&
+                                     m_speakerShowCurrentSpeakerNameCheckBox->isChecked();
+    request.showCurrentSpeakerOrganization =
+        m_speakerShowCurrentSpeakerOrganizationCheckBox &&
+        m_speakerShowCurrentSpeakerOrganizationCheckBox->isChecked();
+    request.currentSpeakerNameTextScale =
+        m_speakerCurrentSpeakerNameTextSizeSpin
+            ? qBound<qreal>(0.25, m_speakerCurrentSpeakerNameTextSizeSpin->value() / 100.0, 3.0)
+            : 1.0;
+    request.currentSpeakerOrganizationTextScale =
+        m_speakerCurrentSpeakerOrganizationTextSizeSpin
+            ? qBound<qreal>(0.25, m_speakerCurrentSpeakerOrganizationTextSizeSpin->value() / 100.0, 3.0)
+            : 1.0;
+    request.currentSpeakerNameVerticalPosition =
+        m_speakerCurrentSpeakerNameYPositionSpin
+            ? qBound<qreal>(0.0, m_speakerCurrentSpeakerNameYPositionSpin->value() / 100.0, 1.0)
+            : 0.86;
+    request.currentSpeakerOrganizationVerticalPosition =
+        m_speakerCurrentSpeakerOrganizationYPositionSpin
+            ? qBound<qreal>(0.0, m_speakerCurrentSpeakerOrganizationYPositionSpin->value() / 100.0, 1.0)
+            : 0.93;
     request.createVideoFromImageSequence = m_createImageSequenceCheckBox &&
                                            m_createImageSequenceCheckBox->isChecked();
     if (request.createVideoFromImageSequence && m_imageSequenceFormatCombo) {

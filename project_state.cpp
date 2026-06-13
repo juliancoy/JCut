@@ -429,6 +429,8 @@ QJsonObject EditorWindow::buildStateJson() const
         m_previewShowSpeakerTrackPointsCheckBox ? m_previewShowSpeakerTrackPointsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowSpeakerTrackBoxes")] =
         m_speakerShowFaceDetectionsBoxesCheckBox ? m_speakerShowFaceDetectionsBoxesCheckBox->isChecked() : false;
+    root[QStringLiteral("speakerShowContiguousTranscriptSections")] =
+        m_speakerShowContiguousSectionsCheckBox ? m_speakerShowContiguousSectionsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowRawDetections")] =
         m_speakerShowRawDetectionsCheckBox ? m_speakerShowRawDetectionsCheckBox->isChecked() : false;
     root[QStringLiteral("previewShowCurrentSpeakerName")] =

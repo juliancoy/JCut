@@ -1705,10 +1705,16 @@ bool ControlServerWorker::handleRenderRoutes(QTcpSocket* socket, const Request& 
     const bool usedGpu = renderResult.value(QStringLiteral("usedGpu")).toBool(false);
     writeJson(socket, 200, QJsonObject{
         {QStringLiteral("ok"), true},
+        {QStringLiteral("active"), renderResult.value(QStringLiteral("active")).toBool(false)},
+        {QStringLiteral("status"), renderResult.value(QStringLiteral("status")).toString()},
         {QStringLiteral("usingGpu"), usedGpu},
-        {QStringLiteral("path"), usedGpu ? QStringLiteral("gpu") : QStringLiteral("cpu_fallback")},
+        {QStringLiteral("path"), usedGpu ? QStringLiteral("gpu") : QStringLiteral("unavailable")},
         {QStringLiteral("encoder"), renderResult.value(QStringLiteral("encoderLabel")).toString()},
         {QStringLiteral("usedHardwareEncode"), renderResult.value(QStringLiteral("usedHardwareEncode")).toBool(false)},
+        {QStringLiteral("framesCompleted"), renderResult.value(QStringLiteral("framesCompleted")).toVariant().toLongLong()},
+        {QStringLiteral("totalFrames"), renderResult.value(QStringLiteral("totalFrames")).toVariant().toLongLong()},
+        {QStringLiteral("outputPath"), renderResult.value(QStringLiteral("outputPath")).toString()},
+        {QStringLiteral("liveRenderProgress"), renderResult.value(QStringLiteral("live")).toObject()},
         {QStringLiteral("lastRenderResult"), renderResult}
     });
     return true;

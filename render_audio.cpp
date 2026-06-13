@@ -1,10 +1,55 @@
 #include "render_internal.h"
 
+#include "audio_time_stretch.h"
+
 #include <QDebug>
 #include <cmath>
 #include <cstdlib>
 
 namespace render_detail {
+
+AudioTimeStretchRubberBandSettings exportRubberBandSettings()
+{
+    AudioTimeStretchRubberBandSettings settings;
+    settings.engine = editor::rubberBandEnginePreference() == editor::RubberBandEnginePreference::Finer
+        ? RubberBandEngineMode::Finer
+        : RubberBandEngineMode::Faster;
+    switch (editor::rubberBandThreadingPreference()) {
+    case editor::RubberBandThreadingPreference::Never:
+        settings.threading = RubberBandThreadingMode::Never;
+        break;
+    case editor::RubberBandThreadingPreference::Always:
+        settings.threading = RubberBandThreadingMode::Always;
+        break;
+    case editor::RubberBandThreadingPreference::Auto:
+        settings.threading = RubberBandThreadingMode::Auto;
+        break;
+    }
+    switch (editor::rubberBandWindowPreference()) {
+    case editor::RubberBandWindowPreference::Short:
+        settings.window = RubberBandWindowMode::Short;
+        break;
+    case editor::RubberBandWindowPreference::Long:
+        settings.window = RubberBandWindowMode::Long;
+        break;
+    case editor::RubberBandWindowPreference::Standard:
+        settings.window = RubberBandWindowMode::Standard;
+        break;
+    }
+    switch (editor::rubberBandPitchPreference()) {
+    case editor::RubberBandPitchPreference::HighQuality:
+        settings.pitch = RubberBandPitchMode::HighQuality;
+        break;
+    case editor::RubberBandPitchPreference::HighConsistency:
+        settings.pitch = RubberBandPitchMode::HighConsistency;
+        break;
+    case editor::RubberBandPitchPreference::HighSpeed:
+        settings.pitch = RubberBandPitchMode::HighSpeed;
+        break;
+    }
+    settings.channelsTogether = editor::rubberBandChannelsTogether();
+    return settings;
+}
 
 DecodedAudioClip decodeClipAudio(const QString& path) {
     DecodedAudioClip cache;
@@ -458,39 +503,103 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
         return true;
     };
 
+    auto queueFloatAudioForEncode = [&](const float* samples, int frameCount) -> bool {
+        if (!samples || frameCount <= 0) {
+            return true;
+        }
+        const int estimatedOutSamples = swr_get_out_samples(swr, frameCount);
+        uint8_t** convertedData = nullptr;
+        int convertedLineSize = 0;
+        if (av_samples_alloc_array_and_samples(&convertedData,
+                                               &convertedLineSize,
+                                               ffmpeg_compat::codecContextChannelCount(state.codecCtx),
+                                               estimatedOutSamples,
+                                               state.codecCtx->sample_fmt,
+                                               0) < 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to allocate converted audio buffer.");
+            }
+            return false;
+        }
+
+        const uint8_t* inputData[1] = {
+            reinterpret_cast<const uint8_t*>(samples)
+        };
+        const int convertedSamples =
+            swr_convert(swr, convertedData, estimatedOutSamples, inputData, frameCount);
+        if (convertedSamples < 0) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to convert mixed audio for encoding.");
+            }
+            av_freep(&convertedData[0]);
+            av_freep(&convertedData);
+            return false;
+        }
+
+        if (av_audio_fifo_realloc(fifo, av_audio_fifo_size(fifo) + convertedSamples) < 0 ||
+            av_audio_fifo_write(fifo, reinterpret_cast<void**>(convertedData), convertedSamples) < convertedSamples) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Failed to queue mixed audio for encoding.");
+            }
+            av_freep(&convertedData[0]);
+            av_freep(&convertedData);
+            return false;
+        }
+
+        av_freep(&convertedData[0]);
+        av_freep(&convertedData);
+        return writeAvailableAudioFrames(false);
+    };
+
     for (const ExportRangeSegment& range : exportRanges) {
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
         const int64_t sourceSegmentSamples = frameToSamples(exportEnd - exportStart + 1);
-        const int64_t segmentTotalSamples = qMax<int64_t>(
-            1,
-            static_cast<int64_t>(std::ceil(static_cast<qreal>(sourceSegmentSamples) / speed)));
-        int64_t producedSamples = 0;
-        while (producedSamples < segmentTotalSamples) {
+        if (sourceSegmentSamples <= 0 ||
+            sourceSegmentSamples > std::numeric_limits<int>::max() / kRenderAudioChannels) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("Export audio segment is too large to pitch-preserve in memory.");
+            }
+            av_frame_free(&audioFrame);
+            av_audio_fifo_free(fifo);
+            ffmpeg_compat::uninitChannelLayout(&inputLayout);
+            swr_free(&swr);
+            return false;
+        }
+
+        QVector<float> sourceMix(static_cast<int>(sourceSegmentSamples) * kRenderAudioChannels);
+        int64_t mixedSamples = 0;
+        while (mixedSamples < sourceSegmentSamples) {
             const int framesThisChunk =
-                static_cast<int>(qMin<int64_t>(mixChunkFrames, segmentTotalSamples - producedSamples));
-            const int64_t chunkStartSample =
-                frameToSamples(exportStart) +
-                static_cast<int64_t>(std::floor(static_cast<qreal>(producedSamples) * speed));
+                static_cast<int>(qMin<int64_t>(mixChunkFrames, sourceSegmentSamples - mixedSamples));
+            const int64_t chunkStartSample = frameToSamples(exportStart) + mixedSamples;
             mixAudioChunk(state.clips,
                           state.renderSyncMarkers,
                           state.cache,
                           mixBuffer.data(),
                           framesThisChunk,
                           chunkStartSample,
-                          speed);
+                          1.0);
+            std::memcpy(sourceMix.data() + (mixedSamples * kRenderAudioChannels),
+                        mixBuffer.constData(),
+                        static_cast<size_t>(framesThisChunk * kRenderAudioChannels) * sizeof(float));
+            mixedSamples += framesThisChunk;
+        }
 
-            const int estimatedOutSamples = swr_get_out_samples(swr, framesThisChunk);
-            uint8_t** convertedData = nullptr;
-            int convertedLineSize = 0;
-            if (av_samples_alloc_array_and_samples(&convertedData,
-                                                   &convertedLineSize,
-                                                   ffmpeg_compat::codecContextChannelCount(state.codecCtx),
-                                                   estimatedOutSamples,
-                                                   state.codecCtx->sample_fmt,
-                                                   0) < 0) {
+        QVector<float> exportMix = sourceMix;
+        if (qAbs(speed - 1.0) >= 0.0001) {
+            exportMix = timeStretchPreservePitch(sourceMix,
+                                                 kRenderAudioChannels,
+                                                 kRenderAudioSampleRate,
+                                                 speed,
+                                                 AudioTimeStretchBackend::RubberBand,
+                                                 nullptr,
+                                                 exportRubberBandSettings());
+            if (exportMix.isEmpty()) {
                 if (errorMessage) {
-                    *errorMessage = QStringLiteral("Failed to allocate converted audio buffer.");
+                    *errorMessage = QStringLiteral(
+                        "Rubber Band pitch-preserving audio stretch failed for export speed %1.")
+                        .arg(speed, 0, 'f', 3);
                 }
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
@@ -498,51 +607,22 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                 swr_free(&swr);
                 return false;
             }
+        }
 
-            const uint8_t* inputData[1] = {
-                reinterpret_cast<const uint8_t*>(mixBuffer.constData())
-            };
-            const int convertedSamples =
-                swr_convert(swr, convertedData, estimatedOutSamples, inputData, framesThisChunk);
-            if (convertedSamples < 0) {
-                if (errorMessage) {
-                    *errorMessage = QStringLiteral("Failed to convert mixed audio for encoding.");
-                }
-                av_freep(&convertedData[0]);
-                av_freep(&convertedData);
+        int64_t queuedFrames = 0;
+        const int64_t exportFrames = exportMix.size() / kRenderAudioChannels;
+        while (queuedFrames < exportFrames) {
+            const int framesThisChunk =
+                static_cast<int>(qMin<int64_t>(mixChunkFrames, exportFrames - queuedFrames));
+            if (!queueFloatAudioForEncode(exportMix.constData() + (queuedFrames * kRenderAudioChannels),
+                                          framesThisChunk)) {
                 av_frame_free(&audioFrame);
                 av_audio_fifo_free(fifo);
                 ffmpeg_compat::uninitChannelLayout(&inputLayout);
                 swr_free(&swr);
                 return false;
             }
-
-            if (av_audio_fifo_realloc(fifo, av_audio_fifo_size(fifo) + convertedSamples) < 0 ||
-                av_audio_fifo_write(fifo, reinterpret_cast<void**>(convertedData), convertedSamples) < convertedSamples) {
-                if (errorMessage) {
-                    *errorMessage = QStringLiteral("Failed to queue mixed audio for encoding.");
-                }
-                av_freep(&convertedData[0]);
-                av_freep(&convertedData);
-                av_frame_free(&audioFrame);
-                av_audio_fifo_free(fifo);
-                ffmpeg_compat::uninitChannelLayout(&inputLayout);
-                swr_free(&swr);
-                return false;
-            }
-
-            av_freep(&convertedData[0]);
-            av_freep(&convertedData);
-
-            if (!writeAvailableAudioFrames(false)) {
-                av_frame_free(&audioFrame);
-                av_audio_fifo_free(fifo);
-                ffmpeg_compat::uninitChannelLayout(&inputLayout);
-                swr_free(&swr);
-                return false;
-            }
-
-            producedSamples += framesThisChunk;
+            queuedFrames += framesThisChunk;
         }
     }
 

@@ -519,15 +519,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         return result;
     }
 
-    QHash<QString, QVector<TranscriptSection>> transcriptCache;
-    bool hasTranscriptOverlay = false;
-    for (const TimelineClip& clip : transcriptOverlayClips) {
-        if (clip.transcriptOverlay.enabled) {
-            hasTranscriptOverlay = true;
-            break;
-        }
-    }
-
     const bool cudaHardwareFrames =
         codecCtx->pix_fmt == AV_PIX_FMT_CUDA && codecCtx->hw_frames_ctx != nullptr;
     const AVPixelFormat encoderInputPixFmt =
@@ -538,7 +529,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     const bool vulkanGpuNv12Conversion =
         vulkanGpuRenderer &&
         encoderInputPixFmt == AV_PIX_FMT_NV12 &&
-        !hasTranscriptOverlay &&
         !request.createVideoFromImageSequence;
     const bool vulkanCudaExternalTransfer =
         vulkanGpuNv12Conversion &&
@@ -553,7 +543,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     const bool vulkanGpuYuv420pConversion =
         vulkanGpuRenderer &&
         encoderInputPixFmt == AV_PIX_FMT_YUV420P &&
-        !hasTranscriptOverlay &&
         !request.createVideoFromImageSequence;
     const bool needsSoftwareColorConverter =
         !directNv12Conversion && !vulkanGpuYuv420pConversion;
@@ -886,7 +875,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             qint64 frameReadbackMs = 0;
             qint64* frameReadbackMsPtr = &frameReadbackMs;
             const bool directGpuFrameReadback =
-                useGpuRenderer && !hasTranscriptOverlay && !request.createVideoFromImageSequence;
+                useGpuRenderer && !request.createVideoFromImageSequence;
             if (directGpuFrameReadback) {
                 frameReadbackMsPtr = nullptr;
             }
@@ -918,19 +907,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             if ((!renderedOk || rendered.isNull()) && !directGpuFrameReadback) {
                 errorMessage = QStringLiteral("Failed to render Vulkan timeline frame %1.").arg(timelineFrame);
                 break;
-            }
-
-            if ((!directNv12Conversion || hasTranscriptOverlay) && !rendered.isNull()) {
-                QElapsedTimer overlayTimer;
-                overlayTimer.start();
-                const OverlayImage overlay = renderTranscriptOverlay(
-                    rendered.size(), request, timelineFrame, transcriptOverlayClips, transcriptCache);
-                if (!overlay.isNull()) {
-                    QPainter painter(&rendered);
-                    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-                    painter.drawImage(QPoint(0, 0), overlay.asQImageView());
-                }
-                totalOverlayStageMs += overlayTimer.elapsed();
             }
 
             // Save intermediate image files if requested
@@ -1013,7 +989,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                 progress.skippedClipReasonCounts = skippedReasonCounts;
                 progress.renderStageTable = buildRenderStageTable(clipStageStats, totalRenderStageMs, framesCompleted);
                 progress.worstFrameTable = buildWorstFrameTable(worstFrames);
-                if (!directNv12Conversion || hasTranscriptOverlay) {
+                if (!directNv12Conversion) {
                     progress.previewFrame = rendered;
                 }
                 if (!progressCallback(progress)) {
