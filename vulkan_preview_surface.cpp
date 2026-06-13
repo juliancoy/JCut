@@ -1145,7 +1145,7 @@ void VulkanPreviewSurface::requestFramesForCurrentPosition()
         }
 
         const int64_t localFrame = sourceFrameForSample(clip, m_interaction.currentSample);
-        constexpr bool requireDirectVulkanPayload = false;
+        constexpr bool requireDirectVulkanPayload = true;
         const bool displayableCached = m_cache->hasDisplayableFrameForPreview(
             clip.id,
             localFrame,

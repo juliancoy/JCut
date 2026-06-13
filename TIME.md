@@ -61,26 +61,76 @@ Playback state is anchored by:
 - `anchorTimelineTime`: timeline time at that moment.
 - `playbackSpeed`: user transport speed.
 - `effectivePlaybackRanges`: continuous or speech-filtered ranges.
+- `timelineAdvanceCarrySamples`: fractional-sample accumulator that absorbs timer
+  jitter across ticks (see below).
 
-The normal unfiltered mapping is:
+### Delta-Accumulation Model
+
+The runtime clock is driven by a `QTimer` (or equivalent) that calls
+`EditorWindow::advanceFrame()` on each tick. Unlike a pure monotonic formula,
+the implementation uses **delta accumulation** with a carry-over fractional-sample
+buffer:
 
 ```text
-transportTimeSeconds = anchorTimelineTime
-                     + (nowMonotonic - anchorSystemTime) * playbackSpeed
+elapsedMs = nowMs - lastTickMs
+lastTickMs = nowMs
+
+carrySamples += elapsedSeconds * audioSampleRate * speed
+deltaSamples = floor(carrySamples)
+carrySamples -= deltaSamples
 ```
 
-When speech filtering is enabled, elapsed transport time is projected through the
-filtered playback ranges. The system clock still drives playback; the range mapping
-only changes which timeline spans are visited.
+This is equivalent to the ideal formula over long windows but tolerates timer
+jitter, main-thread contention, and variable-rate timer intervals without losing
+or gaining fractional samples. The carry accumulator ensures that sub-sample
+time is preserved across ticks rather than truncated.
 
-Seek, pause, speed changes, warp-mode changes, and range changes reset the transport
-anchor. They do not create a new clock.
+### Timer Jitter Tolerance
+
+Because `advanceFrame()` runs on the Qt main-thread timer, its callback may be
+delayed by:
+
+- Decoder completion handlers
+- UI layout and paint events
+- OS scheduler preemption
+
+The delta-accumulation model handles this correctly: a delayed tick produces a
+proportionally larger `deltaSamples`, catching up to the correct timeline
+position. An early tick produces a smaller step, with the remainder held in
+`carrySamples` for the next tick. No time is gained or lost.
+
+### Fallback Minimum Step
+
+If `deltaSamples <= 0` (e.g., the timer fired faster than one sample's worth of
+real time), a minimum step of one frame at the current speed is forced. This
+prevents playback from stalling on very fast timer intervals.
+
+### Anchor Reset Events
+
+Seek, pause, speed changes, warp-mode changes, and range changes reset the
+transport anchor:
+
+- `lastTickMs` is set to the current monotonic time.
+- `carrySamples` is cleared to zero.
+- `transportTimelineSample` is set directly to the target position.
+
+These events do not create a new clock. They only re-anchor the existing system
+monotonic transport.
+
+### Speech-Filtered Projection
+
+When speech filtering is enabled, elapsed transport time is projected through the
+filtered playback ranges. The system clock still drives playback; the range
+mapping only changes which timeline spans are visited. The delta-accumulation
+model applies unchanged — only the `effectivePlaybackRanges` set differs.
 
 ## Conversion Paths
 
 - System clock -> timeline time:
-  - `EditorWindow::advanceFrame()` should compute current timeline time from
-    monotonic elapsed time and transport anchors.
+  - `EditorWindow::advanceFrame()` advances `m_transportTimelineSample` by a
+    delta computed from elapsed monotonic time, playback speed, and the
+    carry-over fractional-sample accumulator. See "Delta-Accumulation Model"
+    above.
 - Timeline time -> timeline frame:
   - `floor(timelineSeconds * kTimelineFps)` or the shared helper used by the editor.
 - Timeline time/frame -> source media frame/sample:
@@ -114,6 +164,32 @@ Important rules:
 - If pitch-preserving time-stretch data is unavailable, audio readiness may block or
   degrade audio according to policy; video and subtitles must not switch to an audio
   clock to hide that problem.
+
+### Drift Correction Model
+
+Audio hardware and the system transport clock can drift apart due to:
+- Audio device clock rate inaccuracy (typical crystal tolerance: ±50 ppm).
+- Resampling artifacts in the audio pipeline.
+- Cumulative scheduling latency between timer ticks.
+
+Drift correction is implemented as a closed-loop feedback controller in
+`evaluatePlaybackDriftRetimeMultiplier(...)`. It computes a multiplier applied
+to the audio output rate to keep it aligned with the transport clock.
+
+Key parameters (see `PlaybackDriftRetimeInput`):
+
+- `deadbandSamples` (default 2400, ~50 ms at 48 kHz): Drift within this window
+  is ignored. This prevents unnecessary correction from benign timer jitter.
+- `fullCorrectionSamples` (default 24000, ~500 ms): Drift at or beyond this
+  magnitude applies the full `maxCorrection` rate adjustment.
+- `maxCorrection` (default 0.02, i.e. ±2%): Hard limit on the retime multiplier
+  deviation from 1.0. This prevents audible pitch warble from aggressive correction.
+- `smoothing` (default 0.08): First-order IIR smoothing coefficient. The
+  multiplier moves toward the target exponentially, avoiding abrupt rate changes.
+
+The correction is applied as a rate multiplier to the audio output, not as a
+clock override. The transport clock remains authoritative; the audio engine
+adjusts its output rate to track it. This is consistent with Invariant 3.
 
 ## Video
 
