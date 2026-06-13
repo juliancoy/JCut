@@ -609,7 +609,7 @@ The inspector tab order is fixed by `buildPane()` and decorated by
                - `Postpend Time` spin.
                - `Fade Length` spin.
                - `Transition` -> `Boundary Crossfade`
-               - `Clock Source` combo: `Auto`, `Audio`, `Timeline`
+               - `Clock Source` combo: disabled `System Clock`
                - `Audio Warp` combo: `Disabled`, `Varispeed`, `TimeStretch`
              - Stretch.
      - Child 1: transcript table

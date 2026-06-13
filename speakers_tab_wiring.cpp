@@ -113,7 +113,8 @@ void SpeakersTab::wire()
                         m_sectionSelectionTiming.finishSkipped(QStringLiteral("no_current_row"));
                         return;
                     }
-                    QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
+                    QTableWidgetItem* speakerItem =
+                        m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
                     if (!speakerItem) {
                         m_sectionSelectionTiming.finishSkipped(QStringLiteral("missing_speaker_item"));
                         return;

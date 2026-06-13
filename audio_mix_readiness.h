@@ -7,10 +7,11 @@
 //
 // A starved clip (audio cache does not cover the requested mix range) is
 // dropped from the chunk and decoded in the background; it must not stall
-// clips that are ready. Blocking the chunk — and with it the audio master
-// clock — is allowed only when no active clip can contribute, because
-// emitting silence over content that merely is not decoded yet would skip
-// that content instead of waiting for it.
+// clips that are ready. Blocking the chunk is allowed only when no active
+// clip can contribute, because emitting silence over content that merely is
+// not decoded yet would skip that content instead of waiting for it. This is
+// audio-output readiness only; system-clock transport remains the playback
+// time source.
 
 // Prepare-stage rule: block the chunk only when clips wanted audio and none
 // of them produced a usable cache entry.

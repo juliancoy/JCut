@@ -121,7 +121,7 @@ void EditorWindow::refreshAudioInspectorViews()
 
     const int64_t clipStartSample = clipTimelineStartSamples(*clip);
     const int64_t clipEndSample = clipStartSample + frameToSamples(clip->durationFrames);
-    if (m_absolutePlaybackSample < clipStartSample || m_absolutePlaybackSample >= clipEndSample) {
+    if (m_transportTimelineSample < clipStartSample || m_transportTimelineSample >= clipEndSample) {
         m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("Playhead outside selected clip"));
         m_audioCurrentSpeakerDetailsLabel->setText(
             QStringLiteral("Move the playhead into the selected clip to inspect the active speaker."));
@@ -139,7 +139,7 @@ void EditorWindow::refreshAudioInspectorViews()
 
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
         *clip,
-        m_absolutePlaybackSample,
+        m_transportTimelineSample,
         m_timeline->renderSyncMarkers());
     const QString speakerTitle =
         transcriptSpeakerTitleForSourceFrame(transcriptPath, runtimeDocument->sections, sourceFrame).trimmed();
@@ -373,6 +373,8 @@ void EditorWindow::createTranscriptTab()
             m_transcriptInspectorClipLabel, m_transcriptInspectorDetailsLabel,
             m_transcriptTable, m_transcriptOverlayEnabledCheckBox,
             m_inspectorPane->transcriptBackgroundVisibleCheckBox(),
+            m_inspectorPane->transcriptBackgroundOpacitySpin(),
+            m_inspectorPane->transcriptBackgroundCornerRadiusSpin(),
             m_inspectorPane->transcriptShadowEnabledCheckBox(),
             m_inspectorPane->transcriptShowSpeakerTitleCheckBox(),
             m_transcriptMaxLinesSpin, m_transcriptMaxCharsSpin,
@@ -460,7 +462,7 @@ void EditorWindow::createTranscriptTab()
         scheduleTranscriptNormalizeRangeRefresh(50);
         if (m_timeline && m_preview) {
             const bool duringPlayback = m_playbackTimer.isActive();
-            setCurrentPlaybackSample(m_absolutePlaybackSample, duringPlayback, duringPlayback);
+            setCurrentPlaybackSample(m_transportTimelineSample, duringPlayback, duringPlayback);
         }
         refreshSpeechFilterInspectorViews();
     });

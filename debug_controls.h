@@ -148,7 +148,7 @@ void setRubberBandPitchPreference(RubberBandPitchPreference preference);
 void setRubberBandChannelsTogether(bool enabled);
 
 struct RenderPipelineDefaults {
-    DecodePreference decodePreference = DecodePreference::Software;
+    DecodePreference decodePreference = DecodePreference::Hardware;
     H26xSoftwareThreadingMode h26xSoftwareThreadingMode = H26xSoftwareThreadingMode::Auto;
     bool deterministicPipeline = false;
     bool playbackCacheFallback = true;

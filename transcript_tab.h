@@ -34,6 +34,8 @@ public:
         QTableWidget* transcriptTable = nullptr;
         QCheckBox* transcriptOverlayEnabledCheckBox = nullptr;
         QCheckBox* transcriptBackgroundVisibleCheckBox = nullptr;
+        QSpinBox* transcriptBackgroundOpacitySpin = nullptr;
+        QSpinBox* transcriptBackgroundCornerRadiusSpin = nullptr;
         QCheckBox* transcriptShadowEnabledCheckBox = nullptr;
         QCheckBox* transcriptShowSpeakerTitleCheckBox = nullptr;
         QSpinBox* transcriptMaxLinesSpin = nullptr;

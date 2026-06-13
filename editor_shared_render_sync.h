@@ -14,18 +14,9 @@ QString playbackAudioWarpModeLabel(PlaybackAudioWarpMode mode);
 qreal normalizedPlaybackSpeed(qreal speed);
 PlaybackAudioWarpMode normalizedPlaybackAudioWarpMode(qreal playbackSpeed, PlaybackAudioWarpMode mode);
 qreal effectivePlaybackAudioWarpRate(qreal playbackSpeed, PlaybackAudioWarpMode mode);
-bool shouldUseAudioMasterClock(PlaybackClockSource source,
-                               PlaybackAudioWarpMode mode,
-                               qreal playbackSpeed,
-                               bool hasPlayableAudio);
 bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
                                               qreal playbackSpeed,
                                               bool hasPlayableAudio);
-bool shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode mode,
-                                       qreal playbackSpeed,
-                                       bool hasPlayableAudio,
-                                       bool audioBlocked,
-                                       bool audioReady);
 
 int64_t adjustedClipLocalFrameAtTimelineFrame(const TimelineClip& clip,
                                               int64_t localTimelineFrame,

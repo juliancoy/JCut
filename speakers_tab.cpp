@@ -32,6 +32,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QImage>
+#include <QIcon>
 #include <QListView>
 #include <QListWidget>
 #include <QMessageBox>
@@ -697,6 +698,7 @@ void SpeakersTab::refreshTranscriptSpeakerViews(const QString& preferredSpeakerI
 {
     refreshSpeakersTable(m_transcriptSession.rootObject(), preferredSpeakerId);
     refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
+    syncSpeakerListMode();
     if (refreshTrackPanels) {
         requestRefreshFaceDetectionsPathsPanel();
     }
@@ -898,6 +900,7 @@ void SpeakersTab::refreshForSubtab(const QString& subtabName)
         m_widgets.speakerSectionsTable->rowCount() == 0) {
         refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
     }
+    syncSpeakerListMode();
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
 }
@@ -1008,7 +1011,8 @@ bool SpeakersTab::selectSpeakerSectionRowAtFrame(const QString& speakerId, int64
     }
     QSignalBlocker blocker(m_widgets.speakerSectionsTable);
     for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
-        QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
+        QTableWidgetItem* speakerItem =
+            m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
         if (!speakerItem) {
             continue;
         }
@@ -1020,7 +1024,7 @@ bool SpeakersTab::selectSpeakerSectionRowAtFrame(const QString& speakerId, int64
             continue;
         }
         if (m_widgets.speakerSectionsTable->currentRow() != row) {
-            m_widgets.speakerSectionsTable->setCurrentCell(row, 1);
+            m_widgets.speakerSectionsTable->setCurrentCell(row, SpeakerSectionSpeakerColumn);
             m_widgets.speakerSectionsTable->selectRow(row);
             m_widgets.speakerSectionsTable->scrollToItem(
                 speakerItem, QAbstractItemView::PositionAtCenter);
@@ -1037,7 +1041,8 @@ void SpeakersTab::focusSpeakerSectionTrackFromRow(int row)
         return;
     }
 
-    QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
+    QTableWidgetItem* speakerItem =
+        m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
     if (!speakerItem) {
         return;
     }
@@ -1087,7 +1092,8 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     int64_t selectedSectionStartTimelineFrame = -1;
     const int selectedTableRow = m_widgets.speakerSectionsTable->currentRow();
     if (selectedTableRow >= 0) {
-        if (QTableWidgetItem* currentSpeakerItem = m_widgets.speakerSectionsTable->item(selectedTableRow, 1)) {
+        if (QTableWidgetItem* currentSpeakerItem =
+                m_widgets.speakerSectionsTable->item(selectedTableRow, SpeakerSectionSpeakerColumn)) {
             selectedSectionSpeakerId = currentSpeakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
             selectedSectionStartTimelineFrame =
                 currentSpeakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
@@ -1105,8 +1111,17 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
 
     QHash<QString, QVector<int>> assignedTrackIdsBySpeaker;
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    QJsonArray streams;
+    QHash<int, QJsonObject> streamByTrackId;
     if (clip) {
-        const QJsonArray streams = continuityStreamsForClip(*clip);
+        streams = continuityStreamsForClip(*clip);
+        for (const QJsonValue& streamValue : streams) {
+            const QJsonObject streamObj = streamValue.toObject();
+            const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+            if (trackId >= 0) {
+                streamByTrackId.insert(trackId, streamObj);
+            }
+        }
         const auto& resolution = trackIdentityResolutionCacheForClip(*clip, streams);
         assignedTrackIdsBySpeaker = resolution.trackIdsByIdentity;
     }
@@ -1222,6 +1237,18 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
     QSignalBlocker blocker(m_widgets.speakerSectionsTable);
     m_widgets.speakerSectionsTable->clearContents();
     m_widgets.speakerSectionsTable->setRowCount(rows.size());
+    std::unique_ptr<editor::DecoderContext> avatarDecoder;
+    QHash<int64_t, QImage> avatarFrameImageCache;
+    if (clip && !streamByTrackId.isEmpty() &&
+        !(m_speakerDeps.isPlaybackActive && m_speakerDeps.isPlaybackActive())) {
+        const QString avatarMediaPath = interactivePreviewMediaPathForClip(*clip);
+        if (!avatarMediaPath.isEmpty()) {
+            avatarDecoder = std::make_unique<editor::DecoderContext>(avatarMediaPath);
+            if (!avatarDecoder->initialize()) {
+                avatarDecoder.reset();
+            }
+        }
+    }
     for (int row = 0; row < rows.size(); ++row) {
         const SpeakerSectionRow& section = rows.at(row);
         const QString rangeText =
@@ -1235,8 +1262,9 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
         auto* indexItem = new QTableWidgetItem(QString::number(row + 1));
         auto* speakerItem = new QTableWidgetItem(section.displayLabel);
         auto* rangeItem = new QTableWidgetItem(rangeText);
-        const QVector<int> assignedTrackIds =
+        QVector<int> assignedTrackIds =
             assignedTrackIdsBySpeaker.value(section.speakerId.trimmed());
+        std::sort(assignedTrackIds.begin(), assignedTrackIds.end());
         QStringList trackIdStrings;
         QStringList trackLabels;
         trackIdStrings.reserve(assignedTrackIds.size());
@@ -1247,10 +1275,32 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
                 trackLabels.push_back(QStringLiteral("T%1").arg(trackId));
             }
         }
+        auto* avatarItem = new QTableWidgetItem();
+        avatarItem->setFlags(avatarItem->flags() & ~Qt::ItemIsEditable);
+        avatarItem->setTextAlignment(Qt::AlignCenter);
+        avatarItem->setSizeHint(QSize(40, 40));
+        const int avatarTrackId = assignedTrackIds.isEmpty() ? -1 : assignedTrackIds.constFirst();
+        if (clip && avatarTrackId >= 0 && streamByTrackId.contains(avatarTrackId)) {
+            const QPixmap avatar = continuityTrackAvatar(*clip,
+                                                         section.speakerId,
+                                                         streamByTrackId.value(avatarTrackId),
+                                                         40,
+                                                         avatarDecoder.get(),
+                                                         &avatarFrameImageCache);
+            if (!avatar.isNull()) {
+                avatarItem->setIcon(QIcon(avatar));
+                avatarItem->setToolTip(QStringLiteral("Selected continuity-track avatar for T%1.")
+                                           .arg(avatarTrackId));
+            }
+        }
         auto* trackItem = new QTableWidgetItem(
             trackLabels.isEmpty() ? QStringLiteral("-") : trackLabels.join(QStringLiteral(", ")));
         auto* wordsItem = new QTableWidgetItem(QString::number(section.wordCount));
         auto* snippetItem = new QTableWidgetItem(snippet);
+        avatarItem->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
+        avatarItem->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
+        avatarItem->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
+        avatarItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
         speakerItem->setData(SpeakerSectionSpeakerIdRole, section.speakerId);
         speakerItem->setData(SpeakerSectionStartFrameRole, QVariant::fromValue<qlonglong>(section.startTimelineFrame));
         speakerItem->setData(SpeakerSectionEndFrameRole, QVariant::fromValue<qlonglong>(section.endTimelineFrame));
@@ -1269,12 +1319,13 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
                       .arg(trackLabels.join(QStringLiteral(", "))));
         wordsItem->setFlags(wordsItem->flags() & ~Qt::ItemIsEditable);
         snippetItem->setFlags(snippetItem->flags() & ~Qt::ItemIsEditable);
-        m_widgets.speakerSectionsTable->setItem(row, 0, indexItem);
-        m_widgets.speakerSectionsTable->setItem(row, 1, speakerItem);
-        m_widgets.speakerSectionsTable->setItem(row, 2, rangeItem);
-        m_widgets.speakerSectionsTable->setItem(row, 3, trackItem);
-        m_widgets.speakerSectionsTable->setItem(row, 4, wordsItem);
-        m_widgets.speakerSectionsTable->setItem(row, 5, snippetItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionAvatarColumn, avatarItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionIndexColumn, indexItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionSpeakerColumn, speakerItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionRangeColumn, rangeItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionTrackColumn, trackItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionWordsColumn, wordsItem);
+        m_widgets.speakerSectionsTable->setItem(row, SpeakerSectionTranscriptColumn, snippetItem);
     }
     if (!rows.isEmpty()) {
         int rowToSelect = 0;
@@ -1288,13 +1339,105 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
                 }
             }
         }
-        m_widgets.speakerSectionsTable->setCurrentCell(rowToSelect, 0);
+        m_widgets.speakerSectionsTable->setCurrentCell(rowToSelect, SpeakerSectionSpeakerColumn);
     }
     if (m_widgets.speakerExportLongSectionsButton) {
         m_widgets.speakerExportLongSectionsButton->setEnabled(
             m_widgets.speakerSectionsTable->isVisible() &&
             m_speakerDeps.exportSpeakerSectionsVideo &&
             !rows.isEmpty());
+    }
+}
+
+void SpeakersTab::refreshVisibleSpeakerSectionAssignments(const QString& speakerId)
+{
+    const QString trimmedSpeakerId = speakerId.trimmed();
+    if (trimmedSpeakerId.isEmpty() ||
+        !m_widgets.speakerSectionsTable ||
+        !m_widgets.speakerSectionsTable->isVisible()) {
+        return;
+    }
+
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    if (!clip) {
+        return;
+    }
+
+    const QJsonArray streams = continuityStreamsForClip(*clip);
+    QHash<int, QJsonObject> streamByTrackId;
+    for (const QJsonValue& streamValue : streams) {
+        const QJsonObject streamObj = streamValue.toObject();
+        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            streamByTrackId.insert(trackId, streamObj);
+        }
+    }
+
+    QVector<int> assignedTrackIds =
+        resolvedAssignedTrackIdsForSpeaker(*clip, streams, trimmedSpeakerId);
+    std::sort(assignedTrackIds.begin(), assignedTrackIds.end());
+    QStringList trackIdStrings;
+    QStringList trackLabels;
+    trackIdStrings.reserve(assignedTrackIds.size());
+    trackLabels.reserve(assignedTrackIds.size());
+    for (int trackId : assignedTrackIds) {
+        if (trackId >= 0) {
+            trackIdStrings.push_back(QString::number(trackId));
+            trackLabels.push_back(QStringLiteral("T%1").arg(trackId));
+        }
+    }
+
+    const QString tracksText =
+        trackLabels.isEmpty() ? QStringLiteral("-") : trackLabels.join(QStringLiteral(", "));
+    const QString tracksTooltip =
+        trackLabels.isEmpty()
+            ? QStringLiteral("No continuity track is currently mapped to this section's speaker.")
+            : QStringLiteral("Continuity track(s) mapped to this section's speaker: %1")
+                  .arg(trackLabels.join(QStringLiteral(", ")));
+
+    QSignalBlocker blocker(m_widgets.speakerSectionsTable);
+    const int avatarTrackId = assignedTrackIds.isEmpty() ? -1 : assignedTrackIds.constFirst();
+    QIcon avatarIcon;
+    QString avatarTooltip;
+    if (avatarTrackId >= 0 && streamByTrackId.contains(avatarTrackId)) {
+        const QPixmap avatar = continuityTrackAvatar(*clip,
+                                                     trimmedSpeakerId,
+                                                     streamByTrackId.value(avatarTrackId),
+                                                     40,
+                                                     nullptr,
+                                                     nullptr);
+        if (!avatar.isNull()) {
+            avatarIcon = QIcon(avatar);
+            avatarTooltip = QStringLiteral("Selected continuity-track avatar for T%1.")
+                                .arg(avatarTrackId);
+        }
+    }
+
+    for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
+        QTableWidgetItem* speakerItem =
+            m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
+        if (!speakerItem ||
+            speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed() != trimmedSpeakerId) {
+            continue;
+        }
+        speakerItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
+        speakerItem->setToolTip(QStringLiteral("Speaker ID: %1\nAssigned track(s): %2")
+                                    .arg(trimmedSpeakerId,
+                                         trackLabels.isEmpty()
+                                             ? QStringLiteral("-")
+                                             : trackLabels.join(QStringLiteral(", "))));
+
+        if (QTableWidgetItem* avatarItem =
+                m_widgets.speakerSectionsTable->item(row, SpeakerSectionAvatarColumn)) {
+            avatarItem->setData(SpeakerSectionTrackIdsRole, trackIdStrings);
+            avatarItem->setIcon(avatarIcon);
+            avatarItem->setToolTip(avatarTooltip);
+        }
+        if (QTableWidgetItem* trackItem =
+                m_widgets.speakerSectionsTable->item(row, SpeakerSectionTrackColumn)) {
+            trackItem->setText(tracksText);
+            trackItem->setToolTip(tracksTooltip);
+        }
     }
 }
 
@@ -2064,12 +2207,21 @@ void SpeakersTab::refreshSpeakersTable(const QJsonObject& transcriptRoot,
 
 QString SpeakersTab::selectedSpeakerId() const
 {
-    const auto speakerIdFromRow = [](QTableWidget* table, int row) {
+    const auto speakerIdFromRow = [this](QTableWidget* table, int row) {
         if (!table || row < 0) {
             return QString();
         }
-        QTableWidgetItem* speakerItem = table->item(row, 1);
-        return speakerItem ? speakerItem->data(Qt::UserRole).toString().trimmed() : QString();
+        const int speakerColumn = table == m_widgets.speakerSectionsTable
+            ? SpeakerSectionSpeakerColumn
+            : 1;
+        QTableWidgetItem* speakerItem = table->item(row, speakerColumn);
+        if (!speakerItem) {
+            return QString();
+        }
+        const int speakerRole = table == m_widgets.speakerSectionsTable
+            ? static_cast<int>(SpeakerSectionSpeakerIdRole)
+            : static_cast<int>(Qt::UserRole);
+        return speakerItem->data(speakerRole).toString().trimmed();
     };
 
     const auto speakerIdFromTableSelection = [&speakerIdFromRow](QTableWidget* table) {

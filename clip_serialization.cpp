@@ -223,6 +223,8 @@ QJsonObject clipToJson(const TimelineClip &clip)
         QJsonObject transcriptOverlayObj;
         transcriptOverlayObj[QStringLiteral("enabled")] = clip.transcriptOverlay.enabled;
         transcriptOverlayObj[QStringLiteral("showBackground")] = clip.transcriptOverlay.showBackground;
+        transcriptOverlayObj[QStringLiteral("backgroundOpacity")] = clip.transcriptOverlay.backgroundOpacity;
+        transcriptOverlayObj[QStringLiteral("backgroundCornerRadius")] = clip.transcriptOverlay.backgroundCornerRadius;
         transcriptOverlayObj[QStringLiteral("showShadow")] = clip.transcriptOverlay.showShadow;
         transcriptOverlayObj[QStringLiteral("showSpeakerTitle")] = clip.transcriptOverlay.showSpeakerTitle;
         transcriptOverlayObj[QStringLiteral("autoScroll")] = clip.transcriptOverlay.autoScroll;
@@ -592,6 +594,10 @@ TimelineClip clipFromJson(const QJsonObject &obj)
         const QJsonObject transcriptOverlayObj = obj.value(QStringLiteral("transcriptOverlay")).toObject();
         clip.transcriptOverlay.enabled = transcriptOverlayObj.value(QStringLiteral("enabled")).toBool(false);
         clip.transcriptOverlay.showBackground = transcriptOverlayObj.value(QStringLiteral("showBackground")).toBool(true);
+        clip.transcriptOverlay.backgroundOpacity =
+            transcriptOverlayObj.value(QStringLiteral("backgroundOpacity")).toDouble(120.0 / 255.0);
+        clip.transcriptOverlay.backgroundCornerRadius =
+            transcriptOverlayObj.value(QStringLiteral("backgroundCornerRadius")).toDouble(14.0);
         clip.transcriptOverlay.showShadow = transcriptOverlayObj.value(QStringLiteral("showShadow")).toBool(true);
         clip.transcriptOverlay.showSpeakerTitle =
             transcriptOverlayObj.value(QStringLiteral("showSpeakerTitle")).toBool(false);

@@ -35,6 +35,7 @@ public:
 
     bool initialize();
     void shutdown();
+    void setAllowHardwareFrameMaterialization(bool allow);
 
     FrameHandle decodeFrame(int64_t frameNumber);
     QVector<FrameHandle> decodeThroughFrame(int64_t targetFrame);
@@ -96,6 +97,7 @@ private:
     bool m_serializeSoftwareDecode = false;
     bool m_loggedSourceFormat = false;
     bool m_reportedAlphaMismatch = false;
+    bool m_allowHardwareFrameMaterialization = false;
     bool m_loggedAlphaProbe = false;
 
     // Optional pointer into AsyncDecoder's shared device map (not owned).

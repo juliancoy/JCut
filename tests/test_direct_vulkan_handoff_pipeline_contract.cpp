@@ -612,19 +612,49 @@ void TestDirectVulkanHandoffPipelineContract::
            "/debug options");
 
   const QString editorSource = readSourceFile(QStringLiteral("editor.cpp"));
-  QVERIFY2(!editorSource.contains(QStringLiteral(
+  QVERIFY2(editorSource.contains(QStringLiteral(
                "debugDecodePreference = editor::DecodePreference::HardwareZeroCopy")),
-           "loading a Vulkan project must honor debugDecodeMode instead of "
-           "forcing hardware-zero-copy");
+           "loading a Vulkan project must force hardware-zero-copy after state "
+           "load so NVIDIA decode is not materialized as CPU images");
+  QVERIFY2(editorSource.contains(QStringLiteral(
+               "debugDecodePreference == editor::DecodePreference::Software")) &&
+               editorSource.contains(QStringLiteral(
+                   "debugDecodePreference = editor::DecodePreference::Hardware")),
+           "loading project state must sanitize legacy software decode mode "
+           "back to hardware decode");
+  const QString projectState = readSourceFile(QStringLiteral("project_state.cpp"));
+  QVERIFY2(!projectState.contains(QStringLiteral("debugDecodeMode")),
+           "project state must not persist decode mode; saved software decode "
+           "must not disable NVIDIA playback decode on future runs");
   const QString inspectorTabs =
       readSourceFile(QStringLiteral("inspector_pane_secondary_tabs.cpp"));
   QVERIFY2(!inspectorTabs.contains(QStringLiteral("GPU Zero-Copy")) &&
-               !inspectorTabs.contains(QStringLiteral("hardware_zero_copy")),
-           "interactive decode controls must not expose hardware-zero-copy");
+               !inspectorTabs.contains(QStringLiteral("hardware_zero_copy")) &&
+               !inspectorTabs.contains(QStringLiteral("CPU Software")) &&
+               !inspectorTabs.contains(QStringLiteral("\"software\"")),
+           "interactive decode controls must not expose hardware-zero-copy or "
+           "CPU software decode");
+  QVERIFY2(debugControls.contains(QStringLiteral(
+               "if (preference == DecodePreference::Software)")) &&
+               debugControls.contains(QStringLiteral(
+                   "preference = DecodePreference::Hardware")),
+           "runtime debug decode preference must reject CPU software decode");
   QVERIFY2(debugControls.contains(
                QStringLiteral("*preferenceOut = DecodePreference::HardwareZeroCopy;")),
            "explicit hardware-zero-copy state must survive parsing so direct "
            "Vulkan playback can request hardware frame handles");
+  const QString decoderContext = readSourceFile(QStringLiteral("decoder_context.cpp"));
+  QVERIFY2(decoderContext.contains(QStringLiteral("std::defer_lock")) &&
+               decoderContext.contains(QStringLiteral("if (!m_info.hardwareAccelerated)")) &&
+               decoderContext.contains(QStringLiteral("decodeLock.lock()")),
+           "global FFmpeg decode serialization must apply only to software "
+           "decode; NVIDIA hardware decode lanes must run concurrently");
+  const QString decoderHeader = readSourceFile(QStringLiteral("decoder_context.h"));
+  QVERIFY2(decoderHeader.contains(QStringLiteral("setAllowHardwareFrameMaterialization")) &&
+               decoderHeader.contains(QStringLiteral("m_allowHardwareFrameMaterialization")) &&
+               decoderContext.contains(QStringLiteral("!m_allowHardwareFrameMaterialization")),
+           "CPU materialization for thumbnail/avatar decode must be a local "
+           "DecoderContext option, not a global decode preference mutation");
 }
 
 void TestDirectVulkanHandoffPipelineContract::

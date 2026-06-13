@@ -11,13 +11,17 @@ This document defines how JCut runtime scheduling should work for playback, visi
 
 ## Core Principle
 
-Playback has one temporal source of truth: the active timeline sample in 48 kHz timeline-sample space.
+Playback has one temporal source of truth: system monotonic transport time. The
+active timeline sample is derived state for existing timeline/audio conversion
+helpers.
 
-Every scheduler must derive its target work from that sample through the canonical conversion helpers. No scheduler may compare or prioritize work across mixed domains without converting first.
+Every scheduler must derive its target work from transport time through the shared
+conversion helpers. No scheduler may compare or prioritize work across mixed
+domains without converting first.
 
 Examples:
 
-- Audio clock reports timeline samples.
+- Audio feedback reports output samples and latency.
 - UI timeline position is timeline frames.
 - Decoder requests are media source frames.
 - Transcript and captions use transcript/source-derived frames.
@@ -35,13 +39,14 @@ Examples:
 
 ## Playback Start Gate
 
-Playback should not start until required media for the selected clock mode is ready.
+Playback should start from the system-clock transport once required visible media
+is ready. Audio readiness controls audio output and diagnostics; it does not select
+a different playback clock.
 
 Required gates:
 
-- If audio is the master clock, audio stream state must be open/running and able to report an effective audible sample.
 - If pitch-preserving `time_stretch` is active, the needed retimed audio sidecar/cache must be ready for the requested start frame.
-- Visible video should have a small current/future readiness window, but video should not silently take over the clock.
+- Visible video should have a small current/future readiness window.
 - Missing non-critical overlays must not block playback.
 
 If a gate fails, the UI should report the blocked reason explicitly:
@@ -58,7 +63,7 @@ Audio is scheduled from timeline samples.
 
 Rules:
 
-- Audio-master playback follows `AudioEngine::currentSample()`, which should represent effective audible output position, not queued future position.
+- Live playback follows system-clock transport time. `AudioEngine::currentSample()` is feedback for audible output latency/drift, not playback time authority.
 - Pitch-preserving non-1.0 playback uses precomputed retimed audio only.
 - There is no implicit SOLA or varispeed fallback when `time_stretch` sidecar-only mode is required.
 - If required retimed audio is missing, playback holds before start or enters an explicit blocked state.

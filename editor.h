@@ -203,8 +203,8 @@ private:
     void advanceFrame();
     bool speechFilterPlaybackEnabled() const;
     int64_t filteredPlaybackSampleForAbsoluteSample(int64_t absoluteSample) const;
-    int64_t absolutePlaybackSampleForFilteredSample(int64_t filteredSample) const;
-    int64_t playbackSampleForAudioClockSample(int64_t audioClockSample) const;
+    int64_t timelineSampleForFilteredPlaybackSample(int64_t filteredSample) const;
+    int64_t timelineSampleForAudioFeedbackSample(int64_t audioFeedbackSample) const;
     QVector<ExportRangeSegment> effectivePlaybackRanges() const;
     QVector<ExportRangeSegment> effectiveTranscriptNormalizeRanges() const;
     QString playbackRangeCacheSignature(bool discrete, int neighborWordRadius = 0) const;
@@ -288,7 +288,6 @@ private:
     void setPlaybackAudioWarpMode(PlaybackAudioWarpMode mode);
     PlaybackRuntimeConfig playbackRuntimeConfig() const;
     void applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& requestedConfig);
-    bool shouldUseAudioMasterClock() const;
     qreal effectiveAudioWarpRate() const;
     bool needsPitchPreservingPlaybackAudio() const;
     void updateAudioDriftRetime(bool reset = false);
@@ -657,9 +656,9 @@ private:
     bool m_updatingTracksTab = false;
 
     QColor m_backgroundColor = QColor(Qt::black);
-    int64_t m_absolutePlaybackSample = 0;
+    int64_t m_transportTimelineSample = 0;
     int64_t m_filteredPlaybackSample = 0;
-    int64_t m_playbackAudioClockAnchorAbsoluteSample = 0;
+    int64_t m_playbackAudioFeedbackAnchorTimelineSample = 0;
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
@@ -767,8 +766,6 @@ private:
     int m_mainThreadHeartbeatIntervalMs = 100;
     int m_stateSaveDebounceIntervalMs = 250;
     int m_transcriptManualSelectionHoldMs = 1200;
-    int m_audioClockStallTicks = 0;
-    int m_audioClockStallThresholdTicks = 1;
     qint64 m_transcriptNormalizeRefreshGeneration = 0;
     qint64 m_appliedTranscriptNormalizeRefreshGeneration = 0;
     QJsonObject m_optimizedProfile;

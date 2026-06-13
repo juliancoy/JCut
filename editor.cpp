@@ -750,7 +750,7 @@ void EditorWindow::syncTranscriptTableToPlayhead()
         m_transcriptTable->clearSelection();
         return;
     }
-    const qreal timelineFramePosition = samplesToFramePosition(m_absolutePlaybackSample);
+    const qreal timelineFramePosition = samplesToFramePosition(m_transportTimelineSample);
     const qreal clipStart = static_cast<qreal>(clip->startFrame);
     const qreal clipEnd = static_cast<qreal>(clip->startFrame + qMax<int64_t>(0, clip->durationFrames - 1));
     if (timelineFramePosition < clipStart || timelineFramePosition > clipEnd) {
@@ -760,21 +760,21 @@ void EditorWindow::syncTranscriptTableToPlayhead()
 
     const int64_t sourceSample = sourceSampleForClipAtTimelineSample(
         *clip,
-        m_absolutePlaybackSample,
+        m_transportTimelineSample,
         m_timeline->renderSyncMarkers());
     const double sourceSeconds = static_cast<double>(sourceSample) / static_cast<double>(kAudioSampleRate);
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
         *clip,
-        m_absolutePlaybackSample,
+        m_transportTimelineSample,
         m_timeline->renderSyncMarkers());
     if (m_transcriptTab) {
-        m_transcriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
+        m_transcriptTab->syncTableToPlayhead(m_transportTimelineSample, sourceSeconds, sourceFrame);
     }
     if (m_speakerTranscriptTab) {
-        m_speakerTranscriptTab->syncTableToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
+        m_speakerTranscriptTab->syncTableToPlayhead(m_transportTimelineSample, sourceSeconds, sourceFrame);
     }
     if (m_speakersTab) {
-        m_speakersTab->syncIdentityToPlayhead(m_absolutePlaybackSample, sourceSeconds, sourceFrame);
+        m_speakersTab->syncIdentityToPlayhead(m_transportTimelineSample, sourceSeconds, sourceFrame);
     }
 }
 
@@ -1058,11 +1058,17 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
                root.value(QStringLiteral("timelineAudioEnvelopeGranularity"))
                    .toInt(editor::debugTimelineAudioEnvelopeGranularity()),
                8192);
-    editor::DecodePreference debugDecodePreference = editor::debugDecodePreference();
+    editor::DecodePreference debugDecodePreference = editor::DecodePreference::Hardware;
     const QString debugDecodeModeText =
         root.value(QStringLiteral("debugDecodeMode"))
-            .toString(editor::decodePreferenceToString(editor::debugDecodePreference()));
+            .toString(editor::decodePreferenceToString(debugDecodePreference));
     editor::parseDecodePreference(debugDecodeModeText, &debugDecodePreference);
+    if (debugDecodePreference == editor::DecodePreference::Software) {
+        debugDecodePreference = editor::DecodePreference::Hardware;
+    }
+    if (renderBackendPreference == QStringLiteral("vulkan")) {
+        debugDecodePreference = editor::DecodePreference::HardwareZeroCopy;
+    }
     editor::setDebugDecodePreference(debugDecodePreference);
     editor::H26xSoftwareThreadingMode debugH26xSoftwareThreadingMode =
         editor::debugH26xSoftwareThreadingMode();
@@ -1535,8 +1541,12 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
     }
     if (m_outputDecodeModeCombo) {
         QSignalBlocker block(m_outputDecodeModeCombo);
+        const editor::DecodePreference visibleDecodePreference =
+            debugDecodePreference == editor::DecodePreference::HardwareZeroCopy
+                ? editor::DecodePreference::Hardware
+                : debugDecodePreference;
         const int decodeModeIndex =
-            m_outputDecodeModeCombo->findData(editor::decodePreferenceToString(debugDecodePreference));
+            m_outputDecodeModeCombo->findData(editor::decodePreferenceToString(visibleDecodePreference));
         if (decodeModeIndex >= 0) {
             m_outputDecodeModeCombo->setCurrentIndex(decodeModeIndex);
         }

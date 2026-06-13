@@ -2,9 +2,10 @@
 
 #include <QRectF>
 #include <QSize>
-#include <QVulkanFunctions>
 
 #include <vulkan/vulkan.h>
+
+class QVulkanDeviceFunctions;
 
 namespace jcut::vulkan {
 
@@ -13,6 +14,12 @@ void clearRect(QVulkanDeviceFunctions* funcs,
                VkCommandBuffer cb,
                const VkClearValue& value,
                const VkClearRect& rect);
+void clearRoundedRect(QVulkanDeviceFunctions* funcs,
+                      VkCommandBuffer cb,
+                      const VkClearValue& value,
+                      const QRectF& rect,
+                      const QSize& swapSize,
+                      int radius);
 void clearBoxOutline(QVulkanDeviceFunctions* funcs,
                      VkCommandBuffer cb,
                      const VkClearValue& value,

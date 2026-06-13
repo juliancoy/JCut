@@ -113,6 +113,8 @@ struct TimelineClip {
 
         bool enabled = false;
         bool showBackground = true;
+        qreal backgroundOpacity = 120.0 / 255.0;
+        qreal backgroundCornerRadius = 14.0;
         bool showShadow = true;
         bool showSpeakerTitle = false;
         bool autoScroll = false;
@@ -138,6 +140,8 @@ struct TimelineClip {
             boxHeight = qMax<qreal>(kMinReadableBoxHeight, boxHeight);
             maxCharsPerLine = qMax(kMinReadableCharsPerLine, maxCharsPerLine);
             fontPointSize = qMax(kMinReadableFontPointSize, fontPointSize);
+            backgroundOpacity = qBound<qreal>(0.0, backgroundOpacity, 1.0);
+            backgroundCornerRadius = qBound<qreal>(0.0, backgroundCornerRadius, 128.0);
         }
     };
 

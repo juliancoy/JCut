@@ -54,12 +54,13 @@ Owner: `EditorWindow`
 
 Inputs:
 
-- Audio-master clock sample from `AudioEngine::currentSample()`, or timeline-timer sample when audio is not the active master.
+- System monotonic transport time from `EditorWindow::advanceFrame()`.
+- Audio feedback sample from `AudioEngine::currentSample()` for latency/drift diagnostics only.
 - Playback speed, export ranges, speech filter ranges, and render-sync markers.
 
 Outputs:
 
-- `absolutePlaybackSample`
+- Active timeline sample derived from system transport time.
 - Preview-facing timeline sample via `PreviewSurface::setCurrentPlaybackSample(...)`
 
 Synchronization rule:
@@ -467,7 +468,7 @@ If CUDA/Vulkan external interop is used, ownership must be explicit:
 
 | Resource | Owner | Lifetime Rule |
 | --- | --- | --- |
-| `absolutePlaybackSample` | `EditorWindow` | Current until next clock tick; downstream derives from it |
+| Active timeline sample | `EditorWindow` | Derived from system transport time for the current tick; downstream derives from it |
 | `FrameHandle` | `TimelineCache` residency plus shared handle references | Must keep hardware frame alive through handoff and draw submission |
 | FFmpeg hardware frame | `FrameHandle` / decoder context references | Must not be freed before GPU handoff completes |
 | Playback buffer entry | `TimelineCache::PlaybackBuffer` | May be evicted only outside the current visible/useful window |
@@ -487,7 +488,7 @@ The presenter must not read directly from `TimelineCache`. It consumes `VulkanPr
 
 ```mermaid
 flowchart TD
-    Editor["EditorWindow\nowns clock/sample"]
+    Editor["EditorWindow\nowns system transport/sample"]
     Surface["VulkanPreviewSurface\nowns preview scheduling/status"]
     Cache["TimelineCache\nowns cache, pending maps,\nplayback buffers"]
     Decoder["AsyncDecoder\nowns worker lanes"]
@@ -520,13 +521,13 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    Clock["EditorWindow playback clock\nabsolutePlaybackSample"]
+    Clock["EditorWindow system transport clock\nactive timeline sample"]
     Audio["AudioEngine\ncurrent audible sample\nretimed sidecar readiness"]
     TimelineState["Timeline state\nclips, tracks, export ranges,\nrender-sync markers"]
     PreviewState["PreviewInteractionState\ncurrentSample/currentFrame\nselected clip, UI toggles"]
 
     Clock --> PreviewState
-    Audio --> Clock
+    Clock -. drift feedback .-> Audio
     TimelineState --> PreviewState
 
     PreviewState --> SourceMap["Source mapping\nsourceFrameForClipAtTimelineSample"]

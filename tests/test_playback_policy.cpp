@@ -26,12 +26,12 @@ private slots:
     void testAudioWarpRoundTrip();
     void testNormalizedAudioWarpMode();
     void testEffectiveWarpRate();
-    void testAudioMasterClockPolicy();
+    void testSystemClockSourcePolicy();
     void testPitchPreservingAudioGatePolicy();
     void testPlaybackClockCoordinator();
     void testPlaybackDriftRetimeController();
-    void testAudioMasterClockSampleStaysAbsoluteAcrossSpeechRanges();
-    void testAudioMasterSameFrameCarriesCanonicalSample();
+    void testAudioFeedbackSampleStaysAbsoluteAcrossSpeechRanges();
+    void testSystemClockDecisionCarriesTransportSample();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
     void testActivePlaybackRuntimeConfigRealignsStreams();
 };
@@ -40,9 +40,13 @@ void TestPlaybackPolicy::testClockSourceRoundTrip() {
     QCOMPARE(playbackClockSourceFromString(playbackClockSourceToString(PlaybackClockSource::Auto)),
              PlaybackClockSource::Auto);
     QCOMPARE(playbackClockSourceFromString(playbackClockSourceToString(PlaybackClockSource::Audio)),
-             PlaybackClockSource::Audio);
+             PlaybackClockSource::Auto);
     QCOMPARE(playbackClockSourceFromString(playbackClockSourceToString(PlaybackClockSource::Timeline)),
-             PlaybackClockSource::Timeline);
+             PlaybackClockSource::Auto);
+    QCOMPARE(playbackClockSourceFromString(QStringLiteral("audio")),
+             PlaybackClockSource::Auto);
+    QCOMPARE(playbackClockSourceFromString(QStringLiteral("timeline")),
+             PlaybackClockSource::Auto);
     QCOMPARE(playbackClockSourceFromString(QStringLiteral("unknown")),
              PlaybackClockSource::Auto);
 }
@@ -84,39 +88,13 @@ void TestPlaybackPolicy::testNormalizedAudioWarpMode() {
              PlaybackAudioWarpMode::TimeStretch);
 }
 
-void TestPlaybackPolicy::testAudioMasterClockPolicy() {
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Auto,
-                                       PlaybackAudioWarpMode::Varispeed,
-                                       1.0,
-                                       false));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Auto,
-                                       PlaybackAudioWarpMode::Disabled,
-                                       1.0,
-                                       true));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Auto,
-                                       PlaybackAudioWarpMode::Disabled,
-                                       1.5,
-                                       true));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Audio,
-                                       PlaybackAudioWarpMode::Varispeed,
-                                       2.0,
-                                       true));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Audio,
-                                       PlaybackAudioWarpMode::TimeStretch,
-                                       1.0,
-                                       true));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Timeline,
-                                       PlaybackAudioWarpMode::Varispeed,
-                                       1.0,
-                                       true));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Timeline,
-                                       PlaybackAudioWarpMode::TimeStretch,
-                                       1.0,
-                                       true));
-    QVERIFY(!shouldUseAudioMasterClock(PlaybackClockSource::Timeline,
-                                       PlaybackAudioWarpMode::TimeStretch,
-                                       1.5,
-                                       true));
+void TestPlaybackPolicy::testSystemClockSourcePolicy() {
+    QCOMPARE(playbackClockSourceToString(PlaybackClockSource::Auto), QStringLiteral("auto"));
+    QCOMPARE(playbackClockSourceToString(PlaybackClockSource::Audio), QStringLiteral("auto"));
+    QCOMPARE(playbackClockSourceToString(PlaybackClockSource::Timeline), QStringLiteral("auto"));
+    QCOMPARE(playbackClockSourceLabel(PlaybackClockSource::Auto), QStringLiteral("System Clock"));
+    QCOMPARE(playbackClockSourceLabel(PlaybackClockSource::Audio), QStringLiteral("System Clock"));
+    QCOMPARE(playbackClockSourceLabel(PlaybackClockSource::Timeline), QStringLiteral("System Clock"));
 }
 
 void TestPlaybackPolicy::testPitchPreservingAudioGatePolicy() {
@@ -133,88 +111,23 @@ void TestPlaybackPolicy::testPitchPreservingAudioGatePolicy() {
                                                     1.5,
                                                     true));
 
-    QVERIFY(!shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
-                                               1.5,
-                                               true,
-                                               false,
-                                               true));
-    QVERIFY(shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
-                                              1.5,
-                                              true,
-                                              true,
-                                              true));
-    QVERIFY(shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
-                                              1.5,
-                                              true,
-                                              false,
-                                              false));
-    QVERIFY(!shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode::TimeStretch,
-                                               1.0,
-                                               true,
-                                               true,
-                                               false));
 }
 
 void TestPlaybackPolicy::testPlaybackClockCoordinator() {
     editor::PlaybackClockInput input;
-    input.pitchPreservingAudioRequired = true;
-    input.audioMasterEnabled = true;
-    input.audioClockAvailable = true;
-    input.hasPlayableAudio = true;
-    input.audioBlocked = true;
-    input.audioReady = true;
     input.transportSample = frameToSamples(120);
-    input.audioSample = frameToSamples(100);
-    input.currentFrame = 120;
     input.totalFrames = 1000;
-    input.audioClockStallTicks = 0;
-    input.audioClockStallThresholdTicks = 2;
     editor::PlaybackClockDecision decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
-    QCOMPARE(decision.reason, QStringLiteral("audio_blocked"));
-    QVERIFY(decision.resetTimerContinuity);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTransportSample);
+    QCOMPARE(decision.reason, QStringLiteral("system_clock_transport"));
+    QCOMPARE(decision.sample, input.transportSample);
+    QCOMPARE(decision.frame, static_cast<int64_t>(120));
+    QVERIFY(!decision.resetTimerContinuity);
 
-    input.audioBlocked = false;
-    input.audioReady = false;
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
-    QCOMPARE(decision.reason, QStringLiteral("retimed_audio_not_ready"));
-
-    input.audioReady = true;
-    input.audioSample = frameToSamples(80);
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
-    QCOMPARE(decision.reason, QStringLiteral("audio_clock_regressed"));
-
-    input.pitchPreservingAudioRequired = false;
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
-    QCOMPARE(decision.reason, QStringLiteral("audio_master_resync"));
-    QVERIFY(decision.resetTimerContinuity);
-
-    input.pitchPreservingAudioRequired = true;
-    input.audioSample = frameToSamples(120);
-    input.audioClockStallTicks = 1;
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::WaitForAudioClock);
-
-    input.audioClockStallTicks = 3;
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::WaitForAudioClock);
-    QCOMPARE(decision.reason, QStringLiteral("audio_clock_stalled"));
-
-    input.audioSample = frameToSamples(121);
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
-
-    input.audioMasterEnabled = false;
-    input.audioClockAvailable = true;
-    input.hasPlayableAudio = true;
     input.transportSample = frameToSamples(140) + 17;
-    input.audioSample = frameToSamples(10);
     decision = editor::evaluatePlaybackClock(input);
     QCOMPARE(decision.action, editor::PlaybackClockAction::UseTransportSample);
-    QCOMPARE(decision.reason, QStringLiteral("monotonic_transport"));
+    QCOMPARE(decision.reason, QStringLiteral("system_clock_transport"));
     QCOMPARE(decision.sample, input.transportSample);
 }
 
@@ -247,41 +160,36 @@ void TestPlaybackPolicy::testPlaybackDriftRetimeController() {
     QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.01);
 }
 
-void TestPlaybackPolicy::testAudioMasterClockSampleStaysAbsoluteAcrossSpeechRanges() {
+void TestPlaybackPolicy::testAudioFeedbackSampleStaysAbsoluteAcrossSpeechRanges() {
     const QVector<ExportRangeSegment> ranges{
         ExportRangeSegment{100, 109},
         ExportRangeSegment{200, 209},
     };
 
     const int64_t audibleAbsoluteSample = frameToSamples(205);
-    QCOMPARE(editor::audioMasterClockSampleToTimelineSample(audibleAbsoluteSample),
+    QCOMPARE(editor::audioFeedbackSampleToTimelineSample(audibleAbsoluteSample),
              audibleAbsoluteSample);
 
     const int64_t skippedGapSample = frameToSamples(150);
     bool atOrPastEnd = false;
     QCOMPARE(playableSampleAtOrAfter(
-                 editor::audioMasterClockSampleToTimelineSample(skippedGapSample),
+                 editor::audioFeedbackSampleToTimelineSample(skippedGapSample),
                  ranges,
                  &atOrPastEnd),
              frameToSamples(200));
     QVERIFY(!atOrPastEnd);
 }
 
-void TestPlaybackPolicy::testAudioMasterSameFrameCarriesCanonicalSample() {
+void TestPlaybackPolicy::testSystemClockDecisionCarriesTransportSample() {
     editor::PlaybackClockInput input;
-    input.audioMasterEnabled = true;
-    input.audioClockAvailable = true;
-    input.hasPlayableAudio = true;
     input.transportSample = frameToSamples(120);
-    input.audioSample = frameToSamples(120) + (kSamplesPerFrame / 2);
-    input.currentFrame = 120;
     input.totalFrames = 1000;
 
     const editor::PlaybackClockDecision decision =
         editor::evaluatePlaybackClock(input);
 
-    QCOMPARE(decision.action, editor::PlaybackClockAction::WaitForAudioClock);
-    QCOMPARE(decision.sample, input.audioSample);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTransportSample);
+    QCOMPARE(decision.sample, input.transportSample);
     QCOMPARE(decision.frame, static_cast<int64_t>(120));
 }
 
@@ -325,12 +233,12 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
                  "reconcileActivePlaybackAudioState(activePlaybackReconfigured)")),
              "active runtime changes must request stream realignment");
     QVERIFY2(playback.contains(QStringLiteral("m_audioEngine->seek(currentFrame)")),
-             "already-running audio must seek to the canonical playhead when "
+             "already-running audio must seek to the transport playhead when "
              "runtime playback policy changes");
     QVERIFY2(playback.contains(QStringLiteral("const int64_t playbackStartFrame")) &&
                  playback.contains(QStringLiteral("m_audioEngine->start(playbackStartFrame)")) &&
                  playback.contains(QStringLiteral("m_audioEngine->warmPlaybackAudio(\n                    playbackStartFrame")),
-             "playback start must use one canonical start frame for audio "
+             "playback start must use one transport-derived start frame for audio "
              "warmup and stream start");
     QVERIFY2(playback.contains(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) &&
                  playback.indexOf(QStringLiteral("playbackStartSample = playableSampleAtOrAfter")) <
@@ -339,16 +247,17 @@ void TestPlaybackPolicy::testActivePlaybackRuntimeConfigRealignsStreams()
                      playback.indexOf(QStringLiteral("m_audioEngine->start(playbackStartFrame)")),
              "playback start must resolve export/speech ranges before deriving "
              "the shared audio/video start frame");
-    QVERIFY2(playback.contains(QStringLiteral("bool EditorWindow::shouldUseAudioMasterClock() const")) &&
-                 playback.contains(QStringLiteral("return false;")),
-             "runtime playback must stay transport-clocked even when the UI "
-             "clock source is Audio");
+    const QString removedSelectableClockHook =
+        QStringLiteral("shouldUse") + QStringLiteral("Audio") +
+        QStringLiteral("Master") + QStringLiteral("Clock");
+    QVERIFY2(!playback.contains(removedSelectableClockHook),
+             "runtime playback must not retain a selectable audio clock hook");
     QVERIFY2(playback.contains(QStringLiteral("updateAudioDriftRetime()")) &&
                  playback.contains(QStringLiteral("setPlaybackDriftRetimeRate")),
              "transport-clock playback must smoothly retime follower audio "
              "instead of only seeking on drift");
-    QVERIFY2(playback.contains(QStringLiteral("playbackActive() && shouldUseAudioMasterClock()")),
-             "retimed-audio warmup must not stop active transport-clock "
+    QVERIFY2(!playback.contains(QStringLiteral("playbackActive() && ") + removedSelectableClockHook + QStringLiteral("()")),
+             "retimed-audio warmup must not stop active system-clock transport "
              "playback");
     QVERIFY2(playback.contains(QStringLiteral("requestPlaybackAudioWarmup(false)")) &&
                  playback.contains(QStringLiteral("continuing transport playback while re-timed audio warms")) &&

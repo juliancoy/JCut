@@ -1091,6 +1091,8 @@ QWidget *InspectorPane::buildTranscriptTab()
     form->setSpacing(4);
     m_transcriptOverlayEnabledCheckBox = new QCheckBox(QStringLiteral("Enable Overlay"), settingsContainer);
     m_transcriptBackgroundVisibleCheckBox = new QCheckBox(QStringLiteral("Show Window"), settingsContainer);
+    m_transcriptBackgroundOpacitySpin = new QSpinBox(settingsContainer);
+    m_transcriptBackgroundCornerRadiusSpin = new QSpinBox(settingsContainer);
     m_transcriptShadowEnabledCheckBox = new QCheckBox(QStringLiteral("Show Shadow"), settingsContainer);
     m_transcriptShowSpeakerTitleCheckBox = new QCheckBox(QStringLiteral("Show Speaker Title"), settingsContainer);
     m_transcriptMaxLinesSpin = new QSpinBox(settingsContainer);
@@ -1123,6 +1125,14 @@ QWidget *InspectorPane::buildTranscriptTab()
         new QCheckBox(QStringLiteral("Show Lines Not In Active Cut"), settingsContainer);
 
     m_transcriptMaxLinesSpin->setRange(1, 20);
+    m_transcriptBackgroundOpacitySpin->setRange(0, 100);
+    m_transcriptBackgroundOpacitySpin->setSuffix(QStringLiteral("%"));
+    m_transcriptBackgroundOpacitySpin->setToolTip(
+        QStringLiteral("Opacity of the subtitle background window."));
+    m_transcriptBackgroundCornerRadiusSpin->setRange(0, 128);
+    m_transcriptBackgroundCornerRadiusSpin->setSuffix(QStringLiteral(" px"));
+    m_transcriptBackgroundCornerRadiusSpin->setToolTip(
+        QStringLiteral("Corner radius of the subtitle background window."));
     m_transcriptMaxCharsSpin->setRange(
         TimelineClip::TranscriptOverlaySettings::kMinReadableCharsPerLine,
         200);
@@ -1148,6 +1158,8 @@ QWidget *InspectorPane::buildTranscriptTab()
 
     form->addRow(QStringLiteral("Overlay"), m_transcriptOverlayEnabledCheckBox);
     form->addRow(QStringLiteral("Window"), m_transcriptBackgroundVisibleCheckBox);
+    form->addRow(QStringLiteral("Window Opacity"), m_transcriptBackgroundOpacitySpin);
+    form->addRow(QStringLiteral("Window Radius"), m_transcriptBackgroundCornerRadiusSpin);
     form->addRow(QStringLiteral("Shadow"), m_transcriptShadowEnabledCheckBox);
     form->addRow(QStringLiteral("Title"), m_transcriptShowSpeakerTitleCheckBox);
     form->addRow(QStringLiteral("Max Lines"), m_transcriptMaxLinesSpin);
@@ -1189,15 +1201,12 @@ QWidget *InspectorPane::buildTranscriptTab()
     m_playbackClockSourceCombo = new QComboBox(settingsContainer);
     m_playbackAudioWarpModeCombo = new QComboBox(settingsContainer);
     m_playbackClockSourceCombo->setToolTip(
-        QStringLiteral("Choose whether preview time is driven by audio or by the timeline clock."));
+        QStringLiteral("Preview time is driven by the system transport clock."));
     m_playbackAudioWarpModeCombo->setToolTip(
         QStringLiteral("Audio behavior when preview speed is not 1x."));
     m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Auto),
                                         playbackClockSourceToString(PlaybackClockSource::Auto));
-    m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Audio),
-                                        playbackClockSourceToString(PlaybackClockSource::Audio));
-    m_playbackClockSourceCombo->addItem(playbackClockSourceLabel(PlaybackClockSource::Timeline),
-                                        playbackClockSourceToString(PlaybackClockSource::Timeline));
+    m_playbackClockSourceCombo->setEnabled(false);
     m_playbackAudioWarpModeCombo->addItem(playbackAudioWarpModeLabel(PlaybackAudioWarpMode::Disabled),
                                           playbackAudioWarpModeToString(PlaybackAudioWarpMode::Disabled));
     m_playbackAudioWarpModeCombo->addItem(playbackAudioWarpModeLabel(PlaybackAudioWarpMode::Varispeed),
@@ -1431,9 +1440,10 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerCurrentSpeakerOrganizationYPositionSpin->setToolTip(
         QStringLiteral("Set the active speaker organization vertical position in the preview. 0% is top; 100% is bottom."));
     m_speakerSectionsTable = new QTableWidget(page);
-    m_speakerSectionsTable->setColumnCount(6);
+    m_speakerSectionsTable->setColumnCount(7);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
-        {QStringLiteral("#"),
+        {QStringLiteral("Avatar"),
+         QStringLiteral("#"),
          QStringLiteral("Speaker"),
          QStringLiteral("Range"),
          QStringLiteral("Track"),
@@ -1456,7 +1466,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::Stretch);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
     m_speakerSectionsTable->hide();
 
     auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);

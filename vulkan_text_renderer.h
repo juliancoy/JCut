@@ -128,6 +128,11 @@ private:
         QRectF uv;
         QColor color;
     };
+    struct TranscriptBackground {
+        QRectF rect;
+        QColor color;
+        qreal radius = 0.0;
+    };
     struct Atlas {
         QString key;
         render_detail::OverlayImage image;
@@ -145,7 +150,7 @@ private:
         QString layoutKey;
         Atlas atlas;
         QVector<LaidOutGlyph> glyphs;
-        QVector<QRectF> backgrounds;
+        QVector<TranscriptBackground> backgrounds;
         QVector<QRectF> highlights;
     };
 
@@ -161,7 +166,7 @@ private:
                                        const QString& speakerTitle,
                                        Atlas* atlas,
                                        QVector<LaidOutGlyph>* glyphs,
-                                       QVector<QRectF>* backgrounds,
+                                       QVector<TranscriptBackground>* backgrounds,
                                        QVector<QRectF>* highlights) const;
     const SpeakerLayoutCache* speakerLabelLayout(const QSize& outputSize,
                                                  const render_detail::SpeakerLabelOverlaySpec& spec) const;

@@ -24,12 +24,12 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
                                  QVulkanDeviceFunctions* funcs)
 {
     destroy();
-    if (!physicalDevice || !device || !funcs) {
+    Q_UNUSED(funcs);
+    if (!physicalDevice || !device) {
         return false;
     }
     m_physicalDevice = physicalDevice;
     m_device = device;
-    m_funcs = funcs;
 
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -40,7 +40,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     samplerInfo.maxAnisotropy = 1.0f;
-    if (m_funcs->vkCreateSampler(m_device, &samplerInfo, nullptr, &m_sampler) != VK_SUCCESS) {
+    if (vkCreateSampler(m_device, &samplerInfo, nullptr, &m_sampler) != VK_SUCCESS) {
         destroy();
         return false;
     }
@@ -58,7 +58,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     descriptorSetLayoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     descriptorSetLayoutInfo.bindingCount = 2;
     descriptorSetLayoutInfo.pBindings = bindings;
-    if (m_funcs->vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS) {
+    if (vkCreateDescriptorSetLayout(m_device, &descriptorSetLayoutInfo, nullptr, &m_descriptorSetLayout) != VK_SUCCESS) {
         destroy();
         return false;
     }
@@ -71,7 +71,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     descriptorPoolInfo.poolSizeCount = 1;
     descriptorPoolInfo.pPoolSizes = &poolSize;
     descriptorPoolInfo.maxSets = static_cast<uint32_t>(VulkanResources::kDescriptorSetCount);
-    if (m_funcs->vkCreateDescriptorPool(m_device, &descriptorPoolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS) {
+    if (vkCreateDescriptorPool(m_device, &descriptorPoolInfo, nullptr, &m_descriptorPool) != VK_SUCCESS) {
         destroy();
         return false;
     }
@@ -83,7 +83,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
     descriptorSetAllocInfo.descriptorPool = m_descriptorPool;
     descriptorSetAllocInfo.descriptorSetCount = static_cast<uint32_t>(m_descriptorSets.size());
     descriptorSetAllocInfo.pSetLayouts = layouts.data();
-    if (m_funcs->vkAllocateDescriptorSets(m_device, &descriptorSetAllocInfo, m_descriptorSets.data()) != VK_SUCCESS) {
+    if (vkAllocateDescriptorSets(m_device, &descriptorSetAllocInfo, m_descriptorSets.data()) != VK_SUCCESS) {
         destroy();
         return false;
     }
@@ -98,7 +98,7 @@ bool VulkanResources::initialize(VkPhysicalDevice physicalDevice,
 
 void VulkanResources::destroy()
 {
-    if (!m_device || !m_funcs) {
+    if (!m_device) {
         m_physicalDevice = VK_NULL_HANDLE;
         m_device = VK_NULL_HANDLE;
         m_funcs = nullptr;
@@ -106,38 +106,38 @@ void VulkanResources::destroy()
         return;
     }
     if (m_stagingBuffer != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
+        vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
         m_stagingBuffer = VK_NULL_HANDLE;
     }
     if (m_stagingMemory != VK_NULL_HANDLE) {
-        m_funcs->vkFreeMemory(m_device, m_stagingMemory, nullptr);
+        vkFreeMemory(m_device, m_stagingMemory, nullptr);
         m_stagingMemory = VK_NULL_HANDLE;
     }
     destroyTextureImage();
     if (m_curveLutView != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyImageView(m_device, m_curveLutView, nullptr);
+        vkDestroyImageView(m_device, m_curveLutView, nullptr);
         m_curveLutView = VK_NULL_HANDLE;
     }
     if (m_curveLutImage != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyImage(m_device, m_curveLutImage, nullptr);
+        vkDestroyImage(m_device, m_curveLutImage, nullptr);
         m_curveLutImage = VK_NULL_HANDLE;
     }
     if (m_curveLutMemory != VK_NULL_HANDLE) {
-        m_funcs->vkFreeMemory(m_device, m_curveLutMemory, nullptr);
+        vkFreeMemory(m_device, m_curveLutMemory, nullptr);
         m_curveLutMemory = VK_NULL_HANDLE;
     }
     if (m_descriptorPool != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
+        vkDestroyDescriptorPool(m_device, m_descriptorPool, nullptr);
         m_descriptorPool = VK_NULL_HANDLE;
     }
     m_descriptorSets.fill(VK_NULL_HANDLE);
     m_descriptorSetIndex = 0;
     if (m_descriptorSetLayout != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
+        vkDestroyDescriptorSetLayout(m_device, m_descriptorSetLayout, nullptr);
         m_descriptorSetLayout = VK_NULL_HANDLE;
     }
     if (m_sampler != VK_NULL_HANDLE) {
-        m_funcs->vkDestroySampler(m_device, m_sampler, nullptr);
+        vkDestroySampler(m_device, m_sampler, nullptr);
         m_sampler = VK_NULL_HANDLE;
     }
     m_textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -173,12 +173,12 @@ bool VulkanResources::createTextureResources()
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (m_funcs->vkCreateImage(m_device, &imageInfo, nullptr, image) != VK_SUCCESS) {
+    if (vkCreateImage(m_device, &imageInfo, nullptr, image) != VK_SUCCESS) {
         return false;
     }
 
     VkMemoryRequirements imageReq{};
-    m_funcs->vkGetImageMemoryRequirements(m_device, *image, &imageReq);
+    vkGetImageMemoryRequirements(m_device, *image, &imageReq);
     const uint32_t imageMemType = findMemoryType(imageReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (imageMemType == UINT32_MAX) {
         return false;
@@ -187,10 +187,10 @@ bool VulkanResources::createTextureResources()
     imageAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     imageAlloc.allocationSize = imageReq.size;
     imageAlloc.memoryTypeIndex = imageMemType;
-    if (m_funcs->vkAllocateMemory(m_device, &imageAlloc, nullptr, memory) != VK_SUCCESS) {
+    if (vkAllocateMemory(m_device, &imageAlloc, nullptr, memory) != VK_SUCCESS) {
         return false;
     }
-    if (m_funcs->vkBindImageMemory(m_device, *image, *memory, 0) != VK_SUCCESS) {
+    if (vkBindImageMemory(m_device, *image, *memory, 0) != VK_SUCCESS) {
         return false;
     }
 
@@ -202,7 +202,7 @@ bool VulkanResources::createTextureResources()
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
-    if (m_funcs->vkCreateImageView(m_device, &viewInfo, nullptr, view) != VK_SUCCESS) {
+    if (vkCreateImageView(m_device, &viewInfo, nullptr, view) != VK_SUCCESS) {
         return false;
     }
     return true;
@@ -240,7 +240,7 @@ bool VulkanResources::createTextureResources()
             ++writeIndex;
         }
     }
-    m_funcs->vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writeIndex), writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(m_device, static_cast<uint32_t>(writeIndex), writes.data(), 0, nullptr);
     return true;
 }
 
@@ -265,12 +265,12 @@ bool VulkanResources::createTextureImage(const QSize& size)
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (m_funcs->vkCreateImage(m_device, &imageInfo, nullptr, &m_textureImage) != VK_SUCCESS) {
+    if (vkCreateImage(m_device, &imageInfo, nullptr, &m_textureImage) != VK_SUCCESS) {
         return false;
     }
 
     VkMemoryRequirements imageReq{};
-    m_funcs->vkGetImageMemoryRequirements(m_device, m_textureImage, &imageReq);
+    vkGetImageMemoryRequirements(m_device, m_textureImage, &imageReq);
     const uint32_t imageMemType = findMemoryType(imageReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (imageMemType == UINT32_MAX) {
         destroyTextureImage();
@@ -280,11 +280,11 @@ bool VulkanResources::createTextureImage(const QSize& size)
     imageAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     imageAlloc.allocationSize = imageReq.size;
     imageAlloc.memoryTypeIndex = imageMemType;
-    if (m_funcs->vkAllocateMemory(m_device, &imageAlloc, nullptr, &m_textureMemory) != VK_SUCCESS) {
+    if (vkAllocateMemory(m_device, &imageAlloc, nullptr, &m_textureMemory) != VK_SUCCESS) {
         destroyTextureImage();
         return false;
     }
-    if (m_funcs->vkBindImageMemory(m_device, m_textureImage, m_textureMemory, 0) != VK_SUCCESS) {
+    if (vkBindImageMemory(m_device, m_textureImage, m_textureMemory, 0) != VK_SUCCESS) {
         destroyTextureImage();
         return false;
     }
@@ -297,7 +297,7 @@ bool VulkanResources::createTextureImage(const QSize& size)
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
-    if (m_funcs->vkCreateImageView(m_device, &viewInfo, nullptr, &m_textureView) != VK_SUCCESS) {
+    if (vkCreateImageView(m_device, &viewInfo, nullptr, &m_textureView) != VK_SUCCESS) {
         destroyTextureImage();
         return false;
     }
@@ -312,15 +312,15 @@ bool VulkanResources::createTextureImage(const QSize& size)
 void VulkanResources::destroyTextureImage()
 {
     if (m_textureView != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyImageView(m_device, m_textureView, nullptr);
+        vkDestroyImageView(m_device, m_textureView, nullptr);
         m_textureView = VK_NULL_HANDLE;
     }
     if (m_textureImage != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyImage(m_device, m_textureImage, nullptr);
+        vkDestroyImage(m_device, m_textureImage, nullptr);
         m_textureImage = VK_NULL_HANDLE;
     }
     if (m_textureMemory != VK_NULL_HANDLE) {
-        m_funcs->vkFreeMemory(m_device, m_textureMemory, nullptr);
+        vkFreeMemory(m_device, m_textureMemory, nullptr);
         m_textureMemory = VK_NULL_HANDLE;
     }
     m_textureLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -348,11 +348,11 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
         return true;
     }
     if (m_stagingBuffer != VK_NULL_HANDLE) {
-        m_funcs->vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
+        vkDestroyBuffer(m_device, m_stagingBuffer, nullptr);
         m_stagingBuffer = VK_NULL_HANDLE;
     }
     if (m_stagingMemory != VK_NULL_HANDLE) {
-        m_funcs->vkFreeMemory(m_device, m_stagingMemory, nullptr);
+        vkFreeMemory(m_device, m_stagingMemory, nullptr);
         m_stagingMemory = VK_NULL_HANDLE;
     }
 
@@ -361,11 +361,11 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
     bufferInfo.size = bytes;
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (m_funcs->vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_stagingBuffer) != VK_SUCCESS) {
+    if (vkCreateBuffer(m_device, &bufferInfo, nullptr, &m_stagingBuffer) != VK_SUCCESS) {
         return false;
     }
     VkMemoryRequirements bufferReq{};
-    m_funcs->vkGetBufferMemoryRequirements(m_device, m_stagingBuffer, &bufferReq);
+    vkGetBufferMemoryRequirements(m_device, m_stagingBuffer, &bufferReq);
     const uint32_t bufferMemType = findMemoryType(
         bufferReq.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
@@ -376,10 +376,10 @@ bool VulkanResources::ensureStagingCapacity(VkDeviceSize bytes)
     bufferAlloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     bufferAlloc.allocationSize = bufferReq.size;
     bufferAlloc.memoryTypeIndex = bufferMemType;
-    if (m_funcs->vkAllocateMemory(m_device, &bufferAlloc, nullptr, &m_stagingMemory) != VK_SUCCESS) {
+    if (vkAllocateMemory(m_device, &bufferAlloc, nullptr, &m_stagingMemory) != VK_SUCCESS) {
         return false;
     }
-    if (m_funcs->vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) != VK_SUCCESS) {
+    if (vkBindBufferMemory(m_device, m_stagingBuffer, m_stagingMemory, 0) != VK_SUCCESS) {
         return false;
     }
     m_stagingCapacity = bytes;
@@ -425,7 +425,7 @@ void VulkanResources::transitionTextureImage(VkCommandBuffer cb,
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.layerCount = 1;
-    m_funcs->vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 static void transitionExternalImage(QVulkanDeviceFunctions* funcs,
@@ -438,6 +438,7 @@ static void transitionExternalImage(QVulkanDeviceFunctions* funcs,
                                     VkAccessFlags srcAccess,
                                     VkAccessFlags dstAccess)
 {
+    Q_UNUSED(funcs);
     VkImageMemoryBarrier barrier{};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barrier.oldLayout = oldLayout;
@@ -450,7 +451,7 @@ static void transitionExternalImage(QVulkanDeviceFunctions* funcs,
     barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     barrier.subresourceRange.levelCount = 1;
     barrier.subresourceRange.layerCount = 1;
-    funcs->vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(cb, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 }
 
 bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer)
@@ -472,11 +473,11 @@ bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer
     }
 
     void* mapped = nullptr;
-    if (m_funcs->vkMapMemory(m_device, m_stagingMemory, 0, kTextureBytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+    if (vkMapMemory(m_device, m_stagingMemory, 0, kTextureBytes, 0, &mapped) != VK_SUCCESS || !mapped) {
         return false;
     }
     std::memcpy(mapped, pixels.data(), pixels.size());
-    m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
+    vkUnmapMemory(m_device, m_stagingMemory);
 
     transitionTextureImage(commandBuffer,
                     m_textureLayout,
@@ -493,7 +494,7 @@ bool VulkanResources::ensureCheckerTextureUploaded(VkCommandBuffer commandBuffer
     region.imageExtent = {static_cast<uint32_t>(m_textureSize.width()),
                           static_cast<uint32_t>(m_textureSize.height()),
                           1};
-    m_funcs->vkCmdCopyBufferToImage(commandBuffer,
+    vkCmdCopyBufferToImage(commandBuffer,
                                     m_stagingBuffer,
                                     m_textureImage,
                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -529,11 +530,11 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer, const QI
     }
 
     void* mapped = nullptr;
-    if (m_funcs->vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+    if (vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
         return false;
     }
     std::memcpy(mapped, rgbaImage.constBits(), static_cast<size_t>(bytes));
-    m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
+    vkUnmapMemory(m_device, m_stagingMemory);
 
     transitionTextureImage(commandBuffer,
                            m_textureLayout,
@@ -550,7 +551,7 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer, const QI
     region.imageExtent = {static_cast<uint32_t>(size.width()),
                           static_cast<uint32_t>(size.height()),
                           1};
-    m_funcs->vkCmdCopyBufferToImage(commandBuffer,
+    vkCmdCopyBufferToImage(commandBuffer,
                                     m_stagingBuffer,
                                     m_textureImage,
                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -583,11 +584,11 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer,
     }
 
     void* mapped = nullptr;
-    if (m_funcs->vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+    if (vkMapMemory(m_device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
         return false;
     }
     std::memcpy(mapped, image.rgbaPremultiplied.constData(), static_cast<size_t>(bytes));
-    m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
+    vkUnmapMemory(m_device, m_stagingMemory);
 
     transitionTextureImage(commandBuffer,
                            m_textureLayout,
@@ -604,7 +605,7 @@ bool VulkanResources::uploadImageTexture(VkCommandBuffer commandBuffer,
     region.imageExtent = {static_cast<uint32_t>(size.width()),
                           static_cast<uint32_t>(size.height()),
                           1};
-    m_funcs->vkCmdCopyBufferToImage(commandBuffer,
+    vkCmdCopyBufferToImage(commandBuffer,
                                     m_stagingBuffer,
                                     m_textureImage,
                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -641,7 +642,7 @@ bool VulkanResources::setSampledImage(VkImageView imageView, VkImageLayout image
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &imageInfoDesc;
-    m_funcs->vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
+    vkUpdateDescriptorSets(m_device, 1, &write, 0, nullptr);
     return true;
 }
 
@@ -656,11 +657,11 @@ bool VulkanResources::uploadCurveLut(VkCommandBuffer commandBuffer, const QByteA
     }
 
     void* mapped = nullptr;
-    if (m_funcs->vkMapMemory(m_device, m_stagingMemory, 0, kCurveLutBytes, 0, &mapped) != VK_SUCCESS || !mapped) {
+    if (vkMapMemory(m_device, m_stagingMemory, 0, kCurveLutBytes, 0, &mapped) != VK_SUCCESS || !mapped) {
         return false;
     }
     std::memcpy(mapped, rgbaLut.constData(), static_cast<size_t>(kCurveLutBytes));
-    m_funcs->vkUnmapMemory(m_device, m_stagingMemory);
+    vkUnmapMemory(m_device, m_stagingMemory);
 
     transitionExternalImage(m_funcs,
                             commandBuffer,
@@ -677,7 +678,7 @@ bool VulkanResources::uploadCurveLut(VkCommandBuffer commandBuffer, const QByteA
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {kCurveLutWidth, kCurveLutHeight, 1};
-    m_funcs->vkCmdCopyBufferToImage(commandBuffer,
+    vkCmdCopyBufferToImage(commandBuffer,
                                     m_stagingBuffer,
                                     m_curveLutImage,
                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

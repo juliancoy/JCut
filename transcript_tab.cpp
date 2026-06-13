@@ -310,6 +310,14 @@ void TranscriptTab::wire()
         connect(m_widgets.transcriptBackgroundVisibleCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
     }
+    if (m_widgets.transcriptBackgroundOpacitySpin) {
+        connect(m_widgets.transcriptBackgroundOpacitySpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
+    if (m_widgets.transcriptBackgroundCornerRadiusSpin) {
+        connect(m_widgets.transcriptBackgroundCornerRadiusSpin, qOverload<int>(&QSpinBox::valueChanged),
+                this, &TranscriptTab::onOverlaySettingChanged);
+    }
     if (m_widgets.transcriptShadowEnabledCheckBox) {
         connect(m_widgets.transcriptShadowEnabledCheckBox, &QCheckBox::toggled,
                 this, &TranscriptTab::onOverlaySettingChanged);
@@ -504,6 +512,12 @@ void TranscriptTab::applyOverlayFromInspector(bool pushHistory)
                                          m_widgets.transcriptOverlayEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showBackground = m_widgets.transcriptBackgroundVisibleCheckBox &&
                                                 m_widgets.transcriptBackgroundVisibleCheckBox->isChecked();
+        clip.transcriptOverlay.backgroundOpacity = m_widgets.transcriptBackgroundOpacitySpin
+            ? qBound<qreal>(0.0, m_widgets.transcriptBackgroundOpacitySpin->value() / 100.0, 1.0)
+            : 120.0 / 255.0;
+        clip.transcriptOverlay.backgroundCornerRadius = m_widgets.transcriptBackgroundCornerRadiusSpin
+            ? qBound<qreal>(0.0, m_widgets.transcriptBackgroundCornerRadiusSpin->value(), 128.0)
+            : 14.0;
         clip.transcriptOverlay.showShadow = m_widgets.transcriptShadowEnabledCheckBox &&
                                             m_widgets.transcriptShadowEnabledCheckBox->isChecked();
         clip.transcriptOverlay.showSpeakerTitle = m_widgets.transcriptShowSpeakerTitleCheckBox &&
@@ -1164,6 +1178,8 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
 
     QSignalBlocker enabledBlock(m_widgets.transcriptOverlayEnabledCheckBox);
     QSignalBlocker backgroundBlock(m_widgets.transcriptBackgroundVisibleCheckBox);
+    QSignalBlocker backgroundOpacityBlock(m_widgets.transcriptBackgroundOpacitySpin);
+    QSignalBlocker backgroundCornerRadiusBlock(m_widgets.transcriptBackgroundCornerRadiusSpin);
     QSignalBlocker shadowBlock(m_widgets.transcriptShadowEnabledCheckBox);
     QSignalBlocker titleBlock(m_widgets.transcriptShowSpeakerTitleCheckBox);
     QSignalBlocker maxLinesBlock(m_widgets.transcriptMaxLinesSpin);
@@ -1181,6 +1197,14 @@ void TranscriptTab::updateOverlayWidgetsFromClip(const TimelineClip& clip)
     m_widgets.transcriptOverlayEnabledCheckBox->setChecked(clip.transcriptOverlay.enabled);
     if (m_widgets.transcriptBackgroundVisibleCheckBox) {
         m_widgets.transcriptBackgroundVisibleCheckBox->setChecked(clip.transcriptOverlay.showBackground);
+    }
+    if (m_widgets.transcriptBackgroundOpacitySpin) {
+        m_widgets.transcriptBackgroundOpacitySpin->setValue(
+            static_cast<int>(std::round(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundOpacity, 1.0) * 100.0)));
+    }
+    if (m_widgets.transcriptBackgroundCornerRadiusSpin) {
+        m_widgets.transcriptBackgroundCornerRadiusSpin->setValue(
+            static_cast<int>(std::round(qBound<qreal>(0.0, clip.transcriptOverlay.backgroundCornerRadius, 128.0))));
     }
     if (m_widgets.transcriptShadowEnabledCheckBox) {
         m_widgets.transcriptShadowEnabledCheckBox->setChecked(clip.transcriptOverlay.showShadow);

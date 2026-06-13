@@ -88,8 +88,8 @@ defect to surface.)
    tests). What's missing is making it the *default* for direct-Vulkan visible video and gating
    the live `cpu_upload` path (`vulkan_preview_surface.cpp:1469`) behind an explicit, logged
    opt-in — after the D6 bisect explains why it's currently enabled.
-5. **One clock, all streams.** Everything derives from `absolutePlaybackSample` through the
-   canonical converters (TIME.md). No subsystem advances its own notion of "now."
+5. **One clock, all streams.** Everything derives from system-clock transport time through
+   the shared converters (TIME.md). No subsystem advances its own notion of "now."
 6. **Buffer properly.** Honor the documented retention (`effectiveVisibleDecodeKeepWindow()`,
    24/96/240 frames) and the stale tolerance (`previewMaxPlaybackStaleFrameDelta()`: ~67 ms of
    source media, clamped **4–8** source frames — *not* "≤4"). Per D7, make these tunable with
@@ -126,15 +126,15 @@ disappear quickly, that temptation *is* F1/F2/F3. Stop and find the cause.
 
 ## 3. The professional render pipeline (the target state)
 
-This is the canonical ownership chain from `render.md` §"Interactive Preview Path" and
+This is the required ownership chain from `render.md` §"Interactive Preview Path" and
 `synchronization.md` §"Decode-To-Preview Steps". **This is the law.** Verification on 2026-06-11
 confirmed the running code already matches the *shape* of this chain (the presenter has zero
 references to TimelineCache; the export path constructs its own `AsyncDecoder` at
 `render_export.cpp:593`); your job is to make the *behavior* match too.
 
 ```
-EditorWindow            owns the playback clock; publishes absolutePlaybackSample
-   │  (timeline sample, never a source-frame guess)
+EditorWindow            owns system transport; publishes active timeline sample
+   │  (derived timeline position, never a source-frame guess)
    ▼
 VulkanPreviewSurface    maps sample → per-clip media source frame (trim, rate, fps, sync markers)
    │                    decides the visible request; builds VulkanPreviewClipFrameStatus
@@ -243,7 +243,7 @@ which hypothesis (or combination) holds on the hardware you can reach. You do no
      (`editor_profiling.cpp:314-315`, `:382-392`). (Note: the symbol `kMaxVisibleBacklog` named in
      PROFESSIONALIZE.md and v1 of this plan **does not exist in code** — the tuning knob is
      `playbackTuning().visibleBacklogLimit`.)
-4. **One clock.** Everything derives from `absolutePlaybackSample` via canonical converters
+4. **One clock.** Everything derives from system-clock transport time via shared converters
    (TIME.md Invariants 1–10). Never advance an independent video/caption/overlay clock.
 5. **Preserve the diagnostics contract.** A change that improves appearance but removes/hides a
    required diagnostic field (synchronization.md §Diagnostics) is **incomplete and will be
@@ -442,10 +442,10 @@ buffer.
 
 Tasks:
 1. **Single-clock proof (TIME.md Invariants 1–10).** Verify video frame, audio sample, transcript
-   frame, speaker-label timing, and overlay timing all derive from `absolutePlaybackSample` via
-   canonical converters. Subtitles prefer the **presented** media source frame when available so
+   frame, speaker-label timing, and overlay timing all derive from system-clock transport time via
+   shared converters. Subtitles prefer the **presented** media source frame when available so
    text never leads late video (TIME.md Invariant 4 sub-clause; synchronization.md Step 9).
-2. **A/V lock.** Audio-master clock is the *effective audible* position, not queued/submitted
+2. **A/V lock.** System-clock transport is the playback authority; audio feedback is the *effective audible* position, not queued/submitted
    position (TIME.md). In pitch-preserving `time_stretch`, video must hold when the retimed
    segment is blocked — never ride the timer through a blocked audio segment (TIME.md
    Invariant 7).

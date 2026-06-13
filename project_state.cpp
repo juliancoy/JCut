@@ -467,8 +467,6 @@ QJsonObject EditorWindow::buildStateJson() const
     root[QStringLiteral("debugDecoderLaneCount")] = editor::debugDecoderLaneCount();
     root[QStringLiteral("timelineAudioEnvelopeGranularity")] =
         editor::debugTimelineAudioEnvelopeGranularity();
-    root[QStringLiteral("debugDecodeMode")] =
-        editor::decodePreferenceToString(editor::debugDecodePreference());
     root[QStringLiteral("debugH26xSoftwareThreadingMode")] =
         editor::h26xSoftwareThreadingModeToString(editor::debugH26xSoftwareThreadingMode());
     root[QStringLiteral("rubberBandEngine")] =

@@ -1550,7 +1550,8 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
         return;
     }
 
-    QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
+    QTableWidgetItem* speakerItem =
+        m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
     if (!speakerItem) {
         return;
     }
@@ -1566,7 +1567,7 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
         m_widgets.speakerSectionsTable->selectRow(row);
     }
     if (m_widgets.speakerSectionsTable->currentRow() != row) {
-        m_widgets.speakerSectionsTable->setCurrentCell(row, 1);
+        m_widgets.speakerSectionsTable->setCurrentCell(row, SpeakerSectionSpeakerColumn);
     }
 
     int wordCount = 0;
@@ -1625,8 +1626,8 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     }
     if (chosen == exportAction) {
         if (m_speakerDeps.exportSpeakerSectionVideo) {
-            const QString snippet = m_widgets.speakerSectionsTable->item(row, 5)
-                ? m_widgets.speakerSectionsTable->item(row, 5)->text().trimmed()
+            const QString snippet = m_widgets.speakerSectionsTable->item(row, SpeakerSectionTranscriptColumn)
+                ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionTranscriptColumn)->text().trimmed()
                 : QString();
             const QString speakerDisplayName = speakerItem->text().trimmed();
             m_speakerDeps.exportSpeakerSectionVideo(
@@ -1667,8 +1668,10 @@ void SpeakersTab::onSpeakerExportLongSectionsClicked()
 
     QVector<SpeakerSectionExportItem> sections;
     for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
-        QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
-        QTableWidgetItem* wordsItem = m_widgets.speakerSectionsTable->item(row, 4);
+        QTableWidgetItem* speakerItem =
+            m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn);
+        QTableWidgetItem* wordsItem =
+            m_widgets.speakerSectionsTable->item(row, SpeakerSectionWordsColumn);
         if (!speakerItem || !wordsItem) {
             continue;
         }
@@ -1681,7 +1684,8 @@ void SpeakersTab::onSpeakerExportLongSectionsClicked()
             !wordCountOk || wordCount < 10) {
             continue;
         }
-        QTableWidgetItem* snippetItem = m_widgets.speakerSectionsTable->item(row, 5);
+        QTableWidgetItem* snippetItem =
+            m_widgets.speakerSectionsTable->item(row, SpeakerSectionTranscriptColumn);
         sections.push_back(SpeakerSectionExportItem{
             speakerId,
             startFrame,

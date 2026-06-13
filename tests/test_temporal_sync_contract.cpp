@@ -23,7 +23,7 @@ TimelineClip makeSixtyFpsClip()
     return clip;
 }
 
-int64_t canonicalSampleForWallSeconds(const TimelineClip& clip, double wallSeconds, double playbackSpeed)
+int64_t transportSampleForWallSeconds(const TimelineClip& clip, double wallSeconds, double playbackSpeed)
 {
     const int64_t startSample = clipTimelineStartSamples(clip);
     return startSample + static_cast<int64_t>(
@@ -43,9 +43,9 @@ void verifyDerivedDomainsShareSourceSeconds(const TimelineClip& clip, int64_t ti
         static_cast<double>(transcriptFrame) / static_cast<double>(kTimelineFps);
 
     QVERIFY2(std::abs(mediaSeconds - sourceSeconds) <= (1.0 / clip.sourceFps),
-             "media source frame must derive from the canonical timeline sample");
+             "media source frame must derive from the transport timeline sample");
     QVERIFY2(std::abs(transcriptSeconds - sourceSeconds) <= (1.0 / kTimelineFps),
-             "transcript frame must derive from the same canonical timeline sample");
+             "transcript frame must derive from the same transport timeline sample");
 }
 
 }  // namespace
@@ -56,7 +56,7 @@ class TestTemporalSyncContract : public QObject {
 private slots:
     void derivedDomainsStayLockedAtPlaybackSpeeds();
     void renderSyncMarkersFeedVideoAndTranscriptMapping();
-    void pitchPreservingClockGatePreventsTimerFallback();
+    void systemClockDecisionIgnoresAudioReadiness();
 };
 
 void TestTemporalSyncContract::derivedDomainsStayLockedAtPlaybackSpeeds()
@@ -65,7 +65,7 @@ void TestTemporalSyncContract::derivedDomainsStayLockedAtPlaybackSpeeds()
     for (const double playbackSpeed : {1.0, 1.25, 1.5}) {
         for (const double wallSeconds : {0.25, 1.0, 2.5}) {
             const int64_t timelineSample =
-                canonicalSampleForWallSeconds(clip, wallSeconds, playbackSpeed);
+                transportSampleForWallSeconds(clip, wallSeconds, playbackSpeed);
             verifyDerivedDomainsShareSourceSeconds(clip, timelineSample);
 
             const int64_t sourceSample =
@@ -123,37 +123,22 @@ void TestTemporalSyncContract::renderSyncMarkersFeedVideoAndTranscriptMapping()
              "video and transcript mapping must consume the same render-sync-adjusted source time");
 }
 
-void TestTemporalSyncContract::pitchPreservingClockGatePreventsTimerFallback()
+void TestTemporalSyncContract::systemClockDecisionIgnoresAudioReadiness()
 {
     editor::PlaybackClockInput input;
-    input.pitchPreservingAudioRequired = true;
-    input.audioMasterEnabled = true;
-    input.audioClockAvailable = true;
-    input.hasPlayableAudio = true;
-    input.audioBlocked = true;
-    input.audioReady = true;
-    input.audioSample = frameToSamples(100);
-    input.currentFrame = 120;
+    input.transportSample = frameToSamples(120);
     input.totalFrames = 1000;
-    input.audioClockStallTicks = 8;
-    input.audioClockStallThresholdTicks = 2;
 
     editor::PlaybackClockDecision decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTransportSample);
+    QCOMPARE(decision.reason, QStringLiteral("system_clock_transport"));
+    QCOMPARE(decision.sample, input.transportSample);
 
-    input.audioBlocked = false;
-    input.audioReady = false;
+    input.transportSample = frameToSamples(125) + 33;
     decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
-
-    input.audioReady = true;
-    input.audioSample = frameToSamples(80);
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::HoldForPitchPreservingAudio);
-
-    input.pitchPreservingAudioRequired = false;
-    decision = editor::evaluatePlaybackClock(input);
-    QCOMPARE(decision.action, editor::PlaybackClockAction::UseAudioSample);
+    QCOMPARE(decision.action, editor::PlaybackClockAction::UseTransportSample);
+    QCOMPARE(decision.reason, QStringLiteral("system_clock_transport"));
+    QCOMPARE(decision.sample, input.transportSample);
 }
 
 QTEST_MAIN(TestTemporalSyncContract)

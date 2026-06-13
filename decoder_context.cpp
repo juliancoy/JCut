@@ -63,6 +63,10 @@ DecoderContext::~DecoderContext() {
     shutdown();
 }
 
+void DecoderContext::setAllowHardwareFrameMaterialization(bool allow) {
+    m_allowHardwareFrameMaterialization = allow;
+}
+
 void DecoderContext::shutdown() {
     if (m_codecCtx) {
         avcodec_free_context(&m_codecCtx);
@@ -669,11 +673,12 @@ QVector<FrameHandle> DecoderContext::decodeForwardUntil(int64_t targetFrame, boo
         return decodedFrames;
     }
 
-    // Stability-first decode gate:
-    // serialize avcodec_send_packet/receive_frame across contexts.
-    // This avoids intermittent libavcodec null-call crashes seen during
-    // concurrent software decode in playback/render/export.
-    std::unique_lock<std::mutex> decodeLock(ffmpegDecodeMutex());
+    // Stability-first software decode gate. Hardware decode contexts can run
+    // concurrently; serializing them here starves Vulkan playback on NVIDIA.
+    std::unique_lock<std::mutex> decodeLock(ffmpegDecodeMutex(), std::defer_lock);
+    if (!m_info.hardwareAccelerated) {
+        decodeLock.lock();
+    }
     if (!m_formatCtx || !m_codecCtx || m_videoStreamIndex < 0 ||
         m_videoStreamIndex >= static_cast<int>(m_formatCtx->nb_streams) ||
         !m_codecCtx->codec || !m_codecCtx->internal) {
@@ -831,7 +836,9 @@ FrameHandle DecoderContext::convertToFrame(AVFrame* avFrame, int64_t frameNumber
         }
     }
 
-    if (decodePreference == DecodePreference::HardwareZeroCopy && m_info.hardwareAccelerated) {
+    if (decodePreference == DecodePreference::HardwareZeroCopy &&
+        m_info.hardwareAccelerated &&
+        !m_allowHardwareFrameMaterialization) {
         decodeTrace(QStringLiteral("DecoderContext::convertToFrame.reject-materialized"),
                     QStringLiteral("file=%1 frame=%2 fmt=%3")
                         .arg(shortPath(m_path))

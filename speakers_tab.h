@@ -205,6 +205,17 @@ private slots:
     void onSpeakerFindMatchingTracksClicked();
 
 private:
+    enum SpeakerSectionColumn {
+        SpeakerSectionAvatarColumn = 0,
+        SpeakerSectionIndexColumn = 1,
+        SpeakerSectionSpeakerColumn = 2,
+        SpeakerSectionRangeColumn = 3,
+        SpeakerSectionTrackColumn = 4,
+        SpeakerSectionWordsColumn = 5,
+        SpeakerSectionTranscriptColumn = 6,
+        SpeakerSectionColumnCount = 7
+    };
+
     enum SpeakerSectionItemRole {
         SpeakerSectionSpeakerIdRole = Qt::UserRole,
         SpeakerSectionStartFrameRole,
@@ -268,6 +279,7 @@ private:
     void ensurePersistentTrackAvatarMemory(const TimelineClip& clip,
                                            const QJsonArray& streams,
                                            bool forceRefresh = false,
+                                           const QSet<int>& onlyTrackIds = {},
                                            editor::DecoderContext* decoderCtx = nullptr,
                                            QHash<int64_t, QImage>* frameImageCache = nullptr);
     QJsonObject resolveFaceDetectionsAssignmentRow(const TimelineClip& clip,
@@ -312,6 +324,7 @@ private:
     int64_t currentSourceFrameForClip(const TimelineClip& clip) const;
     void refreshSpeakersTable(const QJsonObject& transcriptRoot,
                               const QString& preferredSpeakerId = QString());
+    void refreshVisibleSpeakerSectionAssignments(const QString& speakerId);
     void seekToSpeakerFirstWord(const QString& speakerId);
     bool seekToSpeakerSegmentRelative(const QString& speakerId, int direction);
     bool seekToSpeakerNextSection(const QString& speakerId);

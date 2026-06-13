@@ -123,6 +123,9 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_vulkan_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_clear_helpers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_text_renderer.cpp
 )
 target_link_libraries(test_vulkan_subtitle_render
     PRIVATE
@@ -160,6 +163,12 @@ add_test(NAME test_contiguous_transcript_sections_state_persistence
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_contiguous_transcript_sections_state_persistence.cmake
 )
 
+add_test(NAME test_contiguous_sections_avatar_column
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_contiguous_sections_avatar_column.cmake
+)
+
 add_test(NAME test_render_status_reports_live_progress
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
@@ -170,6 +179,12 @@ add_test(NAME test_export_audio_uses_rubberband
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
         -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_export_audio_uses_rubberband.cmake
+)
+
+add_test(NAME test_export_speaker_labels_in_vulkan_path
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/..
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_export_speaker_labels_in_vulkan_path.cmake
 )
 
 add_executable(test_facedetections_processed_artifact

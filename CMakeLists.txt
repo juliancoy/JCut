@@ -595,6 +595,9 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
 )
 target_include_directories(jcut_editor_runtime
@@ -786,7 +789,9 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_pipeline.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_clear_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_resources.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_text_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_zero_copy_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_scrfd_ncnn_face_detector.cpp

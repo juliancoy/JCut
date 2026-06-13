@@ -7,30 +7,16 @@
 namespace editor {
 
 enum class PlaybackClockAction {
-    HoldForPitchPreservingAudio,
     UseTransportSample,
-    UseAudioSample,
-    WaitForAudioClock,
-    UseTimelineTimer,
 };
 
 struct PlaybackClockInput {
-    bool pitchPreservingAudioRequired = false;
-    bool audioMasterEnabled = false;
-    bool audioClockAvailable = false;
-    bool hasPlayableAudio = false;
-    bool audioBlocked = false;
-    bool audioReady = true;
     int64_t transportSample = 0;
-    int64_t audioSample = 0;
-    int64_t currentFrame = 0;
     int64_t totalFrames = 0;
-    int audioClockStallTicks = 0;
-    int audioClockStallThresholdTicks = 0;
 };
 
 struct PlaybackClockDecision {
-    PlaybackClockAction action = PlaybackClockAction::UseTimelineTimer;
+    PlaybackClockAction action = PlaybackClockAction::UseTransportSample;
     QString reason;
     int64_t sample = 0;
     int64_t frame = 0;
@@ -47,7 +33,7 @@ struct PlaybackDriftRetimeInput {
     qreal smoothing = 0.08;
 };
 
-int64_t audioMasterClockSampleToTimelineSample(int64_t audioClockSample);
+int64_t audioFeedbackSampleToTimelineSample(int64_t audioFeedbackSample);
 PlaybackClockDecision evaluatePlaybackClock(const PlaybackClockInput& input);
 qreal evaluatePlaybackDriftRetimeMultiplier(const PlaybackDriftRetimeInput& input);
 

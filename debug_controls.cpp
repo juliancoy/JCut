@@ -667,6 +667,9 @@ void setDebugSequenceLateBufferSeedSlack(int slack) {
 }
 
 void setDebugDecodePreference(DecodePreference preference) {
+    if (preference == DecodePreference::Software) {
+        preference = DecodePreference::Hardware;
+    }
     g_decodePreference.store(static_cast<int>(preference));
 }
 
@@ -717,7 +720,7 @@ void setRubberBandChannelsTogether(bool enabled) {
 RenderPipelineDefaults defaultRenderPipelineDefaultsForCurrentSystem() {
     RenderPipelineDefaults defaults;
 
-    defaults.decodePreference = DecodePreference::Software;
+    defaults.decodePreference = DecodePreference::Hardware;
     defaults.h26xSoftwareThreadingMode = H26xSoftwareThreadingMode::Auto;
 #if defined(Q_OS_LINUX)
     const bool hasVaapiRenderNode =

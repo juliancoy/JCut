@@ -351,8 +351,7 @@ QWidget *InspectorPane::buildPreferencesTab()
     decodeForm->addRow(QStringLiteral("Decoder Lane Count"), m_outputDecoderLaneCountSpin);
     m_outputDecodeModeCombo = new QComboBox(page);
     m_outputDecodeModeCombo->addItem(QStringLiteral("Auto"), QStringLiteral("auto"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("GPU Upload"), QStringLiteral("hardware"));
-    m_outputDecodeModeCombo->addItem(QStringLiteral("CPU Software"), QStringLiteral("software"));
+    m_outputDecodeModeCombo->addItem(QStringLiteral("NVIDIA / GPU Hardware"), QStringLiteral("hardware"));
     const QString decodeMode = editor::decodePreferenceToString(editor::debugDecodePreference());
     const int decodeModeIndex = m_outputDecodeModeCombo->findData(decodeMode);
     if (decodeModeIndex >= 0) {

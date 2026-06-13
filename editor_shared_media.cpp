@@ -565,38 +565,18 @@ QString renderSyncActionLabel(RenderSyncAction action) {
 }
 
 QString playbackClockSourceToString(PlaybackClockSource source) {
-    switch (source) {
-    case PlaybackClockSource::Audio:
-        return QStringLiteral("audio");
-    case PlaybackClockSource::Timeline:
-        return QStringLiteral("timeline");
-    case PlaybackClockSource::Auto:
-    default:
-        return QStringLiteral("auto");
-    }
+    (void)source;
+    return QStringLiteral("auto");
 }
 
 PlaybackClockSource playbackClockSourceFromString(const QString& value) {
-    const QString normalized = value.trimmed().toLower();
-    if (normalized == QStringLiteral("audio")) {
-        return PlaybackClockSource::Audio;
-    }
-    if (normalized == QStringLiteral("timeline")) {
-        return PlaybackClockSource::Timeline;
-    }
+    (void)value;
     return PlaybackClockSource::Auto;
 }
 
 QString playbackClockSourceLabel(PlaybackClockSource source) {
-    switch (source) {
-    case PlaybackClockSource::Audio:
-        return QStringLiteral("Audio Clock");
-    case PlaybackClockSource::Timeline:
-        return QStringLiteral("Timeline Clock");
-    case PlaybackClockSource::Auto:
-    default:
-        return QStringLiteral("Auto");
-    }
+    (void)source;
+    return QStringLiteral("System Clock");
 }
 
 QString playbackAudioWarpModeToString(PlaybackAudioWarpMode mode) {
@@ -663,17 +643,6 @@ qreal effectivePlaybackAudioWarpRate(qreal playbackSpeed, PlaybackAudioWarpMode 
     return normalizedPlaybackSpeed(playbackSpeed);
 }
 
-bool shouldUseAudioMasterClock(PlaybackClockSource source,
-                               PlaybackAudioWarpMode mode,
-                               qreal playbackSpeed,
-                               bool hasPlayableAudio) {
-    (void)source;
-    (void)mode;
-    (void)playbackSpeed;
-    (void)hasPlayableAudio;
-    return false;
-}
-
 bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
                                               qreal playbackSpeed,
                                               bool hasPlayableAudio) {
@@ -682,15 +651,6 @@ bool pitchPreservingPlaybackRequiresAudioGate(PlaybackAudioWarpMode mode,
     }
     return normalizedPlaybackAudioWarpMode(playbackSpeed, mode) == PlaybackAudioWarpMode::TimeStretch &&
            qAbs(effectivePlaybackAudioWarpRate(playbackSpeed, mode) - 1.0) >= 0.0001;
-}
-
-bool shouldHoldForPitchPreservingAudio(PlaybackAudioWarpMode mode,
-                                       qreal playbackSpeed,
-                                       bool hasPlayableAudio,
-                                       bool audioBlocked,
-                                       bool audioReady) {
-    return pitchPreservingPlaybackRequiresAudioGate(mode, playbackSpeed, hasPlayableAudio) &&
-           (audioBlocked || !audioReady);
 }
 
 bool clipHasVisuals(const TimelineClip& clip) {

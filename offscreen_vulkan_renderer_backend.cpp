@@ -6,6 +6,7 @@
 #include "render_vulkan_shared.h"
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
+#include "vulkan_text_renderer.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -1269,9 +1270,9 @@ public:
       return false;
     }
 
-    if (!createPipeline(m_effectsVertModule, m_effectsFragModule,
-                        m_effectsPipelineLayout, m_renderPass,
-                        &m_effectsPipeline) ||
+	    if (!createPipeline(m_effectsVertModule, m_effectsFragModule,
+	                        m_effectsPipelineLayout, m_renderPass,
+	                        &m_effectsPipeline) ||
         !createPipeline(m_maskVertModule, m_maskFragModule,
                         m_maskPipelineLayout, m_renderPass, &m_maskPipeline) ||
         !createPipeline(m_nv12VertModule, m_nv12YFragModule,
@@ -1289,21 +1290,32 @@ public:
       if (errorMessage) {
         *errorMessage =
             QStringLiteral("Failed to create Vulkan graphics pipelines.");
-      }
+	      }
+	      return false;
+	    }
+
+    m_transcriptTextRenderer = std::make_unique<VulkanTextRenderer>();
+    if (!m_transcriptTextRenderer->initialize(m_physicalDevice, m_device, nullptr, m_renderPass, errorMessage)) {
+      return false;
+    }
+    m_speakerTextRenderer = std::make_unique<VulkanTextRenderer>();
+    if (!m_speakerTextRenderer->initialize(m_physicalDevice, m_device, nullptr, m_renderPass, errorMessage)) {
       return false;
     }
 
-    m_initialized = true;
-    return true;
-  }
+	    m_initialized = true;
+	    return true;
+	  }
 
-  void release() {
-    if (m_nv12ScratchFrame) {
-      av_frame_free(&m_nv12ScratchFrame);
-    }
-    if (m_device != VK_NULL_HANDLE) {
-      vkDeviceWaitIdle(m_device);
-    }
+	  void release() {
+	    if (m_nv12ScratchFrame) {
+	      av_frame_free(&m_nv12ScratchFrame);
+	    }
+	    if (m_device != VK_NULL_HANDLE) {
+	      vkDeviceWaitIdle(m_device);
+	    }
+    m_speakerTextRenderer.reset();
+    m_transcriptTextRenderer.reset();
     for (FrameSlot &slot : m_frameSlots) {
 #if JCUT_HAS_CUDA_DRIVER
       if (slot.cudaExternalMemory) {
@@ -1632,6 +1644,19 @@ public:
                      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
   };
 
+  struct TranscriptTextInput {
+    TimelineClip clip;
+    TranscriptOverlayLayout layout;
+    QRectF outputRect;
+    QString speakerTitle;
+  };
+
+  struct VulkanTextInputs {
+    QVector<TranscriptTextInput> transcripts;
+    bool hasSpeakerLabel = false;
+    SpeakerLabelOverlaySpec speakerLabel;
+  };
+
   bool writeOverlayImageToStagingFlippedY(const OverlayImage &overlay,
                                           VkDeviceSize stagingOffset) {
     if (overlay.isNull() || !m_stagingMapped) {
@@ -1751,6 +1776,7 @@ public:
   }
 
   QImage renderFrameFromLayers(const QVector<LayerInput> &layers,
+                               const VulkanTextInputs &textInputs,
                                bool readbackToImage) {
     if (!m_initialized || m_device == VK_NULL_HANDLE ||
         m_commandBuffer == VK_NULL_HANDLE) {
@@ -2042,6 +2068,23 @@ public:
       }
       return true;
     };
+    QSet<int> preparedTranscriptTextIndices;
+    if (m_transcriptTextRenderer && m_transcriptTextRenderer->isReady()) {
+      for (int i = 0; i < textInputs.transcripts.size(); ++i) {
+        const TranscriptTextInput &text = textInputs.transcripts.at(i);
+        if (m_transcriptTextRenderer->prepareTranscriptOverlayAtlas(
+                m_commandBuffer, m_outputSize, text.clip, text.layout,
+                text.outputRect, text.speakerTitle)) {
+          preparedTranscriptTextIndices.insert(i);
+        }
+      }
+    }
+    const bool preparedSpeakerText =
+        textInputs.hasSpeakerLabel && m_speakerTextRenderer &&
+        m_speakerTextRenderer->isReady() &&
+        m_speakerTextRenderer->prepareSpeakerLabelAtlas(
+            m_commandBuffer, m_outputSize, textInputs.speakerLabel);
+
     int layerIndex = 0;
     while (layerIndex < layers.size()) {
       const int batchCount =
@@ -2149,6 +2192,27 @@ public:
       }
       vkCmdEndRenderPass(m_commandBuffer);
       layerIndex += batchCount;
+    }
+
+    if (!preparedTranscriptTextIndices.isEmpty() || preparedSpeakerText) {
+      vkCmdBeginRenderPass(m_commandBuffer, &renderPassBeginInfo,
+                           VK_SUBPASS_CONTENTS_INLINE);
+      const QRectF outputTargetRect(QPointF(0.0, 0.0), QSizeF(m_outputSize));
+      for (int i = 0; i < textInputs.transcripts.size(); ++i) {
+        if (!preparedTranscriptTextIndices.contains(i)) {
+          continue;
+        }
+        const TranscriptTextInput &text = textInputs.transcripts.at(i);
+        m_transcriptTextRenderer->drawTranscriptOverlay(
+            m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
+            text.clip, text.layout, text.outputRect, text.speakerTitle);
+      }
+      if (preparedSpeakerText) {
+        m_speakerTextRenderer->drawSpeakerLabel(
+            m_commandBuffer, m_outputSize, m_outputSize, outputTargetRect,
+            textInputs.speakerLabel);
+      }
+      vkCmdEndRenderPass(m_commandBuffer);
     }
 
     transitionImageLayout(m_commandBuffer, m_colorImage,
@@ -2871,18 +2935,49 @@ public:
            m_vkGetMemoryFdKHR != nullptr && m_cudaExportBuffersReady;
   }
 
-  OverlayImage buildTranscriptOverlayImage(
+  QVector<TranscriptTextInput> buildTranscriptTextInputs(
       const QSize &imageSize, const RenderRequest &request,
       int64_t timelineFrame, const QVector<TimelineClip> &orderedClips) {
-    return overlayRenderBackend().renderTranscriptOverlay(
-        imageSize, request, timelineFrame, orderedClips, m_transcriptCache);
+    QVector<TranscriptTextInput> inputs;
+    for (const TimelineClip &clip : orderedClips) {
+      const TranscriptOverlayLayout layout =
+          transcriptOverlayLayoutForFrame(clip, timelineFrame,
+                                          request.renderSyncMarkers,
+                                          m_transcriptCache);
+      if (layout.lines.isEmpty()) {
+        continue;
+      }
+      const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
+      QVector<TranscriptSection> sections = m_transcriptCache.value(transcriptPath);
+      if (sections.isEmpty()) {
+        sections = loadTranscriptSections(transcriptPath);
+        m_transcriptCache.insert(transcriptPath, sections);
+      }
+      const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
+          clip, frameToSamples(timelineFrame), request.renderSyncMarkers);
+      const QRectF outputRect = transcriptOverlayRectInOutputSpace(
+          clip, imageSize, transcriptPath, sections, sourceFrame);
+      if (outputRect.isEmpty()) {
+        continue;
+      }
+      const QString speakerTitle = clip.transcriptOverlay.showSpeakerTitle
+          ? transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame).trimmed()
+          : QString();
+      inputs.push_back(TranscriptTextInput{clip, layout, outputRect, speakerTitle});
+    }
+    return inputs;
   }
 
-  OverlayImage buildSpeakerLabelOverlayImage(
-      const QSize &imageSize, const RenderRequest &request,
-      int64_t timelineFrame, const QVector<TimelineClip> &orderedClips) {
+  bool buildSpeakerLabelSpec(
+      const RenderRequest &request,
+      int64_t timelineFrame,
+      const QVector<TimelineClip> &orderedClips,
+      SpeakerLabelOverlaySpec *outSpec) {
+    if (outSpec) {
+      *outSpec = SpeakerLabelOverlaySpec{};
+    }
     if (!request.showCurrentSpeakerName && !request.showCurrentSpeakerOrganization) {
-      return {};
+      return false;
     }
     SpeakerLabelOverlaySpec spec;
     spec.showName = request.showCurrentSpeakerName;
@@ -2934,9 +3029,12 @@ public:
       }
       spec.name = profile.name.trimmed();
       spec.organization = profile.organization.trimmed();
-      return overlayRenderBackend().renderSpeakerLabelOverlay(imageSize, spec);
+      if (outSpec) {
+        *outSpec = spec;
+      }
+      return true;
     }
-    return {};
+    return false;
   }
 
 private:
@@ -2995,6 +3093,8 @@ private:
   QVector<LayerTextureSlot> m_layerSlots;
   QHash<QString, QImage> m_preparedImageCache;
   QHash<QString, QVector<TranscriptSection>> m_transcriptCache;
+  std::unique_ptr<VulkanTextRenderer> m_transcriptTextRenderer;
+  std::unique_ptr<VulkanTextRenderer> m_speakerTextRenderer;
   VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
   VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;
   void *m_stagingMapped = nullptr;
@@ -3109,6 +3209,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   int decodeNullCount = 0;
   int decodeConvertFailCount = 0;
   QRectF transcriptLayerBounds;
+  OffscreenVulkanRendererPrivate::VulkanTextInputs textInputs;
   for (const TimelineClip &clip : orderedClips) {
     if (timelineFrame < clip.startFrame ||
         timelineFrame >= clip.startFrame + clip.durationFrames) {
@@ -3259,29 +3360,19 @@ QImage OffscreenVulkanRenderer::renderFrame(
     ++visualLayersResolved;
   }
   if (hasTranscriptCandidate) {
-    const OverlayImage transcriptLayer = d->buildTranscriptOverlayImage(
+    textInputs.transcripts = d->buildTranscriptTextInputs(
         request.outputSize, request,
         qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
         transcriptOverlayClips);
-    transcriptLayerBounds = alphaBoundsForOverlayImage(transcriptLayer);
-    OffscreenVulkanRendererPrivate::LayerInput overlay;
-    overlay.overlayImage = transcriptLayer;
-    overlay.sourceSize = QSize(transcriptLayer.width, transcriptLayer.height);
-    overlay.opacity = 1.0f;
-    layers.push_back(overlay);
+    for (const OffscreenVulkanRendererPrivate::TranscriptTextInput &text : textInputs.transcripts) {
+      transcriptLayerBounds = transcriptLayerBounds.united(text.outputRect);
+    }
   }
-  const OverlayImage speakerLabelLayer = d->buildSpeakerLabelOverlayImage(
-      request.outputSize,
+  textInputs.hasSpeakerLabel = d->buildSpeakerLabelSpec(
       request,
       qMax<int64_t>(0, static_cast<int64_t>(std::floor(timelineFrame))),
-      orderedClips);
-  if (!speakerLabelLayer.isNull()) {
-    OffscreenVulkanRendererPrivate::LayerInput speakerOverlay;
-    speakerOverlay.overlayImage = speakerLabelLayer;
-    speakerOverlay.sourceSize = QSize(speakerLabelLayer.width, speakerLabelLayer.height);
-    speakerOverlay.opacity = 1.0f;
-    layers.push_back(speakerOverlay);
-  }
+      orderedClips,
+      &textInputs.speakerLabel);
   if (visualClipCandidates > 0 && visualLayersResolved == 0) {
     qWarning().noquote() << QStringLiteral(
                                 "[vulkan-compose] no visual layers resolved at "
@@ -3304,7 +3395,7 @@ QImage OffscreenVulkanRenderer::renderFrame(
   }
   const qint64 renderStartMs = QDateTime::currentMSecsSinceEpoch();
   const bool shouldReadbackToImage = (readbackMs != nullptr);
-  const QImage output = d->renderFrameFromLayers(layers, shouldReadbackToImage);
+  const QImage output = d->renderFrameFromLayers(layers, textInputs, shouldReadbackToImage);
   if (compositeMs) {
     *compositeMs = (QDateTime::currentMSecsSinceEpoch() - renderStartMs);
   }

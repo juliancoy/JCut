@@ -146,7 +146,7 @@ QJsonObject EditorWindow::profilingSnapshot() const
         {QStringLiteral("playback_active"), m_playbackTimer.isActive()},
         {QStringLiteral("timeline_clip_count"), m_timeline ? m_timeline->clips().size() : 0},
         {QStringLiteral("current_frame"), m_timeline ? static_cast<qint64>(m_timeline->currentFrame()) : 0},
-        {QStringLiteral("absolute_playback_sample"), static_cast<qint64>(m_absolutePlaybackSample)},
+        {QStringLiteral("transport_timeline_sample"), static_cast<qint64>(m_transportTimelineSample)},
         {QStringLiteral("filtered_playback_sample"), static_cast<qint64>(m_filteredPlaybackSample)},
         {QStringLiteral("explorer_root"), m_explorerPane ? m_explorerPane->currentRootPath() : QString()},
         {QStringLiteral("debug"), debugControlsSnapshot()},
@@ -169,15 +169,15 @@ QJsonObject EditorWindow::profilingSnapshot() const
     if (m_audioEngine) {
         QJsonObject audio = m_audioEngine->profilingSnapshot();
         const int64_t projectedAudioSample =
-            playbackSampleForAudioClockSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
-        audio[QStringLiteral("projected_audio_clock_absolute_sample")] =
+            timelineSampleForAudioFeedbackSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        audio[QStringLiteral("projected_audio_feedback_timeline_sample")] =
             static_cast<qint64>(projectedAudioSample);
-        audio[QStringLiteral("projected_audio_clock_absolute_frame")] =
+        audio[QStringLiteral("projected_audio_feedback_timeline_frame")] =
             static_cast<qint64>(std::floor(samplesToFramePosition(projectedAudioSample)));
         audio[QStringLiteral("audio_video_drift_samples")] =
-            static_cast<qint64>(m_absolutePlaybackSample - projectedAudioSample);
+            static_cast<qint64>(m_transportTimelineSample - projectedAudioSample);
         audio[QStringLiteral("audio_video_drift_frames")] =
-            static_cast<qint64>(std::floor(samplesToFramePosition(m_absolutePlaybackSample)) -
+            static_cast<qint64>(std::floor(samplesToFramePosition(m_transportTimelineSample)) -
                                 std::floor(samplesToFramePosition(projectedAudioSample)));
         snapshot[QStringLiteral("audio")] = audio;
     }
@@ -235,21 +235,21 @@ QJsonObject EditorWindow::audioDebugSnapshot() const
     audio[QStringLiteral("editor_playback_active")] = m_playbackTimer.isActive();
     audio[QStringLiteral("editor_current_frame")] =
         m_timeline ? static_cast<qint64>(m_timeline->currentFrame()) : 0;
-    audio[QStringLiteral("absolute_playback_sample")] =
-        static_cast<qint64>(m_absolutePlaybackSample);
+    audio[QStringLiteral("transport_timeline_sample")] =
+        static_cast<qint64>(m_transportTimelineSample);
     audio[QStringLiteral("filtered_playback_sample")] =
         static_cast<qint64>(m_filteredPlaybackSample);
     if (m_audioEngine) {
         const int64_t projectedAudioSample =
-            playbackSampleForAudioClockSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
-        audio[QStringLiteral("projected_audio_clock_absolute_sample")] =
+            timelineSampleForAudioFeedbackSample(qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        audio[QStringLiteral("projected_audio_feedback_timeline_sample")] =
             static_cast<qint64>(projectedAudioSample);
-        audio[QStringLiteral("projected_audio_clock_absolute_frame")] =
+        audio[QStringLiteral("projected_audio_feedback_timeline_frame")] =
             static_cast<qint64>(std::floor(samplesToFramePosition(projectedAudioSample)));
         audio[QStringLiteral("audio_video_drift_samples")] =
-            static_cast<qint64>(m_absolutePlaybackSample - projectedAudioSample);
+            static_cast<qint64>(m_transportTimelineSample - projectedAudioSample);
         audio[QStringLiteral("audio_video_drift_frames")] =
-            static_cast<qint64>(std::floor(samplesToFramePosition(m_absolutePlaybackSample)) -
+            static_cast<qint64>(std::floor(samplesToFramePosition(m_transportTimelineSample)) -
                                 std::floor(samplesToFramePosition(projectedAudioSample)));
     }
     audio[QStringLiteral("last_playback_stop_reason")] = m_lastPlaybackStopReason;
@@ -310,7 +310,6 @@ QJsonObject EditorWindow::throttleConfigSnapshot() const
         {QStringLiteral("main_thread_heartbeat_interval_ms"), m_mainThreadHeartbeatIntervalMs},
         {QStringLiteral("state_save_debounce_interval_ms"), m_stateSaveDebounceIntervalMs},
         {QStringLiteral("transcript_manual_selection_hold_ms"), m_transcriptManualSelectionHoldMs},
-        {QStringLiteral("audio_clock_stall_threshold_ticks"), m_audioClockStallThresholdTicks},
         {QStringLiteral("preview_visible_backlog_limit"),
          m_preview ? m_preview->playbackTuning().visibleBacklogLimit : defaultOptimizedPreviewProfile().previewTuning.visibleBacklogLimit},
         {QStringLiteral("preview_source_lookahead_frames"),
@@ -378,7 +377,6 @@ QJsonObject EditorWindow::applyThrottleConfigPatch(const QJsonObject& patch)
         !parsePositiveInt(patch, QStringLiteral("main_thread_heartbeat_interval_ms"), &m_mainThreadHeartbeatIntervalMs, &error) ||
         !parsePositiveInt(patch, QStringLiteral("state_save_debounce_interval_ms"), &m_stateSaveDebounceIntervalMs, &error) ||
         !parsePositiveInt(patch, QStringLiteral("transcript_manual_selection_hold_ms"), &m_transcriptManualSelectionHoldMs, &error) ||
-        !parsePositiveInt(patch, QStringLiteral("audio_clock_stall_threshold_ticks"), &m_audioClockStallThresholdTicks, &error) ||
         !parsePositiveInt(patch, QStringLiteral("preview_visible_backlog_limit"), &previewVisibleBacklogLimit, &error) ||
         !parsePositiveInt(patch, QStringLiteral("preview_source_lookahead_frames"), &previewSourceLookaheadFrames, &error) ||
         !parsePositiveInt(patch, QStringLiteral("preview_proxy_lookahead_frames"), &previewProxyLookaheadFrames, &error)) {

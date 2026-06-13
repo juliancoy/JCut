@@ -440,6 +440,7 @@ QVector<QPixmap> SpeakersTab::assignedFaceDetectionsPreviewPixmaps(const Timelin
     const QString mediaPath = interactivePreviewMediaPathForClip(clip);
     if (!mediaPath.isEmpty()) {
         decoder = std::make_unique<editor::DecoderContext>(mediaPath);
+        decoder->setAllowHardwareFrameMaterialization(true);
         if (!decoder->initialize()) {
             decoder.reset();
         }
@@ -600,6 +601,7 @@ QJsonObject SpeakersTab::trackMemoryEntryForClip(const QString& clipId, int trac
 void SpeakersTab::ensurePersistentTrackAvatarMemory(const TimelineClip& clip,
                                                     const QJsonArray& streams,
                                                     bool forceRefresh,
+                                                    const QSet<int>& onlyTrackIds,
                                                     editor::DecoderContext* decoderCtx,
                                                     QHash<int64_t, QImage>* frameImageCache)
 {
@@ -619,6 +621,9 @@ void SpeakersTab::ensurePersistentTrackAvatarMemory(const TimelineClip& clip,
         const QJsonObject streamObj = streamValue.toObject();
         const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
         if (trackId < 0) {
+            continue;
+        }
+        if (!onlyTrackIds.isEmpty() && !onlyTrackIds.contains(trackId)) {
             continue;
         }
         const QJsonObject existing = trackMemoryEntryForClip(clip.id, trackId);
@@ -651,6 +656,7 @@ void SpeakersTab::ensurePersistentTrackAvatarMemory(const TimelineClip& clip,
         const QString mediaPath = interactivePreviewMediaPathForClip(clip);
         if (!mediaPath.isEmpty()) {
             localDecoder = std::make_unique<editor::DecoderContext>(mediaPath);
+            localDecoder->setAllowHardwareFrameMaterialization(true);
             if (localDecoder->initialize()) {
                 activeDecoder = localDecoder.get();
             }
@@ -1843,11 +1849,42 @@ bool SpeakersTab::persistTrackAssignments(
 
     phaseTimer.restart();
     m_avatarHoverTooltipHtmlCache.clear();
+    if (const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+        selectedClip && selectedClip->id == trimmedClipId) {
+        QSet<int> assignedTrackIds;
+        for (auto it = anchorByTrackId.cbegin(); it != anchorByTrackId.cend(); ++it) {
+            assignedTrackIds.insert(it.key());
+        }
+        if (!assignedTrackIds.isEmpty()) {
+            const QJsonArray streams = continuityStreamsForClip(*selectedClip);
+            const QString mediaPath = interactivePreviewMediaPathForClip(*selectedClip);
+            std::unique_ptr<editor::DecoderContext> avatarDecoder;
+            if (!mediaPath.isEmpty()) {
+                avatarDecoder = std::make_unique<editor::DecoderContext>(mediaPath);
+                avatarDecoder->setAllowHardwareFrameMaterialization(true);
+                if (!avatarDecoder->initialize()) {
+                    avatarDecoder.reset();
+                }
+            }
+            QHash<int64_t, QImage> avatarFrameImageCache;
+            ensurePersistentTrackAvatarMemory(
+                *selectedClip,
+                streams,
+                false,
+                assignedTrackIds,
+                avatarDecoder.get(),
+                &avatarFrameImageCache);
+        }
+    }
 
     m_trackIdentityResolutionCache.clear();
     m_speakersTableRefreshSignature.clear();
     m_faceStreamPanelRefreshSignature.clear();
     emit transcriptDocumentChanged();
+    refreshVisibleSpeakerSectionAssignments(trimmedSpeakerId);
+    if (m_widgets.speakersTable && m_widgets.speakersTable->isVisible()) {
+        refreshSpeakersTable(m_transcriptSession.rootObject(), trimmedSpeakerId);
+    }
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();
     }
@@ -3274,6 +3311,7 @@ void SpeakersTab::onSpeakerRefreshTrackAvatarsClicked()
         *clip,
         streams,
         true,
+        {},
         decoder.get(),
         &frameImageCache);
     m_avatarCache.clear();
