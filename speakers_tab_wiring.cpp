@@ -13,6 +13,7 @@
 #include <QEvent>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -82,6 +83,14 @@ void SpeakersTab::wire()
                         refreshSpeakerSectionsTable(m_transcriptSession.rootObject());
                     }
                 });
+    }
+    if (m_widgets.speakerExportLongSectionsButton) {
+        m_widgets.speakerExportLongSectionsButton->setToolTip(
+            QStringLiteral("Export every contiguous transcript section with at least 10 words."));
+        connect(m_widgets.speakerExportLongSectionsButton,
+                &QPushButton::clicked,
+                this,
+                &SpeakersTab::onSpeakerExportLongSectionsClicked);
     }
     if (m_widgets.speakerHideUnidentifiedCheckBox) {
         connect(m_widgets.speakerHideUnidentifiedCheckBox, &QCheckBox::toggled, this, [this]() {
@@ -378,6 +387,32 @@ void SpeakersTab::wire()
             deassignSelectedSpeakerAssignedTracks();
         });
         m_widgets.selectedSpeakerFaceDetectionsList->addAction(deassignShortcut);
+    }
+    if (m_widgets.selectedSpeakerNameEdit) {
+        m_widgets.selectedSpeakerNameEdit->setToolTip(
+            QStringLiteral("Edit the selected speaker's display name."));
+        connect(m_widgets.selectedSpeakerNameEdit, &QLineEdit::editingFinished, this, [this]() {
+            if (m_updating || !activeCutMutable() || !m_widgets.selectedSpeakerNameEdit) {
+                return;
+            }
+            if (!saveSelectedSpeakerProfileField(QString(kTranscriptSpeakerNameKey),
+                                                 m_widgets.selectedSpeakerNameEdit->text())) {
+                updateSelectedSpeakerPanel();
+            }
+        });
+    }
+    if (m_widgets.selectedSpeakerOrganizationEdit) {
+        m_widgets.selectedSpeakerOrganizationEdit->setToolTip(
+            QStringLiteral("Edit the selected speaker's organization."));
+        connect(m_widgets.selectedSpeakerOrganizationEdit, &QLineEdit::editingFinished, this, [this]() {
+            if (m_updating || !activeCutMutable() || !m_widgets.selectedSpeakerOrganizationEdit) {
+                return;
+            }
+            if (!saveSelectedSpeakerProfileField(QStringLiteral("organization"),
+                                                 m_widgets.selectedSpeakerOrganizationEdit->text())) {
+                updateSelectedSpeakerPanel();
+            }
+        });
     }
     if (m_widgets.speakerAiFindNamesButton) {
         m_widgets.speakerAiFindNamesButton->setToolTip(

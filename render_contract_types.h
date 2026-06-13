@@ -22,6 +22,7 @@ struct RenderRequestCore {
     std::string imageSequenceFormat;
     core::SizeI outputSize;
     double outputFps = 0.0;
+    double playbackSpeed = 1.0;
     bool useProxyMedia = false;
     bool bypassGrading = false;
     bool correctionsEnabled = true;
@@ -97,8 +98,6 @@ struct RenderResultCore {
     std::int64_t maxFrameConvertStageMs = 0;
     std::string requestedRenderBackend;
     std::string effectiveRenderBackend;
-    bool backendFallbackApplied = false;
-    std::string backendFallbackReason;
     std::string message;
     nlohmann::json skippedClips;
     nlohmann::json skippedClipReasonCounts;

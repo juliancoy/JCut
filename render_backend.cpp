@@ -6,12 +6,6 @@ RenderBackend parseRenderBackend(const QString& text)
     if (normalized == QStringLiteral("vulkan")) {
         return RenderBackend::Vulkan;
     }
-    if (normalized == QStringLiteral("null")) {
-        return RenderBackend::Null;
-    }
-    if (normalized == QStringLiteral("auto")) {
-        return RenderBackend::Auto;
-    }
     return RenderBackend::Vulkan;
 }
 
@@ -20,10 +14,6 @@ QString renderBackendName(RenderBackend backend)
     switch (backend) {
     case RenderBackend::Vulkan:
         return QStringLiteral("vulkan");
-    case RenderBackend::Null:
-        return QStringLiteral("null");
-    case RenderBackend::Auto:
-        return QStringLiteral("auto");
     default:
         return QStringLiteral("vulkan");
     }

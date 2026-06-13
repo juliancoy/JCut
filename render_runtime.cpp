@@ -4,7 +4,6 @@
 #include "render_backend.h"
 #include "render_internal.h"
 #include "render_qt_compat.h"
-#include "vulkan_backend.h"
 
 #include <QHash>
 #include <QImage>
@@ -53,6 +52,7 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.imageSequenceFormat = QString::fromStdString(request.imageSequenceFormat);
     qtRequest.outputSize = QSize(request.outputSize.width, request.outputSize.height);
     qtRequest.outputFps = request.outputFps;
+    qtRequest.playbackSpeed = request.playbackSpeed;
     qtRequest.useProxyMedia = request.useProxyMedia;
     qtRequest.bypassGrading = request.bypassGrading;
     qtRequest.correctionsEnabled = request.correctionsEnabled;
@@ -108,17 +108,8 @@ PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
     std::unique_ptr<render_detail::OffscreenRenderer> activeRenderer;
 
     if (requestedBackend == RenderBackend::Vulkan) {
-        const VulkanAvailabilityResult vulkan = probeVulkanBackendAvailability();
-        if (!vulkan.available) {
-            result.backendFallbackApplied = true;
-            result.backendFallbackReason = vulkan.status.toStdString();
-            result.message = "vulkan preview backend unavailable";
-            return result;
-        }
         activeRenderer = std::make_unique<render_detail::OffscreenVulkanRenderer>();
         result.effectiveRenderBackend = "vulkan";
-    } else if (requestedBackend == RenderBackend::Null) {
-        result.effectiveRenderBackend = "cpu";
     } else {
         result.message = "unsupported preview backend";
         return result;
@@ -128,46 +119,30 @@ PreviewFrameResultCore renderPreviewFrameCore(const RenderRequestCore& request,
         activeRenderer->initialize(qtRequest.outputSize, &gpuInitializationError);
     const bool useGpuRenderer = gpuInitialized;
     if (!useGpuRenderer) {
-        result.backendFallbackApplied = !gpuInitializationError.isEmpty();
-        result.backendFallbackReason = gpuInitializationError.toStdString();
-        if (requestedBackend == RenderBackend::Vulkan) {
-            result.message = gpuInitializationError.isEmpty()
-                ? "vulkan preview renderer initialization failed"
-                : gpuInitializationError.toStdString();
-            return result;
-        }
-        result.effectiveRenderBackend = "cpu";
-    } else {
-        result.effectiveRenderBackend = activeRenderer->backendId().toStdString();
+        result.message = gpuInitializationError.isEmpty()
+            ? "vulkan preview renderer initialization failed"
+            : gpuInitializationError.toStdString();
+        return result;
     }
+    result.effectiveRenderBackend = activeRenderer->backendId().toStdString();
 
     render_detail::OffscreenRenderFrame previewFrame;
-    const bool renderedOk = useGpuRenderer
-        ? activeRenderer->renderFrameToOutput(qtRequest,
-                                              static_cast<qreal>(timelineFrame),
-                                              decoders,
-                                              &asyncDecoder,
-                                              &asyncFrameCache,
-                                              toQVector(timelineData.clips),
-                                              &previewFrame,
-                                              true)
-        : render_detail::renderTimelineFrameToOutput(qtRequest,
-                                                     static_cast<qreal>(timelineFrame),
-                                                     decoders,
-                                                     &asyncDecoder,
-                                                     &asyncFrameCache,
-                                                     toQVector(timelineData.clips),
-                                                     &previewFrame,
-                                                     true);
+    const bool renderedOk =
+        activeRenderer->renderFrameToOutput(qtRequest,
+                                            static_cast<qreal>(timelineFrame),
+                                            decoders,
+                                            &asyncDecoder,
+                                            &asyncFrameCache,
+                                            toQVector(timelineData.clips),
+                                            &previewFrame,
+                                            true);
     if (!renderedOk || previewFrame.cpuImage.isNull()) {
-        result.message = useGpuRenderer
-            ? "failed to render preview frame with GPU renderer"
-            : "failed to render preview frame";
+        result.message = "failed to render preview frame with Vulkan renderer";
         return result;
     }
 
     result.success = true;
-    result.usedGpu = useGpuRenderer;
+    result.usedGpu = true;
     result.image = toImageBuffer(previewFrame.cpuImage);
     return result;
 }

@@ -581,7 +581,6 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/render_contract_json.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/runtime_control_server.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_render_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_audio.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_codecs.cpp
@@ -591,7 +590,11 @@ add_library(jcut_editor_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/render_qt_compat.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_runtime.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_export_stub.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_shared.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
 )
 target_include_directories(jcut_editor_runtime
@@ -602,7 +605,19 @@ target_include_directories(jcut_editor_runtime
 target_link_libraries(jcut_editor_runtime
     PUBLIC
         editor_test_support
+        Vulkan::Vulkan
 )
+if(CUDA_DRIVER_LIBRARY)
+    target_link_libraries(jcut_editor_runtime PUBLIC ${CUDA_DRIVER_LIBRARY})
+endif()
+target_compile_definitions(jcut_editor_runtime
+    PUBLIC
+        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
+        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${CUDA_DRIVER_LIBRARY}>,1,0>
+)
+if(TARGET jcut_vulkan_shaders)
+    add_dependencies(jcut_editor_runtime jcut_vulkan_shaders)
+endif()
 
 add_library(jcut_imgui_runtime STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_runtime.cpp
@@ -763,10 +778,10 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preview_view_transform.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_render_fallback.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_audio_tab.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_detector_frame_handoff.cpp

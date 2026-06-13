@@ -160,6 +160,9 @@ EditorPane::EditorPane(QWidget *parent)
     previewLayout->setSpacing(0);
 
     m_preview = createPreviewSurfaceForConfiguredBackend();
+    if (!m_preview) {
+        qFatal("Vulkan preview surface creation failed and no fallback preview surface is available.");
+    }
     QWidget* previewWidget = m_preview->asWidget();
     previewWidget->setObjectName(QStringLiteral("preview.window"));
     previewWidget->setFocusPolicy(Qt::StrongFocus);

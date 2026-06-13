@@ -1,6 +1,7 @@
 #include "render_internal.h"
 
 #include <QDebug>
+#include <cmath>
 #include <cstdlib>
 
 namespace render_detail {
@@ -167,8 +168,12 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
                    const QHash<QString, DecodedAudioClip>& audioCache,
                    float* output,
                    int frames,
-                   int64_t chunkStartSample) {
+                   int64_t chunkStartSample,
+                   qreal timelineSampleStep) {
     std::fill(output, output + frames * kRenderAudioChannels, 0.0f);
+    const qreal sampleStep = std::isfinite(timelineSampleStep) && timelineSampleStep > 0.001
+        ? timelineSampleStep
+        : 1.0;
 
     for (const TimelineClip& clip : clips) {
         if (!clipAudioPlaybackEnabled(clip)) {
@@ -188,15 +193,18 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
         }
         const int64_t clipEndSample =
             clipStartSample + qMin<int64_t>(frameToSamples(clip.durationFrames), clipAvailableSamples);
-        const int64_t chunkEndSample = chunkStartSample + frames;
+        const int64_t chunkEndSample =
+            chunkStartSample + static_cast<int64_t>(std::ceil(static_cast<qreal>(frames) * sampleStep));
         if (chunkEndSample <= clipStartSample || chunkStartSample >= clipEndSample) {
             continue;
         }
 
-        const int64_t mixStart = qMax<int64_t>(chunkStartSample, clipStartSample);
-        const int64_t mixEnd = qMin<int64_t>(chunkEndSample, clipEndSample);
-        for (int64_t samplePos = mixStart; samplePos < mixEnd; ++samplePos) {
-            const int outFrame = static_cast<int>(samplePos - chunkStartSample);
+        for (int outFrame = 0; outFrame < frames; ++outFrame) {
+            const int64_t samplePos =
+                chunkStartSample + static_cast<int64_t>(std::floor(static_cast<qreal>(outFrame) * sampleStep));
+            if (samplePos < clipStartSample || samplePos >= clipEndSample) {
+                continue;
+            }
             const int64_t inFrame =
                 sourceSampleForClipAtTimelineSample(clip, samplePos, renderSyncMarkers);
             if (inFrame < 0 || inFrame >= (audio.samples.size() / kRenderAudioChannels)) {
@@ -342,6 +350,7 @@ bool initializeExportAudio(const RenderRequest& request,
 bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                        const AudioExportState& state,
                        AVFormatContext* formatCtx,
+                       qreal playbackSpeed,
                        QString* errorMessage) {
     if (!state.enabled || !state.codecCtx || !state.stream) {
         return true;
@@ -403,6 +412,9 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     const int mixChunkFrames = 1024;
     QVector<float> mixBuffer(mixChunkFrames * kRenderAudioChannels);
     int64_t audioPts = 0;
+    const qreal speed = std::isfinite(playbackSpeed) && playbackSpeed > 0.001
+        ? playbackSpeed
+        : 1.0;
 
     auto writeAvailableAudioFrames = [&](bool flushTail) -> bool {
         const int encoderFrameSamples = state.codecCtx->frame_size > 0 ? state.codecCtx->frame_size : 1024;
@@ -449,18 +461,24 @@ bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
     for (const ExportRangeSegment& range : exportRanges) {
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
-        const int64_t segmentTotalSamples = frameToSamples(exportEnd - exportStart + 1);
+        const int64_t sourceSegmentSamples = frameToSamples(exportEnd - exportStart + 1);
+        const int64_t segmentTotalSamples = qMax<int64_t>(
+            1,
+            static_cast<int64_t>(std::ceil(static_cast<qreal>(sourceSegmentSamples) / speed)));
         int64_t producedSamples = 0;
         while (producedSamples < segmentTotalSamples) {
             const int framesThisChunk =
                 static_cast<int>(qMin<int64_t>(mixChunkFrames, segmentTotalSamples - producedSamples));
-            const int64_t chunkStartSample = frameToSamples(exportStart) + producedSamples;
+            const int64_t chunkStartSample =
+                frameToSamples(exportStart) +
+                static_cast<int64_t>(std::floor(static_cast<qreal>(producedSamples) * speed));
             mixAudioChunk(state.clips,
                           state.renderSyncMarkers,
                           state.cache,
                           mixBuffer.data(),
                           framesThisChunk,
-                          chunkStartSample);
+                          chunkStartSample,
+                          speed);
 
             const int estimatedOutSamples = swr_get_out_samples(swr, framesThisChunk);
             uint8_t** convertedData = nullptr;

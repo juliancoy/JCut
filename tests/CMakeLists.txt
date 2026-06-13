@@ -34,6 +34,7 @@ set(EDITOR_TEST_TARGETS
     test_direct_vulkan_handoff_pipeline_contract
     test_no_proxy_hardware_playback_contract
     test_vulkan_text_generation
+    test_editor_runtime_vulkan_export_backend
 )
 
 foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
@@ -119,6 +120,7 @@ add_executable(test_vulkan_subtitle_render
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_decode.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_overlay_render_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../render_stats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../render_vulkan_shared.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../titles.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
 )
@@ -143,6 +145,13 @@ jcut_force_bundled_ffmpeg_runtime(test_vulkan_subtitle_render)
 add_test(NAME test_vulkan_subtitle_render COMMAND test_vulkan_subtitle_render)
 set_tests_properties(test_vulkan_subtitle_render PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_test(NAME test_editor_core_excludes_vulkan_export_stub
+    COMMAND ${CMAKE_COMMAND}
+        -DARCHIVE=$<TARGET_FILE:editor_core>
+        -DAR=${CMAKE_AR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/assert_archive_excludes_vulkan_export_stub.cmake
 )
 
 add_executable(test_facedetections_processed_artifact

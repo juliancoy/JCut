@@ -16,6 +16,7 @@
 #include "editor_action_result.h"
 #include "editor_playback_types.h"
 #include "editor_timeline_types.h"
+#include "speaker_section_export_item.h"
 #include "speaker_section_selection_timing_service.h"
 #include "table_tab_base.h"
 #include "transcript_document_io.h"
@@ -24,6 +25,7 @@
 class QLabel;
 class QListWidget;
 class QPushButton;
+class QLineEdit;
 class QDoubleSpinBox;
 class QSpinBox;
 class QCheckBox;
@@ -46,10 +48,13 @@ public:
         QTableWidget* speakersTable = nullptr;
         QCheckBox* speakerHideUnidentifiedCheckBox = nullptr;
         QCheckBox* speakerShowContiguousSectionsCheckBox = nullptr;
+        QPushButton* speakerExportLongSectionsButton = nullptr;
         QCheckBox* speakerShowCurrentSpeakerNameCheckBox = nullptr;
         QCheckBox* speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
         QTableWidget* speakerSectionsTable = nullptr;
         QLabel* selectedSpeakerIdLabel = nullptr;
+        QLineEdit* selectedSpeakerNameEdit = nullptr;
+        QLineEdit* selectedSpeakerOrganizationEdit = nullptr;
         QListWidget* selectedSpeakerFaceDetectionsList = nullptr;
         QListWidget* speakerPlayheadFaceDetectionsList = nullptr;
         QCheckBox* speakerShowPlayheadFaceDetectionsCheckBox = nullptr;
@@ -108,7 +113,8 @@ public:
         std::function<bool()> isPlaybackActive;
         std::function<bool(QString*)> ensureAiSession;
         std::function<void(const QStringList&)> exportSpeakersVideo;
-        std::function<void(const QString&, int64_t, int64_t, const QString&)> exportSpeakerSectionVideo;
+        std::function<void(const QString&, int64_t, int64_t, const QString&, const QString&, int)> exportSpeakerSectionVideo;
+        std::function<void(const QVector<SpeakerSectionExportItem>&)> exportSpeakerSectionsVideo;
         std::function<void(bool)> setAudioBackgroundDecodeSuppressed;
     };
 
@@ -173,6 +179,7 @@ private slots:
     void onSpeakersSelectionChanged();
     void onSpeakersTableContextMenuRequested(const QPoint& pos);
     void onSpeakerSectionsTableContextMenuRequested(const QPoint& pos);
+    void onSpeakerExportLongSectionsClicked();
     void onSpeakerPreviousSentenceClicked();
     void onSpeakerNextSentenceClicked();
     void onSpeakerNextSectionClicked();
@@ -325,6 +332,7 @@ private:
     QPixmap unsetSpeakerAvatar(int size) const;
     QPixmap placeholderSpeakerAvatar(const QString& speakerId) const;
     bool saveSpeakerProfileEdit(int tableRow, int column, const QString& valueText);
+    bool saveSelectedSpeakerProfileField(const QString& fieldKey, const QString& valueText);
     bool deassignTrackFromSpeaker(const QString& speakerId, int trackId);
     bool deassignSelectedSpeakerAssignedTracks();
     void showSelectedSpeakerAssignedTracksContextMenu(const QPoint& pos);

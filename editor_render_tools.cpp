@@ -3,8 +3,10 @@
 #include "speaker_export_harness.h"
 
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QDir>
 #include <QFormLayout>
+#include <QHBoxLayout>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
@@ -16,6 +18,11 @@
 #include <QProgressBar>
 #include <QCoreApplication>
 #include <QRegularExpression>
+#include <QSet>
+#include <QSpinBox>
+#include <QVBoxLayout>
+
+#include <cmath>
 
 using namespace editor;
 
@@ -98,6 +105,170 @@ QString titleFromAiResponse(const QJsonObject& response)
         }
     }
     return {};
+}
+
+QString speakerSectionFallbackTitle(const QString& speakerDisplayName,
+                                    const QString& speakerId,
+                                    int sectionOrdinal,
+                                    int64_t sourceStartFrame,
+                                    int64_t sourceEndFrame)
+{
+    QString speakerName = speakerDisplayName.simplified();
+    if (speakerName.isEmpty()) {
+        speakerName = speakerId.simplified();
+    }
+    if (speakerName.isEmpty()) {
+        speakerName = QStringLiteral("Speaker");
+    }
+    if (sectionOrdinal > 0) {
+        return QStringLiteral("%1 %2").arg(speakerName).arg(sectionOrdinal);
+    }
+    return QStringLiteral("%1 section %2 %3")
+        .arg(speakerName)
+        .arg(sourceStartFrame)
+        .arg(sourceEndFrame);
+}
+
+QVector<ExportRangeSegment> timelineRangesForTranscriptSection(const TimelineClip& clip,
+                                                               int64_t sourceStartFrame,
+                                                               int64_t sourceEndFrame,
+                                                               const QVector<RenderSyncMarker>& markers)
+{
+    QVector<ExportRangeSegment> timelineRanges;
+    const int64_t clipStartFrame = clip.startFrame;
+    const int64_t clipEndFrame = clip.startFrame + clip.durationFrames - 1;
+    for (int64_t timelineFrame = clipStartFrame; timelineFrame <= clipEndFrame; ++timelineFrame) {
+        const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
+            clip, frameToSamples(timelineFrame), markers);
+        if (transcriptFrame < sourceStartFrame || transcriptFrame > sourceEndFrame) {
+            continue;
+        }
+        if (timelineRanges.isEmpty() || timelineFrame > timelineRanges.constLast().endFrame + 1) {
+            timelineRanges.push_back(ExportRangeSegment{timelineFrame, timelineFrame});
+        } else {
+            timelineRanges.last().endFrame = timelineFrame;
+        }
+    }
+    return timelineRanges;
+}
+
+QString uniqueExportPath(const QString& directory,
+                         const QString& baseName,
+                         const QString& outputFormat,
+                         QSet<QString>* reservedPaths)
+{
+    const QString safeBase = baseName.trimmed().isEmpty() ? QStringLiteral("section") : baseName.trimmed();
+    const QString suffix = outputFormat.trimmed().isEmpty() ? QStringLiteral("mp4") : outputFormat.trimmed();
+    QDir dir(directory);
+    QString candidate = dir.filePath(QStringLiteral("%1.%2").arg(safeBase, suffix));
+    int counter = 2;
+    while ((reservedPaths && reservedPaths->contains(candidate)) || QFileInfo::exists(candidate)) {
+        candidate = dir.filePath(QStringLiteral("%1_%2.%3").arg(safeBase).arg(counter).arg(suffix));
+        ++counter;
+    }
+    if (reservedPaths) {
+        reservedPaths->insert(candidate);
+    }
+    return candidate;
+}
+
+bool confirmContiguousSectionExportPreflight(QWidget* parent,
+                                             RenderRequest* request,
+                                             int sectionCount)
+{
+    if (!request) {
+        return false;
+    }
+
+    QDialog dialog(parent);
+    dialog.setWindowTitle(sectionCount == 1
+                              ? QStringLiteral("Section Export Preflight")
+                              : QStringLiteral("Sections Export Preflight"));
+    dialog.setModal(true);
+    dialog.resize(430, 260);
+
+    auto* root = new QVBoxLayout(&dialog);
+    root->setContentsMargins(14, 14, 14, 14);
+    root->setSpacing(10);
+
+    auto* summary = new QLabel(
+        sectionCount == 1
+            ? QStringLiteral("Confirm render settings for this contiguous transcript section.")
+            : QStringLiteral("Confirm render settings for %1 contiguous transcript sections.").arg(sectionCount),
+        &dialog);
+    summary->setWordWrap(true);
+    root->addWidget(summary);
+
+    auto* form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+
+    auto* speedSpin = new QDoubleSpinBox(&dialog);
+    speedSpin->setRange(0.100, 8.000);
+    speedSpin->setSingleStep(0.100);
+    speedSpin->setDecimals(3);
+    speedSpin->setSuffix(QStringLiteral("x"));
+    speedSpin->setValue(std::isfinite(request->playbackSpeed) && request->playbackSpeed > 0.001
+                            ? request->playbackSpeed
+                            : 1.0);
+    form->addRow(QStringLiteral("Speed"), speedSpin);
+
+    auto* fpsSpin = new QDoubleSpinBox(&dialog);
+    fpsSpin->setRange(1.0, 240.0);
+    fpsSpin->setSingleStep(1.0);
+    fpsSpin->setDecimals(3);
+    fpsSpin->setValue(std::isfinite(request->outputFps) && request->outputFps > 0.001
+                          ? request->outputFps
+                          : static_cast<double>(kTimelineFps));
+    form->addRow(QStringLiteral("Frame Rate"), fpsSpin);
+
+    auto* widthSpin = new QSpinBox(&dialog);
+    widthSpin->setRange(16, 8192);
+    widthSpin->setSingleStep(16);
+    widthSpin->setValue(qMax(16, request->outputSize.width()));
+    auto* heightSpin = new QSpinBox(&dialog);
+    heightSpin->setRange(16, 8192);
+    heightSpin->setSingleStep(16);
+    heightSpin->setValue(qMax(16, request->outputSize.height()));
+    auto* sizeRow = new QWidget(&dialog);
+    auto* sizeLayout = new QHBoxLayout(sizeRow);
+    sizeLayout->setContentsMargins(0, 0, 0, 0);
+    sizeLayout->setSpacing(6);
+    sizeLayout->addWidget(widthSpin);
+    sizeLayout->addWidget(new QLabel(QStringLiteral("x"), sizeRow));
+    sizeLayout->addWidget(heightSpin);
+    form->addRow(QStringLiteral("Output Window"), sizeRow);
+
+    auto* formatLabel = new QLabel(
+        request->outputFormat.trimmed().isEmpty()
+            ? QStringLiteral("mp4")
+            : request->outputFormat.trimmed(),
+        &dialog);
+    form->addRow(QStringLiteral("Format"), formatLabel);
+
+    root->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Cancel | QDialogButtonBox::Ok, &dialog);
+    buttons->button(QDialogButtonBox::Ok)->setText(QStringLiteral("Continue"));
+    root->addWidget(buttons);
+    QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return false;
+    }
+
+    request->playbackSpeed = speedSpin->value();
+    request->outputFps = fpsSpin->value();
+    request->outputSize = QSize(widthSpin->value(), heightSpin->value());
+    qInfo().noquote()
+        << QStringLiteral("[section-export-preflight] sections=%1 speed=%2 fps=%3 size=%4x%5 format=%6")
+               .arg(sectionCount)
+               .arg(request->playbackSpeed, 0, 'f', 3)
+               .arg(request->outputFps, 0, 'f', 3)
+               .arg(request->outputSize.width())
+               .arg(request->outputSize.height())
+               .arg(request->outputFormat);
+    return true;
 }
 
 } // namespace
@@ -894,7 +1065,9 @@ void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speak
 void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& speakerId,
                                                               int64_t sourceStartFrame,
                                                               int64_t sourceEndFrame,
-                                                              const QString& snippet)
+                                                              const QString& snippet,
+                                                              const QString& speakerDisplayName,
+                                                              int sectionOrdinal)
 {
     if (!m_timeline || speakerId.trimmed().isEmpty()) {
         return;
@@ -914,21 +1087,8 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
     }
 
     const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
-    QVector<ExportRangeSegment> timelineRanges;
-    const int64_t clipStartFrame = clip->startFrame;
-    const int64_t clipEndFrame = clip->startFrame + clip->durationFrames - 1;
-    for (int64_t timelineFrame = clipStartFrame; timelineFrame <= clipEndFrame; ++timelineFrame) {
-        const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
-            *clip, frameToSamples(timelineFrame), markers);
-        if (transcriptFrame < sourceStartFrame || transcriptFrame > sourceEndFrame) {
-            continue;
-        }
-        if (timelineRanges.isEmpty() || timelineFrame > timelineRanges.constLast().endFrame + 1) {
-            timelineRanges.push_back(ExportRangeSegment{timelineFrame, timelineFrame});
-        } else {
-            timelineRanges.last().endFrame = timelineFrame;
-        }
-    }
+    QVector<ExportRangeSegment> timelineRanges =
+        timelineRangesForTranscriptSection(*clip, sourceStartFrame, sourceEndFrame, markers);
     if (timelineRanges.isEmpty()) {
         QMessageBox::information(
             this,
@@ -940,6 +1100,9 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
     setPlaybackActive(false);
 
     RenderRequest request = buildRenderRequestFromOutputControls();
+    if (!confirmContiguousSectionExportPreflight(this, &request, 1)) {
+        return;
+    }
     QString aiTitle;
     QString aiError;
     bool aiOk = false;
@@ -948,6 +1111,8 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
     payload[QStringLiteral("instruction")] =
         QStringLiteral("Return only a short title for this video section, ideally two to four words. No punctuation.");
     payload[QStringLiteral("speaker_id")] = speakerId.trimmed();
+    payload[QStringLiteral("speaker_name")] = speakerDisplayName.simplified();
+    payload[QStringLiteral("section_ordinal")] = sectionOrdinal;
     payload[QStringLiteral("section_text")] = snippet.simplified();
     payload[QStringLiteral("source_start_frame")] = QString::number(sourceStartFrame);
     payload[QStringLiteral("source_end_frame")] = QString::number(sourceEndFrame);
@@ -965,14 +1130,19 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
             : m_aiIntegrationStatus;
     }
 
-    const QString fallbackTitle = QStringLiteral("section_%1_%2").arg(sourceStartFrame).arg(sourceEndFrame);
+    const QString fallbackTitle = speakerSectionFallbackTitle(
+        speakerDisplayName,
+        speakerId,
+        sectionOrdinal,
+        sourceStartFrame,
+        sourceEndFrame);
     const QString title = coupleWordTitle(aiTitle, fallbackTitle);
     const QString suggestedBase = sanitizedExportBaseName(title, fallbackTitle);
     if (!aiOk && !aiError.trimmed().isEmpty()) {
         QMessageBox::information(
             this,
             QStringLiteral("Export Section"),
-            QStringLiteral("AI could not name this section, so a fallback filename will be used.\n\n%1")
+            QStringLiteral("AI could not name this section, so the speaker/section fallback filename will be used.\n\n%1")
                 .arg(aiError));
     }
 
@@ -1006,4 +1176,141 @@ void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& spe
     request.exportStartFrame = timelineRanges.constFirst().startFrame;
     request.exportEndFrame = timelineRanges.constLast().endFrame;
     renderTimelineFromOutputRequest(request);
+}
+
+void EditorWindow::exportVideoForSpeakerSectionsOnSelectedClip(const QVector<SpeakerSectionExportItem>& sections)
+{
+    if (!m_timeline || sections.isEmpty()) {
+        return;
+    }
+    const TimelineClip* clip = m_timeline->selectedClip();
+    if (!clip || clip->durationFrames <= 0) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Export Sections"),
+                                 QStringLiteral("Select a clip first."));
+        return;
+    }
+
+    QVector<SpeakerSectionExportItem> validSections;
+    validSections.reserve(sections.size());
+    for (const SpeakerSectionExportItem& section : sections) {
+        if (!section.speakerId.trimmed().isEmpty() &&
+            section.sourceStartFrame >= 0 &&
+            section.sourceEndFrame >= section.sourceStartFrame &&
+            section.wordCount >= 10) {
+            validSections.push_back(section);
+        }
+    }
+    if (validSections.isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Sections"),
+            QStringLiteral("No contiguous transcript sections have 10 or more words."));
+        return;
+    }
+
+    RenderRequest baseRequest = buildRenderRequestFromOutputControls();
+    if (!confirmContiguousSectionExportPreflight(this, &baseRequest, validSections.size())) {
+        return;
+    }
+    const QString outputFormat = baseRequest.outputFormat.isEmpty()
+        ? QStringLiteral("mp4")
+        : baseRequest.outputFormat;
+    QString defaultDir = QDir::currentPath();
+    if (!m_lastRenderOutputPath.trimmed().isEmpty()) {
+        const QFileInfo previousInfo(m_lastRenderOutputPath);
+        if (previousInfo.dir().exists()) {
+            defaultDir = previousInfo.dir().absolutePath();
+        }
+    }
+    const QString outputDir = QFileDialog::getExistingDirectory(
+        this,
+        QStringLiteral("Export 10+ Word Sections"),
+        defaultDir);
+    if (outputDir.isEmpty()) {
+        return;
+    }
+
+    setPlaybackActive(false);
+
+    const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+    refreshAiIntegrationState();
+    const bool canUseAi = m_aiIntegrationEnabled && !m_aiAuthToken.trimmed().isEmpty();
+    QString aiUnavailableReason;
+    if (!canUseAi) {
+        aiUnavailableReason = m_aiAuthToken.trimmed().isEmpty()
+            ? QStringLiteral("AI login required.")
+            : m_aiIntegrationStatus;
+    }
+
+    QSet<QString> reservedPaths;
+    int exportedCount = 0;
+    int skippedCount = 0;
+    for (const SpeakerSectionExportItem& section : std::as_const(validSections)) {
+        QVector<ExportRangeSegment> timelineRanges =
+            timelineRangesForTranscriptSection(
+                *clip,
+                section.sourceStartFrame,
+                section.sourceEndFrame,
+                markers);
+        if (timelineRanges.isEmpty()) {
+            ++skippedCount;
+            continue;
+        }
+
+        QString aiTitle;
+        if (canUseAi) {
+            QJsonObject payload;
+            payload[QStringLiteral("task")] = QStringLiteral("name_transcript_section");
+            payload[QStringLiteral("instruction")] =
+                QStringLiteral("Return only a short title for this video section, ideally two to four words. No punctuation.");
+            payload[QStringLiteral("speaker_id")] = section.speakerId.trimmed();
+            payload[QStringLiteral("speaker_name")] = section.speakerDisplayName.simplified();
+            payload[QStringLiteral("section_ordinal")] = section.sectionOrdinal;
+            payload[QStringLiteral("section_text")] = section.snippet.simplified();
+            payload[QStringLiteral("source_start_frame")] = QString::number(section.sourceStartFrame);
+            payload[QStringLiteral("source_end_frame")] = QString::number(section.sourceEndFrame);
+            bool aiOk = false;
+            QString aiError;
+            const QJsonObject response = runAiAction(
+                QStringLiteral("name_transcript_section"), payload, &aiOk, &aiError);
+            if (aiOk) {
+                aiTitle = titleFromAiResponse(response);
+            } else if (aiUnavailableReason.isEmpty()) {
+                aiUnavailableReason = aiError.trimmed();
+            }
+        }
+
+        const QString fallbackTitle = speakerSectionFallbackTitle(
+            section.speakerDisplayName,
+            section.speakerId,
+            section.sectionOrdinal,
+            section.sourceStartFrame,
+            section.sourceEndFrame);
+        const QString title = coupleWordTitle(aiTitle, fallbackTitle);
+        const QString suggestedBase = sanitizedExportBaseName(title, fallbackTitle);
+        RenderRequest request = baseRequest;
+        request.outputPath = uniqueExportPath(outputDir, suggestedBase, outputFormat, &reservedPaths);
+        request.clips = m_timeline->clips();
+        request.tracks = m_timeline->tracks();
+        request.renderSyncMarkers = markers;
+        request.exportRanges = timelineRanges;
+        request.exportStartFrame = timelineRanges.constFirst().startFrame;
+        request.exportEndFrame = timelineRanges.constLast().endFrame;
+        m_lastRenderOutputPath = request.outputPath;
+        renderTimelineFromOutputRequest(request);
+        ++exportedCount;
+    }
+
+    scheduleSaveState();
+    QString summary = QStringLiteral("Exported %1 section video(s).").arg(exportedCount);
+    if (skippedCount > 0) {
+        summary += QStringLiteral("\nSkipped %1 section(s) that could not be mapped to timeline frames.")
+                       .arg(skippedCount);
+    }
+    if (!canUseAi && !aiUnavailableReason.trimmed().isEmpty()) {
+        summary += QStringLiteral("\n\nAI naming was unavailable, so speaker/section fallback filenames were used.\n%1")
+                       .arg(aiUnavailableReason);
+    }
+    QMessageBox::information(this, QStringLiteral("Export Sections"), summary);
 }

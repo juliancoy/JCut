@@ -481,6 +481,35 @@ QString activeSpeakerIdInTranscriptRootAtSourceFrame(const QJsonObject& transcri
     return QString();
 }
 
+QSet<int> resolvedCurrentTrackIdsForSpeaker(const QJsonObject& transcriptRoot,
+                                            const QString& clipId,
+                                            const QString& speakerId)
+{
+    QSet<int> trackIds;
+    const QString targetSpeaker = speakerId.trimmed();
+    if (clipId.trimmed().isEmpty() || targetSpeaker.isEmpty()) {
+        return trackIds;
+    }
+
+    const QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipRoot = clipsRoot.value(clipId).toObject();
+    const QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
+    const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
+    for (const QJsonValue& value : resolvedMap) {
+        const QJsonObject row = value.toObject();
+        const QString identity = row.value(QStringLiteral("identity_id")).toString().trimmed();
+        if (identity != targetSpeaker) {
+            continue;
+        }
+        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        if (trackId >= 0) {
+            trackIds.insert(trackId);
+        }
+    }
+    return trackIds;
+}
+
 ContinuityCoverageSummary continuityCoverageSummaryForClip(const QString& transcriptPath,
                                                           const QString& clipId)
 {
@@ -884,6 +913,13 @@ void SpeakersTab::syncSpeakerListMode()
     if (m_widgets.speakerSectionsTable) {
         m_widgets.speakerSectionsTable->setVisible(showSections);
     }
+    if (m_widgets.speakerExportLongSectionsButton) {
+        m_widgets.speakerExportLongSectionsButton->setEnabled(
+            showSections &&
+            m_speakerDeps.exportSpeakerSectionsVideo &&
+            m_widgets.speakerSectionsTable &&
+            m_widgets.speakerSectionsTable->rowCount() > 0);
+    }
 }
 
 void SpeakersTab::syncIdentityToPlayhead(int64_t absolutePlaybackSample,
@@ -902,18 +938,29 @@ void SpeakersTab::syncIdentityToPlayhead(int64_t absolutePlaybackSample,
     if (sourceFrame < 0) {
         sourceFrame = currentSourceFrameForClip(*clip);
     }
-    if (sourceFrame < 0 || sourceFrame == m_lastPlayheadSyncedSourceFrame) {
+    if (sourceFrame < 0) {
         return;
     }
 
     const QString activeSpeakerId =
         activeSpeakerIdInTranscriptRootAtSourceFrame(m_transcriptSession.rootObject(), sourceFrame);
     if (activeSpeakerId.isEmpty()) {
+        if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
+            m_speakerDeps.setPreviewAssignedFaceTrackIds({});
+        }
         m_lastPlayheadSyncedSourceFrame = sourceFrame;
+        m_lastPlayheadSyncedSpeakerId.clear();
         return;
     }
 
     const bool sameSpeaker = activeSpeakerId == m_lastPlayheadSyncedSpeakerId;
+    if (sameSpeaker && sourceFrame == m_lastPlayheadSyncedSourceFrame) {
+        return;
+    }
+    if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
+        m_speakerDeps.setPreviewAssignedFaceTrackIds(
+            resolvedCurrentTrackIdsForSpeaker(m_transcriptSession.rootObject(), clip->id, activeSpeakerId));
+    }
     const bool sectionSelected = selectSpeakerSectionRowAtFrame(activeSpeakerId, sourceFrame);
     const bool speakerSelected = selectSpeakerRowById(activeSpeakerId);
     if (!speakerSelected && !sectionSelected) {
@@ -1242,6 +1289,12 @@ void SpeakersTab::refreshSpeakerSectionsTable(const QJsonObject& transcriptRoot)
             }
         }
         m_widgets.speakerSectionsTable->setCurrentCell(rowToSelect, 0);
+    }
+    if (m_widgets.speakerExportLongSectionsButton) {
+        m_widgets.speakerExportLongSectionsButton->setEnabled(
+            m_widgets.speakerSectionsTable->isVisible() &&
+            m_speakerDeps.exportSpeakerSectionsVideo &&
+            !rows.isEmpty());
     }
 }
 
@@ -2019,37 +2072,44 @@ QString SpeakersTab::selectedSpeakerId() const
         return speakerItem ? speakerItem->data(Qt::UserRole).toString().trimmed() : QString();
     };
 
-    if (m_widgets.speakersTable && m_widgets.speakersTable->selectionModel()) {
-        const QModelIndexList selectedRows = m_widgets.speakersTable->selectionModel()->selectedRows();
+    const auto speakerIdFromTableSelection = [&speakerIdFromRow](QTableWidget* table) {
+        if (!table || !table->selectionModel()) {
+            return QString();
+        }
+        const QModelIndexList selectedRows = table->selectionModel()->selectedRows();
         if (!selectedRows.isEmpty()) {
             const QString selectedId =
-                speakerIdFromRow(m_widgets.speakersTable, selectedRows.constFirst().row());
+                speakerIdFromRow(table, selectedRows.constFirst().row());
             if (!selectedId.isEmpty()) {
                 return selectedId;
             }
         }
 
-        const QString currentId =
-            speakerIdFromRow(m_widgets.speakersTable, m_widgets.speakersTable->currentRow());
+        const QString currentId = speakerIdFromRow(table, table->currentRow());
         if (!currentId.isEmpty()) {
             return currentId;
+        }
+        return QString();
+    };
+
+    const bool sectionsVisible =
+        m_widgets.speakerSectionsTable && m_widgets.speakerSectionsTable->isVisible();
+    if (sectionsVisible) {
+        const QString sectionSpeakerId = speakerIdFromTableSelection(m_widgets.speakerSectionsTable);
+        if (!sectionSpeakerId.isEmpty()) {
+            return sectionSpeakerId;
         }
     }
 
-    if (m_widgets.speakerSectionsTable && m_widgets.speakerSectionsTable->selectionModel()) {
-        const QModelIndexList selectedRows = m_widgets.speakerSectionsTable->selectionModel()->selectedRows();
-        if (!selectedRows.isEmpty()) {
-            const QString selectedId =
-                speakerIdFromRow(m_widgets.speakerSectionsTable, selectedRows.constFirst().row());
-            if (!selectedId.isEmpty()) {
-                return selectedId;
-            }
-        }
+    const QString rosterSpeakerId = speakerIdFromTableSelection(m_widgets.speakersTable);
+    if (!rosterSpeakerId.isEmpty()) {
+        return rosterSpeakerId;
+    }
 
-        const QString currentId =
-            speakerIdFromRow(m_widgets.speakerSectionsTable, m_widgets.speakerSectionsTable->currentRow());
-        if (!currentId.isEmpty()) {
-            return currentId;
+    if (!sectionsVisible) {
+        const QString sectionSpeakerId = speakerIdFromTableSelection(m_widgets.speakerSectionsTable);
+        if (!sectionSpeakerId.isEmpty()) {
+            return sectionSpeakerId;
         }
     }
 
@@ -2282,8 +2342,24 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
 
     const bool hasContinuityArtifact =
         selectedClip && selectedClipHasFaceDetectionsSidecars();
-    const QJsonArray streams = selectedClip ? continuityStreamsForClip(*selectedClip) : QJsonArray{};
-    const bool hasContinuityTracks = !streams.isEmpty();
+    QVector<jcut::facedetections::FacestreamTrackSummary> continuityTrackSummaries;
+    if (selectedClip && hasContinuityArtifact) {
+        editor::TranscriptEngine engine;
+        QJsonObject artifactRoot;
+        const bool loadedProcessed =
+            engine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+        const bool loadedRaw =
+            !loadedProcessed &&
+            engine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+        if (loadedProcessed || loadedRaw) {
+            const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, selectedClip->id);
+            continuityTrackSummaries =
+                jcut::facedetections::continuityTrackSummaryModelsForRoot(
+                    continuityRoot,
+                    QJsonObject{});
+        }
+    }
+    const bool hasContinuityTracks = !continuityTrackSummaries.isEmpty();
     const ContinuityCoverageSummary coverage =
         selectedClip
             ? continuityCoverageSummaryForClip(m_transcriptSession.transcriptPath(), selectedClip->id)
@@ -2346,8 +2422,27 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
     const QJsonObject tracking = speakerFramingObject(profile);
     const bool trackingEnabled = transcriptTrackingEnabled(tracking);
     const bool hasPointstream = transcriptTrackingHasPointstream(tracking);
-    const int assignedFaceDetectionsCount =
-        selectedClip ? resolvedAssignedTrackIdsForSpeaker(*selectedClip, streams, speakerId).size() : 0;
+    int assignedFaceDetectionsCount = 0;
+    if (selectedClip) {
+        const QJsonObject speakerFlow =
+            m_transcriptSession.rootObject().value(QStringLiteral("speaker_flow")).toObject();
+        const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+        const QJsonObject clipRoot = clipsRoot.value(selectedClip->id).toObject();
+        const QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
+        const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
+        QSet<int> assignedTrackIds;
+        for (const QJsonValue& value : resolvedMap) {
+            const QJsonObject row = value.toObject();
+            if (row.value(QStringLiteral("identity_id")).toString().trimmed() != speakerId) {
+                continue;
+            }
+            const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+            if (trackId >= 0) {
+                assignedTrackIds.insert(trackId);
+            }
+        }
+        assignedFaceDetectionsCount = assignedTrackIds.size();
+    }
     if (m_widgets.speakerRefsChipLabel) {
         m_widgets.speakerRefsChipLabel->setText(
             QStringLiteral("Assigned Tracks: %1").arg(assignedFaceDetectionsCount));
@@ -2487,7 +2582,7 @@ void SpeakersTab::updateSpeakerTrackingStatusLabel()
         QStringLiteral("Speaker: %1 | Assigned Tracks: %2 | Continuity Tracks: %3 | Speaker Tracking: %4 | Face Stabilize: %5")
             .arg(speakerDisplayLabel(speakerId))
             .arg(assignedFaceDetectionsCount)
-            .arg(streams.size())
+            .arg(continuityTrackSummaries.size())
             .arg(trackingEnabled ? QStringLiteral("ON") : QStringLiteral("OFF"))
             .arg(selectedClip ? clipFramingState : QStringLiteral("OFF"));
     const bool showPlayheadTracks =

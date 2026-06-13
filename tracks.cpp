@@ -187,6 +187,66 @@ bool resolvePlayheadTrackSelection(const TimelineClip& clip,
         selectionOut);
 }
 
+bool resolvePlayheadTrackSelection(const TimelineClip& clip,
+                                   const CachedFacestreamTrack& trackModel,
+                                   const QVector<RenderSyncMarker>& renderSyncMarkers,
+                                   int64_t playheadTimelineFrame,
+                                   int64_t playheadSourceFrame,
+                                   FacestreamResolvedSelection* selectionOut)
+{
+    if (!selectionOut || trackModel.trackId() < 0 || trackModel.keyframes.isEmpty()) {
+        return false;
+    }
+
+    FacestreamResolvedTrack track;
+    track.trackId = trackModel.trackId();
+    track.streamId = trackModel.streamId().trimmed().isEmpty()
+        ? QStringLiteral("T%1").arg(track.trackId)
+        : trackModel.streamId().trimmed();
+    track.source = trackModel.summary.source.trimmed().toLower();
+    track.typicalFrameStep = qMax<int64_t>(1, trackModel.summary.typicalFrameStep);
+
+    int64_t minStreamFrame = std::numeric_limits<int64_t>::max();
+    int64_t maxStreamFrame = std::numeric_limits<int64_t>::min();
+    track.keyframes.reserve(trackModel.keyframes.size());
+    for (const CachedFacestreamKeyframe& modelKeyframe : trackModel.keyframes) {
+        if (modelKeyframe.frame < 0) {
+            continue;
+        }
+        FacestreamResolvedKeyframe keyframe;
+        keyframe.frame = modelKeyframe.frame;
+        keyframe.boxNorm = modelKeyframe.boxNorm;
+        keyframe.xNorm = qBound<qreal>(0.0, modelKeyframe.x, 1.0);
+        keyframe.yNorm = qBound<qreal>(0.0, modelKeyframe.y, 1.0);
+        keyframe.boxSizeNorm = qBound<qreal>(0.01, modelKeyframe.box, 1.0);
+        keyframe.confidence = qBound<qreal>(0.0, modelKeyframe.confidence, 1.0);
+        keyframe.source = track.source;
+        keyframe.hasCenterBox = true;
+        track.keyframes.push_back(keyframe);
+        minStreamFrame = qMin(minStreamFrame, keyframe.frame);
+        maxStreamFrame = qMax(maxStreamFrame, keyframe.frame);
+    }
+    if (track.keyframes.isEmpty()) {
+        return false;
+    }
+
+    std::sort(track.keyframes.begin(),
+              track.keyframes.end(),
+              [](const FacestreamResolvedKeyframe& a, const FacestreamResolvedKeyframe& b) {
+                  return a.frame < b.frame;
+              });
+    if (!parseFacestreamFrameDomainString(trackModel.summary.frameDomain, &track.frameDomain)) {
+        track.frameDomain = inferFacestreamFrameDomain(clip, minStreamFrame, maxStreamFrame);
+    }
+    return resolveFacestreamTrackAtPlayhead(
+        clip,
+        track,
+        renderSyncMarkers,
+        playheadTimelineFrame,
+        playheadSourceFrame,
+        selectionOut);
+}
+
 bool selectPlayheadTrackInList(QListWidget* list, int trackId)
 {
     if (!list || trackId < 0) {
@@ -2767,78 +2827,70 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         finalizeRefreshTiming();
         return;
     }
-    QJsonArray streams = continuityStreamsForClip(clip);
+    const QVector<RenderSyncMarker> renderSyncMarkers =
+        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
+    const int64_t playheadTimelineFrame =
+        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
+    const int64_t playheadSourceFrame =
+        sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
+    QVector<CachedFacestreamTrack> candidateTracks;
     QJsonObject candidateDebug{
         {QStringLiteral("status"), QStringLiteral("begin")},
         {QStringLiteral("clip_id"), clip.id},
         {QStringLiteral("speaker_id"), speakerId},
         {QStringLiteral("transcript_path"), m_transcriptSession.transcriptPath()},
-        {QStringLiteral("initial_stream_count"), streams.size()}
+        {QStringLiteral("playhead_timeline_frame"), static_cast<qint64>(playheadTimelineFrame)},
+        {QStringLiteral("playhead_source_frame"), static_cast<qint64>(playheadSourceFrame)}
     };
-    if (streams.isEmpty()) {
-        editor::TranscriptEngine transcriptEngine;
-        QJsonObject artifactRoot;
-        QString fallbackArtifactSource;
-        const bool loadedRaw =
-            transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
-        if (loadedRaw) {
-            fallbackArtifactSource = QStringLiteral("raw");
-        }
-        const bool loadedProcessed =
-            !loadedRaw &&
-            transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
-        if (loadedProcessed) {
-            fallbackArtifactSource = QStringLiteral("processed");
-        }
-        if (loadedRaw || loadedProcessed) {
-            const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
-            const jcut::facedetections::ArtifactCompatibilityResult compatibility =
-                jcut::facedetections::validateArtifactCompatibilityForClip(continuityRoot, clip);
-            candidateDebug[QStringLiteral("fallback_compatibility")] = compatibility.details;
-            if (!compatibility.compatible) {
-                candidateDebug[QStringLiteral("status")] = QStringLiteral("artifact_incompatible");
-                candidateDebug[QStringLiteral("elapsed_ms")] = refreshTimer.elapsed();
-                jcut::facedetections::debugLogJson(
-                    QStringLiteral("FACESTREAM PLAYHEAD CANDIDATES"), candidateDebug);
-                auto* item = new QListWidgetItem(QStringLiteral("FaceDetections artifact incompatible"));
-                item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
-                item->setToolTip(QString::fromUtf8(
-                    QJsonDocument(compatibility.details).toJson(QJsonDocument::Indented)));
-                item->setSizeHint(QSize(220, 48));
-                m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
-                finalizeRefreshTiming();
-                return;
-            }
-            const QVector<RenderSyncMarker> renderSyncMarkers =
-                m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
-            const int64_t playheadTimelineFrame =
-                m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
-            const int64_t playheadSourceFrame =
-                sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
-            candidateDebug[QStringLiteral("fallback_artifact_source")] = fallbackArtifactSource;
-            candidateDebug[QStringLiteral("fallback_continuity_root_found")] = !continuityRoot.isEmpty();
-            candidateDebug[QStringLiteral("fallback_continuity_root_keys")] = objectKeysJson(continuityRoot);
-            candidateDebug[QStringLiteral("fallback_streams_key_present")] =
-                continuityRoot.contains(QStringLiteral("streams"));
-            candidateDebug[QStringLiteral("fallback_playhead_timeline_frame")] =
-                static_cast<qint64>(playheadTimelineFrame);
-            candidateDebug[QStringLiteral("fallback_playhead_source_frame")] =
-                static_cast<qint64>(playheadSourceFrame);
-            candidateDebug[QStringLiteral("fallback_raw_tracks_artifact_path")] =
-                continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
-            candidateDebug[QStringLiteral("fallback_raw_tracks_frame_domain")] =
-                continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
-            streams = jcut::facedetections::continuityStreamsNearFrame(
-                continuityRoot,
-                playheadSourceFrame,
-                0,
-                QJsonObject{});
-            candidateDebug[QStringLiteral("fallback_near_frame_stream_count")] = streams.size();
-        } else {
-            candidateDebug[QStringLiteral("fallback_artifact_source")] = QStringLiteral("missing");
-        }
+    editor::TranscriptEngine transcriptEngine;
+    QJsonObject artifactRoot;
+    QString artifactSource;
+    const bool loadedProcessed =
+        transcriptEngine.loadFacestreamProcessedArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+    if (loadedProcessed) {
+        artifactSource = QStringLiteral("processed");
     }
-    if (streams.isEmpty()) {
+    const bool loadedRaw =
+        !loadedProcessed &&
+        transcriptEngine.loadFacestreamArtifact(m_transcriptSession.transcriptPath(), &artifactRoot);
+    if (loadedRaw) {
+        artifactSource = QStringLiteral("raw");
+    }
+    if (loadedRaw || loadedProcessed) {
+        const QJsonObject continuityRoot = continuityRootForClip(artifactRoot, clip.id);
+        const jcut::facedetections::ArtifactCompatibilityResult compatibility =
+            jcut::facedetections::validateArtifactCompatibilityForClip(continuityRoot, clip);
+        candidateDebug[QStringLiteral("artifact_source")] = artifactSource;
+        candidateDebug[QStringLiteral("compatibility")] = compatibility.details;
+        candidateDebug[QStringLiteral("continuity_root_found")] = !continuityRoot.isEmpty();
+        candidateDebug[QStringLiteral("raw_tracks_artifact_path")] =
+            continuityRoot.value(QStringLiteral("raw_tracks_artifact_path")).toString().trimmed();
+        candidateDebug[QStringLiteral("raw_tracks_frame_domain")] =
+            continuityRoot.value(QStringLiteral("raw_tracks_frame_domain")).toString().trimmed();
+        if (!compatibility.compatible) {
+            candidateDebug[QStringLiteral("status")] = QStringLiteral("artifact_incompatible");
+            candidateDebug[QStringLiteral("elapsed_ms")] = refreshTimer.elapsed();
+            jcut::facedetections::debugLogJson(
+                QStringLiteral("FACESTREAM PLAYHEAD CANDIDATES"), candidateDebug);
+            auto* item = new QListWidgetItem(QStringLiteral("FaceDetections artifact incompatible"));
+            item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+            item->setToolTip(QString::fromUtf8(
+                QJsonDocument(compatibility.details).toJson(QJsonDocument::Indented)));
+            item->setSizeHint(QSize(220, 48));
+            m_widgets.speakerPlayheadFaceDetectionsList->addItem(item);
+            finalizeRefreshTiming();
+            return;
+        }
+        candidateTracks = jcut::facedetections::continuityTrackModelsNearFrameForRoot(
+            continuityRoot,
+            playheadSourceFrame,
+            0,
+            QJsonObject{});
+        candidateDebug[QStringLiteral("near_frame_track_count")] = candidateTracks.size();
+    } else {
+        candidateDebug[QStringLiteral("artifact_source")] = QStringLiteral("missing");
+    }
+    if (candidateTracks.isEmpty()) {
         candidateDebug[QStringLiteral("status")] = QStringLiteral("no_streams");
         candidateDebug[QStringLiteral("elapsed_ms")] = refreshTimer.elapsed();
         jcut::facedetections::debugLogJson(
@@ -2851,27 +2903,30 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
         return;
     }
 
-    const QVector<RenderSyncMarker> renderSyncMarkers =
-        m_speakerDeps.getRenderSyncMarkers ? m_speakerDeps.getRenderSyncMarkers() : QVector<RenderSyncMarker>{};
-    const int64_t playheadTimelineFrame =
-        m_deps.getCurrentTimelineFrame ? m_deps.getCurrentTimelineFrame() : clip.startFrame;
-    const int64_t playheadSourceFrame =
-        sourceFrameForClipAtTimelinePosition(clip, static_cast<qreal>(playheadTimelineFrame), renderSyncMarkers);
-    candidateDebug[QStringLiteral("playhead_timeline_frame")] =
-        static_cast<qint64>(playheadTimelineFrame);
-    candidateDebug[QStringLiteral("playhead_source_frame")] =
-        static_cast<qint64>(playheadSourceFrame);
-    candidateDebug[QStringLiteral("resolved_stream_count")] = streams.size();
-    const QHash<int, QString> assignedIdentityByTrackId = resolvedIdentityByTrackId(clip, streams);
-    for (const QJsonValue& value : streams) {
-        const QJsonObject streamObj = value.toObject();
-        const int trackId = streamObj.value(QStringLiteral("track_id")).toInt(-1);
+    candidateDebug[QStringLiteral("resolved_track_count")] = candidateTracks.size();
+    QHash<int, QString> assignedIdentityByTrackId;
+    const QJsonObject speakerFlow =
+        m_transcriptSession.rootObject().value(QStringLiteral("speaker_flow")).toObject();
+    const QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    const QJsonObject clipRoot = clipsRoot.value(clip.id).toObject();
+    const QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
+    const QJsonArray resolvedMap = resolvedPayload.value(QStringLiteral("track_identity_map")).toArray();
+    for (const QJsonValue& value : resolvedMap) {
+        const QJsonObject row = value.toObject();
+        const int trackId = row.value(QStringLiteral("track_id")).toInt(-1);
+        const QString identity = row.value(QStringLiteral("identity_id")).toString().trimmed();
+        if (trackId >= 0 && !identity.isEmpty()) {
+            assignedIdentityByTrackId.insert(trackId, identity);
+        }
+    }
+    for (const CachedFacestreamTrack& track : candidateTracks) {
+        const int trackId = track.trackId();
         if (trackId < 0) {
             continue;
         }
         FacestreamResolvedSelection selection;
         if (!resolvePlayheadTrackSelection(clip,
-                                           streamObj,
+                                           track,
                                            renderSyncMarkers,
                                            playheadTimelineFrame,
                                            playheadSourceFrame,
@@ -2879,28 +2934,14 @@ void SpeakersTab::refreshPlayheadTrackCandidatesList(const TimelineClip& clip, c
             continue;
         }
 
-        const QString streamId = streamObj.value(QStringLiteral("stream_id")).toString(QStringLiteral("T%1").arg(trackId));
+        const QString streamId = track.streamId().trimmed().isEmpty()
+            ? QStringLiteral("T%1").arg(trackId)
+            : track.streamId().trimmed();
         const QString assignedSpeakerId = assignedIdentityByTrackId.value(trackId).trimmed();
         const QString assignedLabel =
             assignedSpeakerId.isEmpty() ? QStringLiteral("Unassigned") : speakerDisplayLabel(assignedSpeakerId);
-        QPixmap itemAvatar;
-        if (!playbackActive) {
-            const QString avatarCacheKey = QStringLiteral("%1|%2|%3|%4")
-                                               .arg(clip.id)
-                                               .arg(trackId)
-                                               .arg(speakerId)
-                                               .arg(72);
-            const auto cachedAvatar = m_playheadTrackAvatarCache.constFind(avatarCacheKey);
-            if (cachedAvatar != m_playheadTrackAvatarCache.cend()) {
-                itemAvatar = cachedAvatar.value();
-            } else {
-                itemAvatar = continuityTrackAvatar(clip, speakerId, streamObj, 72, nullptr, nullptr);
-                m_playheadTrackAvatarCache.insert(avatarCacheKey, itemAvatar);
-            }
-        }
-        QListWidgetItem* item = itemAvatar.isNull()
-            ? new QListWidgetItem(QStringLiteral("%1\n%2").arg(streamId, assignedLabel))
-            : new QListWidgetItem(QIcon(itemAvatar), QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
+        QListWidgetItem* item =
+            new QListWidgetItem(QStringLiteral("%1\n%2").arg(streamId, assignedLabel));
         item->setData(PlayheadTrackIdRole, trackId);
         item->setData(PlayheadTrackStreamIdRole, streamId);
         item->setData(PlayheadTrackSourceFrameRole, QVariant::fromValue<qlonglong>(selection.sourceFrame));

@@ -7,7 +7,6 @@
 #include "debug_controls.h"
 #include "media_pipeline_shared.h"
 #include "cpu_overlay_render_backend.h"
-#include "cpu_render_fallback.h"
 #include "ffmpeg_compat.h"
 
 #include <QDir>
@@ -171,7 +170,8 @@ void mixAudioChunk(const QVector<TimelineClip>& clips,
                    const QHash<QString, DecodedAudioClip>& audioCache,
                    float* output,
                    int frames,
-                   int64_t chunkStartSample);
+                   int64_t chunkStartSample,
+                   qreal timelineSampleStep = 1.0);
 bool encodeFrame(AVCodecContext* codecCtx,
                  AVStream* stream,
                  AVFormatContext* formatCtx,
@@ -184,6 +184,7 @@ bool initializeExportAudio(const RenderRequest& request,
 bool encodeExportAudio(const QVector<ExportRangeSegment>& exportRanges,
                        const AudioExportState& state,
                        AVFormatContext* formatCtx,
+                       qreal playbackSpeed,
                        QString* errorMessage);
 
 QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
@@ -408,32 +409,6 @@ public:
 private:
     std::unique_ptr<OffscreenVulkanRendererPrivate> d;
 };
-
-QImage renderTimelineFrame(const RenderRequest& request,
-                           qreal timelineFrame,
-                           QHash<QString, editor::DecoderContext*>& decoders,
-                           editor::AsyncDecoder* asyncDecoder,
-                           QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                           const QVector<TimelineClip>& orderedClips,
-                           QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                           QJsonArray* skippedClips = nullptr,
-                           QJsonObject* skippedReasonCounts = nullptr);
-
-bool renderTimelineFrameToOutput(const RenderRequest& request,
-                                 qreal timelineFrame,
-                                 QHash<QString, editor::DecoderContext*>& decoders,
-                                 editor::AsyncDecoder* asyncDecoder,
-                                 QHash<RenderAsyncFrameKey, editor::FrameHandle>* asyncFrameCache,
-                                 const QVector<TimelineClip>& orderedClips,
-                                 OffscreenRenderFrame* output,
-                                 bool readbackToCpuImage = true,
-                                 QHash<QString, RenderClipStageStats>* clipStageStats = nullptr,
-                                 qint64* decodeMs = nullptr,
-                                 qint64* textureMs = nullptr,
-                                 qint64* compositeMs = nullptr,
-                                 qint64* readbackMs = nullptr,
-                                 QJsonArray* skippedClips = nullptr,
-                                 QJsonObject* skippedReasonCounts = nullptr);
 
 RenderResult renderTimelineToImageSequenceAndVideo(const RenderRequest& request,
                                                   const std::function<bool(const RenderProgress&)>& progressCallback);

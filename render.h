@@ -53,6 +53,7 @@ struct RenderRequest {
     QString imageSequenceFormat;  // "jpeg", "webp", or empty for none
     QSize outputSize;
     double outputFps = static_cast<double>(kTimelineFps);
+    double playbackSpeed = 1.0;
     bool useProxyMedia = false;
     bool bypassGrading = false;
     bool correctionsEnabled = true;
@@ -92,8 +93,6 @@ struct RenderResult {
     qint64 maxFrameConvertStageMs = 0;
     QString requestedRenderBackend;
     QString effectiveRenderBackend;
-    bool backendFallbackApplied = false;
-    QString backendFallbackReason;
     QString message;
     QJsonArray skippedClips;
     QJsonObject skippedClipReasonCounts;

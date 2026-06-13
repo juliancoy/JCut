@@ -97,6 +97,7 @@ public:
     QTableWidget *speakersTable() const { return m_speakersTable; }
     QCheckBox *speakerHideUnidentifiedCheckBox() const { return m_speakerHideUnidentifiedCheckBox; }
     QCheckBox *speakerShowContiguousSectionsCheckBox() const { return m_speakerShowContiguousSectionsCheckBox; }
+    QPushButton *speakerExportLongSectionsButton() const { return m_speakerExportLongSectionsButton; }
     QCheckBox *speakerShowCurrentSpeakerNameCheckBox() const { return m_speakerShowCurrentSpeakerNameCheckBox; }
     QCheckBox *speakerShowCurrentSpeakerOrganizationCheckBox() const { return m_speakerShowCurrentSpeakerOrganizationCheckBox; }
     QSpinBox *speakerCurrentSpeakerNameTextSizeSpin() const { return m_speakerCurrentSpeakerNameTextSizeSpin; }
@@ -105,6 +106,8 @@ public:
     QSpinBox *speakerCurrentSpeakerOrganizationYPositionSpin() const { return m_speakerCurrentSpeakerOrganizationYPositionSpin; }
     QTableWidget *speakerSectionsTable() const { return m_speakerSectionsTable; }
     QLabel *selectedSpeakerIdLabel() const { return m_selectedSpeakerIdLabel; }
+    QLineEdit *selectedSpeakerNameEdit() const { return m_selectedSpeakerNameEdit; }
+    QLineEdit *selectedSpeakerOrganizationEdit() const { return m_selectedSpeakerOrganizationEdit; }
     QListWidget *selectedSpeakerFaceDetectionsList() const { return m_selectedSpeakerFaceDetectionsList; }
     QListWidget *speakerPlayheadFaceDetectionsList() const { return m_speakerPlayheadFaceDetectionsList; }
     QCheckBox *speakerShowPlayheadFaceDetectionsCheckBox() const { return m_speakerShowPlayheadFaceDetectionsCheckBox; }
@@ -628,6 +631,7 @@ private:
     SpeakersTable *m_speakersTable = nullptr;
     QCheckBox *m_speakerHideUnidentifiedCheckBox = nullptr;
     QCheckBox *m_speakerShowContiguousSectionsCheckBox = nullptr;
+    QPushButton *m_speakerExportLongSectionsButton = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerNameCheckBox = nullptr;
     QCheckBox *m_speakerShowCurrentSpeakerOrganizationCheckBox = nullptr;
     QSpinBox *m_speakerCurrentSpeakerNameTextSizeSpin = nullptr;
@@ -636,6 +640,8 @@ private:
     QSpinBox *m_speakerCurrentSpeakerOrganizationYPositionSpin = nullptr;
     QTableWidget *m_speakerSectionsTable = nullptr;
     QLabel *m_selectedSpeakerIdLabel = nullptr;
+    QLineEdit *m_selectedSpeakerNameEdit = nullptr;
+    QLineEdit *m_selectedSpeakerOrganizationEdit = nullptr;
     QListWidget *m_selectedSpeakerFaceDetectionsList = nullptr;
     QListWidget *m_speakerPlayheadFaceDetectionsList = nullptr;
     QCheckBox *m_speakerShowPlayheadFaceDetectionsCheckBox = nullptr;

@@ -3,6 +3,7 @@
 #include "cpu_overlay_render_backend.h"
 #include "offscreen_vulkan_renderer_helpers.h"
 #include "render_internal.h"
+#include "render_vulkan_shared.h"
 #include "titles.h"
 #include "vulkan_detector_frame_handoff.h"
 
@@ -11,7 +12,6 @@
 #include <QDir>
 #include <QFile>
 #include <QImage>
-#include <QMatrix4x4>
 #include <QScopeGuard>
 
 #if JCUT_HAS_CUDA_DRIVER
@@ -3081,19 +3081,20 @@ QImage OffscreenVulkanRenderer::renderFrame(
     if (clip.mediaType == ClipMediaType::Image && !layer.preferHardwareDirect) {
       layer.cacheKey = clip.id + QStringLiteral(":prepared_rgba");
     }
-    layer.opacity = static_cast<float>(grade.opacity);
-    layer.brightness = static_cast<float>(grade.brightness);
-    layer.contrast = static_cast<float>(grade.contrast);
-    layer.saturation = static_cast<float>(grade.saturation);
-    layer.shadows[0] = static_cast<float>(grade.shadowsR);
-    layer.shadows[1] = static_cast<float>(grade.shadowsG);
-    layer.shadows[2] = static_cast<float>(grade.shadowsB);
-    layer.midtones[0] = static_cast<float>(grade.midtonesR);
-    layer.midtones[1] = static_cast<float>(grade.midtonesG);
-    layer.midtones[2] = static_cast<float>(grade.midtonesB);
-    layer.highlights[0] = static_cast<float>(grade.highlightsR);
-    layer.highlights[1] = static_cast<float>(grade.highlightsG);
-    layer.highlights[2] = static_cast<float>(grade.highlightsB);
+    const VulkanDrawEffectState layerEffects = vulkanDrawEffectStateForGrade(grade);
+    layer.opacity = layerEffects.opacity;
+    layer.brightness = layerEffects.brightness;
+    layer.contrast = layerEffects.contrast;
+    layer.saturation = layerEffects.saturation;
+    layer.shadows[0] = layerEffects.shadows[0];
+    layer.shadows[1] = layerEffects.shadows[1];
+    layer.shadows[2] = layerEffects.shadows[2];
+    layer.midtones[0] = layerEffects.midtones[0];
+    layer.midtones[1] = layerEffects.midtones[1];
+    layer.midtones[2] = layerEffects.midtones[2];
+    layer.highlights[0] = layerEffects.highlights[0];
+    layer.highlights[1] = layerEffects.highlights[1];
+    layer.highlights[2] = layerEffects.highlights[2];
     layer.curveLutRgba = curveLutBytesForGrade(grade);
     const TimelineClip::TransformKeyframe transform =
         evaluateClipRenderTransformAtPosition(
@@ -3101,66 +3102,44 @@ QImage OffscreenVulkanRenderer::renderFrame(
     const QSize sourceSize =
         layer.sourceSize.isValid() ? layer.sourceSize : layer.image.size();
     const QRect fitted = fitRect(sourceSize, request.outputSize);
-    QMatrix4x4 projection;
-    projection.ortho(0.0f, static_cast<float>(request.outputSize.width()),
-                     static_cast<float>(request.outputSize.height()), 0.0f,
-                     -1.0f, 1.0f);
-    QMatrix4x4 model;
-    model.translate(
-        static_cast<float>(fitted.center().x() + transform.translationX),
-        static_cast<float>(fitted.center().y() + transform.translationY), 0.0f);
-    model.rotate(static_cast<float>(transform.rotation), 0.0f, 0.0f, 1.0f);
-    model.scale(static_cast<float>(fitted.width() * transform.scaleX),
-                static_cast<float>(fitted.height() * transform.scaleY), 1.0f);
-    QMatrix4x4 shaderQuadToOpenGlQuad;
-    shaderQuadToOpenGlQuad.scale(0.5f, 0.5f, 1.0f);
-    const QMatrix4x4 mvp = projection * model * shaderQuadToOpenGlQuad;
-    const float *mvpData = mvp.constData();
-    for (int i = 0; i < 16; ++i) {
-      layer.mvp[i] = mvpData[i];
-    }
+    const QPointF layerCenter(fitted.center().x() + transform.translationX,
+                              fitted.center().y() + transform.translationY);
+    const QSizeF layerSize(fitted.width() * transform.scaleX,
+                           fitted.height() * transform.scaleY);
+    vulkanMvpForOutputRect(
+        QRectF(layerCenter.x() - (layerSize.width() * 0.5),
+               layerCenter.y() - (layerSize.height() * 0.5),
+               layerSize.width(),
+               layerSize.height()),
+        request.outputSize,
+        transform.rotation,
+        layer.mvp);
     if (!backgroundFilled &&
         shouldDrawBlurredFillBackground(sourceSize, request.outputSize)) {
       OffscreenVulkanRendererPrivate::LayerInput backgroundLayer;
       backgroundLayer.sourceSize = request.outputSize;
-      backgroundLayer.opacity = qBound(0.0f, layer.opacity, 1.0f);
+      const VulkanDrawEffectState backgroundEffects =
+          vulkanBlurredBackgroundEffectState(layer.opacity);
+      backgroundLayer.opacity = backgroundEffects.opacity;
+      backgroundLayer.brightness = backgroundEffects.brightness;
+      backgroundLayer.contrast = backgroundEffects.contrast;
+      backgroundLayer.saturation = backgroundEffects.saturation;
       if (!layer.image.isNull()) {
         backgroundLayer.image =
             buildBlurredFillBackground(layer.image, request.outputSize);
         backgroundLayer.sourceSize = backgroundLayer.image.size();
       }
-      QMatrix4x4 backgroundModel;
-      backgroundModel.translate(request.outputSize.width() / 2.0f,
-                                request.outputSize.height() / 2.0f, 0.0f);
-      backgroundModel.scale(request.outputSize.width(),
-                            request.outputSize.height(), 1.0f);
-      const QMatrix4x4 fullFrameBackgroundMvp =
-          projection * backgroundModel * shaderQuadToOpenGlQuad;
-      const float *fullFrameBackgroundMvpData =
-          fullFrameBackgroundMvp.constData();
-      for (int i = 0; i < 16; ++i) {
-        backgroundLayer.mvp[i] = fullFrameBackgroundMvpData[i];
-      }
+      vulkanMvpForOutputRect(QRectF(QPointF(0.0, 0.0), QSizeF(request.outputSize)),
+                             request.outputSize,
+                             0.0,
+                             backgroundLayer.mvp);
       if (backgroundLayer.image.isNull()) {
         backgroundLayer.frameHandle = frame;
         backgroundLayer.sourceSize = sourceSize;
         backgroundLayer.preferHardwareDirect = frame.hasHardwareFrame();
-        backgroundLayer.brightness = -0.12f;
-        backgroundLayer.saturation = 0.75f;
 
         const QRect covered = coverRect(sourceSize, request.outputSize);
-        QMatrix4x4 backgroundModel;
-        backgroundModel.translate(static_cast<float>(covered.center().x()),
-                                  static_cast<float>(covered.center().y()),
-                                  0.0f);
-        backgroundModel.scale(static_cast<float>(covered.width()),
-                              static_cast<float>(covered.height()), 1.0f);
-        const QMatrix4x4 backgroundMvp =
-            projection * backgroundModel * shaderQuadToOpenGlQuad;
-        const float *backgroundMvpData = backgroundMvp.constData();
-        for (int i = 0; i < 16; ++i) {
-          backgroundLayer.mvp[i] = backgroundMvpData[i];
-        }
+        vulkanMvpForOutputRect(QRectF(covered), request.outputSize, 0.0, backgroundLayer.mvp);
       }
       if (!backgroundLayer.image.isNull() ||
           !backgroundLayer.frameHandle.isNull()) {

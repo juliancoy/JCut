@@ -40,6 +40,45 @@ QHash<QString, QPixmap>& hoverSpeakerImageCache()
     return cache;
 }
 
+const VulkanPreviewClipFrameStatus* presentedFrameStatusForClip(const PreviewInteractionState* state,
+                                                                const QString& clipId)
+{
+    if (!state) {
+        return nullptr;
+    }
+    for (const VulkanPreviewClipFrameStatus& status : state->vulkanFrameStatuses) {
+        if (status.clipId == clipId && status.active && status.hasFrame &&
+            status.presentedSourceFrame >= 0) {
+            return &status;
+        }
+    }
+    return nullptr;
+}
+
+int64_t transcriptFrameForClipAtPreviewState(const TimelineClip& clip,
+                                             const PreviewInteractionState* state)
+{
+    if (const VulkanPreviewClipFrameStatus* status =
+            presentedFrameStatusForClip(state, clip.id)) {
+        return transcriptFrameForClipSourceFrame(clip, status->presentedSourceFrame);
+    }
+    return state
+        ? transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers)
+        : 0;
+}
+
+int64_t mediaSourceFrameForClipAtPreviewState(const TimelineClip& clip,
+                                              const PreviewInteractionState* state)
+{
+    if (const VulkanPreviewClipFrameStatus* status =
+            presentedFrameStatusForClip(state, clip.id)) {
+        return status->presentedSourceFrame;
+    }
+    return state
+        ? sourceFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers)
+        : 0;
+}
+
 QMutex& currentSpeakerRangeCacheMutex()
 {
     static QMutex mutex;
@@ -351,8 +390,7 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
 
     for (const TimelineClip& clip : candidates) {
         const QString transcriptPath = activeTranscriptPathForClipFile(clip.filePath);
-        const int64_t sourceFrame =
-            transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
+        const int64_t sourceFrame = transcriptFrameForClipAtPreviewState(clip, state);
         QString speakerId;
         if (cachedCurrentSpeakerId(clip.id, transcriptPath, sourceFrame, &speakerId)) {
             return currentSpeakerLabelFromSpeakerId(transcriptPath, speakerId);
@@ -460,16 +498,16 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
             continue;
         }
 
-        const int64_t transcriptFrame =
-            transcriptFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
-        const int64_t mediaSourceFrame =
-            sourceFrameForClipAtTimelineSample(clip, state->currentSample, state->renderSyncMarkers);
+        const int64_t transcriptFrame = transcriptFrameForClipAtPreviewState(clip, state);
+        const int64_t mediaSourceFrame = mediaSourceFrameForClipAtPreviewState(clip, state);
         const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, transcriptFrame);
         clipDebug.insert(QStringLiteral("source_frame"), static_cast<qint64>(transcriptFrame));
         clipDebug.insert(QStringLiteral("transcript_frame"), static_cast<qint64>(transcriptFrame));
         clipDebug.insert(QStringLiteral("media_source_frame"), static_cast<qint64>(mediaSourceFrame));
         clipDebug.insert(QStringLiteral("speaker_timing_source"),
-                         QStringLiteral("transcript_overlay_padded_word_timing"));
+                         presentedFrameStatusForClip(state, clip.id)
+                             ? QStringLiteral("presented_frame_transcript_timing")
+                             : QStringLiteral("transport_sample_transcript_timing"));
         clipDebug.insert(QStringLiteral("speaker_id"), speakerId);
         if (speakerId.isEmpty()) {
             clipDebug.insert(QStringLiteral("status"), QStringLiteral("no_speaker_at_source_frame"));

@@ -1,7 +1,8 @@
 #include "offscreen_vulkan_renderer_helpers.h"
 
+#include "render_vulkan_shared.h"
+
 #include <QFile>
-#include <QVector>
 
 extern "C" {
 #include <libavutil/frame.h>
@@ -14,40 +15,12 @@ namespace render_detail {
 
 QByteArray curveLutBytesForGrade(const TimelineClip::GradingKeyframe& grade)
 {
-    const QVector<quint8> lutR =
-        gradingCurveLut8(grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> lutG =
-        gradingCurveLut8(grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> lutB =
-        gradingCurveLut8(grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> lutL =
-        gradingCurveLut8(grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    if (lutR.size() != TimelineClip::kGradingCurveLutSize ||
-        lutG.size() != TimelineClip::kGradingCurveLutSize ||
-        lutB.size() != TimelineClip::kGradingCurveLutSize ||
-        lutL.size() != TimelineClip::kGradingCurveLutSize) {
-        return {};
-    }
-
-    QByteArray rgba;
-    rgba.resize(static_cast<int>(kCurveLutBytes));
-    for (int i = 0; i < TimelineClip::kGradingCurveLutSize; ++i) {
-        rgba[i * 4 + 0] = static_cast<char>(lutR[i]);
-        rgba[i * 4 + 1] = static_cast<char>(lutG[i]);
-        rgba[i * 4 + 2] = static_cast<char>(lutB[i]);
-        rgba[i * 4 + 3] = static_cast<char>(lutL[i]);
-    }
-    return rgba;
+    return vulkanCurveLutRgbaBytes(grade);
 }
 
 QByteArray identityCurveLutBytes()
 {
-    TimelineClip::GradingKeyframe grade;
-    grade.curvePointsR = defaultGradingCurvePoints();
-    grade.curvePointsG = defaultGradingCurvePoints();
-    grade.curvePointsB = defaultGradingCurvePoints();
-    grade.curvePointsLuma = defaultGradingCurvePoints();
-    return curveLutBytesForGrade(grade);
+    return vulkanIdentityCurveLutRgbaBytes();
 }
 
 bool vulkanSubtitleDebugEnabled()

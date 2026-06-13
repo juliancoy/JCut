@@ -161,8 +161,6 @@ RenderResultCore toCoreRenderResult(const ::RenderResult& result)
     core.maxFrameConvertStageMs = result.maxFrameConvertStageMs;
     core.requestedRenderBackend = result.requestedRenderBackend.toStdString();
     core.effectiveRenderBackend = result.effectiveRenderBackend.toStdString();
-    core.backendFallbackApplied = result.backendFallbackApplied;
-    core.backendFallbackReason = result.backendFallbackReason.toStdString();
     core.message = result.message.toStdString();
     core.skippedClips = toJson(result.skippedClips);
     core.skippedClipReasonCounts = toJson(result.skippedClipReasonCounts);

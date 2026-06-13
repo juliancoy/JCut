@@ -527,10 +527,13 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakersTable(),
             m_inspectorPane->speakerHideUnidentifiedCheckBox(),
             m_inspectorPane->speakerShowContiguousSectionsCheckBox(),
+            m_inspectorPane->speakerExportLongSectionsButton(),
             m_inspectorPane->speakerShowCurrentSpeakerNameCheckBox(),
             m_inspectorPane->speakerShowCurrentSpeakerOrganizationCheckBox(),
             m_inspectorPane->speakerSectionsTable(),
             m_inspectorPane->selectedSpeakerIdLabel(),
+            m_inspectorPane->selectedSpeakerNameEdit(),
+            m_inspectorPane->selectedSpeakerOrganizationEdit(),
             m_inspectorPane->selectedSpeakerFaceDetectionsList(),
             m_inspectorPane->speakerPlayheadFaceDetectionsList(),
             m_inspectorPane->speakerShowPlayheadFaceDetectionsCheckBox(),
@@ -641,9 +644,14 @@ void EditorWindow::createSpeakersTab()
             [this](const QString& speakerId,
                    int64_t startFrame,
                    int64_t endFrame,
-                   const QString& snippet) {
+                   const QString& snippet,
+                   const QString& speakerDisplayName,
+                   int sectionOrdinal) {
                 exportVideoForSpeakerSectionOnSelectedClip(
-                    speakerId, startFrame, endFrame, snippet);
+                    speakerId, startFrame, endFrame, snippet, speakerDisplayName, sectionOrdinal);
+            },
+            [this](const QVector<SpeakerSectionExportItem>& sections) {
+                exportVideoForSpeakerSectionsOnSelectedClip(sections);
             },
             [this](bool suppressed) {
                 if (m_audioEngine) {

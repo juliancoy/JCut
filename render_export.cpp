@@ -1,8 +1,8 @@
 #include "render_internal.h"
 #include "cpu_overlay_render_backend.h"
 #include "render_backend.h"
-#include "vulkan_backend.h"
 
+#include <QCoreApplication>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -13,6 +13,74 @@
 using namespace render_detail;
 
 namespace {
+
+inline int clampByte(int value) {
+    return value < 0 ? 0 : (value > 255 ? 255 : value);
+}
+
+bool fillNv12FrameFromRenderedImage(const QImage& image, AVFrame* frame) {
+    if (!frame || frame->format != AV_PIX_FMT_NV12 || image.isNull()) {
+        return false;
+    }
+
+    QImage argb = image;
+    if (argb.format() != QImage::Format_ARGB32 && argb.format() != QImage::Format_ARGB32_Premultiplied) {
+        argb = image.convertToFormat(QImage::Format_ARGB32);
+    }
+    if (argb.isNull()) {
+        return false;
+    }
+
+    const int width = qMin(argb.width(), frame->width);
+    const int height = qMin(argb.height(), frame->height);
+    uint8_t* yPlane = frame->data[0];
+    uint8_t* uvPlane = frame->data[1];
+    const int yStride = frame->linesize[0];
+    const int uvStride = frame->linesize[1];
+
+    for (int y = 0; y < height; ++y) {
+        const uint8_t* src = argb.constScanLine(y);
+        uint8_t* dstY = yPlane + y * yStride;
+        for (int x = 0; x < width; ++x) {
+            const int b = src[x * 4 + 0];
+            const int g = src[x * 4 + 1];
+            const int r = src[x * 4 + 2];
+            const int yValue = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+            dstY[x] = static_cast<uint8_t>(clampByte(yValue));
+        }
+    }
+
+    for (int y = 0; y < height; y += 2) {
+        const uint8_t* src0 = argb.constScanLine(y);
+        const uint8_t* src1 = argb.constScanLine(qMin(y + 1, height - 1));
+        uint8_t* dstUV = uvPlane + (y / 2) * uvStride;
+        for (int x = 0; x < width; x += 2) {
+            int sumU = 0;
+            int sumV = 0;
+            int sampleCount = 0;
+            for (int dy = 0; dy < 2; ++dy) {
+                const uint8_t* src = (dy == 0) ? src0 : src1;
+                for (int dx = 0; dx < 2; ++dx) {
+                    const int xx = qMin(x + dx, width - 1);
+                    const int b = src[xx * 4 + 0];
+                    const int g = src[xx * 4 + 1];
+                    const int r = src[xx * 4 + 2];
+                    const int uValue = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+                    const int vValue = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+                    sumU += uValue;
+                    sumV += vValue;
+                    ++sampleCount;
+                }
+            }
+            dstUV[x + 0] = static_cast<uint8_t>(clampByte(sumU / qMax(1, sampleCount)));
+            if (x + 1 < uvStride) {
+                dstUV[x + 1] = static_cast<uint8_t>(clampByte(sumV / qMax(1, sampleCount)));
+            }
+        }
+    }
+
+    return true;
+}
 
 bool configureCudaHardwareFrames(AVCodecContext* codecCtx,
                                  AVPixelFormat swFormat,
@@ -105,6 +173,9 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                                   const std::function<bool(const RenderProgress&)>& progressCallback) {
     RenderResult result;
     const RenderBackend requestedBackend = desiredRenderBackendFromEnvironment();
+    const qreal playbackSpeed = std::isfinite(request.playbackSpeed) && request.playbackSpeed > 0.001
+        ? request.playbackSpeed
+        : 1.0;
     result.requestedRenderBackend = renderBackendName(requestedBackend);
     result.effectiveRenderBackend = QStringLiteral("none");
     if (request.outputPath.isEmpty()) {
@@ -184,13 +255,13 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         ? request.outputFps
         : static_cast<double>(kTimelineFps);
     const qreal timelineFramesPerOutputFrame =
-        static_cast<qreal>(kTimelineFps) / static_cast<qreal>(outputFps);
+        (static_cast<qreal>(kTimelineFps) / static_cast<qreal>(outputFps)) * playbackSpeed;
     int64_t totalFramesToRender = 0;
     for (const ExportRangeSegment& range : exportRanges) {
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
         const qreal durationSeconds =
-            static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps);
+            (static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps)) / playbackSpeed;
         totalFramesToRender += qMax<int64_t>(
             1,
             static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
@@ -202,45 +273,61 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
 
     std::unique_ptr<OffscreenRenderer> activeRenderer;
     if (requestedBackend == RenderBackend::Vulkan) {
-        const VulkanAvailabilityResult vulkan = probeVulkanBackendAvailability();
-        if (!vulkan.available) {
-            result.backendFallbackApplied = true;
-            result.backendFallbackReason = vulkan.status;
-            result.message = QStringLiteral(
-                "Vulkan backend requested for export, but Vulkan is unavailable. "
-                "No legacy fallback is available.");
-            return result;
-        }
         activeRenderer = std::make_unique<OffscreenVulkanRenderer>();
         result.effectiveRenderBackend = QStringLiteral("vulkan");
-    } else if (requestedBackend == RenderBackend::Null) {
-        result.effectiveRenderBackend = QStringLiteral("cpu");
     } else {
-        result.message = QStringLiteral("Unsupported render backend. Only Vulkan and CPU/null export paths are available.");
+        result.message = QStringLiteral("Unsupported render backend. Vulkan is required.");
         return result;
     }
 
+    qInfo().noquote()
+        << QStringLiteral("[render-export-backend] begin app=\"%1\" pid=%2 requested=%3 env_JCUT_RENDER_BACKEND=\"%4\" "
+                          "renderer_backend_id=\"%5\" output=\"%6\" size=%7x%8 fps=%9 speed=%10 ranges=%11 frames=%12")
+               .arg(QCoreApplication::applicationFilePath())
+               .arg(QCoreApplication::applicationPid())
+               .arg(result.requestedRenderBackend,
+                    qEnvironmentVariable("JCUT_RENDER_BACKEND"),
+                    activeRenderer ? activeRenderer->backendId() : QStringLiteral("none"),
+                    request.outputPath)
+               .arg(request.outputSize.width())
+               .arg(request.outputSize.height())
+               .arg(outputFps, 0, 'f', 3)
+               .arg(playbackSpeed, 0, 'f', 3)
+               .arg(exportRanges.size())
+               .arg(totalFramesToRender);
     const bool gpuInitialized = activeRenderer && activeRenderer->initialize(request.outputSize, &gpuInitializationError);
     const bool useGpuRenderer = gpuInitialized;
     if (!useGpuRenderer) {
-        result.backendFallbackApplied = true;
-        result.backendFallbackReason = gpuInitializationError;
-        if (requestedBackend == RenderBackend::Vulkan) {
-            result.message = QStringLiteral(
-                "Vulkan backend requested for export, but Vulkan renderer initialization failed. "
-                "No legacy fallback is available.");
-            return result;
-        }
-        result.effectiveRenderBackend = QStringLiteral("cpu");
+        qWarning().noquote()
+            << QStringLiteral("[render-export-backend] init_failed app=\"%1\" pid=%2 requested=%3 renderer_backend_id=\"%4\" "
+                              "output=\"%5\" size=%6x%7 fps=%8 speed=%9 message=\"%10\"")
+                   .arg(QCoreApplication::applicationFilePath())
+                   .arg(QCoreApplication::applicationPid())
+                   .arg(result.requestedRenderBackend,
+                        activeRenderer ? activeRenderer->backendId() : QStringLiteral("none"),
+                        request.outputPath)
+                   .arg(request.outputSize.width())
+                   .arg(request.outputSize.height())
+                   .arg(outputFps, 0, 'f', 3)
+                   .arg(playbackSpeed, 0, 'f', 3)
+                   .arg(gpuInitializationError);
+        result.message = gpuInitializationError.trimmed().isEmpty()
+            ? QStringLiteral("Vulkan export renderer initialization failed.")
+            : gpuInitializationError.trimmed();
+        return result;
     }
     if (useGpuRenderer) {
         result.effectiveRenderBackend = activeRenderer->backendId();
+        qInfo().noquote()
+            << QStringLiteral("[render-export-backend] init_ok effective=%1 cuda_external_memory=%2")
+                   .arg(result.effectiveRenderBackend,
+                        activeRenderer->supportsCudaExternalMemoryInterop()
+                            ? QStringLiteral("yes")
+                            : QStringLiteral("no"));
     }
     if (requestedBackend == RenderBackend::Vulkan &&
         qEnvironmentVariable("JCUT_VULKAN_CUDA_EXTERNAL_MEMORY_REQUIRED", QStringLiteral("0")) != QStringLiteral("0") &&
         (!activeRenderer || !activeRenderer->supportsCudaExternalMemoryInterop())) {
-        result.backendFallbackApplied = false;
-        result.backendFallbackReason = QStringLiteral("Vulkan/CUDA external-memory interop is unavailable.");
         result.message = QStringLiteral(
             "Vulkan/CUDA external-memory interop was required, but the selected Vulkan device "
             "does not expose the required external memory/semaphore FD capability.");
@@ -720,7 +807,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         const int64_t exportStart = qMax<int64_t>(0, range.startFrame);
         const int64_t exportEnd = qMax(exportStart, range.endFrame);
         const qreal durationSeconds =
-            static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps);
+            (static_cast<qreal>(exportEnd - exportStart + 1) / static_cast<qreal>(kTimelineFps)) / playbackSpeed;
         const int64_t segmentOutputFrames = qMax<int64_t>(
             1,
             static_cast<int64_t>(std::ceil(durationSeconds * static_cast<qreal>(outputFps))));
@@ -805,37 +892,22 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             }
             QJsonArray frameSkippedClips;
             render_detail::OffscreenRenderFrame renderedFrame;
-            const bool renderedOk = useGpuRenderer
-                ? activeRenderer->renderFrameToOutput(request,
-                                                      timelineFramePosition,
-                                                      decoders,
-                                                      &asyncDecoder,
-                                                      &asyncFrameCache,
-                                                      orderedClips,
-                                                      &renderedFrame,
-                                                      !directGpuFrameReadback,
-                                                      &clipStageStats,
-                                                      &frameDecodeMs,
-                                                      &frameTextureMs,
-                                                      &frameCompositeMs,
-                                                      frameReadbackMsPtr,
-                                                      &frameSkippedClips,
-                                                      &skippedReasonCounts)
-                : renderTimelineFrameToOutput(request,
-                                              timelineFramePosition,
-                                              decoders,
-                                              &asyncDecoder,
-                                              &asyncFrameCache,
-                                              orderedClips,
-                                              &renderedFrame,
-                                              true,
-                                              &clipStageStats,
-                                              &frameDecodeMs,
-                                              &frameTextureMs,
-                                              &frameCompositeMs,
-                                              &frameReadbackMs,
-                                              &frameSkippedClips,
-                                              &skippedReasonCounts);
+            const bool renderedOk =
+                activeRenderer->renderFrameToOutput(request,
+                                                    timelineFramePosition,
+                                                    decoders,
+                                                    &asyncDecoder,
+                                                    &asyncFrameCache,
+                                                    orderedClips,
+                                                    &renderedFrame,
+                                                    !directGpuFrameReadback,
+                                                    &clipStageStats,
+                                                    &frameDecodeMs,
+                                                    &frameTextureMs,
+                                                    &frameCompositeMs,
+                                                    frameReadbackMsPtr,
+                                                    &frameSkippedClips,
+                                                    &skippedReasonCounts);
             QImage rendered = renderedFrame.cpuImage;
             lastSkippedClips = frameSkippedClips;
             totalRenderStageMs += renderStageTimer.elapsed();
@@ -844,9 +916,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             totalRenderCompositeStageMs += frameCompositeMs;
             totalGpuReadbackMs += frameReadbackMs;
             if ((!renderedOk || rendered.isNull()) && !directGpuFrameReadback) {
-                errorMessage = useGpuRenderer
-                    ? QStringLiteral("Failed to render GPU timeline frame %1.").arg(timelineFrame)
-                    : QStringLiteral("Failed to render timeline frame %1.").arg(timelineFrame);
+                errorMessage = QStringLiteral("Failed to render Vulkan timeline frame %1.").arg(timelineFrame);
                 break;
             }
 
@@ -1026,7 +1096,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
                     useGpuRenderer && activeRenderer->convertLastFrameToNv12(encodedFrame,
                                                                          &totalRenderNv12StageMs,
                                                                          &totalGpuReadbackMs);
-                if (!gpuNv12Converted && !fillNv12FrameFromImage(rendered, encodedFrame)) {
+                if (!gpuNv12Converted && !fillNv12FrameFromRenderedImage(rendered, encodedFrame)) {
                     errorMessage = QStringLiteral("Failed to convert rendered frame %1 to NV12 for encoding.").arg(timelineFrame);
                     break;
                 }
@@ -1199,7 +1269,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     if (errorMessage.isEmpty() && audioState.enabled) {
         QElapsedTimer audioTimer;
         audioTimer.start();
-        encodeExportAudio(exportRanges, audioState, formatCtx, &errorMessage);
+        encodeExportAudio(exportRanges, audioState, formatCtx, playbackSpeed, &errorMessage);
         totalAudioStageMs += audioTimer.elapsed();
     }
 
@@ -1274,9 +1344,6 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
     QString renderPathSuffix;
     if (useGpuRenderer && activeRenderer) {
         renderPathSuffix = QStringLiteral("\nRender path: %1").arg(activeRenderer->backendId());
-    } else if (!useGpuRenderer) {
-        renderPathSuffix = QStringLiteral("\nGPU export path unavailable, used CPU fallback: %1")
-                               .arg(gpuInitializationError);
     }
     result.message = QStringLiteral("Rendered %1 video frames to %2%3")
                          .arg(framesCompleted)

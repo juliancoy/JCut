@@ -240,7 +240,10 @@ private:
     void exportVideoForSpeakerSectionOnSelectedClip(const QString& speakerId,
                                                     int64_t sourceStartFrame,
                                                     int64_t sourceEndFrame,
-                                                    const QString& snippet);
+                                                    const QString& snippet,
+                                                    const QString& speakerDisplayName,
+                                                    int sectionOrdinal);
+    void exportVideoForSpeakerSectionsOnSelectedClip(const QVector<SpeakerSectionExportItem>& sections);
     void openAudioToolsDialog();
     void applyPreviewViewMode(const QString& modeText);
     void refreshAiIntegrationState();

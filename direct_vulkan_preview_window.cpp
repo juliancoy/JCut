@@ -9,6 +9,7 @@
 #include "direct_vulkan_preview_audio.h"
 #include "preview_speaker_profiles.h"
 #include "preview_view_transform.h"
+#include "render_vulkan_shared.h"
 #include "editor_shared.h"
 #include "render_internal.h"
 #include "titles.h"
@@ -2240,11 +2241,13 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                               backgroundGeometry.localRect,
                                               swapSize,
                                               backgroundPush.mvp);
-                    backgroundPush.opacity = static_cast<float>(
-                        std::clamp(static_cast<double>(status->grading.opacity), 0.0, 1.0));
-                    backgroundPush.brightness = -0.12f;
-                    backgroundPush.contrast = 1.0f;
-                    backgroundPush.saturation = 0.75f;
+                    const render_detail::VulkanDrawEffectState backgroundEffects =
+                        render_detail::vulkanBlurredBackgroundEffectState(
+                            static_cast<float>(status->grading.opacity));
+                    backgroundPush.opacity = backgroundEffects.opacity;
+                    backgroundPush.brightness = backgroundEffects.brightness;
+                    backgroundPush.contrast = backgroundEffects.contrast;
+                    backgroundPush.saturation = backgroundEffects.saturation;
                     VkRect2D backgroundScissor{};
                     if (state->hideOutsideOutputWindow) {
                         backgroundScissor = scissorFromQRect(compositeRect, swapSize);
@@ -2265,20 +2268,22 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                           effectiveClipGeometry.localRect,
                                           swapSize,
                                           push.mvp);
-                push.opacity = static_cast<float>(std::clamp(static_cast<double>(status->grading.opacity), 0.0, 1.0));
                 if (status) {
-                    push.brightness = static_cast<float>(status->grading.brightness);
-                    push.contrast = static_cast<float>(status->grading.contrast);
-                    push.saturation = static_cast<float>(status->grading.saturation);
-                    push.shadows[0] = static_cast<float>(status->grading.shadowsR);
-                    push.shadows[1] = static_cast<float>(status->grading.shadowsG);
-                    push.shadows[2] = static_cast<float>(status->grading.shadowsB);
-                    push.midtones[0] = static_cast<float>(status->grading.midtonesR);
-                    push.midtones[1] = static_cast<float>(status->grading.midtonesG);
-                    push.midtones[2] = static_cast<float>(status->grading.midtonesB);
-                    push.highlights[0] = static_cast<float>(status->grading.highlightsR);
-                    push.highlights[1] = static_cast<float>(status->grading.highlightsG);
-                    push.highlights[2] = static_cast<float>(status->grading.highlightsB);
+                    const render_detail::VulkanDrawEffectState effects =
+                        render_detail::vulkanDrawEffectStateForGrade(status->grading);
+                    push.brightness = effects.brightness;
+                    push.contrast = effects.contrast;
+                    push.saturation = effects.saturation;
+                    push.opacity = effects.opacity;
+                    push.shadows[0] = effects.shadows[0];
+                    push.shadows[1] = effects.shadows[1];
+                    push.shadows[2] = effects.shadows[2];
+                    push.midtones[0] = effects.midtones[0];
+                    push.midtones[1] = effects.midtones[1];
+                    push.midtones[2] = effects.midtones[2];
+                    push.highlights[0] = effects.highlights[0];
+                    push.highlights[1] = effects.highlights[1];
+                    push.highlights[2] = effects.highlights[2];
                     push.shadows[3] = status->curveLutApplied ? 1.0f : 0.0f;
                     push.midtones[3] = static_cast<float>(std::max<qreal>(0.0, status->maskFeather));
                     push.highlights[3] = static_cast<float>(std::max<qreal>(0.01, status->maskFeatherGamma));

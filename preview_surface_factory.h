@@ -9,7 +9,6 @@ struct PreviewBackendDecision {
     QString requested;
     QString effective;
     QString reason;
-    bool fallbackApplied = false;
 };
 
 PreviewSurface* createPreviewSurfaceForConfiguredBackend(QWidget* parent = nullptr);

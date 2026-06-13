@@ -21,8 +21,6 @@ struct PreviewFrameResultCore {
     bool usedGpu = false;
     std::string requestedRenderBackend;
     std::string effectiveRenderBackend;
-    bool backendFallbackApplied = false;
-    std::string backendFallbackReason;
     std::string message;
     core::ImageBuffer image;
 };

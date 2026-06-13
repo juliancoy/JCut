@@ -4,8 +4,6 @@
 
 enum class RenderBackend {
     Vulkan,
-    Null,
-    Auto,
 };
 
 RenderBackend parseRenderBackend(const QString& text);

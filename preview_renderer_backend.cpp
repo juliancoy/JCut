@@ -20,57 +20,24 @@ bool PreviewRenderer::initialize() {
     QElapsedTimer initTimer;
     initTimer.start();
 
-    if (qEnvironmentVariableIntValue("EDITOR_FORCE_NULL_RHI") == 1) {
-        qDebug() << "[STARTUP] Forcing QRhi Null backend";
-        QRhiInitParams nullParams;
-        m_rhi.reset(QRhi::create(QRhi::Null, &nullParams, QRhi::Flags()));
-        if (!m_rhi) {
-            qWarning() << "Failed to initialize forced Null QRhi backend";
-            return false;
-        }
-        m_backendName = QString::fromLatin1(m_rhi->backendName()) + QStringLiteral(" (forced)");
-
-        qDebug() << "[STARTUP] Initializing GPUCompositor...";
-        QElapsedTimer compositorTimer;
-        compositorTimer.start();
-        m_compositor = std::make_unique<GPUCompositor>(m_rhi.get());
-        if (!m_compositor->initialize()) {
-            qWarning() << "Failed to initialize GPU compositor";
-        }
-        qDebug() << "[STARTUP] GPUCompositor initialized in" << compositorTimer.elapsed() << "ms";
-
-        m_initialized = true;
-        qDebug() << "[STARTUP] PreviewRenderer::initialize() total:" << initTimer.elapsed() << "ms";
-        return true;
-    }
-
     const RenderBackend desiredBackend = desiredRenderBackendFromEnvironment();
     qDebug().noquote() << "[render-backend] requested=" << renderBackendName(desiredBackend);
 
-    const bool wantsVulkan = (desiredBackend == RenderBackend::Vulkan || desiredBackend == RenderBackend::Auto);
-    if (wantsVulkan) {
-        qDebug() << "[vulkan] attempting QRhi Vulkan initialization";
-        VulkanBackendResult vk = createVulkanBackendRhi();
-        if (vk.rhi) {
-            m_rhi = std::move(vk.rhi);
-            m_backendName = QString::fromLatin1(m_rhi->backendName());
-            qDebug() << "[vulkan] initialized backend:" << m_backendName;
-        } else {
-            qWarning().noquote()
-                << "[render-backend-fallback] vulkan_init_failed reason=\"" << vk.status
-                << "\" fallback=null";
-        }
+    qDebug() << "[vulkan] attempting QRhi Vulkan initialization";
+    VulkanBackendResult vk = createVulkanBackendRhi();
+    if (vk.rhi) {
+        m_rhi = std::move(vk.rhi);
+        m_backendName = QString::fromLatin1(m_rhi->backendName());
+        qDebug() << "[vulkan] initialized backend:" << m_backendName;
+    } else {
+        qCritical().noquote()
+            << QStringLiteral("[render-backend-error] vulkan_init_failed reason=\"%1\"")
+                   .arg(vk.status);
+        return false;
     }
-
     if (!m_rhi) {
-        QRhiInitParams nullParams;
-        m_rhi.reset(QRhi::create(QRhi::Null, &nullParams, QRhi::Flags()));
-        if (m_rhi) {
-            m_backendName = QString::fromLatin1(m_rhi->backendName()) + QStringLiteral(" (fallback)");
-        } else {
-            qWarning() << "Failed to initialize any RHI backend";
-            return false;
-        }
+        qCritical() << "Failed to initialize Vulkan RHI backend";
+        return false;
     } else {
         m_backendName = QString::fromLatin1(m_rhi->backendName());
         qDebug() << "PreviewRenderer: Using backend:" << m_backendName;

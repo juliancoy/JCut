@@ -1387,6 +1387,11 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerShowContiguousSectionsCheckBox->setChecked(false);
     m_speakerShowContiguousSectionsCheckBox->setToolTip(
         QStringLiteral("Replace the speaker roster with transcript-ordered contiguous speaker sections."));
+    m_speakerExportLongSectionsButton = new QPushButton(QStringLiteral("Export 10+ Word Sections"), page);
+    m_speakerExportLongSectionsButton->setObjectName(QStringLiteral("speakers.export_long_sections"));
+    m_speakerExportLongSectionsButton->setMinimumHeight(30);
+    m_speakerExportLongSectionsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
+    m_speakerExportLongSectionsButton->setEnabled(false);
     m_speakerShowCurrentSpeakerNameCheckBox =
         new QCheckBox(QStringLiteral("Show Current Speaker Name at Bottom"), page);
     m_speakerShowCurrentSpeakerNameCheckBox->setChecked(false);
@@ -1458,6 +1463,22 @@ QWidget *InspectorPane::buildSpeakersTab()
     styleSectionTitle(selectedSpeakerTitle);
     m_selectedSpeakerIdLabel = new QLabel(QStringLiteral("No speaker selected"), page);
     m_selectedSpeakerIdLabel->setObjectName(QStringLiteral("speakers.selected_speaker"));
+    m_selectedSpeakerNameEdit = new QLineEdit(page);
+    m_selectedSpeakerNameEdit->setObjectName(QStringLiteral("speakers.selected_speaker.name"));
+    m_selectedSpeakerNameEdit->setPlaceholderText(QStringLiteral("Speaker name"));
+    m_selectedSpeakerNameEdit->setClearButtonEnabled(true);
+    m_selectedSpeakerNameEdit->setEnabled(false);
+    m_selectedSpeakerOrganizationEdit = new QLineEdit(page);
+    m_selectedSpeakerOrganizationEdit->setObjectName(QStringLiteral("speakers.selected_speaker.organization"));
+    m_selectedSpeakerOrganizationEdit->setPlaceholderText(QStringLiteral("Organization"));
+    m_selectedSpeakerOrganizationEdit->setClearButtonEnabled(true);
+    m_selectedSpeakerOrganizationEdit->setEnabled(false);
+    auto *selectedSpeakerProfileForm = new QFormLayout;
+    selectedSpeakerProfileForm->setContentsMargins(0, 0, 0, 0);
+    selectedSpeakerProfileForm->setHorizontalSpacing(6);
+    selectedSpeakerProfileForm->setVerticalSpacing(6);
+    selectedSpeakerProfileForm->addRow(QStringLiteral("Name"), m_selectedSpeakerNameEdit);
+    selectedSpeakerProfileForm->addRow(QStringLiteral("Organization"), m_selectedSpeakerOrganizationEdit);
     auto *selectedFaceDetectionsTitle = new QLabel(QStringLiteral("Assigned Tracks"), page);
     styleSectionTitle(selectedFaceDetectionsTitle);
     m_selectedSpeakerFaceDetectionsList = new QListWidget(page);
@@ -1770,6 +1791,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     selectedSpeakerPageLayout->setSpacing(6);
     selectedSpeakerPageLayout->addWidget(selectedSpeakerTitle);
     selectedSpeakerPageLayout->addWidget(m_selectedSpeakerIdLabel);
+    selectedSpeakerPageLayout->addLayout(selectedSpeakerProfileForm);
     selectedSpeakerPageLayout->addWidget(selectedFaceDetectionsTitle);
     selectedSpeakerPageLayout->addWidget(m_selectedSpeakerFaceDetectionsList);
     selectedSpeakerPageLayout->addLayout(playheadFaceDetectionsHeaderRow);
@@ -1796,6 +1818,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     speakerListLayout->setSpacing(6);
     speakerListLayout->addWidget(m_speakerHideUnidentifiedCheckBox);
     speakerListLayout->addWidget(m_speakerShowContiguousSectionsCheckBox);
+    speakerListLayout->addWidget(m_speakerExportLongSectionsButton);
     speakerListLayout->addWidget(m_speakerShowCurrentSpeakerNameCheckBox);
     speakerListLayout->addWidget(m_speakerShowCurrentSpeakerOrganizationCheckBox);
     auto *currentSpeakerTextSizeLayout = new QFormLayout;

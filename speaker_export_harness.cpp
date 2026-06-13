@@ -369,8 +369,6 @@ int runSpeakerExportHarness(const SpeakerExportHarnessConfig& config) {
     out << "  cancelled: " << (result.cancelled ? "true" : "false") << "\n";
     out << "  requestedBackend: " << result.requestedRenderBackend << "\n";
     out << "  effectiveBackend: " << result.effectiveRenderBackend << "\n";
-    out << "  backendFallbackApplied: " << (result.backendFallbackApplied ? "true" : "false") << "\n";
-    out << "  backendFallbackReason: " << result.backendFallbackReason << "\n";
     out << "  usedGpu: " << (result.usedGpu ? "true" : "false") << "\n";
     out << "  usedHardwareEncode: " << (result.usedHardwareEncode ? "true" : "false") << "\n";
     out << "  encoder: " << result.encoderLabel << "\n";

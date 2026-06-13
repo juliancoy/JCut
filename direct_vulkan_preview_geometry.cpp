@@ -1,8 +1,8 @@
 #include "direct_vulkan_preview_geometry.h"
 
-#include "editor_shared_effects.h"
 #include "editor_shared_keyframes.h"
 #include "preview_view_transform.h"
+#include "render_vulkan_shared.h"
 
 #include <QColor>
 #include <QRect>
@@ -41,26 +41,7 @@ void mvpForVulkanClipTransform(const QTransform& clipToSwapchain,
                                const QSize& swapSize,
                                float outMvp[16])
 {
-    const float fullW = static_cast<float>(std::max(1, swapSize.width()));
-    const float fullH = static_cast<float>(std::max(1, swapSize.height()));
-    const float halfW = static_cast<float>(std::max<qreal>(1.0, localRect.width())) * 0.5f;
-    const float halfH = static_cast<float>(std::max<qreal>(1.0, localRect.height())) * 0.5f;
-    const float m11 = static_cast<float>(clipToSwapchain.m11());
-    const float m12 = static_cast<float>(clipToSwapchain.m12());
-    const float m21 = static_cast<float>(clipToSwapchain.m21());
-    const float m22 = static_cast<float>(clipToSwapchain.m22());
-    const float dx = static_cast<float>(clipToSwapchain.dx());
-    const float dy = static_cast<float>(clipToSwapchain.dy());
-    const float m[16] = {
-        (2.0f * m11 * halfW) / fullW, (2.0f * m12 * halfW) / fullH, 0.f, 0.f,
-        (2.0f * m21 * halfH) / fullW, (2.0f * m22 * halfH) / fullH, 0.f, 0.f,
-        0.f,                0.f,                 1.f, 0.f,
-        (2.0f * dx / fullW) - 1.0f,
-        (2.0f * dy / fullH) - 1.0f,
-        0.f,
-        1.f
-    };
-    std::copy(std::begin(m), std::end(m), outMvp);
+    render_detail::vulkanMvpForPreviewTransform(clipToSwapchain, localRect, swapSize, outMvp);
 }
 
 VkClearValue clipColor(const TimelineClip& clip, int ordinal, bool selected)
@@ -92,29 +73,7 @@ const VulkanPreviewClipFrameStatus* frameStatusForClip(const PreviewInteractionS
 
 QByteArray curveLutRgbaBytes(const TimelineClip::GradingKeyframe& grade)
 {
-    const QVector<quint8> lutR = gradingCurveLut8(
-        grade.curvePointsR, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> lutG = gradingCurveLut8(
-        grade.curvePointsG, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> lutB = gradingCurveLut8(
-        grade.curvePointsB, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    const QVector<quint8> lutL = gradingCurveLut8(
-        grade.curvePointsLuma, TimelineClip::kGradingCurveLutSize, grade.curveSmoothingEnabled);
-    if (lutR.size() != TimelineClip::kGradingCurveLutSize ||
-        lutG.size() != TimelineClip::kGradingCurveLutSize ||
-        lutB.size() != TimelineClip::kGradingCurveLutSize ||
-        lutL.size() != TimelineClip::kGradingCurveLutSize) {
-        return QByteArray();
-    }
-    QByteArray rgba;
-    rgba.resize(TimelineClip::kGradingCurveLutSize * 4);
-    for (int i = 0; i < TimelineClip::kGradingCurveLutSize; ++i) {
-        rgba[i * 4 + 0] = static_cast<char>(lutR[i]);
-        rgba[i * 4 + 1] = static_cast<char>(lutG[i]);
-        rgba[i * 4 + 2] = static_cast<char>(lutB[i]);
-        rgba[i * 4 + 3] = static_cast<char>(lutL[i]);
-    }
-    return rgba;
+    return render_detail::vulkanCurveLutRgbaBytes(grade);
 }
 
 VkClearValue clipColorForStatus(const TimelineClip& clip,

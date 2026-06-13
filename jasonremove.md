@@ -6,6 +6,8 @@ Remove excessive reliance on JSON structures from preview, playback, speaker fra
 
 JSON is allowed at serialization boundaries: project files, transcript files, REST payloads, debug snapshots, migration input/output, and on-disk artifacts where JSON/CBOR remains the chosen interchange format. JSON must not be the in-memory representation used by frame-by-frame preview, playback, overlay lookup, speaker framing sampling, or candidate lookup.
 
+Law: live playback must never decode or materialize JSON. Decode JSON/CBOR exactly once at a load or artifact boundary into compact typed memory: structs, vectors, indices, and caches. Playback and preview hot paths may only do bounded lookups over those typed arrays.
+
 The final runtime shape should be:
 
 - Disk: compact artifact manifests plus indexed artifact data.

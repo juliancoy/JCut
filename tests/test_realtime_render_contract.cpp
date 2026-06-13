@@ -125,9 +125,9 @@ void TestRealtimeRenderContract::exportLoopPassesFractionalPositionToRenderer()
     QVERIFY2(source.contains(QStringLiteral("const qreal timelineFramePosition")),
              "export must derive a fractional timeline position from output PTS");
     QVERIFY2(source.contains(QStringLiteral("activeRenderer->renderFrameToOutput(request,\n                                                      timelineFramePosition")),
-             "GPU export must render the fractional timeline position, not the floored edit frame");
-    QVERIFY2(source.contains(QStringLiteral("renderTimelineFrameToOutput(request,\n                                              timelineFramePosition")),
-             "CPU export must render the fractional timeline position, not the floored edit frame");
+             "Vulkan export must render the fractional timeline position, not the floored edit frame");
+    QVERIFY2(!source.contains(QStringLiteral("renderTimelineFrameToOutput(request,")),
+             "export must not contain the removed CPU render fallback path");
 }
 
 QTEST_MAIN(TestRealtimeRenderContract)

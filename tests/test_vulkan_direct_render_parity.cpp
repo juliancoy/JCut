@@ -1,4 +1,5 @@
 #include "../vulkan_pipeline.h"
+#include "../render_vulkan_shared.h"
 
 #include <QtTest/QtTest>
 #include <QFile>
@@ -9,6 +10,53 @@ class VulkanDirectRenderParityTest : public QObject {
     Q_OBJECT
 
 private slots:
+    void sharedRenderStateBuildsVulkanPushValues()
+    {
+        TimelineClip::GradingKeyframe grade;
+        grade.opacity = 0.5;
+        grade.brightness = 0.125;
+        grade.contrast = 1.25;
+        grade.saturation = 0.75;
+        grade.shadowsR = -0.25;
+        grade.shadowsG = 0.125;
+        grade.shadowsB = 0.375;
+        grade.midtonesR = 0.5;
+        grade.midtonesG = -0.125;
+        grade.midtonesB = 0.25;
+        grade.highlightsR = 0.75;
+        grade.highlightsG = 0.625;
+        grade.highlightsB = -0.5;
+
+        const render_detail::VulkanDrawEffectState state =
+            render_detail::vulkanDrawEffectStateForGrade(grade);
+
+        QCOMPARE(state.opacity, 0.5f);
+        QCOMPARE(state.brightness, 0.125f);
+        QCOMPARE(state.contrast, 1.25f);
+        QCOMPARE(state.saturation, 0.75f);
+        QCOMPARE(state.shadows[0], -0.25f);
+        QCOMPARE(state.shadows[1], 0.125f);
+        QCOMPARE(state.shadows[2], 0.375f);
+        QCOMPARE(state.shadows[3], 1.0f);
+        QCOMPARE(state.midtones[0], 0.5f);
+        QCOMPARE(state.midtones[1], -0.125f);
+        QCOMPARE(state.midtones[2], 0.25f);
+        QCOMPARE(state.highlights[0], 0.75f);
+        QCOMPARE(state.highlights[1], 0.625f);
+        QCOMPARE(state.highlights[2], -0.5f);
+        QCOMPARE(state.highlights[3], 1.0f);
+    }
+
+    void sharedCurveLutHasShaderTextureShape()
+    {
+        const QByteArray lut = render_detail::vulkanIdentityCurveLutRgbaBytes();
+        QCOMPARE(lut.size(), TimelineClip::kGradingCurveLutSize * 4);
+        QCOMPARE(static_cast<unsigned char>(lut[0]), static_cast<unsigned char>(0));
+        QCOMPARE(static_cast<unsigned char>(lut[3]), static_cast<unsigned char>(0));
+        QCOMPARE(static_cast<unsigned char>(lut[lut.size() - 4]), static_cast<unsigned char>(255));
+        QCOMPARE(static_cast<unsigned char>(lut[lut.size() - 1]), static_cast<unsigned char>(255));
+    }
+
     void pushConstantLayoutKeepsParityFlagsInPadding()
     {
         QCOMPARE(sizeof(VulkanPipeline::Push), size_t(128));

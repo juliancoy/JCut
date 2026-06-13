@@ -172,6 +172,8 @@ void SpeakersTab::updatePlayheadTrackCandidatesVisibility()
 void SpeakersTab::updateSelectedSpeakerPanel()
 {
     if (!m_widgets.selectedSpeakerIdLabel &&
+        !m_widgets.selectedSpeakerNameEdit &&
+        !m_widgets.selectedSpeakerOrganizationEdit &&
         !m_widgets.selectedSpeakerFaceDetectionsList &&
         !m_widgets.speakerPlayheadFaceDetectionsList) {
         return;
@@ -179,6 +181,18 @@ void SpeakersTab::updateSelectedSpeakerPanel()
 
     const QString speakerId = selectedSpeakerId();
     const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    auto setProfileEdits = [this](const QString& name, const QString& organization, bool enabled) {
+        if (m_widgets.selectedSpeakerNameEdit) {
+            QSignalBlocker blocker(m_widgets.selectedSpeakerNameEdit);
+            m_widgets.selectedSpeakerNameEdit->setText(name);
+            m_widgets.selectedSpeakerNameEdit->setEnabled(enabled);
+        }
+        if (m_widgets.selectedSpeakerOrganizationEdit) {
+            QSignalBlocker blocker(m_widgets.selectedSpeakerOrganizationEdit);
+            m_widgets.selectedSpeakerOrganizationEdit->setText(organization);
+            m_widgets.selectedSpeakerOrganizationEdit->setEnabled(enabled);
+        }
+    };
     if (!clip || !m_transcriptSession.hasObjectDocument()) {
         if (m_speakerDeps.setPreviewAssignedFaceTrackIds) {
             m_speakerDeps.setPreviewAssignedFaceTrackIds({});
@@ -192,6 +206,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             m_widgets.speakerCurrentSentenceLabel->setText(
                 QStringLiteral("Select a speaker to assign tracks and view sentence context."));
         }
+        setProfileEdits(QString(), QString(), false);
         if (m_widgets.selectedSpeakerFaceDetectionsList) {
             m_widgets.selectedSpeakerFaceDetectionsList->clear();
         }
@@ -215,6 +230,7 @@ void SpeakersTab::updateSelectedSpeakerPanel()
             m_widgets.speakerCurrentSentenceLabel->setText(
                 QStringLiteral("Select a speaker to assign tracks and view sentence context."));
         }
+        setProfileEdits(QString(), QString(), false);
         if (m_widgets.selectedSpeakerFaceDetectionsList) {
             m_widgets.selectedSpeakerFaceDetectionsList->clear();
             auto* item = new QListWidgetItem(QStringLiteral("Select Speaker To View Assignments"));
@@ -232,6 +248,9 @@ void SpeakersTab::updateSelectedSpeakerPanel()
     const QJsonObject profiles = root.value(QString(kTranscriptSpeakerProfilesKey)).toObject();
     const QJsonObject profile = profiles.value(speakerId).toObject();
     const QString displayName = speakerDisplayLabel(speakerId);
+    const QString profileName = profile.value(QString(kTranscriptSpeakerNameKey)).toString().trimmed();
+    const QString organization = profile.value(QStringLiteral("organization")).toString().trimmed();
+    setProfileEdits(profileName, organization, activeCutMutable());
     if (m_widgets.selectedSpeakerIdLabel) {
         m_widgets.selectedSpeakerIdLabel->setText(displayName);
         if (displayName != speakerId) {
@@ -1135,6 +1154,46 @@ bool SpeakersTab::saveSpeakerProfileEdit(int tableRow, int column, const QString
     return saveLoadedTranscriptDocument();
 }
 
+bool SpeakersTab::saveSelectedSpeakerProfileField(const QString& fieldKey, const QString& valueText)
+{
+    const QString speakerId = selectedSpeakerId().trimmed();
+    const QString key = fieldKey.trimmed();
+    if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty() || key.isEmpty()) {
+        return false;
+    }
+
+    const SpeakerDocumentEditResult result =
+        speaker_document_edit_ops::applyProfileStringFieldUpdates(
+            m_transcriptSession,
+            key,
+            QVector<SpeakerFieldValueUpdate>{{speakerId, valueText}});
+    if (!result.ok) {
+        return false;
+    }
+    if (!result.changed) {
+        return true;
+    }
+    if (!saveLoadedTranscriptDocument()) {
+        return false;
+    }
+
+    m_speakersTableRefreshSignature.clear();
+    refreshSpeakersTable(m_transcriptSession.rootObject(), speakerId);
+    updateSelectedSpeakerPanel();
+    updateSpeakerTrackingStatusLabel();
+    if (m_speakerDeps.refreshPreview) {
+        m_speakerDeps.refreshPreview();
+    }
+    emit transcriptDocumentChanged();
+    if (m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
+    }
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
+    return true;
+}
+
 bool SpeakersTab::setSpeakerTrackingEnabled(const QString& speakerId, bool enabled)
 {
     if (!m_transcriptSession.hasObjectDocument() || speakerId.isEmpty()) {
@@ -1569,7 +1628,14 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
             const QString snippet = m_widgets.speakerSectionsTable->item(row, 5)
                 ? m_widgets.speakerSectionsTable->item(row, 5)->text().trimmed()
                 : QString();
-            m_speakerDeps.exportSpeakerSectionVideo(speakerId, startFrame, endFrame, snippet);
+            const QString speakerDisplayName = speakerItem->text().trimmed();
+            m_speakerDeps.exportSpeakerSectionVideo(
+                speakerId,
+                startFrame,
+                endFrame,
+                snippet,
+                speakerDisplayName,
+                row + 1);
         }
         return;
     }
@@ -1591,6 +1657,50 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     emit transcriptDocumentChanged();
     applySpeakerDocumentEffects(m_deps);
     refresh();
+}
+
+void SpeakersTab::onSpeakerExportLongSectionsClicked()
+{
+    if (!m_widgets.speakerSectionsTable || !m_speakerDeps.exportSpeakerSectionsVideo) {
+        return;
+    }
+
+    QVector<SpeakerSectionExportItem> sections;
+    for (int row = 0; row < m_widgets.speakerSectionsTable->rowCount(); ++row) {
+        QTableWidgetItem* speakerItem = m_widgets.speakerSectionsTable->item(row, 1);
+        QTableWidgetItem* wordsItem = m_widgets.speakerSectionsTable->item(row, 4);
+        if (!speakerItem || !wordsItem) {
+            continue;
+        }
+        const QString speakerId = speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
+        const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
+        const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
+        bool wordCountOk = false;
+        const int wordCount = wordsItem->text().trimmed().toInt(&wordCountOk);
+        if (speakerId.isEmpty() || startFrame < 0 || endFrame < startFrame ||
+            !wordCountOk || wordCount < 10) {
+            continue;
+        }
+        QTableWidgetItem* snippetItem = m_widgets.speakerSectionsTable->item(row, 5);
+        sections.push_back(SpeakerSectionExportItem{
+            speakerId,
+            startFrame,
+            endFrame,
+            snippetItem ? snippetItem->text().trimmed() : QString(),
+            speakerItem->text().trimmed(),
+            row + 1,
+            wordCount});
+    }
+
+    if (sections.isEmpty()) {
+        QMessageBox::information(
+            nullptr,
+            QStringLiteral("Export Sections"),
+            QStringLiteral("No contiguous transcript sections have 10 or more words."));
+        return;
+    }
+
+    m_speakerDeps.exportSpeakerSectionsVideo(sections);
 }
 
 void SpeakersTab::onSpeakersTableItemClicked(QTableWidgetItem* item)
