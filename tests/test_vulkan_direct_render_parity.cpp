@@ -29,7 +29,7 @@ private slots:
         const QString source = QString::fromUtf8(shader.readAll());
 
         QVERIFY2(source.contains(QStringLiteral("layout(set = 0, binding = 1) uniform sampler2D u_curve_lut")),
-                 "Direct Vulkan presenter must bind the same curve LUT resource used by the OpenGL path.");
+                 "Direct Vulkan presenter must bind the expected curve LUT resource.");
         QVERIFY2(source.contains(QStringLiteral("pc.u_shadows.a > 0.5")),
                  "Direct Vulkan presenter must use the push-constant curve-enabled flag.");
         QVERIFY2(source.contains(QStringLiteral("pc.u_midtones.a > 0.0")),

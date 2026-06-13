@@ -1,5 +1,5 @@
 #include "editor.h"
-#include "opengl_preview_debug.h"
+#include "playback_debug.h"
 #include "startup_project_state.h"
 
 #include <QApplication>

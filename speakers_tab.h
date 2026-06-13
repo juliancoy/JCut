@@ -108,6 +108,7 @@ public:
         std::function<bool()> isPlaybackActive;
         std::function<bool(QString*)> ensureAiSession;
         std::function<void(const QStringList&)> exportSpeakersVideo;
+        std::function<void(const QString&, int64_t, int64_t, const QString&)> exportSpeakerSectionVideo;
         std::function<void(bool)> setAudioBackgroundDecodeSuppressed;
     };
 

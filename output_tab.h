@@ -14,7 +14,7 @@
 #include <QVector>
 
 #include "editor_shared.h"
-#include "render.h"
+#include "render_contract_types.h"
 
 class OutputTab : public QObject
 {
@@ -62,10 +62,7 @@ public:
         std::function<void(int64_t, int64_t)> setExportRange;
         std::function<void(const QSize&)> setOutputSize;
         std::function<void()> stopPlayback;
-        std::function<QVector<TimelineClip>()> getTimelineClips;
-        std::function<QVector<TimelineTrack>()> getTimelineTracks;
-        std::function<QVector<RenderSyncMarker>()> getRenderSyncMarkers;
-        std::function<void(const RenderRequest&)> renderTimeline;
+        std::function<void(const jcut::render::RenderRequestCore&)> renderTimeline;
         std::function<QString()> lastRenderOutputPath;
         std::function<void(const QString&)> setLastRenderOutputPath;
         std::function<int()> autosaveIntervalMinutes;

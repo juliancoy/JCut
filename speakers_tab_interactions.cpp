@@ -1550,12 +1550,27 @@ void SpeakersTab::onSpeakerSectionsTableContextMenuRequested(const QPoint& pos)
     QMenu menu(m_widgets.speakerSectionsTable);
     QAction* skipAction = menu.addAction(QStringLiteral("Skip Section"));
     QAction* unskipAction = menu.addAction(QStringLiteral("Unskip Section"));
+    menu.addSeparator();
+    QAction* exportAction = menu.addAction(QStringLiteral("Export"));
     const bool canMutate = activeCutMutable();
     skipAction->setEnabled(canMutate && wordCount > 0 && skippedCount < wordCount);
     unskipAction->setEnabled(canMutate && wordCount > 0 && skippedCount > 0);
+    exportAction->setEnabled(m_speakerDeps.exportSpeakerSectionVideo &&
+                             wordCount > 0 &&
+                             startFrame >= 0 &&
+                             endFrame >= startFrame);
 
     QAction* chosen = menu.exec(m_widgets.speakerSectionsTable->viewport()->mapToGlobal(pos));
     if (!chosen) {
+        return;
+    }
+    if (chosen == exportAction) {
+        if (m_speakerDeps.exportSpeakerSectionVideo) {
+            const QString snippet = m_widgets.speakerSectionsTable->item(row, 5)
+                ? m_widgets.speakerSectionsTable->item(row, 5)->text().trimmed()
+                : QString();
+            m_speakerDeps.exportSpeakerSectionVideo(speakerId, startFrame, endFrame, snippet);
+        }
         return;
     }
     if (!activeCutMutable()) {

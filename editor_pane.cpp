@@ -1,6 +1,5 @@
 #include "editor_pane.h"
 
-#include "opengl_preview.h"
 #include "preview_surface.h"
 #include "preview_surface_factory.h"
 #include "timeline_widget.h"

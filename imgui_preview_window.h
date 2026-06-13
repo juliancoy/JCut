@@ -1,17 +1,20 @@
 #pragma once
 
-#include "facedetections_tracking.h"
+#include "core/geometry.h"
 
-#include <QRectF>
-#include <QSize>
-#include <QString>
-#include <QVector>
+#include <memory>
+#include <span>
+#include <string>
 
 #include <cstdint>
-#include <memory>
 
 namespace render_detail {
 struct OffscreenVulkanFrame;
+}
+
+namespace jcut::facedetections {
+struct ContinuityTrack;
+struct Detection;
 }
 
 class ImGuiPreviewWindow final {
@@ -24,16 +27,16 @@ public:
     ImGuiPreviewWindow(const ImGuiPreviewWindow&) = delete;
     ImGuiPreviewWindow& operator=(const ImGuiPreviewWindow&) = delete;
 
-    bool initialize(const QString& title, const QSize& initialSize);
+    bool initialize(const std::string& title, jcut::core::SizeI initialSize);
     bool isActive() const;
     bool hasFailed() const;
     bool updatePending() const;
     bool isVisible() const;
     int64_t lastPresentedSourceFrame() const;
-    QString failureReason() const;
+    std::string failureReason() const;
 
-    void setStatusText(const QString& text);
-    void setWindowTitle(const QString& title);
+    void setStatusText(const std::string& text);
+    void setWindowTitle(const std::string& title);
     void setTimelineRange(int minFrame, int maxFrame, int latestProcessedFrame);
     void setProcessingPaused(bool paused);
     void setFollowLatest(bool followLatest);
@@ -67,14 +70,14 @@ public:
     void pumpEvents();
     bool presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                       int64_t frameNumber,
-                      const QVector<jcut::facedetections::ContinuityTrack>& tracks,
-                      const QVector<jcut::facedetections::Detection>& detections,
-                      const QRectF& roiRect,
+                      std::span<const jcut::facedetections::ContinuityTrack> tracks,
+                      std::span<const jcut::facedetections::Detection> detections,
+                      const jcut::core::RectF& roiRect,
                       int detectionCount);
 
 private:
     void shutdown();
-    void markFailure(const QString& reason);
+    void markFailure(const std::string& reason);
 
     std::unique_ptr<Impl> m_impl;
 };

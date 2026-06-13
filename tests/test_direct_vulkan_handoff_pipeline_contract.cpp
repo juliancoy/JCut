@@ -1024,7 +1024,7 @@ void TestDirectVulkanHandoffPipelineContract::
 
   QVERIFY2(!shader.contains(QStringLiteral(
                "pos = vec2(-1.0, -1.0);\n        unitUv = vec2(0.0, 1.0);")),
-           "text shader must not use OpenGL-style Y-flipped glyph UVs in the "
+           "text shader must not use legacy Y-flipped glyph UVs in the "
            "Vulkan presenter");
 }
 

@@ -36,6 +36,27 @@ extern "C" {
 namespace jcut::vulkan_detector {
 namespace {
 
+void setStdError(std::string* out, const QString& value)
+{
+    if (!out) {
+        return;
+    }
+    *out = value.toStdString();
+}
+
+QString toQStringError(const std::string* value)
+{
+    if (!value) {
+        return {};
+    }
+    return QString::fromStdString(*value);
+}
+
+jcut::core::SizeI toSizeI(const QSize& size)
+{
+    return {size.width(), size.height()};
+}
+
 QByteArray readShader(const QString& name)
 {
     QFile file(QStringLiteral(JCUT_VULKAN_SHADER_DIR) + QLatin1Char('/') + name);
@@ -153,14 +174,14 @@ void VulkanDetectorFrameHandoff::resetResourceStats()
     m_resourceStats = {};
 }
 
-bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, QString* errorMessage)
+bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, std::string* errorMessage)
 {
     release();
     if (context.physicalDevice == VK_NULL_HANDLE ||
         context.device == VK_NULL_HANDLE ||
         context.queue == VK_NULL_HANDLE ||
         context.queueFamilyIndex == UINT32_MAX) {
-        if (errorMessage) *errorMessage = QStringLiteral("Invalid Vulkan device context for frame handoff.");
+        setStdError(errorMessage, QStringLiteral("Invalid Vulkan device context for frame handoff."));
         return false;
     }
     m_context = context;
@@ -170,7 +191,7 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     poolInfo.queueFamilyIndex = m_context.queueFamilyIndex;
     if (vkCreateCommandPool(m_context.device, &poolInfo, nullptr, &m_commandPool) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to create frame handoff command pool.");
+        setStdError(errorMessage, QStringLiteral("Failed to create frame handoff command pool."));
         release();
         return false;
     }
@@ -181,7 +202,7 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = 1;
     if (vkAllocateCommandBuffers(m_context.device, &allocInfo, &m_commandBuffer) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to allocate frame handoff command buffer.");
+        setStdError(errorMessage, QStringLiteral("Failed to allocate frame handoff command buffer."));
         release();
         return false;
     }
@@ -189,7 +210,7 @@ bool VulkanDetectorFrameHandoff::initialize(const VulkanDeviceContext& context, 
     VkFenceCreateInfo fenceInfo{};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     if (vkCreateFence(m_context.device, &fenceInfo, nullptr, &m_fence) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to create frame handoff fence.");
+        setStdError(errorMessage, QStringLiteral("Failed to create frame handoff fence."));
         release();
         return false;
     }
@@ -248,7 +269,7 @@ void VulkanDetectorFrameHandoff::release()
     m_imageView = VK_NULL_HANDLE;
     m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_imageFormat = VK_FORMAT_UNDEFINED;
-    m_imageSize = QSize();
+    m_imageSize = {};
     m_imageImported = false;
     m_importSourceDevice = VK_NULL_HANDLE;
     m_importSourceMemory = VK_NULL_HANDLE;
@@ -257,7 +278,7 @@ void VulkanDetectorFrameHandoff::release()
     m_importedImageView = VK_NULL_HANDLE;
     m_importedImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     m_importedImageFormat = VK_FORMAT_UNDEFINED;
-    m_importedImageSize = QSize();
+    m_importedImageSize = {};
     m_stagingSize = 0;
     m_cudaExportSize = 0;
     m_cudaExportUvSize = 0;
@@ -281,7 +302,7 @@ void VulkanDetectorFrameHandoff::release()
     m_context = VulkanDeviceContext{};
 }
 
-bool VulkanDetectorFrameHandoff::ensureImageResources(const QSize& size,
+bool VulkanDetectorFrameHandoff::ensureImageResources(const jcut::core::SizeI& size,
                                                       VkFormat format,
                                                       QString* errorMessage)
 {
@@ -307,7 +328,7 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const QSize& size,
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent = {static_cast<uint32_t>(size.width()), static_cast<uint32_t>(size.height()), 1};
+    imageInfo.extent = {static_cast<uint32_t>(size.width), static_cast<uint32_t>(size.height), 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.format = format;
@@ -355,7 +376,7 @@ bool VulkanDetectorFrameHandoff::ensureImageResources(const QSize& size,
     return true;
 }
 
-bool VulkanDetectorFrameHandoff::ensureImportedImageResources(const QSize& size,
+bool VulkanDetectorFrameHandoff::ensureImportedImageResources(const jcut::core::SizeI& size,
                                                               VkFormat format,
                                                               QString* errorMessage)
 {
@@ -388,7 +409,7 @@ bool VulkanDetectorFrameHandoff::ensureImportedImageResources(const QSize& size,
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.pNext = &externalImageInfo;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent = {static_cast<uint32_t>(size.width()), static_cast<uint32_t>(size.height()), 1};
+    imageInfo.extent = {static_cast<uint32_t>(size.width), static_cast<uint32_t>(size.height), 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.format = format;
@@ -705,7 +726,11 @@ bool VulkanDetectorFrameHandoff::convertNv12BuffersToImage(int width,
                                                            int uvPitch,
                                                            QString* errorMessage)
 {
-    if (!finishPendingUpload(nullptr, errorMessage)) {
+    std::string finishError;
+    if (!finishPendingUpload(nullptr, &finishError)) {
+        if (errorMessage) {
+            *errorMessage = QString::fromStdString(finishError);
+        }
         return false;
     }
     if (!ensureNv12ConversionResources(errorMessage)) {
@@ -895,10 +920,11 @@ void VulkanDetectorFrameHandoff::transitionImage(VkCommandBuffer commandBuffer,
 bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
                                              bool allowCpuUploadFallback,
                                              double* uploadMs,
-                                             QString* errorMessage)
+                                             std::string* errorMessage)
 {
+    QString qtError;
     if (!m_initialized || frame.isNull()) {
-        if (errorMessage) *errorMessage = QStringLiteral("Invalid frame handoff upload state.");
+        setStdError(errorMessage, QStringLiteral("Invalid frame handoff upload state."));
         return false;
     }
     m_lastHardwareDirectAttemptReason.clear();
@@ -911,9 +937,10 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
         }
         m_lastHardwareDirectAttemptReason = directError;
         if (errorMessage && !directError.isEmpty()) {
-            *errorMessage = QStringLiteral("Hardware direct handoff attempt failed: %1").arg(directError);
+            setStdError(errorMessage,
+                        QStringLiteral("Hardware direct handoff attempt failed: %1").arg(directError));
         } else if (errorMessage) {
-            *errorMessage = QStringLiteral("Hardware direct handoff attempt failed.");
+            setStdError(errorMessage, QStringLiteral("Hardware direct handoff attempt failed."));
         }
         if (!allowCpuUploadFallback) {
             m_lastMode = FrameHandoffMode::Invalid;
@@ -925,23 +952,24 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
             const QString reason = m_lastHardwareDirectAttemptReason.isEmpty()
                 ? QStringLiteral("No supported hardware-direct decoder-to-Vulkan handoff path is available.")
                 : m_lastHardwareDirectAttemptReason;
-            *errorMessage = QStringLiteral(
-                "CPU upload fallback is disabled; hardware-direct handoff was not used: %1").arg(reason);
+            setStdError(errorMessage,
+                        QStringLiteral(
+                            "CPU upload fallback is disabled; hardware-direct handoff was not used: %1")
+                            .arg(reason));
         }
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
     if (!frame.hasCpuImage()) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral(
-                "Direct hardware frame handoff is not implemented for this path; CPU image is required.");
-        }
+        setStdError(errorMessage,
+                    QStringLiteral(
+                        "Direct hardware frame handoff is not implemented for this path; CPU image is required."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
     const QImage rgba = frame.cpuImage().convertToFormat(QImage::Format_RGBA8888);
     if (rgba.isNull()) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to materialize RGBA upload image.");
+        setStdError(errorMessage, QStringLiteral("Failed to materialize RGBA upload image."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -950,8 +978,9 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
         return false;
     }
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(rgba.width()) * rgba.height() * 4;
-    if (!ensureStagingBuffer(bytes, errorMessage) ||
-        !ensureImageResources(rgba.size(), VK_FORMAT_R8G8B8A8_UNORM, errorMessage)) {
+    if (!ensureStagingBuffer(bytes, &qtError) ||
+        !ensureImageResources(toSizeI(rgba.size()), VK_FORMAT_R8G8B8A8_UNORM, &qtError)) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -959,7 +988,7 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
     timer.start();
     void* mapped = nullptr;
     if (vkMapMemory(m_context.device, m_stagingMemory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to map Vulkan handoff staging memory.");
+        setStdError(errorMessage, QStringLiteral("Failed to map Vulkan handoff staging memory."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -994,7 +1023,7 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &m_commandBuffer;
     if (vkQueueSubmit(m_context.queue, 1, &submit, m_fence) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Vulkan submit failed for frame handoff upload.");
+        setStdError(errorMessage, QStringLiteral("Vulkan submit failed for frame handoff upload."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1008,7 +1037,7 @@ bool VulkanDetectorFrameHandoff::uploadFrame(const editor::FrameHandle& frame,
     return true;
 }
 
-bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, QString* errorMessage)
+bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, std::string* errorMessage)
 {
     if (uploadMs) {
         *uploadMs = 0.0;
@@ -1018,9 +1047,7 @@ bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, QString* 
         return true;
     }
     if (vkWaitForFences(m_context.device, 1, &m_fence, VK_TRUE, 5'000'000'000ull) != VK_SUCCESS) {
-        if (errorMessage) {
-            *errorMessage = QStringLiteral("timed out waiting for Vulkan frame handoff upload");
-        }
+        setStdError(errorMessage, QStringLiteral("timed out waiting for Vulkan frame handoff upload"));
         return false;
     }
     m_pendingNv12DescriptorSet = VK_NULL_HANDLE;
@@ -1034,25 +1061,28 @@ bool VulkanDetectorFrameHandoff::finishPendingUpload(double* uploadMs, QString* 
 bool VulkanDetectorFrameHandoff::recordHardwareFrameUpload(VkCommandBuffer commandBuffer,
                                                            const editor::FrameHandle& frame,
                                                            double* uploadMs,
-                                                           QString* errorMessage)
+                                                           std::string* errorMessage)
 {
+    QString qtError;
     if (!m_initialized || commandBuffer == VK_NULL_HANDLE || frame.isNull()) {
-        if (errorMessage) *errorMessage = QStringLiteral("Invalid frame handoff command-buffer upload state.");
+        setStdError(errorMessage, QStringLiteral("Invalid frame handoff command-buffer upload state."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
     bool isNv12 = false;
-    QSize size;
+    jcut::core::SizeI size;
     int yPitch = 0;
     int uvPitch = 0;
-    if (!prepareCudaHardwareFrame(frame, &isNv12, &size, &yPitch, &uvPitch, uploadMs, errorMessage)) {
+    if (!prepareCudaHardwareFrame(frame, &isNv12, &size, &yPitch, &uvPitch, uploadMs, &qtError)) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
     const bool recorded = isNv12
-        ? recordNv12Conversion(commandBuffer, size.width(), size.height(), yPitch, uvPitch, errorMessage)
-        : recordCudaHardwareFrameCopy(commandBuffer, size, errorMessage);
+        ? recordNv12Conversion(commandBuffer, size.width, size.height, yPitch, uvPitch, &qtError)
+        : recordCudaHardwareFrameCopy(commandBuffer, size, &qtError);
     if (!recorded) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1062,7 +1092,7 @@ bool VulkanDetectorFrameHandoff::recordHardwareFrameUpload(VkCommandBuffer comma
 
 bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHandle& frame,
                                                           bool* isNv12Out,
-                                                          QSize* sizeOut,
+                                                          jcut::core::SizeI* sizeOut,
                                                           int* yPitchOut,
                                                           int* uvPitchOut,
                                                           double* uploadMs,
@@ -1118,8 +1148,8 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         if (errorMessage) *errorMessage = QStringLiteral("missing CUDA context on frame");
         return false;
     }
-    const QSize size = frame.size();
-    if (!size.isValid()) {
+    const jcut::core::SizeI size = toSizeI(frame.size());
+    if (!size.valid()) {
         if (errorMessage) *errorMessage = QStringLiteral("invalid frame size for hardware-direct");
         return false;
     }
@@ -1128,17 +1158,23 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         (swFmt == AV_PIX_FMT_BGRA || swFmt == AV_PIX_FMT_BGR0)
             ? VK_FORMAT_B8G8R8A8_UNORM
             : VK_FORMAT_R8G8B8A8_UNORM;
-    if (!ensureImageResources(size, targetFormat, errorMessage) ||
-        !finishPendingUpload(nullptr, errorMessage)) {
+    if (!ensureImageResources(size, targetFormat, errorMessage)) {
+        return false;
+    }
+    std::string finishError;
+    if (!finishPendingUpload(nullptr, &finishError)) {
+        if (errorMessage) {
+            *errorMessage = QString::fromStdString(finishError);
+        }
         return false;
     }
 
     const VkDeviceSize bytes = isNv12
-        ? static_cast<VkDeviceSize>(hw->linesize[0]) * static_cast<VkDeviceSize>(size.height())
-        : static_cast<VkDeviceSize>(size.width()) * size.height() * 4;
+        ? static_cast<VkDeviceSize>(hw->linesize[0]) * static_cast<VkDeviceSize>(size.height)
+        : static_cast<VkDeviceSize>(size.width) * size.height * 4;
     const int uvPitch = (hw->linesize[1] > 0) ? hw->linesize[1] : hw->linesize[0];
     const VkDeviceSize uvBytes = isNv12
-        ? static_cast<VkDeviceSize>(uvPitch) * static_cast<VkDeviceSize>((size.height() + 1) / 2)
+        ? static_cast<VkDeviceSize>(uvPitch) * static_cast<VkDeviceSize>((size.height + 1) / 2)
         : 0;
 
     PFN_vkGetMemoryFdKHR vkGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
@@ -1241,20 +1277,20 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         yCopy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
         yCopy.dstDevice = static_cast<CUdeviceptr>(m_cudaExternalDevicePtr);
         yCopy.dstPitch = static_cast<size_t>(hw->linesize[0]);
-        yCopy.WidthInBytes = static_cast<size_t>(size.width());
-        yCopy.Height = static_cast<size_t>(size.height());
+        yCopy.WidthInBytes = static_cast<size_t>(size.width);
+        yCopy.Height = static_cast<size_t>(size.height);
 
         CUDA_MEMCPY2D uvCopy{};
         uvCopy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         uvCopy.srcDevice = hw->data[1]
             ? reinterpret_cast<CUdeviceptr>(hw->data[1])
-            : reinterpret_cast<CUdeviceptr>(hw->data[0] + (static_cast<size_t>(hw->linesize[0]) * static_cast<size_t>(size.height())));
+            : reinterpret_cast<CUdeviceptr>(hw->data[0] + (static_cast<size_t>(hw->linesize[0]) * static_cast<size_t>(size.height)));
         uvCopy.srcPitch = static_cast<size_t>(uvPitch);
         uvCopy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
         uvCopy.dstDevice = static_cast<CUdeviceptr>(m_cudaExternalUvDevicePtr);
         uvCopy.dstPitch = static_cast<size_t>(uvPitch);
-        uvCopy.WidthInBytes = static_cast<size_t>(size.width());
-        uvCopy.Height = static_cast<size_t>((size.height() + 1) / 2);
+        uvCopy.WidthInBytes = static_cast<size_t>(size.width);
+        uvCopy.Height = static_cast<size_t>((size.height + 1) / 2);
         if (cuMemcpy2DAsync(&yCopy, cudaDevice->stream) != CUDA_SUCCESS ||
             cuMemcpy2DAsync(&uvCopy, cudaDevice->stream) != CUDA_SUCCESS ||
             synchronizeCudaStream(cudaDevice->stream, &m_resourceStats) != CUDA_SUCCESS) {
@@ -1262,7 +1298,7 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
             return false;
         }
     } else {
-        const size_t widthBytes = static_cast<size_t>(size.width()) * 4;
+        const size_t widthBytes = static_cast<size_t>(size.width) * 4;
         CUDA_MEMCPY2D copy{};
         copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         copy.srcDevice = reinterpret_cast<CUdeviceptr>(hw->data[0]);
@@ -1271,7 +1307,7 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
         copy.dstDevice = static_cast<CUdeviceptr>(m_cudaExternalDevicePtr);
         copy.dstPitch = widthBytes;
         copy.WidthInBytes = widthBytes;
-        copy.Height = static_cast<size_t>(size.height());
+        copy.Height = static_cast<size_t>(size.height);
         if (cuMemcpy2DAsync(&copy, cudaDevice->stream) != CUDA_SUCCESS ||
             synchronizeCudaStream(cudaDevice->stream, &m_resourceStats) != CUDA_SUCCESS) {
             if (errorMessage) *errorMessage = QStringLiteral("CUDA device copy into Vulkan-export buffer failed");
@@ -1291,7 +1327,7 @@ bool VulkanDetectorFrameHandoff::prepareCudaHardwareFrame(const editor::FrameHan
 }
 
 bool VulkanDetectorFrameHandoff::recordCudaHardwareFrameCopy(VkCommandBuffer commandBuffer,
-                                                             const QSize& size,
+                                                             const jcut::core::SizeI& size,
                                                              QString* errorMessage)
 {
     if (commandBuffer == VK_NULL_HANDLE || m_cudaExportBuffer == VK_NULL_HANDLE || m_image == VK_NULL_HANDLE) {
@@ -1321,7 +1357,7 @@ bool VulkanDetectorFrameHandoff::recordCudaHardwareFrameCopy(VkCommandBuffer com
     VkBufferImageCopy bi{};
     bi.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     bi.imageSubresource.layerCount = 1;
-    bi.imageExtent = {static_cast<uint32_t>(size.width()), static_cast<uint32_t>(size.height()), 1};
+    bi.imageExtent = {static_cast<uint32_t>(size.width), static_cast<uint32_t>(size.height), 1};
     vkCmdCopyBufferToImage(commandBuffer,
                            m_cudaExportBuffer,
                            m_image,
@@ -1512,8 +1548,8 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         if (errorMessage) *errorMessage = QStringLiteral("missing CUDA context on frame");
         return false;
     }
-    const QSize size = frame.size();
-    if (!size.isValid()) {
+    const jcut::core::SizeI size = toSizeI(frame.size());
+    if (!size.valid()) {
         if (errorMessage) *errorMessage = QStringLiteral("invalid frame size for hardware-direct");
         return false;
     }
@@ -1529,16 +1565,20 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     if (!ensureImageResources(size, targetFormat, errorMessage)) {
         return false;
     }
-    if (!finishPendingUpload(nullptr, errorMessage)) {
+    std::string finishError;
+    if (!finishPendingUpload(nullptr, &finishError)) {
+        if (errorMessage) {
+            *errorMessage = QString::fromStdString(finishError);
+        }
         return false;
     }
 
     const VkDeviceSize bytes = isNv12
-        ? static_cast<VkDeviceSize>(hw->linesize[0]) * static_cast<VkDeviceSize>(size.height())
-        : static_cast<VkDeviceSize>(size.width()) * size.height() * 4;
+        ? static_cast<VkDeviceSize>(hw->linesize[0]) * static_cast<VkDeviceSize>(size.height)
+        : static_cast<VkDeviceSize>(size.width) * size.height * 4;
     const int uvPitch = (hw->linesize[1] > 0) ? hw->linesize[1] : hw->linesize[0];
     const VkDeviceSize uvBytes = isNv12
-        ? static_cast<VkDeviceSize>(uvPitch) * static_cast<VkDeviceSize>((size.height() + 1) / 2)
+        ? static_cast<VkDeviceSize>(uvPitch) * static_cast<VkDeviceSize>((size.height + 1) / 2)
         : 0;
     PFN_vkGetMemoryFdKHR vkGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
         vkGetDeviceProcAddr(m_context.device, "vkGetMemoryFdKHR"));
@@ -1643,20 +1683,20 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         yCopy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
         yCopy.dstDevice = static_cast<CUdeviceptr>(m_cudaExternalDevicePtr);
         yCopy.dstPitch = static_cast<size_t>(hw->linesize[0]);
-        yCopy.WidthInBytes = static_cast<size_t>(size.width());
-        yCopy.Height = static_cast<size_t>(size.height());
+        yCopy.WidthInBytes = static_cast<size_t>(size.width);
+        yCopy.Height = static_cast<size_t>(size.height);
 
         CUDA_MEMCPY2D uvCopy{};
         uvCopy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
         uvCopy.srcDevice = hw->data[1]
             ? reinterpret_cast<CUdeviceptr>(hw->data[1])
-            : reinterpret_cast<CUdeviceptr>(hw->data[0] + (static_cast<size_t>(hw->linesize[0]) * static_cast<size_t>(size.height())));
+            : reinterpret_cast<CUdeviceptr>(hw->data[0] + (static_cast<size_t>(hw->linesize[0]) * static_cast<size_t>(size.height)));
         uvCopy.srcPitch = static_cast<size_t>(uvPitch);
         uvCopy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
         uvCopy.dstDevice = static_cast<CUdeviceptr>(m_cudaExternalUvDevicePtr);
         uvCopy.dstPitch = static_cast<size_t>(uvPitch);
-        uvCopy.WidthInBytes = static_cast<size_t>(size.width());
-        uvCopy.Height = static_cast<size_t>((size.height() + 1) / 2);
+        uvCopy.WidthInBytes = static_cast<size_t>(size.width);
+        uvCopy.Height = static_cast<size_t>((size.height + 1) / 2);
 
         if (cuMemcpy2DAsync(&yCopy, cudaDevice->stream) != CUDA_SUCCESS ||
             cuMemcpy2DAsync(&uvCopy, cudaDevice->stream) != CUDA_SUCCESS) {
@@ -1666,7 +1706,7 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         if (!signalCudaReadySemaphore(cudaDevice->stream, errorMessage)) {
             return false;
         }
-        if (!convertNv12BuffersToImage(size.width(), size.height(), hw->linesize[0], uvPitch, errorMessage)) {
+        if (!convertNv12BuffersToImage(size.width, size.height, hw->linesize[0], uvPitch, errorMessage)) {
             return false;
         }
         if (uploadMs) {
@@ -1675,7 +1715,7 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
         return true;
     }
 
-    const size_t widthBytes = static_cast<size_t>(size.width()) * 4;
+    const size_t widthBytes = static_cast<size_t>(size.width) * 4;
     CUDA_MEMCPY2D copy{};
     copy.srcMemoryType = CU_MEMORYTYPE_DEVICE;
     copy.srcDevice = reinterpret_cast<CUdeviceptr>(hw->data[0]);
@@ -1684,7 +1724,7 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     copy.dstDevice = static_cast<CUdeviceptr>(m_cudaExternalDevicePtr);
     copy.dstPitch = widthBytes;
     copy.WidthInBytes = widthBytes;
-    copy.Height = static_cast<size_t>(size.height());
+    copy.Height = static_cast<size_t>(size.height);
     if (cuMemcpy2DAsync(&copy, cudaDevice->stream) != CUDA_SUCCESS) {
         if (errorMessage) *errorMessage = QStringLiteral("CUDA device copy into Vulkan-export buffer failed");
         return false;
@@ -1725,7 +1765,7 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
     VkBufferImageCopy bi{};
     bi.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     bi.imageSubresource.layerCount = 1;
-    bi.imageExtent = {static_cast<uint32_t>(size.width()), static_cast<uint32_t>(size.height()), 1};
+    bi.imageExtent = {static_cast<uint32_t>(size.width), static_cast<uint32_t>(size.height), 1};
     vkCmdCopyBufferToImage(m_commandBuffer,
                            m_cudaExportBuffer,
                            m_image,
@@ -1751,10 +1791,11 @@ bool VulkanDetectorFrameHandoff::tryHardwareDirect(const editor::FrameHandle& fr
 }
 
 bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
-                                                      QString* errorMessage)
+                                                      std::string* errorMessage)
 {
+    QString qtError;
     if (!m_initialized) {
-        if (errorMessage) *errorMessage = QStringLiteral("Vulkan handoff is not initialized.");
+        setStdError(errorMessage, QStringLiteral("Vulkan handoff is not initialized."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1763,14 +1804,15 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
         frame.image == VK_NULL_HANDLE ||
         frame.imageView == VK_NULL_HANDLE ||
         frame.imageMemory == VK_NULL_HANDLE ||
-        !frame.size.isValid() ||
+        !frame.size.valid() ||
         frame.imageFormat == VK_FORMAT_UNDEFINED) {
-        if (errorMessage) *errorMessage = QStringLiteral("Invalid offscreen Vulkan frame for external-memory import.");
+        setStdError(errorMessage, QStringLiteral("Invalid offscreen Vulkan frame for external-memory import."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
-    if (!ensureImageResources(frame.size, frame.imageFormat, errorMessage) ||
-        !ensureImportedImageResources(frame.size, frame.imageFormat, errorMessage)) {
+    if (!ensureImageResources(frame.size, frame.imageFormat, &qtError) ||
+        !ensureImportedImageResources(frame.size, frame.imageFormat, &qtError)) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1780,7 +1822,8 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
         m_importedImageView != VK_NULL_HANDLE &&
         m_importedImageMemory != VK_NULL_HANDLE) {
         m_importedImageLayout = frame.imageLayout;
-        if (!copyImportedFrameToLocal(frame.imageLayout, errorMessage)) {
+        if (!copyImportedFrameToLocal(frame.imageLayout, &qtError)) {
+            setStdError(errorMessage, qtError);
             m_lastMode = FrameHandoffMode::Invalid;
             return false;
         }
@@ -1797,7 +1840,7 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
     PFN_vkGetMemoryFdKHR sourceGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
         vkGetDeviceProcAddr(frame.device, "vkGetMemoryFdKHR"));
     if (!sourceGetMemoryFdKHR) {
-        if (errorMessage) *errorMessage = QStringLiteral("Source Vulkan device does not expose vkGetMemoryFdKHR.");
+        setStdError(errorMessage, QStringLiteral("Source Vulkan device does not expose vkGetMemoryFdKHR."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1808,7 +1851,7 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
     fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
     int fd = -1;
     if (sourceGetMemoryFdKHR(frame.device, &fdInfo, &fd) != VK_SUCCESS || fd < 0) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to export offscreen Vulkan image memory FD.");
+        setStdError(errorMessage, QStringLiteral("Failed to export offscreen Vulkan image memory FD."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1818,7 +1861,7 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
     const uint32_t type = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (type == UINT32_MAX) {
         close(fd);
-        if (errorMessage) *errorMessage = QStringLiteral("No imported Vulkan image memory type.");
+        setStdError(errorMessage, QStringLiteral("No imported Vulkan image memory type."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1839,7 +1882,7 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
             ++m_resourceStats.importedMemoryFrees;
             m_importedImageMemory = VK_NULL_HANDLE;
         }
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to import/bind offscreen Vulkan image memory.");
+        setStdError(errorMessage, QStringLiteral("Failed to import/bind offscreen Vulkan image memory."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1858,7 +1901,7 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
         m_importedImageView = VK_NULL_HANDLE;
     }
     if (vkCreateImageView(m_context.device, &viewInfo, nullptr, &m_importedImageView) != VK_SUCCESS) {
-        if (errorMessage) *errorMessage = QStringLiteral("Failed to create imported Vulkan image view.");
+        setStdError(errorMessage, QStringLiteral("Failed to create imported Vulkan image view."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1866,7 +1909,8 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
     m_importSourceDevice = frame.device;
     m_importSourceMemory = frame.imageMemory;
     m_importedImageLayout = frame.imageLayout;
-    if (!copyImportedFrameToLocal(frame.imageLayout, errorMessage)) {
+    if (!copyImportedFrameToLocal(frame.imageLayout, &qtError)) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1876,10 +1920,12 @@ bool VulkanDetectorFrameHandoff::importOffscreenFrame(const render_detail::Offsc
 
 bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer commandBuffer,
                                                          const render_detail::OffscreenVulkanFrame& frame,
-                                                         QString* errorMessage)
+                                                         std::string* errorMessage)
 {
+    QString qtError;
     if (!m_initialized || commandBuffer == VK_NULL_HANDLE) {
-        if (errorMessage) *errorMessage = QStringLiteral("Vulkan handoff is not initialized for command-buffer import.");
+        setStdError(errorMessage,
+                    QStringLiteral("Vulkan handoff is not initialized for command-buffer import."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1888,14 +1934,15 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
         frame.image == VK_NULL_HANDLE ||
         frame.imageView == VK_NULL_HANDLE ||
         frame.imageMemory == VK_NULL_HANDLE ||
-        !frame.size.isValid() ||
+        !frame.size.valid() ||
         frame.imageFormat == VK_FORMAT_UNDEFINED) {
-        if (errorMessage) *errorMessage = QStringLiteral("Invalid offscreen Vulkan frame for external-memory import.");
+        setStdError(errorMessage, QStringLiteral("Invalid offscreen Vulkan frame for external-memory import."));
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
-    if (!ensureImageResources(frame.size, frame.imageFormat, errorMessage) ||
-        !ensureImportedImageResources(frame.size, frame.imageFormat, errorMessage)) {
+    if (!ensureImageResources(frame.size, frame.imageFormat, &qtError) ||
+        !ensureImportedImageResources(frame.size, frame.imageFormat, &qtError)) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1913,7 +1960,7 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
         PFN_vkGetMemoryFdKHR sourceGetMemoryFdKHR = reinterpret_cast<PFN_vkGetMemoryFdKHR>(
             vkGetDeviceProcAddr(frame.device, "vkGetMemoryFdKHR"));
         if (!sourceGetMemoryFdKHR) {
-            if (errorMessage) *errorMessage = QStringLiteral("Source Vulkan device does not expose vkGetMemoryFdKHR.");
+            setStdError(errorMessage, QStringLiteral("Source Vulkan device does not expose vkGetMemoryFdKHR."));
             m_lastMode = FrameHandoffMode::Invalid;
             return false;
         }
@@ -1924,7 +1971,7 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
         fdInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT;
         int fd = -1;
         if (sourceGetMemoryFdKHR(frame.device, &fdInfo, &fd) != VK_SUCCESS || fd < 0) {
-            if (errorMessage) *errorMessage = QStringLiteral("Failed to export offscreen Vulkan image memory FD.");
+            setStdError(errorMessage, QStringLiteral("Failed to export offscreen Vulkan image memory FD."));
             m_lastMode = FrameHandoffMode::Invalid;
             return false;
         }
@@ -1934,7 +1981,7 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
         const uint32_t type = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (type == UINT32_MAX) {
             close(fd);
-            if (errorMessage) *errorMessage = QStringLiteral("No imported Vulkan image memory type.");
+            setStdError(errorMessage, QStringLiteral("No imported Vulkan image memory type."));
             m_lastMode = FrameHandoffMode::Invalid;
             return false;
         }
@@ -1955,7 +2002,7 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
                 ++m_resourceStats.importedMemoryFrees;
                 m_importedImageMemory = VK_NULL_HANDLE;
             }
-            if (errorMessage) *errorMessage = QStringLiteral("Failed to import/bind offscreen Vulkan image memory.");
+            setStdError(errorMessage, QStringLiteral("Failed to import/bind offscreen Vulkan image memory."));
             m_lastMode = FrameHandoffMode::Invalid;
             return false;
         }
@@ -1974,7 +2021,7 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
             m_importedImageView = VK_NULL_HANDLE;
         }
         if (vkCreateImageView(m_context.device, &viewInfo, nullptr, &m_importedImageView) != VK_SUCCESS) {
-            if (errorMessage) *errorMessage = QStringLiteral("Failed to create imported Vulkan image view.");
+            setStdError(errorMessage, QStringLiteral("Failed to create imported Vulkan image view."));
             m_lastMode = FrameHandoffMode::Invalid;
             return false;
         }
@@ -1983,7 +2030,8 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
     }
 
     m_importedImageLayout = frame.imageLayout;
-    if (!recordImportedFrameCopyToLocal(commandBuffer, frame.imageLayout, errorMessage)) {
+    if (!recordImportedFrameCopyToLocal(commandBuffer, frame.imageLayout, &qtError)) {
+        setStdError(errorMessage, qtError);
         m_lastMode = FrameHandoffMode::Invalid;
         return false;
     }
@@ -1994,7 +2042,11 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopy(VkCommandBuffer command
 bool VulkanDetectorFrameHandoff::copyImportedFrameToLocal(VkImageLayout sourceLayout,
                                                           QString* errorMessage)
 {
-    if (!finishPendingUpload(nullptr, errorMessage)) {
+    std::string finishError;
+    if (!finishPendingUpload(nullptr, &finishError)) {
+        if (errorMessage) {
+            *errorMessage = QString::fromStdString(finishError);
+        }
         return false;
     }
     vkResetFences(m_context.device, 1, &m_fence);
@@ -2051,8 +2103,8 @@ bool VulkanDetectorFrameHandoff::copyImportedFrameToLocal(VkImageLayout sourceLa
     copyRegion.srcSubresource.layerCount = 1;
     copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copyRegion.dstSubresource.layerCount = 1;
-    copyRegion.extent.width = static_cast<uint32_t>(std::max(1, m_imageSize.width()));
-    copyRegion.extent.height = static_cast<uint32_t>(std::max(1, m_imageSize.height()));
+    copyRegion.extent.width = static_cast<uint32_t>(std::max(1, m_imageSize.width));
+    copyRegion.extent.height = static_cast<uint32_t>(std::max(1, m_imageSize.height));
     copyRegion.extent.depth = 1;
     vkCmdCopyImage(m_commandBuffer,
                    m_importedImage,
@@ -2097,7 +2149,11 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopyToLocal(VkCommandBuffer 
         if (errorMessage) *errorMessage = QStringLiteral("Invalid Vulkan image state for command-buffer imported frame copy.");
         return false;
     }
-    if (!finishPendingUpload(nullptr, errorMessage)) {
+    std::string finishError;
+    if (!finishPendingUpload(nullptr, &finishError)) {
+        if (errorMessage) {
+            *errorMessage = QString::fromStdString(finishError);
+        }
         return false;
     }
     const auto transitionSpecificImage = [&](VkImage image,
@@ -2145,8 +2201,8 @@ bool VulkanDetectorFrameHandoff::recordImportedFrameCopyToLocal(VkCommandBuffer 
     copyRegion.srcSubresource.layerCount = 1;
     copyRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copyRegion.dstSubresource.layerCount = 1;
-    copyRegion.extent.width = static_cast<uint32_t>(std::max(1, m_imageSize.width()));
-    copyRegion.extent.height = static_cast<uint32_t>(std::max(1, m_imageSize.height()));
+    copyRegion.extent.width = static_cast<uint32_t>(std::max(1, m_imageSize.width));
+    copyRegion.extent.height = static_cast<uint32_t>(std::max(1, m_imageSize.height));
     copyRegion.extent.depth = 1;
     vkCmdCopyImage(commandBuffer,
                    m_importedImage,

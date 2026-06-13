@@ -1,76 +1,994 @@
-# UI Layout (KISS)
+# UI Layout
 
-This file defines non-negotiable layout rules to keep the editor usable and predictable.
+This file documents the Qt widget hierarchy that defines the editor shell.
+Keep this in sync with `editor_setup.cpp`, `editor_pane.cpp`,
+`timeline_container.cpp`, `explorer_pane.cpp`, `inspector_pane.cpp`,
+`inspector_pane_collections.cpp`, `inspector_pane_secondary_tabs.cpp`, and
+`inspector_pane_wiring.cpp`.
 
-## Principles
+## Main Window
 
-1. No hidden columns by resize:
-   - Users must not be able to drag-resize the center pane until side panes are effectively covered.
-2. Stable 3-column structure:
-   - Explorer (left), Editor (center), Inspector (right) are always visible.
-3. Bounded local resizing:
-   - Sub-layout controls (like the Inspector tab rail) may resize only within safe limits.
-4. Prefer hard constraints over reactive fixes:
-   - Use minimum widths and non-collapsible splitters instead of trying to recover after bad states.
+- `EditorWindow`
+  - Window chrome:
+    - Title: `JCut`
+    - Initial size: up to `1500 x 860`, bounded by available screen geometry.
+  - Central widget: anonymous `QWidget`
+    - Root layout: `QHBoxLayout`
+      - Margins: `0, 0, 0, 0`
+      - Spacing: `0`
+      - Child: `QSplitter(Qt::Horizontal)` named `layout.main_splitter`
+        - `setChildrenCollapsible(false)`
+        - `setCollapsible(0, false)`
+        - `setCollapsible(1, false)`
+        - `setCollapsible(2, false)`
+        - Handle width: `6`
+        - Stretch:
+          - Column 0: `0`
+          - Column 1: `1`
+          - Column 2: `0`
+        - Initial sizes: `{320, 900, 280}`
+        - Child 0: `ExplorerPane` named `column.explorer`
+          - Minimum width: `140`
+        - Child 1: `EditorPane` named `column.editor`
+          - Minimum width: `360`
+        - Child 2: `InspectorPane` named `column.inspector`
+          - Minimum width: `180`
 
-## Implemented Constraints
+## Left Column: Explorer
 
-### Main horizontal splitter (`editor_setup.cpp`)
+- `ExplorerPane` named `column.explorer`
+  - Own layout root: anonymous child `QWidget` returned by `buildUi()`
+    - Layout: `QVBoxLayout`
+      - Margins: `12, 12, 12, 12`
+      - Spacing: `10`
+      - Child 0: toolbar `QHBoxLayout`
+        - Margins: `0, 0, 0, 0`
+        - Spacing: `8`
+        - `QPushButton` `m_folderPickerButton`
+          - Text: `Media Root...`
+          - Tooltip: `Set media root`
+          - Layout stretch: `1`
+        - `QToolButton` `m_refreshExplorerButton`
+          - Icon: `QStyle::SP_BrowserReload`
+          - Tooltip: `Refresh media browser`
+      - Child 1: `QLabel` `m_rootPathLabel`
+        - Word wrap enabled.
+        - Displays `Media Root: <native path>`.
+      - Child 2: `QStackedWidget` `m_explorerStack`
+        - Layout stretch: `1`
+        - Page 0: filesystem tree page from `buildTreePage()`
+          - `QWidget`
+            - Layout: `QVBoxLayout`
+              - Margins: `0, 0, 0, 0`
+              - Spacing: `8`
+              - Child: `QTreeView` `m_tree`
+                - Model: `QFileSystemModel` `m_fsModel`
+                  - Filter: `QDir::AllEntries | QDir::NoDotAndDotDot`
+                  - Icon provider: `SequenceAwareIconProvider`
+                - Header visible.
+                - Last header section stretched.
+                - Animated expand/collapse enabled.
+                - Single-selection mode.
+                - Drag enabled; drag/drop mode is `DragOnly`.
+                - Sorting enabled; column `0` ascending.
+                - Mouse tracking enabled.
+                - Context menu policy: `Qt::CustomContextMenu`.
+                - Viewport has `ExplorerPane` as event filter for drag and hover preview.
+                - Double-click behavior:
+                  - Directory that is not an image sequence: opens gallery page for that directory.
+                  - File or image sequence: emits `fileActivated(path)`.
+                - Hover behavior:
+                  - File or image sequence under cursor: shows explorer hover preview.
+                  - Directory/invalid row: hides explorer hover preview.
+                - Expand/collapse emits `stateChanged()`.
+        - Page 1: gallery page from `buildGalleryPage()`
+          - `QWidget`
+            - Layout: `QVBoxLayout`
+              - Margins: `0, 0, 0, 0`
+              - Spacing: `8`
+              - Child 0: gallery header `QHBoxLayout`
+                - `QToolButton` `m_galleryBackButton`
+                  - Text: `Back`
+                  - Returns stack to page 0 and clears gallery path/title.
+                - `QLabel` `m_galleryTitleLabel`
+                  - Word wrap enabled.
+                  - Text shape: `Current Folder: ...`
+                  - Layout stretch: `1`
+              - Child 1: `QListWidget` `m_galleryList`
+                - Layout stretch: `1`
+                - View mode: `QListView::IconMode`
+                - Resize mode: `QListView::Adjust`
+                - Movement: `QListView::Static`
+                - Icon size: `48 x 48`
+                - Spacing: `8`
+                - Drag enabled; drag/drop mode is `DragOnly`.
+                - Mouse tracking enabled.
+                - Context menu policy: `Qt::CustomContextMenu`.
+                - Viewport has `ExplorerPane` as event filter.
+                - Double-click behavior matches the tree page:
+                  - Directory opens nested gallery.
+                  - File or image sequence emits `fileActivated(path)`.
+                - Hover behavior mirrors the tree page hover preview.
+  - Floating child: `QLabel` `m_explorerHoverPreview`
+    - Created lazily as a tooltip window.
+    - Renders image/video/sequence previews outside the normal layout.
+  - Background worker:
+    - `QThread` `m_thumbnailThread`
+    - `ThumbnailWorker` `m_thumbnailWorker`
+    - Emits thumbnail images back to the UI with queued connection.
 
-- `setChildrenCollapsible(false)`
-- `setCollapsible(0, false)`
-- `setCollapsible(1, false)`
-- `setCollapsible(2, false)`
-- Minimum widths:
-  - Explorer: `220`
-  - Editor center pane: `520`
-  - Inspector: `240`
+## Center Column: Editor
 
-These prevent dragging the center pane to overlap/hide side panels.
+- `EditorPane` named `column.editor`
+  - Layout: `QVBoxLayout`
+    - Margins: `4, 4, 4, 4`
+    - Spacing: `0`
+    - Child: `QSplitter(Qt::Vertical)` named `layout.editor_splitter`
+      - `setChildrenCollapsible(false)`
+      - Handle width: `6`
+      - Child 0: preview frame
+        - Type: `QFrame`
+        - Minimum height: `150`
+        - Frame shape: `QFrame::NoFrame`
+        - Layout: `QVBoxLayout`
+          - Margins: `0, 0, 0, 0`
+          - Spacing: `0`
+          - Child: `QStackedLayout`
+            - Stacking mode: `QStackedLayout::StackAll`
+            - Layer 0: preview surface widget named `preview.window`
+              - Created by `createPreviewSurfaceForConfiguredBackend()`.
+              - Focus policy: `Qt::StrongFocus`
+              - Minimum size: `160 x 120`
+              - Output size initialized to `1080 x 1920`.
+            - Layer 1: transparent overlay `QWidget`
+              - `Qt::WA_TransparentForMouseEvents`
+              - Layout: `QVBoxLayout`
+                - Margins: `18, 14, 18, 14`
+                - Spacing: `6`
+                - Child 0: badge row `QHBoxLayout`
+                  - `QLabel` named `overlay.status_badge`
+                    - Left-aligned status badge.
+                  - Stretch.
+                - Child 1: stretch.
+                - Child 2: `QLabel` named `overlay.preview_info`
+                  - Word wrap enabled.
+                  - Initially hidden.
+                  - Bottom-left aligned preview info block.
+      - Child 1: `TimelineContainer` named `timeline.container`
+        - Minimum height: `200`
+        - Size policy: expanding horizontally, minimum-expanding vertically.
+      - Splitter flags:
+        - `setCollapsible(0, false)`
+        - `setCollapsible(1, false)`
+        - Stretch factor preview: `3`
+        - Stretch factor timeline: `2`
+        - Initial sizes: `{540, 320}`
 
-### Inspector tab rail (`inspector_pane.cpp`)
+## Timeline Container
 
-- Tab rail uses a hover-expanding dock pattern:
-  - Collapsed width: `48`
-  - Expanded width: `156`
-  - Collapsed state shows centered icons only.
-  - Hover state reveals icon + text labels.
+- `TimelineContainer` named `timeline.container`
+  - Layout: `QGridLayout`
+    - Margins: `0, 0, 0, 0`
+    - Horizontal spacing: `0`
+    - Vertical spacing: `0`
+    - Column 0:
+      - Minimum width: `TrackSidebar::kTrackColumnWidth` (`110`)
+      - Stretch: `0`
+      - Resizable through the track sidebar resize handle from `110` to `360`.
+    - Column 1:
+      - Stretch: `1`
+    - Row 0:
+      - Stretch: `0`
+      - Fixed-height header/transport row.
+    - Row 1:
+      - Stretch: `1`
+      - Track body row.
+  - Cell `(0, 0)`: `QWidget` named `timeline.placeholder`
+    - Fixed width: `TrackSidebar::kTrackColumnWidth` (`110`) unless resized.
+    - Fixed height: `44`
+    - Layout: `QHBoxLayout`
+      - Margins: `8, 4, 8, 4`
+      - `QLabel`
+        - Text: `Tracks`
+      - Stretch.
+  - Cell `(0, 1)`: `QWidget` named `timeline.transport`
+    - Fixed height: `44`
+    - Layout: `QHBoxLayout`
+      - Margins: `8, 4, 8, 4`
+      - Spacing after editor customization: `4`
+      - Children inserted by `EditorPane::setupTransportControls()`:
+        - `QToolButton` named `transport.start`
+          - Icon: transport `ToStart`
+          - Tooltip: `Go to start`
+          - Fixed/preferred width cap: `30`
+        - `QToolButton` named `transport.prev_frame`
+          - Icon: transport `StepBack`
+          - Tooltip: `Previous frame`
+          - Width cap: `30`
+        - `QPushButton` named `transport.play`
+          - Icon: transport `Play` or `Pause`
+          - Tooltip: `Play / Pause (Space)`
+          - Width cap: `34`
+        - `QToolButton` named `transport.next_frame`
+          - Icon: transport `StepForward`
+          - Tooltip: `Next frame`
+          - Width cap: `30`
+        - `QToolButton` named `transport.end`
+          - Icon: transport `ToEnd`
+          - Tooltip: `Go to end`
+          - Width cap: `30`
+        - Spacing: `4`
+        - `QToolButton` named `transport.razor`
+          - Text: `R`
+          - Checkable.
+          - Tooltip: `Razor tool (B) - click to split clips`
+          - Width cap: `28`
+        - `QSlider(Qt::Horizontal)` named `transport.seek`
+          - Range: `0..300`
+          - Minimum width: `96` or `120` when transport is wide enough.
+          - Layout stretch: `1`
+        - `QLabel` named `transport.timecode`
+          - Minimum width: `64`
+        - `QComboBox` named `transport.playback_speed`
+          - Items: `10%`, `25%`, `50%`, `75%`, `100%`, `125%`, `150%`,
+            `200%`, `300%`
+          - Default: `100%`
+          - Hidden below transport width `500`.
+        - `QToolButton` named `transport.loop`
+          - Text: `Loop`
+          - Checkable.
+          - Width cap: `46`
+          - Hidden below transport width `460`.
+        - `QComboBox` named `transport.preview_mode`
+          - Items:
+            - `Preview: Video` with data `video`
+            - `Preview: Audio` with data `audio`
+          - Hidden below transport width `560`.
+        - `QToolButton` named `transport.audio_tools`
+          - Text: `FX`
+          - Tooltip: opens Audio inspector tab.
+          - Width cap: `34`
+          - Hidden below transport width `700`.
+        - `QToolButton` named `transport.audio_mute`
+          - Icon-only volume button.
+          - Tooltip: `Mute / Unmute`
+          - Width cap: `28`
+          - Hidden below transport width `360`.
+        - `QSlider(Qt::Horizontal)` named `transport.audio_volume`
+          - Range: `0..100`
+          - Default: `80`
+          - Width: `56..90`
+          - Hidden below transport width `620`.
+        - `QLabel` named `transport.audio_status`
+          - Initial text: `Audio idle`
+          - Max width: `160`
+          - Hidden below transport width `760`.
+        - `QPushButton` named `transport.zoom_fit`
+          - Text: `Zoom Fit`
+          - Tooltip: `Fit preview to canvas and recenter`
+          - Width: `64..88`
+  - Cell `(1, 0)`: `TrackSidebar` named `timeline.track_sidebar`
+    - Fixed width: `110` initially.
+    - Width resize handle: rightmost `8` px.
+    - Width bounds: `110..360`
+    - Paints track rows corresponding to `TimelineWidget::tracks()`.
+    - Per-track painted subregions:
+      - Track label/name area.
+      - Visual mode toggle.
+      - Audio enable toggle.
+      - Drag/drop target indicator.
+      - Selected-track highlight.
+    - Interactions:
+      - Select track.
+      - Toggle visual mode.
+      - Toggle audio.
+      - Drag tracks to reorder.
+      - Context menu for move/rename/delete.
+      - Wheel delegates to timeline zoom/scroll behavior.
+  - Cell `(1, 1)`: `TimelineWidget` named `timeline.widget`
+    - Size policy: expanding in both axes.
+    - Accepts file drops and clip dragging/editing.
+    - Painted internal hierarchy:
+      - Outer draw rect:
+        - Widget rect inset by `kTimelineOuterMargin` (`16`) on all sides.
+      - Top bar:
+        - Height: `kTimelineTopBarHeight` (`52`)
+        - Contains export range display/handles via `exportRangeRect()`.
+      - Export range band:
+        - Top: top bar top + `26`
+        - Height: `20`
+        - Per segment:
+          - `exportSegmentRect()`
+          - Start/end handles from `exportHandleRect()`
+      - Ruler:
+        - Starts `8` px below top bar.
+        - Height: `kTimelineRulerHeight` (`28`)
+        - Draws frame/time ticks relative to `m_frameOffset` and `m_pixelsPerFrame`.
+      - Track area:
+        - Starts after ruler plus `kTimelineTrackGap` (`12`)
+        - Contains all timeline tracks.
+        - Vertical content inset: `kTimelineTrackInnerPadding` (`12`)
+        - Track spacing: `kTimelineTrackSpacing` (`10`)
+        - Default track height: `44`
+        - Minimum track height: `28`
+      - Track rows:
+        - Geometry from `trackTop(trackIndex)` and `trackHeight(trackIndex)`.
+        - Tracks are vertically scrollable by `m_verticalScrollOffset`.
+        - Track resize hit area: `kTrackResizeHandleHalfHeight` (`4`) around each divider.
+      - Clip rectangles:
+        - X: `timelineContentRect().left() + visibleFrame * m_pixelsPerFrame`
+        - Width: at least `40`, otherwise duration-derived.
+        - Y: vertically centered in the track.
+        - Height: at least `kTimelineClipHeight` (`32`), otherwise track height minus padding.
+      - Clip affordances:
+        - Selection highlight.
+        - Move drag.
+        - Trim-left and trim-right drag modes.
+        - Razor split mode.
+        - Render sync marker rectangles.
+        - Proxy/transcript/facedetection context-menu actions.
+      - Empty/drop affordances:
+        - Append-track target when dropping below current tracks.
+        - Snap indicators for nearby clip boundaries.
 
-This keeps the right sidebar compact during editing while preserving readable labels on hover.
+## Right Column: Inspector
+
+- `InspectorPane` named `column.inspector`
+  - Root layout: `QVBoxLayout`
+    - Margins: `0, 0, 0, 0`
+    - Child: `QFrame` returned by `buildPane()`
+      - Minimum width: `0`
+      - Size policy: preferred width, expanding height.
+      - Layout: `QVBoxLayout`
+        - Margins: `8, 8, 8, 8`
+        - Spacing: `8`
+        - Child 0: `QWidget` named `inspector.header_row`
+          - Minimum height: `32`
+          - Layout: `QHBoxLayout` `m_headerLayout`
+            - Margins: `0, 0, 0, 0`
+            - Spacing: `6`
+            - Stretch.
+            - Optional auth header inserted by `EditorWindow`:
+              - Anonymous `QWidget`
+                - Layout: `QHBoxLayout`
+                  - Margins: `0, 0, 0, 0`
+                  - Spacing: `4`
+                  - `QPushButton` named `tabs.profile_avatar_button`
+                    - Minimum height: `30`
+                    - Opens login/account action.
+                  - `QToolButton` named `tabs.profile_copy_login_button`
+                    - Text: clipboard glyph.
+                    - Fixed size: `30 x 30`
+                    - Copies browser sign-in URL.
+        - Child 1: `InspectorTabWidget` named `tabs.inspector`
+          - Type: `QTabWidget`
+          - Tab position: `QTabWidget::East`
+          - Document mode: enabled.
+          - Minimum size hint: `180 x 180`
+          - Tab bar: `HoverDockTabBar`
+            - Uses scroll buttons.
+            - Draw base disabled.
+            - Icon size: `20 x 20`
+            - Expanding: false.
+            - Elide mode: `Qt::ElideRight`
+            - Collapsed width: `48`
+            - Expanded width: `156`
+            - Minimum height hint: `120`
+            - Maximum size hint height cap: `520`
+            - Tab height: bounded `34..42`
+            - Collapsed state:
+              - Draws centered icon only.
+              - Suppresses label text.
+            - Expanded/hover state:
+              - Triggered on enter/mouse move.
+              - Draws icon plus tab text.
+              - Hovered/selected tabs get rounded highlight.
+            - Leave state:
+              - Collapses to icon-only.
+              - Clears hovered index.
+
+## Inspector Tabs
+
+The inspector tab order is fixed by `buildPane()` and decorated by
+`configureInspectorTabs()`.
+
+1. `Grade`
+   - Heading: `Grade`
+   - Selected-clip path label.
+   - Hidden edit-mode combo with `Levels`, `Curves`.
+   - Common saturation form.
+   - Levels panel:
+     - Brightness spin.
+     - Contrast spin.
+   - Curves panel:
+     - Channel row:
+       - Label `Channel`
+       - Channel tabs: `Red`, `Green`, `Blue`, `Brightness`
+       - Hidden channel combo with same items.
+     - `GradingHistogramWidget`
+     - Options row:
+       - `Sync Lift/Gamma/Gain`
+       - `Smooth`
+     - Group `Shadows (Lift)`:
+       - R/G/B double spins.
+     - Group `Midtones (Gamma)`:
+       - R/G/B double spins.
+     - Group `Highlights (Gain)`:
+       - R/G/B double spins.
+   - Checkboxes:
+     - `Auto Scroll`
+     - `Follow Current`
+     - `Preview`
+   - Buttons:
+     - `Key At Playhead`
+     - `Auto Oppose`
+     - `Fade In From Playhead`
+     - `Fade Out From Playhead`
+   - Fade duration spin.
+   - Keyframe table:
+     - Columns: `Frame`, `Bright`, `Contrast`, `Sat`, `Interp`
+
+2. `Opacity`
+   - Heading: `Opacity`
+   - Selected-clip path label.
+   - Opacity form:
+     - `Opacity` double spin.
+   - Checkboxes:
+     - `Auto Scroll`
+     - `Follow Current Keyframe`
+   - Buttons:
+     - `Key At Playhead`
+     - `Fade In From Playhead`
+     - `Fade Out From Playhead`
+   - Fade duration row:
+     - Label `Fade Duration:`
+     - Duration spin.
+   - Keyframe table:
+     - Columns: `Frame`, `Opacity`, `Interp`
+
+3. `Effects`
+   - Heading: `Effects`
+   - Selected-clip path label.
+   - Mask feathering group:
+     - `Enable Mask Feathering`
+     - Radius row:
+       - Label `Radius:`
+       - Feather radius spin.
+     - Gamma row:
+       - Label `Curve Gamma:`
+       - Feather gamma spin.
+   - Informational label.
+   - Stretch.
+
+4. `Corrections`
+   - Heading: `Corrections`
+   - Clip label.
+   - Status label.
+   - `Enable Corrections`
+   - Label: `Polygon Ranges`
+   - Polygon table:
+     - Columns: `On`, `Start`, `End`, `Points`
+   - Label: `Selected Polygon Vertices`
+   - Vertex table:
+     - Columns: `X`, `Y`
+   - `Draw Polygons In Preview`
+   - Buttons:
+     - `Draw Polygon`
+     - `Close Polygon`
+     - `Cancel Draft`
+     - `Delete Last Polygon`
+     - `Clear All Polygons`
+   - Hint label.
+   - Stretch.
+
+5. `Titles`
+   - Heading: `Titles`
+   - Clip label.
+   - Details label.
+   - Group `Title Text`:
+     - `QPlainTextEdit` title text editor.
+   - Position row:
+     - `X:` label and X spin.
+     - `Y:` label and Y spin.
+   - Font row:
+     - `Font:` label.
+     - Font family combo.
+     - Font size spin.
+   - Style row:
+     - `Bold`
+     - `Italic`
+     - `Color` button.
+     - `Opacity:` label and opacity spin.
+   - Shadow row:
+     - `Shadow`
+     - `Shadow Color` button.
+     - Shadow opacity spin.
+     - `DX:` and X offset spin.
+     - `DY:` and Y offset spin.
+   - Window row:
+     - `Window`
+     - `Window Color` button.
+     - Window opacity spin.
+     - `Pad:` and padding spin.
+   - Window frame row:
+     - `Frame`
+     - `Frame Color` button.
+     - Frame opacity spin.
+     - `W:` and width spin.
+     - `Gap:` and gap spin.
+   - Button row:
+     - `Add Title At Playhead`
+     - `Remove Selected`
+   - Center row:
+     - `Center H`
+     - `Center V`
+   - `Auto-scroll to playhead`
+   - Title keyframe table:
+     - Columns: `Start`, `End`, `Frame`, `Text`, `X`, `Y`, `Size`,
+       `Opacity`, `Interp`
+
+6. `Sync`
+   - Heading: `Sync`
+   - Clip label.
+   - Details label.
+   - `Clear All Sync Points`
+   - Sync table:
+     - Columns: `Clip`, `Frame`, `Count`, `Action`
+
+7. `Keyframes`
+   - Heading: `Keyframes`
+   - Clip label.
+   - Details label.
+   - Transform form:
+     - `Translate X`
+     - `Translate Y`
+     - `Rotation`
+     - `Scale X`
+     - `Scale Y`
+     - `Interpolation` combo with `Step`, `Linear`
+   - Checkboxes:
+     - `Lock Scale`
+     - `Clip-Relative Frames`
+     - `Skip Aware Timing`
+     - `Auto Scroll`
+     - `Follow Current Keyframe`
+     - `Mirror Horizontal`
+     - `Mirror Vertical`
+   - Button row:
+     - `Add Keyframe`
+     - `Remove Keyframe`
+     - `Flip Horizontal`
+   - Video keyframe table:
+     - Columns: `Frame`, `X`, `Y`, `Rot`, `Scale X`, `Scale Y`, `Interp`
+
+8. `Transcript`
+   - Heading: `Transcript`
+   - Child: `QSplitter(Qt::Vertical)`
+     - `setChildrenCollapsible(false)`
+     - Child 0: settings scroll area
+       - `QScrollArea`
+         - Widget resizable.
+         - Frame shape: `QFrame::NoFrame`
+         - Content: settings container
+           - Layout: `QVBoxLayout`
+             - Editable cut title `QLineEdit`.
+             - Details label.
+             - Cut version row:
+               - Label `Cut Version:`
+               - Editable script version combo.
+             - Version buttons row:
+               - `+ New Cut`
+               - `Delete`
+             - Separator line.
+             - Label `Overlay Settings`
+             - Overlay form:
+               - `Overlay` -> `Enable Overlay`
+               - `Window` -> `Show Window`
+               - `Shadow` -> `Show Shadow`
+               - `Title` -> `Show Speaker Title`
+               - `Max Lines` spin.
+               - `Max Chars` spin.
+               - `Follow Word` checkbox.
+               - `X (Norm)` spin.
+               - `Y (Norm)` spin.
+               - `Center` row with `Center H`, `Center V`
+               - `Width` spin.
+               - `Height` spin.
+               - `Font` font combo.
+               - `Font Size` spin.
+               - `Bold` checkbox.
+               - `Italic` checkbox.
+               - `Edit Colors` checkbox.
+               - `Search` line edit.
+               - `Speaker` combo.
+               - `Visibility` -> `Show Lines Not In Active Cut`
+             - Label `Speech Filter`
+             - Speech filter form:
+               - `Speech Filter` -> `Enable Speech Filter`
+               - `Prepend Time` spin.
+               - `Postpend Time` spin.
+               - `Fade Length` spin.
+               - `Transition` -> `Boundary Crossfade`
+               - `Clock Source` combo: `Auto`, `Audio`, `Timeline`
+               - `Audio Warp` combo: `Disabled`, `Varispeed`, `TimeStretch`
+             - Stretch.
+     - Child 1: transcript table
+       - Columns: `Source Start`, `Source End`, `Speaker`, `Text`, `Edits`
+     - Splitter sizes: `{360, 420}`
+
+9. `Speakers`
+   - Heading: `Speakers`
+   - Scroll area:
+     - Widget resizable.
+     - Horizontal scrollbar off.
+     - Content named `speakers.combined_content`
+       - Clip label.
+       - Details label.
+       - Section frame `speakers_identities_section`
+         - Title: `Speaker Identities`
+         - Help label.
+         - AI row:
+           - `Mine Transcript (AI)`
+           - `Find Organizations`
+           - `Clean Assignments`
+         - Mapping content row:
+           - Speaker list panel:
+             - `Hide Unidentified Speakers`
+             - `Show Contiguous Transcript Sections`
+             - `Show Current Speaker Name at Bottom`
+             - `Show Current Speaker Organization at Bottom`
+             - Current-speaker text form:
+               - `Name Size`
+               - `Organization Size`
+               - `Name Y Position`
+               - `Organization Y Position`
+             - `SpeakersTable` named `speakers.roster`
+               - Columns: `Avatar`, `Speaker`, `X`, `Y`, `Assigned Tracks`, `+`
+             - `QTableWidget` speaker sections table
+               - Columns: `#`, `Speaker`, `Range`, `Track`, `Words`, `Transcript`
+               - Initially hidden.
+           - Identity panel named `speakers.identity_panel`
+             - Width: `260..440`
+             - `QTabWidget` named `speakers.selected_speaker_tabs`
+               - Tab `Selected Speaker`
+                 - Label `Selected Speaker`
+                 - Selected speaker id label.
+                 - Label `Assigned Tracks`
+                 - Assigned tracks icon list.
+                 - Header row:
+                   - Label `Tracks At Playhead`
+                   - `Show`
+                   - Stretch.
+                   - `Add Selected Tracks`
+                 - Playhead tracks icon list.
+                 - Navigation/actions row:
+                   - `Previous Sentence`
+                   - `Next Sentence`
+                   - `Next Section`
+                   - `Random Sentence`
+                 - Label `Current Speaker Sentence`
+                 - Current sentence label.
+                 - Tracking status label.
+                 - Stretch.
+               - Tab `Transcript`
+                 - Embedded speaker transcript table:
+                   - Columns: `Source Start`, `Source End`, `Speaker`, `Text`, `Edits`
+       - Section frame `speakers_continuity_section`
+         - Continuity section widget named `speakers.section.continuity`
+           - Title: `Continuity Tracks`
+           - Help label.
+           - Action grid:
+             - `Generate Continuity Tracks`
+             - `View Continuity Artifact`
+             - `Continuity Track Tools`
+             - `Refresh Track Avatars`
+           - Title: `Continuity Track Results`
+           - Help label.
+           - Status row:
+             - Disabled `Raw detections available`
+             - Disabled `Continuity tracks available`
+             - Stretch.
+           - `Show Continuity Tracks in Preview`
+           - `Show Raw Detections in Preview`
+           - Continuity table:
+             - Columns: `Stream`, `Track`, `Frames`, `Range`, `Source`
+           - Read-only details editor.
+           - Title: `Raw Detections At Current Frame`
+           - Help label.
+           - Raw detection table:
+             - Columns: `#`, `Conf`, `X`, `Y`, `W`, `H`
+           - Read-only raw detection details editor.
+       - Section frame `speakers_framing_section`
+         - Title: `Framing`
+         - Help label.
+         - Chip row:
+           - Assigned tracks count label.
+           - Continuity tracks status label.
+           - `Speaker Tracking: OFF` chip button.
+           - `Face Stabilize: OFF` chip button.
+           - Stretch.
+         - Disclosure `Target`
+           - Help label.
+           - `Enable Target Box`
+           - Form:
+             - `Target X` spin plus `Center`
+             - `Target Y` spin plus `Center`
+             - `Target Box`
+             - `Center Smoothing`
+             - `Zoom Smoothing`
+             - `Smoothing Mode`
+             - `Pan Strength`
+             - `Zoom Strength`
+             - `Gap Hold`
+         - `Apply Face Stabilize To Selected Clip`
+         - Face-stabilize keyframe table:
+           - Columns: `Frame`, `Face Stabilize`, `Target X`, `Target Y`,
+             `Target Box`
+         - Face-stabilize status label.
+       - Section frame `speakers_debug_section`
+         - Debug section widget named `speakers.section.debug`
+           - Title: `Debug Artefacts`
+           - `Enable Debug Capture`
+           - Actions row:
+             - `Open Latest Debug Run`
+             - `Export Debug Bundle`
+             - Stretch.
+           - Debug status label.
+       - Stretch.
+
+10. `Properties`
+    - Heading: `Properties`
+    - Clip section:
+      - Clip label.
+      - Proxy usage label.
+      - Playback source label.
+      - Form:
+        - `Playback Speed` spin.
+      - Original media info label.
+      - Proxy info label.
+    - Track section:
+      - Label `Track`
+      - Track label.
+      - Track details label.
+      - Track form:
+        - `Track Name`
+        - `Track Height`
+        - `Track Visuals`
+        - `Crossfade`
+      - `Track Audio Enabled`
+      - `Crossfade Consecutive Clips`
+    - Audio section:
+      - Label `Audio`
+      - Audio clip label.
+      - Audio details label.
+    - Stretch.
+
+11. `Clips`
+    - Heading: `Clips`
+    - Clips table:
+      - Columns: `Name`, `Track`, `Type`, `Start`, `Duration`, `File`
+
+12. `History`
+    - Heading: `History`
+    - History table:
+      - Columns: `Index`, `Summary`
+
+13. `Tracks`
+    - Heading: `Tracks`
+    - Tracks table:
+      - Columns: `Track`, `Visual`, `Audio`
+
+14. `Preview`
+    - Heading: `Preview`
+    - Summary label.
+    - `Hide Content Outside Output Window`
+    - `Show FaceDetections Points`
+    - Vulkan presenter form:
+      - Combo values:
+        - `Embedded In Preview Pane`
+        - `Direct Native Swapchain Window`
+    - Label `Zoom`
+    - Zoom row:
+      - Preview zoom spin.
+      - `Reset`
+    - Zoom help label.
+    - Stretch.
+
+15. `Audio`
+    - Heading: `Audio`
+    - Summary label.
+    - Current speaker section:
+      - Label `Current Speaker`
+      - Current speaker title label.
+      - Current speaker details label.
+    - Audio dynamics form:
+      - `Amplify` -> enable checkbox.
+      - `Amplify Gain`
+      - `Hover Info`
+      - `Waveform`
+      - `Visualization` combo: `Waveform`, `Spectrum`
+      - `Spectrum` -> `Spectrum Settings...`
+      - `Waveform Source` -> `Preview`
+      - `Normalize`
+      - `Normalize Target`
+      - `Selective Normalize`
+      - `Selective Min Segment`
+      - `Selective Peak Threshold`
+      - `Selective Passes`
+      - `Selective Overlay`
+      - `Transcript Normalize`
+      - `Peak Reduction`
+      - `Peak Threshold`
+      - `Limiter`
+      - `Limiter Threshold`
+      - `Compressor`
+      - `Compressor Threshold`
+      - `Compressor Ratio`
+    - Stretch.
+
+16. `AI Assist`
+    - Heading: `AI Assist`
+    - Summary label.
+    - Status label.
+    - Disclosure `AI Actions`
+      - Model form:
+        - `Model` combo named `ai.model_combo`
+      - Action row 1:
+        - `Transcribe (AI)`
+        - `Mine Transcript (AI)`
+      - Action row 2:
+        - `Find Organizations`
+        - `Clean Assignments`
+      - Auth hint label.
+      - Subscription row:
+        - `Subscribe to AI`
+        - Stretch.
+    - Disclosure `Chat`
+      - Chat history `QTextBrowser` named `ai.chat_history`
+      - Prompt label.
+      - Chat input `QPlainTextEdit` named `ai.chat_input`
+      - Button row:
+        - Stretch.
+        - `Send`
+        - `Clear`
+    - Stretch.
+
+17. `Access`
+    - Heading: `Subscriptions & Purchases`
+    - Summary label.
+    - Status label.
+    - Access table named `access.table`
+      - Columns: `Type`, `Item`, `Status`, `Period`, `Source`
+    - Actions row:
+      - Stretch.
+      - `Refresh`
+
+18. `Output`
+    - Heading: `Output`
+    - Disclosure `Export Range`
+      - Range summary label.
+    - Disclosure `Render Settings`
+      - Form:
+        - `Output Width`
+        - `Output Height`
+        - `Timeline / Output FPS`
+        - `Export Range`
+          - Row with `Start` bubble, start spin, `End` bubble, end spin.
+        - `Output Format` combo:
+          - `MP4`, `MOV`, `WebM`, `PNG Sequence`, `JPEG Sequence`
+        - `Export Backend` combo:
+          - `Vulkan`
+        - `Background` color button.
+      - `Use Proxies For Render`
+      - `Also Create Video From Sequence`
+    - Disclosure `Render Action`
+      - `Render`
+    - Stretch.
+
+19. `Pipeline`
+    - Heading: `Pipeline`
+    - Preview host named `pipelinePreviewHost`
+      - Minimum height: `180`
+    - Stage list:
+      - `QListWidget`
+      - List mode.
+      - Icon size: `96 x 54`
+      - Word wrap enabled.
+      - No selection.
+
+20. `System`
+    - Heading: `System`
+    - Decode form:
+      - `H.264/H.265 CPU Threading` combo:
+        - `Auto (Recommended)`
+        - `Single Thread (Safest)`
+        - `Slice Threads (Balanced)`
+        - `Frame + Slice Threads (Fastest)`
+    - Profile summary table:
+      - Columns: `Property`, `Value`
+    - `Run Decode Benchmark`
+    - `Restart All Decoders`
+
+21. `Projects`
+    - Heading: `Projects`
+    - Active project summary label named `projects.active_summary`
+    - Project path summary label named `projects.path_summary`
+    - Button row:
+      - `New`
+      - `Save As`
+      - `Rename`
+    - Projects list named `projects.list`
+
+22. `Preferences`
+    - Heading: `Preferences`
+    - Summary label.
+    - Disclosure `Autosave`
+      - Form:
+        - `Autosave Interval`
+        - `Autosave Backups`
+    - Disclosure `Timeline`
+      - Form:
+        - `Audio Envelope Granularity`
+    - Disclosure `Playback + Decode`
+      - `Allow Cached-Frame Fallback During Playback`
+      - `Enable Lead Prefetch`
+      - Form:
+        - `Lead Prefetch Count`
+        - `Playback Window Ahead`
+        - `Visible Queue Reserve`
+        - `Prefetch Max Queue`
+        - `Prefetch Max Inflight`
+        - `Prefetch Max Per Tick`
+        - `Skip Visible Pending Threshold`
+        - `Decoder Lane Count`
+        - `Render Pipeline`
+      - `Deterministic Pipeline`
+      - `Reset Pipeline Defaults`
+    - Disclosure `Feature Flags`
+      - `Enable AI Assist`
+      - `Enable AI Speaker Cleanup`
+      - `Enable Audio Preview Mode`
+      - `Enable Audio Dynamics Tools`
+    - Stretch.
+
+## Layout Constraints
+
+- The top-level shell is always three columns: explorer, editor, inspector.
+- Main splitter children are non-collapsible.
+- Editor splitter children are non-collapsible.
+- Timeline bottom area is a grid, not a splitter:
+  - Track controls and transport always stay aligned by row.
+  - Track sidebar and timeline canvas always stay aligned by row.
+- The right inspector dock expands only the tab rail, not the whole inspector
+  content hierarchy.
+- Transport controls shed optional widgets by width in this order:
+  - Under `760`: hide audio status.
+  - Under `700`: hide audio tools.
+  - Under `620`: hide audio volume.
+  - Under `560`: hide preview mode.
+  - Under `500`: hide playback speed.
+  - Under `460`: hide loop.
+  - Under `360`: hide mute.
 
 ## Verification Checklist
 
-1. Drag left and right splitter handles aggressively:
-   - Side panes remain visible.
-   - Center pane never consumes entire window.
-2. Hover Inspector tab rail:
-   - Default state shows icons only.
-   - Hover state reveals labels.
-   - Inspector content remains visible.
-3. Restart editor:
-   - Layout behavior remains consistent.
-
-## Scope
-
-- These constraints are intentionally simple and global.
-- If future UX requires more flexibility, update this file and keep limits explicit.
-
-## AI + Audio Controls Placement
-
-- AI panel remains in preview bottom-right, but only as a compact block:
-  - Status line
-  - Model selector
-  - Two rows of actions
-- Audio controls in transport remain compact:
-  - `Preview: Video|Audio` combo
-  - `FX` button
-
-### Feature-flag behavior
-
-When disabled by project flags, controls remain visible but disabled with explicit tooltip reason:
-- `feature_ai_panel`
-- `feature_ai_speaker_cleanup`
-- `feature_audio_preview_mode`
-- `feature_audio_dynamics_tools`
-
-This keeps spatial consistency while making gating obvious.
+1. Drag main horizontal splitter handles aggressively:
+   - Explorer, editor, and inspector remain present.
+   - The center editor column does not permanently cover either side column.
+2. Drag editor vertical splitter:
+   - Preview and timeline remain present.
+3. Drag the track sidebar width handle:
+   - Placeholder and sidebar widths remain synchronized.
+   - Width stays within `110..360`.
+4. Hover the inspector tab rail:
+   - Collapsed rail shows icons only at width `48`.
+   - Hover/expanded rail shows icon plus text at width `156`.
+   - Active inspector page remains visible while rail expands.
+5. Resize the center column:
+   - Transport optional controls hide at their width thresholds.
+   - Core navigation, play, razor, seek, timecode, and zoom-fit remain usable.
+6. Use explorer tree and gallery:
+   - Tree page shows the filesystem model rooted at the media root.
+   - Double-clicking a directory opens gallery page.
+   - Back returns to tree page.
+   - Double-clicking a file or image sequence adds it to the timeline.

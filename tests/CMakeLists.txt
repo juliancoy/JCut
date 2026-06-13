@@ -19,6 +19,7 @@ set(EDITOR_TEST_TARGETS
     test_waveform_service
     test_shader_grading_logic
     test_grading_keyframes
+    test_editor_runtime
     test_facedetections_time_mapping
     test_facedetections_tracking
     test_facedetections_assignment
@@ -40,6 +41,7 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
     target_link_libraries(${test_target}
         PRIVATE
             editor_test_support
+            jcut_editor_runtime
             Qt6::Test
     )
     target_compile_definitions(${test_target}
@@ -54,6 +56,11 @@ foreach(test_target IN LISTS EDITOR_TEST_TARGETS)
         ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
     )
 endforeach()
+
+target_sources(test_editor_runtime
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../editor_runtime_qt_bridge.cpp
+)
 
 target_sources(test_no_proxy_hardware_playback_contract
     PRIVATE
@@ -138,42 +145,6 @@ set_tests_properties(test_vulkan_subtitle_render PROPERTIES
     ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
-add_executable(test_opengl_vulkan_render_exactness
-    ${CMAKE_CURRENT_SOURCE_DIR}/test_opengl_vulkan_render_exactness.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../render_gpu.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer_backend.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../offscreen_vulkan_renderer_helpers.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../gl_frame_texture_shared.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../render_decode.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../cpu_overlay_render_backend.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../render_stats.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../titles.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../vulkan_detector_frame_handoff.cpp
-)
-target_link_libraries(test_opengl_vulkan_render_exactness
-    PRIVATE
-        editor_test_support
-        Qt6::Test
-        Vulkan::Vulkan
-)
-if(CUDA_DRIVER_LIBRARY)
-    target_link_libraries(test_opengl_vulkan_render_exactness PRIVATE ${CUDA_DRIVER_LIBRARY})
-endif()
-target_compile_definitions(test_opengl_vulkan_render_exactness
-    PRIVATE
-        JCUT_VULKAN_SHADER_DIR="${JCUT_VULKAN_SHADER_OUTPUT_DIR}"
-        JCUT_HAS_CUDA_DRIVER=$<IF:$<BOOL:${CUDA_DRIVER_LIBRARY}>,1,0>
-)
-if(TARGET jcut_vulkan_shaders)
-    add_dependencies(test_opengl_vulkan_render_exactness jcut_vulkan_shaders)
-endif()
-jcut_force_bundled_ffmpeg_runtime(test_opengl_vulkan_render_exactness)
-add_test(NAME test_opengl_vulkan_render_exactness COMMAND test_opengl_vulkan_render_exactness)
-set_tests_properties(test_opengl_vulkan_render_exactness PROPERTIES
-    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
-)
-
 add_executable(test_facedetections_processed_artifact
     ${CMAKE_CURRENT_SOURCE_DIR}/test_facedetections_processed_artifact.cpp
 )
@@ -214,6 +185,59 @@ add_test(
 set_tests_properties(test_live_playback_lag_probe PROPERTIES
     LABELS "temporal;live"
     SKIP_RETURN_CODE 77
+)
+
+add_test(
+    NAME test_imgui_binary_no_qt
+    COMMAND ${JCUT_PYTHON3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_imgui_binary_no_qt.py
+            ${CMAKE_CURRENT_BINARY_DIR}/../jcut_imgui
+)
+set_tests_properties(test_imgui_binary_no_qt PROPERTIES
+    LABELS "imgui;linkage"
+    SKIP_RETURN_CODE 77
+)
+
+add_executable(test_imgui_standalone_render
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_imgui_standalone_render.cpp
+)
+target_link_libraries(test_imgui_standalone_render
+    PRIVATE
+        jcut_imgui_runtime
+        Qt6::Test
+)
+target_compile_definitions(test_imgui_standalone_render
+    PRIVATE
+        JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+        JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
+        EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
+)
+jcut_force_bundled_ffmpeg_runtime(test_imgui_standalone_render)
+add_test(NAME test_imgui_standalone_render COMMAND test_imgui_standalone_render)
+set_tests_properties(test_imgui_standalone_render PROPERTIES
+    LABELS "imgui;render"
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
+)
+
+add_executable(test_imgui_standalone_export
+    ${CMAKE_CURRENT_SOURCE_DIR}/test_imgui_standalone_export.cpp
+)
+target_link_libraries(test_imgui_standalone_export
+    PRIVATE
+        jcut_imgui_runtime
+        Qt6::Test
+)
+target_compile_definitions(test_imgui_standalone_export
+    PRIVATE
+        JCUT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+        JCUT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}/.."
+        EDITOR_FFMPEG_PREFIX="${EDITOR_FFMPEG_PREFIX}"
+)
+jcut_force_bundled_ffmpeg_runtime(test_imgui_standalone_export)
+add_test(NAME test_imgui_standalone_export COMMAND test_imgui_standalone_export)
+set_tests_properties(test_imgui_standalone_export PROPERTIES
+    LABELS "imgui;render;export"
+    ENVIRONMENT "LD_LIBRARY_PATH=${EDITOR_FFMPEG_PREFIX}/lib:$ENV{LD_LIBRARY_PATH}"
 )
 
 add_test(

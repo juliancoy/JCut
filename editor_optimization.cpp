@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "debug_controls.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -30,9 +31,6 @@ QString backendFamilyForName(const QString& backendName)
     const QString lowered = backendName.trimmed().toLower();
     if (lowered.contains(QStringLiteral("vulkan"))) {
         return QStringLiteral("vulkan");
-    }
-    if (lowered.contains(QStringLiteral("opengl"))) {
-        return QStringLiteral("opengl");
     }
     return lowered.isEmpty() ? QStringLiteral("unknown") : lowered;
 }

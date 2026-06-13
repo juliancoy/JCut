@@ -1,10 +1,10 @@
 #pragma once
 
+#include "core/geometry.h"
 #include "render.h"
 
 #include "async_decoder.h"
 #include "debug_controls.h"
-#include "gl_frame_texture_shared.h"
 #include "media_pipeline_shared.h"
 #include "cpu_overlay_render_backend.h"
 #include "cpu_render_fallback.h"
@@ -19,13 +19,6 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QOffscreenSurface>
-#include <QOpenGLBuffer>
-#include <QOpenGLContext>
-#include <QOpenGLFramebufferObject>
-#include <QOpenGLFunctions>
-#include <QOpenGLShaderProgram>
-#include <QSurfaceFormat>
 #include <QElapsedTimer>
 #include <QTimer>
 
@@ -53,7 +46,6 @@ extern "C" {
 
 #ifdef EDITOR_HAS_CUDA
 #include <cuda.h>
-#include <cudaGL.h>
 #endif
 
 namespace render_detail {
@@ -199,7 +191,6 @@ QVector<TimelineClip> sortedVisualClips(const QVector<TimelineClip>& clips,
 QVector<TimelineClip> sortedTranscriptOverlayClips(const QVector<TimelineClip>& clips,
                                                    const QVector<TimelineTrack>& tracks);
 
-class OffscreenGpuRendererPrivate;
 class OffscreenVulkanRendererPrivate;
 
 struct OffscreenVulkanFrame {
@@ -213,7 +204,7 @@ struct OffscreenVulkanFrame {
     VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat imageFormat = VK_FORMAT_UNDEFINED;
     int readySemaphoreFd = -1;
-    QSize size;
+    jcut::core::SizeI size;
     bool queueSupportsCompute = false;
     bool valid = false;
 };
@@ -371,33 +362,6 @@ public:
                                      qint64* readbackMs = nullptr) = 0;
     virtual bool supportsCudaExternalMemoryInterop() const { return false; }
     virtual QString backendId() const = 0;
-};
-
-class OffscreenGpuRenderer : public OffscreenRenderer {
-public:
-    using OffscreenRenderer::renderFrame;
-    using OffscreenRenderer::renderFrameToOutput;
-
-    OffscreenGpuRenderer();
-    ~OffscreenGpuRenderer() override;
-
-    bool initialize(const QSize& outputSize, QString* errorMessage) override;
-    QImage renderFrame(const OffscreenRenderContext& context) override;
-    bool renderFrameToOutput(const OffscreenRenderContext& context,
-                             OffscreenRenderFrame* output,
-                             bool readbackToCpuImage = false) override;
-    bool convertLastFrameToNv12(AVFrame* frame,
-                                qint64* nv12ConvertMs = nullptr,
-                                qint64* readbackMs = nullptr) override;
-    bool convertLastFrameToYuv420p(AVFrame* frame,
-                                   qint64* convertMs = nullptr,
-                                   qint64* readbackMs = nullptr) override;
-    bool copyLastFrameToBgra(AVFrame* frame,
-                             qint64* readbackMs = nullptr) override;
-    QString backendId() const override;
-
-private:
-    std::unique_ptr<OffscreenGpuRendererPrivate> d;
 };
 
 class OffscreenVulkanRenderer : public OffscreenRenderer {

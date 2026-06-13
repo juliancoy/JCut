@@ -225,7 +225,7 @@ bool VulkanZeroCopyFaceDetector::preprocessScrfdToTensor(const VulkanExternalIma
         setError(errorMessage, QStringLiteral("zero-copy Vulkan face detector is not initialized"));
         return false;
     }
-    if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+    if (source.imageView == VK_NULL_HANDLE || !source.size.valid()) {
         setError(errorMessage, QStringLiteral("invalid source image for SCRFD zero-copy preprocessing"));
         return false;
     }
@@ -234,8 +234,8 @@ bool VulkanZeroCopyFaceDetector::preprocessScrfdToTensor(const VulkanExternalIma
         return false;
     }
 
-    const int width = source.size.width();
-    const int height = source.size.height();
+    const int width = source.size.width;
+    const int height = source.size.height;
     targetSize = qMax(320, targetSize);
     int resizedW = width;
     int resizedH = height;
@@ -347,7 +347,7 @@ bool VulkanZeroCopyFaceDetector::preprocessToTensor(const VulkanExternalImage& s
         setError(errorMessage, QStringLiteral("zero-copy Vulkan face detector is not initialized"));
         return false;
     }
-    if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+    if (source.imageView == VK_NULL_HANDLE || !source.size.valid()) {
         setError(errorMessage, QStringLiteral("invalid source image for zero-copy face preprocessing"));
         return false;
     }

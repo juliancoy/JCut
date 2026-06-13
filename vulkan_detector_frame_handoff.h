@@ -1,12 +1,14 @@
 #pragma once
 
+#include "core/geometry.h"
 #include "frame_handle.h"
 #include "vulkan_zero_copy_face_detector.h"
 
 #include <QElapsedTimer>
-#include <QSize>
 #include <QString>
 #include <QtGlobal>
+
+#include <string>
 
 namespace render_detail {
 struct OffscreenVulkanFrame;
@@ -51,7 +53,7 @@ public:
     VulkanDetectorFrameHandoff(const VulkanDetectorFrameHandoff&) = delete;
     VulkanDetectorFrameHandoff& operator=(const VulkanDetectorFrameHandoff&) = delete;
 
-    bool initialize(const VulkanDeviceContext& context, QString* errorMessage = nullptr);
+    bool initialize(const VulkanDeviceContext& context, std::string* errorMessage = nullptr);
     void release();
 
     bool isInitialized() const { return m_initialized; }
@@ -67,18 +69,18 @@ public:
     bool uploadFrame(const editor::FrameHandle& frame,
                      bool allowCpuUploadFallback,
                      double* uploadMs = nullptr,
-                     QString* errorMessage = nullptr);
+                     std::string* errorMessage = nullptr);
     bool recordHardwareFrameUpload(VkCommandBuffer commandBuffer,
                                    const editor::FrameHandle& frame,
                                    double* uploadMs = nullptr,
-                                   QString* errorMessage = nullptr);
+                                   std::string* errorMessage = nullptr);
     bool finishPendingUpload(double* uploadMs = nullptr,
-                             QString* errorMessage = nullptr);
+                             std::string* errorMessage = nullptr);
     bool importOffscreenFrame(const render_detail::OffscreenVulkanFrame& frame,
-                              QString* errorMessage = nullptr);
+                              std::string* errorMessage = nullptr);
     bool recordImportedFrameCopy(VkCommandBuffer commandBuffer,
                                  const render_detail::OffscreenVulkanFrame& frame,
-                                 QString* errorMessage = nullptr);
+                                 std::string* errorMessage = nullptr);
     QString lastHardwareDirectAttemptReason() const { return m_lastHardwareDirectAttemptReason; }
     FrameHandoffResourceStats resourceStats() const { return m_resourceStats; }
     void resetResourceStats();
@@ -91,13 +93,13 @@ private:
                            QString* errorMessage);
     bool prepareCudaHardwareFrame(const editor::FrameHandle& frame,
                                   bool* isNv12,
-                                  QSize* size,
+                                  jcut::core::SizeI* size,
                                   int* yPitch,
                                   int* uvPitch,
                                   double* uploadMs,
                                   QString* errorMessage);
     bool recordCudaHardwareFrameCopy(VkCommandBuffer commandBuffer,
-                                     const QSize& size,
+                                     const jcut::core::SizeI& size,
                                      QString* errorMessage);
     bool recordNv12Conversion(VkCommandBuffer commandBuffer,
                               int width,
@@ -121,10 +123,10 @@ private:
                                    int yPitch,
                                    int uvPitch,
                                    QString* errorMessage);
-    bool ensureImageResources(const QSize& size,
+    bool ensureImageResources(const jcut::core::SizeI& size,
                               VkFormat format,
                               QString* errorMessage);
-    bool ensureImportedImageResources(const QSize& size,
+    bool ensureImportedImageResources(const jcut::core::SizeI& size,
                                       VkFormat format,
                                       QString* errorMessage);
     bool copyImportedFrameToLocal(VkImageLayout sourceLayout,
@@ -152,7 +154,7 @@ private:
     VkImageView m_imageView = VK_NULL_HANDLE;
     VkImageLayout m_imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat m_imageFormat = VK_FORMAT_UNDEFINED;
-    QSize m_imageSize;
+    jcut::core::SizeI m_imageSize;
     bool m_imageImported = false;
     VkDevice m_importSourceDevice = VK_NULL_HANDLE;
     VkDeviceMemory m_importSourceMemory = VK_NULL_HANDLE;
@@ -161,7 +163,7 @@ private:
     VkImageView m_importedImageView = VK_NULL_HANDLE;
     VkImageLayout m_importedImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     VkFormat m_importedImageFormat = VK_FORMAT_UNDEFINED;
-    QSize m_importedImageSize;
+    jcut::core::SizeI m_importedImageSize;
 
     VkBuffer m_stagingBuffer = VK_NULL_HANDLE;
     VkDeviceMemory m_stagingMemory = VK_NULL_HANDLE;

@@ -6,6 +6,26 @@ Add a non-Qt Dear ImGui implementation of JCut while keeping the existing Qt edi
 
 Shared functionality should move behind Qt-free subsystem APIs, with Qt and ImGui acting as separate shells over the same editor/runtime core.
 
+The ImGui build must use the same project root, active-project marker, `state.json`, and `history.json` files as the Qt build, and the target end state is full UI coverage rather than a reduced shell.
+
+## Progress Update
+
+Completed in the current implementation:
+
+- `jcut_imgui` is a separate Qt-free executable.
+- ImGui project/session loading uses the same active-project and state/history files as the Qt build.
+- ImGui preview rendering no longer links the Qt render path.
+- ImGui export now has a Qt-free standalone FFmpeg backend and no longer depends on the Qt exporter.
+- Standalone export now supports encoded video plus image-sequence output in the ImGui build.
+- `ImGuiPreviewWindow` no longer exposes Qt string/size state internally; remaining Qt coupling there is limited to upstream geometry/handoff boundaries.
+- `VulkanDetectorFrameHandoff` now exposes neutral `std::string` error plumbing to its callers, with Qt conversions kept inside detector-facing implementations and Qt shells.
+
+Still remaining for full parity:
+
+- move richer composition, overlays, transcript rendering, and effect evaluation behind the same neutral renderer contract
+- carry the remaining Qt-bound subsystem surfaces out of shared headers
+- close behavioral gaps between the current standalone renderer and the full Qt/Vulkan renderer
+
 ## Key Constraint
 
 Do not start by replacing the Qt UI.
@@ -207,6 +227,12 @@ Exit criteria:
 - Qt export still works through adapter shims.
 - strict Vulkan paths fail loudly on unexpected CPU materialization.
 
+Status:
+
+- standalone ImGui preview is now Qt-free
+- standalone ImGui export is now Qt-free
+- shared render contracts still need deeper parity work before this phase is fully complete across all renderer features
+
 ## Phase 5: Decouple Project, Transcript, And JSON Services
 
 Move project and transcript operations out of Qt JSON APIs.
@@ -269,7 +295,7 @@ Initial ImGui layout:
 - transcript/speakers/effects tabs as dockable panels
 - export/progress modal or dock panel
 
-Do not try to reproduce every Qt widget one-for-one. Implement the editor workflows against shared runtime commands.
+The final ImGui build must include the entire Qt UI surface. Partial shells are acceptable only as migration checkpoints while shared subsystems are being extracted.
 
 First usable milestone:
 
@@ -333,3 +359,22 @@ Add shell smoke tests:
 Shared functionality must move downward into Qt-free subsystems. Qt and Dear ImGui should only contain presentation, input handling, and adapter code.
 
 Any logic duplicated between the two shells should be treated as a migration bug.
+
+## Progress Update
+
+- Completed another backend-decoupling phase focused on Vulkan frame/image contracts.
+- `render_detail::OffscreenVulkanFrame`, `jcut::vulkan_detector::VulkanExternalImage`,
+  `DirectVulkanFrameHandoffPipeline::Result`, and decoder-preparation size plumbing now use
+  `jcut::core::SizeI` instead of `QSize`.
+- Added neutral equality/operators on `jcut::core::SizeI` and kept Qt conversions at shell/runtime
+  edges only.
+- Updated Qt-side consumers to convert explicitly at the boundary:
+  `direct_vulkan_preview_window.cpp`, `direct_vulkan_frame_handoff_pipeline.cpp`,
+  `facedetections_runtime.cpp`, and `vulkan_facedetections_offscreen_runner.cpp`.
+- Verified after the change:
+  - `cmake --build build -j2 --target jcut_vulkan_facedetections_offscreen`
+  - `cmake --build build -j2 --target editor`
+  - `cmake --build build -j2 --target jcut_imgui`
+  - `ctest --test-dir build -R 'test_imgui_binary_no_qt|test_imgui_standalone_render|test_imgui_standalone_export' --output-on-failure`
+- Remaining work on this track is to remove the larger Qt request/result/JSON and renderer-surface
+  types that still sit above these now-neutral Vulkan/backend contracts.

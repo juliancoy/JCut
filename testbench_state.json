@@ -55,7 +55,7 @@
   "playbackClockSource": "auto",
   "playbackAudioWarpMode": "quality",
   "previewViewMode": 0,
-  "render_backend": "opengl",
+  "render_backend": "vulkan",
   "audioAmplifyEnabled": false,
   "audioAmplifyDb": 0.0,
   "audioSpeakerHoverModalEnabled": true,
@@ -2208,7 +2208,7 @@
       "titleKeyframes": [
         {
           "frame": 0,
-          "text": "Vulkan / OpenGL Parity Testbench",
+          "text": "Vulkan Render Testbench",
           "translationX": 0.0,
           "translationY": -220.0,
           "fontSize": 68.0,

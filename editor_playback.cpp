@@ -12,6 +12,10 @@
 #include <cmath>
 #include <algorithm>
 
+extern "C" {
+#include <libavutil/hwcontext.h>
+}
+
 namespace editor {
 
 namespace {

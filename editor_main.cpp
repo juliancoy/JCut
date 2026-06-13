@@ -186,7 +186,7 @@ int main(int argc, char **argv)
     }
 
     if (parser.isSet(speakerHarnessOption)) {
-        SpeakerExportHarnessConfig config;
+        editor::SpeakerExportHarnessConfig config;
         config.statePath = parser.value(stateOption);
         config.outputPath = parser.value(outputOption);
         config.outputFormat = parser.value(formatOption);
@@ -205,10 +205,10 @@ int main(int argc, char **argv)
             config.useProxyOverride = true;
             config.useProxyMedia = parser.isSet(useProxyOption) && !parser.isSet(noProxyOption);
         }
-        return runSpeakerExportHarness(config);
+        return editor::runSpeakerExportHarness(config);
     }
 
-    EditorWindow window(controlPort);
+    editor::EditorWindow window(controlPort);
     window.show();
     return app.exec();
 }

@@ -20,6 +20,11 @@
 
 namespace {
 
+jcut::core::SizeI toSizeI(const QSize& size)
+{
+    return {size.width(), size.height()};
+}
+
 struct Options {
     std::string videoPath = "nasreen.mp4";
     std::string proxyPath;
@@ -543,7 +548,7 @@ int main(int argc, char** argv)
         jcut::vulkan_detector::VulkanExternalImage source;
         source.imageView = vk.imageView;
         source.imageLayout = vk.imageLayout;
-        source.size = vk.imageSize;
+        source.size = toSizeI(vk.imageSize);
         jcut::vulkan_detector::VulkanTensorBuffer tensor{vk.tensorBuffer, vk.tensorBytes};
         const auto preStart = std::chrono::steady_clock::now();
         QString preprocessError;

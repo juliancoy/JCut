@@ -265,7 +265,6 @@ void OutputTab::renderFromInspector()
 {
     if (!m_deps.hasTimeline || !m_deps.hasTimeline() ||
         !m_deps.hasClips || !m_deps.hasClips() ||
-        !m_deps.getTimelineClips ||
         !m_deps.renderTimeline) {
         return;
     }
@@ -274,15 +273,16 @@ void OutputTab::renderFromInspector()
         m_deps.stopPlayback();
     }
 
-    RenderRequest request;
-    request.outputFormat = m_widgets.outputFormatCombo
+    jcut::render::RenderRequestCore request;
+    request.outputFormat = (m_widgets.outputFormatCombo
         ? m_widgets.outputFormatCombo->currentData().toString()
-        : QStringLiteral("mp4");
-    if (request.outputFormat.isEmpty()) {
-        request.outputFormat = QStringLiteral("mp4");
+        : QStringLiteral("mp4")).toStdString();
+    if (request.outputFormat.empty()) {
+        request.outputFormat = "mp4";
     }
 
-    const QString defaultFileName = QStringLiteral("render.%1").arg(request.outputFormat);
+    const QString outputFormat = QString::fromStdString(request.outputFormat);
+    const QString defaultFileName = QStringLiteral("render.%1").arg(outputFormat);
     QString defaultPath = defaultFileName;
     QString rememberedPath;
     if (m_deps.lastRenderOutputPath) {
@@ -292,7 +292,7 @@ void OutputTab::renderFromInspector()
             const QString completeBaseName = previousInfo.completeBaseName().isEmpty()
                                                  ? QStringLiteral("render")
                                                  : previousInfo.completeBaseName();
-            defaultPath = previousInfo.dir().filePath(QStringLiteral("%1.%2").arg(completeBaseName, request.outputFormat));
+            defaultPath = previousInfo.dir().filePath(QStringLiteral("%1.%2").arg(completeBaseName, outputFormat));
             rememberedPath = defaultPath;
         }
     }
@@ -303,7 +303,7 @@ void OutputTab::renderFromInspector()
             nullptr,
             QStringLiteral("Render Output"),
             defaultPath,
-            QStringLiteral("Video Files (*.%1);;All Files (*)").arg(request.outputFormat));
+            QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
         if (selectedPath.isEmpty()) {
             return;
         }
@@ -324,7 +324,7 @@ void OutputTab::renderFromInspector()
                 nullptr,
                 QStringLiteral("Render Output"),
                 defaultPath,
-                QStringLiteral("Video Files (*.%1);;All Files (*)").arg(request.outputFormat));
+                QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
             if (selectedPath.isEmpty()) {
                 return;
             }
@@ -332,14 +332,14 @@ void OutputTab::renderFromInspector()
             return;
         }
     }
-    request.outputPath = selectedPath;
+    request.outputPath = selectedPath.toStdString();
     if (m_deps.setLastRenderOutputPath) {
         m_deps.setLastRenderOutputPath(selectedPath);
     }
 
-    request.outputSize = QSize(
+    request.outputSize = {
         m_widgets.outputWidthSpin ? m_widgets.outputWidthSpin->value() : 1080,
-        m_widgets.outputHeightSpin ? m_widgets.outputHeightSpin->value() : 1920);
+        m_widgets.outputHeightSpin ? m_widgets.outputHeightSpin->value() : 1920};
     request.outputFps = m_widgets.outputFpsSpin
         ? m_widgets.outputFpsSpin->value()
         : static_cast<double>(kTimelineFps);
@@ -350,25 +350,24 @@ void OutputTab::renderFromInspector()
     request.createVideoFromImageSequence = m_widgets.createImageSequenceCheckBox &&
                                            m_widgets.createImageSequenceCheckBox->isChecked();
     if (request.createVideoFromImageSequence && m_widgets.imageSequenceFormatCombo) {
-        request.imageSequenceFormat = m_widgets.imageSequenceFormatCombo->currentData().toString();
-        if (request.imageSequenceFormat.isEmpty()) {
-            request.imageSequenceFormat = "jpeg";  // Default to JPEG
+        request.imageSequenceFormat = m_widgets.imageSequenceFormatCombo->currentData().toString().toStdString();
+        if (request.imageSequenceFormat.empty()) {
+            request.imageSequenceFormat = "jpeg";
         }
     }
-    
-    request.clips = m_deps.getTimelineClips();
-    request.tracks = m_deps.getTimelineTracks ? m_deps.getTimelineTracks() : QVector<TimelineTrack>{};
-    request.renderSyncMarkers = m_deps.getRenderSyncMarkers
-        ? m_deps.getRenderSyncMarkers()
-        : QVector<RenderSyncMarker>{};
-    request.exportRanges = m_deps.effectivePlaybackRanges ? m_deps.effectivePlaybackRanges()
-                                                          : QVector<ExportRangeSegment>{};
-    request.exportStartFrame = request.exportRanges.isEmpty()
+    const QVector<ExportRangeSegment> exportRanges = m_deps.effectivePlaybackRanges
+        ? m_deps.effectivePlaybackRanges()
+        : QVector<ExportRangeSegment>{};
+    request.exportRangeCount = static_cast<std::size_t>(exportRanges.size());
+    request.outputMode = request.createVideoFromImageSequence
+        ? jcut::render::RenderOutputMode::EncodedFileAndImageSequence
+        : jcut::render::RenderOutputMode::EncodedFile;
+    request.exportStartFrame = exportRanges.isEmpty()
         ? (m_deps.exportStartFrame ? m_deps.exportStartFrame() : 0)
-        : request.exportRanges.constFirst().startFrame;
-    request.exportEndFrame = request.exportRanges.isEmpty()
+        : exportRanges.constFirst().startFrame;
+    request.exportEndFrame = exportRanges.isEmpty()
         ? (m_deps.exportEndFrame ? m_deps.exportEndFrame() : 0)
-        : request.exportRanges.constLast().endFrame;
+        : exportRanges.constLast().endFrame;
 
     m_deps.renderTimeline(request);
 }

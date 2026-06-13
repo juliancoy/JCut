@@ -8,6 +8,15 @@ extern "C" {
 #include <libavutil/pixfmt.h>
 }
 
+namespace {
+
+QSize toQSize(const jcut::core::SizeI& size)
+{
+    return QSize(size.width, size.height);
+}
+
+} // namespace
+
 DirectVulkanFrameHandoffPipeline::DirectVulkanFrameHandoffPipeline() = default;
 DirectVulkanFrameHandoffPipeline::~DirectVulkanFrameHandoffPipeline() = default;
 
@@ -16,8 +25,14 @@ bool DirectVulkanFrameHandoffPipeline::initialize(
     QString* errorMessage)
 {
     m_handoff = std::make_unique<jcut::vulkan_detector::VulkanDetectorFrameHandoff>();
-    if (!m_handoff->initialize(context, errorMessage)) {
-        m_lastError = errorMessage ? *errorMessage : QStringLiteral("Failed to initialize Vulkan frame handoff.");
+    std::string error;
+    if (!m_handoff->initialize(context, &error)) {
+        m_lastError = QString::fromStdString(error.empty()
+            ? std::string("Failed to initialize Vulkan frame handoff.")
+            : error);
+        if (errorMessage) {
+            *errorMessage = m_lastError;
+        }
         m_handoff.reset();
         return false;
     }
@@ -85,7 +100,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         ++stats->handoffAttempts;
     }
 
-    QString error;
+    std::string error;
     double uploadMs = 0.0;
     bool ok = false;
     if (status.externalVulkanFrame) {
@@ -100,7 +115,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
         offscreenFrame.imageLayout = status.externalImageLayout;
         offscreenFrame.imageFormat = status.externalImageFormat;
         offscreenFrame.readySemaphoreFd = status.externalReadySemaphoreFd;
-        offscreenFrame.size = status.frameSize;
+        offscreenFrame.size = {status.frameSize.width(), status.frameSize.height()};
         offscreenFrame.valid = status.hasFrame;
         ok = m_handoff->importOffscreenFrame(offscreenFrame, &error);
     } else {
@@ -108,10 +123,10 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
     }
 
     if (!ok) {
-        m_lastError = error;
+        m_lastError = QString::fromStdString(error);
         if (stats) {
             ++stats->handoffFailures;
-            stats->lastHandoffError = error;
+            stats->lastHandoffError = m_lastError;
             stats->lastHandoffMode = QStringLiteral("invalid");
             const auto& probe = m_handoff->lastProbe();
             stats->lastProbePath = probe.path;
@@ -133,7 +148,7 @@ DirectVulkanFrameHandoffPipeline::Result DirectVulkanFrameHandoffPipeline::recor
     if (stats) {
         ++stats->handoffSuccesses;
         stats->lastUploadMs = uploadMs;
-        stats->lastExternalImageSize = external.size;
+        stats->lastExternalImageSize = toQSize(external.size);
         stats->lastHandoffError.clear();
         stats->lastHandoffMode =
             m_handoff->lastMode() == jcut::vulkan_detector::FrameHandoffMode::HardwareDirect

@@ -12,7 +12,7 @@ RenderBackend parseRenderBackend(const QString& text)
     if (normalized == QStringLiteral("auto")) {
         return RenderBackend::Auto;
     }
-    return RenderBackend::OpenGL;
+    return RenderBackend::Vulkan;
 }
 
 QString renderBackendName(RenderBackend backend)
@@ -24,9 +24,8 @@ QString renderBackendName(RenderBackend backend)
         return QStringLiteral("null");
     case RenderBackend::Auto:
         return QStringLiteral("auto");
-    case RenderBackend::OpenGL:
     default:
-        return QStringLiteral("opengl");
+        return QStringLiteral("vulkan");
     }
 }
 

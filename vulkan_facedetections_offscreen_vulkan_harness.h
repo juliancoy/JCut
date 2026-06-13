@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/geometry.h"
 #include "editor_shared.h"
 #include "frame_handle.h"
 #include "vulkan_detector_frame_handoff.h"
@@ -53,7 +54,7 @@ public:
   void release();
   bool ensureDetectorBuffers(VkDeviceSize tensorBytesIn, int maxDetectionsIn,
                              QString *error);
-  bool ensureResources(const QSize &size, VkDeviceSize tensorBytes,
+  bool ensureResources(const jcut::core::SizeI &size, VkDeviceSize tensorBytes,
                        int maxDetections, QString *error);
   bool uploadCpuImage(const QImage &imageIn, double *uploadMs, QString *error);
   jcut::vulkan_detector::VulkanDeviceContext detectorContext() const;
@@ -77,7 +78,7 @@ public:
   VkDeviceMemory imageMemory = VK_NULL_HANDLE;
   VkImageView imageView = VK_NULL_HANDLE;
   VkImageLayout imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-  QSize imageSize;
+  jcut::core::SizeI imageSize;
   VkBuffer stagingBuffer = VK_NULL_HANDLE;
   VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
   VkDeviceSize stagingSize = 0;
@@ -154,7 +155,7 @@ struct PreparedDecoderDetectionSlot {
   jcut::vulkan_detector::ScrfdTensorLayout scrfdLayout;
   int frameNumber = -1;
   int frameOffset = -1;
-  QSize detectionFrameSize;
+  jcut::core::SizeI detectionFrameSize;
   double decoderUploadMs = 0.0;
   int workerIndex = 0;
   bool hardwareDirectHandoff = false;
@@ -178,7 +179,7 @@ struct DecoderDetectorWorker {
   std::condition_variable cv;
 };
 
-VkDeviceSize scrfdTensorBytesForSourceSize(const QSize &sourceSize,
+VkDeviceSize scrfdTensorBytesForSourceSize(const jcut::core::SizeI &sourceSize,
                                            int targetSize);
 bool prepareRes10DecoderFrame(
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector *preprocessor,
@@ -187,14 +188,14 @@ bool prepareRes10DecoderFrame(
     jcut::vulkan_detector::VulkanDetectorFrameHandoff *handoff,
     const editor::FrameHandle &frame, const QString &paramPath,
     const QString &binPath, bool suppressNcnnInfo, bool allowCpuUploadFallback,
-    double *uploadMs, bool *hardwareDirectUsed, QSize *detectionFrameSize,
+    double *uploadMs, bool *hardwareDirectUsed, jcut::core::SizeI *detectionFrameSize,
     QString *error);
 QVector<Detection> finalizePreparedRes10DecoderFrame(
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector *preprocessor,
     jcut::vulkan_detector::VulkanRes10NcnnFaceDetector *detector,
     VulkanHarnessContext *vk,
     jcut::vulkan_detector::VulkanDetectorFrameHandoff *handoff,
-    const QSize &detectionFrameSize, float threshold, double *vulkanMs,
+    const jcut::core::SizeI &detectionFrameSize, float threshold, double *vulkanMs,
     QString *error);
 bool prepareScrfdDecoderFrame(
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector *preprocessor,
@@ -205,12 +206,12 @@ bool prepareScrfdDecoderFrame(
     const QString &binPath, int targetSize, bool suppressNcnnInfo,
     bool allowCpuUploadFallback,
     jcut::vulkan_detector::ScrfdTensorLayout *layout, double *uploadMs,
-    bool *hardwareDirectUsed, QSize *detectionFrameSize, QString *error);
+    bool *hardwareDirectUsed, jcut::core::SizeI *detectionFrameSize, QString *error);
 QVector<Detection> finalizePreparedScrfdDecoderFrame(
     jcut::vulkan_detector::VulkanZeroCopyFaceDetector *preprocessor,
     jcut::vulkan_detector::VulkanScrfdNcnnFaceDetector *detector,
     VulkanHarnessContext *vk,
     jcut::vulkan_detector::VulkanDetectorFrameHandoff *handoff,
     const jcut::vulkan_detector::ScrfdTensorLayout &layout,
-    const QSize &detectionFrameSize, float threshold, double *vulkanMs,
+    const jcut::core::SizeI &detectionFrameSize, float threshold, double *vulkanMs,
     QString *error);

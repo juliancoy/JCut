@@ -27,10 +27,9 @@ endif()
 
 find_package(PkgConfig REQUIRED)
 find_package(CURL REQUIRED)
-find_package(OpenGL REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(Threads REQUIRED)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent OpenGLWidgets Test
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network Concurrent Test
              OPTIONAL_COMPONENTS CorePrivate GuiPrivate)
 find_program(GLSLANG_VALIDATOR glslangValidator)
 find_library(CUDA_DRIVER_LIBRARY cuda)
@@ -297,6 +296,7 @@ set(EDITOR_EXCLUDED_REGEX
     ".*/professional_example\\.cpp$"
     ".*/test[0-9]*\\.cpp$"
     ".*/imgui_preview_window\\.cpp$"
+    ".*/jcut_imgui_main\\.cpp$"
     # 3D model import/runtime sources depend on motive3d engine files that are not
     # part of this repository build graph (eg. primitive/texture engine runtime).
     # Exclude them from the editor target so standard builds remain reproducible.
@@ -378,14 +378,11 @@ endif()
 
 add_library(editor_core STATIC ${EDITOR_CORE_SOURCES})
 target_sources(editor_core PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/opengl_preview.h
     ${CMAKE_CURRENT_SOURCE_DIR}/timeline_widget.h
     ${CMAKE_CURRENT_SOURCE_DIR}/ui_icons.qrc
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_compute.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_rolling_compute.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/spectrum_settings_dialog.cpp
 )
 
@@ -406,8 +403,6 @@ target_link_libraries(editor_core
         Qt6::Widgets
         Qt6::Network
         Qt6::Concurrent
-        Qt6::OpenGLWidgets
-        OpenGL::GL
         Vulkan::Vulkan
         Threads::Threads
         CURL::libcurl
@@ -528,8 +523,6 @@ target_link_libraries(editor_test_support
         Qt6::Widgets
         Qt6::Network
         Qt6::Concurrent
-        Qt6::OpenGLWidgets
-        OpenGL::GL
         Threads::Threads
         CURL::libcurl
         PkgConfig::FFMPEG
@@ -557,6 +550,86 @@ target_compile_definitions(editor_test_support
 
 jcut_force_bundled_ffmpeg_runtime(editor_test_support)
 
+add_library(jcut_imgui_preview_support STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
+)
+target_include_directories(jcut_imgui_preview_support
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
+        ${CMAKE_CURRENT_BINARY_DIR}/generated
+)
+target_link_libraries(jcut_imgui_preview_support
+    PUBLIC
+        editor_test_support
+        Vulkan::Vulkan
+        PkgConfig::GLFW
+)
+
+add_library(jcut_editor_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_core_json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_render_bridge.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_project_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_contract_json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_control_server.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_overlay_render_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cpu_render_fallback.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_audio.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_codecs.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_decode.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_export.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_gpu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_qt_compat.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_stats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_vulkan_export_stub.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/titles.cpp
+)
+target_include_directories(jcut_editor_runtime
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(jcut_editor_runtime
+    PUBLIC
+        editor_test_support
+)
+
+add_library(jcut_imgui_runtime STATIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_runtime.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/editor_document_core_json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_project_io.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/render_contract_json.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime_control_server.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/standalone_export_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/standalone_preview_renderer.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/standalone_timeline_renderer.cpp
+)
+set_target_properties(jcut_imgui_runtime PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+)
+target_include_directories(jcut_imgui_runtime
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
+)
+target_link_libraries(jcut_imgui_runtime
+    PUBLIC
+        PkgConfig::FFMPEG
+        Threads::Threads
+)
+
 add_executable(editor
     ${CMAKE_CURRENT_SOURCE_DIR}/editor.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/editor_main.cpp
@@ -571,6 +644,33 @@ set_target_properties(editor PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 jcut_force_bundled_ffmpeg_runtime(editor)
+
+add_executable(jcut_imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/jcut_imgui_main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_tables.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_opengl3.cpp
+)
+target_include_directories(jcut_imgui PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
+)
+target_link_libraries(jcut_imgui PRIVATE
+    jcut_imgui_runtime
+    OpenGL::GL
+    PkgConfig::GLFW
+)
+set_target_properties(jcut_imgui PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+)
+jcut_force_bundled_ffmpeg_runtime(jcut_imgui)
 
 add_executable(project_roundtrip_cli
     ${CMAKE_CURRENT_SOURCE_DIR}/project_roundtrip_cli.cpp
@@ -659,7 +759,6 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_facedetections_offscreen_vulkan_harness.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_generation.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/facedetections_runtime.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/imgui_preview_window.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/offscreen_vulkan_renderer_helpers.cpp
@@ -677,27 +776,18 @@ add_executable(jcut_vulkan_facedetections_offscreen
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_res10_ncnn_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/vulkan_scrfd_ncnn_face_detector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/waveform_service.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_compute.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_gpu_rolling_compute.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_parallel.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_rolling.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/loiacono/loiacono_vulkan_compute.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_draw.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_tables.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/imgui_widgets.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_glfw.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends/imgui_impl_vulkan.cpp
 )
 target_include_directories(jcut_vulkan_facedetections_offscreen PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/external/nlohmann_json/single_include
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui
-    ${CMAKE_CURRENT_SOURCE_DIR}/external/imgui/backends
     ${CMAKE_CURRENT_BINARY_DIR}/generated
 )
 target_link_libraries(jcut_vulkan_facedetections_offscreen PRIVATE
     editor_test_support
+    jcut_imgui_preview_support
     Vulkan::Vulkan
     PkgConfig::FONT_RENDER
     PkgConfig::GLFW
@@ -738,13 +828,6 @@ if(TARGET jcut_vulkan_shaders)
     add_dependencies(jcut_vulkan_facedetections_offscreen jcut_vulkan_shaders)
 endif()
 jcut_force_bundled_ffmpeg_runtime(jcut_vulkan_facedetections_offscreen)
-
-add_executable(jcut_headless_backend_compare
-    ${CMAKE_CURRENT_SOURCE_DIR}/backend_headless_compare_main.cpp
-)
-set_target_properties(jcut_headless_backend_compare PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-)
 
 if(EDITOR_BUILD_TESTS)
     enable_testing()

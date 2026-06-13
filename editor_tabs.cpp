@@ -282,10 +282,9 @@ void EditorWindow::createOutputTab()
             [this](int64_t startFrame, int64_t endFrame) { if (m_timeline) m_timeline->setExportRange(startFrame, endFrame); },
             [this](const QSize& size) { if (m_preview) m_preview->setOutputSize(size); },
             [this]() { setPlaybackActive(false); },
-            [this]() { return m_timeline ? m_timeline->clips() : QVector<TimelineClip>{}; },
-            [this]() { return m_timeline ? m_timeline->tracks() : QVector<TimelineTrack>{}; },
-            [this]() { return m_timeline ? m_timeline->renderSyncMarkers() : QVector<RenderSyncMarker>{}; },
-            [this](const RenderRequest& request) { renderTimelineFromOutputRequest(request); },
+            [this](const jcut::render::RenderRequestCore& request) {
+                renderTimelineFromOutputRequestCore(request);
+            },
             [this]() { return m_lastRenderOutputPath; },
             [this](const QString& path) {
                 m_lastRenderOutputPath = path;
@@ -638,6 +637,13 @@ void EditorWindow::createSpeakersTab()
             },
             [this](const QStringList& speakerIds) {
                 exportVideoForSpeakersOnSelectedClip(speakerIds);
+            },
+            [this](const QString& speakerId,
+                   int64_t startFrame,
+                   int64_t endFrame,
+                   const QString& snippet) {
+                exportVideoForSpeakerSectionOnSelectedClip(
+                    speakerId, startFrame, endFrame, snippet);
             },
             [this](bool suppressed) {
                 if (m_audioEngine) {

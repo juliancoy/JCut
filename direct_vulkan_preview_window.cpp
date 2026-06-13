@@ -38,6 +38,15 @@
 #include <QTransform>
 #include <QVulkanFunctions>
 #include <QVulkanWindow>
+
+namespace {
+
+QSize toQSize(const jcut::core::SizeI& size)
+{
+    return QSize(size.width, size.height);
+}
+
+} // namespace
 #include <QWidget>
 
 #include <vulkan/vulkan.h>
@@ -2201,7 +2210,7 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             if (sampledFrameReady) {
                 decoderReadbackCandidate.image = handoffResult.image;
                 decoderReadbackCandidate.layout = handoffResult.layout;
-                decoderReadbackCandidate.size = handoffResult.size;
+                decoderReadbackCandidate.size = toQSize(handoffResult.size);
                 decoderReadbackCandidate.format = handoffResult.format;
             }
             const bool statusHasDrawableFrame = status && status->hasFrame;

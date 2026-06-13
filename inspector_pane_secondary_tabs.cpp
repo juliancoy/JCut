@@ -130,7 +130,6 @@ QWidget *InspectorPane::buildOutputTab()
     m_outputFormatCombo->addItem(QStringLiteral("PNG Sequence"), QStringLiteral("png"));
     m_outputFormatCombo->addItem(QStringLiteral("JPEG Sequence"), QStringLiteral("jpg"));
     m_renderBackendCombo->addItem(QStringLiteral("Vulkan"), QStringLiteral("vulkan"));
-    m_renderBackendCombo->addItem(QStringLiteral("OpenGL"), QStringLiteral("opengl"));
     m_renderBackendCombo->setToolTip(
         QStringLiteral("Renderer used for final export. Vulkan is strict and fails if unavailable; preview rendering is configured separately."));
     m_renderUseProxiesCheckBox = new QCheckBox(QStringLiteral("Use Proxies For Render"), page);

@@ -3,10 +3,10 @@
 #include "editor_shared.h"
 #include "frame_handle.h"
 #include "render.h"
+#include "render_runtime.h"
 #include "audio_engine.h"
 #include "control_server.h"
 #include "timeline_widget.h"
-#include "opengl_preview.h"
 #include "preview_surface.h"
 #include "playback_stage_metrics.h"
 #include "editor_pane.h"
@@ -233,9 +233,14 @@ private:
     void refreshOutputInspector();
     void applyOutputRangeFromInspector();
     void renderFromOutputInspector();
+    void renderTimelineFromOutputRequestCore(const jcut::render::RenderRequestCore& request);
     RenderRequest buildRenderRequestFromOutputControls() const;
     void renderTimelineFromOutputRequest(const RenderRequest &request);
     void exportVideoForSpeakersOnSelectedClip(const QStringList& speakerIds);
+    void exportVideoForSpeakerSectionOnSelectedClip(const QString& speakerId,
+                                                    int64_t sourceStartFrame,
+                                                    int64_t sourceEndFrame,
+                                                    const QString& snippet);
     void openAudioToolsDialog();
     void applyPreviewViewMode(const QString& modeText);
     void refreshAiIntegrationState();

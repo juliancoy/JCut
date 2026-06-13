@@ -5,6 +5,7 @@
 #include "control_server_media_diag.h"
 #include "control_server_ui_utils.h"
 #include "debug_controls.h"
+#include "editor_document_core_json.h"
 #include "editor.h"
 #include "editor_shared.h"
 
@@ -481,7 +482,7 @@ bool ControlServerWorker::handlePlayhead(QTcpSocket* socket, const Request& requ
     if (request.method == QStringLiteral("POST") && request.url.path() == QStringLiteral("/speakers/sync-playhead")) {
         bool success = false;
         if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &success, [this]() {
-                if (auto* editor = qobject_cast<EditorWindow*>(m_window)) {
+                if (auto* editor = qobject_cast<editor::EditorWindow*>(m_window)) {
                     return editor->syncSpeakersPlayheadForAutomation();
                 }
                 return false;
@@ -552,6 +553,38 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
         return true;
     }
 
+    if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/state/core")) {
+        QString error;
+        if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
+            writeError(socket, 503, error);
+            return true;
+        }
+
+        std::string parseError;
+        const QByteArray serializedState =
+            QJsonDocument(m_lastStateSnapshot).toJson(QJsonDocument::Compact);
+        nlohmann::json root;
+        try {
+            root = nlohmann::json::parse(serializedState.constData());
+        } catch (const std::exception& exception) {
+            writeError(socket, 500, QStringLiteral("failed to parse cached state: %1")
+                                       .arg(QString::fromUtf8(exception.what())));
+            return true;
+        }
+
+        const std::optional<jcut::EditorDocumentCore> document =
+            jcut::editorDocumentCoreFromJson(root, &parseError);
+        if (!document.has_value()) {
+            writeError(socket, 500, QStringLiteral("failed to build core document: %1")
+                                       .arg(QString::fromStdString(parseError)));
+            return true;
+        }
+
+        const std::string body = jcut::toJson(*document).dump();
+        writeResponse(socket, 200, QByteArray::fromStdString(body), "application/json");
+        return true;
+    }
+
     if (request.method == QStringLiteral("GET") && request.url.path() == QStringLiteral("/timeline")) {
         QString error;
         if (!ensureUsableStateSnapshot(&error) || m_lastStateSnapshot.isEmpty()) {
@@ -611,7 +644,7 @@ bool ControlServerWorker::handleStateRoutes(QTcpSocket* socket, const Request& r
 
         bool success = false;
         if (!invokeOnUiThread(m_window, m_uiInvokeTimeoutMs, &success, [this, filePath, startFrame]() {
-                const auto editor = qobject_cast<EditorWindow*>(m_window);
+                const auto editor = qobject_cast<editor::EditorWindow*>(m_window);
                 if (!editor) {
                     return false;
                 }
@@ -1757,25 +1790,6 @@ bool ControlServerWorker::handleHardwareRoutes(QTcpSocket* socket, const Request
     if (pciInfo.contains("AMD") || pciInfo.contains("Radeon")) {
         hardware[QStringLiteral("amd_gpu_detected")] = true;
     }
-
-    QProcess glProc;
-    glProc.start("glxinfo");
-    glProc.waitForFinished(2000);
-    QString glInfo = QString::fromUtf8(glProc.readAllStandardOutput());
-    QStringList glLines = glInfo.split('\n');
-    QString glVendor, glRenderer, glVersion;
-    for (const QString& line : glLines) {
-        if (line.startsWith("OpenGL vendor string:")) {
-            glVendor = line.mid(20).trimmed();
-        } else if (line.startsWith("OpenGL renderer string:")) {
-            glRenderer = line.mid(23).trimmed();
-        } else if (line.startsWith("OpenGL version string:")) {
-            glVersion = line.mid(22).trimmed();
-        }
-    }
-    hardware[QStringLiteral("opengl_vendor")] = glVendor;
-    hardware[QStringLiteral("opengl_renderer")] = glRenderer;
-    hardware[QStringLiteral("opengl_version")] = glVersion;
 
     QProcess cudaProc;
     cudaProc.start("nvcc", QStringList() << "--version");

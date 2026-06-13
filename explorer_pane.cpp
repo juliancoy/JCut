@@ -1,7 +1,6 @@
 // explorer_pane.cpp
 #include "explorer_pane.h"
 #include "decoder_ffmpeg_utils.h"
-#include "opengl_preview.h"
 #include "preview_surface.h"
 #include "render.h"
 

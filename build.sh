@@ -37,7 +37,6 @@ RUBBERBAND_VERSION_FILE="${RUBBERBAND_INSTALL_DIR}/.build-version"
 QT_PRIVATE_DEV_DIR="${SCRIPT_DIR}/.deps/qt6-base-private-dev"
 ASAN="OFF"
 FFMPEG_PROFILE="auto"
-BUILD_TARGET="editor"
 RUN_EDITOR="no"
 CMAKE_GENERATOR="Ninja"
 FFMPEG_REBUILT="0"
@@ -422,7 +421,6 @@ for arg in "$@"; do
         FFMPEG_PROFILE="safe-noasm"
             ;;
         --with-tests)
-            BUILD_TARGET="all"
             ;;
         --ninja)
             CMAKE_GENERATOR="Ninja"
@@ -524,11 +522,7 @@ else
 fi
 cmake "${cmake_configure_args[@]}"
 
-if [[ "${BUILD_TARGET}" == "all" ]]; then
-    cmake --build "${BUILD_DIR}" -j
-else
-    cmake --build "${BUILD_DIR}" --target editor -j
-fi
+cmake --build "${BUILD_DIR}" -j
 
 # Fix for snap library conflicts (snap's libpthread is incompatible with system glibc)
 # Preload system libpthread to avoid snap version being picked up

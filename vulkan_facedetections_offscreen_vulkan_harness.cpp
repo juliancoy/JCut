@@ -10,6 +10,15 @@
 #include <QRectF>
 
 #include <algorithm>
+
+namespace {
+
+jcut::core::SizeI toSizeI(const QSize &size) {
+  return {size.width(), size.height()};
+}
+
+} // namespace
+
 ScopedStderrSilencer::ScopedStderrSilencer(bool enabled) {
     if (!enabled) {
       return;
@@ -258,10 +267,10 @@ bool VulkanHarnessContext::ensureDetectorBuffers(
   }
 
 bool VulkanHarnessContext::ensureResources(
-    const QSize &size, VkDeviceSize tensorBytes, int maxDetections,
+    const jcut::core::SizeI &size, VkDeviceSize tensorBytes, int maxDetections,
     QString *error) {
     const VkDeviceSize stagingBytes =
-        static_cast<VkDeviceSize>(size.width()) * size.height() * 4;
+        static_cast<VkDeviceSize>(size.width) * size.height * 4;
     if (stagingBytes > stagingSize &&
         !createBuffer(stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
@@ -308,8 +317,8 @@ bool VulkanHarnessContext::ensureResources(
     VkImageCreateInfo imageInfo{};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent = {static_cast<uint32_t>(size.width()),
-                        static_cast<uint32_t>(size.height()), 1};
+    imageInfo.extent = {static_cast<uint32_t>(size.width),
+                        static_cast<uint32_t>(size.height), 1};
     imageInfo.mipLevels = 1;
     imageInfo.arrayLayers = 1;
     imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -364,7 +373,7 @@ bool VulkanHarnessContext::ensureResources(
 bool VulkanHarnessContext::uploadCpuImage(const QImage &imageIn,
                                             double *uploadMs, QString *error) {
     const QImage rgba = imageIn.convertToFormat(QImage::Format_RGBA8888);
-    if (!ensureResources(rgba.size(), tensorBytes, maxDetections, error)) {
+    if (!ensureResources(toSizeI(rgba.size()), tensorBytes, maxDetections, error)) {
       return false;
     }
     QElapsedTimer timer;
@@ -614,7 +623,7 @@ QVector<Detection> detectVulkanFrame(
                                  threshold, error)) {
     return out;
   }
-  out = readDetections(*vk, frame.size.width(), frame.size.height());
+  out = readDetections(*vk, frame.size.width, frame.size.height);
   if (vulkanMs) {
     *vulkanMs = static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
   }
@@ -676,9 +685,9 @@ QVector<Detection> detectRes10VulkanFrame(
     if (!preprocessor->preprocessToTensor(source, tensor, error)) {
       return false;
     }
-    const int roiWidth = qMax(1, qRound(frame.size.width() * bounded.width()));
+    const int roiWidth = qMax(1, qRound(frame.size.width * bounded.width()));
     const int roiHeight =
-        qMax(1, qRound(frame.size.height() * bounded.height()));
+        qMax(1, qRound(frame.size.height * bounded.height()));
     const QVector<jcut::vulkan_detector::Res10Detection> raw =
         detector->inferFromTensor(tensor, roiWidth, roiHeight, threshold,
                                   error);
@@ -687,8 +696,8 @@ QVector<Detection> detectRes10VulkanFrame(
     }
     dst->reserve(dst->size() + raw.size());
     for (const auto &det : raw) {
-      QRectF box(bounded.x() * frame.size.width() + det.box.x(),
-                 bounded.y() * frame.size.height() + det.box.y(),
+      QRectF box(bounded.x() * frame.size.width + det.box.x(),
+                 bounded.y() * frame.size.height + det.box.y(),
                  det.box.width(), det.box.height());
       dst->push_back({box, det.confidence});
     }
@@ -730,7 +739,11 @@ QVector<Detection> detectRes10FromDecoderFrame(
           QStringLiteral("Invalid decoder frame for Vulkan detector handoff.");
     return out;
   }
-  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, error)) {
+  std::string handoffError;
+  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     return out;
   }
   if (hardwareDirectUsed) {
@@ -740,7 +753,7 @@ QVector<Detection> detectRes10FromDecoderFrame(
   }
   const jcut::vulkan_detector::VulkanExternalImage source =
       handoff->externalImage();
-  if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+  if (source.imageView == VK_NULL_HANDLE || !source.size.valid()) {
     if (error)
       *error = QStringLiteral("Frame handoff produced invalid external image.");
     return out;
@@ -758,7 +771,11 @@ QVector<Detection> detectRes10FromDecoderFrame(
   out = detectRes10VulkanFrame(preprocessor, detector, vk, detectorFrame,
                                paramPath, binPath, threshold, false, false,
                                vulkanMs, error);
-  if (!handoff->finishPendingUpload(nullptr, error)) {
+  handoffError.clear();
+  if (!handoff->finishPendingUpload(nullptr, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     out.clear();
     return out;
   }
@@ -795,8 +812,8 @@ QVector<Detection> detectScrfdVulkanFrame(
     }
   }
 
-  const int sourceWidth = qMax(1, frame.size.width());
-  const int sourceHeight = qMax(1, frame.size.height());
+  const int sourceWidth = qMax(1, frame.size.width);
+  const int sourceHeight = qMax(1, frame.size.height);
   targetSize = qMax(320, targetSize);
   float scale = 1.0f;
   int resizedW = sourceWidth;
@@ -899,7 +916,11 @@ QVector<Detection> detectScrfdFromDecoderFrame(
           QStringLiteral("Invalid decoder frame for Vulkan SCRFD handoff.");
     return out;
   }
-  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, error)) {
+  std::string handoffError;
+  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     return out;
   }
   if (hardwareDirectUsed) {
@@ -909,7 +930,7 @@ QVector<Detection> detectScrfdFromDecoderFrame(
   }
   const jcut::vulkan_detector::VulkanExternalImage source =
       handoff->externalImage();
-  if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+  if (source.imageView == VK_NULL_HANDLE || !source.size.valid()) {
     if (error)
       *error = QStringLiteral("Frame handoff produced invalid external image.");
     return out;
@@ -927,17 +948,21 @@ QVector<Detection> detectScrfdFromDecoderFrame(
   out = detectScrfdVulkanFrame(preprocessor, detector, vk, detectorFrame,
                                paramPath, binPath, threshold, targetSize,
                                tiledPass, suppressNcnnInfo, vulkanMs, error);
-  if (!handoff->finishPendingUpload(nullptr, error)) {
+  handoffError.clear();
+  if (!handoff->finishPendingUpload(nullptr, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     out.clear();
     return out;
   }
   return out;
 }
 
-VkDeviceSize scrfdTensorBytesForSourceSize(const QSize &sourceSize,
+VkDeviceSize scrfdTensorBytesForSourceSize(const jcut::core::SizeI &sourceSize,
                                            int targetSize) {
-  const int sourceWidth = qMax(1, sourceSize.width());
-  const int sourceHeight = qMax(1, sourceSize.height());
+  const int sourceWidth = qMax(1, sourceSize.width);
+  const int sourceHeight = qMax(1, sourceSize.height);
   targetSize = qMax(320, targetSize);
   int resizedW = sourceWidth;
   int resizedH = sourceHeight;
@@ -964,7 +989,7 @@ bool prepareRes10DecoderFrame(
     jcut::vulkan_detector::VulkanDetectorFrameHandoff *handoff,
     const editor::FrameHandle &frame, const QString &paramPath,
     const QString &binPath, bool suppressNcnnInfo, bool allowCpuUploadFallback,
-    double *uploadMs, bool *hardwareDirectUsed, QSize *detectionFrameSize,
+    double *uploadMs, bool *hardwareDirectUsed, jcut::core::SizeI *detectionFrameSize,
     QString *error) {
   if (!preprocessor || !detector || !vk || !handoff || frame.isNull()) {
     if (error)
@@ -972,7 +997,11 @@ bool prepareRes10DecoderFrame(
           QStringLiteral("Invalid decoder frame for Vulkan Res10 preparation.");
     return false;
   }
-  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, error)) {
+  std::string handoffError;
+  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     return false;
   }
   if (hardwareDirectUsed) {
@@ -982,7 +1011,7 @@ bool prepareRes10DecoderFrame(
   }
   const jcut::vulkan_detector::VulkanExternalImage source =
       handoff->externalImage();
-  if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+  if (source.imageView == VK_NULL_HANDLE || !source.size.valid()) {
     if (error)
       *error = QStringLiteral("Frame handoff produced invalid external image.");
     return false;
@@ -1018,11 +1047,11 @@ QVector<Detection> finalizePreparedRes10DecoderFrame(
     jcut::vulkan_detector::VulkanRes10NcnnFaceDetector *detector,
     VulkanHarnessContext *vk,
     jcut::vulkan_detector::VulkanDetectorFrameHandoff *handoff,
-    const QSize &detectionFrameSize, float threshold, double *vulkanMs,
+    const jcut::core::SizeI &detectionFrameSize, float threshold, double *vulkanMs,
     QString *error) {
   QVector<Detection> out;
   if (!preprocessor || !detector || !vk || !handoff ||
-      !detectionFrameSize.isValid()) {
+      !detectionFrameSize.valid()) {
     if (error)
       *error = QStringLiteral("Invalid prepared Vulkan Res10 decoder frame.");
     return out;
@@ -1032,10 +1061,17 @@ QVector<Detection> finalizePreparedRes10DecoderFrame(
   const jcut::vulkan_detector::VulkanTensorBuffer tensor{
       vk->tensorBuffer, preprocessor->tensorSpec().byteSize()};
   const QVector<jcut::vulkan_detector::Res10Detection> raw =
-      detector->inferFromTensor(tensor, detectionFrameSize.width(),
-                                detectionFrameSize.height(), threshold, error);
-  if (!preprocessor->finishPendingPreprocess(error) ||
-      !handoff->finishPendingUpload(nullptr, error)) {
+      detector->inferFromTensor(tensor, detectionFrameSize.width,
+                                detectionFrameSize.height, threshold, error);
+  if (!preprocessor->finishPendingPreprocess(error)) {
+    out.clear();
+    return out;
+  }
+  std::string handoffError;
+  if (!handoff->finishPendingUpload(nullptr, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     out.clear();
     return out;
   }
@@ -1058,7 +1094,7 @@ bool prepareScrfdDecoderFrame(
     const QString &binPath, int targetSize, bool suppressNcnnInfo,
     bool allowCpuUploadFallback,
     jcut::vulkan_detector::ScrfdTensorLayout *layout, double *uploadMs,
-    bool *hardwareDirectUsed, QSize *detectionFrameSize, QString *error) {
+    bool *hardwareDirectUsed, jcut::core::SizeI *detectionFrameSize, QString *error) {
   if (!preprocessor || !detector || !vk || !handoff || frame.isNull() ||
       !layout) {
     if (error)
@@ -1066,7 +1102,11 @@ bool prepareScrfdDecoderFrame(
           QStringLiteral("Invalid decoder frame for Vulkan SCRFD preparation.");
     return false;
   }
-  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, error)) {
+  std::string handoffError;
+  if (!handoff->uploadFrame(frame, allowCpuUploadFallback, uploadMs, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     return false;
   }
   if (hardwareDirectUsed) {
@@ -1076,7 +1116,7 @@ bool prepareScrfdDecoderFrame(
   }
   const jcut::vulkan_detector::VulkanExternalImage source =
       handoff->externalImage();
-  if (source.imageView == VK_NULL_HANDLE || !source.size.isValid()) {
+  if (source.imageView == VK_NULL_HANDLE || !source.size.valid()) {
     if (error)
       *error = QStringLiteral("Frame handoff produced invalid external image.");
     return false;
@@ -1115,11 +1155,11 @@ QVector<Detection> finalizePreparedScrfdDecoderFrame(
     VulkanHarnessContext *vk,
     jcut::vulkan_detector::VulkanDetectorFrameHandoff *handoff,
     const jcut::vulkan_detector::ScrfdTensorLayout &layout,
-    const QSize &detectionFrameSize, float threshold, double *vulkanMs,
+    const jcut::core::SizeI &detectionFrameSize, float threshold, double *vulkanMs,
     QString *error) {
   QVector<Detection> out;
   if (!preprocessor || !detector || !vk || !handoff ||
-      !detectionFrameSize.isValid()) {
+      !detectionFrameSize.valid()) {
     if (error)
       *error = QStringLiteral("Invalid prepared Vulkan SCRFD decoder frame.");
     return out;
@@ -1129,10 +1169,17 @@ QVector<Detection> finalizePreparedScrfdDecoderFrame(
   const jcut::vulkan_detector::VulkanTensorBuffer tensor{vk->tensorBuffer,
                                                          vk->tensorSize};
   const QVector<jcut::vulkan_detector::ScrfdDetection> raw =
-      detector->inferFromTensor(tensor, layout, detectionFrameSize.width(),
-                                detectionFrameSize.height(), threshold, error);
-  if (!preprocessor->finishPendingPreprocess(error) ||
-      !handoff->finishPendingUpload(nullptr, error)) {
+      detector->inferFromTensor(tensor, layout, detectionFrameSize.width,
+                                detectionFrameSize.height, threshold, error);
+  if (!preprocessor->finishPendingPreprocess(error)) {
+    out.clear();
+    return out;
+  }
+  std::string handoffError;
+  if (!handoff->finishPendingUpload(nullptr, &handoffError)) {
+    if (error) {
+      *error = QString::fromStdString(handoffError);
+    }
     out.clear();
     return out;
   }

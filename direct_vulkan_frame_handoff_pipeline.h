@@ -1,11 +1,11 @@
 #pragma once
 
+#include "core/geometry.h"
 #include "direct_vulkan_preview_presenter.h"
 #include "preview_interaction_state.h"
 #include "vulkan_detector_frame_handoff.h"
 
 #include <QString>
-#include <QSize>
 
 #include <memory>
 
@@ -22,7 +22,7 @@ public:
         VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
         int descriptorSetIndex = -1;
         int descriptorSetCount = 0;
-        QSize size;
+        jcut::core::SizeI size;
     };
 
     DirectVulkanFrameHandoffPipeline();

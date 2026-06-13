@@ -11,6 +11,7 @@
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QMatrix4x4>
 #include <QScopeGuard>
 
 #if JCUT_HAS_CUDA_DRIVER
@@ -1813,18 +1814,18 @@ public:
           context.device = m_device;
           context.queue = m_graphicsQueue;
           context.queueFamilyIndex = m_graphicsQueueFamily;
-          QString handoffError;
+          std::string handoffError;
           if (!handoff->initialize(context, &handoffError)) {
             qWarning().noquote()
                 << QStringLiteral("[vulkan-compose] hardware frame handoff "
                                   "initialization failed: %1")
-                       .arg(handoffError);
+                       .arg(QString::fromStdString(handoffError));
           } else {
             slot.hardwareFrameHandoff = handoff;
           }
         }
         if (slot.hardwareFrameHandoff) {
-          QString uploadError;
+          std::string uploadError;
           if (slot.hardwareFrameHandoff->uploadFrame(layer.frameHandle, false,
                                                      nullptr, &uploadError)) {
             const auto external = slot.hardwareFrameHandoff->externalImage();
@@ -1840,7 +1841,7 @@ public:
               << QStringLiteral(
                      "[vulkan-compose] hardware frame handoff failed; "
                      "falling back to CPU image path: %1")
-                     .arg(uploadError);
+                     .arg(QString::fromStdString(uploadError));
         }
       }
       QImage rgba;
@@ -2213,7 +2214,7 @@ public:
     frame->imageLayout = m_colorImageLayout;
     frame->imageFormat = VK_FORMAT_B8G8R8A8_UNORM;
     frame->readySemaphoreFd = -1;
-    frame->size = m_outputSize;
+    frame->size = {m_outputSize.width(), m_outputSize.height()};
     frame->queueSupportsCompute = m_graphicsQueueSupportsCompute;
     frame->valid = true;
     return true;

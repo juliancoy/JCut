@@ -1,6 +1,6 @@
 #include "editor.h"
-#include "opengl_preview_debug.h"
 #include "debug_controls.h"
+#include "playback_debug.h"
 
 #include <QDateTime>
 #include <QSet>

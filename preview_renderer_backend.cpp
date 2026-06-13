@@ -6,11 +6,8 @@
 
 #include <QDebug>
 #include <QElapsedTimer>
-#include <QOffscreenSurface>
-#include <QSurfaceFormat>
 
 #include <QtGui/private/qrhi_p.h>
-#include <QtGui/private/qrhigles2_p.h>
 
 using namespace editor;
 
@@ -50,24 +47,6 @@ bool PreviewRenderer::initialize() {
     const RenderBackend desiredBackend = desiredRenderBackendFromEnvironment();
     qDebug().noquote() << "[render-backend] requested=" << renderBackendName(desiredBackend);
 
-    auto createOpenGlRhi = [this]() -> bool {
-        m_fallbackSurface = std::make_unique<QOffscreenSurface>();
-        m_fallbackSurface->setFormat(QSurfaceFormat::defaultFormat());
-        m_fallbackSurface->create();
-        if (!m_fallbackSurface->isValid()) {
-            qWarning() << "Failed to create fallback surface";
-            return false;
-        }
-        QElapsedTimer rhiTimer;
-        rhiTimer.start();
-        QRhiGles2InitParams params;
-        params.format = QSurfaceFormat::defaultFormat();
-        params.fallbackSurface = m_fallbackSurface.get();
-        m_rhi.reset(QRhi::create(QRhi::OpenGLES2, &params, QRhi::Flags()));
-        qDebug() << "[STARTUP] QRhi::create(OpenGLES2) took" << rhiTimer.elapsed() << "ms";
-        return m_rhi != nullptr;
-    };
-
     const bool wantsVulkan = (desiredBackend == RenderBackend::Vulkan || desiredBackend == RenderBackend::Auto);
     if (wantsVulkan) {
         qDebug() << "[vulkan] attempting QRhi Vulkan initialization";
@@ -79,14 +58,7 @@ bool PreviewRenderer::initialize() {
         } else {
             qWarning().noquote()
                 << "[render-backend-fallback] vulkan_init_failed reason=\"" << vk.status
-                << "\" fallback=opengl";
-        }
-    }
-
-    if (!m_rhi && (desiredBackend == RenderBackend::OpenGL || desiredBackend == RenderBackend::Auto || desiredBackend == RenderBackend::Vulkan)) {
-        qDebug() << "[STARTUP] Creating QRhi OpenGL context...";
-        if (!createOpenGlRhi()) {
-            qWarning() << "[render-backend-fallback] opengl_init_failed fallback=null";
+                << "\" fallback=null";
         }
     }
 
@@ -121,7 +93,6 @@ bool PreviewRenderer::initialize() {
 void PreviewRenderer::release() {
     m_compositor.reset();
     m_rhi.reset();
-    m_fallbackSurface.reset();
     m_initialized = false;
 }
 

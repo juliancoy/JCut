@@ -38,6 +38,20 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+
+namespace {
+
+jcut::core::SizeI toSizeI(const QSize& size)
+{
+  return {size.width(), size.height()};
+}
+
+QSize toQSize(const jcut::core::SizeI& size)
+{
+  return QSize(size.width, size.height);
+}
+
+} // namespace
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
@@ -77,6 +91,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -87,6 +102,18 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect.hpp>
 #endif
+
+namespace {
+
+std::string toStdString(const QString& value) {
+  return value.toUtf8().toStdString();
+}
+
+jcut::core::RectF toCoreRect(const QRectF& rect) {
+  return {rect.x(), rect.y(), rect.width(), rect.height()};
+}
+
+}  // namespace
 
 int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   QApplication *appPtr =
@@ -302,14 +329,14 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   if (options.livePreview && !platformIsOffscreen) {
     livePreviewWindow = std::make_unique<ImGuiPreviewWindow>();
     if (!livePreviewWindow->initialize(
-            QStringLiteral("JCut DNN FaceDetections Generator Preview"),
-            QSize(1080, 720))) {
+            "JCut DNN FaceDetections Generator Preview",
+            {1080, 720})) {
       std::cerr << "Failed to initialize Dear ImGui preview window: "
-                << livePreviewWindow->failureReason().toStdString() << "\n";
+                << livePreviewWindow->failureReason() << "\n";
       return 2;
     }
     livePreviewWindow->setStatusText(
-        QStringLiteral("Waiting for JCut DNN FaceDetections preview..."));
+        "Waiting for JCut DNN FaceDetections preview...");
   }
   QLocalSocket previewSocket;
   QLocalSocket *previewSocketPtr = nullptr;
@@ -355,7 +382,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     if (!livePreviewWindow || text == lastPreviewStatusText) {
       return;
     }
-    livePreviewWindow->setStatusText(text);
+    livePreviewWindow->setStatusText(toStdString(text));
     lastPreviewStatusText = text;
   };
   bool previewFailureLogged = false;
@@ -587,10 +614,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     appPtr->processEvents();
   }
 
-  auto currentRoiRect = [&](const QSize &size) -> QRectF {
-    return QRectF(tuning.roiX1 * size.width(), tuning.roiY1 * size.height(),
-                  (tuning.roiX2 - tuning.roiX1) * size.width(),
-                  (tuning.roiY2 - tuning.roiY1) * size.height());
+  auto currentRoiRect = [&](const jcut::core::SizeI &size) -> QRectF {
+    return QRectF(tuning.roiX1 * size.width, tuning.roiY1 * size.height,
+                  (tuning.roiX2 - tuning.roiX1) * size.width,
+                  (tuning.roiY2 - tuning.roiY1) * size.height);
   };
   auto liveTrackCount = [&](const QVector<Track> &tracks) {
     int count = 0;
@@ -616,16 +643,18 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       return false;
     }
     livePreviewWindow->setWindowTitle(
-        QStringLiteral("%1 - frame %2").arg(titlePrefix).arg(frameNumber));
+        toStdString(QStringLiteral("%1 - frame %2").arg(titlePrefix).arg(frameNumber)));
     livePreviewWindow->setStatusText(
-        QStringLiteral("%1 | frame %2 | detections %3 | live tracks %4")
-            .arg(titlePrefix)
-            .arg(frameNumber)
-            .arg(previewDetections.size())
-            .arg(liveTrackCount(previewTracks)));
+        toStdString(QStringLiteral("%1 | frame %2 | detections %3 | live tracks %4")
+                        .arg(titlePrefix)
+                        .arg(frameNumber)
+                        .arg(previewDetections.size())
+                        .arg(liveTrackCount(previewTracks))));
     const bool presented = livePreviewWindow->presentFrame(
-        frame, frameNumber, previewTracks, previewDetections,
-        currentRoiRect(frame.size), previewDetections.size());
+        frame, frameNumber,
+        std::span<const jcut::facedetections::ContinuityTrack>(previewTracks.constData(), previewTracks.size()),
+        std::span<const jcut::facedetections::Detection>(previewDetections.constData(), previewDetections.size()),
+        toCoreRect(currentRoiRect(frame.size)), previewDetections.size());
     return presented;
   };
   auto renderAndPresentLivePreviewWindow =
@@ -725,7 +754,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       return false;
     }
     const QImage preview =
-        buildPreview(image, tracks, detections, currentRoiRect(image.size()));
+        buildPreview(image, tracks, detections, currentRoiRect(toSizeI(image.size())));
     bool emitted = false;
     if (previewSocketPtr) {
       emitted = sendPreviewFrame(previewSocketPtr, preview) || emitted;
@@ -983,11 +1012,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
                 .arg(previewWarmupTimer.elapsed()));
       }
       if (livePreviewWindow && livePreviewWindow->hasFailed()) {
-        const QString failureReason =
-            livePreviewWindow->failureReason().trimmed().isEmpty()
+        const QString failureReason = QString::fromStdString(livePreviewWindow->failureReason()).trimmed().isEmpty()
                 ? QStringLiteral(
                       "The Dear ImGui preview window failed during warmup.")
-                : livePreviewWindow->failureReason().trimmed();
+                : QString::fromStdString(livePreviewWindow->failureReason()).trimmed();
         setPreviewStatusText(
             QStringLiteral("Preview warmup failed | %1").arg(failureReason));
         appPtr->processEvents();
@@ -1497,11 +1525,11 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
   };
   auto advanceRuntimeTracks =
       [&](int frameNumber, const QVector<Detection> &detections,
-          const QSize &detectionFrameSize) -> QVector<Track> {
+          const jcut::core::SizeI &detectionFrameSize) -> QVector<Track> {
     QElapsedTimer timer;
     timer.start();
     jcut::facedetections::updateContinuityTracks(
-        &runtimeTracks, detections, frameNumber, detectionFrameSize,
+        &runtimeTracks, detections, frameNumber, toQSize(detectionFrameSize),
         trackingTuningForRuntime(tuning));
     stageTimings.trackingMsTotal +=
         static_cast<double>(timer.nsecsElapsed()) / 1'000'000.0;
@@ -1512,7 +1540,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       [&](int frameOffset, int frameNumber,
           const jcut::facedetections::VulkanFrameStats &renderStats,
           const QVector<Detection> &detections, const QVector<Track> &tracks,
-          const QSize &detectionFrameSize, bool appVulkanFrame,
+          const jcut::core::SizeI &detectionFrameSize, bool appVulkanFrame,
           bool decoderVulkanUploadFallback, bool hardwareDirectHandoff,
           double decoderUploadMs, double vulkanDetectMs,
           const jcut::vulkan_detector::NcnnInferenceStats &ncnnStats,
@@ -1546,13 +1574,13 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
         if (!resume.fullPayloadDeferred) {
           for (const Detection &detection : detections) {
             detectionRows.append(jcut::facedetections::compactDetectionJson(
-                detection, detectionFrameSize));
+                detection, toQSize(detectionFrameSize)));
           }
           rawDetectionFrames.append(QJsonObject{
               {QStringLiteral("frame"), frameNumber},
               {QStringLiteral("detector"), detectorId},
-              {QStringLiteral("frame_width"), detectionFrameSize.width()},
-              {QStringLiteral("frame_height"), detectionFrameSize.height()},
+              {QStringLiteral("frame_width"), detectionFrameSize.width},
+              {QStringLiteral("frame_height"), detectionFrameSize.height},
               {QStringLiteral("detection_count"), detections.size()},
               {QStringLiteral("detections"), detectionRows}});
           rawDetectionFrameIndexByFrame.insert(frameNumber,
@@ -1611,7 +1639,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
         streamRecord.backend = backend;
         streamRecord.detector = detectorId;
         streamRecord.frame = frameNumber;
-        streamRecord.frameSize = detectionFrameSize;
+        streamRecord.frameSize = toQSize(detectionFrameSize);
         streamRecord.detections = detections;
         streamRecord.trackDetections = trackDetectionRecords;
         streamRecord.appVulkanFramePath = appVulkanFrame;
@@ -1778,12 +1806,14 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
           return false;
         }
       }
-      if (!slot.handoff.isInitialized() &&
-          !slot.handoff.initialize(slot.context.detectorContext(), &error)) {
+      if (!slot.handoff.isInitialized()) {
+        std::string handoffError;
+        if (!slot.handoff.initialize(slot.context.detectorContext(), &handoffError)) {
         std::cerr
             << "Failed to prewarm decoder frame handoff resources for slot "
-            << slotIndex << ": " << error.toStdString() << "\n";
+            << slotIndex << ": " << handoffError << "\n";
         return false;
+        }
       }
       if (options.scrfdDetector) {
         if (!slot.preprocessor.isInitialized() &&
@@ -1804,7 +1834,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
           }
         }
         if (!slot.context.ensureDetectorBuffers(
-                scrfdTensorBytesForSourceSize(probeFrameSize,
+                scrfdTensorBytesForSourceSize(toSizeI(probeFrameSize),
                                               tuning.scrfdTargetSize),
                 1, &error)) {
           std::cerr << "Failed to prewarm SCRFD detector buffers for slot "
@@ -2025,10 +2055,10 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     const QVector<Detection> rawDetections = detections;
     DetectionSanitizeStats sanitizeStats;
     detections =
-        sanitizeDetections(detections, slot.detectionFrameSize,
+        sanitizeDetections(detections, toQSize(slot.detectionFrameSize),
                            tuning.maxFacesPerFrame, tuning, &sanitizeStats);
     if (detections.isEmpty()) {
-      logDetectionSanitizeStats(slot.frameNumber, slot.detectionFrameSize,
+      logDetectionSanitizeStats(slot.frameNumber, toQSize(slot.detectionFrameSize),
                                 tuning, sanitizeStats, rawDetections);
     }
     const QVector<Track> detectionPreviewTracks = advanceRuntimeTracks(
@@ -2112,10 +2142,11 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
       }
     }
     if (!slot.handoff.isInitialized()) {
-      if (!slot.handoff.initialize(slot.context.detectorContext(), &error)) {
+      std::string handoffError;
+      if (!slot.handoff.initialize(slot.context.detectorContext(), &handoffError)) {
         std::cerr
             << "Failed to initialize decoder frame handoff module at frame "
-            << frameNumber << ": " << error.toStdString() << "\n";
+            << frameNumber << ": " << handoffError << "\n";
         return false;
       }
     }
@@ -2137,8 +2168,8 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     slot.frameNumber = frameNumber;
     slot.frameOffset = frameOffset;
     slot.detectionFrameSize = slot.decodedFrame.size().isValid()
-                                  ? slot.decodedFrame.size()
-                                  : renderSize;
+                                  ? toSizeI(slot.decodedFrame.size())
+                                  : toSizeI(renderSize);
     slot.decoderUploadMs = 0.0;
     slot.workerIndex = workerIndex;
     slot.hardwareDirectHandoff = false;
@@ -2219,9 +2250,8 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
           qMax(options.startFrame, latestProcessedFrame));
       livePreviewWindow->setProcessingPaused(runtimePaused);
       if (!previewDebugSettings.presentationEnabled) {
-        livePreviewWindow->setStatusText(QStringLiteral(
-            "Preview presentation disabled from runtime REST control; "
-            "detection continues."));
+        livePreviewWindow->setStatusText(
+            "Preview presentation disabled from runtime REST control; detection continues.");
       }
       syncDetectorPreviewPanel(&detectorControls, livePreviewWindow.get(),
                                options.startFrame,
@@ -2442,11 +2472,12 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
           }
         }
         if (!decoderFrameHandoff.isInitialized()) {
+          std::string handoffError;
           if (!decoderFrameHandoff.initialize(detectorContext.detectorContext(),
-                                              &error)) {
+                                              &handoffError)) {
             std::cerr
                 << "Failed to initialize decoder frame handoff module at frame "
-                << frameNumber << ": " << error.toStdString() << "\n";
+                << frameNumber << ": " << handoffError << "\n";
             return false;
           }
         }
@@ -2542,7 +2573,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
                                     sanitizeStats, rawDetections);
         }
         const QVector<Track> detectionPreviewTracks =
-            advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
+            advanceRuntimeTracks(frameNumber, detections, toSizeI(detectionFrameSize));
         enqueueLivePreviewSample(
             frameNumber, detectionPreviewTracks, detections,
             QStringLiteral("JCut DNN FaceDetections Generator"));
@@ -2617,7 +2648,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
         appVulkanFrame = true;
         ++appVulkanFramePathFrames;
         ++hardwareFrames;
-        detectionFrameSize = vulkanFrame.size;
+        detectionFrameSize = toQSize(vulkanFrame.size);
         error.clear();
         if (options.heuristicZeroCopyDetector) {
           detections = detectVulkanFrame(
@@ -2651,7 +2682,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
                                     sanitizeStats, rawDetections);
         }
         const QVector<Track> detectionPreviewTracks =
-            advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
+            advanceRuntimeTracks(frameNumber, detections, toSizeI(detectionFrameSize));
         const bool previewFrameDue =
             !previewPipelinePrimed ||
             ((frameNumber % effectivePreviewStride) == 0);
@@ -2795,7 +2826,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
                                   sanitizeStats, rawDetections);
       }
       const QVector<Track> detectionPreviewTracks =
-          advanceRuntimeTracks(frameNumber, detections, detectionFrameSize);
+          advanceRuntimeTracks(frameNumber, detections, toSizeI(detectionFrameSize));
 
       const bool previewFrameDue =
           !previewPipelinePrimed ||
@@ -2824,7 +2855,7 @@ int runVulkanFacestreamOffscreenWithArgv(int argc, char **argv) {
     }
     if (!recordProcessedFrame(
             frameOffset, frameNumber, renderStats, detections, runtimeTracks,
-            detectionFrameSize, appVulkanFrame, decoderVulkanUploadFallback,
+            toSizeI(detectionFrameSize), appVulkanFrame, decoderVulkanUploadFallback,
             hardwareDirectHandoff, decoderUploadMs, vulkanDetectMs,
             emptyNcnnStats, decoderFrameHandoff.lastProbe(),
             decoderFrameHandoff.lastHardwareDirectAttemptReason())) {

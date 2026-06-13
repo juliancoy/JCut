@@ -3,15 +3,104 @@
 #include "speaker_export_harness.h"
 
 #include <QDialog>
+#include <QDir>
 #include <QFormLayout>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QCheckBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QProgressBar>
 #include <QCoreApplication>
+#include <QRegularExpression>
+
+using namespace editor;
+
+namespace {
+
+QString sanitizedExportBaseName(QString value, const QString& fallback)
+{
+    value = value.simplified();
+    value.remove(QRegularExpression(QStringLiteral("[\\\\/:*?\"<>|]")));
+    value.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._ -]+")), QStringLiteral(""));
+    value.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral("_"));
+    value.replace(QRegularExpression(QStringLiteral("_+")), QStringLiteral("_"));
+    value = value.trimmed();
+    while (value.startsWith(QLatin1Char('.')) || value.startsWith(QLatin1Char('_')) ||
+           value.startsWith(QLatin1Char('-'))) {
+        value.remove(0, 1);
+    }
+    while (value.endsWith(QLatin1Char('.')) || value.endsWith(QLatin1Char('_')) ||
+           value.endsWith(QLatin1Char('-'))) {
+        value.chop(1);
+    }
+    if (value.isEmpty()) {
+        value = fallback.trimmed();
+    }
+    return value.left(80);
+}
+
+QString coupleWordTitle(QString value, const QString& fallback)
+{
+    value = value.simplified();
+    value.remove(QRegularExpression(QStringLiteral("[\\r\\n]")));
+    value.remove(QRegularExpression(QStringLiteral("^[\"'`]+|[\"'`]+$")));
+    value.remove(QRegularExpression(QStringLiteral("[.!?;:]+$")));
+
+    const QStringList words = value.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (words.isEmpty()) {
+        return fallback;
+    }
+    QStringList limited;
+    for (const QString& word : words) {
+        limited.push_back(word);
+        if (limited.size() >= 4) {
+            break;
+        }
+    }
+    return limited.join(QLatin1Char(' '));
+}
+
+QString titleFromAiResponse(const QJsonObject& response)
+{
+    const QStringList topLevelKeys{
+        QStringLiteral("title"),
+        QStringLiteral("name"),
+        QStringLiteral("filename"),
+    };
+    for (const QString& key : topLevelKeys) {
+        const QString value = response.value(key).toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+
+    const QJsonValue resultValue = response.value(QStringLiteral("result"));
+    if (resultValue.isString()) {
+        return resultValue.toString().trimmed();
+    }
+    const QJsonObject resultObj = resultValue.toObject();
+    for (const QString& key : topLevelKeys) {
+        const QString value = resultObj.value(key).toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+
+    const QJsonObject payloadObj = response.value(QStringLiteral("payload")).toObject();
+    for (const QString& key : topLevelKeys) {
+        const QString value = payloadObj.value(key).toString().trimmed();
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+    return {};
+}
+
+} // namespace
 
 bool EditorWindow::parseSyncActionText(const QString &text, RenderSyncAction *actionOut) const
 {
@@ -96,6 +185,41 @@ void EditorWindow::renderFromOutputInspector()
     if (m_outputTab) {
         m_outputTab->renderFromInspector();
     }
+}
+
+void EditorWindow::renderTimelineFromOutputRequestCore(const jcut::render::RenderRequestCore& request)
+{
+    if (!m_timeline) {
+        return;
+    }
+
+    jcut::render::TimelineRenderData timelineData;
+    const QVector<TimelineClip> clips = m_timeline->clips();
+    timelineData.clips.reserve(static_cast<std::size_t>(clips.size()));
+    for (const TimelineClip& clip : clips) {
+        timelineData.clips.push_back(clip);
+    }
+
+    const QVector<TimelineTrack> tracks = m_timeline->tracks();
+    timelineData.tracks.reserve(static_cast<std::size_t>(tracks.size()));
+    for (const TimelineTrack& track : tracks) {
+        timelineData.tracks.push_back(track);
+    }
+
+    const QVector<RenderSyncMarker> renderSyncMarkers = m_timeline->renderSyncMarkers();
+    timelineData.renderSyncMarkers.reserve(static_cast<std::size_t>(renderSyncMarkers.size()));
+    for (const RenderSyncMarker& marker : renderSyncMarkers) {
+        timelineData.renderSyncMarkers.push_back(marker);
+    }
+
+    const QVector<ExportRangeSegment> exportRanges = effectivePlaybackRanges();
+    timelineData.exportRanges.reserve(static_cast<std::size_t>(exportRanges.size()));
+    for (const ExportRangeSegment& range : exportRanges) {
+        timelineData.exportRanges.push_back(range);
+    }
+
+    RenderRequest qtRequest = jcut::render::toQtRenderRequest(request, timelineData);
+    renderTimelineFromOutputRequest(qtRequest);
 }
 
 RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
@@ -750,6 +874,123 @@ void EditorWindow::exportVideoForSpeakersOnSelectedClip(const QStringList& speak
         QStringLiteral("Export Video"),
         QDir::current().filePath(QStringLiteral("%1.%2").arg(suggestedBase, request.outputFormat)),
         QStringLiteral("Video Files (*.%1);;All Files (*)").arg(request.outputFormat));
+    if (selectedPath.isEmpty()) {
+        return;
+    }
+
+    request.outputPath = selectedPath;
+    m_lastRenderOutputPath = selectedPath;
+    scheduleSaveState();
+
+    request.clips = m_timeline->clips();
+    request.tracks = m_timeline->tracks();
+    request.renderSyncMarkers = markers;
+    request.exportRanges = timelineRanges;
+    request.exportStartFrame = timelineRanges.constFirst().startFrame;
+    request.exportEndFrame = timelineRanges.constLast().endFrame;
+    renderTimelineFromOutputRequest(request);
+}
+
+void EditorWindow::exportVideoForSpeakerSectionOnSelectedClip(const QString& speakerId,
+                                                              int64_t sourceStartFrame,
+                                                              int64_t sourceEndFrame,
+                                                              const QString& snippet)
+{
+    if (!m_timeline || speakerId.trimmed().isEmpty()) {
+        return;
+    }
+    const TimelineClip* clip = m_timeline->selectedClip();
+    if (!clip || clip->durationFrames <= 0) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Export Section"),
+                                 QStringLiteral("Select a clip first."));
+        return;
+    }
+    if (sourceStartFrame < 0 || sourceEndFrame < sourceStartFrame) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Export Section"),
+                                 QStringLiteral("The selected section does not have a valid time range."));
+        return;
+    }
+
+    const QVector<RenderSyncMarker> markers = m_timeline->renderSyncMarkers();
+    QVector<ExportRangeSegment> timelineRanges;
+    const int64_t clipStartFrame = clip->startFrame;
+    const int64_t clipEndFrame = clip->startFrame + clip->durationFrames - 1;
+    for (int64_t timelineFrame = clipStartFrame; timelineFrame <= clipEndFrame; ++timelineFrame) {
+        const int64_t transcriptFrame = transcriptFrameForClipAtTimelineSample(
+            *clip, frameToSamples(timelineFrame), markers);
+        if (transcriptFrame < sourceStartFrame || transcriptFrame > sourceEndFrame) {
+            continue;
+        }
+        if (timelineRanges.isEmpty() || timelineFrame > timelineRanges.constLast().endFrame + 1) {
+            timelineRanges.push_back(ExportRangeSegment{timelineFrame, timelineFrame});
+        } else {
+            timelineRanges.last().endFrame = timelineFrame;
+        }
+    }
+    if (timelineRanges.isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Section"),
+            QStringLiteral("Could not map the selected section to timeline frames."));
+        return;
+    }
+
+    setPlaybackActive(false);
+
+    RenderRequest request = buildRenderRequestFromOutputControls();
+    QString aiTitle;
+    QString aiError;
+    bool aiOk = false;
+    QJsonObject payload;
+    payload[QStringLiteral("task")] = QStringLiteral("name_transcript_section");
+    payload[QStringLiteral("instruction")] =
+        QStringLiteral("Return only a short title for this video section, ideally two to four words. No punctuation.");
+    payload[QStringLiteral("speaker_id")] = speakerId.trimmed();
+    payload[QStringLiteral("section_text")] = snippet.simplified();
+    payload[QStringLiteral("source_start_frame")] = QString::number(sourceStartFrame);
+    payload[QStringLiteral("source_end_frame")] = QString::number(sourceEndFrame);
+
+    refreshAiIntegrationState();
+    if (m_aiIntegrationEnabled && !m_aiAuthToken.trimmed().isEmpty()) {
+        const QJsonObject response = runAiAction(
+            QStringLiteral("name_transcript_section"), payload, &aiOk, &aiError);
+        if (aiOk) {
+            aiTitle = titleFromAiResponse(response);
+        }
+    } else {
+        aiError = m_aiAuthToken.trimmed().isEmpty()
+            ? QStringLiteral("AI login required.")
+            : m_aiIntegrationStatus;
+    }
+
+    const QString fallbackTitle = QStringLiteral("section_%1_%2").arg(sourceStartFrame).arg(sourceEndFrame);
+    const QString title = coupleWordTitle(aiTitle, fallbackTitle);
+    const QString suggestedBase = sanitizedExportBaseName(title, fallbackTitle);
+    if (!aiOk && !aiError.trimmed().isEmpty()) {
+        QMessageBox::information(
+            this,
+            QStringLiteral("Export Section"),
+            QStringLiteral("AI could not name this section, so a fallback filename will be used.\n\n%1")
+                .arg(aiError));
+    }
+
+    const QString outputFormat = request.outputFormat.isEmpty()
+        ? QStringLiteral("mp4")
+        : request.outputFormat;
+    QString defaultDir = QDir::currentPath();
+    if (!m_lastRenderOutputPath.trimmed().isEmpty()) {
+        const QFileInfo previousInfo(m_lastRenderOutputPath);
+        if (previousInfo.dir().exists()) {
+            defaultDir = previousInfo.dir().absolutePath();
+        }
+    }
+    const QString selectedPath = QFileDialog::getSaveFileName(
+        this,
+        QStringLiteral("Export Section"),
+        QDir(defaultDir).filePath(QStringLiteral("%1.%2").arg(suggestedBase, outputFormat)),
+        QStringLiteral("Video Files (*.%1);;All Files (*)").arg(outputFormat));
     if (selectedPath.isEmpty()) {
         return;
     }

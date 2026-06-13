@@ -379,6 +379,15 @@ VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
     return status;
 }
 
+namespace {
+
+QSize toQSize(const jcut::core::SizeI& size)
+{
+    return QSize(size.width, size.height);
+}
+
+} // namespace
+
 VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
                                                          const render_detail::OffscreenVulkanFrame& frame,
                                                          int64_t requestedFrame)
@@ -389,7 +398,7 @@ VulkanPreviewClipFrameStatus buildPreviewClipFrameStatus(const QString& clipId,
     status.active = true;
     status.requestedSourceFrame = requestedFrame;
     status.presentedSourceFrame = requestedFrame;
-    status.frameSize = frame.size;
+    status.frameSize = toQSize(frame.size);
     status.hasFrame = frame.valid && frame.imageView != VK_NULL_HANDLE;
     status.exact = status.hasFrame;
     status.exactFrameAvailable = status.hasFrame;

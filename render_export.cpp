@@ -208,13 +208,16 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
             result.backendFallbackReason = vulkan.status;
             result.message = QStringLiteral(
                 "Vulkan backend requested for export, but Vulkan is unavailable. "
-                "OpenGL fallback is disabled.");
+                "No legacy fallback is available.");
             return result;
         }
         activeRenderer = std::make_unique<OffscreenVulkanRenderer>();
         result.effectiveRenderBackend = QStringLiteral("vulkan");
+    } else if (requestedBackend == RenderBackend::Null) {
+        result.effectiveRenderBackend = QStringLiteral("cpu");
     } else {
-        activeRenderer = std::make_unique<OffscreenGpuRenderer>();
+        result.message = QStringLiteral("Unsupported render backend. Only Vulkan and CPU/null export paths are available.");
+        return result;
     }
 
     const bool gpuInitialized = activeRenderer && activeRenderer->initialize(request.outputSize, &gpuInitializationError);
@@ -225,7 +228,7 @@ RenderResult renderTimelineToFile(const RenderRequest& request,
         if (requestedBackend == RenderBackend::Vulkan) {
             result.message = QStringLiteral(
                 "Vulkan backend requested for export, but Vulkan renderer initialization failed. "
-                "OpenGL fallback is disabled.");
+                "No legacy fallback is available.");
             return result;
         }
         result.effectiveRenderBackend = QStringLiteral("cpu");

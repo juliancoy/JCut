@@ -1,5 +1,6 @@
 #include "imgui_preview_window.h"
 
+#include "facedetections_tracking.h"
 #include "external/imgui/imgui.h"
 #include "external/imgui/backends/imgui_impl_glfw.h"
 #include "external/imgui/backends/imgui_impl_vulkan.h"
@@ -12,26 +13,34 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
-#include <QByteArray>
+#include <QRectF>
+#include <QString>
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <sstream>
 #include <vector>
 
 namespace {
 
 constexpr uint32_t kMinImageCount = 2;
 
-ImVec2 fitImageIntoRegion(const QSize& imageSize, const ImVec2& avail)
+QRectF toQRectF(const jcut::core::RectF& rect)
 {
-    if (!imageSize.isValid() || avail.x <= 1.0f || avail.y <= 1.0f) {
+    return QRectF(rect.x, rect.y, rect.width, rect.height);
+}
+
+ImVec2 fitImageIntoRegion(jcut::core::SizeI imageSize, const ImVec2& avail)
+{
+    if (!imageSize.valid() || avail.x <= 1.0f || avail.y <= 1.0f) {
         return ImVec2(1.0f, 1.0f);
     }
 
-    const float imageW = static_cast<float>(imageSize.width());
-    const float imageH = static_cast<float>(imageSize.height());
+    const float imageW = static_cast<float>(imageSize.width);
+    const float imageH = static_cast<float>(imageSize.height);
     const float scale = std::min(avail.x / imageW, avail.y / imageH);
     return ImVec2(std::max(1.0f, imageW * scale), std::max(1.0f, imageH * scale));
 }
@@ -63,8 +72,8 @@ bool hasExtension(const std::vector<VkExtensionProperties>& properties, const ch
 
 void drawAnimatedProgressBar(const char* id,
                              float fraction,
-                             const QString& title,
-                             const QString& detail,
+                             const std::string& title,
+                             const std::string& detail,
                              float markerFraction = -1.0f)
 {
     const ImVec2 cursor = ImGui::GetCursorScreenPos();
@@ -120,17 +129,39 @@ void drawAnimatedProgressBar(const char* id,
 
     const ImVec2 titlePos(rectMin.x + 12.0f, rectMin.y + 7.0f);
     const ImVec2 detailPos(rectMin.x + 12.0f, rectMin.y + 24.0f);
-    drawList->AddText(titlePos, IM_COL32(250, 252, 255, 255), title.toUtf8().constData());
-    drawList->AddText(detailPos, IM_COL32(188, 201, 219, 255), detail.toUtf8().constData());
+    drawList->AddText(titlePos, IM_COL32(250, 252, 255, 255), title.c_str());
+    drawList->AddText(detailPos, IM_COL32(188, 201, 219, 255), detail.c_str());
+}
+
+template <typename... Args>
+std::string formatString(const char* fmt, Args... args)
+{
+    const int size = std::snprintf(nullptr, 0, fmt, args...);
+    if (size <= 0) {
+        return std::string();
+    }
+    std::string output(static_cast<std::size_t>(size), '\0');
+    std::snprintf(output.data(), static_cast<std::size_t>(size) + 1, fmt, args...);
+    return output;
+}
+
+std::string trimCopy(const std::string& value)
+{
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        return std::string();
+    }
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
 }
 
 } // namespace
 
 struct ImGuiPreviewWindow::Impl {
     GLFWwindow* window = nullptr;
-    QString failureReason;
-    QString statusText;
-    QString windowTitle;
+    std::string failureReason;
+    std::string statusText;
+    std::string windowTitle;
     int64_t lastPresentedSourceFrame = -1;
     bool glfwInitialized = false;
     bool imguiContextInitialized = false;
@@ -153,7 +184,7 @@ struct ImGuiPreviewWindow::Impl {
     jcut::vulkan_detector::VulkanDetectorFrameHandoff frameHandoff;
     VkImageView boundImageView = VK_NULL_HANDLE;
     VkImageLayout boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    QSize boundImageSize;
+    jcut::core::SizeI boundImageSize;
     VkDescriptorSet textureSet = VK_NULL_HANDLE;
 
     bool showDetections = true;
@@ -193,13 +224,13 @@ ImGuiPreviewWindow::~ImGuiPreviewWindow()
 
 namespace {
 
-void checkVkResult(VkResult err, QString* errorOut)
+void checkVkResult(VkResult err, std::string* errorOut)
 {
     if (err == VK_SUCCESS) {
         return;
     }
-    if (errorOut && errorOut->isEmpty()) {
-        *errorOut = QStringLiteral("Vulkan call failed with VkResult=%1.").arg(static_cast<int>(err));
+    if (errorOut && errorOut->empty()) {
+        *errorOut = formatString("Vulkan call failed with VkResult=%d.", static_cast<int>(err));
     }
 }
 
@@ -239,7 +270,7 @@ bool selectQueueFamilyForPresent(VkPhysicalDevice physicalDevice,
     return false;
 }
 
-bool createInstance(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
+bool createInstance(ImGuiPreviewWindow::Impl* impl, std::string* errorOut)
 {
     if (!impl) {
         return false;
@@ -248,7 +279,7 @@ bool createInstance(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
     if (!glfwExtensions || glfwExtensionCount == 0) {
         if (errorOut) {
-            *errorOut = QStringLiteral("GLFW did not expose required Vulkan instance extensions.");
+            *errorOut = "GLFW did not expose required Vulkan instance extensions.";
         }
         return false;
     }
@@ -256,7 +287,7 @@ bool createInstance(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     uint32_t propertyCount = 0;
     if (vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, nullptr) != VK_SUCCESS) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to enumerate Vulkan instance extensions.");
+            *errorOut = "Failed to enumerate Vulkan instance extensions.";
         }
         return false;
     }
@@ -264,7 +295,7 @@ bool createInstance(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     if (propertyCount > 0 &&
         vkEnumerateInstanceExtensionProperties(nullptr, &propertyCount, properties.data()) != VK_SUCCESS) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to load Vulkan instance extension list.");
+            *errorOut = "Failed to load Vulkan instance extension list.";
         }
         return false;
     }
@@ -304,7 +335,7 @@ bool createInstance(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
 
 bool selectPhysicalDevice(ImGuiPreviewWindow::Impl* impl,
                           VkPhysicalDevice preferred,
-                          QString* errorOut)
+                          std::string* errorOut)
 {
     if (!impl || impl->instance == VK_NULL_HANDLE || impl->surface == VK_NULL_HANDLE) {
         return false;
@@ -327,14 +358,14 @@ bool selectPhysicalDevice(ImGuiPreviewWindow::Impl* impl,
     uint32_t deviceCount = 0;
     if (vkEnumeratePhysicalDevices(impl->instance, &deviceCount, nullptr) != VK_SUCCESS || deviceCount == 0) {
         if (errorOut) {
-            *errorOut = QStringLiteral("No Vulkan physical devices found for preview window.");
+            *errorOut = "No Vulkan physical devices found for preview window.";
         }
         return false;
     }
     std::vector<VkPhysicalDevice> devices(deviceCount);
     if (vkEnumeratePhysicalDevices(impl->instance, &deviceCount, devices.data()) != VK_SUCCESS) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to enumerate Vulkan physical devices for preview window.");
+            *errorOut = "Failed to enumerate Vulkan physical devices for preview window.";
         }
         return false;
     }
@@ -344,12 +375,12 @@ bool selectPhysicalDevice(ImGuiPreviewWindow::Impl* impl,
         }
     }
     if (errorOut) {
-        *errorOut = QStringLiteral("No Vulkan graphics/present queue supports the Dear ImGui preview surface.");
+        *errorOut = "No Vulkan graphics/present queue supports the Dear ImGui preview surface.";
     }
     return false;
 }
 
-bool createDevice(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
+bool createDevice(ImGuiPreviewWindow::Impl* impl, std::string* errorOut)
 {
     if (!impl || impl->physicalDevice == VK_NULL_HANDLE || impl->queueFamily == UINT32_MAX) {
         return false;
@@ -370,7 +401,7 @@ bool createDevice(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
             return true;
         }
         if (required && errorOut) {
-            *errorOut = QStringLiteral("Required Vulkan device extension is unavailable: %1").arg(name);
+            *errorOut = formatString("Required Vulkan device extension is unavailable: %s", name);
         }
         return false;
     };
@@ -383,7 +414,7 @@ bool createDevice(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     if (tryEnable(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME, false)) {
         extensions.push_back(VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME);
     }
-#ifdef Q_OS_LINUX
+#ifdef __linux__
     if (tryEnable(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, false)) {
         extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
     }
@@ -428,7 +459,7 @@ bool createDevice(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     return true;
 }
 
-bool createDescriptorPool(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
+bool createDescriptorPool(ImGuiPreviewWindow::Impl* impl, std::string* errorOut)
 {
     const std::array<VkDescriptorPoolSize, 2> poolSizes{{
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, IMGUI_IMPL_VULKAN_MINIMUM_SAMPLED_IMAGE_POOL_SIZE + 16},
@@ -451,7 +482,7 @@ bool createDescriptorPool(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     return true;
 }
 
-bool createSampler(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
+bool createSampler(ImGuiPreviewWindow::Impl* impl, std::string* errorOut)
 {
     VkSamplerCreateInfo samplerInfo{};
     samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -470,7 +501,7 @@ bool createSampler(ImGuiPreviewWindow::Impl* impl, QString* errorOut)
     return true;
 }
 
-bool setupWindowData(ImGuiPreviewWindow::Impl* impl, int width, int height, QString* errorOut)
+bool setupWindowData(ImGuiPreviewWindow::Impl* impl, int width, int height, std::string* errorOut)
 {
     impl->windowData.Surface = impl->surface;
     const VkFormat requestSurfaceImageFormat[] = {
@@ -504,7 +535,7 @@ bool setupWindowData(ImGuiPreviewWindow::Impl* impl, int width, int height, QStr
     impl->windowData.ClearValue = makeClearValue();
     if (impl->windowData.RenderPass == VK_NULL_HANDLE) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to initialize Vulkan swapchain/render pass for Dear ImGui preview.");
+            *errorOut = "Failed to initialize Vulkan swapchain/render pass for Dear ImGui preview.";
         }
         return false;
     }
@@ -561,12 +592,12 @@ void cleanupVulkan(ImGuiPreviewWindow::Impl* impl)
     impl->queue = VK_NULL_HANDLE;
     impl->boundImageView = VK_NULL_HANDLE;
     impl->boundImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    impl->boundImageSize = QSize();
+    impl->boundImageSize = {};
 }
 
 bool ensureVulkanReady(ImGuiPreviewWindow::Impl* impl,
                        VkPhysicalDevice preferredPhysicalDevice,
-                       QString* errorOut)
+                       std::string* errorOut)
 {
     if (!impl) {
         return false;
@@ -576,13 +607,13 @@ bool ensureVulkanReady(ImGuiPreviewWindow::Impl* impl,
     }
     if (impl->window == nullptr) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Dear ImGui preview GLFW window is unavailable.");
+            *errorOut = "Dear ImGui preview GLFW window is unavailable.";
         }
         return false;
     }
     if (!glfwVulkanSupported()) {
         if (errorOut) {
-            *errorOut = QStringLiteral("GLFW reports that Vulkan is not supported on this system.");
+            *errorOut = "GLFW reports that Vulkan is not supported on this system.";
         }
         return false;
     }
@@ -591,7 +622,7 @@ bool ensureVulkanReady(ImGuiPreviewWindow::Impl* impl,
     }
     if (glfwCreateWindowSurface(impl->instance, impl->window, nullptr, &impl->surface) != VK_SUCCESS) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to create Vulkan surface for Dear ImGui preview.");
+            *errorOut = "Failed to create Vulkan surface for Dear ImGui preview.";
         }
         cleanupVulkan(impl);
         return false;
@@ -628,19 +659,25 @@ bool ensureVulkanReady(ImGuiPreviewWindow::Impl* impl,
     initInfo.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
     initInfo.CheckVkResultFn = [](VkResult err) {
         if (err != VK_SUCCESS && err != VK_SUBOPTIMAL_KHR) {
-            qWarning("Dear ImGui Vulkan preview backend error: %d", static_cast<int>(err));
+            std::fprintf(stderr,
+                         "Dear ImGui Vulkan preview backend error: %d\n",
+                         static_cast<int>(err));
         }
     };
     if (!ImGui_ImplVulkan_Init(&initInfo)) {
         if (errorOut) {
-            *errorOut = QStringLiteral("Failed to initialize Dear ImGui Vulkan backend.");
+            *errorOut = "Failed to initialize Dear ImGui Vulkan backend.";
         }
         cleanupVulkan(impl);
         return false;
     }
     impl->imguiBackendsInitialized = true;
+    std::string handoffError;
     if (!impl->frameHandoff.initialize({impl->physicalDevice, impl->device, impl->queue, impl->queueFamily},
-                                       errorOut)) {
+                                       &handoffError)) {
+        if (errorOut) {
+            *errorOut = handoffError;
+        }
         cleanupVulkan(impl);
         return false;
     }
@@ -755,25 +792,24 @@ void framePresent(ImGuiPreviewWindow::Impl* impl)
 
 } // namespace
 
-bool ImGuiPreviewWindow::initialize(const QString& title, const QSize& initialSize)
+bool ImGuiPreviewWindow::initialize(const std::string& title, jcut::core::SizeI initialSize)
 {
     shutdown();
 
     if (!glfwInit()) {
-        markFailure(QStringLiteral("glfwInit() failed for Dear ImGui preview."));
+        markFailure("glfwInit() failed for Dear ImGui preview.");
         return false;
     }
     m_impl->glfwInitialized = true;
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    const QByteArray titleUtf8 = title.toUtf8();
-    m_impl->window = glfwCreateWindow(std::max(320, initialSize.width()),
-                                      std::max(240, initialSize.height()),
-                                      titleUtf8.constData(),
+    m_impl->window = glfwCreateWindow(std::max(320, initialSize.width),
+                                      std::max(240, initialSize.height),
+                                      title.c_str(),
                                       nullptr,
                                       nullptr);
     if (!m_impl->window) {
-        markFailure(QStringLiteral("glfwCreateWindow() failed for Dear ImGui preview."));
+        markFailure("glfwCreateWindow() failed for Dear ImGui preview.");
         return false;
     }
 
@@ -790,7 +826,7 @@ bool ImGuiPreviewWindow::initialize(const QString& title, const QSize& initialSi
     style.Colors[ImGuiCol_WindowBg] = ImVec4(0.04f, 0.05f, 0.07f, 1.0f);
 
     if (!ImGui_ImplGlfw_InitForVulkan(m_impl->window, true)) {
-        markFailure(QStringLiteral("ImGui GLFW Vulkan backend initialization failed."));
+        markFailure("ImGui GLFW Vulkan backend initialization failed.");
         return false;
     }
 
@@ -803,13 +839,13 @@ bool ImGuiPreviewWindow::initialize(const QString& title, const QSize& initialSi
 bool ImGuiPreviewWindow::isActive() const
 {
     return m_impl->window &&
-           m_impl->failureReason.trimmed().isEmpty() &&
+           trimCopy(m_impl->failureReason).empty() &&
            !glfwWindowShouldClose(m_impl->window);
 }
 
 bool ImGuiPreviewWindow::hasFailed() const
 {
-    return !m_impl->failureReason.trimmed().isEmpty();
+    return !trimCopy(m_impl->failureReason).empty();
 }
 
 bool ImGuiPreviewWindow::updatePending() const
@@ -827,30 +863,29 @@ int64_t ImGuiPreviewWindow::lastPresentedSourceFrame() const
     return m_impl->lastPresentedSourceFrame;
 }
 
-QString ImGuiPreviewWindow::failureReason() const
+std::string ImGuiPreviewWindow::failureReason() const
 {
-    return m_impl->failureReason;
+    return m_impl ? m_impl->failureReason : std::string();
 }
 
-void ImGuiPreviewWindow::setStatusText(const QString& text)
+void ImGuiPreviewWindow::setStatusText(const std::string& text)
 {
     m_impl->statusText = text;
 }
 
-void ImGuiPreviewWindow::setWindowTitle(const QString& title)
+void ImGuiPreviewWindow::setWindowTitle(const std::string& title)
 {
     m_impl->windowTitle = title;
     if (!m_impl->window) {
         return;
     }
-    const QByteArray titleUtf8 = title.toUtf8();
-    glfwSetWindowTitle(m_impl->window, titleUtf8.constData());
+    glfwSetWindowTitle(m_impl->window, m_impl->windowTitle.c_str());
 }
 
 void ImGuiPreviewWindow::setTimelineRange(int minFrame, int maxFrame, int latestProcessedFrame)
 {
     m_impl->minTimelineFrame = minFrame;
-    m_impl->maxTimelineFrame = qMax(minFrame, maxFrame);
+    m_impl->maxTimelineFrame = std::max(minFrame, maxFrame);
     m_impl->latestProcessedFrame = clampFrameToRange(latestProcessedFrame,
                                                      m_impl->minTimelineFrame,
                                                      m_impl->maxTimelineFrame);
@@ -894,7 +929,7 @@ void ImGuiPreviewWindow::setRequestedPreviewFrame(int frameNumber)
     m_impl->requestedPreviewFrame =
         clampFrameToRange(frameNumber,
                           m_impl->minTimelineFrame,
-                          qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
+                          std::max(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
     m_impl->redrawRequested = true;
 }
 
@@ -906,7 +941,7 @@ void ImGuiPreviewWindow::setPreviewPlaybackActive(bool active)
         m_impl->requestedPreviewFrame =
             clampFrameToRange(m_impl->requestedPreviewFrame,
                               m_impl->minTimelineFrame,
-                              qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
+                              std::max(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
     }
     m_impl->redrawRequested = true;
 }
@@ -1076,18 +1111,18 @@ void ImGuiPreviewWindow::pumpEvents()
     m_impl->requestedPreviewFrame =
         clampFrameToRange(m_impl->requestedPreviewFrame,
                           m_impl->minTimelineFrame,
-                          qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
+                          std::max(m_impl->minTimelineFrame, m_impl->latestProcessedFrame));
     glfwPollEvents();
-    if (glfwWindowShouldClose(m_impl->window) && m_impl->failureReason.trimmed().isEmpty()) {
-        markFailure(QStringLiteral("Dear ImGui preview window was closed."));
+    if (glfwWindowShouldClose(m_impl->window) && trimCopy(m_impl->failureReason).empty()) {
+        markFailure("Dear ImGui preview window was closed.");
     }
 }
 
 bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame& frame,
                                       int64_t frameNumber,
-                                      const QVector<jcut::facedetections::ContinuityTrack>& tracks,
-                                      const QVector<jcut::facedetections::Detection>& detections,
-                                      const QRectF& roiRect,
+                                      std::span<const jcut::facedetections::ContinuityTrack> tracks,
+                                      std::span<const jcut::facedetections::Detection> detections,
+                                      const jcut::core::RectF& roiRect,
                                       int detectionCount)
 {
     m_impl->updatePending = true;
@@ -1096,12 +1131,12 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         m_impl->updatePending = false;
         return false;
     }
-    if (!frame.valid || frame.imageView == VK_NULL_HANDLE || !frame.size.isValid()) {
+    if (!frame.valid || frame.imageView == VK_NULL_HANDLE || !frame.size.valid()) {
         m_impl->updatePending = false;
         return false;
     }
 
-    QString error;
+    std::string error;
     if (!ensureVulkanReady(m_impl.get(), frame.physicalDevice, &error)) {
         markFailure(error);
         m_impl->updatePending = false;
@@ -1109,15 +1144,16 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     }
     rebuildSwapchainIfNeeded(m_impl.get());
 
-    if (!m_impl->frameHandoff.importOffscreenFrame(frame, &error)) {
-        markFailure(error);
+    std::string handoffError;
+    if (!m_impl->frameHandoff.importOffscreenFrame(frame, &handoffError)) {
+        markFailure(handoffError);
         m_impl->updatePending = false;
         return false;
     }
 
     const jcut::vulkan_detector::VulkanExternalImage external = m_impl->frameHandoff.externalImage();
-    if (external.imageView == VK_NULL_HANDLE || !external.size.isValid()) {
-        markFailure(QStringLiteral("Dear ImGui preview received an invalid imported Vulkan image."));
+    if (external.imageView == VK_NULL_HANDLE || !external.size.valid()) {
+        markFailure("Dear ImGui preview received an invalid imported Vulkan image.");
         m_impl->updatePending = false;
         return false;
     }
@@ -1133,7 +1169,7 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
                                                          external.imageView,
                                                          external.imageLayout);
         if (m_impl->textureSet == VK_NULL_HANDLE) {
-            markFailure(QStringLiteral("Failed to bind imported Vulkan image into Dear ImGui."));
+            markFailure("Failed to bind imported Vulkan image into Dear ImGui.");
             m_impl->updatePending = false;
             return false;
         }
@@ -1158,35 +1194,37 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
     ImGui::Begin("JCut FaceDetections Preview", nullptr, flags);
-    ImGui::TextUnformatted(m_impl->windowTitle.toUtf8().constData());
-    if (!m_impl->statusText.trimmed().isEmpty()) {
+    ImGui::TextUnformatted(m_impl->windowTitle.c_str());
+    if (!trimCopy(m_impl->statusText).empty()) {
         ImGui::Separator();
-        ImGui::TextWrapped("%s", m_impl->statusText.toUtf8().constData());
+        ImGui::TextWrapped("%s", m_impl->statusText.c_str());
     }
     ImGui::Separator();
 
-    const int timelineMax = qMax(m_impl->minTimelineFrame, m_impl->maxTimelineFrame);
-    const int processedFrame = qBound(m_impl->minTimelineFrame, m_impl->latestProcessedFrame, timelineMax);
+    const int timelineMax = std::max(m_impl->minTimelineFrame, m_impl->maxTimelineFrame);
+    const int processedFrame =
+        std::clamp(m_impl->latestProcessedFrame, m_impl->minTimelineFrame, timelineMax);
     const int requestedFrame = clampFrameToRange(m_impl->requestedPreviewFrame,
                                                  m_impl->minTimelineFrame,
-                                                 qMax(m_impl->minTimelineFrame, processedFrame));
-    const int totalSpan = qMax(1, timelineMax - m_impl->minTimelineFrame);
+                                                 std::max(m_impl->minTimelineFrame, processedFrame));
+    const int totalSpan = std::max(1, timelineMax - m_impl->minTimelineFrame);
     const float processedFraction =
         static_cast<float>(processedFrame - m_impl->minTimelineFrame) / static_cast<float>(totalSpan);
     const float requestedFraction =
         static_cast<float>(requestedFrame - m_impl->minTimelineFrame) / static_cast<float>(totalSpan);
-    const QString progressTitle = QStringLiteral("%1  %2%")
-        .arg(m_impl->processingPausedRequested ? QStringLiteral("Processing Paused")
-                                              : QStringLiteral("Processing"))
-        .arg(QString::number(processedFraction * 100.0f, 'f', 1));
-    const QString progressDetail = QStringLiteral("processed %1 / %2 frames   preview %3   %4")
-        .arg(processedFrame)
-        .arg(timelineMax)
-        .arg(requestedFrame)
-        .arg(m_impl->followLatest ? QStringLiteral("follow latest")
-                                  : (m_impl->historyPlaying
-                                         ? QStringLiteral("history playback")
-                                         : QStringLiteral("manual inspect")));
+    const std::string progressMode = m_impl->followLatest
+        ? "follow latest"
+        : (m_impl->historyPlaying ? "history playback" : "manual inspect");
+    const std::string progressTitle = formatString(
+        "%s  %.1f%%",
+        m_impl->processingPausedRequested ? "Processing Paused" : "Processing",
+        processedFraction * 100.0f);
+    const std::string progressDetail = formatString(
+        "processed %d / %d frames   preview %d   %s",
+        processedFrame,
+        timelineMax,
+        requestedFrame,
+        progressMode.c_str());
     drawAnimatedProgressBar("processing_progress_bar",
                             processedFraction,
                             progressTitle,
@@ -1222,7 +1260,7 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
         m_impl->historyPlaying = false;
         m_impl->requestedPreviewFrame = m_impl->latestProcessedFrame;
     }
-    const int seekTimelineMax = qMax(m_impl->minTimelineFrame, m_impl->latestProcessedFrame);
+    const int seekTimelineMax = std::max(m_impl->minTimelineFrame, m_impl->latestProcessedFrame);
     int requestedFrameSlider = clampFrameToRange(m_impl->requestedPreviewFrame,
                                                  m_impl->minTimelineFrame,
                                                  seekTimelineMax);
@@ -1300,14 +1338,15 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     ImGui::Image(m_impl->textureSet, fitted, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
-    const float scaleX = fitted.x / static_cast<float>(std::max(1, external.size.width()));
-    const float scaleY = fitted.y / static_cast<float>(std::max(1, external.size.height()));
+    const float scaleX = fitted.x / static_cast<float>(std::max(1, external.size.width));
+    const float scaleY = fitted.y / static_cast<float>(std::max(1, external.size.height));
     const int alpha = static_cast<int>(std::round(255.0f * m_impl->overlayOpacity));
     const ImU32 roiColor = IM_COL32(255, 170, 51, alpha);
     const ImU32 detColor = IM_COL32(168, 85, 247, alpha);
+    const QRectF qtRoiRect = toQRectF(roiRect);
     auto trackColor = [alpha](jcut::facedetections::ContinuityTrackState state) {
         if (state == jcut::facedetections::ContinuityTrackState::Removed) {
-            return IM_COL32(160, 160, 160, qMin(alpha, 220));
+            return IM_COL32(160, 160, 160, std::min(alpha, 220));
         }
         return IM_COL32(168, 85, 247, alpha);
     };
@@ -1324,11 +1363,11 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
             return "Removed";
         }
     };
-    if (m_impl->showRoi && roiRect.isValid() && !roiRect.isEmpty()) {
-        const ImVec2 roiMin(imagePos.x + static_cast<float>(roiRect.left()) * scaleX,
-                            imagePos.y + static_cast<float>(roiRect.top()) * scaleY);
-        const ImVec2 roiMax(imagePos.x + static_cast<float>(roiRect.right()) * scaleX,
-                            imagePos.y + static_cast<float>(roiRect.bottom()) * scaleY);
+    if (m_impl->showRoi && qtRoiRect.isValid() && !qtRoiRect.isEmpty()) {
+        const ImVec2 roiMin(imagePos.x + static_cast<float>(qtRoiRect.left()) * scaleX,
+                            imagePos.y + static_cast<float>(qtRoiRect.top()) * scaleY);
+        const ImVec2 roiMax(imagePos.x + static_cast<float>(qtRoiRect.right()) * scaleX,
+                            imagePos.y + static_cast<float>(qtRoiRect.bottom()) * scaleY);
         drawList->AddRect(roiMin, roiMax, roiColor, 0.0f, 0, 2.0f);
     }
     if (m_impl->showDetections) {
@@ -1380,13 +1419,13 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
                                 imagePos.y + static_cast<float>(track.box.bottom()) * scaleY);
             drawList->AddRect(boxMin, boxMax, color, 0.0f, 0, m_impl->trackLineThickness);
             if (m_impl->showTrackLabels) {
-                const QString labelText =
-                    QStringLiteral("T%1  %2").arg(track.id).arg(QString::fromLatin1(trackStateLabel(track.state)));
-                const ImVec2 labelSize = ImGui::CalcTextSize(labelText.toUtf8().constData());
+                const std::string labelText =
+                    formatString("T%d  %s", track.id, trackStateLabel(track.state));
+                const ImVec2 labelSize = ImGui::CalcTextSize(labelText.c_str());
                 const ImVec2 labelMin(boxMin.x, std::max(imagePos.y, boxMin.y - labelSize.y - 6.0f));
                 const ImVec2 labelMax(labelMin.x + labelSize.x + 10.0f, labelMin.y + labelSize.y + 4.0f);
-                drawList->AddRectFilled(labelMin, labelMax, IM_COL32(0, 0, 0, qMin(alpha, 180)), 5.0f);
-                drawList->AddText(ImVec2(labelMin.x + 5.0f, labelMin.y + 2.0f), color, labelText.toUtf8().constData());
+                drawList->AddRectFilled(labelMin, labelMax, IM_COL32(0, 0, 0, std::min(alpha, 180)), 5.0f);
+                drawList->AddText(ImVec2(labelMin.x + 5.0f, labelMin.y + 2.0f), color, labelText.c_str());
             }
         }
     }
@@ -1396,16 +1435,15 @@ bool ImGuiPreviewWindow::presentFrame(const render_detail::OffscreenVulkanFrame&
     drawList->AddRectFilled(panelMin, panelMax, IM_COL32(0, 0, 0, 160), 6.0f);
     drawList->AddText(ImVec2(panelMin.x + 10.0f, panelMin.y + 9.0f),
                       IM_COL32(255, 255, 255, 255),
-                      QStringLiteral("Detections: %1").arg(detectionCount).toUtf8().constData());
+                      formatString("Detections: %d", detectionCount).c_str());
     drawList->AddText(ImVec2(panelMin.x + 10.0f, panelMin.y + 30.0f),
                       IM_COL32(255, 255, 255, 255),
-                      QStringLiteral("Tracks: %1  C:%2  T:%3  L:%4")
-                          .arg(tracks.size())
-                          .arg(confirmedCount)
-                          .arg(tentativeCount)
-                          .arg(lostCount)
-                          .toUtf8()
-                          .constData());
+                      formatString("Tracks: %zu  C:%d  T:%d  L:%d",
+                                   tracks.size(),
+                                   confirmedCount,
+                                   tentativeCount,
+                                   lostCount)
+                          .c_str());
 
     if (showTrackPanel) {
         ImGui::SameLine();
@@ -1490,9 +1528,10 @@ void ImGuiPreviewWindow::shutdown()
     m_impl->lastPresentedSourceFrame = -1;
 }
 
-void ImGuiPreviewWindow::markFailure(const QString& reason)
+void ImGuiPreviewWindow::markFailure(const std::string& reason)
 {
-    m_impl->failureReason = reason.trimmed().isEmpty()
-        ? QStringLiteral("Unknown Dear ImGui preview failure.")
-        : reason.trimmed();
+    const std::string trimmedReason = trimCopy(reason);
+    m_impl->failureReason = trimmedReason.empty()
+        ? "Unknown Dear ImGui preview failure."
+        : trimmedReason;
 }

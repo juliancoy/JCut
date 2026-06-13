@@ -29,7 +29,7 @@ inline qint64 playbackTraceMs()
 
 inline bool playbackTraceEnabled()
 {
-    return debugPlaybackLevel() >= DebugLogLevel::Info;
+    return editor::debugPlaybackLevel() >= editor::DebugLogLevel::Info;
 }
 
 inline void playbackTrace(const QString &stage, const QString &detail = QString())
@@ -41,7 +41,7 @@ inline void playbackTrace(const QString &stage, const QString &detail = QString(
 
     static QHash<QString, qint64> lastLogByStage;
     const qint64 now = playbackTraceMs();
-    const bool throttle = !debugPlaybackVerboseEnabled();
+    const bool throttle = !editor::debugPlaybackVerboseEnabled();
     if (throttle &&
         (stage.startsWith(QStringLiteral("PreviewWindow::requestFramesForCurrentPosition")) ||
          stage.startsWith(QStringLiteral("EditorWindow::advanceFrame")) ||

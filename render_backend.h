@@ -3,7 +3,6 @@
 #include <QString>
 
 enum class RenderBackend {
-    OpenGL,
     Vulkan,
     Null,
     Auto,

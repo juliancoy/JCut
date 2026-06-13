@@ -44,6 +44,8 @@
 #include <QHeaderView>
 #include <QVBoxLayout>
 
+using namespace editor;
+
 namespace {
 
 constexpr auto kDefaultSupabaseGateway = "https://ivwutugdrpugjqglxabw.supabase.co";

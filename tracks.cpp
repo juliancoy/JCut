@@ -2657,10 +2657,15 @@ bool SpeakersTab::handlePreviewFaceDetectionsBoxFocusClear(const QString& clipId
                   ? m_speakerDeps.getRenderSyncMarkers()
                   : QVector<RenderSyncMarker>{});
     const int64_t transcriptFrame = transcriptFrameForClipSourceFrame(*clip, mediaSourceFrame);
+    const QJsonArray streams = continuityStreamsForClip(*clip);
+    const QHash<int, QString> identityByTrackId = resolvedIdentityByTrackId(*clip, streams);
 
-    const QString selectedSpeaker = selectedSpeakerId().trimmed();
-    QString speakerId = selectedSpeaker;
+    QString speakerId = identityByTrackId.value(trackId).trimmed();
     int64_t speakerSourceFrame = transcriptFrame;
+    if (speakerId.isEmpty()) {
+        const QString selectedSpeaker = selectedSpeakerId().trimmed();
+        speakerId = selectedSpeaker;
+    }
     if (speakerId.isEmpty()) {
         speakerId = activeSpeakerIdAtSourceFrame(transcriptFrame);
     }
@@ -2673,7 +2678,7 @@ bool SpeakersTab::handlePreviewFaceDetectionsBoxFocusClear(const QString& clipId
         }
     }
     if (speakerId.isEmpty() || !m_transcriptSession.hasObjectDocument()) {
-        report(QStringLiteral("Face box right-click ignored: no current speaker focus for track %1 at media source frame %2.")
+        report(QStringLiteral("Face box right-click ignored: track %1 has no speaker mapping at media source frame %2.")
                    .arg(trackId)
                    .arg(mediaSourceFrame));
         return false;

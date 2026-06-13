@@ -1,6 +1,7 @@
 #pragma once
 
-#include <QSize>
+#include "core/geometry.h"
+
 #include <QString>
 #include <QVector>
 
@@ -18,7 +19,7 @@ struct VulkanDeviceContext {
 struct VulkanExternalImage {
     VkImageView imageView = VK_NULL_HANDLE;
     VkImageLayout imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    QSize size;
+    jcut::core::SizeI size;
     bool sourceIsSrgb = false;
     float sourceX = 0.0f;
     float sourceY = 0.0f;
