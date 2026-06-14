@@ -74,6 +74,8 @@ struct RenderRequest {
     qreal currentSpeakerBorderWidth = 1.0;
     bool currentSpeakerShadowEnabled = true;
     QColor currentSpeakerShadowColor = QColor(0, 0, 0, 190);
+    int transcriptPrependMs = 150;
+    int transcriptPostpendMs = 70;
     QVector<TimelineClip> clips;
     QVector<TimelineTrack> tracks;
     QVector<RenderSyncMarker> renderSyncMarkers;

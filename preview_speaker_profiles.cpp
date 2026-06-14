@@ -403,7 +403,11 @@ CurrentSpeakerLabel currentSpeakerLabelForState(const PreviewInteractionState* s
             continue;
         }
         ExportRangeSegment activeRange{-1, -1};
-        speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame, &activeRange);
+        speakerId = transcriptOverlaySpeakerAtSourceFrame(
+            sections,
+            sourceFrame,
+            &activeRange,
+            TranscriptOverlayTiming{state->transcriptPrependMs, state->transcriptPostpendMs});
         if (speakerId.isEmpty()) {
             continue;
         }
@@ -500,7 +504,11 @@ QJsonObject currentSpeakerLabelDebugForState(const PreviewInteractionState* stat
 
         const int64_t transcriptFrame = transcriptFrameForClipAtPreviewState(clip, state);
         const int64_t mediaSourceFrame = mediaSourceFrameForClipAtPreviewState(clip, state);
-        const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, transcriptFrame);
+        const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(
+            sections,
+            transcriptFrame,
+            nullptr,
+            TranscriptOverlayTiming{state->transcriptPrependMs, state->transcriptPostpendMs});
         clipDebug.insert(QStringLiteral("source_frame"), static_cast<qint64>(transcriptFrame));
         clipDebug.insert(QStringLiteral("transcript_frame"), static_cast<qint64>(transcriptFrame));
         clipDebug.insert(QStringLiteral("media_source_frame"), static_cast<qint64>(mediaSourceFrame));

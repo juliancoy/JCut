@@ -1202,8 +1202,9 @@ void invalidateTranscriptJsonCache(const QString& transcriptPath)
 
 QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
                                              const QVector<TranscriptSection>& sections,
-                                             int64_t sourceFrame) {
-    const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame);
+                                             int64_t sourceFrame,
+                                             const TranscriptOverlayTiming& timing) {
+    const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame, nullptr, timing);
     if (speakerId.isEmpty() || transcriptPath.isEmpty()) {
         return QString();
     }
@@ -1264,8 +1265,9 @@ QString transcriptSpeakerSentenceForSourceFrame(const TranscriptRuntimeDocument&
 
 SpeakerProfile transcriptSpeakerProfileForSourceFrame(const QString& transcriptPath,
                                                       const QVector<TranscriptSection>& sections,
-                                                      int64_t sourceFrame) {
-    const QString speakerId = activeSpeakerForSourceFrame(sections, sourceFrame);
+                                                      int64_t sourceFrame,
+                                                      const TranscriptOverlayTiming& timing) {
+    const QString speakerId = transcriptOverlaySpeakerAtSourceFrame(sections, sourceFrame, nullptr, timing);
     if (speakerId.isEmpty() || transcriptPath.isEmpty()) {
         return {};
     }

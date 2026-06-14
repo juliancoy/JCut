@@ -170,6 +170,8 @@ struct PreviewInteractionState {
     qreal currentSpeakerBorderWidth = 1.0;
     bool currentSpeakerShadowEnabled = true;
     QColor currentSpeakerShadowColor = QColor(0, 0, 0, 190);
+    int transcriptPrependMs = 150;
+    int transcriptPostpendMs = 70;
     QString playbackStatusOverlayText;
     qreal playbackStatusOverlayProgress = -1.0;
     QString temporalDebugOverlayText;

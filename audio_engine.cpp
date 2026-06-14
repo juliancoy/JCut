@@ -147,7 +147,7 @@ void AudioEngine::setPlaybackRate(qreal rate) {
 }
 
 void AudioEngine::setPlaybackDriftRetimeRate(qreal rate) {
-  m_playbackDriftRetimeRate.store(qBound<qreal>(0.99, rate, 1.01),
+  m_playbackDriftRetimeRate.store(qBound<qreal>(0.92, rate, 1.08),
                                   std::memory_order_release);
 }
 
@@ -610,9 +610,9 @@ QJsonObject AudioEngine::profilingSnapshot() const {
   const qreal playbackRate =
       qBound<qreal>(0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
   const qreal driftRetimeRate =
-      qBound<qreal>(0.99,
+      qBound<qreal>(0.92,
                     m_playbackDriftRetimeRate.load(std::memory_order_acquire),
-                    1.01);
+                    1.08);
   snapshot[QStringLiteral("initialized")] = m_initialized;
   snapshot[QStringLiteral("running")] =
       m_running.load(std::memory_order_acquire);
@@ -1255,7 +1255,7 @@ void AudioEngine::requestAudioForTimelineSampleLocked(int64_t timelineSample) {
 
 int AudioEngine::rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
                                  unsigned int nFrames, double /*streamTime*/,
-                                 rt::audio::RtAudioStreamStatus /*status*/,
+                                 rt::audio::RtAudioStreamStatus status,
                                  void *userData) {
   auto *engine = static_cast<AudioEngine *>(userData);
   auto *out = static_cast<int16_t *>(outputBuffer);
@@ -1270,18 +1270,17 @@ int AudioEngine::rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
       static_cast<qint64>(samplesNeeded > read ? samplesNeeded - read : 0),
       std::memory_order_release);
 
-  if (read > 0) {
-    const int64_t readFrames = static_cast<int64_t>(
-        read / static_cast<size_t>(engine->m_channelCount));
+  if (nFrames > 0) {
+    const int64_t sinkFrames = static_cast<int64_t>(nFrames);
     const qreal playbackRate = qBound<qreal>(
         0.1, engine->m_playbackRate.load(std::memory_order_acquire), 3.0);
     const qreal driftRetimeRate = qBound<qreal>(
-        0.99,
+        0.92,
         engine->m_playbackDriftRetimeRate.load(std::memory_order_acquire),
-        1.01);
+        1.08);
     const int64_t timelineAdvance =
         qMax<int64_t>(1, static_cast<int64_t>(std::llround(
-                             static_cast<long double>(readFrames) *
+                             static_cast<long double>(sinkFrames) *
                              static_cast<long double>(playbackRate * driftRetimeRate))));
     engine->m_audioClockSample.fetch_add(timelineAdvance,
                                          std::memory_order_release);
@@ -1290,6 +1289,9 @@ int AudioEngine::rtAudioCallback(void *outputBuffer, void * /*inputBuffer*/,
   if (read < samplesNeeded) {
     std::memset(out + read, 0, (samplesNeeded - read) * sizeof(int16_t));
     engine->m_underrunCount.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (status != 0 || read < samplesNeeded) {
+    engine->m_mixCondition.notify_one();
   }
   if (samplesNeeded >= static_cast<size_t>(engine->m_channelCount)) {
     const size_t lastIndex =
@@ -3308,8 +3310,8 @@ void AudioEngine::mixLoop() {
       playbackRate = qBound<qreal>(
           0.1, m_playbackRate.load(std::memory_order_acquire), 3.0);
       driftRetimeRate = qBound<qreal>(
-          0.99, m_playbackDriftRetimeRate.load(std::memory_order_acquire),
-          1.01);
+          0.92, m_playbackDriftRetimeRate.load(std::memory_order_acquire),
+          1.08);
       const qreal chunkTimelineDuration =
           playbackRate * driftRetimeRate * static_cast<qreal>(m_periodFrames);
       const int64_t timelineStep = qMax<int64_t>(

@@ -57,6 +57,16 @@ private slots:
         QCOMPARE(static_cast<unsigned char>(lut[lut.size() - 1]), static_cast<unsigned char>(255));
     }
 
+    void blurredFillBackgroundUsesShaderBlurSignal()
+    {
+        const render_detail::VulkanDrawEffectState state =
+            render_detail::vulkanBlurredBackgroundEffectState(0.8f);
+
+        QCOMPARE(state.opacity, 0.8f);
+        QVERIFY2(state.midtones[3] < 0.0f,
+                 "Blurred fill background must signal color blur without using the positive alpha-feather path.");
+    }
+
     void pushConstantLayoutKeepsParityFlagsInPadding()
     {
         QCOMPARE(sizeof(VulkanPipeline::Push), size_t(128));
@@ -82,6 +92,10 @@ private slots:
                  "Direct Vulkan presenter must use the push-constant curve-enabled flag.");
         QVERIFY2(source.contains(QStringLiteral("pc.u_midtones.a > 0.0")),
                  "Direct Vulkan presenter must use the push-constant mask-feather radius.");
+        QVERIFY2(source.contains(QStringLiteral("pc.u_midtones.a < 0.0")),
+                 "Direct Vulkan presenter must use the push-constant blurred-fill background signal.");
+        QVERIFY2(source.contains(QStringLiteral("blurredFillSample")),
+                 "Direct Vulkan presenter must blur the cover-fill background in shader.");
 
         const int shadowsPos = source.indexOf(QStringLiteral("rgb *= (1.0 + pc.u_shadows.rgb"));
         const int midtonesPos = source.indexOf(QStringLiteral("vec3 midtoneAdjust = pc.u_midtones.rgb"));

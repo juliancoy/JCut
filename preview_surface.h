@@ -118,6 +118,7 @@ public:
     virtual void setCurrentSpeakerBorderWidth(qreal width) = 0;
     virtual void setCurrentSpeakerShadowEnabled(bool enabled) = 0;
     virtual void setCurrentSpeakerShadowColor(const QColor& color) = 0;
+    virtual void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs) = 0;
     virtual void setPlaybackStatusOverlayText(const QString& text) = 0;
     virtual void setPlaybackStatusOverlayProgress(qreal progress) = 0;
     virtual void setFacestreamOverlaySource(const QString& source) = 0;

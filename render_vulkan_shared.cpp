@@ -137,6 +137,7 @@ VulkanDrawEffectState vulkanBlurredBackgroundEffectState(float opacity)
     state.contrast = 1.0f;
     state.saturation = 0.75f;
     state.shadows[3] = 1.0f;
+    state.midtones[3] = -14.0f;
     state.highlights[3] = 1.0f;
     return state;
 }

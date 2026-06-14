@@ -4,8 +4,10 @@
 #include "grading_histogram_widget.h"
 #include "speakers_table.h"
 
-#include <QCheckBox>
+#include <QAbstractButton>
 #include <QBrush>
+#include <QButtonGroup>
+#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -21,6 +23,7 @@
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSplitter>
 #include <QSpinBox>
 #include <QTabBar>
@@ -1397,16 +1400,17 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakersTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_speakersTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
     m_speakerHideUnidentifiedCheckBox =
-        new QCheckBox(QStringLiteral("Hide Unidentified Speakers"), page);
+        new QCheckBox(QStringLiteral("Hide Unidentified"), page);
     m_speakerHideUnidentifiedCheckBox->setChecked(false);
     m_speakerHideUnidentifiedCheckBox->setToolTip(
         QStringLiteral("Hide speaker roster rows that do not have an identified profile name."));
     m_speakerShowContiguousSectionsCheckBox =
-        new QCheckBox(QStringLiteral("Show Contiguous Transcript Sections"), page);
+        new QCheckBox(QStringLiteral("Transcript Sections"), page);
     m_speakerShowContiguousSectionsCheckBox->setChecked(false);
+    m_speakerShowContiguousSectionsCheckBox->hide();
     m_speakerShowContiguousSectionsCheckBox->setToolTip(
-        QStringLiteral("Replace the speaker roster with transcript-ordered contiguous speaker sections."));
-    m_speakerExportLongSectionsButton = new QPushButton(QStringLiteral("Export 10+ Word Sections"), page);
+        QStringLiteral("Switch assignment rows from speakers to transcript-ordered contiguous sections."));
+    m_speakerExportLongSectionsButton = new QPushButton(QStringLiteral("Export Sections"), page);
     m_speakerExportLongSectionsButton->setObjectName(QStringLiteral("speakers.export_long_sections"));
     m_speakerExportLongSectionsButton->setMinimumHeight(30);
     m_speakerExportLongSectionsButton->setSizePolicy(QSizePolicy::MinimumExpanding, QSizePolicy::Fixed);
@@ -1511,18 +1515,20 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerCurrentSpeakerShadowOpacitySpin->setToolTip(
         QStringLiteral("Set the active speaker label shadow opacity."));
     m_speakerSectionsTable = new QTableWidget(page);
-    m_speakerSectionsTable->setColumnCount(7);
+    m_speakerSectionsTable->setColumnCount(8);
     m_speakerSectionsTable->setHorizontalHeaderLabels(
         {QStringLiteral("Avatar"),
          QStringLiteral("#"),
          QStringLiteral("Speaker"),
          QStringLiteral("Range"),
-         QStringLiteral("Track"),
+         QStringLiteral("Tracks"),
+         QStringLiteral("Rotation"),
          QStringLiteral("Words"),
          QStringLiteral("Transcript")});
     m_speakerSectionsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_speakerSectionsTable->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_speakerSectionsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_speakerSectionsTable->setEditTriggers(QAbstractItemView::DoubleClicked |
+                                            QAbstractItemView::EditKeyPressed);
     m_speakerSectionsTable->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     m_speakerSectionsTable->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     m_speakerSectionsTable->setMinimumHeight(0);
@@ -1538,7 +1544,8 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(4, QHeaderView::ResizeToContents);
     m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(5, QHeaderView::ResizeToContents);
-    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::Stretch);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(6, QHeaderView::ResizeToContents);
+    m_speakerSectionsTable->horizontalHeader()->setSectionResizeMode(7, QHeaderView::Stretch);
     m_speakerSectionsTable->hide();
 
     auto *selectedSpeakerTitle = new QLabel(QStringLiteral("Selected Speaker"), page);
@@ -1774,6 +1781,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingTargetXSpin = new QDoubleSpinBox(page);
     m_speakerFramingTargetYSpin = new QDoubleSpinBox(page);
     m_speakerFramingTargetBoxSpin = new QDoubleSpinBox(page);
+    m_speakerSectionRotationSpin = new QDoubleSpinBox(page);
     m_speakerFramingCenterSmoothingFramesSpin = new QSpinBox(page);
     m_speakerFramingZoomSmoothingFramesSpin = new QSpinBox(page);
     m_speakerFramingSmoothingModeCombo = new QComboBox(page);
@@ -1792,6 +1800,13 @@ QWidget *InspectorPane::buildSpeakersTab()
     m_speakerFramingTargetXSpin->setValue(0.5);
     m_speakerFramingTargetYSpin->setValue(0.35);
     m_speakerFramingTargetBoxSpin->setValue(0.20);
+    m_speakerSectionRotationSpin->setDecimals(1);
+    m_speakerSectionRotationSpin->setRange(-180.0, 180.0);
+    m_speakerSectionRotationSpin->setSingleStep(0.5);
+    m_speakerSectionRotationSpin->setSuffix(QStringLiteral(" deg"));
+    m_speakerSectionRotationSpin->setValue(0.0);
+    m_speakerSectionRotationSpin->setToolTip(
+        QStringLiteral("Rotate the selected contiguous transcript section around its active face box."));
     for (QSpinBox* spinBox : {
              m_speakerFramingCenterSmoothingFramesSpin,
              m_speakerFramingZoomSmoothingFramesSpin}) {
@@ -1898,11 +1913,84 @@ QWidget *InspectorPane::buildSpeakersTab()
     auto *speakerListLayout = new QVBoxLayout(speakerListPanel);
     speakerListLayout->setContentsMargins(0, 0, 0, 0);
     speakerListLayout->setSpacing(6);
-    speakerListLayout->addWidget(m_speakerHideUnidentifiedCheckBox);
-    speakerListLayout->addWidget(m_speakerShowContiguousSectionsCheckBox);
-    speakerListLayout->addWidget(m_speakerExportLongSectionsButton);
-    speakerListLayout->addWidget(m_speakerShowCurrentSpeakerNameCheckBox);
-    speakerListLayout->addWidget(m_speakerShowCurrentSpeakerOrganizationCheckBox);
+    auto *speakerWorkTabs = new QTabWidget(speakerListPanel);
+    speakerWorkTabs->setObjectName(QStringLiteral("speakers.work_tabs"));
+    speakerWorkTabs->setDocumentMode(true);
+    speakerWorkTabs->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    auto *speakerAssignmentsPage = new QWidget(speakerWorkTabs);
+    auto *speakerAssignmentsLayout = new QVBoxLayout(speakerAssignmentsPage);
+    speakerAssignmentsLayout->setContentsMargins(0, 0, 0, 0);
+    speakerAssignmentsLayout->setSpacing(6);
+
+    auto *assignmentControlsGroup = new QGroupBox(QStringLiteral("Assignment Rows"), speakerAssignmentsPage);
+    auto *assignmentControlsLayout = new QHBoxLayout(assignmentControlsGroup);
+    assignmentControlsLayout->setContentsMargins(8, 6, 8, 6);
+    assignmentControlsLayout->setSpacing(8);
+    auto *assignmentModeLabel = new QLabel(QStringLiteral("Rows"), assignmentControlsGroup);
+    auto *assignmentModeGroup = new QButtonGroup(assignmentControlsGroup);
+    assignmentModeGroup->setExclusive(true);
+    auto *speakerRowsButton = new QToolButton(assignmentControlsGroup);
+    speakerRowsButton->setObjectName(QStringLiteral("speakers.assignment_mode.speakers"));
+    speakerRowsButton->setText(QStringLiteral("Speakers"));
+    speakerRowsButton->setCheckable(true);
+    speakerRowsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    auto *sectionRowsButton = new QToolButton(assignmentControlsGroup);
+    sectionRowsButton->setObjectName(QStringLiteral("speakers.assignment_mode.sections"));
+    sectionRowsButton->setText(QStringLiteral("Sections"));
+    sectionRowsButton->setCheckable(true);
+    sectionRowsButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    assignmentModeGroup->addButton(speakerRowsButton, 0);
+    assignmentModeGroup->addButton(sectionRowsButton, 1);
+    assignmentModeGroup->button(m_speakerShowContiguousSectionsCheckBox->isChecked() ? 1 : 0)->setChecked(true);
+    const QString assignmentModeToolTip =
+        QStringLiteral("Choose whether assignments are edited by speaker or by contiguous transcript section.");
+    speakerRowsButton->setToolTip(assignmentModeToolTip);
+    sectionRowsButton->setToolTip(assignmentModeToolTip);
+    connect(assignmentModeGroup,
+            &QButtonGroup::idClicked,
+            m_speakerShowContiguousSectionsCheckBox,
+            [this](int id) {
+                if (m_speakerShowContiguousSectionsCheckBox) {
+                    m_speakerShowContiguousSectionsCheckBox->setChecked(id == 1);
+                }
+            });
+    connect(m_speakerShowContiguousSectionsCheckBox,
+            &QCheckBox::toggled,
+            assignmentModeGroup,
+            [assignmentModeGroup](bool showSections) {
+                QSignalBlocker blocker(assignmentModeGroup);
+                if (QAbstractButton *button = assignmentModeGroup->button(showSections ? 1 : 0)) {
+                    button->setChecked(true);
+                }
+            });
+    assignmentControlsLayout->addWidget(assignmentModeLabel);
+    assignmentControlsLayout->addWidget(speakerRowsButton);
+    assignmentControlsLayout->addWidget(sectionRowsButton);
+    assignmentControlsLayout->addWidget(m_speakerHideUnidentifiedCheckBox);
+    assignmentControlsLayout->addStretch(1);
+    assignmentControlsLayout->addWidget(m_speakerExportLongSectionsButton);
+    speakerAssignmentsLayout->addWidget(assignmentControlsGroup);
+    speakerAssignmentsLayout->addWidget(m_speakersTable, 1);
+    speakerAssignmentsLayout->addWidget(m_speakerSectionsTable, 1);
+
+    auto *speakerOverlayPage = new QWidget(speakerWorkTabs);
+    auto *speakerOverlayLayout = new QVBoxLayout(speakerOverlayPage);
+    speakerOverlayLayout->setContentsMargins(0, 0, 0, 0);
+    speakerOverlayLayout->setSpacing(6);
+
+    auto *speakerOverlayVisibilityGroup = new QGroupBox(QStringLiteral("Visible Fields"), speakerOverlayPage);
+    auto *speakerOverlayVisibilityLayout = new QVBoxLayout(speakerOverlayVisibilityGroup);
+    speakerOverlayVisibilityLayout->setContentsMargins(8, 6, 8, 6);
+    speakerOverlayVisibilityLayout->setSpacing(4);
+    speakerOverlayVisibilityLayout->addWidget(m_speakerShowCurrentSpeakerNameCheckBox);
+    speakerOverlayVisibilityLayout->addWidget(m_speakerShowCurrentSpeakerOrganizationCheckBox);
+    speakerOverlayLayout->addWidget(speakerOverlayVisibilityGroup);
+
+    auto *speakerOverlayStyleGroup = new QGroupBox(QStringLiteral("Style"), speakerOverlayPage);
+    auto *speakerOverlayStyleLayout = new QVBoxLayout(speakerOverlayStyleGroup);
+    speakerOverlayStyleLayout->setContentsMargins(8, 6, 8, 6);
+    speakerOverlayStyleLayout->setSpacing(4);
     auto *currentSpeakerTextSizeLayout = new QFormLayout;
     currentSpeakerTextSizeLayout->setContentsMargins(0, 0, 0, 0);
     currentSpeakerTextSizeLayout->setHorizontalSpacing(8);
@@ -1922,9 +2010,13 @@ QWidget *InspectorPane::buildSpeakersTab()
     currentSpeakerTextSizeLayout->addRow(m_speakerCurrentSpeakerShadowCheckBox);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Shadow Color"), m_speakerCurrentSpeakerShadowColorButton);
     currentSpeakerTextSizeLayout->addRow(QStringLiteral("Shadow Opacity"), m_speakerCurrentSpeakerShadowOpacitySpin);
-    speakerListLayout->addLayout(currentSpeakerTextSizeLayout);
-    speakerListLayout->addWidget(m_speakersTable, 1);
-    speakerListLayout->addWidget(m_speakerSectionsTable, 1);
+    speakerOverlayStyleLayout->addLayout(currentSpeakerTextSizeLayout);
+    speakerOverlayLayout->addWidget(speakerOverlayStyleGroup);
+    speakerOverlayLayout->addStretch(1);
+
+    speakerWorkTabs->addTab(speakerAssignmentsPage, QStringLiteral("Assignments"));
+    speakerWorkTabs->addTab(speakerOverlayPage, QStringLiteral("Overlay Label"));
+    speakerListLayout->addWidget(speakerWorkTabs, 1);
     mappingContentRow->addWidget(speakerListPanel, 1);
     mappingContentRow->addWidget(identityPanel);
 
@@ -2077,6 +2169,7 @@ QWidget *InspectorPane::buildSpeakersTab()
     framingForm->addRow(QStringLiteral("Target X"), targetXRow);
     framingForm->addRow(QStringLiteral("Target Y"), targetYRow);
     framingForm->addRow(QStringLiteral("Target Box"), m_speakerFramingTargetBoxSpin);
+    framingForm->addRow(QStringLiteral("Section Rotation"), m_speakerSectionRotationSpin);
     framingForm->addRow(QStringLiteral("Center Smoothing"), m_speakerFramingCenterSmoothingFramesSpin);
     framingForm->addRow(QStringLiteral("Zoom Smoothing"), m_speakerFramingZoomSmoothingFramesSpin);
     framingForm->addRow(QStringLiteral("Smoothing Mode"), m_speakerFramingSmoothingModeCombo);

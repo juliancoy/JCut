@@ -48,6 +48,8 @@ nlohmann::json toJson(const RenderRequestCore& request)
         {"correctionsEnabled", request.correctionsEnabled},
         {"createVideoFromImageSequence", request.createVideoFromImageSequence},
         {"disableParallelImageWrite", request.disableParallelImageWrite},
+        {"transcriptPrependMs", request.transcriptPrependMs},
+        {"transcriptPostpendMs", request.transcriptPostpendMs},
         {"exportStartFrame", request.exportStartFrame},
         {"exportEndFrame", request.exportEndFrame},
         {"clipCount", request.clipCount},

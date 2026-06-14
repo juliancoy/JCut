@@ -150,7 +150,8 @@ bool visualClipActiveAtSample(const TimelineClip& clip,
 
 bool clipSupportsDrawableTranscriptOverlayForSelection(const TimelineClip& clip,
                                                        int64_t currentSample,
-                                                       const QVector<RenderSyncMarker>& renderSyncMarkers)
+                                                       const QVector<RenderSyncMarker>& renderSyncMarkers,
+                                                       const TranscriptOverlayTiming& timing)
 {
     if (!((clip.mediaType == ClipMediaType::Audio) || clip.hasAudio) || !clip.transcriptOverlay.enabled) {
         return false;
@@ -161,7 +162,7 @@ bool clipSupportsDrawableTranscriptOverlayForSelection(const TimelineClip& clip,
     const QVector<TranscriptSection>& sections =
         runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(clip, currentSample, renderSyncMarkers);
-    const TranscriptOverlayLayout layout = transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
+    const TranscriptOverlayLayout layout = transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame, timing);
     return !layout.lines.isEmpty();
 }
 
@@ -1302,7 +1303,10 @@ bool VulkanPreviewSurface::selectedOverlayIsTranscript() const
         }
         if (!clipSupportsDrawableTranscriptOverlayForSelection(clip,
                                                               m_interaction.currentSample,
-                                                              m_interaction.renderSyncMarkers)) {
+                                                              m_interaction.renderSyncMarkers,
+                                                              TranscriptOverlayTiming{
+                                                                  m_interaction.transcriptPrependMs,
+                                                                  m_interaction.transcriptPostpendMs})) {
             return false;
         }
         return true;

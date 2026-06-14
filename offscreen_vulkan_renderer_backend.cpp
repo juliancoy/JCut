@@ -2918,7 +2918,9 @@ public:
       const TranscriptOverlayLayout layout =
           transcriptOverlayLayoutForFrame(clip, timelineFrame,
                                           request.renderSyncMarkers,
-                                          m_transcriptCache);
+                                          m_transcriptCache,
+                                          TranscriptOverlayTiming{request.transcriptPrependMs,
+                                                                  request.transcriptPostpendMs});
       if (layout.lines.isEmpty()) {
         continue;
       }
@@ -2936,7 +2938,12 @@ public:
         continue;
       }
       const QString speakerTitle = clip.transcriptOverlay.showSpeakerTitle
-          ? transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame).trimmed()
+          ? transcriptSpeakerTitleForSourceFrame(
+                transcriptPath,
+                sections,
+                sourceFrame,
+                TranscriptOverlayTiming{request.transcriptPrependMs,
+                                        request.transcriptPostpendMs}).trimmed()
           : QString();
       inputs.push_back(TranscriptTextInput{clip, layout, outputRect, speakerTitle});
     }
@@ -2997,7 +3004,12 @@ public:
         m_transcriptCache.insert(transcriptPath, sections);
       }
       const QString speakerId =
-          transcriptOverlaySpeakerAtSourceFrame(sections, transcriptFrame).trimmed();
+          transcriptOverlaySpeakerAtSourceFrame(
+              sections,
+              transcriptFrame,
+              nullptr,
+              TranscriptOverlayTiming{request.transcriptPrependMs,
+                                      request.transcriptPostpendMs}).trimmed();
       if (speakerId.isEmpty()) {
         continue;
       }

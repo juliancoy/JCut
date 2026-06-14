@@ -36,16 +36,26 @@ file(READ "${CONTROL_ROUTES_SOURCE}" control_routes_source)
 foreach(required IN ITEMS
         "SpeakerSectionAvatarColumn = 0"
         "SpeakerSectionSpeakerColumn = 2"
-        "SpeakerSectionColumnCount = 7")
+        "SpeakerSectionRotationColumn = 5"
+        "SpeakerSectionColumnCount = 8")
     if(NOT speakers_header MATCHES "${required}")
         message(FATAL_ERROR "Contiguous transcript section table column contract is missing ${required}")
     endif()
 endforeach()
 
-if(NOT inspector_source MATCHES "m_speakerSectionsTable->setColumnCount\\(7\\)" OR
+if(NOT inspector_source MATCHES "m_speakerSectionsTable->setColumnCount\\(8\\)" OR
    NOT inspector_source MATCHES "QStringLiteral\\(\"Avatar\"\\)")
     message(FATAL_ERROR "Contiguous transcript section table must expose a left-side Avatar column")
 endif()
+
+foreach(required IN ITEMS
+        "QStringLiteral\\(\"Rotation\"\\)"
+        "QAbstractItemView::DoubleClicked"
+        "QAbstractItemView::EditKeyPressed")
+    if(NOT inspector_source MATCHES "${required}")
+        message(FATAL_ERROR "Contiguous transcript section table must expose editable per-row rotation: missing ${required}")
+    endif()
+endforeach()
 
 foreach(required IN ITEMS
         "continuityTrackAvatar"
@@ -54,8 +64,13 @@ foreach(required IN ITEMS
         "streamByTrackId"
         "sectionTrackEntriesFromAssignment"
         "sectionTrackIdStringsFromAssignment"
+        "speakerSectionTrackAvatarStrip"
         "applySpeakerSectionRowTint"
-        "QIcon\\(avatar\\)"
+        "SpeakerSectionRotationColumn"
+        "SpeakerSectionRotationRole"
+        "QIcon\\(avatarStrip\\)"
+        "setIconSize\\(QSize\\(avatarIconWidth, 40\\)\\)"
+        "resizeColumnToContents\\(SpeakerSectionAvatarColumn\\)"
         "setItem\\(row, SpeakerSectionAvatarColumn, avatarItem\\)"
         "setItem\\(row, SpeakerSectionSpeakerColumn, speakerItem\\)")
     if(NOT speakers_source MATCHES "${required}")
@@ -67,16 +82,39 @@ foreach(required IN ITEMS
         "source_absolute"
         "source_frame"
         "box_size"
-        "avatarStream = continuityStreamFromSectionAssignment\\(avatarAssignment\\)")
+        "avatarStream = continuityStreamFromSectionAssignment\\(entryAssignment\\)")
     if(NOT speakers_source MATCHES "${required}")
         message(FATAL_ERROR "Contiguous transcript section avatars must fall back to row assignment anchors when stream objects are missing: missing ${required}")
     endif()
 endforeach()
 
+if(speakers_source MATCHES "QIcon\\(avatar\\)" OR
+   speakers_source MATCHES "Selected continuity-track avatar for T%1")
+    message(FATAL_ERROR "Contiguous transcript section avatars must render every assigned track, not only the first selected track")
+endif()
+
 if(NOT speakers_internal MATCHES "SpeakerSectionItemDelegate" OR
    NOT wiring_source MATCHES "SpeakerSectionItemDelegate")
     message(FATAL_ERROR "Contiguous transcript section table must preserve speaker-tinted selected rows")
 endif()
+
+foreach(required IN ITEMS
+        "item->column\\(\\) != SpeakerSectionRotationColumn"
+        "saveSpeakerSectionRotation\\(item->row\\(\\), boundedRotation\\)"
+        "SpeakerSectionRotationRole")
+    if(NOT wiring_source MATCHES "${required}")
+        message(FATAL_ERROR "Contiguous transcript section rotation edits must persist through the row mapping: missing ${required}")
+    endif()
+endforeach()
+
+foreach(required IN ITEMS
+        "saveSpeakerSectionRotation\\(int row, qreal rotation\\)"
+        "sectionRow\\[QStringLiteral\\(\"rotation\"\\)\\] = rotation"
+        "entry\\[QStringLiteral\\(\"rotation\"\\)\\] = rotation")
+    if(NOT tracks_source MATCHES "${required}")
+        message(FATAL_ERROR "Contiguous transcript section rotation must persist on section rows and track entries: missing ${required}")
+    endif()
+endforeach()
 
 if(speakers_source MATCHES "speakerSectionsTable->item\\([^,]+, 1\\)" OR
    speakers_source MATCHES "speakerSectionsTable->setCurrentCell\\([^,]+, 1\\)" OR

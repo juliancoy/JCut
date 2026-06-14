@@ -178,13 +178,14 @@ to the audio output rate to keep it aligned with the transport clock.
 
 Key parameters (see `PlaybackDriftRetimeInput`):
 
-- `deadbandSamples` (default 3840, ~80 ms at 48 kHz): Drift within this window
-  is ignored. This prevents unnecessary correction from benign timer jitter.
-- `fullCorrectionSamples` (default 60000, ~1250 ms): Drift at or beyond this
+- `deadbandSamples` (default 240, ~5 ms at 48 kHz): Drift within this window
+  is ignored. This prevents unnecessary correction from benign callback jitter.
+- `fullCorrectionSamples` (default 9600, ~200 ms): Drift at or beyond this
   magnitude applies the full `maxCorrection` rate adjustment.
-- `maxCorrection` (default 0.01, i.e. ±1%): Hard limit on the retime multiplier
-  deviation from 1.0. This prevents audible pitch warble from aggressive correction.
-- `smoothing` (default 0.035): First-order IIR smoothing coefficient. The
+- `maxCorrection` (default 0.08, i.e. ±8%): Hard limit on the retime multiplier
+  deviation from 1.0. This gives the follower stream enough pressure to correct
+  unacceptable drift while staying bounded.
+- `smoothing` (default 0.30): First-order IIR smoothing coefficient. The
   multiplier moves toward the target exponentially, avoiding abrupt rate changes.
 
 The correction is applied as a rate multiplier to the audio output, not as a

@@ -85,6 +85,8 @@ RenderRequestCore toCoreRenderRequest(const ::RenderRequest& request)
     core.correctionsEnabled = request.correctionsEnabled;
     core.createVideoFromImageSequence = request.createVideoFromImageSequence;
     core.disableParallelImageWrite = request.disableParallelImageWrite;
+    core.transcriptPrependMs = request.transcriptPrependMs;
+    core.transcriptPostpendMs = request.transcriptPostpendMs;
     core.exportStartFrame = request.exportStartFrame;
     core.exportEndFrame = request.exportEndFrame;
     core.clipCount = static_cast<std::size_t>(request.clips.size());

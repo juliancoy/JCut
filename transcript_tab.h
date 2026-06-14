@@ -258,6 +258,7 @@ private:
     void onTranscriptRowClicked(int row);
     void scheduleSeekToTranscriptRow(int row);
     bool hasActiveManualSelection() const;
+    void persistSelectionIdentityFromRow(int row);
     bool eventFilter(QObject* watched, QEvent* event) override;
 
     Widgets m_widgets;

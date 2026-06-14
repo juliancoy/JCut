@@ -8,9 +8,83 @@
 
 namespace editor {
 
+namespace {
+
+int64_t filteredPlaybackSampleForAbsoluteSample(
+    int64_t absoluteSample,
+    const QVector<ExportRangeSegment>& ranges)
+{
+    if (ranges.isEmpty()) {
+        return qMax<int64_t>(0, absoluteSample);
+    }
+
+    int64_t filteredSample = 0;
+    for (const ExportRangeSegment& range : ranges) {
+        const int64_t rangeStartSample = frameToSamples(range.startFrame);
+        const int64_t rangeEndSampleExclusive = frameToSamples(range.endFrame + 1);
+        if (absoluteSample <= rangeStartSample) {
+            return filteredSample;
+        }
+        if (absoluteSample < rangeEndSampleExclusive) {
+            return filteredSample + (absoluteSample - rangeStartSample);
+        }
+        filteredSample += (rangeEndSampleExclusive - rangeStartSample);
+    }
+    return filteredSample;
+}
+
+int64_t timelineSampleForFilteredPlaybackSample(
+    int64_t filteredSample,
+    const QVector<ExportRangeSegment>& ranges)
+{
+    if (ranges.isEmpty()) {
+        return qMax<int64_t>(0, filteredSample);
+    }
+
+    int64_t remaining = qMax<int64_t>(0, filteredSample);
+    for (const ExportRangeSegment& range : ranges) {
+        const int64_t rangeStartSample = frameToSamples(range.startFrame);
+        const int64_t rangeEndSampleExclusive = frameToSamples(range.endFrame + 1);
+        const int64_t rangeLength = qMax<int64_t>(0, rangeEndSampleExclusive - rangeStartSample);
+        if (remaining < rangeLength) {
+            return rangeStartSample + remaining;
+        }
+        remaining -= rangeLength;
+    }
+
+    const ExportRangeSegment& last = ranges.constLast();
+    return frameToSamples(last.endFrame + 1);
+}
+
+}  // namespace
+
 int64_t audioFeedbackSampleToTimelineSample(int64_t audioFeedbackSample)
 {
     return qMax<int64_t>(0, audioFeedbackSample);
+}
+
+int64_t projectAudioFeedbackSampleToTimelineSample(
+    int64_t audioFeedbackSample,
+    int64_t anchorTimelineSample,
+    int64_t anchorFeedbackSample,
+    const QVector<ExportRangeSegment>& ranges)
+{
+    const int64_t clampedFeedbackSample =
+        audioFeedbackSampleToTimelineSample(audioFeedbackSample);
+    const int64_t anchorTimeline = qMax<int64_t>(0, anchorTimelineSample);
+    const int64_t anchorFeedback = qMax<int64_t>(0, anchorFeedbackSample);
+    const int64_t audibleElapsedSamples =
+        qMax<int64_t>(0, clampedFeedbackSample - anchorFeedback);
+
+    if (ranges.isEmpty()) {
+        return anchorTimeline + audibleElapsedSamples;
+    }
+
+    const int64_t anchorFilteredSample =
+        filteredPlaybackSampleForAbsoluteSample(anchorTimeline, ranges);
+    return timelineSampleForFilteredPlaybackSample(
+        anchorFilteredSample + audibleElapsedSamples,
+        ranges);
 }
 
 PlaybackClockDecision evaluatePlaybackClock(const PlaybackClockInput& input)

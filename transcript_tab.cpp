@@ -450,7 +450,6 @@ void TranscriptTab::refresh()
     m_allTranscriptRows.clear();
     m_wordEditIndex.clear();
     m_lastSyncRow = -1;
-    setTranscriptOverlayTimingPaddingMs(transcriptPrependMs(), transcriptPostpendMs());
     if (m_widgets.speechFilterFadeSamplesSpin) {
         m_speechFilterFadeSamples = qMax(0, m_widgets.speechFilterFadeSamplesSpin->value());
     }
@@ -753,6 +752,7 @@ void TranscriptTab::syncTableToPlayhead(int64_t absolutePlaybackSample,
         m_widgets.transcriptTable->selectRow(matchingRow);
         m_suppressSelectionSideEffects = false;
     }
+    persistSelectionIdentityFromRow(matchingRow);
     m_lastSyncRow = matchingRow;
 
     if (m_widgets.transcriptTable->item(matchingRow, 0)) {
@@ -1079,15 +1079,7 @@ void TranscriptTab::onTranscriptSelectionChanged()
         return;
     }
 
-    if (QTableWidgetItem* item = m_widgets.transcriptTable->item(selectedRows.constFirst().row(), 0);
-        item && !item->data(Qt::UserRole + 4).toBool() && !item->data(Qt::UserRole + 12).toBool()) {
-        if (const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr) {
-            m_persistedSelectedClipId = selectedClip->id;
-        }
-        m_persistedSelectedSegmentIndex = item->data(Qt::UserRole + 5).toInt();
-        m_persistedSelectedWordIndex = item->data(Qt::UserRole + 6).toInt();
-        m_persistedSelectedWordId = item->data(Qt::UserRole + 16).toInt();
-    }
+    persistSelectionIdentityFromRow(selectedRows.constFirst().row());
 
     const Qt::KeyboardModifiers modifiers = QApplication::keyboardModifiers();
     if (modifiers.testFlag(Qt::ShiftModifier) ||
@@ -1104,6 +1096,23 @@ void TranscriptTab::onTranscriptSelectionChanged()
     }
 
     scheduleSeekToTranscriptRow(selectedRows.constFirst().row());
+}
+
+void TranscriptTab::persistSelectionIdentityFromRow(int row)
+{
+    if (!m_widgets.transcriptTable || row < 0 || row >= m_widgets.transcriptTable->rowCount()) {
+        return;
+    }
+    QTableWidgetItem* item = m_widgets.transcriptTable->item(row, 0);
+    if (!item || item->data(Qt::UserRole + 4).toBool() || item->data(Qt::UserRole + 12).toBool()) {
+        return;
+    }
+    if (const TimelineClip* selectedClip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr) {
+        m_persistedSelectedClipId = selectedClip->id;
+    }
+    m_persistedSelectedSegmentIndex = item->data(Qt::UserRole + 5).toInt();
+    m_persistedSelectedWordIndex = item->data(Qt::UserRole + 6).toInt();
+    m_persistedSelectedWordId = item->data(Qt::UserRole + 16).toInt();
 }
 
 bool TranscriptTab::hasActiveManualSelection() const
@@ -1176,7 +1185,6 @@ void TranscriptTab::onCenterVerticalClicked()
 void TranscriptTab::onPrependMsChanged(int value)
 {
     Q_UNUSED(value);
-    setTranscriptOverlayTimingPaddingMs(transcriptPrependMs(), transcriptPostpendMs());
     refresh();
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),
@@ -1186,7 +1194,6 @@ void TranscriptTab::onPrependMsChanged(int value)
 void TranscriptTab::onPostpendMsChanged(int value)
 {
     Q_UNUSED(value);
-    setTranscriptOverlayTimingPaddingMs(transcriptPrependMs(), transcriptPostpendMs());
     refresh();
     emit speechFilterParametersChanged();
     applyTabEditEffects(transcriptEditCallbacks(m_deps),

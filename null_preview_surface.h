@@ -62,6 +62,7 @@ public:
     void setCurrentSpeakerBorderWidth(qreal width) override;
     void setCurrentSpeakerShadowEnabled(bool enabled) override;
     void setCurrentSpeakerShadowColor(const QColor& color) override;
+    void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs) override;
     void setPlaybackStatusOverlayText(const QString& text) override;
     void setPlaybackStatusOverlayProgress(qreal progress) override;
     void setFacestreamOverlaySource(const QString& source) override;

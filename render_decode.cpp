@@ -302,7 +302,8 @@ QString transcriptSpeakerTitleHtml(const QString& title, const QColor& color) {
 TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip,
                                                         int64_t timelineFrame,
                                                         const QVector<RenderSyncMarker>& markers,
-                                                        QHash<QString, QVector<TranscriptSection>>& transcriptCache) {
+                                                        QHash<QString, QVector<TranscriptSection>>& transcriptCache,
+                                                        const TranscriptOverlayTiming& timing) {
     if (!((clip.mediaType == ClipMediaType::Audio || clip.hasAudio) && clip.transcriptOverlay.enabled)) {
         return {};
     }
@@ -324,7 +325,7 @@ TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip
     }
     const int64_t sourceFrame = transcriptFrameForClipAtTimelineSample(
         clip, frameToSamples(timelineFrame), markers);
-    return transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
+    return transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame, timing);
 }
 
 OverlayImage renderTranscriptOverlay(const QSize& imageSize,

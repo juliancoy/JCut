@@ -739,6 +739,20 @@ void VulkanPreviewSurface::setCurrentSpeakerShadowColor(const QColor& color)
     requestNativeUpdate();
 }
 
+void VulkanPreviewSurface::setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs)
+{
+    const int normalizedPrepend = qMax(0, prependMs);
+    const int normalizedPostpend = qMax(0, postpendMs);
+    if (m_interaction.transcriptPrependMs == normalizedPrepend &&
+        m_interaction.transcriptPostpendMs == normalizedPostpend) {
+        return;
+    }
+    m_interaction.transcriptPrependMs = normalizedPrepend;
+    m_interaction.transcriptPostpendMs = normalizedPostpend;
+    invalidateTranscriptOverlayCache();
+    requestNativeUpdate();
+}
+
 void VulkanPreviewSurface::setPlaybackStatusOverlayText(const QString& text)
 {
     const QString normalized = text.trimmed();

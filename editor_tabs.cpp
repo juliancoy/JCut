@@ -142,7 +142,11 @@ void EditorWindow::refreshAudioInspectorViews()
         m_transportTimelineSample,
         m_timeline->renderSyncMarkers());
     const QString speakerTitle =
-        transcriptSpeakerTitleForSourceFrame(transcriptPath, runtimeDocument->sections, sourceFrame).trimmed();
+        transcriptSpeakerTitleForSourceFrame(
+            transcriptPath,
+            runtimeDocument->sections,
+            sourceFrame,
+            TranscriptOverlayTiming{m_transcriptPrependMs, m_transcriptPostpendMs}).trimmed();
     if (speakerTitle.isEmpty()) {
         m_audioCurrentSpeakerTitleLabel->setText(QStringLiteral("No current speaker"));
         m_audioCurrentSpeakerDetailsLabel->setText(
@@ -151,7 +155,11 @@ void EditorWindow::refreshAudioInspectorViews()
     }
 
     const SpeakerProfile profile =
-        transcriptSpeakerProfileForSourceFrame(transcriptPath, runtimeDocument->sections, sourceFrame);
+        transcriptSpeakerProfileForSourceFrame(
+            transcriptPath,
+            runtimeDocument->sections,
+            sourceFrame,
+            TranscriptOverlayTiming{m_transcriptPrependMs, m_transcriptPostpendMs});
     m_audioCurrentSpeakerTitleLabel->setText(speakerTitle);
 
     QStringList details;
@@ -441,7 +449,9 @@ void EditorWindow::createTranscriptTab()
         m_speechFilterEnabled = m_transcriptTab->speechFilterEnabled();
         m_transcriptPrependMs = m_transcriptPrependMsSpin ? qMax(0, m_transcriptPrependMsSpin->value()) : 150;
         m_transcriptPostpendMs = m_transcriptPostpendMsSpin ? qMax(0, m_transcriptPostpendMsSpin->value()) : 70;
-        setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+        if (m_preview) {
+            m_preview->setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+        }
         m_speechFilterFadeSamples = m_transcriptTab->speechFilterFadeSamples();
         m_transcriptEngine.invalidateCache();
         invalidatePlaybackRangeCaches();
@@ -560,6 +570,7 @@ void EditorWindow::createSpeakersTab()
             m_inspectorPane->speakerFramingTargetXSpin(),
             m_inspectorPane->speakerFramingTargetYSpin(),
             m_inspectorPane->speakerFramingTargetBoxSpin(),
+            m_inspectorPane->speakerSectionRotationSpin(),
             m_inspectorPane->speakerFramingZoomEnabledCheckBox(),
             m_inspectorPane->speakerFramingCenterSmoothingFramesSpin(),
             m_inspectorPane->speakerFramingZoomSmoothingFramesSpin(),

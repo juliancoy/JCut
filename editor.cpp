@@ -1683,7 +1683,9 @@ void EditorWindow::applyStateJson(const QJsonObject &root)
 
     m_transcriptPrependMs = transcriptPrependMs;
     m_transcriptPostpendMs = transcriptPostpendMs;
-    setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+    if (m_preview) {
+        m_preview->setTranscriptOverlayTimingPaddingMs(m_transcriptPrependMs, m_transcriptPostpendMs);
+    }
     m_speechFilterFadeSamples = qMax(0, speechFilterFadeSamples);
     m_speechFilterRangeCrossfade = speechFilterRangeCrossfade;
     

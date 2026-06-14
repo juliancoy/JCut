@@ -31,6 +31,8 @@ private slots:
     void testPlaybackClockCoordinator();
     void testPlaybackDriftRetimeController();
     void testAudioFeedbackSampleStaysAbsoluteAcrossSpeechRanges();
+    void testAudioFeedbackProjectionUsesFeedbackAnchor();
+    void testAudioFeedbackProjectionUsesSpeechRangeAnchor();
     void testSystemClockDecisionCarriesTransportSample();
     void testPlayableSampleAtOrAfterAcrossSpeechRanges();
     void testActivePlaybackRuntimeConfigRealignsStreams();
@@ -135,29 +137,29 @@ void TestPlaybackPolicy::testPlaybackDriftRetimeController() {
     editor::PlaybackDriftRetimeInput input;
     input.enabled = true;
     input.previousMultiplier = 1.0;
-    input.deadbandSamples = 3840.0;
-    input.fullCorrectionSamples = 60000.0;
-    input.maxCorrection = 0.01;
+    input.deadbandSamples = 240.0;
+    input.fullCorrectionSamples = 9600.0;
+    input.maxCorrection = 0.08;
     input.smoothing = 1.0;
 
-    input.driftSamples = 2400;
+    input.driftSamples = 120;
     QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.0);
 
-    input.driftSamples = 60000;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.01);
+    input.driftSamples = 9600;
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.08);
 
-    input.driftSamples = -60000;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 0.99);
+    input.driftSamples = -9600;
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 0.92);
 
     input.previousMultiplier = 1.0;
-    input.driftSamples = 60000;
+    input.driftSamples = 9600;
     input.smoothing = 0.25;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.0025);
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.02);
 
     input.enabled = false;
-    input.previousMultiplier = 1.01;
+    input.previousMultiplier = 1.08;
     input.smoothing = 0.5;
-    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.005);
+    QCOMPARE(editor::evaluatePlaybackDriftRetimeMultiplier(input), 1.04);
 }
 
 void TestPlaybackPolicy::testAudioFeedbackSampleStaysAbsoluteAcrossSpeechRanges() {
@@ -178,6 +180,54 @@ void TestPlaybackPolicy::testAudioFeedbackSampleStaysAbsoluteAcrossSpeechRanges(
                  &atOrPastEnd),
              frameToSamples(200));
     QVERIFY(!atOrPastEnd);
+}
+
+void TestPlaybackPolicy::testAudioFeedbackProjectionUsesFeedbackAnchor() {
+    const QVector<ExportRangeSegment> ranges;
+    const int64_t anchorTimelineSample = frameToSamples(300);
+    const int64_t anchorFeedbackSample = frameToSamples(40);
+
+    QCOMPARE(editor::projectAudioFeedbackSampleToTimelineSample(
+                 anchorFeedbackSample,
+                 anchorTimelineSample,
+                 anchorFeedbackSample,
+                 ranges),
+             anchorTimelineSample);
+    QCOMPARE(editor::projectAudioFeedbackSampleToTimelineSample(
+                 anchorFeedbackSample + frameToSamples(12),
+                 anchorTimelineSample,
+                 anchorFeedbackSample,
+                 ranges),
+             anchorTimelineSample + frameToSamples(12));
+}
+
+void TestPlaybackPolicy::testAudioFeedbackProjectionUsesSpeechRangeAnchor() {
+    const QVector<ExportRangeSegment> ranges{
+        ExportRangeSegment{100, 109},
+        ExportRangeSegment{200, 209},
+        ExportRangeSegment{300, 309},
+    };
+    const int64_t anchorTimelineSample = frameToSamples(200);
+    const int64_t anchorFeedbackSample = frameToSamples(80);
+
+    QCOMPARE(editor::projectAudioFeedbackSampleToTimelineSample(
+                 anchorFeedbackSample,
+                 anchorTimelineSample,
+                 anchorFeedbackSample,
+                 ranges),
+             anchorTimelineSample);
+    QCOMPARE(editor::projectAudioFeedbackSampleToTimelineSample(
+                 anchorFeedbackSample + frameToSamples(5),
+                 anchorTimelineSample,
+                 anchorFeedbackSample,
+                 ranges),
+             frameToSamples(205));
+    QCOMPARE(editor::projectAudioFeedbackSampleToTimelineSample(
+                 anchorFeedbackSample + frameToSamples(12),
+                 anchorTimelineSample,
+                 anchorFeedbackSample,
+                 ranges),
+             frameToSamples(302));
 }
 
 void TestPlaybackPolicy::testSystemClockDecisionCarriesTransportSample() {

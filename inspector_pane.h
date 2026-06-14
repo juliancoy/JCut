@@ -146,6 +146,7 @@ public:
     QDoubleSpinBox *speakerFramingTargetXSpin() const { return m_speakerFramingTargetXSpin; }
     QDoubleSpinBox *speakerFramingTargetYSpin() const { return m_speakerFramingTargetYSpin; }
     QDoubleSpinBox *speakerFramingTargetBoxSpin() const { return m_speakerFramingTargetBoxSpin; }
+    QDoubleSpinBox *speakerSectionRotationSpin() const { return m_speakerSectionRotationSpin; }
     QCheckBox *speakerFramingZoomEnabledCheckBox() const { return m_speakerFramingZoomEnabledCheckBox; }
     QSpinBox *speakerFramingCenterSmoothingFramesSpin() const { return m_speakerFramingCenterSmoothingFramesSpin; }
     QSpinBox *speakerFramingZoomSmoothingFramesSpin() const { return m_speakerFramingZoomSmoothingFramesSpin; }
@@ -697,6 +698,7 @@ private:
     QDoubleSpinBox *m_speakerFramingTargetXSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetYSpin = nullptr;
     QDoubleSpinBox *m_speakerFramingTargetBoxSpin = nullptr;
+    QDoubleSpinBox *m_speakerSectionRotationSpin = nullptr;
     QCheckBox *m_speakerFramingZoomEnabledCheckBox = nullptr;
     QSpinBox *m_speakerFramingCenterSmoothingFramesSpin = nullptr;
     QSpinBox *m_speakerFramingZoomSmoothingFramesSpin = nullptr;

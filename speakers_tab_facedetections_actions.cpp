@@ -184,6 +184,16 @@ void SpeakersTab::onSpeakerFramingTargetChanged()
         }
         return;
     }
+    if (contiguousTranscriptSectionModeActive() &&
+        sender() == m_widgets.speakerSectionRotationSpin) {
+        if (saveSelectedSpeakerSectionRotationFromControls() && m_speakerDeps.refreshPreview) {
+            m_speakerDeps.refreshPreview();
+        } else if (m_speakerDeps.refreshPreview) {
+            m_speakerDeps.refreshPreview();
+        }
+        updateSpeakerTrackingStatusLabel();
+        return;
+    }
     if (!saveClipSpeakerFramingTargetsFromControls()) {
         if (m_speakerDeps.refreshPreview) {
             m_speakerDeps.refreshPreview();

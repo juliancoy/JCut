@@ -1886,7 +1886,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
                                                              samplePosition,
                                                              state->renderSyncMarkers);
             const TranscriptOverlayLayout overlayLayout =
-                transcriptOverlayLayoutAtSourceFrame(effectiveClip, sections, sourceFrame);
+                transcriptOverlayLayoutAtSourceFrame(
+                    effectiveClip,
+                    sections,
+                    sourceFrame,
+                    TranscriptOverlayTiming{state->transcriptPrependMs,
+                                            state->transcriptPostpendMs});
             if (overlayLayout.lines.isEmpty()) {
                 return candidate;
             }
@@ -1916,7 +1921,12 @@ void DirectVulkanPreviewRenderer::startNextFrame()
             }
             QString speakerTitle;
             if (effectiveClip.transcriptOverlay.showSpeakerTitle) {
-                speakerTitle = transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame).trimmed();
+                speakerTitle = transcriptSpeakerTitleForSourceFrame(
+                    transcriptPath,
+                    sections,
+                    sourceFrame,
+                    TranscriptOverlayTiming{state->transcriptPrependMs,
+                                            state->transcriptPostpendMs}).trimmed();
             }
             candidate.valid = true;
             candidate.clip = effectiveClip;

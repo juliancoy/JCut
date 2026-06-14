@@ -390,6 +390,8 @@ void EditorWindow::renderTimelineFromOutputRequestCore(const jcut::render::Rende
     }
 
     RenderRequest qtRequest = jcut::render::toQtRenderRequest(request, timelineData);
+    qtRequest.transcriptPrependMs = qMax(0, m_transcriptPrependMs);
+    qtRequest.transcriptPostpendMs = qMax(0, m_transcriptPostpendMs);
     renderTimelineFromOutputRequest(qtRequest);
 }
 
@@ -449,6 +451,8 @@ RenderRequest EditorWindow::buildRenderRequestFromOutputControls() const
             ? m_speakerCurrentSpeakerShadowCheckBox->isChecked()
             : true;
     request.currentSpeakerShadowColor = m_speakerCurrentSpeakerShadowColor;
+    request.transcriptPrependMs = qMax(0, m_transcriptPrependMs);
+    request.transcriptPostpendMs = qMax(0, m_transcriptPostpendMs);
     request.createVideoFromImageSequence = m_createImageSequenceCheckBox &&
                                            m_createImageSequenceCheckBox->isChecked();
     if (request.createVideoFromImageSequence && m_imageSequenceFormatCombo) {

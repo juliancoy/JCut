@@ -28,6 +28,8 @@ struct RenderRequestCore {
     bool correctionsEnabled = true;
     bool createVideoFromImageSequence = false;
     bool disableParallelImageWrite = false;
+    int transcriptPrependMs = 150;
+    int transcriptPostpendMs = 70;
     std::int64_t exportStartFrame = 0;
     std::int64_t exportEndFrame = 0;
     std::size_t clipCount = 0;

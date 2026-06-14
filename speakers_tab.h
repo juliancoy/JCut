@@ -79,6 +79,7 @@ public:
         QDoubleSpinBox* speakerFramingTargetXSpin = nullptr;
         QDoubleSpinBox* speakerFramingTargetYSpin = nullptr;
         QDoubleSpinBox* speakerFramingTargetBoxSpin = nullptr;
+        QDoubleSpinBox* speakerSectionRotationSpin = nullptr;
         QCheckBox* speakerFramingZoomEnabledCheckBox = nullptr;
         QSpinBox* speakerFramingCenterSmoothingFramesSpin = nullptr;
         QSpinBox* speakerFramingZoomSmoothingFramesSpin = nullptr;
@@ -157,6 +158,11 @@ public:
     bool rebuildProcessedFaceDetectionsForSelectedClip(bool interactive = true);
     qint64 lastSpeakersTableRefreshDurationMs() const { return m_lastSpeakersTableRefreshDurationMs; }
     qint64 maxSpeakersTableRefreshDurationMs() const { return m_maxSpeakersTableRefreshDurationMs; }
+    qint64 lastSpeakerSectionsTableRefreshDurationMs() const { return m_lastSpeakerSectionsTableRefreshDurationMs; }
+    qint64 maxSpeakerSectionsTableRefreshDurationMs() const { return m_maxSpeakerSectionsTableRefreshDurationMs; }
+    int lastSpeakerSectionsTableRowCount() const { return m_lastSpeakerSectionsTableRowCount; }
+    QString lastSpeakerSectionsTableRefreshSkippedReason() const { return m_lastSpeakerSectionsTableRefreshSkippedReason; }
+    qint64 speakerSectionsTableRefreshCacheHitCount() const { return m_speakerSectionsTableRefreshCacheHitCount; }
     qint64 lastFaceDetectionsPanelRefreshDurationMs() const { return m_lastFaceDetectionsPanelRefreshDurationMs; }
     qint64 maxFaceDetectionsPanelRefreshDurationMs() const { return m_maxFaceDetectionsPanelRefreshDurationMs; }
     qint64 lastPlayheadTrackCandidatesRefreshDurationMs() const { return m_lastPlayheadTrackCandidatesRefreshDurationMs; }
@@ -211,9 +217,10 @@ private:
         SpeakerSectionSpeakerColumn = 2,
         SpeakerSectionRangeColumn = 3,
         SpeakerSectionTrackColumn = 4,
-        SpeakerSectionWordsColumn = 5,
-        SpeakerSectionTranscriptColumn = 6,
-        SpeakerSectionColumnCount = 7
+        SpeakerSectionRotationColumn = 5,
+        SpeakerSectionWordsColumn = 6,
+        SpeakerSectionTranscriptColumn = 7,
+        SpeakerSectionColumnCount = 8
     };
 
     enum SpeakerSectionItemRole {
@@ -222,7 +229,8 @@ private:
         SpeakerSectionEndFrameRole,
         SpeakerSectionTrackIdsRole,
         SpeakerSectionTrackIdRole,
-        SpeakerSectionStreamIdRole
+        SpeakerSectionStreamIdRole,
+        SpeakerSectionRotationRole
     };
 
     bool updateLoadedTranscriptDocument(const std::function<bool(QJsonObject&)>& mutator,
@@ -271,6 +279,16 @@ private:
                                   int size,
                                   editor::DecoderContext* decoderCtx = nullptr,
                                   QHash<int64_t, QImage>* frameImageCache = nullptr) const;
+    QPixmap speakerSectionTrackAvatarStrip(const TimelineClip& clip,
+                                           const QString& speakerId,
+                                           const QJsonObject& sectionAssignment,
+                                           const QJsonArray& assignedTrackEntries,
+                                           const QHash<int, QJsonObject>& streamByTrackId,
+                                           int avatarSize,
+                                           editor::DecoderContext* decoderCtx,
+                                           QHash<int64_t, QImage>* frameImageCache,
+                                           QStringList* trackLabels,
+                                           int* firstTrackId) const;
     QVector<QPixmap> assignedFaceDetectionsPreviewPixmaps(const TimelineClip& clip,
                                                       const QString& speakerId) const;
     QString assignedFaceDetectionsPreviewTooltipHtml(const TimelineClip& clip,
@@ -351,6 +369,9 @@ private:
     bool deassignTrackFromContiguousSection(const QString& clipId,
                                             int trackId,
                                             int row = -1);
+    bool saveSpeakerSectionRotation(int row, qreal rotation);
+    bool saveSelectedSpeakerSectionRotationFromControls();
+    qreal selectedSpeakerSectionRotation() const;
     void seekToSpeakerFirstWord(const QString& speakerId);
     bool seekToSpeakerSegmentRelative(const QString& speakerId, int direction);
     bool seekToSpeakerNextSection(const QString& speakerId);
@@ -456,12 +477,19 @@ private:
     int64_t m_lastPlayheadSyncedSourceFrame = -1;
     QString m_faceStreamPanelRefreshSignature;
     QJsonArray m_faceStreamPanelRows;
+    QString m_speakerSectionsTableRefreshSignature;
+    qint64 m_transcriptDocumentRevision = 0;
     QElapsedTimer m_playbackSpeakerPanelThrottle;
     int64_t m_lastPlaybackSpeakerPanelSourceFrame = -1;
     QString m_lastPlaybackSpeakerPanelSpeakerId;
     mutable QHash<QString, QString> m_avatarHoverTooltipHtmlCache;
     qint64 m_lastSpeakersTableRefreshDurationMs = 0;
     qint64 m_maxSpeakersTableRefreshDurationMs = 0;
+    qint64 m_lastSpeakerSectionsTableRefreshDurationMs = 0;
+    qint64 m_maxSpeakerSectionsTableRefreshDurationMs = 0;
+    int m_lastSpeakerSectionsTableRowCount = 0;
+    QString m_lastSpeakerSectionsTableRefreshSkippedReason;
+    qint64 m_speakerSectionsTableRefreshCacheHitCount = 0;
     qint64 m_lastFaceDetectionsPanelRefreshDurationMs = 0;
     qint64 m_maxFaceDetectionsPanelRefreshDurationMs = 0;
     qint64 m_lastPlayheadTrackCandidatesRefreshDurationMs = 0;

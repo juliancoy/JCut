@@ -95,6 +95,7 @@ void SpeakersTab::wire()
     if (m_widgets.speakerHideUnidentifiedCheckBox) {
         connect(m_widgets.speakerHideUnidentifiedCheckBox, &QCheckBox::toggled, this, [this]() {
             m_speakersTableRefreshSignature.clear();
+            m_speakerSectionsTableRefreshSignature.clear();
             if (m_transcriptSession.hasObjectDocument()) {
                 refreshSpeakersTable(m_transcriptSession.rootObject(), selectedSpeakerId());
             }
@@ -129,6 +130,7 @@ void SpeakersTab::wire()
                     const int64_t timelineFrame = speakerItem->data(Qt::UserRole + 1).toLongLong();
                     m_sectionSelectionTiming.setSectionContext(speakerId, timelineFrame);
                     m_sectionSelectionTiming.markStep(QStringLiteral("row_lookup_duration_ms"));
+                    updateSpeakerFramingTargetControls();
                     selectSpeakerRowById(speakerId);
                     m_sectionSelectionTiming.markStep(QStringLiteral("select_speaker_row_duration_ms"));
                     m_lastSelectedSpeakerIdHint = speakerId;
@@ -146,6 +148,46 @@ void SpeakersTab::wire()
                     scheduleSelectedSpeakerPanelRefresh();
                     m_sectionSelectionTiming.markStep(QStringLiteral("schedule_panel_refresh_duration_ms"));
                     m_sectionSelectionTiming.finish();
+                });
+        connect(m_widgets.speakerSectionsTable,
+                &QTableWidget::itemChanged,
+                this,
+                [this](QTableWidgetItem* item) {
+                    if (!item ||
+                        item->column() != SpeakerSectionRotationColumn ||
+                        m_updatingSpeakerFramingTargetControls) {
+                        return;
+                    }
+                    bool ok = false;
+                    const qreal rotation = item->text().trimmed().toDouble(&ok);
+                    if (!ok) {
+                        QSignalBlocker blocker(m_widgets.speakerSectionsTable);
+                        const qreal previous =
+                            qBound<qreal>(-180.0,
+                                          item->data(SpeakerSectionRotationRole).toDouble(),
+                                          180.0);
+                        item->setText(QString::number(previous, 'f', 1));
+                        return;
+                    }
+                    const qreal boundedRotation = qBound<qreal>(-180.0, rotation, 180.0);
+                    if (!saveSpeakerSectionRotation(item->row(), boundedRotation)) {
+                        QSignalBlocker blocker(m_widgets.speakerSectionsTable);
+                        const qreal previous =
+                            qBound<qreal>(-180.0,
+                                          item->data(SpeakerSectionRotationRole).toDouble(),
+                                          180.0);
+                        item->setText(QString::number(previous, 'f', 1));
+                        return;
+                    }
+                    if (m_widgets.speakerSectionRotationSpin &&
+                        m_widgets.speakerSectionsTable->currentRow() == item->row()) {
+                        QSignalBlocker blocker(m_widgets.speakerSectionRotationSpin);
+                        m_widgets.speakerSectionRotationSpin->setValue(boundedRotation);
+                    }
+                    if (m_speakerDeps.refreshPreview) {
+                        m_speakerDeps.refreshPreview();
+                    }
+                    updateSpeakerTrackingStatusLabel();
                 });
         connect(m_widgets.speakerSectionsTable,
                 &QWidget::customContextMenuRequested,
@@ -448,6 +490,10 @@ void SpeakersTab::wire()
     }
     if (m_widgets.speakerFramingTargetBoxSpin) {
         connect(m_widgets.speakerFramingTargetBoxSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
+                this, &SpeakersTab::onSpeakerFramingTargetChanged);
+    }
+    if (m_widgets.speakerSectionRotationSpin) {
+        connect(m_widgets.speakerSectionRotationSpin, qOverload<double>(&QDoubleSpinBox::valueChanged),
                 this, &SpeakersTab::onSpeakerFramingTargetChanged);
     }
     if (m_widgets.speakerFramingZoomEnabledCheckBox) {

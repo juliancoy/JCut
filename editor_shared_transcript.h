@@ -59,7 +59,10 @@ bool applyTranscriptSpeakerTrackingConfigPatch(const QJsonObject& patch,
                                                QString* errorOut = nullptr);
 QJsonObject transcriptSpeakerTrackingProfilingSnapshot();
 void resetTranscriptSpeakerTrackingProfiling();
-void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs);
+struct TranscriptOverlayTiming {
+    int prependMs = 150;
+    int postpendMs = 70;
+};
 ExportRangeSegment transcriptPaddedWordRange(const TranscriptWord& word,
                                              int prependMs,
                                              int postpendMs);
@@ -80,10 +83,12 @@ int transcriptOverlayEffectiveLinesForBox(const TimelineClip& clip);
 int transcriptOverlayEffectiveCharsForBox(const TimelineClip& clip);
 TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(const TimelineClip& clip,
                                                              const QVector<TranscriptSection>& sections,
-                                                             int64_t sourceFrame);
+                                                             int64_t sourceFrame,
+                                                             const TranscriptOverlayTiming& timing = {});
 QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& sections,
                                               int64_t sourceFrame,
-                                              ExportRangeSegment* activeRangeOut = nullptr);
+                                              ExportRangeSegment* activeRangeOut = nullptr,
+                                              const TranscriptOverlayTiming& timing = {});
 QString wrappedTranscriptSectionText(const QString& text, int maxCharsPerLine, int maxLines);
 TranscriptOverlayLayout layoutTranscriptSection(const TranscriptSection& section,
                                                 int64_t sourceFrame,
@@ -96,10 +101,12 @@ QString transcriptOverlayHtml(const TranscriptOverlayLayout& layout,
                               const QColor& highlightFillColor);
 QString transcriptSpeakerTitleForSourceFrame(const QString& transcriptPath,
                                              const QVector<TranscriptSection>& sections,
-                                             int64_t sourceFrame);
+                                             int64_t sourceFrame,
+                                             const TranscriptOverlayTiming& timing = {});
 QString transcriptSpeakerSentenceForSourceFrame(const TranscriptRuntimeDocument& runtimeDocument,
                                                 const QString& speakerId,
                                                 int64_t sourceFrame);
 SpeakerProfile transcriptSpeakerProfileForSourceFrame(const QString& transcriptPath,
                                                       const QVector<TranscriptSection>& sections,
-                                                      int64_t sourceFrame);
+                                                      int64_t sourceFrame,
+                                                      const TranscriptOverlayTiming& timing = {});

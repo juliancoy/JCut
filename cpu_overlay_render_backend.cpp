@@ -647,7 +647,12 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
             continue;
         }
         const TranscriptOverlayLayout overlayLayout =
-            transcriptOverlayLayoutForFrame(clip, timelineFrame, request.renderSyncMarkers, transcriptCache);
+            transcriptOverlayLayoutForFrame(
+                clip,
+                timelineFrame,
+                request.renderSyncMarkers,
+                transcriptCache,
+                TranscriptOverlayTiming{request.transcriptPrependMs, request.transcriptPostpendMs});
         if (overlayLayout.lines.isEmpty()) {
             continue;
         }
@@ -706,7 +711,11 @@ OverlayImage renderTranscriptOverlayImageSoftware(const QSize& imageSize,
         const QColor highlightTextColor(QStringLiteral("#181818"));
 
         const QString speakerTitle = (clip.transcriptOverlay.showSpeakerTitle && hasTitleFace)
-            ? transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, sourceFrame).trimmed()
+            ? transcriptSpeakerTitleForSourceFrame(
+                  transcriptPath,
+                  sections,
+                  sourceFrame,
+                  TranscriptOverlayTiming{request.transcriptPrependMs, request.transcriptPostpendMs}).trimmed()
             : QString();
 
         QVector<TranscriptRenderLineMetrics> lineMetrics;

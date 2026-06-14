@@ -126,7 +126,7 @@
     "rubberBandWindow": "standard",
     "selectedClip": {
         "audioEnabled": true,
-        "audioSourceLastVerifiedMs": 1781403231921,
+        "audioSourceLastVerifiedMs": 1781413412963,
         "audioSourceMode": "embedded",
         "audioSourceOriginalPath": "testbench_assets/video/pseudorandom_source.mp4",
         "audioSourcePath": "testbench_assets/video/pseudorandom_source.mp4",
@@ -473,7 +473,7 @@
     "timeline": [
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781403231905,
+            "audioSourceLastVerifiedMs": 1781413412948,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/life_c.png",
             "audioSourcePath": "testbench_assets/images/life_c.png",
@@ -913,7 +913,7 @@
         },
         {
             "audioEnabled": false,
-            "audioSourceLastVerifiedMs": 1781403231922,
+            "audioSourceLastVerifiedMs": 1781413412964,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "",
             "audioSourcePath": "",
@@ -1408,7 +1408,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781403231905,
+            "audioSourceLastVerifiedMs": 1781413412948,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/gradient_a.png",
             "audioSourcePath": "testbench_assets/images/gradient_a.png",
@@ -1848,7 +1848,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781403231905,
+            "audioSourceLastVerifiedMs": 1781413412948,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/images/fractal_b.png",
             "audioSourcePath": "testbench_assets/images/fractal_b.png",
@@ -2288,7 +2288,7 @@
         },
         {
             "audioEnabled": true,
-            "audioSourceLastVerifiedMs": 1781403231921,
+            "audioSourceLastVerifiedMs": 1781413412963,
             "audioSourceMode": "embedded",
             "audioSourceOriginalPath": "testbench_assets/video/pseudorandom_source.mp4",
             "audioSourcePath": "testbench_assets/video/pseudorandom_source.mp4",

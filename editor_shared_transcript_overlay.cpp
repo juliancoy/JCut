@@ -2,27 +2,9 @@
 
 #include <QStringList>
 
-#include <atomic>
 #include <cmath>
 #include <limits>
 #include <utility>
-
-namespace {
-std::atomic<int>& transcriptOverlayPrependMs() {
-    static std::atomic<int> value{150};
-    return value;
-}
-
-std::atomic<int>& transcriptOverlayPostpendMs() {
-    static std::atomic<int> value{70};
-    return value;
-}
-} // namespace
-
-void setTranscriptOverlayTimingPaddingMs(int prependMs, int postpendMs) {
-    transcriptOverlayPrependMs().store(qMax(0, prependMs));
-    transcriptOverlayPostpendMs().store(qMax(0, postpendMs));
-}
 
 int64_t transcriptPrependFramesForMs(int prependMs) {
     return qMax<int64_t>(
@@ -102,6 +84,8 @@ struct ResolvedTranscriptOverlaySection {
     bool valid = false;
 };
 
+constexpr int64_t kTranscriptOverlayEdgeGuardFrames = 1;
+
 int transcriptOverlayActiveWordIndexForSection(const TranscriptSection& section,
                                                int64_t sourceFrame)
 {
@@ -122,21 +106,52 @@ int transcriptOverlayActiveWordIndexForSection(const TranscriptSection& section,
     return activeWordIndex;
 }
 
+int transcriptOverlayActiveWordIndexForPaddedWords(const TranscriptSection& section,
+                                                   int64_t sourceFrame,
+                                                   int64_t prependFrames,
+                                                   int64_t postpendFrames)
+{
+    int activeWordIndex = -1;
+    int64_t bestDistance = std::numeric_limits<int64_t>::max();
+    for (int i = 0; i < section.words.size(); ++i) {
+        const TranscriptWord& word = section.words.at(i);
+        const ExportRangeSegment range =
+            transcriptPaddedWordRangeForFrames(word, prependFrames, postpendFrames);
+        const int64_t guardedStart =
+            qMax<int64_t>(0, range.startFrame - kTranscriptOverlayEdgeGuardFrames);
+        const int64_t guardedEnd = range.endFrame + kTranscriptOverlayEdgeGuardFrames;
+        if (sourceFrame < guardedStart || sourceFrame > guardedEnd) {
+            continue;
+        }
+
+        const int64_t distance =
+            sourceFrame < word.startFrame
+                ? word.startFrame - sourceFrame
+                : (sourceFrame > word.endFrame ? sourceFrame - word.endFrame : 0);
+        if (distance < bestDistance ||
+            (distance == bestDistance && activeWordIndex >= 0 &&
+             sourceFrame >= word.startFrame)) {
+            activeWordIndex = i;
+            bestDistance = distance;
+        }
+    }
+    return activeWordIndex;
+}
+
 ResolvedTranscriptOverlaySection resolveTranscriptOverlaySectionAtSourceFrame(
     const QVector<TranscriptSection>& sections,
-    int64_t sourceFrame)
+    int64_t sourceFrame,
+    const TranscriptOverlayTiming& timing)
 {
-    const int prependMs = transcriptOverlayPrependMs().load();
-    const int postpendMs = transcriptOverlayPostpendMs().load();
-    const int64_t prependFrames = transcriptPrependFramesForMs(prependMs);
-    const int64_t postpendFrames = transcriptPostpendFramesForMs(postpendMs);
+    const int64_t prependFrames = transcriptPrependFramesForMs(timing.prependMs);
+    const int64_t postpendFrames = transcriptPostpendFramesForMs(timing.postpendMs);
     const auto firstPossibleSection = std::lower_bound(
         sections.constBegin(),
         sections.constEnd(),
         sourceFrame,
         [postpendFrames](const TranscriptSection& section, int64_t frame) {
             const int64_t paddedEndFrame =
-                qMax<int64_t>(0, section.endFrame + postpendFrames);
+                qMax<int64_t>(0, section.endFrame + postpendFrames + kTranscriptOverlayEdgeGuardFrames);
             return paddedEndFrame < frame;
         });
     for (auto it = firstPossibleSection; it != sections.constEnd(); ++it) {
@@ -145,13 +160,27 @@ ResolvedTranscriptOverlaySection resolveTranscriptOverlaySectionAtSourceFrame(
             continue;
         }
         const int64_t paddedStartFrame =
-            qMax<int64_t>(0, section.words.constFirst().startFrame - prependFrames);
+            qMax<int64_t>(0,
+                          section.words.constFirst().startFrame -
+                              prependFrames -
+                              kTranscriptOverlayEdgeGuardFrames);
         const int64_t paddedEndFrame =
-            qMax<int64_t>(paddedStartFrame, section.words.constLast().endFrame + postpendFrames);
+            qMax<int64_t>(paddedStartFrame,
+                          section.words.constLast().endFrame +
+                              postpendFrames +
+                              kTranscriptOverlayEdgeGuardFrames);
         if (sourceFrame < paddedStartFrame) {
             return {};
         }
         if (sourceFrame > paddedEndFrame) {
+            continue;
+        }
+        const int activeWordIndex =
+            transcriptOverlayActiveWordIndexForPaddedWords(section,
+                                                           sourceFrame,
+                                                           prependFrames,
+                                                           postpendFrames);
+        if (activeWordIndex < 0) {
             continue;
         }
 
@@ -165,7 +194,7 @@ ResolvedTranscriptOverlaySection resolveTranscriptOverlaySectionAtSourceFrame(
             word.startFrame = range.startFrame;
             word.endFrame = range.endFrame;
         }
-        resolved.activeWordIndex = transcriptOverlayActiveWordIndexForSection(paddedSection, sourceFrame);
+        resolved.activeWordIndex = activeWordIndex;
         resolved.valid = resolved.activeWordIndex >= 0 && resolved.activeWordIndex < paddedSection.words.size();
         resolved.section = std::move(paddedSection);
         return resolved;
@@ -263,12 +292,13 @@ int transcriptOverlayEffectiveCharsForBox(const TimelineClip& clip) {
 TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(
     const TimelineClip& clip,
     const QVector<TranscriptSection>& sections,
-    int64_t sourceFrame) {
+    int64_t sourceFrame,
+    const TranscriptOverlayTiming& timing) {
     if (sections.isEmpty()) {
         return {};
     }
     const ResolvedTranscriptOverlaySection resolved =
-        resolveTranscriptOverlaySectionAtSourceFrame(sections, sourceFrame);
+        resolveTranscriptOverlaySectionAtSourceFrame(sections, sourceFrame, timing);
     if (!resolved.valid) {
         return {};
     }
@@ -281,7 +311,8 @@ TranscriptOverlayLayout transcriptOverlayLayoutAtSourceFrame(
 
 QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& sections,
                                               int64_t sourceFrame,
-                                              ExportRangeSegment* activeRangeOut)
+                                              ExportRangeSegment* activeRangeOut,
+                                              const TranscriptOverlayTiming& timing)
 {
     if (activeRangeOut) {
         *activeRangeOut = ExportRangeSegment{-1, -1};
@@ -290,13 +321,15 @@ QString transcriptOverlaySpeakerAtSourceFrame(const QVector<TranscriptSection>& 
         return QString();
     }
     const ResolvedTranscriptOverlaySection resolved =
-        resolveTranscriptOverlaySectionAtSourceFrame(sections, sourceFrame);
+        resolveTranscriptOverlaySectionAtSourceFrame(sections, sourceFrame, timing);
     if (!resolved.valid) {
         return QString();
     }
     const TranscriptWord& activeWord = resolved.section.words.at(resolved.activeWordIndex);
     if (activeRangeOut) {
-        *activeRangeOut = ExportRangeSegment{activeWord.startFrame, activeWord.endFrame};
+        *activeRangeOut = ExportRangeSegment{
+            qMax<int64_t>(0, activeWord.startFrame - kTranscriptOverlayEdgeGuardFrames),
+            activeWord.endFrame + kTranscriptOverlayEdgeGuardFrames};
     }
     return activeWord.speaker.trimmed();
 }

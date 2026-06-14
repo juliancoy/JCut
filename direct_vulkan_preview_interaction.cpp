@@ -226,7 +226,11 @@ QRectF transcriptOverlayBoundsForClip(const PreviewInteractionState* state,
         runtimeDocument ? runtimeDocument->sections : QVector<TranscriptSection>{};
     const int64_t sourceFrame =
         transcriptFrameForClipAtTimelineSample(effectiveClip, state->currentSample, state->renderSyncMarkers);
-    const TranscriptOverlayLayout layout = transcriptOverlayLayoutAtSourceFrame(effectiveClip, sections, sourceFrame);
+    const TranscriptOverlayLayout layout = transcriptOverlayLayoutAtSourceFrame(
+        effectiveClip,
+        sections,
+        sourceFrame,
+        TranscriptOverlayTiming{state->transcriptPrependMs, state->transcriptPostpendMs});
     if (layout.lines.isEmpty()) {
         return QRectF();
     }
@@ -712,6 +716,7 @@ TimelineClip::TransformKeyframe currentTransformForVulkanClip(const PreviewInter
                             state->currentFramePosition,
                             faceCenter,
                             faceBoxSize,
+                            0.0,
                             state->outputSize)));
             }
             return transformWithTransientOverride(state, clipId, evaluateClipRenderTransformAtPosition(

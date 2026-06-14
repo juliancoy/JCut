@@ -2377,6 +2377,7 @@ void SpeakersTab::onSpeakerPrecropFacesClicked()
 
     m_trackIdentityResolutionCache.clear();
     m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
     m_faceStreamPanelRefreshSignature.clear();
 
     if (assignmentsBySpeaker.isEmpty()) {

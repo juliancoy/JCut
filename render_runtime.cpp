@@ -58,6 +58,8 @@ RenderRequest toQtRenderRequest(const RenderRequestCore& request,
     qtRequest.correctionsEnabled = request.correctionsEnabled;
     qtRequest.createVideoFromImageSequence = request.createVideoFromImageSequence;
     qtRequest.disableParallelImageWrite = request.disableParallelImageWrite;
+    qtRequest.transcriptPrependMs = request.transcriptPrependMs;
+    qtRequest.transcriptPostpendMs = request.transcriptPostpendMs;
     qtRequest.exportStartFrame = request.exportStartFrame;
     qtRequest.exportEndFrame = request.exportEndFrame;
     qtRequest.clips = toQVector(timelineData.clips);

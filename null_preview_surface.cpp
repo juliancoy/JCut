@@ -89,6 +89,7 @@ void NullPreviewSurface::setCurrentSpeakerBackgroundCornerRadius(qreal radius) {
 void NullPreviewSurface::setCurrentSpeakerBorderWidth(qreal width) { m_currentSpeakerBorderWidth = qBound<qreal>(0.0, width, 16.0); requestRepaint(); }
 void NullPreviewSurface::setCurrentSpeakerShadowEnabled(bool enabled) { m_currentSpeakerShadowEnabled = enabled; requestRepaint(); }
 void NullPreviewSurface::setCurrentSpeakerShadowColor(const QColor& color) { if (color.isValid()) m_currentSpeakerShadowColor = color; requestRepaint(); }
+void NullPreviewSurface::setTranscriptOverlayTimingPaddingMs(int, int) {}
 void NullPreviewSurface::setPlaybackStatusOverlayText(const QString& text) { m_playbackStatusOverlayText = text.trimmed(); requestRepaint(); }
 void NullPreviewSurface::setPlaybackStatusOverlayProgress(qreal progress) { m_playbackStatusOverlayProgress = progress < 0.0 ? -1.0 : qBound<qreal>(0.0, progress, 1.0); requestRepaint(); }
 void NullPreviewSurface::setFacestreamOverlaySource(const QString& source) { m_facedetectionsOverlaySource = source.trimmed().isEmpty() ? QStringLiteral("all") : source.trimmed(); requestRepaint(); }

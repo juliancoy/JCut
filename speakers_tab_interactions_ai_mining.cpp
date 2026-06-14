@@ -246,6 +246,7 @@ bool SpeakersTab::runAiFindSpeakerNames()
             .arg(autoApplyUnnamedProposals.size())
             .arg(overwriteExistingNameProposals.size()));
     m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
     refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
     return true;
 }
@@ -341,6 +342,7 @@ bool SpeakersTab::runAiFindOrganizations()
         m_deps.pushHistorySnapshot();
     }
     m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
     refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
     return true;
 }
@@ -498,6 +500,7 @@ bool SpeakersTab::runAiCleanSpuriousAssignments()
         m_deps.pushHistorySnapshot();
     }
     m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
     refreshTranscriptSpeakerViews(selectedSpeakerId(), false);
     QMessageBox::information(nullptr,
                              QStringLiteral("Clean Assignments"),

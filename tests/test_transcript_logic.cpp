@@ -74,12 +74,10 @@ class TestTranscriptLogic : public QObject {
 private slots:
     void init() {
         clearAllActiveTranscriptPaths();
-        setTranscriptOverlayTimingPaddingMs(150, 70);
     }
 
     void cleanup() {
         clearAllActiveTranscriptPaths();
-        setTranscriptOverlayTimingPaddingMs(150, 70);
     }
 
     void testSpeechFilterUsesActiveTranscriptCut();
@@ -92,12 +90,14 @@ private slots:
     void testSpeakerManualModeDoesNotOverrideOverlayTranslation();
     void testSpeakerTrackingExplicitDisabledOverridesKeyframes();
     void testSpeakerTrackingReferencePointsModeStaysDisabled();
+    void testSpeakerFramingRotatesAroundDetectedFaceBox();
     void testTranscriptFrameMappingUsesSourceSeconds();
     void testTranscriptFrameMappingFromPresentedSourceFrame();
     void testAudioVideoCaptionMappingStaysSampleAccurateAtOnePointFiveX();
     void testTranscriptOverlaySizingHelpersClampToBox();
     void testTranscriptOverlayLayoutHelperMatchesSectionLayout();
     void testTranscriptOverlayRespectsWordPadding();
+    void testTranscriptOverlayGuardsWordPaddingEdges();
     void testTranscriptOverlaySpeakerLookupReturnsActiveRange();
     void testTranscriptSpeakerTitleUsesOverlayWordPadding();
     void testTranscriptOverlayHtmlUsesQtRichTextRgbColors();
@@ -467,6 +467,34 @@ void TestTranscriptLogic::testSpeakerTrackingReferencePointsModeStaysDisabled() 
     QCOMPARE(pos, QPointF());
 }
 
+void TestTranscriptLogic::testSpeakerFramingRotatesAroundDetectedFaceBox() {
+    TimelineClip clip;
+    clip.id = QStringLiteral("clip");
+    clip.mediaType = ClipMediaType::Video;
+    clip.startFrame = 0;
+    clip.durationFrames = 30;
+    clip.sourceDurationFrames = 30;
+    clip.sourceFrameSize = QSize(1000, 1000);
+    clip.speakerFramingTargetKeyframes.push_back(
+        TimelineClip::TransformKeyframe{0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
+    normalizeClipTransformKeyframes(clip);
+
+    const TimelineClip::TransformKeyframe unrotated =
+        evaluateClipSpeakerFramingForFaceBoxAtPosition(
+            clip, 10.0, QPointF(0.60, 0.50), 0.20, 0.0, QSize(1000, 1000));
+    const TimelineClip::TransformKeyframe rotated =
+        evaluateClipSpeakerFramingForFaceBoxAtPosition(
+            clip, 10.0, QPointF(0.60, 0.50), 0.20, 90.0, QSize(1000, 1000));
+
+    QCOMPARE(unrotated.translationX, -100.0);
+    QCOMPARE(unrotated.translationY, -150.0);
+    QCOMPARE(rotated.rotation, 90.0);
+    QVERIFY(std::abs(rotated.translationX) < 0.000001);
+    QCOMPARE(rotated.translationY, -250.0);
+    QCOMPARE(rotated.scaleX, 1.0);
+    QCOMPARE(rotated.scaleY, 1.0);
+}
+
 void TestTranscriptLogic::testTranscriptFrameMappingUsesSourceSeconds() {
     TimelineClip clip;
     clip.id = QStringLiteral("clip-non30fps");
@@ -577,7 +605,7 @@ void TestTranscriptLogic::testTranscriptOverlaySizingHelpersClampToBox() {
 }
 
 void TestTranscriptLogic::testTranscriptOverlayLayoutHelperMatchesSectionLayout() {
-    setTranscriptOverlayTimingPaddingMs(0, 0);
+    const TranscriptOverlayTiming noPadding{0, 0};
 
     TimelineClip clip;
     clip.transcriptOverlay.maxLines = 3;
@@ -616,7 +644,7 @@ void TestTranscriptLogic::testTranscriptOverlayLayoutHelperMatchesSectionLayout(
         transcriptOverlayEffectiveLinesForBox(clip),
         clip.transcriptOverlay.autoScroll);
     const TranscriptOverlayLayout actual =
-        transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame);
+        transcriptOverlayLayoutAtSourceFrame(clip, sections, sourceFrame, noPadding);
 
     QCOMPARE(actual.lines.size(), expected.lines.size());
     QCOMPARE(actual.truncatedTop, expected.truncatedTop);
@@ -657,19 +685,16 @@ void TestTranscriptLogic::testTranscriptOverlayRespectsWordPadding() {
 
     const QVector<TranscriptSection> sections{first, second};
 
-    setTranscriptOverlayTimingPaddingMs(0, 0);
-    QVERIFY(transcriptOverlayLayoutAtSourceFrame(clip, sections, 12).lines.isEmpty());
+    QVERIFY(transcriptOverlayLayoutAtSourceFrame(clip, sections, 12, TranscriptOverlayTiming{0, 0}).lines.isEmpty());
 
-    setTranscriptOverlayTimingPaddingMs(0, 150);
     const TranscriptOverlayLayout heldLayout =
-        transcriptOverlayLayoutAtSourceFrame(clip, sections, 12);
+        transcriptOverlayLayoutAtSourceFrame(clip, sections, 12, TranscriptOverlayTiming{0, 150});
     QVERIFY(!heldLayout.lines.isEmpty());
     QCOMPARE(heldLayout.lines.constFirst().words, QStringList{QStringLiteral("alpha")});
     QCOMPARE(heldLayout.lines.constFirst().activeWord, 0);
 
-    setTranscriptOverlayTimingPaddingMs(150, 0);
     const TranscriptOverlayLayout earlyLayout =
-        transcriptOverlayLayoutAtSourceFrame(clip, sections, 16);
+        transcriptOverlayLayoutAtSourceFrame(clip, sections, 16, TranscriptOverlayTiming{150, 0});
     QVERIFY(!earlyLayout.lines.isEmpty());
     QCOMPARE(earlyLayout.lines.constFirst().words, QStringList{QStringLiteral("beta")});
     QCOMPARE(earlyLayout.lines.constFirst().activeWord, 0);
@@ -680,15 +705,54 @@ void TestTranscriptLogic::testTranscriptOverlayRespectsWordPadding() {
     joined.text = QStringLiteral("alpha beta");
     joined.words = {firstWord, secondWord};
 
-    setTranscriptOverlayTimingPaddingMs(150, 0);
     const TranscriptOverlayLayout joinedEarlyLayout =
-        transcriptOverlayLayoutAtSourceFrame(clip, QVector<TranscriptSection>{joined}, 16);
+        transcriptOverlayLayoutAtSourceFrame(
+            clip,
+            QVector<TranscriptSection>{joined},
+            16,
+            TranscriptOverlayTiming{150, 0});
     QVERIFY(!joinedEarlyLayout.lines.isEmpty());
     QCOMPARE(joinedEarlyLayout.lines.constFirst().words,
              QStringList({QStringLiteral("alpha"), QStringLiteral("beta")}));
     QCOMPARE(joinedEarlyLayout.lines.constFirst().activeWord, 1);
 
-    setTranscriptOverlayTimingPaddingMs(150, 70);
+}
+
+void TestTranscriptLogic::testTranscriptOverlayGuardsWordPaddingEdges() {
+    TimelineClip clip;
+    clip.transcriptOverlay.maxLines = 2;
+    clip.transcriptOverlay.maxCharsPerLine = 24;
+
+    TranscriptSection section;
+    section.startFrame = 20;
+    section.endFrame = 29;
+    section.text = QStringLiteral("beta");
+    TranscriptWord word;
+    word.startFrame = 20;
+    word.endFrame = 29;
+    word.text = QStringLiteral("beta");
+    word.speaker = QStringLiteral("S2");
+    section.words.push_back(word);
+
+    const QVector<TranscriptSection> sections{section};
+    const TranscriptOverlayTiming timing{150, 70};
+
+    // 150 ms prepend at 30 fps floors to 4 frames, so the speech-filter word
+    // range starts at 16. Frame 15 is the one-frame guard against
+    // sample/frame quantization at the edge.
+    const TranscriptOverlayLayout guardedStart =
+        transcriptOverlayLayoutAtSourceFrame(clip, sections, 15, timing);
+    QVERIFY(!guardedStart.lines.isEmpty());
+    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 15, nullptr, timing), QStringLiteral("S2"));
+
+    ExportRangeSegment activeRange{-1, -1};
+    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 15, &activeRange, timing),
+             QStringLiteral("S2"));
+    QCOMPARE(activeRange.startFrame, int64_t(15));
+    QCOMPARE(activeRange.endFrame, int64_t(33));
+
+    QVERIFY(transcriptOverlayLayoutAtSourceFrame(clip, sections, 14, timing).lines.isEmpty());
+    QVERIFY(transcriptOverlaySpeakerAtSourceFrame(sections, 14, nullptr, timing).isEmpty());
 }
 
 void TestTranscriptLogic::testTranscriptOverlaySpeakerLookupReturnsActiveRange() {
@@ -715,16 +779,16 @@ void TestTranscriptLogic::testTranscriptOverlaySpeakerLookupReturnsActiveRange()
     second.words.push_back(secondWord);
 
     const QVector<TranscriptSection> sections{first, second};
-    setTranscriptOverlayTimingPaddingMs(150, 70);
+    const TranscriptOverlayTiming timing{150, 70};
 
     ExportRangeSegment activeRange{-1, -1};
-    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 16, &activeRange),
+    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 16, &activeRange, timing),
              QStringLiteral("S2"));
-    QCOMPARE(activeRange.startFrame, int64_t(16));
-    QCOMPARE(activeRange.endFrame, int64_t(32));
+    QCOMPARE(activeRange.startFrame, int64_t(15));
+    QCOMPARE(activeRange.endFrame, int64_t(33));
 
     activeRange = ExportRangeSegment{123, 456};
-    QVERIFY(transcriptOverlaySpeakerAtSourceFrame(sections, 14, &activeRange).isEmpty());
+    QVERIFY(transcriptOverlaySpeakerAtSourceFrame(sections, 14, &activeRange, timing).isEmpty());
     QCOMPARE(activeRange.startFrame, int64_t(-1));
     QCOMPARE(activeRange.endFrame, int64_t(-1));
 }
@@ -754,11 +818,11 @@ void TestTranscriptLogic::testTranscriptSpeakerTitleUsesOverlayWordPadding() {
     word.speaker = QStringLiteral("S2");
     section.words.push_back(word);
 
-    setTranscriptOverlayTimingPaddingMs(150, 70);
     const QVector<TranscriptSection> sections{section};
-    QVERIFY(!transcriptOverlayLayoutAtSourceFrame(TimelineClip{}, sections, 16).lines.isEmpty());
-    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 16), QStringLiteral("S2"));
-    QCOMPARE(transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, 16),
+    const TranscriptOverlayTiming timing{150, 70};
+    QVERIFY(!transcriptOverlayLayoutAtSourceFrame(TimelineClip{}, sections, 16, timing).lines.isEmpty());
+    QCOMPARE(transcriptOverlaySpeakerAtSourceFrame(sections, 16, nullptr, timing), QStringLiteral("S2"));
+    QCOMPARE(transcriptSpeakerTitleForSourceFrame(transcriptPath, sections, 16, timing),
              QStringLiteral("Julian Jones - Baltimore County Council"));
 }
 
@@ -997,7 +1061,7 @@ void TestTranscriptLogic::testSpeakerFramingRuntimeSpeakerDescendsFromTranscript
     clip.speakerFramingEnabled = true;
     clip.speakerFramingMinConfidence = 0.08;
     clip.speakerFramingTargetKeyframes.push_back(
-        TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
+        TimelineClip::TransformKeyframe{0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
     prepareClipSpeakerFramingContinuityRuntimeBlocking(clip);
 
@@ -1059,7 +1123,7 @@ void TestTranscriptLogic::testSpeakerFramingGapHoldPersistsTranscriptSpeaker() {
     clip.speakerFramingEnabled = true;
     clip.speakerFramingMinConfidence = 0.08;
     clip.speakerFramingTargetKeyframes.push_back(
-        TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
+        TimelineClip::TransformKeyframe{0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
     prepareClipSpeakerFramingContinuityRuntimeBlocking(clip);
 
@@ -1103,7 +1167,7 @@ void TestTranscriptLogic::testSpeakerFramingSmoothingAppliesToAssignedContinuity
     clip.sourceFrameSize = QSize(1000, 1000);
     clip.speakerFramingEnabled = true;
     clip.speakerFramingTargetKeyframes.push_back(
-        TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
+        TimelineClip::TransformKeyframe{0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
 
     QJsonObject identityRow;
@@ -1296,7 +1360,7 @@ void TestTranscriptLogic::testDynamicSpeakerFramingInterpolatesFractionalPlaybac
     clip.speakerFramingCenterSmoothingFrames = 0;
     clip.speakerFramingZoomSmoothingFrames = 0;
     clip.speakerFramingTargetKeyframes.push_back(
-        TimelineClip::TransformKeyframe{0, 0.50, 0.35, 0.0, 0.20, 0.20, true});
+        TimelineClip::TransformKeyframe{0, QString(), 0.50, 0.35, 0.0, 0.20, 0.20, true});
     normalizeClipTransformKeyframes(clip);
 
     const TimelineClip::TransformKeyframe lower =

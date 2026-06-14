@@ -676,6 +676,7 @@ private:
     int64_t m_transportTimelineSample = 0;
     int64_t m_filteredPlaybackSample = 0;
     int64_t m_playbackAudioFeedbackAnchorTimelineSample = 0;
+    int64_t m_playbackAudioFeedbackAnchorFeedbackSample = 0;
     int64_t m_lastPlaybackUiSyncMs = 0;
     int64_t m_lastPlaybackStateSaveMs = 0;
     qreal m_playbackSpeed = 1.0;
@@ -686,6 +687,7 @@ private:
     bool m_startPlaybackAfterAudioWarmup = false;
     int m_playbackAudioWarmupRequestId = 0;
     qreal m_audioDriftRetimeMultiplier = 1.0;
+    int64_t m_lastAudioDriftHardResyncMs = 0;
     double m_timelineAdvanceCarrySamples = 0.0;
     int64_t m_lastTimelineAdvanceTickMs = 0;
     int64_t m_playbackSessionStartWallMs = 0;

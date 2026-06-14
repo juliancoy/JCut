@@ -160,6 +160,7 @@ private slots:
     void testContinuousAlignmentAcrossFrames();
     void testFollowWorksWhileTableHasFocus();
     void testManualSelectionHoldWhilePausedThenResumeOnPlaybackAdvance();
+    void testPauseRefreshRestoresFollowSelectedRow();
     void testFollowSkipsSkippedRowsAndClearsSelection();
     void testFollowUsesSourceTimesNotRenderTimes();
     void testFollowBridgesSmallGapsDuringFastPlayback();
@@ -343,6 +344,60 @@ void TestTranscriptTabFollow::testManualSelectionHoldWhilePausedThenResumeOnPlay
     // immediately without waiting for the manual-selection hold timeout.
     tab.syncTableToPlayhead(101, row1Seconds);
     QCOMPARE(selectedRow(table), 1);
+}
+
+void TestTranscriptTabFollow::testPauseRefreshRestoresFollowSelectedRow() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString clipPath = dir.filePath(QStringLiteral("clip.wav"));
+    QVERIFY(QFile(clipPath).open(QIODevice::WriteOnly));
+
+    QJsonArray words;
+    words.push_back(word(QStringLiteral("a"), 0.0, 0.10));
+    words.push_back(word(QStringLiteral("b"), 0.10, 0.20));
+    words.push_back(word(QStringLiteral("c"), 0.20, 0.30));
+    QVERIFY(writeActiveEditableTranscript(clipPath, words));
+
+    TimelineClip clip = makeAudioClip(QStringLiteral("clip-pause-refresh"), clipPath);
+
+    QLineEdit clipLabel;
+    QLabel detailsLabel;
+    QTableWidget table;
+    table.setColumnCount(kTranscriptTestColumnCount);
+    QCheckBox follow;
+    follow.setChecked(true);
+    QSpinBox prependSpin;
+    prependSpin.setValue(0);
+    QSpinBox postpendSpin;
+    postpendSpin.setValue(0);
+    QCheckBox speechEnabled;
+    QSpinBox speechFade;
+
+    bool playbackActive = false;
+    TranscriptTab tab(
+        makeTranscriptWidgets(&clipLabel, &detailsLabel, &table, &follow, &prependSpin, &postpendSpin, &speechEnabled, &speechFade),
+        TranscriptTab::Dependencies{
+            [&clip]() -> const TimelineClip* { return &clip; },
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {},
+            [&playbackActive]() { return playbackActive; }});
+    tab.wire();
+    tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
+
+    tab.syncTableToPlayhead(100, 0.225);
+    QCOMPARE(selectedRow(table), 2);
+
+    playbackActive = false;
+    tab.refresh();
+    QTRY_VERIFY_WITH_TIMEOUT(table.rowCount() >= 3, 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(selectedRow(table), 2, 2000);
 }
 
 void TestTranscriptTabFollow::testFollowSkipsSkippedRowsAndClearsSelection() {

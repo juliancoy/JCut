@@ -19,6 +19,7 @@
 #include <QDebug>
 #include <QDialog>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -64,7 +65,8 @@ QJsonObject sectionTrackEntryFromFields(int trackId,
                                         int64_t sourceFrame,
                                         qreal xNorm,
                                         qreal yNorm,
-                                        qreal boxSizeNorm)
+                                        qreal boxSizeNorm,
+                                        qreal rotationDegrees = 0.0)
 {
     QJsonObject entry;
     entry[QStringLiteral("track_id")] = trackId;
@@ -76,6 +78,7 @@ QJsonObject sectionTrackEntryFromFields(int trackId,
     entry[QStringLiteral("x")] = qBound<qreal>(0.0, xNorm, 1.0);
     entry[QStringLiteral("y")] = qBound<qreal>(0.0, yNorm, 1.0);
     entry[QStringLiteral("box")] = qBound<qreal>(0.01, boxSizeNorm, 1.0);
+    entry[QStringLiteral("rotation")] = qBound<qreal>(-180.0, rotationDegrees, 180.0);
     return entry;
 }
 
@@ -95,7 +98,8 @@ QJsonArray sectionTrackEntries(const QJsonObject& row)
         row.value(QStringLiteral("source_frame")).toInteger(0),
         row.value(QStringLiteral("x")).toDouble(0.5),
         row.value(QStringLiteral("y")).toDouble(0.5),
-        row.value(QStringLiteral("box")).toDouble(0.2))};
+        row.value(QStringLiteral("box")).toDouble(0.2),
+        row.value(QStringLiteral("rotation")).toDouble(0.0))};
 }
 
 QJsonArray sectionTrackEntriesWithTrack(QJsonObject row,
@@ -109,7 +113,14 @@ QJsonArray sectionTrackEntriesWithTrack(QJsonObject row,
     QJsonArray merged;
     bool replaced = false;
     const QJsonObject newEntry =
-        sectionTrackEntryFromFields(trackId, streamId, sourceFrame, xNorm, yNorm, boxSizeNorm);
+        sectionTrackEntryFromFields(
+            trackId,
+            streamId,
+            sourceFrame,
+            xNorm,
+            yNorm,
+            boxSizeNorm,
+            row.value(QStringLiteral("rotation")).toDouble(0.0));
     for (const QJsonValue& value : sectionTrackEntries(row)) {
         const QJsonObject entry = value.toObject();
         if (entry.value(QStringLiteral("track_id")).toInt(-1) == trackId) {
@@ -136,6 +147,9 @@ QJsonObject sectionRowWithTrackEntries(QJsonObject row, const QJsonArray& entrie
         row[QStringLiteral("x")] = primary.value(QStringLiteral("x")).toDouble(0.5);
         row[QStringLiteral("y")] = primary.value(QStringLiteral("y")).toDouble(0.5);
         row[QStringLiteral("box")] = primary.value(QStringLiteral("box")).toDouble(0.2);
+        row[QStringLiteral("rotation")] =
+            qBound<qreal>(-180.0, row.value(QStringLiteral("rotation")).toDouble(
+                                       primary.value(QStringLiteral("rotation")).toDouble(0.0)), 180.0);
     } else {
         row.remove(QStringLiteral("track_id"));
         row.remove(QStringLiteral("stream_id"));
@@ -143,6 +157,7 @@ QJsonObject sectionRowWithTrackEntries(QJsonObject row, const QJsonArray& entrie
         row.remove(QStringLiteral("x"));
         row.remove(QStringLiteral("y"));
         row.remove(QStringLiteral("box"));
+        row.remove(QStringLiteral("rotation"));
     }
     return row;
 }
@@ -1893,6 +1908,121 @@ bool SpeakersTab::assignTrackToContiguousSection(const QString& clipId,
     m_avatarHoverTooltipHtmlCache.clear();
     emit transcriptDocumentChanged();
     refreshVisibleSpeakerSectionAssignments(trimmedSpeakerId);
+    if (m_deps.scheduleSaveState) {
+        m_deps.scheduleSaveState();
+    }
+    if (m_deps.pushHistorySnapshot) {
+        m_deps.pushHistorySnapshot();
+    }
+    return true;
+}
+
+qreal SpeakersTab::selectedSpeakerSectionRotation() const
+{
+    if (!m_widgets.speakerSectionsTable || !m_widgets.speakerSectionsTable->isVisible()) {
+        return 0.0;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    const int row = m_widgets.speakerSectionsTable->currentRow();
+    QTableWidgetItem* speakerItem = row >= 0
+        ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn)
+        : nullptr;
+    if (!clip || !speakerItem) {
+        return 0.0;
+    }
+    const QJsonObject assignment = contiguousSectionAssignmentForSection(
+        clip->id,
+        speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed(),
+        speakerItem->data(SpeakerSectionStartFrameRole).toLongLong(),
+        speakerItem->data(SpeakerSectionEndFrameRole).toLongLong());
+    return qBound<qreal>(-180.0, assignment.value(QStringLiteral("rotation")).toDouble(0.0), 180.0);
+}
+
+bool SpeakersTab::saveSelectedSpeakerSectionRotationFromControls()
+{
+    if (m_updatingSpeakerFramingTargetControls ||
+        !m_widgets.speakerSectionRotationSpin ||
+        !m_widgets.speakerSectionsTable) {
+        return false;
+    }
+    return saveSpeakerSectionRotation(
+        m_widgets.speakerSectionsTable->currentRow(),
+        qBound<qreal>(-180.0, m_widgets.speakerSectionRotationSpin->value(), 180.0));
+}
+
+bool SpeakersTab::saveSpeakerSectionRotation(int row, qreal rotation)
+{
+    if (m_updatingSpeakerFramingTargetControls ||
+        !m_widgets.speakerSectionsTable ||
+        !m_widgets.speakerSectionsTable->isVisible() ||
+        !activeCutMutable() ||
+        !m_transcriptSession.hasObjectDocument()) {
+        return false;
+    }
+    const TimelineClip* clip = m_deps.getSelectedClip ? m_deps.getSelectedClip() : nullptr;
+    QTableWidgetItem* speakerItem = row >= 0
+        ? m_widgets.speakerSectionsTable->item(row, SpeakerSectionSpeakerColumn)
+        : nullptr;
+    if (!clip || !speakerItem) {
+        return false;
+    }
+    const QString speakerId = speakerItem->data(SpeakerSectionSpeakerIdRole).toString().trimmed();
+    const int64_t startFrame = speakerItem->data(SpeakerSectionStartFrameRole).toLongLong();
+    const int64_t endFrame = speakerItem->data(SpeakerSectionEndFrameRole).toLongLong();
+    const QString sectionKey = contiguousSectionKey(speakerId, startFrame, endFrame);
+    rotation = qBound<qreal>(-180.0, rotation, 180.0);
+    if (clip->id.trimmed().isEmpty() || speakerId.isEmpty() || startFrame < 0 || endFrame < startFrame) {
+        return false;
+    }
+
+    bool changed = false;
+    QJsonObject transcriptRoot = m_transcriptSession.rootObject();
+    QJsonObject speakerFlow = transcriptRoot.value(QStringLiteral("speaker_flow")).toObject();
+    QJsonObject clipsRoot = speakerFlow.value(QStringLiteral("clips")).toObject();
+    QJsonObject clipRoot = clipsRoot.value(clip->id.trimmed()).toObject();
+    QJsonObject resolvedPayload = clipRoot.value(QStringLiteral("resolved_current")).toObject();
+    QJsonArray nextMap;
+    for (const QJsonValue& value : resolvedPayload.value(QStringLiteral("section_track_map")).toArray()) {
+        QJsonObject sectionRow = value.toObject();
+        if (sectionRow.value(QStringLiteral("section_key")).toString() == sectionKey) {
+            const qreal previous =
+                qBound<qreal>(-180.0, sectionRow.value(QStringLiteral("rotation")).toDouble(0.0), 180.0);
+            if (!qFuzzyCompare(previous + 1.0, rotation + 1.0)) {
+                changed = true;
+            }
+            sectionRow[QStringLiteral("rotation")] = rotation;
+            QJsonArray rotatedEntries;
+            for (const QJsonValue& entryValue : sectionTrackEntries(sectionRow)) {
+                QJsonObject entry = entryValue.toObject();
+                entry[QStringLiteral("rotation")] = rotation;
+                rotatedEntries.push_back(entry);
+            }
+            sectionRow = sectionRowWithTrackEntries(sectionRow, rotatedEntries);
+        }
+        nextMap.push_back(sectionRow);
+    }
+    if (!changed) {
+        return false;
+    }
+    const QString timestamp = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    resolvedPayload[QStringLiteral("updated_at_utc")] = timestamp;
+    resolvedPayload[QStringLiteral("section_track_map")] = nextMap;
+    clipRoot[QStringLiteral("updated_at_utc")] = timestamp;
+    clipRoot[QStringLiteral("resolved_current")] = resolvedPayload;
+    clipsRoot[clip->id.trimmed()] = clipRoot;
+    speakerFlow[QStringLiteral("schema_version")] = QStringLiteral("1.0");
+    speakerFlow[QStringLiteral("clips")] = clipsRoot;
+    transcriptRoot[QStringLiteral("speaker_flow")] = speakerFlow;
+
+    if (!updateLoadedTranscriptDocument([&](QJsonObject& root) {
+            root = transcriptRoot;
+            return true;
+        }) || !saveLoadedTranscriptDocumentNow()) {
+        refresh();
+        return false;
+    }
+    emit transcriptDocumentChanged();
+    refreshVisibleSpeakerSectionAssignments(speakerId);
     if (m_deps.scheduleSaveState) {
         m_deps.scheduleSaveState();
     }

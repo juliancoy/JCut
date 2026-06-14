@@ -131,7 +131,8 @@ QImage buildBlurredFillBackground(const QImage& source, const QSize& outputSize)
 TranscriptOverlayLayout transcriptOverlayLayoutForFrame(const TimelineClip& clip,
                                                         int64_t timelineFrame,
                                                         const QVector<RenderSyncMarker>& markers,
-                                                        QHash<QString, QVector<TranscriptSection>>& transcriptCache);
+                                                        QHash<QString, QVector<TranscriptSection>>& transcriptCache,
+                                                        const TranscriptOverlayTiming& timing = {});
 OverlayImage renderTranscriptOverlay(const QSize& imageSize,
                                      const RenderRequest& request,
                                      int64_t timelineFrame,

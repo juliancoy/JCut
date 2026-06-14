@@ -18,8 +18,35 @@ float lumaOf(vec3 rgb) {
     return dot(rgb, vec3(0.2126, 0.7152, 0.0722));
 }
 
+vec4 blurredFillSample(vec2 uv) {
+    vec2 texelSize = 1.0 / vec2(textureSize(u_texture, 0));
+    float radius = abs(pc.u_midtones.a);
+    vec4 sum = vec4(0.0);
+    float weightSum = 0.0;
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            float weight = 1.0;
+            if (x == 0 && y == 0) {
+                weight = 2.5;
+            } else if (abs(x) + abs(y) == 1) {
+                weight = 1.6;
+            } else if (abs(x) == 2 || abs(y) == 2) {
+                weight = 0.7;
+            }
+            vec2 sampleCoord = clamp(uv + vec2(float(x), float(y)) * texelSize * radius,
+                                     vec2(0.0),
+                                     vec2(1.0));
+            sum += texture(u_texture, sampleCoord) * weight;
+            weightSum += weight;
+        }
+    }
+    return sum / max(0.0001, weightSum);
+}
+
 void main() {
-    vec4 c = texture(u_texture, v_texCoord);
+    vec4 c = pc.u_midtones.a < 0.0
+        ? blurredFillSample(v_texCoord)
+        : texture(u_texture, v_texCoord);
 
     float sourceAlpha = c.a;
     vec3 rgb = c.rgb;

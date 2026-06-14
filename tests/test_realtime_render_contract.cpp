@@ -104,8 +104,8 @@ void TestRealtimeRenderContract::renderTransformsInterpolateAtOutputFpsPositions
     clip.baseTranslationX = 0.0;
     clip.baseTranslationY = 0.0;
     clip.transformKeyframes = QVector<TimelineClip::TransformKeyframe>{
-        TimelineClip::TransformKeyframe{0, 0.0, 0.0, 0.0, 1.0, 1.0, true},
-        TimelineClip::TransformKeyframe{1, 10.0, 20.0, 0.0, 1.0, 1.0, true},
+        TimelineClip::TransformKeyframe{0, QString(), 0.0, 0.0, 0.0, 1.0, 1.0, true},
+        TimelineClip::TransformKeyframe{1, QString(), 10.0, 20.0, 0.0, 1.0, 1.0, true},
     };
 
     const TimelineClip::TransformKeyframe atHalfFrame =

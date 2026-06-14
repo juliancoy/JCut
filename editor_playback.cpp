@@ -164,18 +164,12 @@ int64_t EditorWindow::timelineSampleForFilteredPlaybackSample(int64_t filteredSa
 
 int64_t EditorWindow::timelineSampleForAudioFeedbackSample(int64_t audioFeedbackSample) const
 {
-    const int64_t clampedAudioSample =
-        editor::audioFeedbackSampleToTimelineSample(audioFeedbackSample);
     const QVector<ExportRangeSegment> ranges = effectivePlaybackRanges();
-    if (ranges.isEmpty()) {
-        return clampedAudioSample;
-    }
-
-    const int64_t anchorTimelineSample = qMax<int64_t>(0, m_playbackAudioFeedbackAnchorTimelineSample);
-    const int64_t anchorFilteredSample = filteredPlaybackSampleForAbsoluteSample(anchorTimelineSample);
-    const int64_t audibleElapsedSamples =
-        qMax<int64_t>(0, clampedAudioSample - anchorTimelineSample);
-    return timelineSampleForFilteredPlaybackSample(anchorFilteredSample + audibleElapsedSamples);
+    return editor::projectAudioFeedbackSampleToTimelineSample(
+        audioFeedbackSample,
+        m_playbackAudioFeedbackAnchorTimelineSample,
+        m_playbackAudioFeedbackAnchorFeedbackSample,
+        ranges);
 }
 
 QVector<ExportRangeSegment> EditorWindow::effectivePlaybackRanges() const
@@ -614,11 +608,15 @@ void EditorWindow::setCurrentPlaybackSample(int64_t samplePosition, bool syncAud
     m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(boundedSample);
     if (!duringPlayback || syncAudio) {
         m_playbackAudioFeedbackAnchorTimelineSample = boundedSample;
+        m_playbackAudioFeedbackAnchorFeedbackSample = boundedSample;
     }
     m_fastCurrentFrame.store(bounded);
     
     if (syncAudio && m_audioEngine && m_audioEngine->audioClockAvailable()) {
         m_audioEngine->seek(bounded);
+        const int64_t audioAnchorSample = frameToSamples(bounded);
+        m_playbackAudioFeedbackAnchorTimelineSample = audioAnchorSample;
+        m_playbackAudioFeedbackAnchorFeedbackSample = audioAnchorSample;
     }
     
     m_timeline->setCurrentFrame(bounded);
@@ -770,7 +768,8 @@ void EditorWindow::applyPlaybackRuntimeConfig(const PlaybackRuntimeConfig& reque
     if (activePlaybackReconfigured && m_timeline) {
         m_timelineAdvanceCarrySamples = 0.0;
         m_lastTimelineAdvanceTickMs = nowMs();
-        m_playbackAudioFeedbackAnchorTimelineSample = frameToSamples(m_timeline->currentFrame());
+        m_playbackAudioFeedbackAnchorTimelineSample = m_transportTimelineSample;
+        m_playbackAudioFeedbackAnchorFeedbackSample = m_transportTimelineSample;
     }
 
     if (m_audioEngine) {
@@ -840,6 +839,8 @@ qreal EditorWindow::effectiveAudioWarpRate() const
 
 void EditorWindow::updateAudioDriftRetime(bool reset)
 {
+    constexpr int64_t kAudioDriftHardResyncSamples = 24000; // fifteen 30 fps frames at 48 kHz.
+    constexpr int64_t kAudioDriftHardResyncCooldownMs = 2000;
     if (!m_audioEngine) {
         m_audioDriftRetimeMultiplier = 1.0;
         return;
@@ -853,10 +854,26 @@ void EditorWindow::updateAudioDriftRetime(bool reset)
         m_audioEngine->hasPlayableAudio()) {
         const int64_t audioSample = timelineSampleForAudioFeedbackSample(
             qMax<int64_t>(0, m_audioEngine->playbackClockSample()));
+        const int64_t driftSamples = m_transportTimelineSample - audioSample;
+        const int64_t tickNowMs = nowMs();
+        if (qAbs(driftSamples) > kAudioDriftHardResyncSamples &&
+            tickNowMs - m_lastAudioDriftHardResyncMs >= kAudioDriftHardResyncCooldownMs) {
+            const int64_t currentFrame = qMax<int64_t>(
+                0,
+                static_cast<int64_t>(std::floor(samplesToFramePosition(m_transportTimelineSample))));
+            m_lastAudioDriftHardResyncMs = tickNowMs;
+            m_audioDriftRetimeMultiplier = 1.0;
+            m_audioEngine->setPlaybackDriftRetimeRate(m_audioDriftRetimeMultiplier);
+            m_audioEngine->seek(currentFrame);
+            const int64_t anchorSample = frameToSamples(currentFrame);
+            m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
+            m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
+            return;
+        }
         nextMultiplier = editor::evaluatePlaybackDriftRetimeMultiplier(
             editor::PlaybackDriftRetimeInput{
                 true,
-                m_transportTimelineSample - audioSample,
+                driftSamples,
                 m_audioDriftRetimeMultiplier,
             });
     } else {
@@ -924,6 +941,9 @@ void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPla
                            .arg(currentFrame);
             }
             m_audioEngine->seek(currentFrame);
+            const int64_t anchorSample = frameToSamples(currentFrame);
+            m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
+            m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
         } else if (!audioStarted) {
             const bool needsPitchPreservingAudio = needsPitchPreservingPlaybackAudio();
             if (needsPitchPreservingAudio &&
@@ -943,6 +963,9 @@ void EditorWindow::reconcileActivePlaybackAudioState(bool alignRunningAudioToPla
                            .arg(m_timeline->currentFrame());
             }
             m_audioEngine->start(m_timeline->currentFrame());
+            const int64_t anchorSample = frameToSamples(m_timeline->currentFrame());
+            m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
+            m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
         }
     } else if (audioStarted) {
         updateAudioDriftRetime(true);
@@ -1146,6 +1169,7 @@ void EditorWindow::setPlaybackActive(bool playing)
         m_playbackSessionStartTimelineSample = playbackStartSample;
         m_filteredPlaybackSample = filteredPlaybackSampleForAbsoluteSample(playbackStartSample);
         m_playbackAudioFeedbackAnchorTimelineSample = playbackStartSample;
+        m_playbackAudioFeedbackAnchorFeedbackSample = playbackStartSample;
         if (m_timeline->currentFrame() != playbackStartFrame) {
             m_timeline->setCurrentFrame(playbackStartFrame);
             m_fastCurrentFrame.store(playbackStartFrame);
@@ -1221,6 +1245,9 @@ void EditorWindow::setPlaybackActive(bool playing)
             }
             if (audioReadyToStart) {
                 m_audioEngine->start(playbackStartFrame);
+                const int64_t anchorSample = frameToSamples(playbackStartFrame);
+                m_playbackAudioFeedbackAnchorTimelineSample = anchorSample;
+                m_playbackAudioFeedbackAnchorFeedbackSample = anchorSample;
                 if (!m_startupReadinessAudioStarted.exchange(true)) {
                     startupReadinessMark(QStringLiteral("audio.start.invoked"),
                                          QJsonObject{{QStringLiteral("frame"),

@@ -48,7 +48,8 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                              qreal timelineFramePosition,
                                              qreal mediaSourceFramePosition,
                                              QPointF* locationOut,
-                                             qreal* boxSizeOut);
+                                             qreal* boxSizeOut,
+                                             qreal* rotationDegreesOut = nullptr);
 bool manualContinuityTrackSampleForClip(const TimelineClip& clip,
                                         qreal timelineFramePosition,
                                         qreal mediaSourceFramePosition,
@@ -280,7 +281,8 @@ bool collectSectionTrackAssignmentsForSpeaker(const QJsonObject& transcriptRoot,
                                               qreal mediaSourceFramePosition,
                                               QSet<int>* trackIds,
                                               QSet<QString>* streamIds,
-                                              QString* cacheTokenOut)
+                                              QString* cacheTokenOut,
+                                              qreal* rotationDegreesOut = nullptr)
 {
     if (!trackIds || !streamIds) {
         return false;
@@ -322,6 +324,10 @@ bool collectSectionTrackAssignmentsForSpeaker(const QJsonObject& transcriptRoot,
         }
         if (cacheTokenOut) {
             *cacheTokenOut = sectionAssignmentCacheToken(row);
+        }
+        if (rotationDegreesOut) {
+            *rotationDegreesOut =
+                qBound<qreal>(-180.0, row.value(QStringLiteral("rotation")).toDouble(0.0), 180.0);
         }
         return true;
     }
@@ -674,15 +680,63 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                              qreal timelineFramePosition,
                                              qreal mediaSourceFramePosition,
                                              QPointF* locationOut,
-                                             qreal* boxSizeOut)
+                                             qreal* boxSizeOut,
+                                             qreal* rotationDegreesOut)
 {
+    if (rotationDegreesOut) {
+        *rotationDegreesOut = 0.0;
+    }
     if (clip.id.trimmed().isEmpty() || speakerId.trimmed().isEmpty()) {
         return false;
     }
     const QString trimmedSpeakerId = speakerId.trimmed();
     QString cacheKey = assignedContinuityCacheKey(clip.filePath, clip.id, trimmedSpeakerId);
+    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
     if (currentThreadIsGuiThread() && !speakerFramingRuntimeBuildAllowed()) {
         AssignedContinuityStreamsPtr cachedStreams;
+        QJsonDocument transcriptDoc;
+        QSet<int> assignedTrackIds;
+        QSet<QString> assignedStreamIds;
+        QString assignmentCacheToken;
+        qreal sectionRotationDegrees = 0.0;
+        if (!transcriptPath.trimmed().isEmpty() &&
+            loadTranscriptJsonCached(transcriptPath, &transcriptDoc) &&
+            collectSectionTrackAssignmentsForSpeaker(transcriptDoc.object(),
+                                                     clip,
+                                                     trimmedSpeakerId,
+                                                     mediaSourceFramePosition,
+                                                     &assignedTrackIds,
+                                                     &assignedStreamIds,
+                                                     &assignmentCacheToken,
+                                                     &sectionRotationDegrees) &&
+            !assignmentCacheToken.isEmpty()) {
+            if (rotationDegreesOut) {
+                *rotationDegreesOut = sectionRotationDegrees;
+            }
+            const QString sectionCacheKey =
+                assignedContinuityCacheKey(clip.filePath, clip.id, assignmentCacheToken);
+            if (cachedAssignedContinuityStreamsMemoryOnly(sectionCacheKey, &cachedStreams)) {
+                const auto& streams =
+                    cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
+                for (const jcut::facedetections::FacestreamTrack& stream : streams) {
+                    if (streamSampleAtFrame(clip,
+                                            stream,
+                                            timelineFramePosition,
+                                            mediaSourceFramePosition,
+                                            clip.speakerFramingCenterSmoothingFrames,
+                                            clip.speakerFramingZoomSmoothingFrames,
+                                            clip.speakerFramingSmoothingMode,
+                                            clip.speakerFramingCenterSmoothingStrength,
+                                            clip.speakerFramingZoomSmoothingStrength,
+                                            clip.speakerFramingGapHoldFrames,
+                                            locationOut,
+                                            boxSizeOut)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
         if (cachedAssignedContinuityStreamsMemoryOnly(cacheKey, &cachedStreams)) {
             const auto& streams =
                 cachedStreams ? *cachedStreams : QVector<jcut::facedetections::FacestreamTrack>{};
@@ -707,7 +761,6 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
         return false;
     }
 
-    const QString transcriptPath = transcriptPathForRuntimeSidecarForClipFile(clip.filePath);
     if (transcriptPath.trimmed().isEmpty()) {
         return false;
     }
@@ -751,6 +804,7 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
     QSet<int> assignedTrackIds;
     QSet<QString> assignedStreamIds;
     QString assignmentCacheToken;
+    qreal sectionRotationDegrees = 0.0;
     const bool matchedSectionAssignment =
         collectSectionTrackAssignmentsForSpeaker(transcriptRoot,
                                                  clip,
@@ -758,7 +812,11 @@ bool assignedContinuityTrackSampleForSpeaker(const TimelineClip& clip,
                                                  mediaSourceFramePosition,
                                                  &assignedTrackIds,
                                                  &assignedStreamIds,
-                                                 &assignmentCacheToken);
+                                                 &assignmentCacheToken,
+                                                 &sectionRotationDegrees);
+    if (rotationDegreesOut) {
+        *rotationDegreesOut = matchedSectionAssignment ? sectionRotationDegrees : 0.0;
+    }
     if (!matchedSectionAssignment) {
         const QJsonArray identityMap =
             jcut::speakertrack::assignmentMapForClip(transcriptRoot, clip.id);
@@ -1702,10 +1760,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     qreal timelineFramePosition,
     const QPointF& locationNorm,
     qreal boxSizeNorm,
+    qreal rotationDegrees,
     const QSize& outputSize)
 {
     TimelineClip::TransformKeyframe state;
-    state.rotation = 0.0;
+    const qreal boundedRotation = qBound<qreal>(-180.0, rotationDegrees, 180.0);
+    state.rotation = boundedRotation;
     state.scaleX = 1.0;
     state.scaleY = 1.0;
 
@@ -1740,10 +1800,18 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingForFaceBoxAtPosition(
     const qreal scale = sanitizeScaleValue(targetSideOutputPx / faceSideOutputPx);
     const qreal localX = (qBound<qreal>(0.0, locationNorm.x(), 1.0) - 0.5) * fittedWidth;
     const qreal localY = (qBound<qreal>(0.0, locationNorm.y(), 1.0) - 0.5) * fittedHeight;
+    constexpr qreal kPi = 3.141592653589793238462643383279502884;
+    const qreal radians = boundedRotation * (kPi / 180.0);
+    const qreal scaledLocalX = scale * localX;
+    const qreal scaledLocalY = scale * localY;
+    const qreal rotatedLocalX = (std::cos(radians) * scaledLocalX) -
+                                (std::sin(radians) * scaledLocalY);
+    const qreal rotatedLocalY = (std::sin(radians) * scaledLocalX) +
+                                (std::cos(radians) * scaledLocalY);
     state.frame = static_cast<int64_t>(std::floor(localFrame));
-    state.translationX = targetXPx - (fittedCenterX + (scale * localX));
-    state.translationY = targetYPx - (fittedCenterY + (scale * localY));
-    state.rotation = 0.0;
+    state.translationX = targetXPx - (fittedCenterX + rotatedLocalX);
+    state.translationY = targetYPx - (fittedCenterY + rotatedLocalY);
+    state.rotation = boundedRotation;
     state.scaleX = scale;
     state.scaleY = scale;
     state.linearInterpolation = true;
@@ -1942,13 +2010,21 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
         }
         QPointF location;
         qreal boxSize = -1.0;
+        qreal sectionRotationDegrees = 0.0;
         bool hasSample =
             manualContinuityTrackSampleForClip(clip, timelineFrame, mediaSourceFrame, &location, &boxSize);
         if (!hasSample && !activeSpeaker.isEmpty()) {
             hasSample = assignedContinuityTrackSampleForSpeaker(
-                clip, activeSpeaker, timelineFrame, mediaSourceFrame, &location, &boxSize);
+                clip,
+                activeSpeaker,
+                timelineFrame,
+                mediaSourceFrame,
+                &location,
+                &boxSize,
+                &sectionRotationDegrees);
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
+            sectionRotationDegrees = 0.0;
             hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
         }
         if (!hasSample && activeSpeaker.isEmpty() && !currentThreadIsGuiThread()) {
@@ -1965,7 +2041,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtFrame(const Timeline
             return state;
         }
         return evaluateClipSpeakerFramingForFaceBoxAtPosition(
-            clip, static_cast<qreal>(timelineFrame), location, boxSize, outputSize);
+            clip,
+            static_cast<qreal>(timelineFrame),
+            location,
+            boxSize,
+            sectionRotationDegrees,
+            outputSize);
     }
     TimelineClip::TransformKeyframe framingState;
     if (localFrame <= clip.speakerFramingKeyframes.constFirst().frame) {
@@ -2064,14 +2145,22 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
         }
         QPointF location;
         qreal boxSize = -1.0;
+        qreal sectionRotationDegrees = 0.0;
         bool hasSample =
             manualContinuityTrackSampleForClip(
                 clip, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
         if (!hasSample && !activeSpeaker.isEmpty()) {
             hasSample = assignedContinuityTrackSampleForSpeaker(
-                clip, activeSpeaker, timelineFramePosition, mediaSourceFramePosition, &location, &boxSize);
+                clip,
+                activeSpeaker,
+                timelineFramePosition,
+                mediaSourceFramePosition,
+                &location,
+                &boxSize,
+                &sectionRotationDegrees);
         }
         if (!hasSample && !activeSpeaker.isEmpty()) {
+            sectionRotationDegrees = 0.0;
             hasSample = speakerTrackingSample(activeSpeaker, &location, &boxSize);
         }
         if (!hasSample && activeSpeaker.isEmpty() && !currentThreadIsGuiThread()) {
@@ -2088,7 +2177,12 @@ TimelineClip::TransformKeyframe evaluateClipSpeakerFramingAtPosition(const Timel
             return state;
         }
         return evaluateClipSpeakerFramingForFaceBoxAtPosition(
-            clip, timelineFramePosition, location, boxSize, outputSize);
+            clip,
+            timelineFramePosition,
+            location,
+            boxSize,
+            sectionRotationDegrees,
+            outputSize);
     }
     if (localFrame <= static_cast<qreal>(clip.speakerFramingKeyframes.constFirst().frame)) {
         state = clip.speakerFramingKeyframes.constFirst();

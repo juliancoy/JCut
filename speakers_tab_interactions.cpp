@@ -392,7 +392,8 @@ void SpeakersTab::updateSpeakerFramingTargetControls()
         !m_widgets.speakerFramingSmoothingModeCombo &&
         !m_widgets.speakerFramingCenterSmoothingStrengthSpin &&
         !m_widgets.speakerFramingZoomSmoothingStrengthSpin &&
-        !m_widgets.speakerFramingGapHoldFramesSpin) {
+        !m_widgets.speakerFramingGapHoldFramesSpin &&
+        !m_widgets.speakerSectionRotationSpin) {
         return;
     }
 
@@ -468,6 +469,12 @@ void SpeakersTab::updateSpeakerFramingTargetControls()
         QSignalBlocker blocker(m_widgets.speakerFramingGapHoldFramesSpin);
         m_widgets.speakerFramingGapHoldFramesSpin->setValue(
             clip ? qBound(0, clip->speakerFramingGapHoldFrames, TimelineClip::kSpeakerFramingGapHoldMaxFrames) : 0);
+    }
+    if (m_widgets.speakerSectionRotationSpin) {
+        QSignalBlocker blocker(m_widgets.speakerSectionRotationSpin);
+        m_widgets.speakerSectionRotationSpin->setValue(contiguousTranscriptSectionModeActive()
+                                                           ? selectedSpeakerSectionRotation()
+                                                           : 0.0);
     }
     if (m_widgets.speakerApplyFramingToClipCheckBox) {
         QSignalBlocker blocker(m_widgets.speakerApplyFramingToClipCheckBox);
@@ -1178,6 +1185,7 @@ bool SpeakersTab::saveSelectedSpeakerProfileField(const QString& fieldKey, const
     }
 
     m_speakersTableRefreshSignature.clear();
+    m_speakerSectionsTableRefreshSignature.clear();
     refreshSpeakersTable(m_transcriptSession.rootObject(), speakerId);
     updateSelectedSpeakerPanel();
     updateSpeakerTrackingStatusLabel();
